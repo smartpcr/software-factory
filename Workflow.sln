@@ -64,6 +64,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{A90E0A6B-643
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ExecutionEngine.IntegrationTests", "src\ExecutionEngine.IntegrationTests\ExecutionEngine.IntegrationTests.csproj", "{76F47167-7ECD-440E-8BD3-A8ECD0BC81D3}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Common.Diagnostics.EtwProcessor", "src\Common.Diagnostics.EtwProcessor\Common.Diagnostics.EtwProcessor.csproj", "{77D924CC-DFAB-4CBE-B800-B2CD86D9FF89}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -126,6 +128,10 @@ Global
 		{76F47167-7ECD-440E-8BD3-A8ECD0BC81D3}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{76F47167-7ECD-440E-8BD3-A8ECD0BC81D3}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{76F47167-7ECD-440E-8BD3-A8ECD0BC81D3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{77D924CC-DFAB-4CBE-B800-B2CD86D9FF89}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{77D924CC-DFAB-4CBE-B800-B2CD86D9FF89}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{77D924CC-DFAB-4CBE-B800-B2CD86D9FF89}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{77D924CC-DFAB-4CBE-B800-B2CD86D9FF89}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -149,5 +155,6 @@ Global
 		{6D3C8E12-7065-4C41-8FDB-30B1E3F48C7F} = {A90E0A6B-6432-4B87-B724-A27CF07C0F9B}
 		{2BCC1F71-2B85-4297-8836-80ADAC993DCA} = {A90E0A6B-6432-4B87-B724-A27CF07C0F9B}
 		{4FAD4064-3EAA-4174-81E2-4443B1B6E11D} = {A90E0A6B-6432-4B87-B724-A27CF07C0F9B}
+		{77D924CC-DFAB-4CBE-B800-B2CD86D9FF89} = {A90E0A6B-6432-4B87-B724-A27CF07C0F9B}
 	EndGlobalSection
 EndGlobal
