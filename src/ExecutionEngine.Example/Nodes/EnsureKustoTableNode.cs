@@ -9,12 +9,12 @@ namespace ExecutionEngine.Example.Nodes;
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
 using ExecutionEngine.Nodes;
 using Kusto.Data;
 using Kusto.Data.Common;
 using Kusto.Data.Net.Client;
 using EtwIngest.Libs;
+using ExecutionEngine.Nodes.Definitions;
 
 /// <summary>
 /// Node that ensures Kusto tables exist for CSV files.
@@ -35,7 +35,7 @@ public class EnsureKustoTableNode : ExecutableNodeBase
     /// <inheritdoc/>
     public override void Initialize(NodeDefinition definition)
     {
-        base.Initialize(definition);
+        this.Definition = definition;
 
         // Get connection string from configuration
         if (definition.Configuration != null && definition.Configuration.TryGetValue("ConnectionString", out var connStrValue))

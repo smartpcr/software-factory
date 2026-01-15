@@ -6,17 +6,32 @@
 
 namespace ExecutionEngine.Workflow;
 
-using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 using System.Linq;
 using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
+using ExecutionEngine.Nodes.Definitions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 /// <summary>
 /// Validates workflow definitions to ensure they are well-formed and executable.
 /// </summary>
 public class WorkflowValidator
 {
+    private readonly ILogger<WorkflowValidator> logger;
+
+    /// <summary>
+    /// Initializes a new instance of the WorkflowValidator class.
+    /// </summary>
+    /// <param name="serviceProvider">Optional service provider for DI-based logging.</param>
+    public WorkflowValidator(IServiceProvider? serviceProvider = null)
+    {
+        // Get ILoggerFactory from service provider if available, otherwise use NullLoggerFactory
+        var loggerFactory = serviceProvider?.GetService(typeof(ILoggerFactory)) as ILoggerFactory ?? NullLoggerFactory.Instance;
+        this.logger = loggerFactory.CreateLogger<WorkflowValidator>();
+    }
+
     /// <summary>
     /// Validates a workflow definition and returns a validation result.
     /// </summary>
@@ -28,6 +43,7 @@ public class WorkflowValidator
 
         if (workflow == null)
         {
+            this.logger.LogError("Workflow definition is null");
             result.Errors.Add("Workflow definition cannot be null.");
             return result;
         }
@@ -44,6 +60,16 @@ public class WorkflowValidator
         // Validate graph structure (cycles, entry points)
         this.ValidateGraphStructure(workflow, result);
 
+        if (!result.IsValid)
+        {
+            this.logger.LogError("Workflow {WorkflowId} validation failed with {ErrorCount} errors",
+                workflow.WorkflowId, result.Errors.Count);
+            foreach (var error in result.Errors)
+            {
+                this.logger.LogError("Validation error: {Error}", error);
+            }
+        }
+
         return result;
     }
 
@@ -54,6 +80,7 @@ public class WorkflowValidator
     {
         if (string.IsNullOrWhiteSpace(workflow.WorkflowId))
         {
+            this.logger.LogError("WorkflowId is null or empty");
             result.Errors.Add("WorkflowId cannot be null or empty.");
         }
 
@@ -64,11 +91,13 @@ public class WorkflowValidator
 
         if (workflow.MaxConcurrency < 0)
         {
+            this.logger.LogError("MaxConcurrency is negative: {MaxConcurrency}", workflow.MaxConcurrency);
             result.Errors.Add("MaxConcurrency cannot be negative.");
         }
 
         if (workflow.TimeoutSeconds < 0)
         {
+            this.logger.LogError("TimeoutSeconds is negative: {TimeoutSeconds}", workflow.TimeoutSeconds);
             result.Errors.Add("TimeoutSeconds cannot be negative.");
         }
     }
@@ -80,6 +109,7 @@ public class WorkflowValidator
     {
         if (workflow.Nodes == null || workflow.Nodes.Count == 0)
         {
+            this.logger.LogError("Workflow contains no nodes");
             result.Errors.Add("Workflow must contain at least one node.");
             return;
         }
@@ -90,12 +120,14 @@ public class WorkflowValidator
         {
             if (string.IsNullOrWhiteSpace(node.NodeId))
             {
+                this.logger.LogError("Node found with null or empty NodeId");
                 result.Errors.Add("Node found with null or empty NodeId.");
                 continue;
             }
 
             if (!nodeIds.Add(node.NodeId))
             {
+                this.logger.LogError("Duplicate node ID found: {NodeId}", node.NodeId);
                 result.Errors.Add($"Duplicate node ID found: '{node.NodeId}'.");
             }
 
@@ -108,6 +140,7 @@ public class WorkflowValidator
         {
             if (!nodeIds.Contains(workflow.EntryPointNodeId))
             {
+                this.logger.LogError("Entry point node {EntryPointNodeId} does not exist in workflow", workflow.EntryPointNodeId);
                 result.Errors.Add($"Entry point node '{workflow.EntryPointNodeId}' does not exist in the workflow.");
             }
         }
@@ -116,121 +149,24 @@ public class WorkflowValidator
     /// <summary>
     /// Validates node-specific configuration based on RuntimeType.
     /// </summary>
-    /// <param name="node">The node definition to validate.</param>
+    /// <param name="nodeDefinition">The node definition to validate.</param>
     /// <param name="result">The validation result to populate.</param>
-    private void ValidateNodeConfiguration(NodeDefinition node, ValidationResult result)
+    private void ValidateNodeConfiguration(NodeDefinition nodeDefinition, ValidationResult result)
     {
-        var nodeContext = $"Node '{node.NodeId}'";
-
-        // Validate RuntimeType-specific requirements
-        switch (node.RuntimeType)
+        var validationContext = new ValidationContext(nodeDefinition);
+        var validationErrors = nodeDefinition.Validate(validationContext)
+            .Where(vr => !string.IsNullOrEmpty(vr.ErrorMessage))
+            .ToList();
+        if (validationErrors.Any())
         {
-            case RuntimeType.CSharp:
-                // CSharp nodes need AssemblyPath and TypeName properties
-                if (string.IsNullOrWhiteSpace(node.AssemblyPath))
-                {
-                    result.Errors.Add($"{nodeContext}: CSharp runtime type requires 'AssemblyPath' property.");
-                }
-
-                if (string.IsNullOrWhiteSpace(node.TypeName))
-                {
-                    result.Errors.Add($"{nodeContext}: CSharp runtime type requires 'TypeName' property.");
-                }
-
-                break;
-
-            case RuntimeType.CSharpScript:
-                // CSharpScript nodes need ScriptPath property
-                if (string.IsNullOrWhiteSpace(node.ScriptPath))
-                {
-                    result.Errors.Add($"{nodeContext}: CSharpScript runtime type requires 'ScriptPath' property.");
-                }
-
-                break;
-
-            case RuntimeType.CSharpTask:
-                // CSharpTask nodes need either 'script' (inline) or executor configuration
-                if (node.Configuration == null)
-                {
-                    result.Errors.Add($"{nodeContext}: CSharpTask runtime type requires configuration with 'script' (inline script) or executor settings.");
-                }
-                else
-                {
-                    var hasScript = node.Configuration.ContainsKey("script");
-                    var hasExecutor = node.Configuration.ContainsKey("ExecutorTypeName") || node.Configuration.ContainsKey("ExecutorAssemblyPath");
-
-                    if (!hasScript && !hasExecutor)
-                    {
-                        result.Errors.Add($"{nodeContext}: CSharpTask runtime type requires either 'script' (inline script) or executor configuration ('ExecutorTypeName', 'ExecutorAssemblyPath').");
-                    }
-                }
-
-                break;
-
-            case RuntimeType.PowerShell:
-                // PowerShell nodes need ScriptPath property
-                if (string.IsNullOrWhiteSpace(node.ScriptPath))
-                {
-                    result.Errors.Add($"{nodeContext}: PowerShell runtime type requires 'ScriptPath' property.");
-                }
-
-                break;
-
-            case RuntimeType.PowerShellTask:
-                // PowerShellTask nodes need either script or scriptPath
-                if (node.Configuration == null)
-                {
-                    result.Errors.Add($"{nodeContext}: PowerShellTask runtime type requires configuration with 'script' or 'scriptPath'.");
-                }
-                else
-                {
-                    var hasScript = node.Configuration.ContainsKey("script");
-                    var hasScriptPath = node.Configuration.ContainsKey("scriptPath");
-
-                    if (!hasScript && !hasScriptPath)
-                    {
-                        result.Errors.Add($"{nodeContext}: PowerShellTask runtime type requires either 'script' (inline) or 'scriptPath' in configuration.");
-                    }
-                }
-
-                break;
-
-            case RuntimeType.IfElse:
-                // IfElse nodes need Condition
-                if (node.Configuration == null || !node.Configuration.ContainsKey("Condition"))
-                {
-                    result.Errors.Add($"{nodeContext}: IfElse runtime type requires 'Condition' in configuration.");
-                }
-
-                break;
-
-            case RuntimeType.ForEach:
-                // ForEach nodes need CollectionExpression
-                if (node.Configuration == null || !node.Configuration.ContainsKey("CollectionExpression"))
-                {
-                    result.Errors.Add($"{nodeContext}: ForEach runtime type requires 'CollectionExpression' in configuration.");
-                }
-
-                break;
-
-            case RuntimeType.While:
-                // While nodes need Condition
-                if (node.Configuration == null || !node.Configuration.ContainsKey("Condition"))
-                {
-                    result.Errors.Add($"{nodeContext}: While runtime type requires 'Condition' in configuration.");
-                }
-
-                break;
-
-            default:
-                result.Warnings.Add($"{nodeContext}: Unknown runtime type '{node.RuntimeType}'. Configuration validation skipped.");
-                break;
-        }
-
-        // Validate concurrency settings
-        if (node.MaxConcurrentExecutions < 0)
-        {
-            result.Errors.Add($"{nodeContext}: MaxConcurrentExecutions cannot be negative.");
+            this.logger.LogError("Node {NodeId} has {ErrorCount} configuration errors",
+                nodeDefinition.NodeId, validationErrors.Count);
+            foreach (var validationError in validationErrors)
+            {
+                this.logger.LogError("Node {NodeId} validation error: {ErrorMessage}",
+                    nodeDefinition.NodeId, validationError.ErrorMessage);
+            }
+            result.Errors.AddRange(validationErrors.Select(vr => vr.ErrorMessage!));
         }
     }
 
@@ -250,23 +186,27 @@ public class WorkflowValidator
         {
             if (string.IsNullOrWhiteSpace(connection.SourceNodeId))
             {
+                this.logger.LogError("Connection found with null or empty SourceNodeId");
                 result.Errors.Add("Connection found with null or empty SourceNodeId.");
                 continue;
             }
 
             if (string.IsNullOrWhiteSpace(connection.TargetNodeId))
             {
+                this.logger.LogError("Connection found with null or empty TargetNodeId");
                 result.Errors.Add("Connection found with null or empty TargetNodeId.");
                 continue;
             }
 
             if (!nodeIds.Contains(connection.SourceNodeId))
             {
+                this.logger.LogError("Connection references non-existent source node: {SourceNodeId}", connection.SourceNodeId);
                 result.Errors.Add($"Connection references non-existent source node: '{connection.SourceNodeId}'.");
             }
 
             if (!nodeIds.Contains(connection.TargetNodeId))
             {
+                this.logger.LogError("Connection references non-existent target node: {TargetNodeId}", connection.TargetNodeId);
                 result.Errors.Add($"Connection references non-existent target node: '{connection.TargetNodeId}'.");
             }
 
@@ -318,6 +258,7 @@ public class WorkflowValidator
             {
                 if (this.HasCycleDFS(nodeId, adjacencyList, visited, recursionStack, whileNodes, workflow.Connections))
                 {
+                    this.logger.LogError("Cycle detected in workflow graph involving node {NodeId}", nodeId);
                     result.Errors.Add($"Cycle detected in workflow graph involving node '{nodeId}'. This will cause infinite loops.");
                 }
             }
@@ -333,6 +274,7 @@ public class WorkflowValidator
         {
             if (entryPoints.Count == 0)
             {
+                this.logger.LogError("Workflow has no entry points - all nodes have incoming connections");
                 result.Errors.Add("Workflow has no entry points. All nodes have incoming connections, which may prevent execution from starting.");
             }
             else if (entryPoints.Count > 1)

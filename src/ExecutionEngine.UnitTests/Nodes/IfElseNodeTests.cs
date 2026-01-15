@@ -9,8 +9,8 @@ namespace ExecutionEngine.UnitTests.Nodes;
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Engine;
 using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
 using ExecutionEngine.Nodes;
+using ExecutionEngine.Nodes.Definitions;
 using ExecutionEngine.Workflow;
 using FluentAssertions;
 
@@ -38,13 +38,14 @@ public class IfElseNodeTests
         // Arrange
         var node = new IfElseNode
         {
-            Condition = "(int)GetGlobal(\"x\") > 5"
+
         };
 
-        var definition = new NodeDefinition
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
-            NodeName = "Test If-Else"
+            NodeName = "Test If-Else",
+            Condition = "(int)GetGlobal(\"x\") > 5"
         };
         node.Initialize(definition);
 
@@ -68,13 +69,14 @@ public class IfElseNodeTests
         // Arrange
         var node = new IfElseNode
         {
-            Condition = "(int)GetGlobal(\"x\") > 5"
+
         };
 
-        var definition = new NodeDefinition
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
-            NodeName = "Test If-Else"
+            NodeName = "Test If-Else",
+            Condition = "(int)GetGlobal(\"x\") > 5"
         };
         node.Initialize(definition);
 
@@ -96,15 +98,12 @@ public class IfElseNodeTests
     public async Task ExecuteAsync_ComplexBooleanExpression_EvaluatesCorrectly()
     {
         // Arrange
-        var node = new IfElseNode
-        {
-            Condition = "((int)GetGlobal(\"x\") > 5 && (int)GetGlobal(\"y\") < 10) || (bool)GetGlobal(\"z\") == true"
-        };
-
-        var definition = new NodeDefinition
+        var node = new IfElseNode();
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
-            NodeName = "Test Complex If-Else"
+            NodeName = "Test Complex If-Else",
+            Condition = "((int)GetGlobal(\"x\") > 5 && (int)GetGlobal(\"y\") < 10) || (bool)GetGlobal(\"z\") == true"
         };
         node.Initialize(definition);
 
@@ -128,13 +127,13 @@ public class IfElseNodeTests
         // Arrange
         var node = new IfElseNode
         {
-            Condition = "(string)GetGlobal(\"status\") == \"success\""
         };
 
-        var definition = new NodeDefinition
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
-            NodeName = "Test String If-Else"
+            NodeName = "Test String If-Else",
+            Condition = "(string)GetGlobal(\"status\") == \"success\""
         };
         node.Initialize(definition);
 
@@ -156,13 +155,13 @@ public class IfElseNodeTests
         // Arrange
         var node = new IfElseNode
         {
-            Condition = "(int)GetInput(\"value\") > 100"
         };
 
-        var definition = new NodeDefinition
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
-            NodeName = "Test Input If-Else"
+            NodeName = "Test Input If-Else",
+            Condition = "(int)GetInput(\"value\") > 100"
         };
         node.Initialize(definition);
 
@@ -184,13 +183,13 @@ public class IfElseNodeTests
         // Arrange
         var node = new IfElseNode
         {
-            Condition = string.Empty
         };
 
-        var definition = new NodeDefinition
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
-            NodeName = "Test If-Else"
+            NodeName = "Test If-Else",
+            Condition = string.Empty
         };
         node.Initialize(definition);
 
@@ -211,13 +210,13 @@ public class IfElseNodeTests
         // Arrange
         var node = new IfElseNode
         {
-            Condition = "(int)GetGlobal(\"x\") >" // Invalid syntax
         };
 
-        var definition = new NodeDefinition
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
-            NodeName = "Test If-Else"
+            NodeName = "Test If-Else",
+            Condition = "(int)GetGlobal(\"x\") >" // Invalid syntax
         };
         node.Initialize(definition);
 
@@ -239,13 +238,13 @@ public class IfElseNodeTests
         // Arrange
         var node = new IfElseNode
         {
-            Condition = "(int)GetGlobal(\"x\") + 5" // Returns int, not bool
         };
 
-        var definition = new NodeDefinition
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
-            NodeName = "Test If-Else"
+            NodeName = "Test If-Else",
+            Condition = "(int)GetGlobal(\"x\") + 5" // Returns int, not bool
         };
         node.Initialize(definition);
 
@@ -267,13 +266,13 @@ public class IfElseNodeTests
         // Arrange
         var node = new IfElseNode
         {
-            Condition = "(int)GetGlobal(\"x\") / (int)GetGlobal(\"y\") > 0" // Will cause divide by zero
         };
 
-        var definition = new NodeDefinition
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
-            NodeName = "Test If-Else"
+            NodeName = "Test If-Else",
+            Condition = "(int)GetGlobal(\"x\") / (int)GetGlobal(\"y\") > 0" // Will cause divide by zero
         };
         node.Initialize(definition);
 
@@ -296,13 +295,13 @@ public class IfElseNodeTests
         // Arrange
         var node = new IfElseNode
         {
-            Condition = "true"
         };
 
-        var definition = new NodeDefinition
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
-            NodeName = "Test If-Else"
+            NodeName = "Test If-Else",
+            Condition = "true"
         };
         node.Initialize(definition);
 
@@ -342,15 +341,11 @@ public class IfElseNodeTests
     {
         // Arrange
         var node = new IfElseNode();
-
-        var definition = new NodeDefinition
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
             NodeName = "Test If-Else",
-            Configuration = new Dictionary<string, object>
-            {
-                { "Condition", "(int)GetGlobal(\"x\") >= 10" }
-            }
+            Condition = "(int)GetGlobal(\"x\") >= 10",
         };
         node.Initialize(definition);
 
@@ -372,13 +367,13 @@ public class IfElseNodeTests
         // Arrange
         var node = new IfElseNode
         {
-            Condition = "GetGlobal(\"value\") == null"
         };
 
-        var definition = new NodeDefinition
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
-            NodeName = "Test If-Else"
+            NodeName = "Test If-Else",
+            Condition = "GetGlobal(\"value\") == null"
         };
         node.Initialize(definition);
 
@@ -400,13 +395,13 @@ public class IfElseNodeTests
         // Arrange
         var node = new IfElseNode
         {
-            Condition = "((System.Collections.Generic.List<int>)GetGlobal(\"items\")).Any(i => i > 5)"
         };
 
-        var definition = new NodeDefinition
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
-            NodeName = "Test If-Else"
+            NodeName = "Test If-Else",
+            Condition = "((System.Collections.Generic.List<int>)GetGlobal(\"items\")).Any(i => i > 5)"
         };
         node.Initialize(definition);
 
@@ -428,13 +423,13 @@ public class IfElseNodeTests
         // Arrange
         var node = new IfElseNode
         {
-            Condition = "(int)GetGlobal(\"counter\") > 5"
         };
 
-        var definition = new NodeDefinition
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
-            NodeName = "Test If-Else"
+            NodeName = "Test If-Else",
+            Condition = "(int)GetGlobal(\"counter\") > 5"
         };
         node.Initialize(definition);
 
@@ -464,13 +459,13 @@ public class IfElseNodeTests
         // Arrange
         var node = new IfElseNode
         {
-            Condition = "true"
         };
 
-        var definition = new NodeDefinition
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
             NodeName = "Test If-Else",
+            Condition = "true",
             Configuration = null
         };
 
@@ -485,13 +480,13 @@ public class IfElseNodeTests
         // Arrange
         var node = new IfElseNode
         {
-            Condition = "existing condition"
         };
 
-        var definition = new NodeDefinition
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
             NodeName = "Test If-Else",
+            Condition = "existing condition",
             Configuration = new Dictionary<string, object>
             {
                 { "SomeOtherKey", "value" }
@@ -510,8 +505,7 @@ public class IfElseNodeTests
     {
         // Arrange
         var node = new IfElseNode();
-
-        var definition = new NodeDefinition
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
             NodeName = "Test If-Else",
@@ -533,14 +527,10 @@ public class IfElseNodeTests
     {
         // Arrange
         var factory = new NodeFactory();
-        var definition = new NodeDefinition
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "test-if",
-            RuntimeType = ExecutionEngine.Enums.RuntimeType.IfElse,
-            Configuration = new Dictionary<string, object>
-            {
-                { "Condition", "true" }
-            }
+            Condition = "true",
         };
 
         // Act
@@ -566,31 +556,24 @@ public class IfElseNodeTests
             WorkflowName = "If-Else True Branch Test",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"value\", 10);")
                 },
-                new NodeDefinition
+                new IfElseNodeDefinition
                 {
                     NodeId = "if-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.IfElse,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "Condition", "(int)GetGlobal(\"value\") > 5" }
-                    }
+                    Condition = "(int)GetGlobal(\"value\") > 5",
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "true-branch-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"result\", \"true-branch-executed\");")
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "false-branch-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"result\", \"false-branch-executed\");")
                 }
             },
@@ -649,31 +632,24 @@ public class IfElseNodeTests
             WorkflowName = "If-Else False Branch Test",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"value\", 3);")
                 },
-                new NodeDefinition
+                new IfElseNodeDefinition
                 {
                     NodeId = "if-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.IfElse,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "Condition", "(int)GetGlobal(\"value\") > 5" }
-                    }
+                    Condition = "(int)GetGlobal(\"value\") > 5",
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "true-branch-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"result\", \"true-branch-executed\");")
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "false-branch-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"result\", \"false-branch-executed\");")
                 }
             },
@@ -723,34 +699,27 @@ public class IfElseNodeTests
             WorkflowName = "If-Else Chained Nodes Test",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"value\", 10); SetGlobal(\"execution\", \"setup\");")
                 },
-                new NodeDefinition
+                new IfElseNodeDefinition
                 {
                     NodeId = "if-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.IfElse,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "Condition", "(int)GetGlobal(\"value\") > 5" }
-                    }
+                    Condition = "(int)GetGlobal(\"value\") > 5",
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "true-branch-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript(@"
                         var exec = (string)GetGlobal(""execution"");
                         SetGlobal(""execution"", exec + ""-true"");
                     ")
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "false-branch-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript(@"
                         var exec = (string)GetGlobal(""execution"");
                         SetGlobal(""execution"", exec + ""-false"");
@@ -804,31 +773,24 @@ public class IfElseNodeTests
             WorkflowName = "If-Else Exclusive Execution Test 1",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"value\", 10);")
                 },
-                new NodeDefinition
+                new IfElseNodeDefinition
                 {
                     NodeId = "if-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.IfElse,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "Condition", "(int)GetGlobal(\"value\") > 5" }
-                    }
+                    Condition = "(int)GetGlobal(\"value\") > 5",
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "true-branch-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"true_executed\", true);")
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "false-branch-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"false_executed\", true);")
                 }
             },
@@ -875,31 +837,24 @@ public class IfElseNodeTests
             WorkflowName = "If-Else Exclusive Execution Test 2",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"value\", 3);")
                 },
-                new NodeDefinition
+                new IfElseNodeDefinition
                 {
                     NodeId = "if-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.IfElse,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "Condition", "(int)GetGlobal(\"value\") > 5" }
-                    }
+                    Condition = "(int)GetGlobal(\"value\") > 5",
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "true-branch-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"true_executed\", true);")
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "false-branch-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"false_executed\", true);")
                 }
             },

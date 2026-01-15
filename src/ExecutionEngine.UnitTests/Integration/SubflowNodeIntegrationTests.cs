@@ -6,12 +6,12 @@
 
 namespace ExecutionEngine.UnitTests.Integration;
 
-using System.Text.Json;
 using ExecutionEngine.Engine;
 using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
+using ExecutionEngine.Nodes.Definitions;
 using ExecutionEngine.Workflow;
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// Integration tests for Subflow node with WorkflowEngine.
@@ -36,10 +36,9 @@ public class SubflowNodeIntegrationTests
             EntryPointNodeId = "child-task",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "child-task",
-                    RuntimeType = RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript(@"
                         SetGlobal(""childResult"", ""completed"");
                     ")
@@ -57,28 +56,22 @@ public class SubflowNodeIntegrationTests
             WorkflowName = "Subflow With Downstream Test",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
-                    RuntimeType = RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript(@"
                         SetGlobal(""setupComplete"", true);
                     ")
                 },
-                new NodeDefinition
+                new SubflowNodeDefinition
                 {
                     NodeId = "subflow-1",
-                    RuntimeType = RuntimeType.Subflow,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "WorkflowFilePath", childWorkflowPath },
-                        { "OutputMappings", new Dictionary<string, string> { { "childResult", "parentResult" } } }
-                    }
+                    WorkflowFilePath = childWorkflowPath,
+                    OutputMappings = new Dictionary<string, string>(){ { "childResult", "parentResult" } },
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "downstream-node",
-                    RuntimeType = RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript(@"
                         var result = GetGlobal(""parentResult"");
                         SetGlobal(""downstreamExecuted"", true);
@@ -127,10 +120,9 @@ public class SubflowNodeIntegrationTests
             EntryPointNodeId = "process-task",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "process-task",
-                    RuntimeType = RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript(@"
                         var inputValue = (int)GetGlobal(""childInput"");
                         var result = inputValue * 2;
@@ -148,29 +140,23 @@ public class SubflowNodeIntegrationTests
             WorkflowId = "parent-with-mapping",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
-                    RuntimeType = RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript(@"
                         SetGlobal(""parentValue"", 42);
                     ")
                 },
-                new NodeDefinition
+                new SubflowNodeDefinition
                 {
                     NodeId = "subflow-1",
-                    RuntimeType = RuntimeType.Subflow,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "WorkflowFilePath", childWorkflowPath },
-                        { "InputMappings", new Dictionary<string, string> { { "parentValue", "childInput" } } },
-                        { "OutputMappings", new Dictionary<string, string> { { "childOutput", "parentResult" } } }
-                    }
+                    WorkflowFilePath = childWorkflowPath,
+                    InputMappings = new Dictionary<string, string> { { "parentValue", "childInput" } },
+                    OutputMappings = new Dictionary<string, string> { { "childOutput", "parentResult" } },
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "verify",
-                    RuntimeType = RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript(@"
                         var result = (int)GetGlobal(""parentResult"");
                         SetGlobal(""verificationResult"", result == 84);
@@ -208,10 +194,9 @@ public class SubflowNodeIntegrationTests
             EntryPointNodeId = "fail-task",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "fail-task",
-                    RuntimeType = RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript(@"
                         throw new Exception(""Child workflow intentional failure"");
                     ")
@@ -227,27 +212,21 @@ public class SubflowNodeIntegrationTests
             WorkflowId = "parent-with-error-handler",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new SubflowNodeDefinition
                 {
                     NodeId = "subflow-1",
-                    RuntimeType = RuntimeType.Subflow,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "WorkflowFilePath", childWorkflowPath }
-                    }
+                    WorkflowFilePath = childWorkflowPath,
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "error-handler",
-                    RuntimeType = RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript(@"
                         SetGlobal(""errorHandled"", true);
                     ")
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "success-handler",
-                    RuntimeType = RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript(@"
                         SetGlobal(""successHandled"", true);
                     ")
@@ -285,7 +264,8 @@ public class SubflowNodeIntegrationTests
     public async Task NestedSubflows_TwoLevelDeep_ShouldExecuteCorrectly()
     {
         // Arrange
-        var engine = new WorkflowEngine();
+        // Use AssemblyInitialize.ServiceProvider which has logging configured with Serilog
+        var engine = new WorkflowEngine(null, AssemblyInitialize.ServiceProvider);
 
         // Create level 2 child (innermost) - simple calculation
         var level2Workflow = new WorkflowDefinition
@@ -294,14 +274,10 @@ public class SubflowNodeIntegrationTests
             EntryPointNodeId = "level2-task",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "level2-task",
-                    RuntimeType = RuntimeType.CSharpTask,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "script", "var inputObj = GetGlobal(\"level2Input\"); if (inputObj == null) throw new Exception(\"level2Input is null\"); var input = Convert.ToInt32(inputObj); SetGlobal(\"level2Output\", input + 100);" }
-                    }
+                    ScriptContent = "var inputObj = GetGlobal(\"level2Input\"); if (inputObj == null) throw new Exception(\"level2Input is null\"); var input = Convert.ToInt32(inputObj); SetGlobal(\"level2Output\", input + 100);",
                 }
             }
         };
@@ -314,14 +290,10 @@ public class SubflowNodeIntegrationTests
             EntryPointNodeId = "level1-task",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "level1-task",
-                    RuntimeType = RuntimeType.CSharpTask,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "script", "var inputObj = GetGlobal(\"level1Input\"); if (inputObj == null) throw new Exception(\"level1Input is null\"); var input = Convert.ToInt32(inputObj); SetGlobal(\"level1Output\", input + 10);" }
-                    }
+                    ScriptContent = "var inputObj = GetGlobal(\"level1Input\"); if (inputObj == null) throw new Exception(\"level1Input is null\"); var input = Convert.ToInt32(inputObj); SetGlobal(\"level1Output\", input + 10);",
                 }
             }
         };
@@ -331,38 +303,27 @@ public class SubflowNodeIntegrationTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "parent-workflow",
+            EntryPointNodeId = "setup",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
-                    RuntimeType = RuntimeType.CSharpTask,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "script", "SetGlobal(\"startValue\", 10);" }
-                    }
+                    ScriptContent = "SetGlobal(\"startValue\", 10);",
                 },
-                new NodeDefinition
+                new SubflowNodeDefinition
                 {
                     NodeId = "level1-subflow",
-                    RuntimeType = RuntimeType.Subflow,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "WorkflowFilePath", level1Path },
-                        { "InputMappings", new Dictionary<string, string> { { "startValue", "level1Input" } } },
-                        { "OutputMappings", new Dictionary<string, string> { { "level1Output", "intermediateValue" } } }
-                    }
+                    WorkflowFilePath = level1Path,
+                    InputMappings = new Dictionary<string, string> { { "startValue", "level1Input" } },
+                    OutputMappings = new Dictionary<string, string> { { "level1Output", "intermediateValue" } },
                 },
-                new NodeDefinition
+                new SubflowNodeDefinition
                 {
                     NodeId = "level2-subflow",
-                    RuntimeType = RuntimeType.Subflow,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "WorkflowFilePath", level2Path },
-                        { "InputMappings", new Dictionary<string, string> { { "intermediateValue", "level2Input" } } },
-                        { "OutputMappings", new Dictionary<string, string> { { "level2Output", "finalResult" } } }
-                    }
+                    WorkflowFilePath = level2Path,
+                    InputMappings = new Dictionary<string, string> { { "intermediateValue", "level2Input" } } ,
+                    OutputMappings = new Dictionary<string, string> { { "level2Output", "finalResult" } },
                 }
             },
             Connections = new List<NodeConnection>
@@ -396,10 +357,9 @@ public class SubflowNodeIntegrationTests
             EntryPointNodeId = "child1-task",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "child1-task",
-                    RuntimeType = RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript(@"
                         var input = (int)GetGlobal(""value"");
                         SetGlobal(""result"", input * 2);
@@ -416,10 +376,9 @@ public class SubflowNodeIntegrationTests
             EntryPointNodeId = "child2-task",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "child2-task",
-                    RuntimeType = RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript(@"
                         var input = (int)GetGlobal(""value"");
                         SetGlobal(""result"", input + 10);
@@ -435,40 +394,30 @@ public class SubflowNodeIntegrationTests
             WorkflowId = "sequential-subflows",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
-                    RuntimeType = RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript(@"
                         SetGlobal(""initialValue"", 5);
                     ")
                 },
-                new NodeDefinition
+                new SubflowNodeDefinition
                 {
                     NodeId = "subflow1",
-                    RuntimeType = RuntimeType.Subflow,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "WorkflowFilePath", child1Path },
-                        { "InputMappings", new Dictionary<string, string> { { "initialValue", "value" } } },
-                        { "OutputMappings", new Dictionary<string, string> { { "result", "intermediateValue" } } }
-                    }
+                    WorkflowFilePath = child1Path,
+                    InputMappings = new Dictionary<string, string> { { "initialValue", "value" } },
+                    OutputMappings = new Dictionary<string, string> { { "result", "intermediateValue" } },
                 },
-                new NodeDefinition
+                new SubflowNodeDefinition
                 {
                     NodeId = "subflow2",
-                    RuntimeType = RuntimeType.Subflow,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "WorkflowFilePath", child2Path },
-                        { "InputMappings", new Dictionary<string, string> { { "intermediateValue", "value" } } },
-                        { "OutputMappings", new Dictionary<string, string> { { "result", "finalValue" } } }
-                    }
+                    WorkflowFilePath = child2Path,
+                    InputMappings = new Dictionary<string, string> { { "intermediateValue", "value" } },
+                    OutputMappings = new Dictionary<string, string> { { "result", "finalValue" } },
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "verify",
-                    RuntimeType = RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript(@"
                         var final = (int)GetGlobal(""finalValue"");
                         SetGlobal(""verified"", final == 20); // (5 * 2) + 10 = 20
@@ -490,8 +439,8 @@ public class SubflowNodeIntegrationTests
         result.Should().NotBeNull();
         result.Status.Should().Be(WorkflowExecutionStatus.Completed);
         result.Variables["initialValue"].Should().Be(5);
-        result.Variables["intermediateValue"].Should().Be(10);
-        result.Variables["finalValue"].Should().Be(20);
+        result.Variables["intermediateValue"].Should().Be(10); // subflow1: value = 5 * 2 = 10
+        result.Variables["finalValue"].Should().Be(20);  // subflow2: value = 10 + 10 = 20
         result.Variables["verified"].Should().Be(true);
 
         // Verify execution order
@@ -519,10 +468,9 @@ public class SubflowNodeIntegrationTests
             EntryPointNodeId = "child-task",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "child-task",
-                    RuntimeType = RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript(@"
                         // Try to access parent variable - should not exist
                         var hasParentVar = GetGlobal(""parentSecret"") != null;
@@ -540,24 +488,18 @@ public class SubflowNodeIntegrationTests
             WorkflowId = "parent-with-secret",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
-                    RuntimeType = RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript(@"
                         SetGlobal(""parentSecret"", ""should-not-leak"");
                     ")
                 },
-                new NodeDefinition
+                new SubflowNodeDefinition
                 {
                     NodeId = "subflow-1",
-                    RuntimeType = RuntimeType.Subflow,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "WorkflowFilePath", childWorkflowPath },
-                        // Note: No input mappings - child should not see parent variables
-                        { "OutputMappings", new Dictionary<string, string> { { "hasAccessToParent", "childHadAccess" }, { "childCompleted", "childDone" } } }
-                    }
+                    WorkflowFilePath = childWorkflowPath,
+                    OutputMappings = new Dictionary<string, string> { { "hasAccessToParent", "childHadAccess" }, { "childCompleted", "childDone" } },
                 }
             },
             Connections = new List<NodeConnection>

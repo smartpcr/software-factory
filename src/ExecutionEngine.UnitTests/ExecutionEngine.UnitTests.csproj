@@ -16,15 +16,24 @@
     <None Include="TestData\WorkflowDefinitions\*.yaml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="TestData\Scripts\end.csx">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="TestData\Scripts\start.csx">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="TestData\Scripts\script.csx">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="TestData\Scripts\process.ps1">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
   <ItemGroup>
     <Content Include="..\ExecutionEngine\Samples\simple-workflow.json" Link="TestData\WorkflowDefinitions\simple-workflow.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-  </ItemGroup>
-
-  <ItemGroup>
     <None Include="..\ExecutionEngine.Example\Workflows\azs_deployment.yaml" Link="TestData\WorkflowDefinitions\azs_deployment.yaml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
@@ -34,6 +43,18 @@
     <None Include="..\ExecutionEngine\Samples\simple-workflow.yaml" Link="TestData\WorkflowDefinitions\simple-workflow.yaml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\ExecutionEngine\Samples\scripts\*.*" Link="TestData\Scripts\%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" />
+    <PackageReference Include="Serilog.Extensions.Logging" />
+    <PackageReference Include="Serilog.Sinks.Console" />
+    <!-- Exclude Reqnroll.MsTest to avoid auto-generated AssemblyInitialize conflict -->
+    <PackageReference Update="Reqnroll.MsTest" ExcludeAssets="All" />
   </ItemGroup>
 
 </Project>

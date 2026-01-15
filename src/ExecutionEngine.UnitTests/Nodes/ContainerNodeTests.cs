@@ -10,8 +10,8 @@ using System.Text.Json;
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
 using ExecutionEngine.Nodes;
+using ExecutionEngine.Nodes.Definitions;
 using ExecutionEngine.Workflow;
 using FluentAssertions;
 
@@ -31,18 +31,18 @@ public class ContainerNodeTests
         // Assert
         act.Should().NotThrow();
         node.ChildNodes.Should().HaveCount(3);
-        node.ExecutionMode.Should().Be("Parallel");
+        node.ExecutionMode.Should().Be(ExecutionMode.Parallel);
     }
 
     [TestMethod]
     public void Initialize_WithNullChildNodes_ShouldThrowException()
     {
         // Arrange
-        var definition = new NodeDefinition
+        var definition = new ContainerNodeDefinition
         {
             NodeId = "container-1",
-            RuntimeType = RuntimeType.Container,
-            Configuration = new Dictionary<string, object>() // No ChildNodes
+            ChildNodes = new List<NodeDefinition>(),
+            ChildConnections = new  List<NodeConnection>()
         };
 
         // Act
@@ -58,14 +58,11 @@ public class ContainerNodeTests
     public void Initialize_WithEmptyChildNodes_ShouldThrowException()
     {
         // Arrange
-        var definition = new NodeDefinition
+        var definition = new ContainerNodeDefinition
         {
             NodeId = "container-1",
-            RuntimeType = RuntimeType.Container,
-            Configuration = new Dictionary<string, object>
-            {
-                { "ChildNodes", new List<NodeDefinition>() } // Empty list
-            }
+            ChildNodes = new List<NodeDefinition>(),
+            ChildConnections = new List<NodeConnection>()
         };
 
         // Act
@@ -75,22 +72,6 @@ public class ContainerNodeTests
         // Assert
         act.Should().Throw<InvalidOperationException>()
             .WithMessage("*ChildNodes cannot be null or empty*");
-    }
-
-    [TestMethod]
-    public void Initialize_WithInvalidExecutionMode_ShouldThrowException()
-    {
-        // Arrange
-        var definition = this.CreateContainerDefinitionWithParallelChildren(2);
-        definition.Configuration!["ExecutionMode"] = "InvalidMode";
-
-        // Act
-        var node = new ContainerNode();
-        var act = () => node.Initialize(definition);
-
-        // Assert
-        act.Should().Throw<InvalidOperationException>()
-            .WithMessage("*Invalid ExecutionMode*");
     }
 
     [TestMethod]
@@ -111,15 +92,11 @@ public class ContainerNodeTests
             new NodeConnection { SourceNodeId = "c", TargetNodeId = "a" } // Cycle!
         };
 
-        var definition = new NodeDefinition
+        var definition = new ContainerNodeDefinition
         {
             NodeId = "container-1",
-            RuntimeType = RuntimeType.Container,
-            Configuration = new Dictionary<string, object>
-            {
-                { "ChildNodes", childNodes },
-                { "ChildConnections", childConnections }
-            }
+            ChildNodes = childNodes,
+            ChildConnections = childConnections
         };
 
         // Act
@@ -146,15 +123,11 @@ public class ContainerNodeTests
             new NodeConnection { SourceNodeId = "a", TargetNodeId = "z" } // 'z' doesn't exist!
         };
 
-        var definition = new NodeDefinition
+        var definition = new ContainerNodeDefinition
         {
             NodeId = "container-1",
-            RuntimeType = RuntimeType.Container,
-            Configuration = new Dictionary<string, object>
-            {
-                { "ChildNodes", childNodes },
-                { "ChildConnections", childConnections }
-            }
+            ChildNodes = childNodes,
+            ChildConnections = childConnections
         };
 
         // Act
@@ -215,16 +188,12 @@ public class ContainerNodeTests
             new NodeConnection { SourceNodeId = "b", TargetNodeId = "c", TriggerMessageType = MessageType.Complete }
         };
 
-        var definition = new NodeDefinition
+        var definition = new ContainerNodeDefinition
         {
             NodeId = "container-1",
-            RuntimeType = RuntimeType.Container,
-            Configuration = new Dictionary<string, object>
-            {
-                { "ChildNodes", childNodes },
-                { "ChildConnections", childConnections },
-                { "ExecutionMode", "Sequential" }
-            }
+            ChildNodes = childNodes,
+            ChildConnections = childConnections,
+            ExecutionMode = ExecutionMode.Sequential
         };
 
         var node = new ContainerNode();
@@ -266,7 +235,7 @@ public class ContainerNodeTests
         instance.Status.Should().Be(NodeExecutionStatus.Completed);
         nodeContext.OutputData.Should().ContainKey("ChildResults");
         nodeContext.OutputData.Should().ContainKey("ExecutionMode");
-        nodeContext.OutputData["ExecutionMode"].Should().Be("Parallel");
+        nodeContext.OutputData["ExecutionMode"].Should().Be(ExecutionMode.Parallel);
     }
 
     [TestMethod]
@@ -279,15 +248,11 @@ public class ContainerNodeTests
             this.CreateScriptChild("child-b", "SetOutput(\"value\", \"B\");")
         };
 
-        var definition = new NodeDefinition
+        var definition = new ContainerNodeDefinition
         {
             NodeId = "container-1",
-            RuntimeType = RuntimeType.Container,
-            Configuration = new Dictionary<string, object>
-            {
-                { "ChildNodes", childNodes },
-                { "ChildConnections", new List<NodeConnection>() }
-            }
+            ChildConnections = new List<NodeConnection>(),
+            ChildNodes = childNodes
         };
 
         var node = new ContainerNode();
@@ -342,30 +307,22 @@ public class ContainerNodeTests
             childNodes.Add(this.CreateScriptChild($"child-{i}", $"SetOutput(\"index\", {i});"));
         }
 
-        return new NodeDefinition
+        return new ContainerNodeDefinition
         {
             NodeId = "container-1",
-            RuntimeType = RuntimeType.Container,
-            Configuration = new Dictionary<string, object>
-            {
-                { "ChildNodes", childNodes },
-                { "ChildConnections", new List<NodeConnection>() }, // No connections = all parallel
-                { "ExecutionMode", "Parallel" }
-            }
+            ChildNodes = childNodes,
+            ChildConnections = new List<NodeConnection>(),
+            ExecutionMode = ExecutionMode.Parallel
         };
     }
 
     private NodeDefinition CreateScriptChild(string nodeId, string script)
     {
-        return new NodeDefinition
+        return new CSharpTaskNodeDefinition
         {
             NodeId = nodeId,
             NodeName = $"Child {nodeId}",
-            RuntimeType = RuntimeType.CSharpTask,
-            Configuration = new Dictionary<string, object>
-            {
-                { "script", script }
-            }
+            ScriptContent = script,
         };
     }
 }

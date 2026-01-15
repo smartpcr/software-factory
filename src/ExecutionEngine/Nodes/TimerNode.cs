@@ -9,7 +9,7 @@ namespace ExecutionEngine.Nodes;
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
+using ExecutionEngine.Nodes.Definitions;
 using NCrontab;
 
 /// <summary>
@@ -33,22 +33,13 @@ public class TimerNode : ExecutableNodeBase
     /// <inheritdoc/>
     public override void Initialize(NodeDefinition definition)
     {
-        base.Initialize(definition);
-
-        // Get schedule from definition configuration
-        if (definition.Configuration != null && definition.Configuration.TryGetValue("Schedule", out var scheduleValue))
+        if (definition is not TimerNodeDefinition timerDefinition)
         {
-            this.Schedule = scheduleValue?.ToString() ?? string.Empty;
+            throw new InvalidOperationException($"Invalid node definition type: {definition.GetType().FullName}. Expected TimerNodeDefinition.");
         }
 
-        // Get trigger on start setting
-        if (definition.Configuration != null && definition.Configuration.TryGetValue("TriggerOnStart", out var triggerOnStartValue))
-        {
-            if (bool.TryParse(triggerOnStartValue?.ToString(), out var triggerOnStart))
-            {
-                this.TriggerOnStart = triggerOnStart;
-            }
-        }
+        this.Definition = timerDefinition;
+        this.Schedule = timerDefinition.Schedule;
 
         // Parse and validate the cron schedule
         if (!string.IsNullOrWhiteSpace(this.Schedule))

@@ -6,13 +6,14 @@
 
 namespace ExecutionEngine.Nodes;
 
-using System.Text.Json;
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
 using ExecutionEngine.Engine;
 using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
+using ExecutionEngine.Nodes.Definitions;
 using ExecutionEngine.Workflow;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 /// <summary>
 /// Node that executes another workflow as a child/nested workflow.
@@ -21,6 +22,8 @@ using ExecutionEngine.Workflow;
 /// </summary>
 public class SubflowNode : ExecutableNodeBase
 {
+    private ILogger logger = NullLogger.Instance;
+
     /// <summary>
     /// Gets or sets the workflow definition to execute as a subflow.
     /// Used when the child workflow is provided directly as a definition.
@@ -65,88 +68,113 @@ public class SubflowNode : ExecutableNodeBase
     /// Gets or sets whether to skip workflow validation during initialization.
     /// Used for unit testing. Default is false.
     /// </summary>
-    public bool SkipValidation { get; set; } = false;
+    public bool SkipValidation { get; set; }
 
     /// <inheritdoc/>
     public override void Initialize(NodeDefinition definition)
     {
-        base.Initialize(definition);
-
-        if (definition.Configuration != null)
+        if (definition is not SubflowNodeDefinition subflowDef)
         {
-            // Get workflow file path
-            if (definition.Configuration.TryGetValue("WorkflowFilePath", out var filePath))
-            {
-                this.WorkflowFilePath = filePath?.ToString();
-            }
+            throw new InvalidOperationException(
+                $"SubflowNode '{this.NodeId}': Invalid node definition type: {definition.GetType().FullName}");
+        }
 
-            // Get input mappings
-            if (definition.Configuration.TryGetValue("InputMappings", out var inputMappings))
-            {
-                if (inputMappings is Dictionary<string, string> inputDict)
-                {
-                    this.InputMappings = inputDict;
-                }
-                else if (inputMappings is Dictionary<string, object> inputObjDict)
-                {
-                    this.InputMappings = inputObjDict.ToDictionary(
-                        kvp => kvp.Key,
-                        kvp => kvp.Value?.ToString() ?? string.Empty);
-                }
-            }
+        this.Definition = subflowDef;
 
-            // Get output mappings
-            if (definition.Configuration.TryGetValue("OutputMappings", out var outputMappings))
-            {
-                if (outputMappings is Dictionary<string, string> outputDict)
-                {
-                    this.OutputMappings = outputDict;
-                }
-                else if (outputMappings is Dictionary<string, object> outputObjDict)
-                {
-                    this.OutputMappings = outputObjDict.ToDictionary(
-                        kvp => kvp.Key,
-                        kvp => kvp.Value?.ToString() ?? string.Empty);
-                }
-            }
+        // Read WorkflowFilePath from direct property or Configuration dictionary
+        if (!string.IsNullOrWhiteSpace(subflowDef.WorkflowFilePath))
+        {
+            this.WorkflowFilePath = subflowDef.WorkflowFilePath;
+        }
+        else if (subflowDef.Configuration?.TryGetValue("WorkflowFilePath", out var pathValue) == true)
+        {
+            // Handle both string and other types (in case of incorrect deserialization)
+            this.WorkflowFilePath = pathValue?.ToString() ?? string.Empty;
+        }
 
-            // Get timeout
-            if (definition.Configuration.TryGetValue("Timeout", out var timeout))
+        // Read InputMappings from direct property or Configuration dictionary
+        if (subflowDef.InputMappings != null && subflowDef.InputMappings.Count > 0)
+        {
+            this.InputMappings = subflowDef.InputMappings;
+        }
+        else if (subflowDef.Configuration?.TryGetValue("InputMappings", out var inputMappingsValue) == true)
+        {
+            // Handle Dictionary<string, string> or Dictionary<string, object>
+            if (inputMappingsValue is Dictionary<string, string> inputMappings)
             {
-                if (timeout is TimeSpan timeoutValue)
-                {
-                    this.Timeout = timeoutValue;
-                }
-                else if (timeout is int timeoutMs)
-                {
-                    this.Timeout = TimeSpan.FromMilliseconds(timeoutMs);
-                }
-                else if (double.TryParse(timeout?.ToString(), out var timeoutMsDouble))
-                {
-                    this.Timeout = TimeSpan.FromMilliseconds(timeoutMsDouble);
-                }
+                this.InputMappings = inputMappings;
             }
-
-            // Get child workflow definition if provided directly
-            if (definition.Configuration.TryGetValue("ChildWorkflowDefinition", out var childWorkflow))
+            else if (inputMappingsValue is Dictionary<string, object> inputMappingsObj)
             {
-                if (childWorkflow is WorkflowDefinition workflowDef)
-                {
-                    this.ChildWorkflowDefinition = workflowDef;
-                }
+                this.InputMappings = inputMappingsObj.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => kvp.Value?.ToString() ?? string.Empty);
             }
+        }
 
-            // Check if validation should be skipped (for unit testing)
-            if (definition.Configuration.TryGetValue("SkipValidation", out var skipValidation))
+        // Read OutputMappings from direct property or Configuration dictionary
+        if (subflowDef.OutputMappings != null && subflowDef.OutputMappings.Count > 0)
+        {
+            this.OutputMappings = subflowDef.OutputMappings;
+        }
+        else if (subflowDef.Configuration?.TryGetValue("OutputMappings", out var outputMappingsValue) == true)
+        {
+            // Handle Dictionary<string, string> or Dictionary<string, object>
+            if (outputMappingsValue is Dictionary<string, string> outputMappings)
             {
-                if (skipValidation is bool skipBool)
-                {
-                    this.SkipValidation = skipBool;
-                }
-                else if (bool.TryParse(skipValidation?.ToString(), out var skipParsed))
-                {
-                    this.SkipValidation = skipParsed;
-                }
+                this.OutputMappings = outputMappings;
+            }
+            else if (outputMappingsValue is Dictionary<string, object> outputMappingsObj)
+            {
+                this.OutputMappings = outputMappingsObj.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => kvp.Value?.ToString() ?? string.Empty);
+            }
+        }
+
+        // Read Timeout from direct property or Configuration dictionary
+        if (subflowDef.Timeout != TimeSpan.FromMinutes(5)) // Check if not default
+        {
+            this.Timeout = subflowDef.Timeout;
+        }
+        else if (subflowDef.Configuration?.TryGetValue("Timeout", out var timeoutValue) == true)
+        {
+            if (timeoutValue is TimeSpan timeout)
+            {
+                this.Timeout = timeout;
+            }
+            else if (timeoutValue is string timeoutStr && TimeSpan.TryParse(timeoutStr, out var parsedTimeout))
+            {
+                this.Timeout = parsedTimeout;
+            }
+        }
+
+        // Read SkipValidation from direct property or Configuration dictionary
+        this.SkipValidation = subflowDef.SkipValidation;
+        if (subflowDef.Configuration?.TryGetValue("SkipValidation", out var skipValidationValue) == true && skipValidationValue is bool skipValidation)
+        {
+            this.SkipValidation = skipValidation;
+        }
+
+        // Load child workflow definition if not already provided
+        if (subflowDef.WorkflowDefinition != null)
+        {
+            this.ChildWorkflowDefinition = subflowDef.WorkflowDefinition;
+        }
+        else if (!string.IsNullOrWhiteSpace(this.WorkflowFilePath))
+        {
+            try
+            {
+                var loader = new WorkflowLoader();
+                this.ChildWorkflowDefinition = loader.Load(this.WorkflowFilePath);
+            }
+            catch (FileNotFoundException ex)
+            {
+                // Wrap with SubflowNode-specific error message
+                throw new FileNotFoundException(
+                    $"Child workflow file not found: {this.WorkflowFilePath}",
+                    this.WorkflowFilePath,
+                    ex);
             }
         }
 
@@ -172,13 +200,10 @@ public class SubflowNode : ExecutableNodeBase
         // If workflow file path is provided, validate that it exists and can be loaded
         if (!string.IsNullOrWhiteSpace(this.WorkflowFilePath))
         {
-            // Resolve relative paths by joining with current directory
-            var resolvedPath = this.WorkflowFilePath;
-            if (!Path.IsPathRooted(this.WorkflowFilePath))
-            {
-                resolvedPath = Path.Combine(Directory.GetCurrentDirectory(), this.WorkflowFilePath);
-                Console.WriteLine($"[SubflowNode.ValidateWorkflowConfiguration] Resolved relative path '{this.WorkflowFilePath}' to '{resolvedPath}'");
-            }
+            // Normalize path separators for cross-platform compatibility
+            // On Linux, backslashes are not recognized as path separators
+            var normalizedPath = this.WorkflowFilePath.Replace('\\', '/');
+            var resolvedPath = Path.GetFullPath(normalizedPath);
 
             if (!File.Exists(resolvedPath))
             {
@@ -231,6 +256,15 @@ public class SubflowNode : ExecutableNodeBase
         NodeExecutionContext nodeContext,
         CancellationToken cancellationToken)
     {
+        // Create logger from workflow context if available
+        if (workflowContext.LoggerFactory != null)
+        {
+            this.logger = workflowContext.LoggerFactory.CreateLogger<SubflowNode>();
+        }
+
+        this.logger.LogInformation("SubflowNode.ExecuteAsync starting for NodeId: {NodeId}, WorkflowInstanceId: {WorkflowInstanceId}",
+            this.NodeId, workflowContext.InstanceId);
+
         var instance = new NodeInstance
         {
             NodeInstanceId = Guid.NewGuid(),
@@ -251,7 +285,10 @@ public class SubflowNode : ExecutableNodeBase
             });
 
             // Load child workflow definition
+            this.logger.LogInformation("SubflowNode loading child workflow for NodeId: {NodeId}", this.NodeId);
             var childWorkflowDef = await this.LoadChildWorkflowAsync();
+            this.logger.LogInformation("SubflowNode loaded child workflow: {ChildWorkflowId} for NodeId: {NodeId}",
+                childWorkflowDef?.WorkflowId, this.NodeId);
 
             if (childWorkflowDef == null)
             {
@@ -261,19 +298,26 @@ public class SubflowNode : ExecutableNodeBase
 
             // Prepare initial variables for child workflow from input mappings
             var initialVariables = new Dictionary<string, object>();
-            foreach (var mapping in this.InputMappings)
+            this.logger.LogDebug("SubflowNode preparing input mappings: {MappingCount} mappings for NodeId: {NodeId}",
+                this.InputMappings.Count, this.NodeId);
+            foreach (var parentKey in this.InputMappings.Keys)
             {
-                var parentVarName = mapping.Key;
-                var childVarName = mapping.Value;
+                var childKey = this.InputMappings[parentKey];
 
-                if (workflowContext.Variables.TryGetValue(parentVarName, out var value))
+                // Map parent variable to child variable
+                if (workflowContext.Variables.TryGetValue(parentKey, out var value))
                 {
-                    initialVariables[childVarName] = value;
+                    initialVariables[childKey] = value;
+                    this.logger.LogDebug("SubflowNode mapped variable: {ParentKey} -> {ChildKey} for NodeId: {NodeId}",
+                        parentKey, childKey, this.NodeId);
                 }
             }
 
             // Execute child workflow with initial variables
-            var engine = new WorkflowEngine();
+            // Use service provider from parent workflow context to enable logging in child workflows
+            this.logger.LogInformation("SubflowNode creating child WorkflowEngine for NodeId: {NodeId}, ChildWorkflow: {ChildWorkflowId}",
+                this.NodeId, childWorkflowDef.WorkflowId);
+            var engine = new WorkflowEngine(null, workflowContext.ServiceProvider);
 
             // Track child node completion for progress calculation (like ContainerNode)
             var totalChildNodes = childWorkflowDef.Nodes.Count;
@@ -373,11 +417,17 @@ public class SubflowNode : ExecutableNodeBase
                 });
             };
 
+            this.logger.LogInformation("SubflowNode starting child workflow engine for NodeId: {NodeId}, ChildWorkflow: {ChildWorkflowId}, Timeout: {Timeout}",
+                this.NodeId, childWorkflowDef.WorkflowId, this.Timeout);
+
             this.ChildWorkflowContext = await engine.StartAsync(
                 childWorkflowDef,
                 initialVariables,
                 this.Timeout,
                 cancellationToken);
+
+            this.logger.LogInformation("SubflowNode child workflow completed for NodeId: {NodeId}, ChildWorkflow: {ChildWorkflowId}, Status: {Status}",
+                this.NodeId, childWorkflowDef.WorkflowId, this.ChildWorkflowContext.Status);
 
             // Check child workflow execution status
             if (this.ChildWorkflowContext.Status == WorkflowExecutionStatus.Failed)
@@ -393,6 +443,8 @@ public class SubflowNode : ExecutableNodeBase
             }
 
             // Map output variables from child to parent
+            this.logger.LogDebug("SubflowNode mapping output variables: {MappingCount} mappings for NodeId: {NodeId}",
+                this.OutputMappings.Count, this.NodeId);
             this.MapOutputVariables(this.ChildWorkflowContext, workflowContext);
 
             // Store child workflow output in node context for downstream access
@@ -403,15 +455,22 @@ public class SubflowNode : ExecutableNodeBase
 
             instance.Status = NodeExecutionStatus.Completed;
             instance.EndTime = DateTime.UtcNow;
+
+            this.logger.LogInformation("SubflowNode.ExecuteAsync completed successfully for NodeId: {NodeId}, Duration: {Duration}ms",
+                this.NodeId, instance.Duration?.TotalMilliseconds);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
+            this.logger.LogWarning("SubflowNode.ExecuteAsync cancelled for NodeId: {NodeId}, Message: {Message}",
+                this.NodeId, ex.Message);
             instance.Status = NodeExecutionStatus.Cancelled;
             instance.EndTime = DateTime.UtcNow;
             instance.ErrorMessage = "Subflow execution was cancelled";
         }
         catch (Exception ex)
         {
+            this.logger.LogError(ex, "SubflowNode.ExecuteAsync failed for NodeId: {NodeId}, Message: {Message}",
+                this.NodeId, ex.Message);
             instance.Status = NodeExecutionStatus.Failed;
             instance.EndTime = DateTime.UtcNow;
             instance.ErrorMessage = ex.Message;
@@ -436,19 +495,10 @@ public class SubflowNode : ExecutableNodeBase
         // Load from file path
         if (!string.IsNullOrWhiteSpace(this.WorkflowFilePath))
         {
-            // Resolve path: if relative, join with current directory; if absolute, use as-is
-            string resolvedPath;
-            if (Path.IsPathRooted(this.WorkflowFilePath))
-            {
-                // Absolute path - use as-is
-                resolvedPath = this.WorkflowFilePath;
-            }
-            else
-            {
-                // Relative path - join with current directory
-                resolvedPath = Path.Combine(Directory.GetCurrentDirectory(), this.WorkflowFilePath);
-                Console.WriteLine($"[SubflowNode.LoadChildWorkflowAsync] Resolved relative path '{this.WorkflowFilePath}' to '{resolvedPath}'");
-            }
+            // Normalize path separators for cross-platform compatibility
+            // On Linux, backslashes are not recognized as path separators
+            var normalizedPath = this.WorkflowFilePath.Replace('\\', '/');
+            var resolvedPath = Path.GetFullPath(normalizedPath);
 
             if (!File.Exists(resolvedPath))
             {
@@ -464,39 +514,20 @@ public class SubflowNode : ExecutableNodeBase
     }
 
     /// <summary>
-    /// Maps input variables from parent context to child context.
-    /// </summary>
-    /// <param name="parentContext">Parent workflow context.</param>
-    /// <param name="childContext">Child workflow context.</param>
-    private void MapInputVariables(WorkflowExecutionContext parentContext, WorkflowExecutionContext childContext)
-    {
-        foreach (var mapping in this.InputMappings)
-        {
-            var parentVarName = mapping.Key;
-            var childVarName = mapping.Value;
-
-            if (parentContext.Variables.TryGetValue(parentVarName, out var value))
-            {
-                childContext.Variables[childVarName] = value;
-            }
-        }
-    }
-
-    /// <summary>
     /// Maps output variables from child context to parent context.
     /// </summary>
     /// <param name="childContext">Child workflow context.</param>
     /// <param name="parentContext">Parent workflow context.</param>
     private void MapOutputVariables(WorkflowExecutionContext childContext, WorkflowExecutionContext parentContext)
     {
-        foreach (var mapping in this.OutputMappings)
+        foreach (var outKey in this.OutputMappings.Keys)
         {
-            var childVarName = mapping.Key;
-            var parentVarName = mapping.Value;
+            var globalVariableName = this.OutputMappings[outKey];
 
-            if (childContext.Variables.TryGetValue(childVarName, out var value))
+            // Map child variable to parent variable
+            if (childContext.Variables.TryGetValue(outKey, out var value))
             {
-                parentContext.Variables[parentVarName] = value;
+                parentContext.Variables[globalVariableName] = value;
             }
         }
     }

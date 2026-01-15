@@ -9,8 +9,8 @@ namespace ExecutionEngine.UnitTests.Nodes;
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
 using ExecutionEngine.Nodes;
+using ExecutionEngine.Nodes.Definitions;
 using FluentAssertions;
 
 [TestClass]
@@ -25,7 +25,7 @@ public class WhileNodeTests
             Condition = "(int)GetGlobal(\"counter\") < 5",
             MaxIterations = 100
         };
-        var definition = new NodeDefinition { NodeId = "while-1" };
+        var definition = new WhileNodeDefinition { NodeId = "while-1" };
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -42,7 +42,7 @@ public class WhileNodeTests
         };
 
         // Act - Simulate feedback loop by calling ExecuteAsync multiple times
-        NodeInstance? instance = null;
+        NodeInstance? instance;
         while ((int)workflowContext.Variables["counter"] < 5)
         {
             instance = await node.ExecuteAsync(workflowContext, nodeContext, CancellationToken.None);
@@ -74,7 +74,7 @@ public class WhileNodeTests
         {
             Condition = "(bool)GetGlobal(\"flag\") == true"
         };
-        var definition = new NodeDefinition { NodeId = "while-1" };
+        var definition = new WhileNodeDefinition { NodeId = "while-1" };
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -103,7 +103,7 @@ public class WhileNodeTests
             Condition = "true", // Always true - would be infinite
             MaxIterations = 10
         };
-        var definition = new NodeDefinition { NodeId = "while-1" };
+        var definition = new WhileNodeDefinition { NodeId = "while-1" };
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -113,7 +113,7 @@ public class WhileNodeTests
         node.OnNext += (sender, args) => iterationCount++;
 
         // Act - Simulate feedback loop until max iterations reached
-        NodeInstance? instance = null;
+        NodeInstance? instance;
         for (var i = 0; i < 10; i++)
         {
             instance = await node.ExecuteAsync(workflowContext, nodeContext, CancellationToken.None);
@@ -139,7 +139,7 @@ public class WhileNodeTests
         {
             Condition = "((List<string>)GetGlobal(\"items\")).Count > 0"
         };
-        var definition = new NodeDefinition { NodeId = "while-1" };
+        var definition = new WhileNodeDefinition { NodeId = "while-1" };
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -160,7 +160,7 @@ public class WhileNodeTests
         };
 
         // Act - Simulate feedback loop by manually re-executing WhileNode after each iteration
-        NodeInstance? instance = null;
+        NodeInstance? instance;
         while (true)
         {
             instance = await node.ExecuteAsync(workflowContext, nodeContext, CancellationToken.None);
@@ -196,7 +196,7 @@ public class WhileNodeTests
         {
             Condition = "(int)GetGlobal(\"count\") < 3"
         };
-        var definition = new NodeDefinition { NodeId = "while-1" };
+        var definition = new WhileNodeDefinition { NodeId = "while-1" };
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -216,7 +216,7 @@ public class WhileNodeTests
         };
 
         // Act - Simulate feedback loop by manually re-executing WhileNode after each iteration
-        NodeInstance? instance = null;
+        NodeInstance? instance;
         while (true)
         {
             instance = await node.ExecuteAsync(workflowContext, nodeContext, CancellationToken.None);
@@ -250,7 +250,7 @@ public class WhileNodeTests
         {
             Condition = "this is not valid C#"
         };
-        var definition = new NodeDefinition { NodeId = "while-1" };
+        var definition = new WhileNodeDefinition { NodeId = "while-1" };
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -274,7 +274,7 @@ public class WhileNodeTests
             Condition = "true",
             MaxIterations = 10000
         };
-        var definition = new NodeDefinition { NodeId = "while-1" };
+        var definition = new WhileNodeDefinition { NodeId = "while-1" };
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -321,7 +321,7 @@ public class WhileNodeTests
 
         // Assert
         instance.Should().NotBeNull();
-        instance.Status.Should().Be(NodeExecutionStatus.Cancelled);
+        instance!.Status.Should().Be(NodeExecutionStatus.Cancelled);
         iterationCount.Should().BeLessThanOrEqualTo(5);
     }
 
@@ -330,15 +330,11 @@ public class WhileNodeTests
     {
         // Arrange
         var node = new WhileNode();
-        var definition = new NodeDefinition
+        var definition = new WhileNodeDefinition
         {
             NodeId = "while-1",
-            RuntimeType = RuntimeType.While,
-            Configuration = new Dictionary<string, object>
-            {
-                { "Condition", "GetGlobal(\"x\") < 10" },
-                { "MaxIterations", 50 }
-            }
+            ConditionExpression = "GetGlobal(\"x\") < 10",
+            MaxIterations = 10
         };
 
         // Act
@@ -346,7 +342,7 @@ public class WhileNodeTests
 
         // Assert
         node.Condition.Should().Be("GetGlobal(\"x\") < 10");
-        node.MaxIterations.Should().Be(50);
+        node.MaxIterations.Should().Be(10);
     }
 
     [TestMethod]
@@ -354,10 +350,9 @@ public class WhileNodeTests
     {
         // Arrange
         var node = new WhileNode();
-        var definition = new NodeDefinition
+        var definition = new WhileNodeDefinition
         {
             NodeId = "while-1",
-            RuntimeType = RuntimeType.While
         };
 
         // Act
@@ -388,7 +383,7 @@ public class WhileNodeTests
     {
         // Arrange
         var node = new WhileNode { Condition = "(int)GetGlobal(\"count\") < 2" };
-        var definition = new NodeDefinition { NodeId = "while-1" };
+        var definition = new WhileNodeDefinition { NodeId = "while-1" };
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -402,7 +397,7 @@ public class WhileNodeTests
         };
 
         // Act - Simulate feedback loop by manually re-executing WhileNode after each iteration
-        NodeInstance? instance = null;
+        NodeInstance? instance;
         while (true)
         {
             instance = await node.ExecuteAsync(workflowContext, nodeContext, CancellationToken.None);
@@ -431,7 +426,7 @@ public class WhileNodeTests
     {
         // Arrange
         var node = new WhileNode { Condition = "(int)GetGlobal(\"count\") < 1" };
-        var definition = new NodeDefinition { NodeId = "while-1" };
+        var definition = new WhileNodeDefinition { NodeId = "while-1" };
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -463,7 +458,7 @@ public class WhileNodeTests
             Condition = "(int)GetGlobal(\"count\") < 5",
             MaxIterations = 10
         };
-        var definition = new NodeDefinition { NodeId = "while-1" };
+        var definition = new WhileNodeDefinition { NodeId = "while-1" };
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -480,10 +475,9 @@ public class WhileNodeTests
         };
 
         // Act - Simulate feedback loop by manually re-executing WhileNode after each iteration
-        NodeInstance? instance = null;
         while (true)
         {
-            instance = await node.ExecuteAsync(workflowContext, nodeContext, CancellationToken.None);
+            var instance = await node.ExecuteAsync(workflowContext, nodeContext, CancellationToken.None);
 
             // Check if loop is done (SourcePort is "LoopBody" when condition becomes false)
             if (instance.SourcePort == WhileNode.LoopBodyPort)
@@ -509,7 +503,7 @@ public class WhileNodeTests
     {
         // Arrange
         var node = new WhileNode { Condition = string.Empty };
-        var definition = new NodeDefinition { NodeId = "while-1" };
+        var definition = new WhileNodeDefinition { NodeId = "while-1" };
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -528,7 +522,7 @@ public class WhileNodeTests
     {
         // Arrange
         var node = new WhileNode { Condition = "42" }; // Returns int, not bool
-        var definition = new NodeDefinition { NodeId = "while-1" };
+        var definition = new WhileNodeDefinition { NodeId = "while-1" };
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -546,15 +540,11 @@ public class WhileNodeTests
     public void NodeFactory_CreateWhileNode_ShouldSucceed()
     {
         // Arrange
-        var factory = new NodeFactory();
-        var definition = new NodeDefinition
+        var factory = new NodeFactory(AssemblyInitialize.ServiceProvider);
+        var definition = new WhileNodeDefinition
         {
             NodeId = "while-1",
-            RuntimeType = RuntimeType.While,
-            Configuration = new Dictionary<string, object>
-            {
-                { "Condition", "true" }
-            }
+            ConditionExpression = "true",
         };
 
         // Act
@@ -563,7 +553,7 @@ public class WhileNodeTests
         // Assert
         node.Should().NotBeNull();
         node.Should().BeOfType<WhileNode>();
-        node.NodeId.Should().Be("while-1");
+        node!.NodeId.Should().Be("while-1");
     }
 
     [TestMethod]
@@ -571,7 +561,7 @@ public class WhileNodeTests
     {
         // Arrange
         var node = new WhileNode { Condition = "(int)GetGlobal(\"count\") < 2" };
-        var definition = new NodeDefinition { NodeId = "while-1" };
+        var definition = new WhileNodeDefinition { NodeId = "while-1" };
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -595,6 +585,6 @@ public class WhileNodeTests
         firstEvent!.Metadata.Should().NotBeNull();
         firstEvent.Metadata!.Should().ContainKey("Condition");
         firstEvent.Metadata!.Should().ContainKey("IterationIndex");
-        firstEvent.Metadata["IterationIndex"].Should().Be(0);
+        firstEvent.Metadata!["IterationIndex"].Should().Be(0);
     }
 }

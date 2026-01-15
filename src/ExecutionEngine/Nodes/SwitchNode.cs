@@ -9,7 +9,7 @@ namespace ExecutionEngine.Nodes;
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
+using ExecutionEngine.Nodes.Definitions;
 using Microsoft.CodeAnalysis.CSharp.Scripting;
 using Microsoft.CodeAnalysis.Scripting;
 
@@ -42,29 +42,40 @@ public class SwitchNode : ExecutableNodeBase
     /// <inheritdoc/>
     public override void Initialize(NodeDefinition definition)
     {
-        base.Initialize(definition);
-
-        // Get expression from definition configuration
-        if (definition.Configuration != null)
+        if (definition is not SwitchNodeDefinition switchNodeDefinition)
         {
-            if (definition.Configuration.TryGetValue("Expression", out var expressionValue))
-            {
-                this.Expression = expressionValue?.ToString() ?? string.Empty;
-            }
+            throw new InvalidOperationException($"Invalid node definition type: {definition.GetType().FullName}. Expected: {typeof(SwitchNodeDefinition).FullName}");
+        }
 
-            if (definition.Configuration.TryGetValue("Cases", out var casesValue))
+        this.Definition = switchNodeDefinition;
+
+        // Read Expression from direct property or Configuration dictionary
+        if (!string.IsNullOrWhiteSpace(switchNodeDefinition.Expression))
+        {
+            this.Expression = switchNodeDefinition.Expression;
+        }
+        else if (switchNodeDefinition.Configuration?.TryGetValue("Expression", out var exprValue) == true && exprValue is string expr)
+        {
+            this.Expression = expr;
+        }
+
+        // Read Cases from direct property or Configuration dictionary
+        if (switchNodeDefinition.Cases != null && switchNodeDefinition.Cases.Count > 0)
+        {
+            this.Cases = switchNodeDefinition.Cases;
+        }
+        else if (switchNodeDefinition.Configuration?.TryGetValue("Cases", out var casesValue) == true)
+        {
+            if (casesValue is Dictionary<string, string> stringDict)
             {
-                if (casesValue is Dictionary<string, string> casesDict)
-                {
-                    this.Cases = casesDict;
-                }
-                else if (casesValue is Dictionary<string, object> casesObjDict)
-                {
-                    // Convert object dictionary to string dictionary
-                    this.Cases = casesObjDict.ToDictionary(
-                        kvp => kvp.Key,
-                        kvp => kvp.Value?.ToString() ?? kvp.Key);
-                }
+                this.Cases = stringDict;
+            }
+            else if (casesValue is Dictionary<string, object> objDict)
+            {
+                // Convert Dictionary<string, object> to Dictionary<string, string>
+                this.Cases = objDict.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => kvp.Value?.ToString() ?? string.Empty);
             }
         }
     }

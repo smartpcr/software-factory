@@ -8,7 +8,7 @@ namespace ExecutionEngine.Nodes;
 
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
-using ExecutionEngine.Factory;
+using ExecutionEngine.Nodes.Definitions;
 
 /// <summary>
 /// Abstract base class for executable nodes.
@@ -16,13 +16,13 @@ using ExecutionEngine.Factory;
 /// </summary>
 public abstract class ExecutableNodeBase : INode
 {
-    protected NodeDefinition? definition;
+    protected NodeDefinition? Definition { get; set; }
 
     /// <inheritdoc/>
-    public virtual string NodeId => this.definition?.NodeId ?? string.Empty;
+    public virtual string NodeId => this.Definition?.NodeId ?? string.Empty;
 
     /// <inheritdoc/>
-    public virtual string NodeName => this.definition?.NodeName ?? string.Empty;
+    public virtual string NodeName => this.Definition?.NodeName ?? string.Empty;
 
     /// <inheritdoc/>
     public event EventHandler<NodeStartEventArgs>? OnStart;
@@ -34,10 +34,7 @@ public abstract class ExecutableNodeBase : INode
     public event EventHandler<NodeNextEventArgs>? OnNext;
 
     /// <inheritdoc/>
-    public virtual void Initialize(NodeDefinition definition)
-    {
-        this.definition = definition ?? throw new ArgumentNullException(nameof(definition));
-    }
+    public abstract void Initialize(NodeDefinition definition);
 
     /// <inheritdoc/>
     public abstract Task<NodeInstance> ExecuteAsync(

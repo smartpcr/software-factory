@@ -8,7 +8,7 @@ namespace ExecutionEngine.UnitTests.Engine
 {
     using ExecutionEngine.Engine;
     using ExecutionEngine.Enums;
-    using ExecutionEngine.Factory;
+    using ExecutionEngine.Nodes.Definitions;
     using ExecutionEngine.Workflow;
     using FluentAssertions;
 
@@ -21,7 +21,7 @@ namespace ExecutionEngine.UnitTests.Engine
         public async Task ExecuteAsync_WithNullWorkflow_ShouldThrowException()
         {
             // Arrange
-            var engine = new WorkflowEngine();
+            var engine = new WorkflowEngine(serviceProvider: AssemblyInitialize.ServiceProvider);
 
             // Act
             Func<Task> act = async () => await engine.StartAsync(null!);
@@ -34,7 +34,7 @@ namespace ExecutionEngine.UnitTests.Engine
         public async Task ExecuteAsync_WithEmptyWorkflow_ShouldThrowException()
         {
             // Arrange
-            var engine = new WorkflowEngine();
+            var engine = new WorkflowEngine(serviceProvider: AssemblyInitialize.ServiceProvider);
             var workflow = new WorkflowDefinition
             {
                 WorkflowId = "test",
@@ -53,17 +53,16 @@ namespace ExecutionEngine.UnitTests.Engine
         public async Task ExecuteAsync_WithSingleNode_ShouldComplete()
         {
             // Arrange
-            var engine = new WorkflowEngine();
+            var engine = new WorkflowEngine(serviceProvider: AssemblyInitialize.ServiceProvider);
             var workflow = new WorkflowDefinition
             {
                 WorkflowId = "single-node-test",
                 WorkflowName = "Single Node Test",
                 Nodes = new List<NodeDefinition>
                 {
-                    new NodeDefinition
+                    new CSharpScriptNodeDefinition
                     {
                         NodeId = "node-1",
-                        RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                         ScriptPath = this.CreateTempScript("SetOutput(\"result\", 42);")
                     }
                 }
@@ -86,23 +85,21 @@ namespace ExecutionEngine.UnitTests.Engine
         public async Task ExecuteAsync_WithTwoNodesSequential_ShouldExecuteInOrder()
         {
             // Arrange
-            var engine = new WorkflowEngine();
+            var engine = new WorkflowEngine(serviceProvider: AssemblyInitialize.ServiceProvider);
             var workflow = new WorkflowDefinition
             {
                 WorkflowId = "two-nodes-sequential",
                 WorkflowName = "Two Nodes Sequential",
                 Nodes = new List<NodeDefinition>
                 {
-                    new NodeDefinition
+                    new CSharpScriptNodeDefinition
                     {
                         NodeId = "node-1",
-                        RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                         ScriptPath = this.CreateTempScript("SetOutput(\"value\", 10);")
                     },
-                    new NodeDefinition
+                    new CSharpScriptNodeDefinition
                     {
                         NodeId = "node-2",
-                        RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                         ScriptPath = this.CreateTempScript(@"
                             var input = GetInput(""value"");
                             var inputValue = input != null ? Convert.ToInt32(input) : 0;
@@ -133,17 +130,16 @@ namespace ExecutionEngine.UnitTests.Engine
         public async Task ExecuteAsync_WithNodeFailure_ShouldFailWorkflow()
         {
             // Arrange
-            var engine = new WorkflowEngine();
+            var engine = new WorkflowEngine(serviceProvider: AssemblyInitialize.ServiceProvider);
             var workflow = new WorkflowDefinition
             {
                 WorkflowId = "node-failure-test",
                 WorkflowName = "Node Failure Test",
                 Nodes = new List<NodeDefinition>
                 {
-                    new NodeDefinition
+                    new CSharpScriptNodeDefinition
                     {
                         NodeId = "failing-node",
-                        RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                         ScriptPath = this.CreateTempScript("throw new Exception(\"Test failure\");")
                     }
                 }
@@ -161,7 +157,7 @@ namespace ExecutionEngine.UnitTests.Engine
         public async Task ExecuteAsync_WithExplicitEntryPoint_ShouldUseSpecifiedEntry()
         {
             // Arrange
-            var engine = new WorkflowEngine();
+            var engine = new WorkflowEngine(serviceProvider: AssemblyInitialize.ServiceProvider);
             var workflow = new WorkflowDefinition
             {
                 WorkflowId = "explicit-entry",
@@ -169,16 +165,14 @@ namespace ExecutionEngine.UnitTests.Engine
                 EntryPointNodeId = "node-2",
                 Nodes = new List<NodeDefinition>
                 {
-                    new NodeDefinition
+                    new CSharpScriptNodeDefinition
                     {
                         NodeId = "node-1",
-                        RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                         ScriptPath = this.CreateTempScript("SetOutput(\"n1\", 1);")
                     },
-                    new NodeDefinition
+                    new CSharpScriptNodeDefinition
                     {
                         NodeId = "node-2",
-                        RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                         ScriptPath = this.CreateTempScript("SetOutput(\"n2\", 2);")
                     }
                 },
@@ -200,23 +194,21 @@ namespace ExecutionEngine.UnitTests.Engine
         public async Task ExecuteAsync_WithMultipleEntryPoints_ShouldExecuteAll()
         {
             // Arrange
-            var engine = new WorkflowEngine();
+            var engine = new WorkflowEngine(serviceProvider: AssemblyInitialize.ServiceProvider);
             var workflow = new WorkflowDefinition
             {
                 WorkflowId = "multiple-entries",
                 WorkflowName = "Multiple Entry Points",
                 Nodes = new List<NodeDefinition>
                 {
-                    new NodeDefinition
+                    new CSharpScriptNodeDefinition
                     {
                         NodeId = "entry-1",
-                        RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                         ScriptPath = this.CreateTempScript("SetOutput(\"e1\", 1);")
                     },
-                    new NodeDefinition
+                    new CSharpScriptNodeDefinition
                     {
                         NodeId = "entry-2",
-                        RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                         ScriptPath = this.CreateTempScript("SetOutput(\"e2\", 2);")
                     }
                 }
@@ -234,23 +226,21 @@ namespace ExecutionEngine.UnitTests.Engine
         public async Task ExecuteAsync_WithDisabledConnection_ShouldNotRoute()
         {
             // Arrange
-            var engine = new WorkflowEngine();
+            var engine = new WorkflowEngine(serviceProvider: AssemblyInitialize.ServiceProvider);
             var workflow = new WorkflowDefinition
             {
                 WorkflowId = "disabled-connection",
                 WorkflowName = "Disabled Connection",
                 Nodes = new List<NodeDefinition>
                 {
-                    new NodeDefinition
+                    new CSharpScriptNodeDefinition
                     {
                         NodeId = "node-1",
-                        RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                         ScriptPath = this.CreateTempScript("SetOutput(\"v1\", 1);")
                     },
-                    new NodeDefinition
+                    new CSharpScriptNodeDefinition
                     {
                         NodeId = "node-2",
-                        RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                         ScriptPath = this.CreateTempScript("SetOutput(\"v2\", 2);")
                     }
                 },
@@ -279,23 +269,21 @@ namespace ExecutionEngine.UnitTests.Engine
         public async Task ExecuteAsync_WithGlobalVariables_ShouldShareAcrossNodes()
         {
             // Arrange
-            var engine = new WorkflowEngine();
+            var engine = new WorkflowEngine(serviceProvider: AssemblyInitialize.ServiceProvider);
             var workflow = new WorkflowDefinition
             {
                 WorkflowId = "global-vars",
                 WorkflowName = "Global Variables",
                 Nodes = new List<NodeDefinition>
                 {
-                    new NodeDefinition
+                    new CSharpScriptNodeDefinition
                     {
                         NodeId = "node-1",
-                        RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                         ScriptPath = this.CreateTempScript("SetGlobal(\"shared\", 100);")
                     },
-                    new NodeDefinition
+                    new CSharpScriptNodeDefinition
                     {
                         NodeId = "node-2",
-                        RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                         ScriptPath = this.CreateTempScript(@"
                             var shared = GetGlobal(""shared"");
                             var sharedValue = shared != null ? Convert.ToInt32(shared) : 0;
@@ -322,29 +310,26 @@ namespace ExecutionEngine.UnitTests.Engine
         public async Task ExecuteAsync_WithFanout_ShouldExecuteAllBranches()
         {
             // Arrange
-            var engine = new WorkflowEngine();
+            var engine = new WorkflowEngine(serviceProvider: AssemblyInitialize.ServiceProvider);
             var workflow = new WorkflowDefinition
             {
                 WorkflowId = "fanout",
                 WorkflowName = "Fanout Execution",
                 Nodes = new List<NodeDefinition>
                 {
-                    new NodeDefinition
+                    new CSharpScriptNodeDefinition
                     {
                         NodeId = "source",
-                        RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                         ScriptPath = this.CreateTempScript("SetOutput(\"value\", 42);")
                     },
-                    new NodeDefinition
+                    new CSharpScriptNodeDefinition
                     {
                         NodeId = "branch-1",
-                        RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                         ScriptPath = this.CreateTempScript("SetOutput(\"b1\", 1);")
                     },
-                    new NodeDefinition
+                    new CSharpScriptNodeDefinition
                     {
                         NodeId = "branch-2",
-                        RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                         ScriptPath = this.CreateTempScript("SetOutput(\"b2\", 2);")
                     }
                 },

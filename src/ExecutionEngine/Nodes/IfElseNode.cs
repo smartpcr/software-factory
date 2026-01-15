@@ -9,7 +9,7 @@ namespace ExecutionEngine.Nodes;
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
+using ExecutionEngine.Nodes.Definitions;
 using Microsoft.CodeAnalysis.CSharp.Scripting;
 using Microsoft.CodeAnalysis.Scripting;
 
@@ -38,13 +38,13 @@ public class IfElseNode : ExecutableNodeBase
     /// <inheritdoc/>
     public override void Initialize(NodeDefinition definition)
     {
-        base.Initialize(definition);
-
-        // Get condition from definition configuration
-        if (definition.Configuration != null && definition.Configuration.TryGetValue("Condition", out var conditionValue))
+        if (definition is not IfElseNodeDefinition ifElseDefinition)
         {
-            this.Condition = conditionValue?.ToString() ?? string.Empty;
+            throw new ArgumentException("Invalid node definition type for IfElseNode.");
         }
+
+        this.Definition = ifElseDefinition;
+        this.Condition = ifElseDefinition.Condition;
     }
 
     /// <inheritdoc/>
@@ -100,7 +100,6 @@ public class IfElseNode : ExecutableNodeBase
         return instance;
     }
 
-    /// <inheritdoc/>
     public string[] GetAvailablePorts()
     {
         return new[] { TrueBranchPort, FalseBranchPort };

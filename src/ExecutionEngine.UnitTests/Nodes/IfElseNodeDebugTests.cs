@@ -9,8 +9,8 @@ namespace ExecutionEngine.UnitTests.Nodes;
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Engine;
 using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
 using ExecutionEngine.Nodes;
+using ExecutionEngine.Nodes.Definitions;
 using ExecutionEngine.Workflow;
 using FluentAssertions;
 
@@ -44,25 +44,19 @@ public class IfElseNodeDebugTests
             WorkflowName = "Debug Simple True",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new IfElseNodeDefinition
                 {
                     NodeId = "if-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.IfElse,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "Condition", "true" }  // Hardcoded true
-                    }
+                    Condition = "true",
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "true-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"executed\", \"true-branch\");")
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "false-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"executed\", \"false-branch\");")
                 }
             },
@@ -108,25 +102,19 @@ public class IfElseNodeDebugTests
             WorkflowName = "Debug Simple False",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new IfElseNodeDefinition
                 {
                     NodeId = "if-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.IfElse,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "Condition", "false" }  // Hardcoded false
-                    }
+                    Condition = "false",
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "true-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"executed\", \"true-branch\");")
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "false-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"executed\", \"false-branch\");")
                 }
             },
@@ -172,19 +160,14 @@ public class IfElseNodeDebugTests
             WorkflowName = "Debug No Source Port",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new IfElseNodeDefinition
                 {
                     NodeId = "if-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.IfElse,
-                    Configuration = new Dictionary<string, object>
-                    {
-                        { "Condition", "true" }
-                    }
+                    Condition = "true",
                 },
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "next-node",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                     ScriptPath = this.CreateTempScript("SetGlobal(\"executed\", \"next-node\");")
                 }
             },
@@ -216,15 +199,11 @@ public class IfElseNodeDebugTests
     public async Task Debug_CheckSourcePortValue()
     {
         // Test to verify what SourcePort value the IfElseNode actually sets
-        var node = new IfElseNode
-        {
-            Condition = "true"
-        };
-
-        var definition = new NodeDefinition
+        var node = new IfElseNode();
+        var definition = new IfElseNodeDefinition
         {
             NodeId = "if-1",
-            RuntimeType = ExecutionEngine.Enums.RuntimeType.IfElse,
+            Condition = "true"
         };
         node.Initialize(definition);
 

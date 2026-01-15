@@ -1,8 +1,9 @@
 using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
 using ExecutionEngine.Workflow;
 
 namespace ExecutionEngine.Example.Workflows;
+
+using ExecutionEngine.Nodes.Definitions;
 
 public static class FanOutWorkflow
 {
@@ -16,12 +17,10 @@ public static class FanOutWorkflow
             WorkflowName = "Fan-Out Parallel Processing",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpNodeDefinition()
                 {
                     NodeId = "start",
                     NodeName = "Start",
-                    Type = "Task",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharp,
                     AssemblyPath = assemblyPath,
                     TypeName = "ExecutionEngine.Example.Nodes.LogNode",
                     Configuration = new Dictionary<string, object>
@@ -29,12 +28,10 @@ public static class FanOutWorkflow
                         ["message"] = "Starting parallel processing"
                     }
                 },
-                new NodeDefinition
+                new CSharpNodeDefinition
                 {
                     NodeId = "process1",
                     NodeName = "Processor 1",
-                    Type = "Task",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharp,
                     AssemblyPath = assemblyPath,
                     TypeName = "ExecutionEngine.Example.Nodes.DataProcessorNode",
                     Configuration = new Dictionary<string, object>
@@ -42,12 +39,10 @@ public static class FanOutWorkflow
                         ["data"] = "dataset_1"
                     }
                 },
-                new NodeDefinition
+                new CSharpNodeDefinition
                 {
                     NodeId = "process2",
                     NodeName = "Processor 2",
-                    Type = "Task",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharp,
                     AssemblyPath = assemblyPath,
                     TypeName = "ExecutionEngine.Example.Nodes.DataProcessorNode",
                     Configuration = new Dictionary<string, object>
@@ -55,12 +50,10 @@ public static class FanOutWorkflow
                         ["data"] = "dataset_2"
                     }
                 },
-                new NodeDefinition
+                new CSharpNodeDefinition
                 {
                     NodeId = "process3",
                     NodeName = "Processor 3",
-                    Type = "Task",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharp,
                     AssemblyPath = assemblyPath,
                     TypeName = "ExecutionEngine.Example.Nodes.DataProcessorNode",
                     Configuration = new Dictionary<string, object>
@@ -68,12 +61,10 @@ public static class FanOutWorkflow
                         ["data"] = "dataset_3"
                     }
                 },
-                new NodeDefinition
+                new CSharpNodeDefinition
                 {
                     NodeId = "aggregate",
                     NodeName = "Aggregator",
-                    Type = "Task",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharp,
                     AssemblyPath = assemblyPath,
                     TypeName = "ExecutionEngine.Example.Nodes.AggregatorNode"
                     // NOTE: Temporarily removed JoinType.All due to possible engine bug

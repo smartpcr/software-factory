@@ -9,9 +9,9 @@ namespace ExecutionEngine.Example.Nodes;
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
 using ExecutionEngine.Nodes;
 using EtwEventReader.Tools;
+using ExecutionEngine.Nodes.Definitions;
 
 /// <summary>
 /// Node that discovers ETL/EVTX files using EventFileHandler.
@@ -27,7 +27,7 @@ public class DiscoverEtlFilesNode : ExecutableNodeBase
     /// <inheritdoc/>
     public override void Initialize(NodeDefinition definition)
     {
-        base.Initialize(definition);
+        this.Definition = definition;
 
         // Get search paths from configuration
         if (definition.Configuration != null && definition.Configuration.TryGetValue("SearchPaths", out var pathsValue))

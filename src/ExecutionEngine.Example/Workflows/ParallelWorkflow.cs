@@ -1,8 +1,9 @@
 using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
 using ExecutionEngine.Workflow;
 
 namespace ExecutionEngine.Example.Workflows;
+
+using ExecutionEngine.Nodes.Definitions;
 
 public static class ParallelWorkflow
 {
@@ -16,12 +17,10 @@ public static class ParallelWorkflow
             WorkflowName = "Parallel Data Analytics Pipeline",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpNodeDefinition
                 {
                     NodeId = "fetch-data",
                     NodeName = "Fetch Raw Data",
-                    Type = "Task",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharp,
                     AssemblyPath = assemblyPath,
                     TypeName = "ExecutionEngine.Example.Nodes.LogNode",
                     Configuration = new Dictionary<string, object>
@@ -29,12 +28,10 @@ public static class ParallelWorkflow
                         ["message"] = "Fetching raw data from multiple sources"
                     }
                 },
-                new NodeDefinition
+                new CSharpNodeDefinition
                 {
                     NodeId = "analyze-sales",
                     NodeName = "Analyze Sales Data",
-                    Type = "Task",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharp,
                     AssemblyPath = assemblyPath,
                     TypeName = "ExecutionEngine.Example.Nodes.DataProcessorNode",
                     Configuration = new Dictionary<string, object>
@@ -42,12 +39,10 @@ public static class ParallelWorkflow
                         ["data"] = "sales_metrics"
                     }
                 },
-                new NodeDefinition
+                new CSharpNodeDefinition
                 {
                     NodeId = "analyze-inventory",
                     NodeName = "Analyze Inventory Levels",
-                    Type = "Task",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharp,
                     AssemblyPath = assemblyPath,
                     TypeName = "ExecutionEngine.Example.Nodes.DataProcessorNode",
                     Configuration = new Dictionary<string, object>
@@ -55,12 +50,10 @@ public static class ParallelWorkflow
                         ["data"] = "inventory_status"
                     }
                 },
-                new NodeDefinition
+                new CSharpNodeDefinition
                 {
                     NodeId = "generate-report",
                     NodeName = "Generate Dashboard Report",
-                    Type = "Task",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharp,
                     AssemblyPath = assemblyPath,
                     TypeName = "ExecutionEngine.Example.Nodes.LogNode",
                     Configuration = new Dictionary<string, object>

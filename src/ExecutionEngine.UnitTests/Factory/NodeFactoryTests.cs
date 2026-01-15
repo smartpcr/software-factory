@@ -6,8 +6,10 @@
 
 namespace ExecutionEngine.UnitTests.Factory;
 
+using System.ComponentModel.DataAnnotations;
 using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
+using ExecutionEngine.Nodes;
+using ExecutionEngine.Nodes.Definitions;
 using FluentAssertions;
 
 [TestClass]
@@ -18,7 +20,7 @@ public class NodeFactoryTests
     [TestInitialize]
     public void Setup()
     {
-        this.factory = new NodeFactory();
+        this.factory = new NodeFactory(AssemblyInitialize.ServiceProvider);
     }
 
     [TestMethod]
@@ -40,10 +42,9 @@ public class NodeFactoryTests
             return;
         }
 
-        var definition = new NodeDefinition
+        var definition = new CSharpNodeDefinition
         {
             NodeId = "test-node",
-            RuntimeType = RuntimeType.CSharp,
             AssemblyPath = relativeAssemblyPath,
             TypeName = "ExecutionEngine.UnitTests.Factory.AzureStackPreCheckNode"
         };
@@ -70,10 +71,9 @@ public class NodeFactoryTests
             return;
         }
 
-        var definition = new NodeDefinition
+        var definition = new CSharpNodeDefinition
         {
             NodeId = "test-node-abs",
-            RuntimeType = RuntimeType.CSharp,
             AssemblyPath = absoluteAssemblyPath,
             TypeName = "ExecutionEngine.UnitTests.Factory.AzureStackPreCheckNode"
         };
@@ -90,10 +90,9 @@ public class NodeFactoryTests
     public void CreateNode_WithNonExistentRelativePath_ShouldThrowFileNotFoundException()
     {
         // Arrange
-        var definition = new NodeDefinition
+        var definition = new CSharpNodeDefinition
         {
             NodeId = "test-node",
-            RuntimeType = RuntimeType.CSharp,
             AssemblyPath = "NonExistent.dll",
             TypeName = "Some.Type.Name"
         };
@@ -110,10 +109,9 @@ public class NodeFactoryTests
     public void CreateNode_CSharp_WithNullAssemblyPath_ShouldThrowArgumentException()
     {
         // Arrange
-        var definition = new NodeDefinition
+        var definition = new CSharpNodeDefinition
         {
             NodeId = "test-node",
-            RuntimeType = RuntimeType.CSharp,
             AssemblyPath = null,
             TypeName = "Some.Type"
         };
@@ -122,18 +120,17 @@ public class NodeFactoryTests
         Action act = () => this.factory.CreateNode(definition);
 
         // Assert
-        act.Should().Throw<ArgumentException>()
-            .WithMessage("*AssemblyPath*");
+        act.Should().Throw<ValidationException>()
+            .WithMessage("*AssemblyPath or TypeName are required for CSharpNodeDefinition*");
     }
 
     [TestMethod]
     public void CreateNode_CSharp_WithNullTypeName_ShouldThrowArgumentException()
     {
         // Arrange
-        var definition = new NodeDefinition
+        var definition = new CSharpNodeDefinition
         {
             NodeId = "test-node",
-            RuntimeType = RuntimeType.CSharp,
             AssemblyPath = "Some.dll",
             TypeName = null
         };
@@ -142,8 +139,8 @@ public class NodeFactoryTests
         Action act = () => this.factory.CreateNode(definition);
 
         // Assert
-        act.Should().Throw<ArgumentException>()
-            .WithMessage("*TypeName*");
+        act.Should().Throw<ValidationException>()
+            .WithMessage("Node definition for NodeId test-node is invalid: AssemblyPath or TypeName are required for CSharpNodeDefinition.");
     }
 
     [TestMethod]
@@ -160,10 +157,9 @@ public class NodeFactoryTests
             return;
         }
 
-        var definition = new NodeDefinition
+        var definition = new CSharpNodeDefinition
         {
             NodeId = "cached-node",
-            RuntimeType = RuntimeType.CSharp,
             AssemblyPath = absoluteAssemblyPath,
             TypeName = "ExecutionEngine.UnitTests.Factory.AzureStackPreCheckNode"
         };

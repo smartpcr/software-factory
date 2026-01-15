@@ -13,6 +13,7 @@ using ExecutionEngine.Enums;
 using ExecutionEngine.Events;
 using ExecutionEngine.Queue;
 using ExecutionEngine.Routing;
+using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// Represents the execution context for an entire workflow instance.
@@ -89,6 +90,20 @@ public class WorkflowExecutionContext : IDisposable
     /// </summary>
     [JsonIgnore]
     public IDeadLetterQueue? DeadLetterQueue { get; set; }
+
+    /// <summary>
+    /// Gets or sets the logger factory for creating loggers.
+    /// Used by SubflowNode to create child workflow engines with logging.
+    /// </summary>
+    [JsonIgnore]
+    public ILoggerFactory? LoggerFactory { get; set; }
+
+    /// <summary>
+    /// Gets or sets the service provider for dependency injection.
+    /// Used by SubflowNode to create child workflow engines with DI support.
+    /// </summary>
+    [JsonIgnore]
+    public IServiceProvider? ServiceProvider { get; set; }
 
     /// <summary>
     /// Gets the duration of workflow execution.

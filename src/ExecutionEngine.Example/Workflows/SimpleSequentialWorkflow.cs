@@ -1,8 +1,8 @@
-using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
+namespace ExecutionEngine.Example.Workflows;
+
+using ExecutionEngine.Nodes.Definitions;
 using ExecutionEngine.Workflow;
 
-namespace ExecutionEngine.Example.Workflows;
 
 public static class SimpleSequentialWorkflow
 {
@@ -16,12 +16,10 @@ public static class SimpleSequentialWorkflow
             WorkflowName = "Customer Order Processing Pipeline",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpNodeDefinition
                 {
                     NodeId = "validate-order",
                     NodeName = "Validate Customer Order",
-                    Type = "Task",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharp,
                     AssemblyPath = assemblyPath,
                     TypeName = "ExecutionEngine.Example.Nodes.LogNode",
                     Configuration = new Dictionary<string, object>
@@ -29,12 +27,10 @@ public static class SimpleSequentialWorkflow
                         ["message"] = "Validating order details and customer information"
                     }
                 },
-                new NodeDefinition
+                new CSharpNodeDefinition
                 {
                     NodeId = "process-payment",
                     NodeName = "Process Payment",
-                    Type = "Task",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharp,
                     AssemblyPath = assemblyPath,
                     TypeName = "ExecutionEngine.Example.Nodes.DataProcessorNode",
                     Configuration = new Dictionary<string, object>
@@ -42,12 +38,10 @@ public static class SimpleSequentialWorkflow
                         ["data"] = "payment_transaction"
                     }
                 },
-                new NodeDefinition
+                new CSharpNodeDefinition
                 {
                     NodeId = "send-confirmation",
                     NodeName = "Send Order Confirmation",
-                    Type = "Task",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharp,
                     AssemblyPath = assemblyPath,
                     TypeName = "ExecutionEngine.Example.Nodes.LogNode",
                     Configuration = new Dictionary<string, object>

@@ -9,9 +9,9 @@ namespace ExecutionEngine.Example.Nodes;
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
 using ExecutionEngine.Nodes;
 using EtwEventReader.Tools;
+using ExecutionEngine.Nodes.Definitions;
 
 /// <summary>
 /// Node that parses an ETL/EVTX file and generates batch CSV files.
@@ -32,7 +32,7 @@ public class ParseEtlFileNode : ExecutableNodeBase
     /// <inheritdoc/>
     public override void Initialize(NodeDefinition definition)
     {
-        base.Initialize(definition);
+        this.Definition = definition;
 
         // Get output directory from configuration
         if (definition.Configuration != null && definition.Configuration.TryGetValue("OutputDirectory", out var outputDirValue))
@@ -71,7 +71,7 @@ public class ParseEtlFileNode : ExecutableNodeBase
             });
 
             // Get the ETL file path from input data
-            if (!nodeContext.InputData.TryGetValue("etlFile", out var etlFileObj) && 
+            if (!nodeContext.InputData.TryGetValue("etlFile", out var etlFileObj) &&
                 !nodeContext.InputData.TryGetValue("EtlFile", out etlFileObj))
             {
                 throw new InvalidOperationException("ETL file path not found in input data.");

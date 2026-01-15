@@ -9,8 +9,8 @@ namespace ExecutionEngine.Example.Nodes;
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
-using ExecutionEngine.Factory;
 using ExecutionEngine.Nodes;
+using ExecutionEngine.Nodes.Definitions;
 using Kusto.Data;
 using Kusto.Data.Common;
 using Kusto.Data.Net.Client;
@@ -34,7 +34,7 @@ public class EnsureKustoDbNode : ExecutableNodeBase
     /// <inheritdoc/>
     public override void Initialize(NodeDefinition definition)
     {
-        base.Initialize(definition);
+        this.Definition = definition;
 
         // Get connection string from configuration
         if (definition.Configuration != null && definition.Configuration.TryGetValue("ConnectionString", out var connStrValue))

@@ -6,7 +6,7 @@
 
 namespace ExecutionEngine.UnitTests.Workflow;
 
-using ExecutionEngine.Factory;
+using ExecutionEngine.Nodes.Definitions;
 using ExecutionEngine.Workflow;
 using FluentAssertions;
 
@@ -19,7 +19,7 @@ public class WorkflowLoaderTests
     [TestInitialize]
     public void Setup()
     {
-        this.loader = new WorkflowLoader();
+        this.loader = new WorkflowLoader(AssemblyInitialize.ServiceProvider);
         this.testDirectory = Path.Combine(Path.GetTempPath(), $"WorkflowLoaderTests_{Guid.NewGuid()}");
         Directory.CreateDirectory(this.testDirectory);
     }
@@ -41,11 +41,10 @@ public class WorkflowLoaderTests
             WorkflowName = "Valid Workflow",
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "node-1",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
-                    ScriptPath = "script.csx"
+                    ScriptPath = @"TestData\Scripts\script.csx"
                 }
             }
         };
@@ -58,10 +57,9 @@ public class WorkflowLoaderTests
             WorkflowId = string.Empty, // Invalid - empty ID
             Nodes = new List<NodeDefinition>
             {
-                new NodeDefinition
+                new CSharpScriptNodeDefinition
                 {
                     NodeId = "node-1",
-                    RuntimeType = ExecutionEngine.Enums.RuntimeType.CSharpScript,
                 }
             }
         };

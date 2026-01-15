@@ -11,8 +11,8 @@ using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
 using ExecutionEngine.Events;
-using ExecutionEngine.Factory;
 using ExecutionEngine.Messages;
+using ExecutionEngine.Nodes.Definitions;
 using ExecutionEngine.Queue;
 using ExecutionEngine.Routing;
 using Microsoft.CodeAnalysis.CSharp.Scripting;
@@ -52,26 +52,38 @@ public class WhileNode : ExecutableNodeBase
     /// <inheritdoc/>
     public override void Initialize(NodeDefinition definition)
     {
-        base.Initialize(definition);
-
-        // Get condition expression from definition configuration
-        if (definition.Configuration != null)
+        if (definition is not WhileNodeDefinition whileDef)
         {
-            if (definition.Configuration.TryGetValue("Condition", out var conditionValue))
-            {
-                this.Condition = conditionValue?.ToString() ?? string.Empty;
-            }
+            throw new InvalidOperationException(
+                $"Invalid node definition type. Expected WhileNodeDefinition but got {definition.GetType().Name}");
+        }
 
-            if (definition.Configuration.TryGetValue("MaxIterations", out var maxIterValue))
+        this.Definition = whileDef;
+
+        // Read Condition from direct property or Configuration dictionary
+        if (!string.IsNullOrWhiteSpace(whileDef.ConditionExpression))
+        {
+            this.Condition = whileDef.ConditionExpression;
+        }
+        else if (whileDef.Configuration?.TryGetValue("Condition", out var condValue) == true && condValue is string cond)
+        {
+            this.Condition = cond;
+        }
+
+        // Read MaxIterations from direct property or Configuration dictionary
+        if (whileDef.MaxIterations != DefaultMaxIterations)
+        {
+            this.MaxIterations = whileDef.MaxIterations;
+        }
+        else if (whileDef.Configuration?.TryGetValue("MaxIterations", out var maxIterValue) == true)
+        {
+            if (maxIterValue is int maxIter)
             {
-                if (maxIterValue is int maxIter)
-                {
-                    this.MaxIterations = maxIter;
-                }
-                else if (int.TryParse(maxIterValue?.ToString(), out var parsedMax))
-                {
-                    this.MaxIterations = parsedMax;
-                }
+                this.MaxIterations = maxIter;
+            }
+            else if (maxIterValue is string maxIterStr && int.TryParse(maxIterStr, out var parsed))
+            {
+                this.MaxIterations = parsed;
             }
         }
     }
