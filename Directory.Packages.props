@@ -83,9 +83,11 @@
     <PackageVersion Include="MSTest.TestAdapter" Version="3.6.3" />
     <PackageVersion Include="MSTest.TestFramework" Version="3.6.3" />
     <PackageVersion Include="Reqnroll.MsTest" Version="3.2.1" />
-    <!-- Execution Engine -->
+    <!-- AST -->
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0" />
     <PackageVersion Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.8.0" />
     <PackageVersion Include="Microsoft.PowerShell.SDK" Version="7.4.0" />
+    <!-- Execution Engine -->
     <PackageVersion Include="NCrontab" Version="3.3.3" />
     <PackageVersion Include="YamlDotNet" Version="16.2.1" />
   </ItemGroup>
