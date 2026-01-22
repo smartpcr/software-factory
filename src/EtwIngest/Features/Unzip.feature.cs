@@ -27,8 +27,8 @@ namespace EtwIngest.Features
         
         private static string[] featureTags = ((string[])(null));
         
-        private static global::Reqnroll.FeatureInfo featureInfo = new global::Reqnroll.FeatureInfo(new global::System.Globalization.CultureInfo("en-US"), "Features", "Unzip", "As a user,\r\nI want to be able to extract zip files,\r\nSo that I can put all etl fi" +
-                "les in one folder.", global::Reqnroll.ProgrammingLanguage.CSharp, featureTags, InitializeCucumberMessages());
+        private static global::Reqnroll.FeatureInfo featureInfo = new global::Reqnroll.FeatureInfo(new global::System.Globalization.CultureInfo("en-US"), "Features", "Unzip", "As a user,\nI want to be able to extract zip files,\nSo that I can put all etl file" +
+                "s in one folder.", global::Reqnroll.ProgrammingLanguage.CSharp, featureTags, InitializeCucumberMessages());
         
 #line 1 "Unzip.feature"
 #line hidden

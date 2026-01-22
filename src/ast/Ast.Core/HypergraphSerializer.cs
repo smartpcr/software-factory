@@ -59,7 +59,9 @@ public static class HypergraphSerializer
                 NumPowershellNodes = data.Metadata.NumPowerShellNodes,
                 NumCrossLanguageEdges = data.Metadata.NumCrossLanguageEdges,
                 Files = data.Metadata.Files,
-                ExtractedAt = data.Metadata.ExtractedAt.ToString("O")
+                ExtractedAt = data.Metadata.ExtractedAt.ToString("O"),
+                Repository = data.Metadata.Repository,
+                Projects = data.Metadata.Projects
             }
         };
 
@@ -104,7 +106,9 @@ public static class HypergraphSerializer
                 NumPowershellNodes = data.Metadata.NumPowerShellNodes,
                 NumCrossLanguageEdges = data.Metadata.NumCrossLanguageEdges,
                 Files = data.Metadata.Files,
-                ExtractedAt = data.Metadata.ExtractedAt.ToString("O")
+                ExtractedAt = data.Metadata.ExtractedAt.ToString("O"),
+                Repository = data.Metadata.Repository,
+                Projects = data.Metadata.Projects
             }
         };
 
@@ -157,7 +161,9 @@ public static class HypergraphSerializer
                 NumPowerShellNodes = exportData.Metadata.NumPowershellNodes,
                 NumCrossLanguageEdges = exportData.Metadata.NumCrossLanguageEdges,
                 Files = exportData.Metadata.Files,
-                ExtractedAt = DateTime.Parse(exportData.Metadata.ExtractedAt)
+                ExtractedAt = DateTime.Parse(exportData.Metadata.ExtractedAt),
+                Repository = exportData.Metadata.Repository,
+                Projects = exportData.Metadata.Projects
             }
         };
     }
@@ -224,5 +230,7 @@ public static class HypergraphSerializer
         public int NumCrossLanguageEdges { get; set; }
         public List<string> Files { get; set; } = [];
         public string ExtractedAt { get; set; } = "";
+        public RepositoryMetadata? Repository { get; set; }
+        public List<ProjectMetadata> Projects { get; set; } = [];
     }
 }

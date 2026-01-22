@@ -30,6 +30,25 @@ public class PowerShellHyperedgeExtractor
     private readonly Dictionary<string, List<string>> variableDefs = [];
     private readonly Dictionary<string, List<string>> variableUses = [];
 
+    // Track imported modules for cross-module call resolution
+    private readonly Dictionary<string, string> importedModules = []; // alias -> module name
+    private readonly List<string> loadedModules = [];
+
+    // Remote execution cmdlets to track
+    private static readonly HashSet<string> RemoteExecutionCmdlets = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Invoke-Command",
+        "Enter-PSSession",
+        "New-PSSession",
+        "Connect-PSSession",
+        "Receive-PSSession",
+        "Get-PSSession",
+        "Remove-PSSession",
+        "Disconnect-PSSession",
+        "Export-PSSession",
+        "Import-PSSession"
+    };
+
     public PowerShellHyperedgeExtractor(string filePath)
     {
         this.filePath = filePath;
@@ -44,9 +63,12 @@ public class PowerShellHyperedgeExtractor
 
         // Extract all constructs
         this.ExtractUsingStatements(ast);
+        this.ExtractImportModule(ast);
         this.ExtractFunctions(ast);
         this.ExtractClasses(ast);
         this.ExtractCommands(ast);
+        this.ExtractModuleQualifiedCalls(ast);
+        this.ExtractRemoteExecution(ast);
         this.ExtractPipelines(ast);
         this.ExtractAssignments(ast);
         this.ExtractLoops(ast);
@@ -98,6 +120,358 @@ public class PowerShellHyperedgeExtractor
             this.AddHyperedge(HyperedgeType.ModuleImport, nodes, roles,
                 ("using_type", usingStmt.UsingStatementKind.ToString()));
         }
+    }
+
+    private void ExtractImportModule(System.Management.Automation.Language.Ast ast)
+    {
+        var commands = ast.FindAll(a => a is CommandAst, searchNestedScriptBlocks: true)
+            .Cast<CommandAst>()
+            .Where(c =>
+            {
+                var name = c.GetCommandName();
+                return name != null && name.Equals("Import-Module", StringComparison.OrdinalIgnoreCase);
+            });
+
+        foreach (var cmd in commands)
+        {
+            var nodes = new List<HypergraphNode>();
+            var roles = new Dictionary<string, string>();
+
+            var cmdNode = this.GetOrCreateNode("Import-Module", "cmdlet", cmd.Extent);
+            nodes.Add(cmdNode);
+            roles[cmdNode.Id] = "cmdlet";
+
+            string? moduleName = null;
+            string? moduleAlias = null;
+            string? moduleVersion = null;
+            string? prefix = null;
+            bool global = false;
+            bool force = false;
+
+            string? currentParam = null;
+            for (int i = 1; i < cmd.CommandElements.Count; i++)
+            {
+                var element = cmd.CommandElements[i];
+
+                if (element is CommandParameterAst paramAst)
+                {
+                    currentParam = paramAst.ParameterName;
+
+                    // Handle switch parameters
+                    if (currentParam.Equals("Global", StringComparison.OrdinalIgnoreCase))
+                        global = true;
+                    else if (currentParam.Equals("Force", StringComparison.OrdinalIgnoreCase))
+                        force = true;
+
+                    // Handle inline argument
+                    if (paramAst.Argument != null)
+                    {
+                        var value = GetAstRepr(paramAst.Argument);
+                        if (currentParam.Equals("Name", StringComparison.OrdinalIgnoreCase))
+                            moduleName = value;
+                        else if (currentParam.Equals("Alias", StringComparison.OrdinalIgnoreCase))
+                            moduleAlias = value;
+                        else if (currentParam.Equals("RequiredVersion", StringComparison.OrdinalIgnoreCase) ||
+                                 currentParam.Equals("MinimumVersion", StringComparison.OrdinalIgnoreCase))
+                            moduleVersion = value;
+                        else if (currentParam.Equals("Prefix", StringComparison.OrdinalIgnoreCase))
+                            prefix = value;
+                    }
+                }
+                else
+                {
+                    var value = GetAstRepr(element);
+                    if (currentParam != null)
+                    {
+                        if (currentParam.Equals("Name", StringComparison.OrdinalIgnoreCase))
+                            moduleName = value;
+                        else if (currentParam.Equals("Alias", StringComparison.OrdinalIgnoreCase))
+                            moduleAlias = value;
+                        else if (currentParam.Equals("RequiredVersion", StringComparison.OrdinalIgnoreCase) ||
+                                 currentParam.Equals("MinimumVersion", StringComparison.OrdinalIgnoreCase))
+                            moduleVersion = value;
+                        else if (currentParam.Equals("Prefix", StringComparison.OrdinalIgnoreCase))
+                            prefix = value;
+                        currentParam = null;
+                    }
+                    else
+                    {
+                        // Positional parameter (module name)
+                        moduleName = value;
+                    }
+                }
+            }
+
+            if (moduleName != null)
+            {
+                var moduleNode = this.GetOrCreateNode(moduleName, "module", cmd.Extent);
+                nodes.Add(moduleNode);
+                roles[moduleNode.Id] = "imported_module";
+
+                // Track for cross-module resolution
+                this.loadedModules.Add(moduleName.Trim('\'', '"'));
+                if (moduleAlias != null)
+                {
+                    this.importedModules[moduleAlias.Trim('\'', '"')] = moduleName.Trim('\'', '"');
+                }
+            }
+
+            if (prefix != null)
+            {
+                var prefixNode = this.GetOrCreateNode(prefix, "prefix", cmd.Extent);
+                nodes.Add(prefixNode);
+                roles[prefixNode.Id] = "command_prefix";
+            }
+
+            this.AddHyperedge(HyperedgeType.ModuleImport, nodes, roles,
+                ("module_name", moduleName),
+                ("alias", moduleAlias),
+                ("version", moduleVersion),
+                ("prefix", prefix),
+                ("is_global", global),
+                ("is_force", force));
+        }
+    }
+
+    private void ExtractModuleQualifiedCalls(System.Management.Automation.Language.Ast ast)
+    {
+        // Find module-qualified function calls: ModuleName\FunctionName
+        var commands = ast.FindAll(a => a is CommandAst, searchNestedScriptBlocks: true)
+            .Cast<CommandAst>()
+            .Where(c =>
+            {
+                var name = c.GetCommandName();
+                return name != null && name.Contains('\\');
+            });
+
+        foreach (var cmd in commands)
+        {
+            var fullName = cmd.GetCommandName()!;
+            var parts = fullName.Split('\\', 2);
+            var moduleName = parts[0];
+            var functionName = parts[1];
+
+            var nodes = new List<HypergraphNode>();
+            var roles = new Dictionary<string, string>();
+
+            // Module node
+            var moduleNode = this.GetOrCreateNode(moduleName, "module", cmd.Extent);
+            nodes.Add(moduleNode);
+            roles[moduleNode.Id] = "source_module";
+
+            // Function node
+            var funcNode = this.GetOrCreateNode(functionName, "function_ref", cmd.Extent);
+            nodes.Add(funcNode);
+            roles[funcNode.Id] = "called_function";
+
+            // Arguments
+            string? currentParamName = null;
+            int positionalIndex = 0;
+
+            for (int i = 1; i < cmd.CommandElements.Count; i++)
+            {
+                var element = cmd.CommandElements[i];
+
+                if (element is CommandParameterAst paramAst)
+                {
+                    currentParamName = paramAst.ParameterName;
+                    var paramNode = this.GetOrCreateNode(currentParamName, "param_name", paramAst.Extent);
+                    nodes.Add(paramNode);
+                    roles[paramNode.Id] = $"param_{currentParamName}";
+
+                    if (paramAst.Argument != null)
+                    {
+                        var argRepr = GetAstRepr(paramAst.Argument);
+                        var argNode = this.GetOrCreateNode(argRepr, "param_value", paramAst.Argument.Extent);
+                        nodes.Add(argNode);
+                        roles[argNode.Id] = $"value_{currentParamName}";
+                        currentParamName = null;
+                    }
+                }
+                else
+                {
+                    var argRepr = GetAstRepr(element);
+                    var argNode = this.GetOrCreateNode(argRepr, "param_value", element.Extent);
+                    nodes.Add(argNode);
+
+                    if (currentParamName != null)
+                    {
+                        roles[argNode.Id] = $"value_{currentParamName}";
+                        currentParamName = null;
+                    }
+                    else
+                    {
+                        roles[argNode.Id] = $"positional_{positionalIndex++}";
+                    }
+                }
+            }
+
+            this.AddHyperedge(HyperedgeType.ModuleFunctionCall, nodes, roles,
+                ("module_name", moduleName),
+                ("function_name", functionName),
+                ("is_loaded", this.loadedModules.Contains(moduleName)));
+        }
+    }
+
+    private void ExtractRemoteExecution(System.Management.Automation.Language.Ast ast)
+    {
+        var commands = ast.FindAll(a => a is CommandAst, searchNestedScriptBlocks: true)
+            .Cast<CommandAst>()
+            .Where(c =>
+            {
+                var name = c.GetCommandName();
+                return name != null && RemoteExecutionCmdlets.Contains(name);
+            });
+
+        foreach (var cmd in commands)
+        {
+            var cmdName = cmd.GetCommandName()!;
+            var nodes = new List<HypergraphNode>();
+            var roles = new Dictionary<string, string>();
+
+            var cmdNode = this.GetOrCreateNode(cmdName, "remote_cmdlet", cmd.Extent);
+            nodes.Add(cmdNode);
+            roles[cmdNode.Id] = "remote_cmdlet";
+
+            string? computerName = null;
+            string? session = null;
+            string? credential = null;
+            string? scriptBlock = null;
+            string? filePath = null;
+            string? configurationName = null;
+            bool useSSL = false;
+            int? port = null;
+            string? authentication = null;
+            bool asJob = false;
+
+            string? currentParam = null;
+            for (int i = 1; i < cmd.CommandElements.Count; i++)
+            {
+                var element = cmd.CommandElements[i];
+
+                if (element is CommandParameterAst paramAst)
+                {
+                    currentParam = paramAst.ParameterName;
+
+                    // Handle switch parameters
+                    if (currentParam.Equals("UseSSL", StringComparison.OrdinalIgnoreCase))
+                        useSSL = true;
+                    else if (currentParam.Equals("AsJob", StringComparison.OrdinalIgnoreCase))
+                        asJob = true;
+
+                    // Handle inline argument
+                    if (paramAst.Argument != null)
+                    {
+                        this.ProcessRemoteParameter(currentParam, paramAst.Argument,
+                            ref computerName, ref session, ref credential, ref scriptBlock,
+                            ref filePath, ref configurationName, ref port, ref authentication);
+                    }
+                }
+                else
+                {
+                    if (currentParam != null)
+                    {
+                        this.ProcessRemoteParameter(currentParam, element,
+                            ref computerName, ref session, ref credential, ref scriptBlock,
+                            ref filePath, ref configurationName, ref port, ref authentication);
+                        currentParam = null;
+                    }
+                    else if (element is ScriptBlockExpressionAst scriptBlockAst)
+                    {
+                        // Positional script block
+                        scriptBlock = GetAstRepr(scriptBlockAst);
+                    }
+                }
+            }
+
+            // Add computer name node(s)
+            if (computerName != null)
+            {
+                // Could be a single value or array
+                var computers = computerName.Trim('\'', '"', '@', '(', ')').Split(',');
+                for (int i = 0; i < computers.Length; i++)
+                {
+                    var computer = computers[i].Trim().Trim('\'', '"');
+                    if (!string.IsNullOrEmpty(computer))
+                    {
+                        var computerNode = this.GetOrCreateNode(computer, "remote_computer", cmd.Extent);
+                        nodes.Add(computerNode);
+                        roles[computerNode.Id] = computers.Length > 1 ? $"target_computer_{i}" : "target_computer";
+                    }
+                }
+            }
+
+            // Add session node
+            if (session != null)
+            {
+                var sessionNode = this.GetOrCreateNode(session, "ps_session", cmd.Extent);
+                nodes.Add(sessionNode);
+                roles[sessionNode.Id] = "session";
+            }
+
+            // Add credential node
+            if (credential != null)
+            {
+                var credNode = this.GetOrCreateNode(credential, "credential", cmd.Extent);
+                nodes.Add(credNode);
+                roles[credNode.Id] = "credential";
+            }
+
+            // Add script block node
+            if (scriptBlock != null)
+            {
+                var scriptNode = this.GetOrCreateNode(scriptBlock, "remote_script", cmd.Extent);
+                nodes.Add(scriptNode);
+                roles[scriptNode.Id] = "script_block";
+            }
+
+            // Add file path node
+            if (filePath != null)
+            {
+                var fileNode = this.GetOrCreateNode(filePath, "script_file", cmd.Extent);
+                nodes.Add(fileNode);
+                roles[fileNode.Id] = "script_file";
+            }
+
+            this.AddHyperedge(HyperedgeType.RemoteExecution, nodes, roles,
+                ("cmdlet", cmdName),
+                ("computer_name", computerName),
+                ("session", session),
+                ("credential", credential),
+                ("use_ssl", useSSL),
+                ("port", port),
+                ("authentication", authentication),
+                ("configuration_name", configurationName),
+                ("as_job", asJob),
+                ("has_script_block", scriptBlock != null),
+                ("has_script_file", filePath != null));
+        }
+    }
+
+    private void ProcessRemoteParameter(string paramName, System.Management.Automation.Language.Ast valueAst,
+        ref string? computerName, ref string? session, ref string? credential, ref string? scriptBlock,
+        ref string? filePath, ref string? configurationName, ref int? port, ref string? authentication)
+    {
+        var value = GetAstRepr(valueAst);
+
+        if (paramName.Equals("ComputerName", StringComparison.OrdinalIgnoreCase) ||
+            paramName.Equals("CN", StringComparison.OrdinalIgnoreCase))
+            computerName = value;
+        else if (paramName.Equals("Session", StringComparison.OrdinalIgnoreCase))
+            session = value;
+        else if (paramName.Equals("Credential", StringComparison.OrdinalIgnoreCase))
+            credential = value;
+        else if (paramName.Equals("ScriptBlock", StringComparison.OrdinalIgnoreCase))
+            scriptBlock = value;
+        else if (paramName.Equals("FilePath", StringComparison.OrdinalIgnoreCase))
+            filePath = value;
+        else if (paramName.Equals("ConfigurationName", StringComparison.OrdinalIgnoreCase))
+            configurationName = value;
+        else if (paramName.Equals("Port", StringComparison.OrdinalIgnoreCase) &&
+                 int.TryParse(value, out var portVal))
+            port = portVal;
+        else if (paramName.Equals("Authentication", StringComparison.OrdinalIgnoreCase))
+            authentication = value;
     }
 
     private void ExtractFunctions(System.Management.Automation.Language.Ast ast)

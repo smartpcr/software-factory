@@ -90,5 +90,13 @@
     <!-- Execution Engine -->
     <PackageVersion Include="NCrontab" Version="3.3.3" />
     <PackageVersion Include="YamlDotNet" Version="16.2.1" />
+    <!-- Embedding / Local LLM -->
+    <PackageVersion Include="LLamaSharp" Version="0.18.0" />
+    <PackageVersion Include="LLamaSharp.Backend.Cpu" Version="0.18.0" />
+    <PackageVersion Include="LLamaSharp.Backend.Cuda12" Version="0.18.0" />
+    <!-- Vector Database -->
+    <PackageVersion Include="Qdrant.Client" Version="1.12.0" />
+    <!-- Graph Database -->
+    <PackageVersion Include="Neo4j.Driver" Version="5.28.0" />
   </ItemGroup>
 </Project>

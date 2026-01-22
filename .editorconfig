@@ -39,31 +39,41 @@ csharp_style_var_elsewhere = true:suggestion
 csharp_style_var_for_built_in_types = true:suggestion
 csharp_style_var_when_type_is_apparent = true:suggestion
 
-# Enforce naming rules for static and const fields (PascalCase)
-dotnet_naming_rule.static_fields_pascal_case.severity = warning
-dotnet_naming_rule.static_fields_pascal_case.symbols = static_fields
-dotnet_naming_rule.static_fields_pascal_case.style = pascal_case_style
-
+# Enforce naming rules for const fields (PascalCase)
 dotnet_naming_rule.const_fields_pascal_case.severity = warning
 dotnet_naming_rule.const_fields_pascal_case.symbols = const_fields
 dotnet_naming_rule.const_fields_pascal_case.style = pascal_case_style
 
-# Enforce naming rules for private instance fields without underscore (camelCase)
+# Enforce naming rules for public/internal static fields (PascalCase)
+dotnet_naming_rule.public_static_fields_pascal_case.severity = warning
+dotnet_naming_rule.public_static_fields_pascal_case.symbols = public_static_fields
+dotnet_naming_rule.public_static_fields_pascal_case.style = pascal_case_style
+
+# Enforce naming rules for private/protected static fields (camelCase)
+dotnet_naming_rule.private_static_fields_camel_case.severity = warning
+dotnet_naming_rule.private_static_fields_camel_case.symbols = private_static_fields
+dotnet_naming_rule.private_static_fields_camel_case.style = camel_case_style
+
+# Enforce naming rules for private instance fields (camelCase)
 dotnet_naming_rule.private_instance_fields_camel_case.severity = warning
 dotnet_naming_rule.private_instance_fields_camel_case.symbols = private_instance_fields
 dotnet_naming_rule.private_instance_fields_camel_case.style = camel_case_style
 
 # Symbol definitions
-dotnet_naming_symbols.static_fields.applicable_kinds = field
-dotnet_naming_symbols.static_fields.applicable_accessibilities = public, internal, private, protected, protected_internal, private_protected
-dotnet_naming_symbols.static_fields.required_modifiers = static
-
 dotnet_naming_symbols.const_fields.applicable_kinds = field
-dotnet_naming_symbols.const_fields.applicable_accessibilities = public, internal, private, protected, protected_internal, private_protected
+dotnet_naming_symbols.const_fields.applicable_accessibilities = *
 dotnet_naming_symbols.const_fields.required_modifiers = const
 
+dotnet_naming_symbols.public_static_fields.applicable_kinds = field
+dotnet_naming_symbols.public_static_fields.applicable_accessibilities = public, internal
+dotnet_naming_symbols.public_static_fields.required_modifiers = static
+
+dotnet_naming_symbols.private_static_fields.applicable_kinds = field
+dotnet_naming_symbols.private_static_fields.applicable_accessibilities = private, protected, protected_internal, private_protected
+dotnet_naming_symbols.private_static_fields.required_modifiers = static
+
 dotnet_naming_symbols.private_instance_fields.applicable_kinds = field
-dotnet_naming_symbols.private_instance_fields.applicable_accessibilities = private
+dotnet_naming_symbols.private_instance_fields.applicable_accessibilities = private, protected, protected_internal, private_protected
 dotnet_naming_symbols.private_instance_fields.required_modifiers =
 
 # Style definitions

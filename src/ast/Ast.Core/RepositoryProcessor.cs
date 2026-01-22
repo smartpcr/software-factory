@@ -16,9 +16,12 @@ using System.Text.RegularExpressions;
 public class RepositoryProcessor
 {
     private readonly string repoPath;
+    private readonly AstConfiguration config;
     private readonly Dictionary<string, HypergraphNode> nodes = [];
     private readonly List<Hyperedge> hyperedges = [];
     private readonly Dictionary<string, List<string>> fileToNodes = [];
+    private readonly Dictionary<string, int> fileNodeCounts = [];
+    private readonly Dictionary<string, int> fileEdgeCounts = [];
     private int edgeCounter;
 
     // Track symbols for cross-language linking
@@ -34,9 +37,10 @@ public class RepositoryProcessor
     private static readonly string[] PowerShellExtensions = [".ps1", ".psm1", ".psd1"];
     private static readonly string[] ExcludePatterns = ["bin", "obj", "packages", ".git", "node_modules", "TestResults"];
 
-    public RepositoryProcessor(string repoPath)
+    public RepositoryProcessor(string repoPath, AstConfiguration? config = null)
     {
         this.repoPath = Path.GetFullPath(repoPath);
+        this.config = config ?? new AstConfiguration();
     }
 
     public HypergraphData Process(bool verbose = false)
@@ -95,6 +99,27 @@ public class RepositoryProcessor
             }
         }
 
+        // Extract project and repository metadata
+        var metadataExtractor = new ProjectMetadataExtractor(this.repoPath, this.config);
+        var repoMetadata = metadataExtractor.ExtractRepositoryMetadata();
+        var projects = metadataExtractor.ExtractAllProjects();
+
+        // Update project metadata with node/edge counts
+        foreach (var project in projects)
+        {
+            var projectNodeCount = 0;
+            var projectEdgeCount = 0;
+            foreach (var sourceFile in project.SourceFiles)
+            {
+                if (this.fileNodeCounts.TryGetValue(sourceFile, out var nodeCount))
+                    projectNodeCount += nodeCount;
+                if (this.fileEdgeCounts.TryGetValue(sourceFile, out var edgeCount))
+                    projectEdgeCount += edgeCount;
+            }
+            project.NodeCount = projectNodeCount;
+            project.HyperedgeCount = projectEdgeCount;
+        }
+
         // Calculate statistics
         var csNodes = this.nodes.Values.Count(n => n.Language == "csharp");
         var psNodes = this.nodes.Values.Count(n => n.Language == "powershell");
@@ -111,7 +136,9 @@ public class RepositoryProcessor
                 NumCSharpNodes = csNodes,
                 NumPowerShellNodes = psNodes,
                 NumCrossLanguageEdges = crossEdges,
-                Files = this.fileToNodes.Keys.ToList()
+                Files = this.fileToNodes.Keys.ToList(),
+                Repository = repoMetadata,
+                Projects = projects
             }
         };
     }
@@ -124,6 +151,10 @@ public class RepositoryProcessor
         var relativePath = Path.GetRelativePath(this.repoPath, filePath);
 
         var (nodes, hyperedges) = this.CSharpExtractor(relativePath, sourceCode);
+
+        // Track counts for project metadata
+        this.fileNodeCounts[relativePath] = nodes.Count;
+        this.fileEdgeCounts[relativePath] = hyperedges.Count;
 
         // Merge nodes
         foreach (var (oldId, node) in nodes)
@@ -182,6 +213,10 @@ public class RepositoryProcessor
         var relativePath = Path.GetRelativePath(this.repoPath, filePath);
 
         var (nodes, hyperedges) = this.PowerShellExtractor(relativePath, sourceCode);
+
+        // Track counts for project metadata
+        this.fileNodeCounts[relativePath] = nodes.Count;
+        this.fileEdgeCounts[relativePath] = hyperedges.Count;
 
         // Merge nodes
         foreach (var (oldId, node) in nodes)

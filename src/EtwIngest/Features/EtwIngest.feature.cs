@@ -27,9 +27,9 @@ namespace EtwIngest.Features
         
         private static string[] featureTags = ((string[])(null));
         
-        private static global::Reqnroll.FeatureInfo featureInfo = new global::Reqnroll.FeatureInfo(new global::System.Globalization.CultureInfo("en-US"), "Features", "EtwIngest", "    As a user,\r\n    I want to be able to extract ETW events from a file,\r\n    and" +
-                " infer its kusto table schema based on provider and event,\r\n    and ingest the e" +
-                "vents into the kusto table.", global::Reqnroll.ProgrammingLanguage.CSharp, featureTags, InitializeCucumberMessages());
+        private static global::Reqnroll.FeatureInfo featureInfo = new global::Reqnroll.FeatureInfo(new global::System.Globalization.CultureInfo("en-US"), "Features", "EtwIngest", "    As a user,\n    I want to be able to extract ETW events from a file,\n    and i" +
+                "nfer its kusto table schema based on provider and event,\n    and ingest the even" +
+                "ts into the kusto table.", global::Reqnroll.ProgrammingLanguage.CSharp, featureTags, InitializeCucumberMessages());
         
 #line 1 "EtwIngest.feature"
 #line hidden

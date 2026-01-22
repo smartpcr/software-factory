@@ -33,6 +33,41 @@ public class CSharpHyperedgeExtractor
     private readonly Dictionary<string, List<string>> variableDefs = [];
     private readonly Dictionary<string, List<string>> variableUses = [];
 
+    // DI registration method names
+    private static readonly HashSet<string> DiRegistrationMethods = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "AddSingleton", "AddScoped", "AddTransient",
+        "AddHostedService", "AddHttpClient",
+        "TryAddSingleton", "TryAddScoped", "TryAddTransient",
+        "AddDbContext", "AddDbContextPool", "AddDbContextFactory"
+    };
+
+    // HTTP method attributes for API endpoints
+    private static readonly HashSet<string> HttpMethodAttributes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "HttpGet", "HttpPost", "HttpPut", "HttpDelete", "HttpPatch", "HttpHead", "HttpOptions",
+        "Route", "ApiController"
+    };
+
+    // Logging method names
+    private static readonly HashSet<string> LoggingMethods = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "LogTrace", "LogDebug", "LogInformation", "LogWarning", "LogError", "LogCritical", "Log"
+    };
+
+    // File system methods
+    private static readonly HashSet<string> FileSystemMethods = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "ReadAllText", "ReadAllLines", "ReadAllBytes", "WriteAllText", "WriteAllLines", "WriteAllBytes",
+        "OpenRead", "OpenWrite", "Create", "Delete", "Exists", "Copy", "Move",
+        "CreateDirectory", "GetFiles", "GetDirectories", "EnumerateFiles"
+    };
+
+    // Track architectural elements
+    private bool isController;
+    private string? controllerRoute;
+    private readonly List<string> registeredServices = [];
+
     public CSharpHyperedgeExtractor(string filePath)
     {
         this.filePath = filePath;
@@ -45,6 +80,9 @@ public class CSharpHyperedgeExtractor
     {
         var tree = CSharpSyntaxTree.ParseText(sourceCode);
         var root = tree.GetCompilationUnitRoot();
+
+        // Check for top-level statements (minimal hosting / C# 9+)
+        this.ExtractTopLevelStatements(root);
 
         // Extract namespace
         var namespaceDecl = root.DescendantNodes().OfType<BaseNamespaceDeclarationSyntax>().FirstOrDefault();
@@ -173,6 +211,54 @@ public class CSharpHyperedgeExtractor
         this.AddHyperedge(HyperedgeType.ClassDefinition, nodes, roles,
             ("modifiers", GetModifiers(classDecl.Modifiers)));
 
+        // Check if this is a controller
+        this.isController = false;
+        this.controllerRoute = null;
+
+        foreach (var attrList in classDecl.AttributeLists)
+        {
+            foreach (var attr in attrList.Attributes)
+            {
+                var attrName = attr.Name.ToString();
+                if (attrName == "ApiController" || attrName == "ApiControllerAttribute")
+                {
+                    this.isController = true;
+                }
+                else if (attrName == "Route" || attrName == "RouteAttribute")
+                {
+                    this.isController = true;
+                    if (attr.ArgumentList?.Arguments.Count > 0)
+                    {
+                        this.controllerRoute = attr.ArgumentList.Arguments[0].ToString().Trim('"');
+                    }
+                }
+                else if (attrName == "Controller" || attrName == "ControllerAttribute")
+                {
+                    this.isController = true;
+                }
+            }
+        }
+
+        // Also check if class name ends with Controller
+        if (classDecl.Identifier.Text.EndsWith("Controller"))
+        {
+            this.isController = true;
+        }
+
+        // Check base types for ControllerBase
+        if (classDecl.BaseList != null)
+        {
+            foreach (var baseType in classDecl.BaseList.Types)
+            {
+                var baseName = baseType.Type.ToString();
+                if (baseName.Contains("Controller") || baseName.Contains("ControllerBase"))
+                {
+                    this.isController = true;
+                    break;
+                }
+            }
+        }
+
         // Process class members
         this.scopeStack.Push(classDecl.Identifier.Text);
 
@@ -182,6 +268,8 @@ public class CSharpHyperedgeExtractor
         }
 
         this.scopeStack.Pop();
+        this.isController = false;
+        this.controllerRoute = null;
     }
 
     private void ExtractInterfaceDefinition(InterfaceDeclarationSyntax interfaceDecl)
@@ -383,6 +471,15 @@ public class CSharpHyperedgeExtractor
         this.AddHyperedge(HyperedgeType.MethodDefinition, nodes, roles,
             ("is_async", isAsync),
             ("modifiers", GetModifiers(method.Modifiers)));
+
+        // Check for API endpoint if in a controller
+        if (this.isController)
+        {
+            this.ExtractApiEndpoint(method);
+        }
+
+        // Check for entry point (Main method)
+        this.ExtractEntryPointIfMain(method);
 
         // Process method body
         this.scopeStack.Push(method.Identifier.Text);
@@ -682,6 +779,564 @@ public class CSharpHyperedgeExtractor
         {
             this.AddHyperedge(HyperedgeType.MethodInvocation, nodes, roles);
         }
+
+        // Check for architectural patterns
+        var simpleMethodName = GetSimpleMethodName(invocation.Expression);
+        this.ExtractArchitecturalPatterns(invocation, simpleMethodName);
+    }
+
+    private void ExtractArchitecturalPatterns(InvocationExpressionSyntax invocation, string methodName)
+    {
+        // DI Service Registration
+        if (DiRegistrationMethods.Contains(methodName))
+        {
+            this.ExtractServiceRegistration(invocation, methodName);
+        }
+        // Logging calls
+        else if (LoggingMethods.Contains(methodName))
+        {
+            this.ExtractLoggingCall(invocation, methodName);
+        }
+        // HttpClient usage
+        else if (IsHttpClientCall(invocation))
+        {
+            this.ExtractHttpClientUsage(invocation);
+        }
+        // File system access
+        else if (FileSystemMethods.Contains(methodName))
+        {
+            this.ExtractFileSystemAccess(invocation, methodName);
+        }
+        // Configuration access
+        else if (IsConfigurationAccess(invocation))
+        {
+            this.ExtractConfigurationAccess(invocation);
+        }
+        // Middleware registration
+        else if (methodName.StartsWith("Use") && IsMiddlewareRegistration(invocation))
+        {
+            this.ExtractMiddlewareRegistration(invocation, methodName);
+        }
+    }
+
+    private void ExtractServiceRegistration(InvocationExpressionSyntax invocation, string methodName)
+    {
+        var nodes = new List<HypergraphNode>();
+        var roles = new Dictionary<string, string>();
+
+        // The DI method
+        var methodNode = this.GetOrCreateNode(methodName, "di_method", invocation.GetLocation());
+        nodes.Add(methodNode);
+        roles[methodNode.Id] = "registration_method";
+
+        // Determine lifetime
+        var lifetime = methodName switch
+        {
+            var m when m.Contains("Singleton") => "Singleton",
+            var m when m.Contains("Scoped") => "Scoped",
+            var m when m.Contains("Transient") => "Transient",
+            var m when m.Contains("HostedService") => "Singleton",
+            _ => "Unknown"
+        };
+
+        string? serviceType = null;
+        string? implementationType = null;
+
+        // Check for generic type arguments: AddSingleton<IService, Implementation>()
+        if (invocation.Expression is MemberAccessExpressionSyntax memberAccess &&
+            memberAccess.Name is GenericNameSyntax genericName)
+        {
+            var typeArgs = genericName.TypeArgumentList.Arguments;
+            if (typeArgs.Count >= 1)
+            {
+                serviceType = typeArgs[0].ToString();
+                var serviceNode = this.GetOrCreateNode(serviceType, "service_interface", invocation.GetLocation());
+                nodes.Add(serviceNode);
+                roles[serviceNode.Id] = "service_type";
+            }
+            if (typeArgs.Count >= 2)
+            {
+                implementationType = typeArgs[1].ToString();
+                var implNode = this.GetOrCreateNode(implementationType, "service_implementation", invocation.GetLocation());
+                nodes.Add(implNode);
+                roles[implNode.Id] = "implementation_type";
+            }
+        }
+
+        // Check arguments for typeof() expressions
+        foreach (var arg in invocation.ArgumentList.Arguments)
+        {
+            if (arg.Expression is TypeOfExpressionSyntax typeOf)
+            {
+                var typeName = typeOf.Type.ToString();
+                if (serviceType == null)
+                {
+                    serviceType = typeName;
+                    var serviceNode = this.GetOrCreateNode(typeName, "service_interface", arg.GetLocation());
+                    nodes.Add(serviceNode);
+                    roles[serviceNode.Id] = "service_type";
+                }
+                else if (implementationType == null)
+                {
+                    implementationType = typeName;
+                    var implNode = this.GetOrCreateNode(typeName, "service_implementation", arg.GetLocation());
+                    nodes.Add(implNode);
+                    roles[implNode.Id] = "implementation_type";
+                }
+            }
+            else if (arg.Expression is LambdaExpressionSyntax)
+            {
+                var factoryNode = this.GetOrCreateNode("factory", "factory_delegate", arg.GetLocation());
+                nodes.Add(factoryNode);
+                roles[factoryNode.Id] = "factory";
+            }
+        }
+
+        this.AddHyperedge(HyperedgeType.ServiceRegistration, nodes, roles,
+            ("lifetime", lifetime),
+            ("service_type", serviceType),
+            ("implementation_type", implementationType),
+            ("method", methodName));
+
+        if (serviceType != null)
+        {
+            this.registeredServices.Add(serviceType);
+        }
+    }
+
+    private void ExtractLoggingCall(InvocationExpressionSyntax invocation, string methodName)
+    {
+        var nodes = new List<HypergraphNode>();
+        var roles = new Dictionary<string, string>();
+
+        // Log level from method name
+        var logLevel = methodName switch
+        {
+            "LogTrace" => "Trace",
+            "LogDebug" => "Debug",
+            "LogInformation" => "Information",
+            "LogWarning" => "Warning",
+            "LogError" => "Error",
+            "LogCritical" => "Critical",
+            _ => "Unknown"
+        };
+
+        var logNode = this.GetOrCreateNode(methodName, "log_call", invocation.GetLocation());
+        nodes.Add(logNode);
+        roles[logNode.Id] = "log_method";
+
+        string? messageTemplate = null;
+        var structuredFields = new List<string>();
+
+        foreach (var arg in invocation.ArgumentList.Arguments)
+        {
+            if (arg.Expression is LiteralExpressionSyntax literal && literal.IsKind(SyntaxKind.StringLiteralExpression))
+            {
+                messageTemplate = literal.Token.ValueText;
+                var templateNode = this.GetOrCreateNode(messageTemplate.Length > 50 ? messageTemplate[..50] + "..." : messageTemplate,
+                    "log_template", arg.GetLocation());
+                nodes.Add(templateNode);
+                roles[templateNode.Id] = "message_template";
+
+                // Extract structured logging placeholders {PropertyName}
+                var matches = System.Text.RegularExpressions.Regex.Matches(messageTemplate, @"\{(\w+)\}");
+                foreach (System.Text.RegularExpressions.Match match in matches)
+                {
+                    structuredFields.Add(match.Groups[1].Value);
+                }
+            }
+            else if (arg.Expression is InterpolatedStringExpressionSyntax)
+            {
+                messageTemplate = GetExpressionRepr(arg.Expression);
+            }
+        }
+
+        // Check if logging an exception
+        var hasException = invocation.ArgumentList.Arguments.Any(a =>
+            a.Expression.ToString().Contains("Exception") ||
+            a.Expression.ToString().Contains("ex") ||
+            a.Expression.ToString().Contains("error"));
+
+        this.AddHyperedge(HyperedgeType.LoggingCall, nodes, roles,
+            ("log_level", logLevel),
+            ("message_template", messageTemplate),
+            ("structured_fields", structuredFields.Count > 0 ? string.Join(", ", structuredFields) : null),
+            ("has_exception", hasException),
+            ("scope", this.CurrentScope));
+    }
+
+    private static bool IsHttpClientCall(InvocationExpressionSyntax invocation)
+    {
+        var expr = invocation.Expression.ToString();
+        return expr.Contains("HttpClient") ||
+               expr.Contains("GetAsync") ||
+               expr.Contains("PostAsync") ||
+               expr.Contains("PutAsync") ||
+               expr.Contains("DeleteAsync") ||
+               expr.Contains("SendAsync") ||
+               expr.Contains("GetStringAsync") ||
+               expr.Contains("GetStreamAsync");
+    }
+
+    private void ExtractHttpClientUsage(InvocationExpressionSyntax invocation)
+    {
+        var nodes = new List<HypergraphNode>();
+        var roles = new Dictionary<string, string>();
+
+        var methodName = GetSimpleMethodName(invocation.Expression);
+        var httpMethod = methodName switch
+        {
+            var m when m.Contains("Get") => "GET",
+            var m when m.Contains("Post") => "POST",
+            var m when m.Contains("Put") => "PUT",
+            var m when m.Contains("Delete") => "DELETE",
+            var m when m.Contains("Patch") => "PATCH",
+            _ => "Unknown"
+        };
+
+        var callNode = this.GetOrCreateNode(methodName, "http_call", invocation.GetLocation());
+        nodes.Add(callNode);
+        roles[callNode.Id] = "http_method";
+
+        string? url = null;
+        foreach (var arg in invocation.ArgumentList.Arguments)
+        {
+            var argStr = arg.Expression.ToString();
+            if (argStr.Contains("http") || argStr.Contains("/api") || argStr.Contains("://"))
+            {
+                url = argStr;
+                var urlNode = this.GetOrCreateNode(argStr.Length > 60 ? argStr[..60] + "..." : argStr,
+                    "endpoint_url", arg.GetLocation());
+                nodes.Add(urlNode);
+                roles[urlNode.Id] = "target_url";
+                break;
+            }
+        }
+
+        this.AddHyperedge(HyperedgeType.HttpClientUsage, nodes, roles,
+            ("http_method", httpMethod),
+            ("url", url),
+            ("scope", this.CurrentScope),
+            ("is_async", methodName.EndsWith("Async")));
+    }
+
+    private void ExtractFileSystemAccess(InvocationExpressionSyntax invocation, string methodName)
+    {
+        var nodes = new List<HypergraphNode>();
+        var roles = new Dictionary<string, string>();
+
+        var operation = methodName switch
+        {
+            var m when m.Contains("Read") => "Read",
+            var m when m.Contains("Write") => "Write",
+            var m when m.Contains("Create") => "Create",
+            var m when m.Contains("Delete") => "Delete",
+            var m when m.Contains("Copy") => "Copy",
+            var m when m.Contains("Move") => "Move",
+            var m when m.Contains("Exists") => "Check",
+            var m when m.Contains("Get") || m.Contains("Enumerate") => "List",
+            _ => "Access"
+        };
+
+        var fsNode = this.GetOrCreateNode(methodName, "file_operation", invocation.GetLocation());
+        nodes.Add(fsNode);
+        roles[fsNode.Id] = "operation";
+
+        string? path = null;
+        if (invocation.ArgumentList.Arguments.Count > 0)
+        {
+            var firstArg = invocation.ArgumentList.Arguments[0];
+            path = GetExpressionRepr(firstArg.Expression);
+            var pathNode = this.GetOrCreateNode(path, "file_path", firstArg.GetLocation());
+            nodes.Add(pathNode);
+            roles[pathNode.Id] = "target_path";
+        }
+
+        this.AddHyperedge(HyperedgeType.FileSystemAccess, nodes, roles,
+            ("operation", operation),
+            ("method", methodName),
+            ("path", path),
+            ("scope", this.CurrentScope));
+    }
+
+    private static bool IsConfigurationAccess(InvocationExpressionSyntax invocation)
+    {
+        var expr = invocation.Expression.ToString();
+        return expr.Contains("Configuration") ||
+               expr.Contains("GetSection") ||
+               expr.Contains("GetValue") ||
+               expr.Contains("IOptions") ||
+               expr.Contains("config[");
+    }
+
+    private void ExtractConfigurationAccess(InvocationExpressionSyntax invocation)
+    {
+        var nodes = new List<HypergraphNode>();
+        var roles = new Dictionary<string, string>();
+
+        var methodName = GetSimpleMethodName(invocation.Expression);
+        var configNode = this.GetOrCreateNode(methodName, "config_access", invocation.GetLocation());
+        nodes.Add(configNode);
+        roles[configNode.Id] = "access_method";
+
+        string? configKey = null;
+        foreach (var arg in invocation.ArgumentList.Arguments)
+        {
+            if (arg.Expression is LiteralExpressionSyntax literal)
+            {
+                configKey = literal.Token.ValueText;
+                var keyNode = this.GetOrCreateNode(configKey, "config_key", arg.GetLocation());
+                nodes.Add(keyNode);
+                roles[keyNode.Id] = "configuration_key";
+                break;
+            }
+        }
+
+        this.AddHyperedge(HyperedgeType.ConfigurationAccess, nodes, roles,
+            ("method", methodName),
+            ("config_key", configKey),
+            ("scope", this.CurrentScope));
+    }
+
+    private static bool IsMiddlewareRegistration(InvocationExpressionSyntax invocation)
+    {
+        var expr = invocation.Expression.ToString();
+        return expr.Contains("app.Use") || expr.Contains("builder.Use") || expr.Contains("WebApplication");
+    }
+
+    private void ExtractMiddlewareRegistration(InvocationExpressionSyntax invocation, string methodName)
+    {
+        var nodes = new List<HypergraphNode>();
+        var roles = new Dictionary<string, string>();
+
+        var middlewareName = methodName.StartsWith("Use") ? methodName[3..] : methodName;
+        var mwNode = this.GetOrCreateNode(middlewareName, "middleware", invocation.GetLocation());
+        nodes.Add(mwNode);
+        roles[mwNode.Id] = "middleware";
+
+        this.AddHyperedge(HyperedgeType.MiddlewarePipeline, nodes, roles,
+            ("middleware_name", middlewareName),
+            ("method", methodName));
+    }
+
+    private static string GetSimpleMethodName(ExpressionSyntax expression)
+    {
+        return expression switch
+        {
+            MemberAccessExpressionSyntax memberAccess => memberAccess.Name.Identifier.Text,
+            IdentifierNameSyntax identifier => identifier.Identifier.Text,
+            GenericNameSyntax generic => generic.Identifier.Text,
+            _ => expression.ToString().Split('.').Last().Split('<').First()
+        };
+    }
+
+    private void ExtractApiEndpoint(MethodDeclarationSyntax method)
+    {
+        string? httpMethod = null;
+        string? routeTemplate = null;
+        var produces = new List<string>();
+        var consumes = new List<string>();
+
+        foreach (var attrList in method.AttributeLists)
+        {
+            foreach (var attr in attrList.Attributes)
+            {
+                var attrName = attr.Name.ToString().Replace("Attribute", "");
+
+                switch (attrName)
+                {
+                    case "HttpGet":
+                        httpMethod = "GET";
+                        routeTemplate = GetAttributeArgument(attr);
+                        break;
+                    case "HttpPost":
+                        httpMethod = "POST";
+                        routeTemplate = GetAttributeArgument(attr);
+                        break;
+                    case "HttpPut":
+                        httpMethod = "PUT";
+                        routeTemplate = GetAttributeArgument(attr);
+                        break;
+                    case "HttpDelete":
+                        httpMethod = "DELETE";
+                        routeTemplate = GetAttributeArgument(attr);
+                        break;
+                    case "HttpPatch":
+                        httpMethod = "PATCH";
+                        routeTemplate = GetAttributeArgument(attr);
+                        break;
+                    case "Route":
+                        routeTemplate ??= GetAttributeArgument(attr);
+                        break;
+                    case "Produces":
+                        var producesType = GetAttributeArgument(attr);
+                        if (producesType != null) produces.Add(producesType);
+                        break;
+                    case "Consumes":
+                        var consumesType = GetAttributeArgument(attr);
+                        if (consumesType != null) consumes.Add(consumesType);
+                        break;
+                }
+            }
+        }
+
+        // If no HTTP method attribute, assume GET for methods named Get*
+        if (httpMethod == null && method.Identifier.Text.StartsWith("Get"))
+            httpMethod = "GET";
+        else if (httpMethod == null && method.Identifier.Text.StartsWith("Post"))
+            httpMethod = "POST";
+        else if (httpMethod == null && method.Identifier.Text.StartsWith("Put"))
+            httpMethod = "PUT";
+        else if (httpMethod == null && method.Identifier.Text.StartsWith("Delete"))
+            httpMethod = "DELETE";
+
+        if (httpMethod == null)
+            return; // Not an API endpoint
+
+        var nodes = new List<HypergraphNode>();
+        var roles = new Dictionary<string, string>();
+
+        // Build full route
+        var fullRoute = this.controllerRoute ?? "";
+        if (routeTemplate != null)
+        {
+            fullRoute = fullRoute.TrimEnd('/') + "/" + routeTemplate.TrimStart('/');
+        }
+        fullRoute = fullRoute.Replace("[controller]", this.scopeStack.Peek().Replace("Controller", "").ToLowerInvariant());
+        fullRoute = fullRoute.Replace("[action]", method.Identifier.Text.ToLowerInvariant());
+
+        var endpointNode = this.GetOrCreateNode($"{httpMethod} {fullRoute}", "api_endpoint", method.GetLocation());
+        nodes.Add(endpointNode);
+        roles[endpointNode.Id] = "endpoint";
+
+        var actionNode = this.GetOrCreateNode(method.Identifier.Text, "action_method", method.GetLocation());
+        nodes.Add(actionNode);
+        roles[actionNode.Id] = "action";
+
+        // Return type
+        var returnNode = this.GetOrCreateNode(method.ReturnType.ToString(), "return_type", method.ReturnType.GetLocation());
+        nodes.Add(returnNode);
+        roles[returnNode.Id] = "response_type";
+
+        // Parameters with binding info
+        foreach (var param in method.ParameterList.Parameters)
+        {
+            var paramNode = this.GetOrCreateNode(param.Identifier.Text, "parameter", param.GetLocation());
+            nodes.Add(paramNode);
+
+            var binding = "query"; // default
+            foreach (var attrList in param.AttributeLists)
+            {
+                foreach (var attr in attrList.Attributes)
+                {
+                    var attrName = attr.Name.ToString();
+                    if (attrName.Contains("FromBody")) binding = "body";
+                    else if (attrName.Contains("FromRoute")) binding = "route";
+                    else if (attrName.Contains("FromQuery")) binding = "query";
+                    else if (attrName.Contains("FromHeader")) binding = "header";
+                    else if (attrName.Contains("FromForm")) binding = "form";
+                    else if (attrName.Contains("FromServices")) binding = "services";
+                }
+            }
+
+            roles[paramNode.Id] = $"param_{binding}_{param.Identifier.Text}";
+        }
+
+        this.AddHyperedge(HyperedgeType.ApiEndpoint, nodes, roles,
+            ("http_method", httpMethod),
+            ("route", fullRoute),
+            ("controller", this.scopeStack.Peek()),
+            ("action", method.Identifier.Text),
+            ("produces", produces.Count > 0 ? string.Join(", ", produces) : null),
+            ("consumes", consumes.Count > 0 ? string.Join(", ", consumes) : null),
+            ("is_async", method.Modifiers.Any(m => m.IsKind(SyntaxKind.AsyncKeyword))));
+    }
+
+    private static string? GetAttributeArgument(AttributeSyntax attr)
+    {
+        if (attr.ArgumentList?.Arguments.Count > 0)
+        {
+            var arg = attr.ArgumentList.Arguments[0].ToString();
+            return arg.Trim('"', '\'', '@');
+        }
+        return null;
+    }
+
+    private void ExtractEntryPointIfMain(MethodDeclarationSyntax method)
+    {
+        // Check if this is a Main method
+        if (method.Identifier.Text != "Main")
+            return;
+
+        var isStatic = method.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
+        if (!isStatic)
+            return;
+
+        var nodes = new List<HypergraphNode>();
+        var roles = new Dictionary<string, string>();
+
+        var mainNode = this.GetOrCreateNode("Main", "entry_point", method.GetLocation());
+        nodes.Add(mainNode);
+        roles[mainNode.Id] = "main_method";
+
+        // Check return type
+        var returnType = method.ReturnType.ToString();
+        var isAsync = returnType.Contains("Task") || method.Modifiers.Any(m => m.IsKind(SyntaxKind.AsyncKeyword));
+
+        // Check for common startup patterns in the body
+        var usesWebApplication = false;
+        var usesHostBuilder = false;
+        var usesStartup = false;
+
+        if (method.Body != null)
+        {
+            var bodyText = method.Body.ToString();
+            usesWebApplication = bodyText.Contains("WebApplication") || bodyText.Contains("CreateBuilder");
+            usesHostBuilder = bodyText.Contains("HostBuilder") || bodyText.Contains("CreateDefaultBuilder");
+            usesStartup = bodyText.Contains("UseStartup");
+        }
+
+        this.AddHyperedge(HyperedgeType.EntryPoint, nodes, roles,
+            ("is_async", isAsync),
+            ("return_type", returnType),
+            ("uses_web_application", usesWebApplication),
+            ("uses_host_builder", usesHostBuilder),
+            ("uses_startup_class", usesStartup),
+            ("file", this.filePath));
+    }
+
+    private void ExtractTopLevelStatements(CompilationUnitSyntax root)
+    {
+        // Check for top-level statements (C# 9+ minimal hosting)
+        var hasTopLevelStatements = root.Members.Any(m => m is GlobalStatementSyntax);
+        if (!hasTopLevelStatements)
+            return;
+
+        var nodes = new List<HypergraphNode>();
+        var roles = new Dictionary<string, string>();
+
+        var entryNode = this.GetOrCreateNode("TopLevelStatements", "entry_point", root.GetLocation());
+        nodes.Add(entryNode);
+        roles[entryNode.Id] = "program";
+
+        // Analyze top-level statements for startup patterns
+        var usesWebApplication = false;
+        var usesMinimalApis = false;
+
+        foreach (var member in root.Members.OfType<GlobalStatementSyntax>())
+        {
+            var stmtText = member.Statement.ToString();
+            if (stmtText.Contains("WebApplication.CreateBuilder"))
+                usesWebApplication = true;
+            if (stmtText.Contains("app.Map") || stmtText.Contains("app.Get") || stmtText.Contains("app.Post"))
+                usesMinimalApis = true;
+        }
+
+        this.AddHyperedge(HyperedgeType.EntryPoint, nodes, roles,
+            ("is_top_level", true),
+            ("uses_web_application", usesWebApplication),
+            ("uses_minimal_apis", usesMinimalApis),
+            ("file", this.filePath));
     }
 
     private void ExtractObjectCreation(ObjectCreationExpressionSyntax objectCreation)
@@ -709,6 +1364,90 @@ public class CSharpHyperedgeExtractor
         }
 
         this.AddHyperedge(HyperedgeType.ConstructorInvocation, nodes, roles);
+
+        // Check for database-related instantiations
+        if (typeName.Contains("DbContext") || typeName.Contains("SqlConnection") ||
+            typeName.Contains("SqlCommand") || typeName.Contains("DbConnection"))
+        {
+            this.ExtractDatabaseAccess(objectCreation, typeName);
+        }
+        // Check for HttpClient instantiation
+        else if (typeName.Contains("HttpClient"))
+        {
+            this.ExtractHttpClientCreation(objectCreation);
+        }
+    }
+
+    private void ExtractDatabaseAccess(ObjectCreationExpressionSyntax objectCreation, string typeName)
+    {
+        var nodes = new List<HypergraphNode>();
+        var roles = new Dictionary<string, string>();
+
+        var dbNode = this.GetOrCreateNode(typeName, "database_type", objectCreation.GetLocation());
+        nodes.Add(dbNode);
+        roles[dbNode.Id] = "db_type";
+
+        var dbTech = typeName switch
+        {
+            var t when t.Contains("DbContext") => "EntityFramework",
+            var t when t.Contains("Sql") => "SqlServer",
+            var t when t.Contains("Npgsql") => "PostgreSQL",
+            var t when t.Contains("MySql") => "MySQL",
+            var t when t.Contains("Sqlite") => "SQLite",
+            _ => "Unknown"
+        };
+
+        // Check for connection string in arguments
+        string? connectionString = null;
+        if (objectCreation.ArgumentList?.Arguments.Count > 0)
+        {
+            var firstArg = objectCreation.ArgumentList.Arguments[0].Expression.ToString();
+            if (firstArg.Contains("connection") || firstArg.Contains("Connection"))
+            {
+                connectionString = firstArg;
+                var connNode = this.GetOrCreateNode(firstArg.Length > 50 ? firstArg[..50] + "..." : firstArg,
+                    "connection_string", objectCreation.ArgumentList.Arguments[0].GetLocation());
+                nodes.Add(connNode);
+                roles[connNode.Id] = "connection";
+            }
+        }
+
+        this.AddHyperedge(HyperedgeType.DatabaseAccess, nodes, roles,
+            ("db_type", typeName),
+            ("technology", dbTech),
+            ("connection_string_ref", connectionString),
+            ("scope", this.CurrentScope));
+    }
+
+    private void ExtractHttpClientCreation(ObjectCreationExpressionSyntax objectCreation)
+    {
+        var nodes = new List<HypergraphNode>();
+        var roles = new Dictionary<string, string>();
+
+        var clientNode = this.GetOrCreateNode("HttpClient", "http_client", objectCreation.GetLocation());
+        nodes.Add(clientNode);
+        roles[clientNode.Id] = "client";
+
+        string? baseAddress = null;
+        if (objectCreation.Initializer != null)
+        {
+            foreach (var expr in objectCreation.Initializer.Expressions)
+            {
+                if (expr is AssignmentExpressionSyntax assignment &&
+                    assignment.Left.ToString().Contains("BaseAddress"))
+                {
+                    baseAddress = assignment.Right.ToString();
+                    var baseNode = this.GetOrCreateNode(baseAddress, "base_address", assignment.GetLocation());
+                    nodes.Add(baseNode);
+                    roles[baseNode.Id] = "base_address";
+                }
+            }
+        }
+
+        this.AddHyperedge(HyperedgeType.HttpClientUsage, nodes, roles,
+            ("creation", true),
+            ("base_address", baseAddress),
+            ("scope", this.CurrentScope));
     }
 
     private void ExtractAwaitExpression(AwaitExpressionSyntax awaitExpr)

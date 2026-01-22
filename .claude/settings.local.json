@@ -27,7 +27,8 @@
       "Bash(/tmp/full.log)",
       "Bash(tee:*)",
       "Bash(timeout 60 dotnet run:*)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "WebSearch"
     ],
     "deny": [],
     "ask": []
