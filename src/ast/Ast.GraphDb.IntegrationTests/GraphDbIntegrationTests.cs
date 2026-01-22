@@ -27,6 +27,7 @@ public class GraphDbIntegrationTests
         ? @"E:\work\hub\sln\Deploy"
         : "/mnt/e/work/hub/sln/Deploy";
 
+    private static ILogger<GraphDbIntegrationTests> logger = null!;
     private static Neo4jGraphStore? graphStore;
     private static ICodeQuery? query;
     private static GraphQueryService? graphQueryService;
@@ -36,6 +37,10 @@ public class GraphDbIntegrationTests
     [ClassInitialize]
     public static async Task ClassInitialize(TestContext context)
     {
+        // Initialize logging with TestContext for colored console output
+        TestLoggerFactory.Initialize(context);
+        logger = TestLoggerFactory.CreateLogger<GraphDbIntegrationTests>();
+
         // Ensure Neo4j is running
         await Neo4jDockerFixture.EnsureNeo4jRunningAsync();
 
@@ -48,19 +53,23 @@ public class GraphDbIntegrationTests
             BatchSize = 500
         });
 
-        var logger = TestLoggerFactory.CreateLogger<Neo4jGraphStore>();
-        graphStore = new Neo4jGraphStore(options, logger);
+        var graphStoreLogger = TestLoggerFactory.CreateLogger<Neo4jGraphStore>();
+        graphStore = new Neo4jGraphStore(options, graphStoreLogger);
 
-        // Wait a bit for connection to stabilize
-        await Task.Delay(2000);
+        // Verify connectivity before proceeding
+        await Neo4jDockerFixture.AssertHealthyAsync();
 
-        // Clear existing data
-        Console.WriteLine("Clearing existing graph data...");
-        await graphStore.ClearAsync();
+        // Clear existing data with health check
+        logger.LogInformation("Clearing existing graph data...");
+        await Neo4jDockerFixture.ExecuteWithHealthCheckAsync(
+            async () => { await graphStore.ClearAsync(); return true; },
+            TimeSpan.FromMinutes(2));
 
-        // Create indexes
-        Console.WriteLine("Creating indexes...");
-        await graphStore.CreateIndexesAsync();
+        // Create indexes with health check
+        logger.LogInformation("Creating indexes...");
+        await Neo4jDockerFixture.ExecuteWithHealthCheckAsync(
+            async () => { await graphStore.CreateIndexesAsync(); return true; },
+            TimeSpan.FromMinutes(1));
 
         // Create query builder
         var queryLogger = TestLoggerFactory.CreateLogger<CodeQueryBuilder>();
@@ -70,19 +79,37 @@ public class GraphDbIntegrationTests
         var serviceLogger = TestLoggerFactory.CreateLogger<GraphQueryService>();
         graphQueryService = new GraphQueryService(graphStore, serviceLogger);
 
-        // Parse and index C# repo
-        await ParseAndIndexCSharpRepoAsync();
+        // Parse and index C# repo with health check
+        await Neo4jDockerFixture.ExecuteWithHealthCheckAsync(
+            async () => { await ParseAndIndexCSharpRepoAsync(); return true; },
+            TimeSpan.FromMinutes(10));
 
-        // Parse and index PowerShell repo
-        await ParseAndIndexPowerShellRepoAsync();
+        // Parse and index PowerShell repo with health check
+        await Neo4jDockerFixture.ExecuteWithHealthCheckAsync(
+            async () => { await ParseAndIndexPowerShellRepoAsync(); return true; },
+            TimeSpan.FromMinutes(10));
 
-        Console.WriteLine("\n=== Data Indexing Complete ===");
-        Console.WriteLine("Neo4j is running and data has been indexed.");
-        Console.WriteLine("Neo4j Browser: http://localhost:7474");
-        Console.WriteLine($"Connection: {Neo4jDockerFixture.Neo4jUri}");
-        Console.WriteLine($"Username: {Neo4jDockerFixture.Neo4jUsername}");
-        Console.WriteLine($"Password: {Neo4jDockerFixture.Neo4jPassword}");
-        Console.WriteLine("\nNeo4j will remain running after tests for manual validation.");
+        logger.LogInformation("Data indexing complete");
+        logger.LogInformation("Neo4j is running and data has been indexed");
+        logger.LogInformation("Neo4j Browser: http://localhost:7474");
+        logger.LogInformation("Connection: {Uri}", Neo4jDockerFixture.Neo4jUri);
+        logger.LogInformation("Username: {Username}", Neo4jDockerFixture.Neo4jUsername);
+        logger.LogInformation("Password: {Password}", Neo4jDockerFixture.Neo4jPassword);
+        logger.LogInformation("Neo4j will remain running after tests for manual validation");
+    }
+
+    [TestInitialize]
+    public async Task TestInitialize()
+    {
+        // Verify Neo4j is healthy before each test
+        if (!Neo4jDockerFixture.IsHealthy)
+        {
+            var (healthy, error) = await Neo4jDockerFixture.CheckHealthWithTimeoutAsync();
+            if (!healthy)
+            {
+                Assert.Fail($"Neo4j is not healthy: {error}");
+            }
+        }
     }
 
     private static async Task ParseAndIndexCSharpRepoAsync()
@@ -90,66 +117,99 @@ public class GraphDbIntegrationTests
         var srcPath = Path.Combine(csharpRepoPath, "src");
         if (!Directory.Exists(srcPath))
         {
-            Console.WriteLine($"C# repo not found at {srcPath}, skipping...");
+            logger.LogWarning("C# repo not found at {SrcPath}, skipping...", srcPath);
             return;
         }
 
-        Console.WriteLine($"\nParsing C# repo: {csharpRepoPath}");
+        logger.LogInformation("Parsing C# repo: {RepoPath}", csharpRepoPath);
+
+        // Find all C# files first
+        var csFiles = Directory.GetFiles(srcPath, "*.cs", SearchOption.AllDirectories);
+        logger.LogInformation("Found {FileCount} C# files to parse", csFiles.Length);
 
         var processor = new RepositoryProcessor(csharpRepoPath);
+        var filesProcessed = 0;
         processor.CSharpExtractor = (path, source) =>
         {
+            filesProcessed++;
+            var relativePath = Path.GetRelativePath(csharpRepoPath, path);
+            if (filesProcessed % 10 == 0 || filesProcessed == csFiles.Length)
+            {
+                logger.LogDebug("Parsing file {Current}/{Total}: {FilePath}",
+                    filesProcessed, csFiles.Length, relativePath);
+            }
+
             var extractor = new CSharpHyperedgeExtractor(path);
             return extractor.Extract(source);
         };
 
         csharpData = processor.Process(verbose: false);
 
-        Console.WriteLine($"  Nodes: {csharpData.Nodes.Count}");
-        Console.WriteLine($"  Edges: {csharpData.Hyperedges.Count}");
+        logger.LogInformation("C# parsing complete: {NodeCount} nodes, {EdgeCount} edges",
+            csharpData.Nodes.Count, csharpData.Hyperedges.Count);
 
         // Index into Neo4j
-        Console.WriteLine("  Indexing into Neo4j...");
+        logger.LogInformation("Indexing C# data into Neo4j...");
         var (nodesIndexed, edgesIndexed) = await graphQueryService!.IndexHypergraphAsync(csharpData);
-        Console.WriteLine($"  Indexed {nodesIndexed} nodes and {edgesIndexed} edges");
+        logger.LogInformation("C# indexing complete: {NodesIndexed} nodes, {EdgesIndexed} edges indexed",
+            nodesIndexed, edgesIndexed);
     }
 
     private static async Task ParseAndIndexPowerShellRepoAsync()
     {
         if (!Directory.Exists(powershellRepoPath))
         {
-            Console.WriteLine($"PowerShell repo not found at {powershellRepoPath}, skipping...");
+            logger.LogWarning("PowerShell repo not found at {RepoPath}, skipping...", powershellRepoPath);
             return;
         }
 
-        Console.WriteLine($"\nParsing PowerShell repo: {powershellRepoPath}");
+        logger.LogInformation("Parsing PowerShell repo: {RepoPath}", powershellRepoPath);
+
+        // Find all PowerShell files first
+        var ps1Files = Directory.GetFiles(powershellRepoPath, "*.ps1", SearchOption.AllDirectories);
+        var psm1Files = Directory.GetFiles(powershellRepoPath, "*.psm1", SearchOption.AllDirectories);
+        var totalFiles = ps1Files.Length + psm1Files.Length;
+        logger.LogInformation("Found {FileCount} PowerShell files to parse", totalFiles);
 
         var processor = new RepositoryProcessor(powershellRepoPath);
+        var filesProcessed = 0;
         processor.PowerShellExtractor = (path, source) =>
         {
+            filesProcessed++;
+            var relativePath = Path.GetRelativePath(powershellRepoPath, path);
+            if (filesProcessed % 10 == 0 || filesProcessed == totalFiles)
+            {
+                logger.LogDebug("Parsing file {Current}/{Total}: {FilePath}",
+                    filesProcessed, totalFiles, relativePath);
+            }
+
             var extractor = new PowerShellHyperedgeExtractor(path);
             return extractor.Extract(source);
         };
 
         powershellData = processor.Process(verbose: false);
 
-        Console.WriteLine($"  Nodes: {powershellData.Nodes.Count}");
-        Console.WriteLine($"  Edges: {powershellData.Hyperedges.Count}");
+        logger.LogInformation("PowerShell parsing complete: {NodeCount} nodes, {EdgeCount} edges",
+            powershellData.Nodes.Count, powershellData.Hyperedges.Count);
 
         // Index into Neo4j
-        Console.WriteLine("  Indexing into Neo4j...");
+        logger.LogInformation("Indexing PowerShell data into Neo4j...");
         var (nodesIndexed, edgesIndexed) = await graphQueryService!.IndexHypergraphAsync(powershellData);
-        Console.WriteLine($"  Indexed {nodesIndexed} nodes and {edgesIndexed} edges");
+        logger.LogInformation("PowerShell indexing complete: {NodesIndexed} nodes, {EdgesIndexed} edges indexed",
+            nodesIndexed, edgesIndexed);
     }
 
     [ClassCleanup]
     public static void ClassCleanup()
     {
+        // Stop the health monitor
+        Neo4jDockerFixture.StopHealthMonitor();
+
         // DO NOT stop Neo4j - leave it running for manual validation
-        Console.WriteLine("\n=== Tests Complete ===");
-        Console.WriteLine("Neo4j is still running at http://localhost:7474 for manual validation.");
+        logger.LogInformation("Tests complete");
+        logger.LogInformation("Neo4j is still running at http://localhost:7474 for manual validation");
         var composeCmd = OperatingSystem.IsWindows() ? "podman compose" : "docker compose";
-        Console.WriteLine($"To stop Neo4j manually, run: {composeCmd} -f src/ast/docker-compose.yml down");
+        logger.LogInformation("To stop Neo4j manually, run: {Command} -f src/ast/docker-compose.yml down", composeCmd);
 
         graphStore?.Dispose();
     }
@@ -172,7 +232,7 @@ public class GraphDbIntegrationTests
         // Assert
         result.Should().NotBeNull();
         result.Nodes.Should().NotBeEmpty();
-        Console.WriteLine($"Found {result.Nodes.Count} nodes");
+        logger.LogInformation("Found {NodeCount} nodes", result.Nodes.Count);
     }
 
     [TestMethod]
@@ -187,7 +247,7 @@ public class GraphDbIntegrationTests
         {
             result.Should().AllSatisfy(n => n.NodeType.Should().Be("Class"));
         }
-        Console.WriteLine($"Found {result.Count} classes");
+        logger.LogInformation("Found {Count} classes", result.Count);
     }
 
     [TestMethod]
@@ -202,7 +262,7 @@ public class GraphDbIntegrationTests
         {
             result.Should().AllSatisfy(n => n.NodeType.Should().Be("Method"));
         }
-        Console.WriteLine($"Found {result.Count} methods");
+        logger.LogInformation("Found {Count} methods", result.Count);
     }
 
     [TestMethod]
@@ -216,7 +276,7 @@ public class GraphDbIntegrationTests
         {
             csharpResult.Should().AllSatisfy(n => n.Language.Should().Be("csharp"));
         }
-        Console.WriteLine($"Found {csharpResult.Count} C# nodes");
+        logger.LogInformation("Found {Count} C# nodes", csharpResult.Count);
 
         // Query PowerShell nodes only
         var psResult = await query!.Nodes().OfLanguage("powershell").Take(50).ToListAsync();
@@ -224,7 +284,7 @@ public class GraphDbIntegrationTests
         {
             psResult.Should().AllSatisfy(n => n.Language.Should().Be("powershell"));
         }
-        Console.WriteLine($"Found {psResult.Count} PowerShell nodes");
+        logger.LogInformation("Found {Count} PowerShell nodes", psResult.Count);
     }
 
     [TestMethod]
@@ -235,10 +295,10 @@ public class GraphDbIntegrationTests
 
         // Assert
         result.Should().NotBeNull();
-        Console.WriteLine($"Found {result.Count} nodes matching '*Service*'");
+        logger.LogInformation("Found {Count} nodes matching '*Service*'", result.Count);
         foreach (var node in result.Take(5))
         {
-            Console.WriteLine($"  - {node.Name} ({node.NodeType})");
+            logger.LogDebug("  - {Name} ({NodeType})", node.Name, node.NodeType);
         }
     }
 
@@ -260,7 +320,7 @@ public class GraphDbIntegrationTests
         result.Should().NotBeNull();
         result!.Id.Should().Be(anyNode.Id);
         result.Name.Should().Be(anyNode.Name);
-        Console.WriteLine($"Found node by ID: {result.Name}");
+        logger.LogInformation("Found node by ID: {Name}", result.Name);
     }
 
     [TestMethod]
@@ -280,7 +340,7 @@ public class GraphDbIntegrationTests
         // Assert
         result.Should().NotBeNull();
         result!.Name.Should().Be(anyNode.Name);
-        Console.WriteLine($"Found node by name: {result.Name}");
+        logger.LogInformation("Found node by name: {Name}", result.Name);
     }
 
     [TestMethod]
@@ -299,10 +359,10 @@ public class GraphDbIntegrationTests
 
         // Assert
         callers.Should().NotBeNull();
-        Console.WriteLine($"Method '{method.Name}' has {callers.Count} callers");
+        logger.LogInformation("Method '{MethodName}' has {CallerCount} callers", method.Name, callers.Count);
         foreach (var caller in callers.Take(5))
         {
-            Console.WriteLine($"  - {caller.Node.Name} (depth: {caller.Depth})");
+            logger.LogDebug("  - {Name} (depth: {Depth})", caller.Node.Name, caller.Depth);
         }
     }
 
@@ -322,10 +382,10 @@ public class GraphDbIntegrationTests
 
         // Assert
         callees.Should().NotBeNull();
-        Console.WriteLine($"Method '{method.Name}' calls {callees.Count} other methods");
+        logger.LogInformation("Method '{MethodName}' calls {CalleeCount} other methods", method.Name, callees.Count);
         foreach (var callee in callees.Take(5))
         {
-            Console.WriteLine($"  - {callee.Node.Name} (depth: {callee.Depth})");
+            logger.LogDebug("  - {Name} (depth: {Depth})", callee.Node.Name, callee.Depth);
         }
     }
 
@@ -345,7 +405,7 @@ public class GraphDbIntegrationTests
 
         // Assert
         edges.Should().NotBeNull();
-        Console.WriteLine($"Node '{node.Name}' has {edges.Count} connected edges");
+        logger.LogInformation("Node '{NodeName}' has {EdgeCount} connected edges", node.Name, edges.Count);
     }
 
     [TestMethod]
@@ -365,11 +425,9 @@ public class GraphDbIntegrationTests
         // Assert
         impact.Should().NotBeNull();
         impact.SourceNode.Id.Should().Be(method.Id);
-        Console.WriteLine($"Impact analysis for '{method.Name}':");
-        Console.WriteLine($"  Direct: {impact.DirectlyAffected.Count}");
-        Console.WriteLine($"  Indirect: {impact.IndirectlyAffected.Count}");
-        Console.WriteLine($"  Total: {impact.TotalAffected}");
-        Console.WriteLine($"  Affected files: {impact.AffectedFiles.Count}");
+        logger.LogInformation("Impact analysis for '{MethodName}': Direct={Direct}, Indirect={Indirect}, Total={Total}, Files={Files}",
+            method.Name, impact.DirectlyAffected.Count, impact.IndirectlyAffected.Count,
+            impact.TotalAffected, impact.AffectedFiles.Count);
     }
 
     [TestMethod]
@@ -394,10 +452,11 @@ public class GraphDbIntegrationTests
 
         // Assert
         paths.Should().NotBeNull();
-        Console.WriteLine($"Found {paths.Count} paths from '{startNode.Name}' to '{endNode.Name}'");
+        logger.LogInformation("Found {PathCount} paths from '{StartName}' to '{EndName}'",
+            paths.Count, startNode.Name, endNode.Name);
         foreach (var path in paths)
         {
-            Console.WriteLine($"  Path length: {path.Length}");
+            logger.LogDebug("  Path length: {Length}", path.Length);
         }
     }
 
@@ -421,7 +480,7 @@ public class GraphDbIntegrationTests
                 n.Language.Should().Be("csharp");
             });
         }
-        Console.WriteLine($"Found {result.Count} C# classes");
+        logger.LogInformation("Found {Count} C# classes", result.Count);
     }
 
     [TestMethod]
@@ -432,7 +491,7 @@ public class GraphDbIntegrationTests
 
         // Assert
         count.Should().BeGreaterThanOrEqualTo(0);
-        Console.WriteLine($"Total classes: {count}");
+        logger.LogInformation("Total classes: {Count}", count);
     }
 
     #endregion
@@ -447,21 +506,17 @@ public class GraphDbIntegrationTests
 
         // Assert
         stats.Should().NotBeNull();
-        Console.WriteLine("\n=== Graph Statistics ===");
-        Console.WriteLine($"Total nodes: {stats.TotalNodes}");
-        Console.WriteLine($"Total edges: {stats.TotalEdges}");
-        Console.WriteLine($"Unique files: {stats.UniqueFiles}");
+        logger.LogInformation("Graph Statistics: Nodes={TotalNodes}, Edges={TotalEdges}, Files={UniqueFiles}",
+            stats.TotalNodes, stats.TotalEdges, stats.UniqueFiles);
 
-        Console.WriteLine("\nNodes by language:");
         foreach (var (lang, count) in stats.NodesByLanguage)
         {
-            Console.WriteLine($"  {lang}: {count}");
+            logger.LogInformation("  Language {Language}: {Count} nodes", lang, count);
         }
 
-        Console.WriteLine("\nNodes by type:");
         foreach (var (type, count) in stats.NodesByType.OrderByDescending(x => x.Value).Take(10))
         {
-            Console.WriteLine($"  {type}: {count}");
+            logger.LogDebug("  Type {Type}: {Count} nodes", type, count);
         }
     }
 
@@ -482,7 +537,7 @@ public class GraphDbIntegrationTests
         // Assert
         nodes.Should().NotBeNull();
         nodes.Should().NotBeEmpty();
-        Console.WriteLine($"File '{anyNode.FilePath}' contains {nodes.Count} nodes");
+        logger.LogInformation("File '{FilePath}' contains {NodeCount} nodes", anyNode.FilePath, nodes.Count);
     }
 
     [TestMethod]
@@ -493,8 +548,7 @@ public class GraphDbIntegrationTests
         var methods = await graphQueryService!.GetNodesByTypeAsync("Method", 20);
 
         // Assert
-        Console.WriteLine($"Found {classes.Count} classes");
-        Console.WriteLine($"Found {methods.Count} methods");
+        logger.LogInformation("Found {ClassCount} classes and {MethodCount} methods", classes.Count, methods.Count);
 
         if (classes.Count > 0)
         {

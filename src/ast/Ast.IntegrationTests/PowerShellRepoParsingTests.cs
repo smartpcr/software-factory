@@ -10,68 +10,88 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Ast.Core;
 using Ast.PowerShell;
+using Microsoft.Extensions.Logging;
 
 [TestClass]
 public class PowerShellRepoParsingTests
 {
     // Windows path: E:\work\hub\sln\Deploy, WSL path: /mnt/e/work/hub/sln/Deploy
-    private static readonly string PowerShellRepoPath = OperatingSystem.IsWindows()
+    private static readonly string powerShellRepoPath = OperatingSystem.IsWindows()
         ? @"E:\work\hub\sln\Deploy"
         : "/mnt/e/work/hub/sln/Deploy";
-    private static readonly string OutputDir = Path.Combine(
+    private static readonly string outputDir = Path.Combine(
         AppContext.BaseDirectory, "output", "powershell");
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerOptions jsonOptions = new()
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower) }
     };
 
+    private static ILogger<PowerShellRepoParsingTests> logger = null!;
+
     [ClassInitialize]
     public static void ClassInitialize(TestContext context)
     {
+        // Initialize logging with TestContext for colored console output
+        TestLoggerFactory.Initialize(context);
+        logger = TestLoggerFactory.CreateLogger<PowerShellRepoParsingTests>();
+
         // Create output directory
-        if (Directory.Exists(OutputDir))
+        if (Directory.Exists(outputDir))
         {
-            Directory.Delete(OutputDir, recursive: true);
+            Directory.Delete(outputDir, recursive: true);
         }
-        Directory.CreateDirectory(OutputDir);
+        Directory.CreateDirectory(outputDir);
+
+        logger.LogInformation("Output directory: {OutputDir}", outputDir);
     }
 
     [TestMethod]
     public void ParsePowerShellRepo_ExtractsAllPowerShellFiles()
     {
         // Arrange
-        if (!Directory.Exists(PowerShellRepoPath))
+        if (!Directory.Exists(powerShellRepoPath))
         {
-            Assert.Inconclusive($"PowerShell repo not found at {PowerShellRepoPath}");
+            Assert.Inconclusive($"PowerShell repo not found at {powerShellRepoPath}");
             return;
         }
 
-        var psFiles = Directory.GetFiles(PowerShellRepoPath, "*.ps1", SearchOption.AllDirectories)
-            .Concat(Directory.GetFiles(PowerShellRepoPath, "*.psm1", SearchOption.AllDirectories))
-            .Concat(Directory.GetFiles(PowerShellRepoPath, "*.psd1", SearchOption.AllDirectories))
+        var psFiles = Directory.GetFiles(powerShellRepoPath, "*.ps1", SearchOption.AllDirectories)
+            .Concat(Directory.GetFiles(powerShellRepoPath, "*.psm1", SearchOption.AllDirectories))
+            .Concat(Directory.GetFiles(powerShellRepoPath, "*.psd1", SearchOption.AllDirectories))
             .Where(f => !f.Contains("\\.git\\"))
             .ToList();
+
+        logger.LogInformation("Found {FileCount} PowerShell files to parse", psFiles.Count);
 
         // Act
         var results = new List<(string FilePath, HypergraphData Data)>();
         var errors = new List<(string FilePath, string Error)>();
+        var filesProcessed = 0;
 
         foreach (var file in psFiles)
         {
             try
             {
                 var sourceCode = File.ReadAllText(file);
-                var relativePath = Path.GetRelativePath(PowerShellRepoPath, file);
+                var relativePath = Path.GetRelativePath(powerShellRepoPath, file);
                 var extractor = new PowerShellHyperedgeExtractor(relativePath);
                 var data = extractor.ExtractToHypergraph(sourceCode);
                 results.Add((relativePath, data));
+
+                filesProcessed++;
+                if (filesProcessed % 20 == 0 || filesProcessed == psFiles.Count)
+                {
+                    logger.LogInformation("Extraction progress: {Current}/{Total} files ({Percent:P0})",
+                        filesProcessed, psFiles.Count, (double)filesProcessed / psFiles.Count);
+                }
             }
             catch (Exception ex)
             {
                 errors.Add((file, ex.Message));
+                logger.LogWarning("Failed to parse {FilePath}: {Error}", file, ex.Message);
             }
         }
 
@@ -79,11 +99,12 @@ public class PowerShellRepoParsingTests
         results.Should().NotBeEmpty($"Should have parsed at least some files from {psFiles.Count} PowerShell files");
 
         // Output individual file results
+        logger.LogInformation("Writing {ResultCount} output files...", results.Count);
         foreach (var (filePath, data) in results)
         {
             var safeFileName = filePath.Replace("\\", "_").Replace("/", "_").Replace(":", "");
-            var outputPath = Path.Combine(OutputDir, $"{safeFileName}.json");
-            var json = JsonSerializer.Serialize(data, JsonOptions);
+            var outputPath = Path.Combine(outputDir, $"{safeFileName}.json");
+            var json = JsonSerializer.Serialize(data, jsonOptions);
             File.WriteAllText(outputPath, json);
         }
 
@@ -102,32 +123,40 @@ public class PowerShellRepoParsingTests
             Errors = errors.Take(10).Select(e => new { e.FilePath, e.Error })
         };
 
-        var summaryPath = Path.Combine(OutputDir, "_summary.json");
-        File.WriteAllText(summaryPath, JsonSerializer.Serialize(summary, JsonOptions));
+        var summaryPath = Path.Combine(outputDir, "_summary.json");
+        File.WriteAllText(summaryPath, JsonSerializer.Serialize(summary, jsonOptions));
 
-        Console.WriteLine($"Parsed {results.Count}/{psFiles.Count} PowerShell files");
-        Console.WriteLine($"Total nodes: {summary.TotalNodes}");
-        Console.WriteLine($"Total hyperedges: {summary.TotalHyperedges}");
-        Console.WriteLine($"Output written to: {OutputDir}");
+        logger.LogInformation("Parsed {Parsed}/{Total} PowerShell files", results.Count, psFiles.Count);
+        logger.LogInformation("Total nodes: {TotalNodes}", summary.TotalNodes);
+        logger.LogInformation("Total hyperedges: {TotalHyperedges}", summary.TotalHyperedges);
+        logger.LogInformation("Output written to: {OutputDir}", outputDir);
+
+        if (errors.Count > 0)
+        {
+            logger.LogWarning("Encountered {ErrorCount} parse errors", errors.Count);
+        }
     }
 
     [TestMethod]
     public void ParsePowerShellRepo_ExtractsModuleImports()
     {
         // Arrange
-        if (!Directory.Exists(PowerShellRepoPath))
+        if (!Directory.Exists(powerShellRepoPath))
         {
-            Assert.Inconclusive($"PowerShell repo not found at {PowerShellRepoPath}");
+            Assert.Inconclusive($"PowerShell repo not found at {powerShellRepoPath}");
             return;
         }
 
-        var psFiles = Directory.GetFiles(PowerShellRepoPath, "*.ps1", SearchOption.AllDirectories)
-            .Concat(Directory.GetFiles(PowerShellRepoPath, "*.psm1", SearchOption.AllDirectories))
+        var psFiles = Directory.GetFiles(powerShellRepoPath, "*.ps1", SearchOption.AllDirectories)
+            .Concat(Directory.GetFiles(powerShellRepoPath, "*.psm1", SearchOption.AllDirectories))
             .Where(f => !f.Contains("\\.git\\"))
             .ToList();
 
+        logger.LogInformation("Scanning {FileCount} PowerShell files for module imports", psFiles.Count);
+
         // Act
         var allModuleImports = new List<(string File, Hyperedge Import)>();
+        var filesProcessed = 0;
 
         foreach (var file in psFiles)
         {
@@ -137,7 +166,8 @@ public class PowerShellRepoParsingTests
                 if (!sourceCode.Contains("Import-Module") && !sourceCode.Contains("using module"))
                     continue;
 
-                var relativePath = Path.GetRelativePath(PowerShellRepoPath, file);
+                filesProcessed++;
+                var relativePath = Path.GetRelativePath(powerShellRepoPath, file);
                 var extractor = new PowerShellHyperedgeExtractor(relativePath);
                 var (nodes, hyperedges) = extractor.Extract(sourceCode);
 
@@ -149,6 +179,11 @@ public class PowerShellRepoParsingTests
                 {
                     allModuleImports.Add((relativePath, import));
                 }
+
+                if (filesProcessed % 20 == 0)
+                {
+                    logger.LogDebug("Extraction progress: {Current} files with imports processed", filesProcessed);
+                }
             }
             catch
             {
@@ -157,7 +192,7 @@ public class PowerShellRepoParsingTests
         }
 
         // Output module imports
-        var outputPath = Path.Combine(OutputDir, "_module_imports.json");
+        var outputPath = Path.Combine(outputDir, "_module_imports.json");
         var output = new
         {
             TotalImports = allModuleImports.Count,
@@ -177,29 +212,32 @@ public class PowerShellRepoParsingTests
             })
         };
 
-        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, JsonOptions));
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, jsonOptions));
 
-        Console.WriteLine($"Found {allModuleImports.Count} module imports");
-        Console.WriteLine($"Unique modules: {output.UniqueModules.Count}");
+        logger.LogInformation("Found {Count} module imports", allModuleImports.Count);
+        logger.LogInformation("Unique modules: {UniqueCount}", output.UniqueModules.Count);
     }
 
     [TestMethod]
     public void ParsePowerShellRepo_ExtractsRemoteExecution()
     {
         // Arrange
-        if (!Directory.Exists(PowerShellRepoPath))
+        if (!Directory.Exists(powerShellRepoPath))
         {
-            Assert.Inconclusive($"PowerShell repo not found at {PowerShellRepoPath}");
+            Assert.Inconclusive($"PowerShell repo not found at {powerShellRepoPath}");
             return;
         }
 
-        var psFiles = Directory.GetFiles(PowerShellRepoPath, "*.ps1", SearchOption.AllDirectories)
-            .Concat(Directory.GetFiles(PowerShellRepoPath, "*.psm1", SearchOption.AllDirectories))
+        var psFiles = Directory.GetFiles(powerShellRepoPath, "*.ps1", SearchOption.AllDirectories)
+            .Concat(Directory.GetFiles(powerShellRepoPath, "*.psm1", SearchOption.AllDirectories))
             .Where(f => !f.Contains("\\.git\\"))
             .ToList();
 
+        logger.LogInformation("Scanning {FileCount} PowerShell files for remote execution", psFiles.Count);
+
         // Act
         var allRemoteExecutions = new List<(string File, Hyperedge Execution)>();
+        var filesProcessed = 0;
 
         foreach (var file in psFiles)
         {
@@ -211,7 +249,8 @@ public class PowerShellRepoParsingTests
                     !sourceCode.Contains("New-PSSession"))
                     continue;
 
-                var relativePath = Path.GetRelativePath(PowerShellRepoPath, file);
+                filesProcessed++;
+                var relativePath = Path.GetRelativePath(powerShellRepoPath, file);
                 var extractor = new PowerShellHyperedgeExtractor(relativePath);
                 var (nodes, hyperedges) = extractor.Extract(sourceCode);
 
@@ -223,6 +262,11 @@ public class PowerShellRepoParsingTests
                 {
                     allRemoteExecutions.Add((relativePath, exec));
                 }
+
+                if (filesProcessed % 10 == 0)
+                {
+                    logger.LogDebug("Extraction progress: {Current} files with remote execution processed", filesProcessed);
+                }
             }
             catch
             {
@@ -231,7 +275,7 @@ public class PowerShellRepoParsingTests
         }
 
         // Output remote executions
-        var outputPath = Path.Combine(OutputDir, "_remote_executions.json");
+        var outputPath = Path.Combine(outputDir, "_remote_executions.json");
         var output = new
         {
             TotalRemoteExecutions = allRemoteExecutions.Count,
@@ -254,35 +298,38 @@ public class PowerShellRepoParsingTests
             })
         };
 
-        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, JsonOptions));
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, jsonOptions));
 
-        Console.WriteLine($"Found {allRemoteExecutions.Count} remote execution calls");
+        logger.LogInformation("Found {Count} remote execution calls", allRemoteExecutions.Count);
     }
 
     [TestMethod]
     public void ParsePowerShellRepo_ExtractsFunctionDefinitions()
     {
         // Arrange
-        if (!Directory.Exists(PowerShellRepoPath))
+        if (!Directory.Exists(powerShellRepoPath))
         {
-            Assert.Inconclusive($"PowerShell repo not found at {PowerShellRepoPath}");
+            Assert.Inconclusive($"PowerShell repo not found at {powerShellRepoPath}");
             return;
         }
 
-        var psFiles = Directory.GetFiles(PowerShellRepoPath, "*.ps1", SearchOption.AllDirectories)
-            .Concat(Directory.GetFiles(PowerShellRepoPath, "*.psm1", SearchOption.AllDirectories))
+        var psFiles = Directory.GetFiles(powerShellRepoPath, "*.ps1", SearchOption.AllDirectories)
+            .Concat(Directory.GetFiles(powerShellRepoPath, "*.psm1", SearchOption.AllDirectories))
             .Where(f => !f.Contains("\\.git\\"))
             .ToList();
 
+        logger.LogInformation("Scanning {FileCount} PowerShell files for function definitions", psFiles.Count);
+
         // Act
         var allFunctions = new List<(string File, Hyperedge Function)>();
+        var filesProcessed = 0;
 
         foreach (var file in psFiles)
         {
             try
             {
                 var sourceCode = File.ReadAllText(file);
-                var relativePath = Path.GetRelativePath(PowerShellRepoPath, file);
+                var relativePath = Path.GetRelativePath(powerShellRepoPath, file);
                 var extractor = new PowerShellHyperedgeExtractor(relativePath);
                 var (nodes, hyperedges) = extractor.Extract(sourceCode);
 
@@ -293,6 +340,12 @@ public class PowerShellRepoParsingTests
                 foreach (var func in functions)
                 {
                     allFunctions.Add((relativePath, func));
+                }
+
+                filesProcessed++;
+                if (filesProcessed % 20 == 0 || filesProcessed == psFiles.Count)
+                {
+                    logger.LogDebug("Extraction progress: {Current}/{Total} files", filesProcessed, psFiles.Count);
                 }
             }
             catch
@@ -308,7 +361,7 @@ public class PowerShellRepoParsingTests
             .ToList();
 
         // Output functions
-        var outputPath = Path.Combine(OutputDir, "_functions.json");
+        var outputPath = Path.Combine(outputDir, "_functions.json");
         var output = new
         {
             TotalFunctions = allFunctions.Count,
@@ -324,35 +377,38 @@ public class PowerShellRepoParsingTests
             })
         };
 
-        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, JsonOptions));
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, jsonOptions));
 
-        Console.WriteLine($"Found {allFunctions.Count} function definitions");
+        logger.LogInformation("Found {Count} function definitions", allFunctions.Count);
     }
 
     [TestMethod]
     public void ParsePowerShellRepo_ExtractsPipelines()
     {
         // Arrange
-        if (!Directory.Exists(PowerShellRepoPath))
+        if (!Directory.Exists(powerShellRepoPath))
         {
-            Assert.Inconclusive($"PowerShell repo not found at {PowerShellRepoPath}");
+            Assert.Inconclusive($"PowerShell repo not found at {powerShellRepoPath}");
             return;
         }
 
-        var psFiles = Directory.GetFiles(PowerShellRepoPath, "*.ps1", SearchOption.AllDirectories)
-            .Concat(Directory.GetFiles(PowerShellRepoPath, "*.psm1", SearchOption.AllDirectories))
+        var psFiles = Directory.GetFiles(powerShellRepoPath, "*.ps1", SearchOption.AllDirectories)
+            .Concat(Directory.GetFiles(powerShellRepoPath, "*.psm1", SearchOption.AllDirectories))
             .Where(f => !f.Contains("\\.git\\"))
             .ToList();
 
+        logger.LogInformation("Scanning {FileCount} PowerShell files for pipelines", psFiles.Count);
+
         // Act
         var allPipelines = new List<(string File, Hyperedge Pipeline)>();
+        var filesProcessed = 0;
 
         foreach (var file in psFiles)
         {
             try
             {
                 var sourceCode = File.ReadAllText(file);
-                var relativePath = Path.GetRelativePath(PowerShellRepoPath, file);
+                var relativePath = Path.GetRelativePath(powerShellRepoPath, file);
                 var extractor = new PowerShellHyperedgeExtractor(relativePath);
                 var (nodes, hyperedges) = extractor.Extract(sourceCode);
 
@@ -364,6 +420,12 @@ public class PowerShellRepoParsingTests
                 {
                     allPipelines.Add((relativePath, pipeline));
                 }
+
+                filesProcessed++;
+                if (filesProcessed % 20 == 0 || filesProcessed == psFiles.Count)
+                {
+                    logger.LogDebug("Extraction progress: {Current}/{Total} files", filesProcessed, psFiles.Count);
+                }
             }
             catch
             {
@@ -372,7 +434,7 @@ public class PowerShellRepoParsingTests
         }
 
         // Output pipelines
-        var outputPath = Path.Combine(OutputDir, "_pipelines.json");
+        var outputPath = Path.Combine(outputDir, "_pipelines.json");
         var output = new
         {
             TotalPipelines = allPipelines.Count,
@@ -394,36 +456,39 @@ public class PowerShellRepoParsingTests
                 })
         };
 
-        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, JsonOptions));
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, jsonOptions));
 
-        Console.WriteLine($"Found {allPipelines.Count} pipelines");
+        logger.LogInformation("Found {Count} pipelines", allPipelines.Count);
     }
 
     [TestMethod]
     public void ParsePowerShellRepo_ExtractsCmdletCalls()
     {
         // Arrange
-        if (!Directory.Exists(PowerShellRepoPath))
+        if (!Directory.Exists(powerShellRepoPath))
         {
-            Assert.Inconclusive($"PowerShell repo not found at {PowerShellRepoPath}");
+            Assert.Inconclusive($"PowerShell repo not found at {powerShellRepoPath}");
             return;
         }
 
-        var psFiles = Directory.GetFiles(PowerShellRepoPath, "*.ps1", SearchOption.AllDirectories)
-            .Concat(Directory.GetFiles(PowerShellRepoPath, "*.psm1", SearchOption.AllDirectories))
+        var psFiles = Directory.GetFiles(powerShellRepoPath, "*.ps1", SearchOption.AllDirectories)
+            .Concat(Directory.GetFiles(powerShellRepoPath, "*.psm1", SearchOption.AllDirectories))
             .Where(f => !f.Contains("\\.git\\"))
             .ToList();
+
+        logger.LogInformation("Scanning {FileCount} PowerShell files for cmdlet calls", psFiles.Count);
 
         // Act
         var cmdletUsage = new Dictionary<string, int>();
         var totalCmdletCalls = 0;
+        var filesProcessed = 0;
 
         foreach (var file in psFiles)
         {
             try
             {
                 var sourceCode = File.ReadAllText(file);
-                var relativePath = Path.GetRelativePath(PowerShellRepoPath, file);
+                var relativePath = Path.GetRelativePath(powerShellRepoPath, file);
                 var extractor = new PowerShellHyperedgeExtractor(relativePath);
                 var (nodes, hyperedges) = extractor.Extract(sourceCode);
 
@@ -445,6 +510,13 @@ public class PowerShellRepoParsingTests
                         cmdletUsage[cmdletName]++;
                     }
                 }
+
+                filesProcessed++;
+                if (filesProcessed % 20 == 0 || filesProcessed == psFiles.Count)
+                {
+                    logger.LogDebug("Extraction progress: {Current}/{Total} files, {CmdletCount} cmdlet calls found",
+                        filesProcessed, psFiles.Count, totalCmdletCalls);
+                }
             }
             catch
             {
@@ -453,7 +525,7 @@ public class PowerShellRepoParsingTests
         }
 
         // Output cmdlet usage
-        var outputPath = Path.Combine(OutputDir, "_cmdlet_usage.json");
+        var outputPath = Path.Combine(outputDir, "_cmdlet_usage.json");
         var output = new
         {
             TotalCmdletCalls = totalCmdletCalls,
@@ -467,25 +539,43 @@ public class PowerShellRepoParsingTests
                 .ToDictionary(kv => kv.Key, kv => kv.Value)
         };
 
-        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, JsonOptions));
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, jsonOptions));
 
-        Console.WriteLine($"Found {totalCmdletCalls} cmdlet calls ({cmdletUsage.Count} unique cmdlets)");
+        logger.LogInformation("Found {TotalCalls} cmdlet calls ({UniqueCmdlets} unique cmdlets)",
+            totalCmdletCalls, cmdletUsage.Count);
     }
 
     [TestMethod]
     public void ParsePowerShellRepo_GeneratesNamedRepoGraph()
     {
         // Arrange
-        if (!Directory.Exists(PowerShellRepoPath))
+        if (!Directory.Exists(powerShellRepoPath))
         {
-            Assert.Inconclusive($"PowerShell repo not found at {PowerShellRepoPath}");
+            Assert.Inconclusive($"PowerShell repo not found at {powerShellRepoPath}");
             return;
         }
 
+        logger.LogInformation("Processing repository: {RepoPath}", powerShellRepoPath);
+
+        // Count files for progress tracking
+        var totalFiles = Directory.GetFiles(powerShellRepoPath, "*.ps1", SearchOption.AllDirectories)
+            .Concat(Directory.GetFiles(powerShellRepoPath, "*.psm1", SearchOption.AllDirectories))
+            .Where(f => !f.Contains("\\.git\\"))
+            .Count();
+
         // Act - Use RepositoryProcessor for full repo processing
-        var processor = new RepositoryProcessor(PowerShellRepoPath);
+        var processor = new RepositoryProcessor(powerShellRepoPath);
+        var filesProcessed = 0;
+
         processor.PowerShellExtractor = (path, source) =>
         {
+            filesProcessed++;
+            if (filesProcessed % 20 == 0 || filesProcessed == totalFiles)
+            {
+                logger.LogDebug("Extraction progress: {Current}/{Total} files ({Percent:P0})",
+                    filesProcessed, totalFiles, (double)filesProcessed / totalFiles);
+            }
+
             var extractor = new PowerShellHyperedgeExtractor(path);
             return extractor.Extract(source);
         };
@@ -498,15 +588,15 @@ public class PowerShellRepoParsingTests
 
         // Output repo-level graph with repo name
         var repoName = data.Metadata.Repository.Name;
-        var repoGraphPath = Path.Combine(OutputDir, $"{repoName}.graph.json");
+        var repoGraphPath = Path.Combine(outputDir, $"{repoName}.graph.json");
         HypergraphSerializer.SaveToJson(data, repoGraphPath);
 
-        Console.WriteLine($"Repository: {repoName}");
-        Console.WriteLine($"  Languages: {string.Join(", ", data.Metadata.Repository.Languages)}");
-        Console.WriteLine($"  Projects/Modules: {data.Metadata.Projects.Count}");
-        Console.WriteLine($"  Total nodes: {data.Nodes.Count}");
-        Console.WriteLine($"  Total hyperedges: {data.Hyperedges.Count}");
-        Console.WriteLine($"  Output: {repoGraphPath}");
+        logger.LogInformation("Repository: {RepoName}", repoName);
+        logger.LogInformation("  Languages: {Languages}", string.Join(", ", data.Metadata.Repository.Languages));
+        logger.LogInformation("  Projects/Modules: {ProjectCount}", data.Metadata.Projects.Count);
+        logger.LogInformation("  Total nodes: {NodeCount}", data.Nodes.Count);
+        logger.LogInformation("  Total hyperedges: {EdgeCount}", data.Hyperedges.Count);
+        logger.LogInformation("  Output: {OutputPath}", repoGraphPath);
 
         // Output individual module/script graphs
         foreach (var project in data.Metadata.Projects)
@@ -534,15 +624,12 @@ public class PowerShellRepoParsingTests
                 }
             };
 
-            var projectGraphPath = Path.Combine(OutputDir, $"{project.Name}.graph.json");
+            var projectGraphPath = Path.Combine(outputDir, $"{project.Name}.graph.json");
             HypergraphSerializer.SaveToJson(projectData, projectGraphPath);
 
-            Console.WriteLine($"  Module: {project.Name}");
-            Console.WriteLine($"    Type: {project.ProjectType}");
-            Console.WriteLine($"    Version: {project.ModuleVersion ?? "N/A"}");
-            Console.WriteLine($"    Nodes: {projectNodes.Count}");
-            Console.WriteLine($"    Edges: {projectEdges.Count}");
-            Console.WriteLine($"    Output: {projectGraphPath}");
+            logger.LogDebug("  Module: {ModuleName} ({ModuleType})", project.Name, project.ProjectType);
+            logger.LogDebug("    Version: {Version}, Nodes: {NodeCount}, Edges: {EdgeCount}",
+                project.ModuleVersion ?? "N/A", projectNodes.Count, projectEdges.Count);
         }
     }
 
@@ -550,14 +637,16 @@ public class PowerShellRepoParsingTests
     public void ParsePowerShellRepo_ExtractsModuleMetadata()
     {
         // Arrange
-        if (!Directory.Exists(PowerShellRepoPath))
+        if (!Directory.Exists(powerShellRepoPath))
         {
-            Assert.Inconclusive($"PowerShell repo not found at {PowerShellRepoPath}");
+            Assert.Inconclusive($"PowerShell repo not found at {powerShellRepoPath}");
             return;
         }
 
+        logger.LogInformation("Extracting module metadata from: {RepoPath}", powerShellRepoPath);
+
         // Act
-        var extractor = new ProjectMetadataExtractor(PowerShellRepoPath);
+        var extractor = new ProjectMetadataExtractor(powerShellRepoPath);
         var repoMetadata = extractor.ExtractRepositoryMetadata();
         var projects = extractor.ExtractAllProjects();
 
@@ -565,7 +654,7 @@ public class PowerShellRepoParsingTests
         repoMetadata.Name.Should().NotBeNullOrEmpty();
 
         // Output metadata
-        var outputPath = Path.Combine(OutputDir, "_module_metadata.json");
+        var outputPath = Path.Combine(outputDir, "_module_metadata.json");
         var output = new
         {
             Repository = new
@@ -601,21 +690,21 @@ public class PowerShellRepoParsingTests
             })
         };
 
-        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, JsonOptions));
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, jsonOptions));
 
-        Console.WriteLine($"Repository: {repoMetadata.Name}");
-        Console.WriteLine($"  Path: {repoMetadata.RootPath}");
-        Console.WriteLine($"  Languages: {string.Join(", ", repoMetadata.Languages)}");
-        Console.WriteLine($"  Modules: {projects.Count(p => p.ProjectType == ProjectType.PowerShellModule)}");
-        Console.WriteLine($"  Scripts: {projects.Count(p => p.ProjectType == ProjectType.PowerShellScript)}");
+        logger.LogInformation("Repository: {RepoName}", repoMetadata.Name);
+        logger.LogInformation("  Path: {RepoPath}", repoMetadata.RootPath);
+        logger.LogInformation("  Languages: {Languages}", string.Join(", ", repoMetadata.Languages));
+        logger.LogInformation("  Modules: {ModuleCount}", projects.Count(p => p.ProjectType == ProjectType.PowerShellModule));
+        logger.LogInformation("  Scripts: {ScriptCount}", projects.Count(p => p.ProjectType == ProjectType.PowerShellScript));
 
         foreach (var project in projects.Where(p => p.ProjectType == ProjectType.PowerShellModule))
         {
-            Console.WriteLine($"  Module: {project.Name}");
-            Console.WriteLine($"    Version: {project.ModuleVersion ?? "N/A"}");
-            Console.WriteLine($"    Author: {project.Author ?? "N/A"}");
-            Console.WriteLine($"    Required modules: {project.RequiredModules.Count}");
-            Console.WriteLine($"    Files: {project.SourceFiles.Count}");
+            logger.LogDebug("  Module: {ModuleName}", project.Name);
+            logger.LogDebug("    Version: {Version}, Author: {Author}",
+                project.ModuleVersion ?? "N/A", project.Author ?? "N/A");
+            logger.LogDebug("    Required modules: {RequiredCount}, Files: {FileCount}",
+                project.RequiredModules.Count, project.SourceFiles.Count);
         }
     }
 }

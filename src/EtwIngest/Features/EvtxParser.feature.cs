@@ -27,8 +27,8 @@ namespace EtwIngest.Features
         
         private static string[] featureTags = ((string[])(null));
         
-        private static global::Reqnroll.FeatureInfo featureInfo = new global::Reqnroll.FeatureInfo(new global::System.Globalization.CultureInfo("en-US"), "Features", "EvtxParser", "  As a user,\n  I want to be able to parse an EVTX file,\n  So that I can ingest th" +
-                "em into kusto", global::Reqnroll.ProgrammingLanguage.CSharp, featureTags, InitializeCucumberMessages());
+        private static global::Reqnroll.FeatureInfo featureInfo = new global::Reqnroll.FeatureInfo(new global::System.Globalization.CultureInfo("en-US"), "Features", "EvtxParser", "  As a user,\r\n  I want to be able to parse an EVTX file,\r\n  So that I can ingest " +
+                "them into kusto", global::Reqnroll.ProgrammingLanguage.CSharp, featureTags, InitializeCucumberMessages());
         
 #line 1 "EvtxParser.feature"
 #line hidden

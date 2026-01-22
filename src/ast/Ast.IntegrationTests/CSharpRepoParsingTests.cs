@@ -11,40 +11,49 @@ using System.Text.Json.Serialization;
 using Ast.Core;
 using Ast.Csharp;
 using Ast.PowerShell;
+using Microsoft.Extensions.Logging;
 
 [TestClass]
 public class CSharpRepoParsingTests
 {
     // Windows path: E:\work\hci\update, WSL path: /mnt/e/work/hci/update
-    private static readonly string CSharpRepoPath = OperatingSystem.IsWindows()
+    private static readonly string csharpRepoPath = OperatingSystem.IsWindows()
         ? @"E:\work\hci\update"
         : "/mnt/e/work/hci/update";
-    private static readonly string OutputDir = Path.Combine(
+    private static readonly string outputDir = Path.Combine(
         AppContext.BaseDirectory, "output", "csharp");
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerOptions jsonOptions = new()
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower) }
     };
 
+    private static ILogger<CSharpRepoParsingTests> logger = null!;
+
     [ClassInitialize]
     public static void ClassInitialize(TestContext context)
     {
+        // Initialize logging with TestContext for colored console output
+        TestLoggerFactory.Initialize(context);
+        logger = TestLoggerFactory.CreateLogger<CSharpRepoParsingTests>();
+
         // Create output directory
-        if (Directory.Exists(OutputDir))
+        if (Directory.Exists(outputDir))
         {
-            Directory.Delete(OutputDir, recursive: true);
+            Directory.Delete(outputDir, recursive: true);
         }
-        Directory.CreateDirectory(OutputDir);
+        Directory.CreateDirectory(outputDir);
+
+        logger.LogInformation("Output directory: {OutputDir}", outputDir);
     }
 
     [TestMethod]
     public void ParseCSharpRepo_ExtractsAllCSharpFiles()
     {
         // Arrange
-        var srcPath = Path.Combine(CSharpRepoPath, "src");
+        var srcPath = Path.Combine(csharpRepoPath, "src");
         if (!Directory.Exists(srcPath))
         {
             Assert.Inconclusive($"C# repo not found at {srcPath}");
@@ -55,23 +64,34 @@ public class CSharpRepoParsingTests
             .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\"))
             .ToList();
 
+        logger.LogInformation("Found {FileCount} C# files to parse", csFiles.Count);
+
         // Act
         var results = new List<(string FilePath, HypergraphData Data)>();
         var errors = new List<(string FilePath, string Error)>();
+        var filesProcessed = 0;
 
         foreach (var file in csFiles)
         {
             try
             {
                 var sourceCode = File.ReadAllText(file);
-                var relativePath = Path.GetRelativePath(CSharpRepoPath, file);
+                var relativePath = Path.GetRelativePath(csharpRepoPath, file);
                 var extractor = new CSharpHyperedgeExtractor(relativePath);
                 var data = extractor.ExtractToHypergraph(sourceCode);
                 results.Add((relativePath, data));
+
+                filesProcessed++;
+                if (filesProcessed % 50 == 0 || filesProcessed == csFiles.Count)
+                {
+                    logger.LogInformation("Extraction progress: {Current}/{Total} files ({Percent:P0})",
+                        filesProcessed, csFiles.Count, (double)filesProcessed / csFiles.Count);
+                }
             }
             catch (Exception ex)
             {
                 errors.Add((file, ex.Message));
+                logger.LogWarning("Failed to parse {FilePath}: {Error}", file, ex.Message);
             }
         }
 
@@ -79,11 +99,12 @@ public class CSharpRepoParsingTests
         results.Should().NotBeEmpty($"Should have parsed at least some files from {csFiles.Count} .cs files");
 
         // Output individual file results
+        logger.LogInformation("Writing {ResultCount} output files...", results.Count);
         foreach (var (filePath, data) in results)
         {
             var safeFileName = filePath.Replace("\\", "_").Replace("/", "_").Replace(":", "");
-            var outputPath = Path.Combine(OutputDir, $"{safeFileName}.json");
-            var json = JsonSerializer.Serialize(data, JsonOptions);
+            var outputPath = Path.Combine(outputDir, $"{safeFileName}.json");
+            var json = JsonSerializer.Serialize(data, jsonOptions);
             File.WriteAllText(outputPath, json);
         }
 
@@ -102,20 +123,25 @@ public class CSharpRepoParsingTests
             Errors = errors.Take(10).Select(e => new { e.FilePath, e.Error })
         };
 
-        var summaryPath = Path.Combine(OutputDir, "_summary.json");
-        File.WriteAllText(summaryPath, JsonSerializer.Serialize(summary, JsonOptions));
+        var summaryPath = Path.Combine(outputDir, "_summary.json");
+        File.WriteAllText(summaryPath, JsonSerializer.Serialize(summary, jsonOptions));
 
-        Console.WriteLine($"Parsed {results.Count}/{csFiles.Count} C# files");
-        Console.WriteLine($"Total nodes: {summary.TotalNodes}");
-        Console.WriteLine($"Total hyperedges: {summary.TotalHyperedges}");
-        Console.WriteLine($"Output written to: {OutputDir}");
+        logger.LogInformation("Parsed {Parsed}/{Total} C# files", results.Count, csFiles.Count);
+        logger.LogInformation("Total nodes: {TotalNodes}", summary.TotalNodes);
+        logger.LogInformation("Total hyperedges: {TotalHyperedges}", summary.TotalHyperedges);
+        logger.LogInformation("Output written to: {OutputDir}", outputDir);
+
+        if (errors.Count > 0)
+        {
+            logger.LogWarning("Encountered {ErrorCount} parse errors", errors.Count);
+        }
     }
 
     [TestMethod]
     public void ParseCSharpRepo_ExtractsServiceRegistrations()
     {
         // Arrange
-        var srcPath = Path.Combine(CSharpRepoPath, "src");
+        var srcPath = Path.Combine(csharpRepoPath, "src");
         if (!Directory.Exists(srcPath))
         {
             Assert.Inconclusive($"C# repo not found at {srcPath}");
@@ -129,15 +155,18 @@ public class CSharpRepoParsingTests
                        f.Contains("ServiceCollection") || f.Contains("DependencyInjection"))
             .ToList();
 
+        logger.LogInformation("Found {FileCount} startup/DI files to analyze", startupFiles.Count);
+
         // Act
         var allServiceRegistrations = new List<Hyperedge>();
+        var filesProcessed = 0;
 
         foreach (var file in startupFiles)
         {
             try
             {
                 var sourceCode = File.ReadAllText(file);
-                var relativePath = Path.GetRelativePath(CSharpRepoPath, file);
+                var relativePath = Path.GetRelativePath(csharpRepoPath, file);
                 var extractor = new CSharpHyperedgeExtractor(relativePath);
                 var (nodes, hyperedges) = extractor.Extract(sourceCode);
 
@@ -146,6 +175,12 @@ public class CSharpRepoParsingTests
                     .ToList();
 
                 allServiceRegistrations.AddRange(registrations);
+
+                filesProcessed++;
+                if (filesProcessed % 10 == 0 || filesProcessed == startupFiles.Count)
+                {
+                    logger.LogDebug("Extraction progress: {Current}/{Total} files", filesProcessed, startupFiles.Count);
+                }
             }
             catch
             {
@@ -154,7 +189,7 @@ public class CSharpRepoParsingTests
         }
 
         // Output service registrations
-        var outputPath = Path.Combine(OutputDir, "_service_registrations.json");
+        var outputPath = Path.Combine(outputDir, "_service_registrations.json");
         var output = new
         {
             TotalRegistrations = allServiceRegistrations.Count,
@@ -170,16 +205,16 @@ public class CSharpRepoParsingTests
             })
         };
 
-        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, JsonOptions));
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, jsonOptions));
 
-        Console.WriteLine($"Found {allServiceRegistrations.Count} service registrations");
+        logger.LogInformation("Found {Count} service registrations", allServiceRegistrations.Count);
     }
 
     [TestMethod]
     public void ParseCSharpRepo_ExtractsApiEndpoints()
     {
         // Arrange
-        var srcPath = Path.Combine(CSharpRepoPath, "src");
+        var srcPath = Path.Combine(csharpRepoPath, "src");
         if (!Directory.Exists(srcPath))
         {
             Assert.Inconclusive($"C# repo not found at {srcPath}");
@@ -191,15 +226,18 @@ public class CSharpRepoParsingTests
             .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\"))
             .ToList();
 
+        logger.LogInformation("Found {FileCount} controller files to analyze", controllerFiles.Count);
+
         // Act
         var allEndpoints = new List<(string File, Hyperedge Endpoint)>();
+        var filesProcessed = 0;
 
         foreach (var file in controllerFiles)
         {
             try
             {
                 var sourceCode = File.ReadAllText(file);
-                var relativePath = Path.GetRelativePath(CSharpRepoPath, file);
+                var relativePath = Path.GetRelativePath(csharpRepoPath, file);
                 var extractor = new CSharpHyperedgeExtractor(relativePath);
                 var (nodes, hyperedges) = extractor.Extract(sourceCode);
 
@@ -211,6 +249,12 @@ public class CSharpRepoParsingTests
                 {
                     allEndpoints.Add((relativePath, endpoint));
                 }
+
+                filesProcessed++;
+                if (filesProcessed % 10 == 0 || filesProcessed == controllerFiles.Count)
+                {
+                    logger.LogDebug("Extraction progress: {Current}/{Total} files", filesProcessed, controllerFiles.Count);
+                }
             }
             catch
             {
@@ -219,7 +263,7 @@ public class CSharpRepoParsingTests
         }
 
         // Output API endpoints
-        var outputPath = Path.Combine(OutputDir, "_api_endpoints.json");
+        var outputPath = Path.Combine(outputDir, "_api_endpoints.json");
         var output = new
         {
             TotalEndpoints = allEndpoints.Count,
@@ -236,16 +280,16 @@ public class CSharpRepoParsingTests
             })
         };
 
-        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, JsonOptions));
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, jsonOptions));
 
-        Console.WriteLine($"Found {allEndpoints.Count} API endpoints");
+        logger.LogInformation("Found {Count} API endpoints", allEndpoints.Count);
     }
 
     [TestMethod]
     public void ParseCSharpRepo_ExtractsLoggingCalls()
     {
         // Arrange
-        var srcPath = Path.Combine(CSharpRepoPath, "src");
+        var srcPath = Path.Combine(csharpRepoPath, "src");
         if (!Directory.Exists(srcPath))
         {
             Assert.Inconclusive($"C# repo not found at {srcPath}");
@@ -256,8 +300,12 @@ public class CSharpRepoParsingTests
             .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\"))
             .ToList();
 
+        logger.LogInformation("Scanning {FileCount} C# files for logging calls", csFiles.Count);
+
         // Act
         var allLoggingCalls = new List<(string File, Hyperedge LogCall)>();
+        var filesProcessed = 0;
+        var filesWithLogs = 0;
 
         foreach (var file in csFiles)
         {
@@ -267,7 +315,8 @@ public class CSharpRepoParsingTests
                 if (!sourceCode.Contains("Log"))
                     continue;
 
-                var relativePath = Path.GetRelativePath(CSharpRepoPath, file);
+                filesWithLogs++;
+                var relativePath = Path.GetRelativePath(csharpRepoPath, file);
                 var extractor = new CSharpHyperedgeExtractor(relativePath);
                 var (nodes, hyperedges) = extractor.Extract(sourceCode);
 
@@ -279,6 +328,12 @@ public class CSharpRepoParsingTests
                 {
                     allLoggingCalls.Add((relativePath, logCall));
                 }
+
+                filesProcessed++;
+                if (filesProcessed % 50 == 0)
+                {
+                    logger.LogDebug("Extraction progress: {Current} files with logs processed", filesProcessed);
+                }
             }
             catch
             {
@@ -287,7 +342,7 @@ public class CSharpRepoParsingTests
         }
 
         // Output logging analysis
-        var outputPath = Path.Combine(OutputDir, "_logging_analysis.json");
+        var outputPath = Path.Combine(outputDir, "_logging_analysis.json");
         var output = new
         {
             TotalLogCalls = allLoggingCalls.Count,
@@ -304,16 +359,16 @@ public class CSharpRepoParsingTests
             })
         };
 
-        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, JsonOptions));
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, jsonOptions));
 
-        Console.WriteLine($"Found {allLoggingCalls.Count} logging calls");
+        logger.LogInformation("Found {Count} logging calls in {FileCount} files", allLoggingCalls.Count, filesWithLogs);
     }
 
     [TestMethod]
     public void ParseCSharpRepo_ExtractsExternalDependencies()
     {
         // Arrange
-        var srcPath = Path.Combine(CSharpRepoPath, "src");
+        var srcPath = Path.Combine(csharpRepoPath, "src");
         if (!Directory.Exists(srcPath))
         {
             Assert.Inconclusive($"C# repo not found at {srcPath}");
@@ -324,17 +379,20 @@ public class CSharpRepoParsingTests
             .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\"))
             .ToList();
 
+        logger.LogInformation("Scanning {FileCount} C# files for external dependencies", csFiles.Count);
+
         // Act
         var httpClientUsages = new List<(string File, Hyperedge Usage)>();
         var databaseAccesses = new List<(string File, Hyperedge Access)>();
         var fileSystemAccesses = new List<(string File, Hyperedge Access)>();
+        var filesProcessed = 0;
 
         foreach (var file in csFiles)
         {
             try
             {
                 var sourceCode = File.ReadAllText(file);
-                var relativePath = Path.GetRelativePath(CSharpRepoPath, file);
+                var relativePath = Path.GetRelativePath(csharpRepoPath, file);
                 var extractor = new CSharpHyperedgeExtractor(relativePath);
                 var (nodes, hyperedges) = extractor.Extract(sourceCode);
 
@@ -353,6 +411,13 @@ public class CSharpRepoParsingTests
                             break;
                     }
                 }
+
+                filesProcessed++;
+                if (filesProcessed % 50 == 0 || filesProcessed == csFiles.Count)
+                {
+                    logger.LogDebug("Extraction progress: {Current}/{Total} files ({Percent:P0})",
+                        filesProcessed, csFiles.Count, (double)filesProcessed / csFiles.Count);
+                }
             }
             catch
             {
@@ -361,7 +426,7 @@ public class CSharpRepoParsingTests
         }
 
         // Output external dependencies
-        var outputPath = Path.Combine(OutputDir, "_external_dependencies.json");
+        var outputPath = Path.Combine(outputDir, "_external_dependencies.json");
         var output = new
         {
             HttpClientUsages = new
@@ -405,27 +470,41 @@ public class CSharpRepoParsingTests
             }
         };
 
-        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, JsonOptions));
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, jsonOptions));
 
-        Console.WriteLine($"Found {httpClientUsages.Count} HTTP client usages");
-        Console.WriteLine($"Found {databaseAccesses.Count} database accesses");
-        Console.WriteLine($"Found {fileSystemAccesses.Count} file system accesses");
+        logger.LogInformation("Found {HttpCount} HTTP client usages", httpClientUsages.Count);
+        logger.LogInformation("Found {DbCount} database accesses", databaseAccesses.Count);
+        logger.LogInformation("Found {FsCount} file system accesses", fileSystemAccesses.Count);
     }
 
     [TestMethod]
     public void ParseCSharpRepo_GeneratesNamedRepoGraph()
     {
         // Arrange
-        if (!Directory.Exists(CSharpRepoPath))
+        if (!Directory.Exists(csharpRepoPath))
         {
-            Assert.Inconclusive($"C# repo not found at {CSharpRepoPath}");
+            Assert.Inconclusive($"C# repo not found at {csharpRepoPath}");
             return;
         }
 
+        logger.LogInformation("Processing repository: {RepoPath}", csharpRepoPath);
+
         // Act - Use RepositoryProcessor for full repo processing
-        var processor = new RepositoryProcessor(CSharpRepoPath);
+        var processor = new RepositoryProcessor(csharpRepoPath);
+        var filesProcessed = 0;
+        var totalFiles = Directory.GetFiles(Path.Combine(csharpRepoPath, "src"), "*.cs", SearchOption.AllDirectories)
+            .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\"))
+            .Count();
+
         processor.CSharpExtractor = (path, source) =>
         {
+            filesProcessed++;
+            if (filesProcessed % 50 == 0 || filesProcessed == totalFiles)
+            {
+                logger.LogDebug("Extraction progress: {Current}/{Total} files ({Percent:P0})",
+                    filesProcessed, totalFiles, (double)filesProcessed / totalFiles);
+            }
+
             var extractor = new CSharpHyperedgeExtractor(path);
             return extractor.Extract(source);
         };
@@ -439,15 +518,15 @@ public class CSharpRepoParsingTests
 
         // Output repo-level graph with repo name
         var repoName = data.Metadata.Repository.Name;
-        var repoGraphPath = Path.Combine(OutputDir, $"{repoName}.graph.json");
+        var repoGraphPath = Path.Combine(outputDir, $"{repoName}.graph.json");
         HypergraphSerializer.SaveToJson(data, repoGraphPath);
 
-        Console.WriteLine($"Repository: {repoName}");
-        Console.WriteLine($"  Languages: {string.Join(", ", data.Metadata.Repository.Languages)}");
-        Console.WriteLine($"  Projects: {data.Metadata.Projects.Count}");
-        Console.WriteLine($"  Total nodes: {data.Nodes.Count}");
-        Console.WriteLine($"  Total hyperedges: {data.Hyperedges.Count}");
-        Console.WriteLine($"  Output: {repoGraphPath}");
+        logger.LogInformation("Repository: {RepoName}", repoName);
+        logger.LogInformation("  Languages: {Languages}", string.Join(", ", data.Metadata.Repository.Languages));
+        logger.LogInformation("  Projects: {ProjectCount}", data.Metadata.Projects.Count);
+        logger.LogInformation("  Total nodes: {NodeCount}", data.Nodes.Count);
+        logger.LogInformation("  Total hyperedges: {EdgeCount}", data.Hyperedges.Count);
+        logger.LogInformation("  Output: {OutputPath}", repoGraphPath);
 
         // Output individual project graphs
         foreach (var project in data.Metadata.Projects)
@@ -476,14 +555,11 @@ public class CSharpRepoParsingTests
                 }
             };
 
-            var projectGraphPath = Path.Combine(OutputDir, $"{project.Name}.graph.json");
+            var projectGraphPath = Path.Combine(outputDir, $"{project.Name}.graph.json");
             HypergraphSerializer.SaveToJson(projectData, projectGraphPath);
 
-            Console.WriteLine($"  Project: {project.Name}");
-            Console.WriteLine($"    Type: {project.ProjectType}");
-            Console.WriteLine($"    Nodes: {projectNodes.Count}");
-            Console.WriteLine($"    Edges: {projectEdges.Count}");
-            Console.WriteLine($"    Output: {projectGraphPath}");
+            logger.LogDebug("  Project: {ProjectName} ({ProjectType})", project.Name, project.ProjectType);
+            logger.LogDebug("    Nodes: {NodeCount}, Edges: {EdgeCount}", projectNodes.Count, projectEdges.Count);
         }
     }
 
@@ -491,14 +567,16 @@ public class CSharpRepoParsingTests
     public void ParseCSharpRepo_ExtractsProjectMetadata()
     {
         // Arrange
-        if (!Directory.Exists(CSharpRepoPath))
+        if (!Directory.Exists(csharpRepoPath))
         {
-            Assert.Inconclusive($"C# repo not found at {CSharpRepoPath}");
+            Assert.Inconclusive($"C# repo not found at {csharpRepoPath}");
             return;
         }
 
+        logger.LogInformation("Extracting project metadata from: {RepoPath}", csharpRepoPath);
+
         // Act
-        var extractor = new ProjectMetadataExtractor(CSharpRepoPath);
+        var extractor = new ProjectMetadataExtractor(csharpRepoPath);
         var repoMetadata = extractor.ExtractRepositoryMetadata();
         var projects = extractor.ExtractAllProjects();
 
@@ -507,7 +585,7 @@ public class CSharpRepoParsingTests
         projects.Should().NotBeEmpty();
 
         // Output metadata
-        var outputPath = Path.Combine(OutputDir, "_project_metadata.json");
+        var outputPath = Path.Combine(outputDir, "_project_metadata.json");
         var output = new
         {
             Repository = new
@@ -542,20 +620,20 @@ public class CSharpRepoParsingTests
             })
         };
 
-        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, JsonOptions));
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, jsonOptions));
 
-        Console.WriteLine($"Repository: {repoMetadata.Name}");
-        Console.WriteLine($"  Path: {repoMetadata.RootPath}");
-        Console.WriteLine($"  Languages: {string.Join(", ", repoMetadata.Languages)}");
-        Console.WriteLine($"  Solutions: {repoMetadata.SolutionFiles.Count}");
-        Console.WriteLine($"  Projects: {projects.Count}");
+        logger.LogInformation("Repository: {RepoName}", repoMetadata.Name);
+        logger.LogInformation("  Path: {RepoPath}", repoMetadata.RootPath);
+        logger.LogInformation("  Languages: {Languages}", string.Join(", ", repoMetadata.Languages));
+        logger.LogInformation("  Solutions: {SolutionCount}", repoMetadata.SolutionFiles.Count);
+        logger.LogInformation("  Projects: {ProjectCount}", projects.Count);
 
         foreach (var project in projects)
         {
-            Console.WriteLine($"  - {project.Name} ({project.ProjectType})");
-            Console.WriteLine($"    Target: {string.Join(", ", project.TargetFrameworks)}");
-            Console.WriteLine($"    Packages: {project.PackageReferences.Count}");
-            Console.WriteLine($"    Files: {project.SourceFiles.Count}");
+            logger.LogDebug("  - {ProjectName} ({ProjectType})", project.Name, project.ProjectType);
+            logger.LogDebug("    Target: {TargetFrameworks}", string.Join(", ", project.TargetFrameworks));
+            logger.LogDebug("    Packages: {PackageCount}, Files: {FileCount}",
+                project.PackageReferences.Count, project.SourceFiles.Count);
         }
     }
 }
