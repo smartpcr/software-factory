@@ -98,5 +98,9 @@
     <PackageVersion Include="Qdrant.Client" Version="1.12.0" />
     <!-- Graph Database -->
     <PackageVersion Include="Neo4j.Driver" Version="5.28.0" />
+    <!-- LSP Client -->
+    <PackageVersion Include="StreamJsonRpc" Version="2.17.8" />
+    <!-- CLI -->
+    <PackageVersion Include="Spectre.Console.Cli" Version="0.53.0" />
   </ItemGroup>
 </Project>

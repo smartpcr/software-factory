@@ -111,6 +111,83 @@ public class HypergraphNode
 
         return string.Join("\n", parts);
     }
+
+    /// <summary>
+    /// Generate enhanced text for vector embedding with LSP enrichment data.
+    /// This includes type signatures, documentation, and relationship information
+    /// for higher quality semantic search.
+    /// </summary>
+    public string GetEnhancedEmbeddingText()
+    {
+        var parts = new List<string>();
+
+        // 1. Symbol identification
+        parts.Add($"{this.NodeType}: {this.Name}");
+
+        // 2. Documentation (from LSP hover) - most important for search
+        if (this.Metadata.TryGetValue("Documentation", out var doc) && doc is string docStr && !string.IsNullOrEmpty(docStr))
+        {
+            parts.Add(docStr);
+        }
+
+        // 3. Type signature (from LSP hover) - critical for type-aware search
+        if (this.Metadata.TryGetValue("Signature", out var sig) && sig is string sigStr && !string.IsNullOrEmpty(sigStr))
+        {
+            parts.Add($"Signature: {sigStr}");
+        }
+
+        // 4. Return type
+        if (this.Metadata.TryGetValue("ReturnType", out var ret) && ret is string retStr && !string.IsNullOrEmpty(retStr))
+        {
+            parts.Add($"Returns: {retStr}");
+        }
+
+        // 5. Parameters
+        if (this.Metadata.TryGetValue("Parameters", out var param) && param is string paramStr && !string.IsNullOrEmpty(paramStr))
+        {
+            parts.Add($"Parameters: {paramStr}");
+        }
+
+        // 6. Relationships (for architectural understanding)
+        if (this.Metadata.TryGetValue("Callers", out var callers) && callers is string callersStr && !string.IsNullOrEmpty(callersStr))
+        {
+            parts.Add($"Called by: {callersStr}");
+        }
+
+        if (this.Metadata.TryGetValue("Callees", out var callees) && callees is string calleesStr && !string.IsNullOrEmpty(calleesStr))
+        {
+            parts.Add($"Calls: {calleesStr}");
+        }
+
+        // 7. Scope and modifiers
+        if (!string.IsNullOrEmpty(this.Scope))
+        {
+            parts.Add($"Scope: {this.Scope}");
+        }
+
+        if (this.Modifiers.Count > 0)
+        {
+            parts.Add($"Modifiers: {string.Join(" ", this.Modifiers)}");
+        }
+
+        // 8. Source code (if available in metadata)
+        if (this.Metadata.TryGetValue("SourceCode", out var code) && code is string codeStr && !string.IsNullOrEmpty(codeStr))
+        {
+            // Truncate if too long
+            var truncated = codeStr.Length > 2000 ? codeStr[..2000] : codeStr;
+            parts.Add($"Code:\n{truncated}");
+        }
+
+        // 9. File location (last, as context)
+        parts.Add($"Location: {this.FilePath}:{this.LineStart}");
+
+        return string.Join("\n", parts);
+    }
+
+    /// <summary>
+    /// Checks if this node has been enriched with LSP data.
+    /// </summary>
+    public bool IsLspEnriched => this.Metadata.TryGetValue("LspEnriched", out var val) && val is true;
 }
 
 /// <summary>

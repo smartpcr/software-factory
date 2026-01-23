@@ -59,6 +59,10 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "docs", "docs", "{6A9DBAD1-8
 		docs\AST_DECISION_LOG.md = docs\AST_DECISION_LOG.md
 		docs\AST_IMPLEMENTATION_PLAN.md = docs\AST_IMPLEMENTATION_PLAN.md
 		docs\AST_STATUS.md = docs\AST_STATUS.md
+		docs\code_understanding_comparison.md = docs\code_understanding_comparison.md
+		docs\embedding_model_approach.md = docs\embedding_model_approach.md
+		docs\lsp-deep-dive.md = docs\lsp-deep-dive.md
+		docs\LSP_MIGRATION_PLAN.md = docs\LSP_MIGRATION_PLAN.md
 	EndProjectSection
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ExecutionEngine.UnitTests", "src\ExecutionEngine.UnitTests\ExecutionEngine.UnitTests.csproj", "{AA6DE5A7-B826-425D-882D-EAF9A9E0BD09}"
@@ -106,6 +110,10 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ast.GraphDb.IntegrationTests", "src\ast\Ast.GraphDb.IntegrationTests\Ast.GraphDb.IntegrationTests.csproj", "{ECE15504-8632-4696-8BC3-BB9D8B687B53}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ast.Benchmark", "src\ast\Ast.Benchmark\Ast.Benchmark.csproj", "{0D5D5033-6915-4C93-B23F-48E41C3A306E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ast.Lsp", "src\ast\Ast.Lsp\Ast.Lsp.csproj", "{449886B2-1EF9-445B-9806-CB8AEBD5CB59}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ast.Lsp.UnitTests", "src\ast\Ast.Lsp.UnitTests\Ast.Lsp.UnitTests.csproj", "{12D8BB81-960D-4906-808F-EAE336DB618A}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -241,6 +249,14 @@ Global
 		{0D5D5033-6915-4C93-B23F-48E41C3A306E}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{0D5D5033-6915-4C93-B23F-48E41C3A306E}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{0D5D5033-6915-4C93-B23F-48E41C3A306E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{449886B2-1EF9-445B-9806-CB8AEBD5CB59}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{449886B2-1EF9-445B-9806-CB8AEBD5CB59}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{449886B2-1EF9-445B-9806-CB8AEBD5CB59}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{449886B2-1EF9-445B-9806-CB8AEBD5CB59}.Release|Any CPU.Build.0 = Release|Any CPU
+		{12D8BB81-960D-4906-808F-EAE336DB618A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{12D8BB81-960D-4906-808F-EAE336DB618A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{12D8BB81-960D-4906-808F-EAE336DB618A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{12D8BB81-960D-4906-808F-EAE336DB618A}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -283,5 +299,7 @@ Global
 		{A04A4C31-B42D-4318-B130-4CD57EBD9685} = {1EC60D17-4A69-4F14-B462-44018B071C57}
 		{ECE15504-8632-4696-8BC3-BB9D8B687B53} = {1EC60D17-4A69-4F14-B462-44018B071C57}
 		{0D5D5033-6915-4C93-B23F-48E41C3A306E} = {1EC60D17-4A69-4F14-B462-44018B071C57}
+		{449886B2-1EF9-445B-9806-CB8AEBD5CB59} = {1EC60D17-4A69-4F14-B462-44018B071C57}
+		{12D8BB81-960D-4906-808F-EAE336DB618A} = {1EC60D17-4A69-4F14-B462-44018B071C57}
 	EndGlobalSection
 EndGlobal

@@ -1,14 +1,14 @@
 # AST HyperGraph Reasoning - Project Status
 
-Last Updated: 2026-01-21
+Last Updated: 2026-01-23
 
 ## Overview
 
-Building a HyperGraph-based code reasoning system inspired by [HyperGraphReasoning](https://github.com/smartpcr/hypergraphreasoning), adapted for C#/.NET with local LLM support.
+Building a HyperGraph-based code reasoning system inspired by [HyperGraphReasoning](https://github.com/smartpcr/hypergraphreasoning), adapted for C#/.NET with local LLM support and LSP-based code intelligence.
 
 ---
 
-## Current Phase: Phase 5.5 Complete - Query Interface & Graph Integration Tests
+## Current Phase: Phase 6C Complete - CLI Application
 
 ### Completed Tasks
 
@@ -56,7 +56,7 @@ Building a HyperGraph-based code reasoning system inspired by [HyperGraphReasoni
   - [x] Implemented HttpEmbeddingGenerator (Ollama, OpenAI-compatible APIs)
   - [x] Implemented CodeEmbeddingService (hypergraph node/edge embeddings)
   - [x] Added EmbeddingGeneratorFactory and DI extensions
-  - [x] Created Ast.Embedding.UnitTests (31 tests passing)
+  - [x] Created Ast.Embedding.UnitTests (65 tests passing)
   - [x] Added LLamaSharp packages to Directory.Packages.props
 - [x] **Phase 3: Vector Database**
   - [x] Created Ast.VectorDb project
@@ -94,10 +94,41 @@ Building a HyperGraph-based code reasoning system inspired by [HyperGraphReasoni
   - [x] Indexes hypergraph data into Neo4j
   - [x] Validates using fluent query API
   - [x] Neo4j remains running after tests for manual validation
+- [x] **Phase 6A: LSP Integration**
+  - [x] Created Ast.Lsp project with LSP client implementation
+  - [x] Implemented ILspClient interface for language server communication
+  - [x] Implemented LspClient using StreamJsonRpc over stdio
+  - [x] Implemented LspServerManager for server lifecycle management
+  - [x] Implemented LspEnrichmentService for HypergraphNode enrichment
+  - [x] Added LSP protocol models (Position, Range, Location, HoverResult, etc.)
+  - [x] Added configuration classes (LspConfiguration, CSharpLspConfig, PowerShellLspConfig)
+  - [x] Added DI service collection extensions
+  - [x] Enhanced HypergraphNode with GetEnhancedEmbeddingText() and IsLspEnriched
+  - [x] Created Ast.Lsp.UnitTests (56 tests passing)
+- [x] **Phase 6B: LSP-Embedding Pipeline Integration**
+  - [x] Added Ast.Lsp project reference to Ast.Embedding
+  - [x] Created EnrichedEmbeddingPipeline orchestrating LSP enrichment + embedding generation
+  - [x] Created EnrichedCodeEmbedding model with LSP metadata (signature, documentation, callers, callees)
+  - [x] Created EnrichedEmbeddingOptions for pipeline configuration
+  - [x] Created EnrichedEmbeddingResult for pipeline output with timing and statistics
+  - [x] Created PipelineProgress for multi-step progress reporting
+  - [x] Added DI extensions: AddEnrichedEmbeddingPipeline, AddCSharpEnrichedEmbedding, AddPowerShellEnrichedEmbedding, AddFullEnrichedEmbedding, AddEmbeddingOnlyPipeline
+  - [x] Updated Ast.Embedding.UnitTests (65 tests passing, +34 new tests)
+- [x] **Phase 6C: CLI Application**
+  - [x] Created Ast.Cli project with Spectre.Console.Cli
+  - [x] Implemented ParseCommand - Parses repositories and generates hypergraph JSON
+  - [x] Implemented EnrichCommand - Enriches hypergraph with LSP semantic information
+  - [x] Implemented EmbedCommand - Generates embeddings from hypergraph
+  - [x] Implemented IndexCommand - Indexes data into Neo4j and Qdrant
+  - [x] Implemented QueryCommand - Queries indexed data (semantic, callers, callees, path, impact)
+  - [x] Implemented PipelineCommand - Full pipeline: parse → enrich → embed → index
+  - [x] Implemented StatsCommand - Shows statistics about hypergraph or databases
+  - [x] Added progress reporting with Spectre.Console
+  - [x] Added JSON and table output formats
 
 ### In Progress
 
-- [ ] None - ready for Phase 6 (CLI Application)
+- [ ] None - ready for Phase 7 (Integration Testing)
 
 ---
 
@@ -113,8 +144,10 @@ Building a HyperGraph-based code reasoning system inspired by [HyperGraphReasoni
 | **Vector Database** | Qdrant integration with semantic search | Complete | None |
 | **Embeddings** | LLamaSharp + HTTP API support | Complete | None |
 | **Query Interface** | Fluent API + Hybrid Search | Complete | None |
-| **CLI Tool** | None | Full command set | Full implementation needed |
-| **Unit Tests** | 347 tests passing | BDD test coverage | Expanding coverage |
+| **LSP Integration** | StreamJsonRpc client (56 tests) | Complete | None |
+| **LSP-Embedding Pipeline** | Enriched pipeline (34 tests) | Complete | None |
+| **CLI Tool** | 7 commands (parse, enrich, embed, index, query, pipeline, stats) | Complete | None |
+| **Unit Tests** | 437 tests passing | BDD test coverage | Expanding coverage |
 | **Integration Tests** | 11 tests (C# + PowerShell repos) | E2E test scenarios | Partial - need DB integration tests |
 
 ---
@@ -129,6 +162,7 @@ Building a HyperGraph-based code reasoning system inspired by [HyperGraphReasoni
 | Vector DB | Qdrant | Latest | `Qdrant.Client` 1.12.0 |
 | Local LLM | LLamaSharp | 0.18.0 | `LLamaSharp` + Backend |
 | Embedding Model | Qwen2.5-Coder | 0.5B | GGUF format |
+| LSP Client | StreamJsonRpc | 2.17.8 | `StreamJsonRpc` |
 | CLI Framework | Spectre.Console | 0.53.0 | `Spectre.Console.Cli` |
 
 ### Existing (Reuse)
@@ -156,7 +190,7 @@ Building a HyperGraph-based code reasoning system inspired by [HyperGraphReasoni
 - [x] Integrated LLamaSharp for local GGUF models
 - [x] Implemented HttpEmbeddingGenerator for Ollama/OpenAI APIs
 - [x] Implemented CodeEmbeddingService with similarity search
-- [x] Created 31 unit tests
+- [x] Created unit tests (31 initial, 65 total after Phase 6B)
 - Completed: 2026-01-21
 
 ### Phase 3: Vector Database (COMPLETED)
@@ -193,14 +227,39 @@ Building a HyperGraph-based code reasoning system inspired by [HyperGraphReasoni
 - [x] Neo4j remains running after tests for manual inspection
 - Completed: 2026-01-21
 
-### Phase 6: CLI Application (Not Started)
-- Create Ast.Cli project
-- Implement all commands
-- Add progress reporting
+### Phase 6A: LSP Integration (COMPLETED)
+- [x] Created Ast.Lsp project for Language Server Protocol integration
+- [x] Implemented ILspClient interface with all LSP operations (hover, definitions, references, etc.)
+- [x] Implemented LspClient using StreamJsonRpc for JSON-RPC over stdio
+- [x] Implemented LspServerManager for language server lifecycle management
+- [x] Implemented LspEnrichmentService for enhancing HypergraphNodes with LSP data
+- [x] Added configuration classes for C# (csharp-ls, OmniSharp) and PowerShell (PSES) servers
+- [x] Enhanced HypergraphNode with GetEnhancedEmbeddingText() for LSP-enriched embedding
+- [x] Created Ast.Lsp.UnitTests with 56 tests
+- [x] Created LSP_MIGRATION_PLAN.md documenting the migration strategy
+- Completed: 2026-01-23
+
+### Phase 6B: LSP-Embedding Pipeline Integration (COMPLETED)
+- [x] Added Ast.Lsp as project reference to Ast.Embedding
+- [x] Created EnrichedEmbeddingPipeline class orchestrating LSP enrichment and embedding generation
+- [x] Created EnrichedCodeEmbedding model extending CodeEmbedding with LSP metadata
+- [x] Created EnrichedEmbeddingOptions for configuring pipeline behavior
+- [x] Created EnrichedEmbeddingResult for pipeline output with statistics
+- [x] Created PipelineProgress for multi-step progress reporting (LSP + embedding)
+- [x] Added DI extensions for common configurations (C#, PowerShell, both, or embedding-only)
+- [x] Created 34 new unit tests (total 65 in Ast.Embedding.UnitTests)
+- Completed: 2026-01-23
+
+### Phase 6C: CLI Application (COMPLETED)
+- [x] Created Ast.Cli project with Spectre.Console.Cli
+- [x] Implemented 7 commands: parse, enrich, embed, index, query, pipeline, stats
+- [x] Added progress reporting with Spectre.Console
+- [x] Added JSON and table output formats
+- Completed: 2026-01-23
 
 ### Phase 7: Integration Testing (Not Started)
 - Create integration test project
-- E2E test scenarios
+- E2E test scenarios with LSP servers
 - Performance benchmarks
 - Estimated: 2 weeks
 
@@ -256,19 +315,37 @@ src/ast/
 │   ├── HybridQueryService.cs    # [EXISTS] Hybrid search service
 │   └── ServiceCollectionExtensions.cs  # [EXISTS] DI extensions
 │
-├── Ast.Cli/                     # [TODO] CLI application
-│   ├── Program.cs
-│   └── Commands/
+├── Ast.Lsp/                     # [EXISTS] LSP integration
+│   ├── ILspClient.cs            # [EXISTS] LSP client interface
+│   ├── LspClient.cs             # [EXISTS] StreamJsonRpc implementation
+│   ├── LspModels.cs             # [EXISTS] LSP protocol models
+│   ├── LspConfiguration.cs      # [EXISTS] Configuration classes
+│   ├── LspServerManager.cs      # [EXISTS] Server lifecycle management
+│   ├── LspEnrichmentService.cs  # [EXISTS] HypergraphNode enrichment
+│   └── ServiceCollectionExtensions.cs  # [EXISTS] DI extensions
+│
+├── Ast.Cli/                     # [EXISTS] CLI application
+│   ├── Program.cs               # [EXISTS] Main entry point
+│   ├── Ast.Cli.csproj           # [EXISTS] Project file
+│   └── Commands/                # [EXISTS] 7 commands
+│       ├── ParseCommand.cs      # [EXISTS] Repository parsing
+│       ├── EnrichCommand.cs     # [EXISTS] LSP enrichment
+│       ├── EmbedCommand.cs      # [EXISTS] Embedding generation
+│       ├── IndexCommand.cs      # [EXISTS] Database indexing
+│       ├── QueryCommand.cs      # [EXISTS] Semantic/graph queries
+│       ├── PipelineCommand.cs   # [EXISTS] Full pipeline
+│       └── StatsCommand.cs      # [EXISTS] Statistics display
 │
 ├── docker-compose.yml           # [EXISTS] Neo4j + Qdrant infrastructure
 │
 ├── Ast.Core.UnitTests/          # [EXISTS] 51 tests
 ├── Ast.Csharp.UnitTests/        # [EXISTS] 62 tests
 ├── Ast.PowerShell.UnitTests/    # [EXISTS] 53 tests
-├── Ast.Embedding.UnitTests/     # [EXISTS] 31 tests
+├── Ast.Embedding.UnitTests/     # [EXISTS] 65 tests
 ├── Ast.VectorDb.UnitTests/      # [EXISTS] 28 tests
 ├── Ast.GraphDb.UnitTests/       # [EXISTS] 35 tests
 ├── Ast.Query.UnitTests/         # [EXISTS] 52 tests
+├── Ast.Lsp.UnitTests/           # [EXISTS] 56 tests
 ├── Ast.IntegrationTests/        # [EXISTS] 11 tests
 └── Ast.GraphDb.IntegrationTests/ # [EXISTS] Neo4j integration tests
 ```
@@ -290,12 +367,11 @@ src/ast/
 
 <!-- Graph Database (Phase 4 - DONE) -->
 <PackageVersion Include="Neo4j.Driver" Version="5.28.0" />
-```
 
-### To Add:
+<!-- LSP Client (Phase 6A - DONE) -->
+<PackageVersion Include="StreamJsonRpc" Version="2.17.8" />
 
-```xml
-<!-- CLI (Phase 6) -->
+<!-- CLI (Phase 6C) -->
 <PackageVersion Include="Spectre.Console.Cli" Version="0.53.0" />
 ```
 
@@ -345,10 +421,10 @@ volumes:
 
 ## Next Steps
 
-1. **Phase 6**: Create Ast.Cli project for command-line interface
-2. **Phase 7**: Full end-to-end integration tests with both databases
-3. **Performance**: Benchmark and optimize for large repositories
-4. **Documentation**: Add user guides and API documentation
+1. **Phase 7**: Full end-to-end integration tests with LSP servers and databases
+2. **Performance**: Benchmark and optimize for large repositories
+3. **Documentation**: Add user guides and API documentation
+4. **Polish**: Add CLI unit tests, improve error handling
 
 ---
 
@@ -364,5 +440,7 @@ volumes:
 ## Reference Links
 
 - Implementation Plan: [AST_IMPLEMENTATION_PLAN.md](./AST_IMPLEMENTATION_PLAN.md)
+- LSP Migration Plan: [LSP_MIGRATION_PLAN.md](./LSP_MIGRATION_PLAN.md)
+- LSP Deep Dive: [lsp-deep-dive.md](./lsp-deep-dive.md)
 - Decision Log: [AST_DECISION_LOG.md](./AST_DECISION_LOG.md)
 - Inspiration: [HyperGraphReasoning](https://github.com/smartpcr/hypergraphreasoning)

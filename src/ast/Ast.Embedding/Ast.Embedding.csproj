@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
+    <ProjectReference Include="..\Ast.Lsp\Ast.Lsp.csproj" />
   </ItemGroup>
 
   <ItemGroup>
