@@ -105,6 +105,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ast.Query.UnitTests", "src\
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ast.GraphDb.IntegrationTests", "src\ast\Ast.GraphDb.IntegrationTests\Ast.GraphDb.IntegrationTests.csproj", "{ECE15504-8632-4696-8BC3-BB9D8B687B53}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ast.Benchmark", "src\ast\Ast.Benchmark\Ast.Benchmark.csproj", "{0D5D5033-6915-4C93-B23F-48E41C3A306E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -235,6 +237,10 @@ Global
 		{ECE15504-8632-4696-8BC3-BB9D8B687B53}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{ECE15504-8632-4696-8BC3-BB9D8B687B53}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{ECE15504-8632-4696-8BC3-BB9D8B687B53}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0D5D5033-6915-4C93-B23F-48E41C3A306E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0D5D5033-6915-4C93-B23F-48E41C3A306E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0D5D5033-6915-4C93-B23F-48E41C3A306E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0D5D5033-6915-4C93-B23F-48E41C3A306E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -276,5 +282,6 @@ Global
 		{6E69A829-18DE-4432-BA63-358477FB0EDD} = {1EC60D17-4A69-4F14-B462-44018B071C57}
 		{A04A4C31-B42D-4318-B130-4CD57EBD9685} = {1EC60D17-4A69-4F14-B462-44018B071C57}
 		{ECE15504-8632-4696-8BC3-BB9D8B687B53} = {1EC60D17-4A69-4F14-B462-44018B071C57}
+		{0D5D5033-6915-4C93-B23F-48E41C3A306E} = {1EC60D17-4A69-4F14-B462-44018B071C57}
 	EndGlobalSection
 EndGlobal
