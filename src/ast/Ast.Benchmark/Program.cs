@@ -255,14 +255,21 @@ public class Program
         sw.Stop();
         AnsiConsole.MarkupLine($"[dim]Get class nodes (limit 50): {sw.ElapsedMilliseconds}ms, found {classNodes.Count} nodes[/]");
 
-        // Query 3: Get callers for a random method
-        var methodNode = nodes.FirstOrDefault(n => n.NodeType.Equals("method", StringComparison.OrdinalIgnoreCase));
-        if (methodNode != null)
+        // Query 3: Get edges for a node
+        var sampleNode = nodes.FirstOrDefault();
+        if (sampleNode != null)
         {
-            sw.Restart();
-            var callers = await store.GetCallersAsync(methodNode.Id, depth: 2);
-            sw.Stop();
-            AnsiConsole.MarkupLine($"[dim]Get callers (depth 2): {sw.ElapsedMilliseconds}ms, found {callers.Count} callers[/]");
+            try
+            {
+                sw.Restart();
+                var edges = await store.GetEdgesForNodeAsync(sampleNode.Id);
+                sw.Stop();
+                AnsiConsole.MarkupLine($"[dim]Get edges for node: {sw.ElapsedMilliseconds}ms, found {edges.Count} edges[/]");
+            }
+            catch (Exception ex)
+            {
+                AnsiConsole.MarkupLine($"[dim]Get edges for node: error - {ex.Message}[/]");
+            }
         }
 
         // Query 4: Get statistics

@@ -72,6 +72,69 @@ docker compose up -d
 | `-i, --ingestion` | Run ingestion benchmarks |
 | `-q, --query` | Run query benchmarks |
 
+## Benchmark Results
+
+Results from running against the `hci/update` repository (1,027 C# files):
+
+### Extraction Performance
+
+| Metric | Value |
+|--------|-------|
+| Files Processed | 1,027 |
+| Nodes Extracted | 179,076 |
+| Edges Extracted | 65,850 |
+| Duration | 29.14s |
+| **Files/sec** | **35.2** |
+| **Nodes/sec** | **6,144.4** |
+
+### Ingestion Performance
+
+| Metric | Value |
+|--------|-------|
+| Nodes Ingested | 179,076 |
+| Edges Ingested | 65,850 |
+| Duration | 221.88s |
+| **Nodes/sec** | **807.1** |
+| **Edges/sec** | **296.8** |
+
+### Total
+
+| Metric | Value |
+|--------|-------|
+| Total Duration | 254.06s (~4.2 min) |
+| End-to-end throughput | ~703 nodes/sec |
+
+### Database Statistics
+
+| Metric | Value |
+|--------|-------|
+| Total Nodes | 179,076 |
+| Total Edges | 109,044 |
+| Unique Files | 1,019 |
+
+### Nodes by Type
+
+| Type | Count |
+|------|-------|
+| expression | 54,586 |
+| method_ref | 24,787 |
+| type | 21,057 |
+| use | 16,147 |
+| variable | 15,443 |
+| definition | 13,259 |
+| parameter | 10,471 |
+| method | 4,930 |
+| condition | 2,431 |
+| field | 2,212 |
+
+### Query Performance
+
+| Query | Latency |
+|-------|---------|
+| Get all nodes (limit 100) | 26ms |
+| Get class nodes (limit 50) | 28ms |
+| Get statistics | <50ms |
+
 ## Example Output
 
 ```
@@ -81,27 +144,27 @@ Connected to Neo4j
 Database cleared
 Processing repository: /mnt/e/work/hci/update
 
-Discovered 245 C# files, 0 PowerShell files
-Extracting AST ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100%  00:00:00
-Extraction complete: 12,456 nodes, 34,567 edges
-Ingesting nodes (12,456/12,456) ━━━━━━━━━━━━━━━━ 100%  00:00:00
-Ingesting edges (34,567/34,567) ━━━━━━━━━━━━━━━━ 100%  00:00:00
+Discovered 1027 C# files, 0 PowerShell files
+Extracting AST ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100%  00:00:29
+Extraction complete: 179,076 nodes, 65,850 edges
+Ingesting nodes (179,076/179,076) ━━━━━━━━━━━━━━━━ 100%  00:02:45
+Ingesting edges (65,850/65,850) ━━━━━━━━━━━━━━━━━━ 100%  00:00:56
 
 ─────────────────── Benchmark Results ───────────────────
 │ Phase       │ Metric          │ Value           │
 ├─────────────┼─────────────────┼─────────────────┤
-│ Extraction  │ Files Processed │ 245             │
-│             │ Nodes Extracted │ 12,456          │
-│             │ Edges Extracted │ 34,567          │
-│             │ Duration        │ 3.45s           │
-│             │ Files/sec       │ 71.0            │
-│             │ Nodes/sec       │ 3,610.4         │
-│ Ingestion   │ Nodes Ingested  │ 12,456          │
-│             │ Edges Ingested  │ 34,567          │
-│             │ Duration        │ 15.23s          │
-│             │ Nodes/sec       │ 818.1           │
-│             │ Edges/sec       │ 2,270.3         │
-│ Total       │ Total Duration  │ 18.68s          │
+│ Extraction  │ Files Processed │ 1,027           │
+│             │ Nodes Extracted │ 179,076         │
+│             │ Edges Extracted │ 65,850          │
+│             │ Duration        │ 29.14s          │
+│             │ Files/sec       │ 35.2            │
+│             │ Nodes/sec       │ 6,144.4         │
+│ Ingestion   │ Nodes Ingested  │ 179,076         │
+│             │ Edges Ingested  │ 65,850          │
+│             │ Duration        │ 221.88s         │
+│             │ Nodes/sec       │ 807.1           │
+│             │ Edges/sec       │ 296.8           │
+│ Total       │ Total Duration  │ 254.06s         │
 └─────────────┴─────────────────┴─────────────────┘
 
 Done!
@@ -117,8 +180,8 @@ Done!
 
 ### Ingestion Flow
 
-1. **Node Ingestion**: Batch inserts using Cypher UNWIND
-2. **Edge Ingestion**: Creates relationships between nodes
+1. **Node Ingestion**: Batch inserts using Cypher UNWIND (batch size: 500)
+2. **Edge Ingestion**: Creates relationships between nodes (batch size: 100)
 3. **Progress Tracking**: Batch-level progress with throughput metrics
 
 ### Benchmarks
@@ -126,6 +189,23 @@ Done!
 - **ExtractionBenchmarks**: Measures AST parsing performance by file size
 - **IngestionBenchmarks**: Measures Neo4j write performance by dataset size and batch size
 - **QueryBenchmarks**: Measures Neo4j read performance for various query patterns
+
+## Performance Analysis
+
+### Extraction (CPU-bound)
+- Roslyn parsing is efficient at ~35 files/sec
+- Node generation averages ~174 nodes per file
+- Edge generation averages ~64 edges per file
+
+### Ingestion (I/O-bound)
+- Node ingestion is the primary bottleneck (~807 nodes/sec)
+- Edge ingestion is slower due to MATCH operations (~297 edges/sec)
+- Batch size of 500 provides good balance of throughput and memory
+
+### Optimization Opportunities
+- Parallel extraction could improve file processing throughput
+- Larger batch sizes may improve ingestion (test with IngestionBenchmarks)
+- Edge batching by relationship type could reduce Cypher compilation
 
 ## Docker Configuration
 
