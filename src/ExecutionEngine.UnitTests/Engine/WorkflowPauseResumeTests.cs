@@ -108,8 +108,8 @@ public class WorkflowPauseResumeTests
         {
             WorkflowId = "test-workflow",
             WorkflowName = "Test Workflow",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "node1",
@@ -119,8 +119,8 @@ public class WorkflowPauseResumeTests
                         { "Script", "return \"Hello World\";" }
                     }
                 }
-            },
-            Connections = new List<NodeConnection>(),
+            ],
+            Connections = [],
             EntryPointNodeId = "node1"
         };
     }
@@ -135,9 +135,9 @@ public class WorkflowPauseResumeTests
             Status = status,
             StartTime = DateTime.UtcNow.AddMinutes(-5),
             CheckpointTime = DateTime.UtcNow,
-            Variables = new Dictionary<string, object>(),
-            NodeStates = new Dictionary<string, NodeInstanceState>(),
-            MessageQueues = new Dictionary<string, List<SerializedMessage>>()
+            Variables = [],
+            NodeStates = [],
+            MessageQueues = []
         };
     }
 }

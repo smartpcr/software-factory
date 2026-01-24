@@ -34,7 +34,7 @@ namespace ExecutionEngine.Nodes.Definitions
         {
             if (string.IsNullOrEmpty(this.ScriptPath))
             {
-                yield return  new ValidationResult("Script path cannot be empty.", new[] { nameof(this.ScriptPath) });
+                yield return new ValidationResult("Script path cannot be empty.", new[] { nameof(this.ScriptPath) });
                 yield break;
             }
 

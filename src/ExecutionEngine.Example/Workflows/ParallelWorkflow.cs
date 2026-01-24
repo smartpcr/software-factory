@@ -1,9 +1,8 @@
-using ExecutionEngine.Enums;
-using ExecutionEngine.Workflow;
-
 namespace ExecutionEngine.Example.Workflows;
 
+using ExecutionEngine.Enums;
 using ExecutionEngine.Nodes.Definitions;
+using ExecutionEngine.Workflow;
 
 public static class ParallelWorkflow
 {
@@ -15,8 +14,8 @@ public static class ParallelWorkflow
         {
             WorkflowId = "data-analytics-pipeline",
             WorkflowName = "Parallel Data Analytics Pipeline",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpNodeDefinition
                 {
                     NodeId = "fetch-data",
@@ -61,9 +60,9 @@ public static class ParallelWorkflow
                         ["message"] = "Generating executive dashboard with analytics"
                     }
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 // Fan-out: Fetch data, then analyze both sales and inventory in parallel
                 new NodeConnection { SourceNodeId = "fetch-data", TargetNodeId = "analyze-sales" },
                 new NodeConnection { SourceNodeId = "fetch-data", TargetNodeId = "analyze-inventory" },
@@ -71,7 +70,7 @@ public static class ParallelWorkflow
                 // Fan-in: Both analyses must complete before generating report
                 new NodeConnection { SourceNodeId = "analyze-sales", TargetNodeId = "generate-report" },
                 new NodeConnection { SourceNodeId = "analyze-inventory", TargetNodeId = "generate-report" }
-            }
+            ]
         };
     }
 }

@@ -2,6 +2,24 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Session Initialization
+
+**IMPORTANT: At the start of each Claude Code session, you MUST read all referenced documentation files listed below before proceeding with any tasks.**
+
+### Required Context Documents
+
+Read these files to understand the project architecture, design decisions, and implementation plans:
+
+- @docs/AST_STATUS.md - Current status of AST implementation
+- @docs/AST_IMPLEMENTATION_PLAN.md - Detailed AST implementation plan
+- @docs/AST_DECISION_LOG.md - Design decisions and rationale
+- @docs/ARCHITECTURE_CHANGES.md - Architecture changes and updates
+- @docs/LSP_MIGRATION_PLAN.md - Language Server Protocol migration plan
+- @docs/lsp-deep-dive.md - Deep dive into LSP implementation details
+- @docs/graph.md - Graph database architecture and usage
+- @docs/embedding_model_approach.md - Embedding model approach for code understanding
+- @docs/code_understanding_comparison.md - Comparison of code understanding approaches
+
 ## Project Overview
 
 Workflow is a C# .NET 8.0 solution for processing Event Tracing for Windows (ETW) and Windows Event Log (EVTX) files, with automated ingestion into Azure Data Explorer (Kusto). The project also includes ExecutionEngine and ProgressTree libraries for workflow orchestration. All projects use BDD-style testing with Reqnroll (SpecFlow successor) and MSTest.
@@ -130,3 +148,93 @@ CSV ingestion requires:
 2. CSV ingestion mapping named "CsvMapping"
 3. File path accessible to Kusto container (volume mount translation)
 4. `ignoreFirstRecord=true` flag to skip header row
+
+## Coding Style
+
+**IMPORTANT: All code must follow the coding style defined in `.editorconfig`. These rules are enforced and must be followed strictly.**
+
+### General Formatting
+
+- **Indentation**: Use spaces, not tabs
+  - C# and PowerShell files: 4 spaces
+  - All other files: 2 spaces
+- **Line endings**: CRLF for most files, LF for shell scripts (`.sh`, `.bash`)
+- **Trailing whitespace**: Always trim trailing whitespace
+- **Final newline**: Do not insert final newline
+
+### C# Specific Rules
+
+#### File Header (Required)
+Every C# file must include this header:
+```csharp
+// -----------------------------------------------------------------------
+// <copyright file="{fileName}" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+```
+
+#### Using Directives
+- Place `using` directives **inside** the namespace (warning level)
+- Sort `System.*` directives first
+- Do not separate import directive groups
+
+#### `this` Qualifier (Required)
+Always use `this.` qualifier for instance members (warning level):
+- `this.fieldName`
+- `this.PropertyName`
+- `this.MethodName()`
+- `this.EventName`
+
+#### `var` Usage
+Prefer `var` when:
+- Type is apparent from the right side
+- For built-in types
+- Elsewhere when appropriate
+
+#### Naming Conventions
+
+| Member Type | Accessibility | Style | Example |
+|-------------|---------------|-------|---------|
+| Const fields | Any | PascalCase | `const int MaxRetries = 3;` |
+| Static fields | public/internal | PascalCase | `public static string DefaultName;` |
+| Static fields | private/protected | camelCase | `private static int instanceCount;` |
+| Instance fields | private/protected | camelCase | `private readonly string name;` |
+
+### Example C# Code
+
+```csharp
+// -----------------------------------------------------------------------
+// <copyright file="MyService.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+
+namespace MyProject.Services;
+
+using System;
+using System.Collections.Generic;
+using Microsoft.Extensions.Logging;
+
+public class MyService
+{
+    private const int MaxRetries = 3;
+    public static readonly string DefaultEndpoint = "https://api.example.com";
+    private static int instanceCount;
+    private readonly ILogger<MyService> logger;
+    private string currentState;
+
+    public MyService(ILogger<MyService> logger)
+    {
+        this.logger = logger;
+        this.currentState = "initialized";
+        instanceCount++;
+    }
+
+    public void Process()
+    {
+        this.logger.LogInformation("Processing with state: {State}", this.currentState);
+        var result = this.DoWork();
+    }
+}
+```

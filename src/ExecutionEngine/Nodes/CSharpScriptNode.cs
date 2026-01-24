@@ -70,7 +70,7 @@ public class CSharpScriptNode : ExecutableNodeBase
             }
 
             // Create execution state for script
-            var state = this.CreateExecutionState(workflowContext, nodeContext);
+            var state = CreateExecutionState(workflowContext, nodeContext);
 
             // Execute the script
             var scriptState = await this.compiledScript!.RunAsync(state, cancellationToken);
@@ -100,12 +100,7 @@ public class CSharpScriptNode : ExecutableNodeBase
             throw new InvalidOperationException("Node has not been initialized.");
         }
 
-        var scriptDefinition = this.Definition as CSharpScriptNodeDefinition;
-        if (scriptDefinition == null)
-        {
-            throw new InvalidOperationException($"Node definition is invalid for CSharpScriptNode: {this.Definition.GetType().FullName}");
-        }
-
+        var scriptDefinition = this.Definition as CSharpScriptNodeDefinition ?? throw new InvalidOperationException($"Node definition is invalid for CSharpScriptNode: {this.Definition.GetType().FullName}");
         if (!string.IsNullOrEmpty(scriptDefinition.ScriptContent))
         {
             this.scriptContent = scriptDefinition.ScriptContent;

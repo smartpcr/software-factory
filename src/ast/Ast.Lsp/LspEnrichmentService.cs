@@ -14,27 +14,20 @@ using Microsoft.Extensions.Options;
 /// <summary>
 /// Service for enriching hypergraph nodes with LSP semantic information.
 /// </summary>
-public class LspEnrichmentService : IAsyncDisposable
+/// <remarks>
+/// Creates a new LSP enrichment service.
+/// </remarks>
+/// <param name="serverManager">The LSP server manager.</param>
+/// <param name="options">LSP configuration options.</param>
+/// <param name="logger">Logger instance.</param>
+public partial class LspEnrichmentService(
+    LspServerManager serverManager,
+    IOptions<LspConfiguration> options,
+    ILogger<LspEnrichmentService> logger) : IAsyncDisposable
 {
-    private readonly LspServerManager _serverManager;
-    private readonly LspConfiguration _config;
-    private readonly ILogger<LspEnrichmentService> _logger;
-
-    /// <summary>
-    /// Creates a new LSP enrichment service.
-    /// </summary>
-    /// <param name="serverManager">The LSP server manager.</param>
-    /// <param name="options">LSP configuration options.</param>
-    /// <param name="logger">Logger instance.</param>
-    public LspEnrichmentService(
-        LspServerManager serverManager,
-        IOptions<LspConfiguration> options,
-        ILogger<LspEnrichmentService> logger)
-    {
-        _serverManager = serverManager;
-        _config = options.Value;
-        _logger = logger;
-    }
+    private readonly LspServerManager serverManager = serverManager;
+    private readonly LspConfiguration config = options.Value;
+    private readonly ILogger<LspEnrichmentService> logger = logger;
 
     /// <summary>
     /// Enriches a single hypergraph node with LSP semantic information.
@@ -48,7 +41,7 @@ public class LspEnrichmentService : IAsyncDisposable
         string workspacePath,
         CancellationToken cancellationToken = default)
     {
-        if (!_config.Enabled)
+        if (!this.config.Enabled)
         {
             return node;
         }
@@ -61,7 +54,7 @@ public class LspEnrichmentService : IAsyncDisposable
 
         try
         {
-            var client = await _serverManager.GetOrCreateClientAsync(language.Value, workspacePath, cancellationToken);
+            var client = await this.serverManager.GetOrCreateClientAsync(language.Value, workspacePath, cancellationToken);
 
             // Read file content and open document
             var content = await File.ReadAllTextAsync(node.FilePath, cancellationToken);
@@ -69,7 +62,7 @@ public class LspEnrichmentService : IAsyncDisposable
 
             try
             {
-                var enrichmentData = await GetEnrichmentDataAsync(client, node, cancellationToken);
+                var enrichmentData = await this.GetEnrichmentDataAsync(client, node, cancellationToken);
                 return ApplyEnrichmentData(node, enrichmentData);
             }
             finally
@@ -79,7 +72,7 @@ public class LspEnrichmentService : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to enrich node {NodeId} from {File}", node.Id, node.FilePath);
+            this.logger.LogWarning(ex, "Failed to enrich node {NodeId} from {File}", node.Id, node.FilePath);
             return node;
         }
     }
@@ -98,7 +91,7 @@ public class LspEnrichmentService : IAsyncDisposable
         IProgress<EnrichmentProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        if (!_config.Enabled || nodes.Count == 0)
+        if (!this.config.Enabled || nodes.Count == 0)
         {
             return nodes;
         }
@@ -124,7 +117,7 @@ public class LspEnrichmentService : IAsyncDisposable
 
             try
             {
-                var client = await _serverManager.GetOrCreateClientAsync(
+                var client = await this.serverManager.GetOrCreateClientAsync(
                     language.Value, workspacePath, cancellationToken);
 
                 // Read and open the file once
@@ -142,13 +135,13 @@ public class LspEnrichmentService : IAsyncDisposable
 
                         try
                         {
-                            var enrichmentData = await GetEnrichmentDataAsync(client, node, cancellationToken);
+                            var enrichmentData = await this.GetEnrichmentDataAsync(client, node, cancellationToken);
                             var enrichedNode = ApplyEnrichmentData(node, enrichmentData);
                             results.Add(enrichedNode);
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogWarning(ex, "Failed to enrich node {NodeId}", node.Id);
+                            this.logger.LogWarning(ex, "Failed to enrich node {NodeId}", node.Id);
                             results.Add(node);
                         }
 
@@ -163,13 +156,13 @@ public class LspEnrichmentService : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to process file {File}", filePath);
+                this.logger.LogWarning(ex, "Failed to process file {File}", filePath);
                 results.AddRange(fileNodes);
                 processed += fileNodes.Count;
             }
         }
 
-        _logger.LogInformation("Enriched {Enriched}/{Total} nodes", results.Count, nodes.Count);
+        this.logger.LogInformation("Enriched {Enriched}/{Total} nodes", results.Count, nodes.Count);
         return results;
     }
 
@@ -187,13 +180,13 @@ public class LspEnrichmentService : IAsyncDisposable
         IProgress<EnrichmentProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        if (!_config.Enabled)
+        if (!this.config.Enabled)
         {
             return hypergraph;
         }
 
         var nodes = hypergraph.Nodes.Values.ToList();
-        var enrichedNodes = await EnrichBatchAsync(nodes, workspacePath, progress, cancellationToken);
+        var enrichedNodes = await this.EnrichBatchAsync(nodes, workspacePath, progress, cancellationToken);
 
         var enrichedNodeDict = enrichedNodes.ToDictionary(n => n.Id);
 
@@ -235,28 +228,27 @@ public class LspEnrichmentService : IAsyncDisposable
         // Get references
         var references = await client.GetReferencesAsync(
             node.FilePath, line, character, includeDeclaration: false, cancellationToken);
-        data.References = references.ToList();
+        data.References = [.. references];
 
         // Get call hierarchy if enabled and applicable
-        if (_config.CollectCallHierarchy && IsCallableNode(node))
+        if (this.config.CollectCallHierarchy && IsCallableNode(node))
         {
             var incomingCalls = await client.GetIncomingCallsAsync(
                 node.FilePath, line, character, cancellationToken);
-            data.IncomingCalls = incomingCalls.ToList();
+            data.IncomingCalls = [.. incomingCalls];
 
             var outgoingCalls = await client.GetOutgoingCallsAsync(
                 node.FilePath, line, character, cancellationToken);
-            data.OutgoingCalls = outgoingCalls.ToList();
+            data.OutgoingCalls = [.. outgoingCalls];
         }
 
         // Get diagnostics
-        if (_config.CollectDiagnostics)
+        if (this.config.CollectDiagnostics)
         {
             var diagnostics = client.GetDiagnostics(node.FilePath);
-            data.Diagnostics = diagnostics
+            data.Diagnostics = [.. diagnostics
                 .Where(d => d.Range.Start.Line >= node.LineStart - 1 &&
-                           d.Range.End.Line <= node.LineEnd - 1)
-                .ToList();
+                           d.Range.End.Line <= node.LineEnd - 1)];
         }
 
         return data;
@@ -278,7 +270,7 @@ public class LspEnrichmentService : IAsyncDisposable
         if (content.Kind == "markdown")
         {
             // Extract code blocks (usually contain signatures)
-            var codeBlockMatch = Regex.Match(value, @"```(?:csharp|cs|powershell|ps1)?\s*\n(.*?)\n```", RegexOptions.Singleline);
+            var codeBlockMatch = MyRegex().Match(value);
             if (codeBlockMatch.Success)
             {
                 data.Signature = codeBlockMatch.Groups[1].Value.Trim();
@@ -436,7 +428,7 @@ public class LspEnrichmentService : IAsyncDisposable
     /// <summary>
     /// Applies enrichment data to a node.
     /// </summary>
-    private HypergraphNode ApplyEnrichmentData(HypergraphNode node, LspEnrichmentData data)
+    private static HypergraphNode ApplyEnrichmentData(HypergraphNode node, LspEnrichmentData data)
     {
         var metadata = new Dictionary<string, object?>(node.Metadata);
 
@@ -550,6 +542,9 @@ public class LspEnrichmentService : IAsyncDisposable
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
-        await _serverManager.DisposeAsync();
+        await this.serverManager.DisposeAsync();
     }
+
+    [GeneratedRegex(@"```(?:csharp|cs|powershell|ps1)?\s*\n(.*?)\n```", RegexOptions.Singleline)]
+    private static partial Regex MyRegex();
 }

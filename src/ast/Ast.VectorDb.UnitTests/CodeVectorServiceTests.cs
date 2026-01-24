@@ -23,133 +23,133 @@ public class CodeVectorServiceTests
     [TestInitialize]
     public void Setup()
     {
-        mockVectorStore = new Mock<IVectorStore>();
-        mockEmbeddingGenerator = new Mock<IEmbeddingGenerator>();
-        options = new VectorStoreOptions
+        this.mockVectorStore = new Mock<IVectorStore>();
+        this.mockEmbeddingGenerator = new Mock<IEmbeddingGenerator>();
+        this.options = new VectorStoreOptions
         {
             NodesCollection = "test_nodes",
             EdgesCollection = "test_edges"
         };
 
-        mockEmbeddingGenerator.Setup(e => e.Dimensions).Returns(768);
-        mockEmbeddingGenerator.Setup(e => e.ModelName).Returns("test-model");
+        this.mockEmbeddingGenerator.Setup(e => e.Dimensions).Returns(768);
+        this.mockEmbeddingGenerator.Setup(e => e.ModelName).Returns("test-model");
 
-        service = new CodeVectorService(
-            mockVectorStore.Object,
-            mockEmbeddingGenerator.Object,
-            Options.Create(options),
+        this.service = new CodeVectorService(
+            this.mockVectorStore.Object,
+            this.mockEmbeddingGenerator.Object,
+            Options.Create(this.options),
             NullLogger<CodeVectorService>.Instance);
     }
 
     [TestCleanup]
     public void Cleanup()
     {
-        service?.Dispose();
+        this.service?.Dispose();
     }
 
     [TestMethod]
-    public async Task InitializeAsync_CreatesCollections_WhenNotExist()
+    public async Task InitializeAsync_CreatesCollections_WhenNotExistAsync()
     {
         // Arrange
-        mockVectorStore.Setup(v => v.CollectionExistsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        this.mockVectorStore.Setup(v => v.CollectionExistsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
         // Act
-        await service.InitializeAsync();
+        await this.service.InitializeAsync();
 
         // Assert
-        mockVectorStore.Verify(
+        this.mockVectorStore.Verify(
             v => v.CreateCollectionAsync("test_nodes", 768, It.IsAny<CancellationToken>()),
             Times.Once);
-        mockVectorStore.Verify(
+        this.mockVectorStore.Verify(
             v => v.CreateCollectionAsync("test_edges", 768, It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
     [TestMethod]
-    public async Task InitializeAsync_SkipsCreation_WhenCollectionsExist()
+    public async Task InitializeAsync_SkipsCreation_WhenCollectionsExistAsync()
     {
         // Arrange
-        mockVectorStore.Setup(v => v.CollectionExistsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        this.mockVectorStore.Setup(v => v.CollectionExistsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         // Act
-        await service.InitializeAsync();
+        await this.service.InitializeAsync();
 
         // Assert
-        mockVectorStore.Verify(
+        this.mockVectorStore.Verify(
             v => v.CreateCollectionAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
     [TestMethod]
-    public async Task IndexNodesAsync_IndexesAllNodes()
+    public async Task IndexNodesAsync_IndexesAllNodesAsync()
     {
         // Arrange
         var data = CreateTestHypergraphData();
 
-        mockEmbeddingGenerator
+        this.mockEmbeddingGenerator
             .Setup(e => e.GenerateBatchEmbeddingsAsync(It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((IEnumerable<string> texts, CancellationToken _) =>
                 texts.Select(_ => new float[768]).ToList());
 
         // Act
-        var count = await service.IndexNodesAsync(data);
+        var count = await this.service.IndexNodesAsync(data);
 
         // Assert
         count.Should().Be(2);
-        mockVectorStore.Verify(
+        this.mockVectorStore.Verify(
             v => v.UpsertAsync("test_nodes", It.Is<IEnumerable<VectorPoint>>(p => p.Count() == 2), It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
     [TestMethod]
-    public async Task IndexNodesAsync_ReturnsZero_WhenNoNodes()
+    public async Task IndexNodesAsync_ReturnsZero_WhenNoNodesAsync()
     {
         // Arrange
         var data = new HypergraphData();
 
         // Act
-        var count = await service.IndexNodesAsync(data);
+        var count = await this.service.IndexNodesAsync(data);
 
         // Assert
         count.Should().Be(0);
-        mockVectorStore.Verify(
+        this.mockVectorStore.Verify(
             v => v.UpsertAsync(It.IsAny<string>(), It.IsAny<IEnumerable<VectorPoint>>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
     [TestMethod]
-    public async Task IndexEdgesAsync_IndexesAllEdges()
+    public async Task IndexEdgesAsync_IndexesAllEdgesAsync()
     {
         // Arrange
         var data = CreateTestHypergraphData();
 
-        mockEmbeddingGenerator
+        this.mockEmbeddingGenerator
             .Setup(e => e.GenerateBatchEmbeddingsAsync(It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((IEnumerable<string> texts, CancellationToken _) =>
                 texts.Select(_ => new float[768]).ToList());
 
         // Act
-        var count = await service.IndexEdgesAsync(data);
+        var count = await this.service.IndexEdgesAsync(data);
 
         // Assert
         count.Should().Be(1);
-        mockVectorStore.Verify(
+        this.mockVectorStore.Verify(
             v => v.UpsertAsync("test_edges", It.Is<IEnumerable<VectorPoint>>(p => p.Count() == 1), It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
     [TestMethod]
-    public async Task SearchNodesAsync_ReturnsResults()
+    public async Task SearchNodesAsync_ReturnsResultsAsync()
     {
         // Arrange
         var queryVector = new float[768];
-        mockEmbeddingGenerator
+        this.mockEmbeddingGenerator
             .Setup(e => e.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(queryVector);
 
-        mockVectorStore
+        this.mockVectorStore
             .Setup(v => v.SearchAsync(
                 "test_nodes",
                 It.IsAny<float[]>(),
@@ -158,8 +158,7 @@ public class CodeVectorServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<VectorSearchResult>
             {
-                new VectorSearchResult
-                {
+                new() {
                     Id = "node1",
                     Score = 0.95f,
                     Payload = new Dictionary<string, object>
@@ -175,7 +174,7 @@ public class CodeVectorServiceTests
             });
 
         // Act
-        var results = await service.SearchNodesAsync("find test class", limit: 10);
+        var results = await this.service.SearchNodesAsync("find test class", limit: 10);
 
         // Assert
         results.Should().HaveCount(1);
@@ -187,15 +186,15 @@ public class CodeVectorServiceTests
     }
 
     [TestMethod]
-    public async Task SearchNodesAsync_AppliesFilter()
+    public async Task SearchNodesAsync_AppliesFilterAsync()
     {
         // Arrange
         var queryVector = new float[768];
-        mockEmbeddingGenerator
+        this.mockEmbeddingGenerator
             .Setup(e => e.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(queryVector);
 
-        mockVectorStore
+        this.mockVectorStore
             .Setup(v => v.SearchAsync(
                 It.IsAny<string>(),
                 It.IsAny<float[]>(),
@@ -207,10 +206,10 @@ public class CodeVectorServiceTests
         var filter = new CodeSearchFilter { Language = "C#" };
 
         // Act
-        await service.SearchNodesAsync("test", filter: filter);
+        await this.service.SearchNodesAsync("test", filter: filter);
 
         // Assert
-        mockVectorStore.Verify(
+        this.mockVectorStore.Verify(
             v => v.SearchAsync(
                 It.IsAny<string>(),
                 It.IsAny<float[]>(),
@@ -221,15 +220,15 @@ public class CodeVectorServiceTests
     }
 
     [TestMethod]
-    public async Task SearchEdgesAsync_ReturnsResults()
+    public async Task SearchEdgesAsync_ReturnsResultsAsync()
     {
         // Arrange
         var queryVector = new float[768];
-        mockEmbeddingGenerator
+        this.mockEmbeddingGenerator
             .Setup(e => e.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(queryVector);
 
-        mockVectorStore
+        this.mockVectorStore
             .Setup(v => v.SearchAsync(
                 "test_edges",
                 It.IsAny<float[]>(),
@@ -238,8 +237,7 @@ public class CodeVectorServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<VectorSearchResult>
             {
-                new VectorSearchResult
-                {
+                new() {
                     Id = "edge1",
                     Score = 0.88f,
                     Payload = new Dictionary<string, object>
@@ -252,7 +250,7 @@ public class CodeVectorServiceTests
             });
 
         // Act
-        var results = await service.SearchEdgesAsync("method call");
+        var results = await this.service.SearchEdgesAsync("method call");
 
         // Assert
         results.Should().HaveCount(1);
@@ -262,18 +260,18 @@ public class CodeVectorServiceTests
     }
 
     [TestMethod]
-    public async Task GetStatisticsAsync_ReturnsCorrectCounts()
+    public async Task GetStatisticsAsync_ReturnsCorrectCountsAsync()
     {
         // Arrange
-        mockVectorStore
+        this.mockVectorStore
             .Setup(v => v.CountAsync("test_nodes", It.IsAny<CancellationToken>()))
             .ReturnsAsync(100);
-        mockVectorStore
+        this.mockVectorStore
             .Setup(v => v.CountAsync("test_edges", It.IsAny<CancellationToken>()))
             .ReturnsAsync(50);
 
         // Act
-        var stats = await service.GetStatisticsAsync();
+        var stats = await this.service.GetStatisticsAsync();
 
         // Assert
         stats.NodesCollection.Should().Be("test_nodes");
@@ -285,11 +283,11 @@ public class CodeVectorServiceTests
     }
 
     [TestMethod]
-    public async Task ClearAsync_DeletesAndRecreatesCollections()
+    public async Task ClearAsync_DeletesAndRecreatesCollectionsAsync()
     {
         // Arrange
         var callCount = 0;
-        mockVectorStore.Setup(v => v.CollectionExistsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        this.mockVectorStore.Setup(v => v.CollectionExistsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(() =>
             {
                 // First 2 calls (for delete check) return true, next 2 (for create check) return false
@@ -298,16 +296,16 @@ public class CodeVectorServiceTests
             });
 
         // Act
-        await service.ClearAsync();
+        await this.service.ClearAsync();
 
         // Assert
-        mockVectorStore.Verify(
+        this.mockVectorStore.Verify(
             v => v.DeleteCollectionAsync("test_nodes", It.IsAny<CancellationToken>()),
             Times.Once);
-        mockVectorStore.Verify(
+        this.mockVectorStore.Verify(
             v => v.DeleteCollectionAsync("test_edges", It.IsAny<CancellationToken>()),
             Times.Once);
-        mockVectorStore.Verify(
+        this.mockVectorStore.Verify(
             v => v.CreateCollectionAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Exactly(2));
     }
@@ -316,21 +314,21 @@ public class CodeVectorServiceTests
     public void Dispose_DisposesUnderlyingServices()
     {
         // Act
-        service.Dispose();
+        this.service.Dispose();
 
         // Assert
-        mockVectorStore.Verify(v => v.Dispose(), Times.Once);
-        mockEmbeddingGenerator.Verify(e => e.Dispose(), Times.Once);
+        this.mockVectorStore.Verify(v => v.Dispose(), Times.Once);
+        this.mockEmbeddingGenerator.Verify(e => e.Dispose(), Times.Once);
     }
 
     [TestMethod]
-    public async Task DisposedService_ThrowsObjectDisposedException()
+    public async Task DisposedService_ThrowsObjectDisposedExceptionAsync()
     {
         // Arrange
-        service.Dispose();
+        this.service.Dispose();
 
         // Act & Assert
-        var act = () => service.InitializeAsync();
+        var act = () => this.service.InitializeAsync();
         await act.Should().ThrowAsync<ObjectDisposedException>();
     }
 
@@ -361,20 +359,20 @@ public class CodeVectorServiceTests
                     LineEnd = 8
                 }
             },
-            Hyperedges = new List<Hyperedge>
-            {
+            Hyperedges =
+            [
                 new Hyperedge
                 {
                     Id = "edge1",
                     EdgeType = HyperedgeType.MethodInvocation,
-                    NodeIds = new List<string> { "node1", "node2" },
+                    NodeIds = ["node1", "node2"],
                     Roles = new Dictionary<string, string>
                     {
                         ["node1"] = "caller",
                         ["node2"] = "callee"
                     }
                 }
-            }
+            ]
         };
     }
 }

@@ -41,10 +41,10 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = string.Empty,
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "node-1" }
-            }
+            ]
         };
 
         // Act
@@ -63,10 +63,10 @@ public class WorkflowValidatorTests
         {
             WorkflowId = "wf-001",
             WorkflowName = string.Empty,
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "node-1" }
-            }
+            ]
         };
 
         // Act
@@ -83,7 +83,7 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>()
+            Nodes = []
         };
 
         // Act
@@ -101,11 +101,11 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "node-1", },
                 new PowerShellScriptNodeDefinition { NodeId = "node-1", }
-            }
+            ]
         };
 
         // Act
@@ -123,10 +123,10 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = string.Empty, }
-            }
+            ]
         };
 
         // Act
@@ -145,10 +145,10 @@ public class WorkflowValidatorTests
         {
             WorkflowId = "wf-001",
             EntryPointNodeId = "non-existent",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "node-1", }
-            }
+            ]
         };
 
         // Act
@@ -166,14 +166,14 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "node-1",}
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "non-existent", TargetNodeId = "node-1" }
-            }
+            ]
         };
 
         // Act
@@ -191,14 +191,14 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "node-1",  }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "node-1", TargetNodeId = "non-existent" }
-            }
+            ]
         };
 
         // Act
@@ -216,14 +216,14 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "node-1",  }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = string.Empty, TargetNodeId = "node-1" }
-            }
+            ]
         };
 
         // Act
@@ -241,14 +241,14 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "node-1",  }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "node-1", TargetNodeId = string.Empty }
-            }
+            ]
         };
 
         // Act
@@ -266,14 +266,14 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "node-1",  }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "node-1", TargetNodeId = "node-1" }
-            }
+            ]
         };
 
         // Act
@@ -290,18 +290,18 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "A",  },
                 new CSharpScriptNodeDefinition { NodeId = "B",  },
                 new CSharpScriptNodeDefinition { NodeId = "C",  }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "A", TargetNodeId = "B" },
                 new NodeConnection { SourceNodeId = "B", TargetNodeId = "C" },
                 new NodeConnection { SourceNodeId = "C", TargetNodeId = "A" }
-            }
+            ]
         };
 
         // Act
@@ -319,20 +319,20 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "A",  },
                 new CSharpScriptNodeDefinition { NodeId = "B",  },
                 new CSharpScriptNodeDefinition { NodeId = "C",  },
                 new CSharpScriptNodeDefinition { NodeId = "D",  }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "A", TargetNodeId = "B" },
                 new NodeConnection { SourceNodeId = "B", TargetNodeId = "C" },
                 new NodeConnection { SourceNodeId = "C", TargetNodeId = "D" },
                 new NodeConnection { SourceNodeId = "D", TargetNodeId = "B" }
-            }
+            ]
         };
 
         // Act
@@ -350,17 +350,17 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "A",  },
                 new CSharpScriptNodeDefinition { NodeId = "B",  },
                 new CSharpScriptNodeDefinition { NodeId = "C",  }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "A", TargetNodeId = "B" },
                 new NodeConnection { SourceNodeId = "B", TargetNodeId = "C" }
-            }
+            ]
         };
 
         // Act
@@ -377,16 +377,16 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "A",  },
                 new CSharpScriptNodeDefinition { NodeId = "B",  }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "A", TargetNodeId = "B" },
                 new NodeConnection { SourceNodeId = "B", TargetNodeId = "A" }
-            }
+            ]
         };
 
         // Act
@@ -403,17 +403,17 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "A",  },
                 new CSharpScriptNodeDefinition { NodeId = "B",  },
                 new CSharpScriptNodeDefinition { NodeId = "C",  }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "A", TargetNodeId = "C" },
                 new NodeConnection { SourceNodeId = "B", TargetNodeId = "C" }
-            }
+            ]
         };
 
         // Act
@@ -431,11 +431,11 @@ public class WorkflowValidatorTests
         {
             WorkflowId = "wf-001",
             EntryPointNodeId = "A",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "A",  },
                 new CSharpScriptNodeDefinition { NodeId = "B",  }
-            }
+            ]
         };
 
         // Act
@@ -453,10 +453,10 @@ public class WorkflowValidatorTests
         {
             WorkflowId = "wf-001",
             MaxConcurrency = -1,
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "node-1",  }
-            }
+            ]
         };
 
         // Act
@@ -475,10 +475,10 @@ public class WorkflowValidatorTests
         {
             WorkflowId = "wf-001",
             TimeoutSeconds = -1,
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "node-1",  }
-            }
+            ]
         };
 
         // Act
@@ -496,18 +496,18 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "A",  },
                 new CSharpScriptNodeDefinition { NodeId = "B",  },
                 new CSharpScriptNodeDefinition { NodeId = "C",  }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "A", TargetNodeId = "B", IsEnabled = true },
                 new NodeConnection { SourceNodeId = "B", TargetNodeId = "C", IsEnabled = true },
                 new NodeConnection { SourceNodeId = "C", TargetNodeId = "A", IsEnabled = false }
-            }
+            ]
         };
 
         // Act
@@ -526,8 +526,8 @@ public class WorkflowValidatorTests
             WorkflowId = "wf-valid",
             WorkflowName = "Valid Workflow",
             EntryPointNodeId = "start",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "start",
@@ -543,12 +543,12 @@ public class WorkflowValidatorTests
                     NodeId = "end",
                     ScriptPath = "TestData/Scripts/end.csx"
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "start", TargetNodeId = "process" },
                 new NodeConnection { SourceNodeId = "process", TargetNodeId = "end" }
-            }
+            ]
         };
 
         // Act
@@ -588,14 +588,14 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "node-1",
                     ScriptPath = @"TestData\Scripts\script.csx"
                 }
-            },
+            ],
             Connections = null!
         };
 
@@ -613,13 +613,13 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpTaskNodeDefinition
                 {
                     NodeId = "task-node-1",
                 }
-            }
+            ]
         };
 
         // Act
@@ -637,14 +637,14 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpTaskNodeDefinition
                 {
                     NodeId = "task-node-1",
                     ScriptContent = "return \"Hello World\";",
                 }
-            }
+            ]
         };
 
         // Act
@@ -662,14 +662,14 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "script-node-1",
                     // Missing ScriptPath property
                 }
-            }
+            ]
         };
 
         // Act
@@ -687,14 +687,14 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new PowerShellTaskNodeDefinition
                 {
                     NodeId = "ps-task-1",
                     ScriptContent = "Write-Output 'Hello World'",
                 }
-            }
+            ]
         };
 
         // Act
@@ -711,13 +711,13 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new IfElseNodeDefinition
                 {
                     NodeId = "if-node-1",
                 }
-            }
+            ]
         };
 
         // Act
@@ -735,13 +735,13 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new ForEachNodeDefinition
                 {
                     NodeId = "foreach-node-1",
                 }
-            }
+            ]
         };
 
         // Act
@@ -759,15 +759,15 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpTaskNodeDefinition
                 {
                     NodeId = "node-1",
                     MaxConcurrentExecutions = -1, // Invalid
                     ScriptContent = "return 1;",
                 }
-            }
+            ]
         };
 
         // Act
@@ -785,8 +785,8 @@ public class WorkflowValidatorTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "wf-001",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpTaskNodeDefinition
                 {
                     NodeId = "node-1",
@@ -799,7 +799,7 @@ public class WorkflowValidatorTests
                 {
                     NodeId = "node-3",
                 }
-            }
+            ]
         };
 
         // Act

@@ -13,7 +13,7 @@ namespace Common.Diagnostics.EtwParser.Schema
     /// </summary>
     public static class TypeMapper
     {
-        private static readonly Dictionary<Type, string> KustoTypeMap = new()
+        private static readonly Dictionary<Type, string> kustoTypeMap = new()
         {
             { typeof(string), "string" },
             { typeof(bool), "bool" },
@@ -56,7 +56,7 @@ namespace Common.Diagnostics.EtwParser.Schema
                 return "dynamic";
             }
 
-            return KustoTypeMap.GetValueOrDefault(type, "string");
+            return kustoTypeMap.GetValueOrDefault(type, "string");
         }
 
         /// <summary>

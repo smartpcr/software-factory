@@ -19,21 +19,21 @@ using ExecutionEngine.Workflow;
 /// </summary>
 public class ContainerNode : ExecutableNodeBase
 {
-    private readonly Dictionary<string, INode> childNodeInstances = new Dictionary<string, INode>();
-    private ChildCompletionState completionState = new ChildCompletionState();
-    private List<NodeDefinition> entryPointNodes = new List<NodeDefinition>();
-    private readonly NodeFactory nodeFactory = new NodeFactory();
-    private readonly object stateLock = new object();
+    private readonly Dictionary<string, INode> childNodeInstances = [];
+    private ChildCompletionState completionState = new();
+    private List<NodeDefinition> entryPointNodes = [];
+    private readonly NodeFactory nodeFactory = new();
+    private readonly object stateLock = new();
 
     /// <summary>
     /// Gets or sets the child nodes contained within this container.
     /// </summary>
-    public List<NodeDefinition> ChildNodes { get; set; } = new List<NodeDefinition>();
+    public List<NodeDefinition> ChildNodes { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the connections between child nodes (defines internal flow).
     /// </summary>
-    public List<NodeConnection> ChildConnections{ get; set; } = new List<NodeConnection>();
+    public List<NodeConnection> ChildConnections { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the execution mode for children.
@@ -103,10 +103,10 @@ public class ContainerNode : ExecutableNodeBase
             this.completionState = new ChildCompletionState
             {
                 TotalChildren = this.ChildNodes.Count,
-                ChildInstances = new Dictionary<string, NodeInstance>(),
-                CompletedChildren = new HashSet<string>(),
-                PendingChildren = new HashSet<string>(this.ChildNodes.Select(n => n.NodeId)),
-                RunningChildren = new HashSet<string>()
+                ChildInstances = [],
+                CompletedChildren = [],
+                PendingChildren = [.. this.ChildNodes.Select(n => n.NodeId)],
+                RunningChildren = []
             };
 
             // Phase 1: Start entry-point children
@@ -280,9 +280,7 @@ public class ContainerNode : ExecutableNodeBase
         var nodesWithOutgoing = new HashSet<string>(this.ChildConnections.Select(c => c.SourceNodeId));
 
         // Entry points: nodes with no incoming connections
-        this.entryPointNodes = this.ChildNodes
-            .Where(n => !nodesWithIncoming.Contains(n.NodeId))
-            .ToList();
+        this.entryPointNodes = [.. this.ChildNodes.Where(n => !nodesWithIncoming.Contains(n.NodeId))];
 
         // Exit points: nodes with no outgoing connections
         this.ChildNodes
@@ -292,7 +290,7 @@ public class ContainerNode : ExecutableNodeBase
         // If no connections exist, all nodes are both entry and exit points
         if (this.ChildConnections.Count == 0)
         {
-            this.entryPointNodes = new List<NodeDefinition>(this.ChildNodes);
+            this.entryPointNodes = [.. this.ChildNodes];
             new List<NodeDefinition>(this.ChildNodes);
         }
     }
@@ -309,8 +307,7 @@ public class ContainerNode : ExecutableNodeBase
         foreach (var childDef in this.ChildNodes)
         {
             // If child has a relative assembly path and parent has an absolute path, use parent's path
-            var csharpChildDef = childDef as CSharpNodeDefinition;
-            if (csharpChildDef != null &&
+            if (childDef is CSharpNodeDefinition csharpChildDef &&
                 !string.IsNullOrEmpty(csharpChildDef.AssemblyPath) &&
                 !string.IsNullOrEmpty(parentAssemblyPath) &&
                 csharpChildDef.AssemblyPath.StartsWith("./"))
@@ -326,7 +323,7 @@ public class ContainerNode : ExecutableNodeBase
     /// <summary>
     /// Creates internal router for routing messages between children.
     /// </summary>
-    private void CreateInternalRouter()
+    private static void CreateInternalRouter()
     {
         // Internal router is not needed in this implementation
         // We manually route child completion messages based on ChildConnections
@@ -351,7 +348,7 @@ public class ContainerNode : ExecutableNodeBase
         var childContext = new NodeExecutionContext
         {
             InputData = new Dictionary<string, object>(parentContext.OutputData),
-            OutputData = new Dictionary<string, object>()
+            OutputData = []
         };
 
         // Mark as running
@@ -463,11 +460,10 @@ public class ContainerNode : ExecutableNodeBase
         List<KeyValuePair<string, NodeInstance>> newlyCompleted;
         lock (this.stateLock)
         {
-            newlyCompleted = this.completionState.ChildInstances
+            newlyCompleted = [.. this.completionState.ChildInstances
                 .Where(kvp => kvp.Value != null &&
                               kvp.Value.Status == NodeExecutionStatus.Completed &&
-                              this.completionState.CompletedChildren.Contains(kvp.Key))
-                .ToList();
+                              this.completionState.CompletedChildren.Contains(kvp.Key))];
         }
 
         foreach (var (childId, childInstance) in newlyCompleted)
@@ -497,7 +493,7 @@ public class ContainerNode : ExecutableNodeBase
                 {
                     var parentContext = new NodeExecutionContext
                     {
-                        OutputData = childInstance.ExecutionContext?.OutputData ?? new Dictionary<string, object>()
+                        OutputData = childInstance.ExecutionContext?.OutputData ?? []
                     };
 
                     await this.StartChildNodeAsync(targetDef, workflowContext, parentContext, cancellationToken);
@@ -557,13 +553,13 @@ public class ContainerNode : ExecutableNodeBase
     /// </summary>
     private class ChildCompletionState
     {
-        public Dictionary<string, NodeInstance> ChildInstances { get; set; } = new Dictionary<string, NodeInstance>();
+        public Dictionary<string, NodeInstance> ChildInstances { get; set; } = [];
 
-        public HashSet<string> CompletedChildren { get; set; } = new HashSet<string>();
+        public HashSet<string> CompletedChildren { get; set; } = [];
 
-        public HashSet<string> PendingChildren { get; set; } = new HashSet<string>();
+        public HashSet<string> PendingChildren { get; set; } = [];
 
-        public HashSet<string> RunningChildren { get; set; } = new HashSet<string>();
+        public HashSet<string> RunningChildren { get; set; } = [];
 
         public int TotalChildren { get; set; }
 

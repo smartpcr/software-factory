@@ -19,8 +19,7 @@ public class InMemoryCheckpointStorage : ICheckpointStorage
     /// <inheritdoc/>
     public Task SaveCheckpointAsync(WorkflowCheckpoint checkpoint, CancellationToken cancellationToken = default)
     {
-        if (checkpoint == null)
-            throw new ArgumentNullException(nameof(checkpoint));
+        ArgumentNullException.ThrowIfNull(checkpoint);
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -35,7 +34,7 @@ public class InMemoryCheckpointStorage : ICheckpointStorage
             Variables = new Dictionary<string, object>(checkpoint.Variables),
             NodeStates = new Dictionary<string, NodeInstanceState>(checkpoint.NodeStates),
             MessageQueues = new Dictionary<string, List<SerializedMessage>>(checkpoint.MessageQueues),
-            ErrorMessages = new List<string>(checkpoint.ErrorMessages),
+            ErrorMessages = [.. checkpoint.ErrorMessages],
             Metadata = new Dictionary<string, string>(checkpoint.Metadata)
         };
 
@@ -62,7 +61,7 @@ public class InMemoryCheckpointStorage : ICheckpointStorage
                 Variables = new Dictionary<string, object>(checkpoint.Variables),
                 NodeStates = new Dictionary<string, NodeInstanceState>(checkpoint.NodeStates),
                 MessageQueues = new Dictionary<string, List<SerializedMessage>>(checkpoint.MessageQueues),
-                ErrorMessages = new List<string>(checkpoint.ErrorMessages),
+                ErrorMessages = [.. checkpoint.ErrorMessages],
                 Metadata = new Dictionary<string, string>(checkpoint.Metadata)
             };
 
@@ -97,7 +96,7 @@ public class InMemoryCheckpointStorage : ICheckpointStorage
             Variables = new Dictionary<string, object>(checkpoint.Variables),
             NodeStates = new Dictionary<string, NodeInstanceState>(checkpoint.NodeStates),
             MessageQueues = new Dictionary<string, List<SerializedMessage>>(checkpoint.MessageQueues),
-            ErrorMessages = new List<string>(checkpoint.ErrorMessages),
+            ErrorMessages = [.. checkpoint.ErrorMessages],
             Metadata = new Dictionary<string, string>(checkpoint.Metadata)
         }).ToList();
 

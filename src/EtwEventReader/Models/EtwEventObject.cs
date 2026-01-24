@@ -23,7 +23,7 @@ namespace EtwEventReader.Models
         /// <summary>
         /// The payload properties of this traced event.
         /// </summary>
-        private Dictionary<string, object> properties;
+        private readonly Dictionary<string, object> properties;
 
         /// <summary>
         /// Indicator that this event is the last sibling at a certain hierarchy level under a given parent.
@@ -40,8 +40,8 @@ namespace EtwEventReader.Models
         /// </summary>
         public EtwEventObject()
         {
-            this.DefaultDisplayNames = new List<string>();
-            this.properties = new Dictionary<string, object>();
+            this.DefaultDisplayNames = [];
+            this.properties = [];
         }
 
         /// <summary>
@@ -101,7 +101,7 @@ namespace EtwEventReader.Models
         /// <summary>
         /// Gets the list of display names which will be visible by default.
         /// </summary>
-        public List<string> DefaultDisplayNames { get; } = new List<string>();
+        public List<string> DefaultDisplayNames { get; } = [];
 
         /// <summary>
         /// Gets the time the event occurred.
@@ -191,10 +191,7 @@ namespace EtwEventReader.Models
         {
             child.HierarchyLevel = this.HierarchyLevel + 1;
 
-            if (this.lastSiblingObject != null)
-            {
-                this.lastSiblingObject.IsLastSibling = false;
-            }
+            this.lastSiblingObject?.IsLastSibling = false;
 
             this.lastSiblingObject = child;
             child.IsLastSibling = true;

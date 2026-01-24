@@ -16,7 +16,7 @@ public class VectorModelsTests
         var point = new VectorPoint
         {
             Id = "test-id",
-            Vector = new[] { 0.1f, 0.2f, 0.3f }
+            Vector = [0.1f, 0.2f, 0.3f]
         };
 
         // Assert
@@ -32,7 +32,7 @@ public class VectorModelsTests
         var point = new VectorPoint
         {
             Id = "test-id",
-            Vector = new[] { 0.1f },
+            Vector = [0.1f],
             Payload = new Dictionary<string, object>
             {
                 ["name"] = "TestClass",
@@ -75,8 +75,8 @@ public class VectorModelsTests
         // Arrange & Act
         var filter = new VectorFilter
         {
-            Must = new List<FilterCondition>
-            {
+            Must =
+            [
                 new FilterCondition
                 {
                     Field = "language",
@@ -89,7 +89,7 @@ public class VectorModelsTests
                     Operator = FilterOperator.In,
                     Value = new[] { "Class", "Method" }
                 }
-            }
+            ]
         };
 
         // Assert

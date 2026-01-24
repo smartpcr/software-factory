@@ -72,7 +72,7 @@ namespace EtwEventReader.IntegrationTests
                     Console.WriteLine($"  Path: {file}");
                     Console.WriteLine($"  Size: {FormatFileSize(new FileInfo(file).Length)}");
 
-                    var events = processor.GetEvents(new[] { file });
+                    var events = processor.GetEvents([file]);
 
                     if (events.Count == 0)
                     {
@@ -268,7 +268,7 @@ namespace EtwEventReader.IntegrationTests
         /// Prints a sample from the final aggregate file.
         /// </summary>
         /// <param name="outputDirectory">Output directory.</param>
-        private void PrintFinalAggregate(string outputDirectory)
+        private static void PrintFinalAggregate(string outputDirectory)
         {
             var finalAggregatePath = Path.Combine(outputDirectory, "final_aggregate.txt");
             if (!File.Exists(finalAggregatePath))
@@ -299,7 +299,7 @@ namespace EtwEventReader.IntegrationTests
         /// <param name="events">List of events.</param>
         /// <param name="filePath">Path to the file.</param>
         /// <returns>File statistics.</returns>
-        private FileStatistics AnalyzeEvents(List<EtwEventObject> events, string filePath)
+        private static FileStatistics AnalyzeEvents(List<EtwEventObject> events, string filePath)
         {
             var stats = new FileStatistics
             {
@@ -346,7 +346,7 @@ namespace EtwEventReader.IntegrationTests
         /// Prints statistics for a single file.
         /// </summary>
         /// <param name="stats">File statistics to print.</param>
-        private void PrintFileStatistics(FileStatistics stats)
+        private static void PrintFileStatistics(FileStatistics stats)
         {
             Console.WriteLine($"  Total Events: {stats.TotalEvents:N0}");
             Console.WriteLine($"  Unique Providers: {stats.Providers.Count}");
@@ -389,7 +389,7 @@ namespace EtwEventReader.IntegrationTests
         /// Prints overall summary across all files.
         /// </summary>
         /// <param name="allStatistics">All file statistics.</param>
-        private void PrintOverallSummary(List<FileStatistics> allStatistics)
+        private static void PrintOverallSummary(List<FileStatistics> allStatistics)
         {
             Console.WriteLine("=".PadRight(80, '='));
             Console.WriteLine("OVERALL SUMMARY");
@@ -442,15 +442,15 @@ namespace EtwEventReader.IntegrationTests
         /// </summary>
         /// <param name="bytes">Size in bytes.</param>
         /// <returns>Formatted string.</returns>
-        private string FormatFileSize(long bytes)
+        private static string FormatFileSize(long bytes)
         {
-            string[] sizes = { "B", "KB", "MB", "GB", "TB" };
+            string[] sizes = ["B", "KB", "MB", "GB", "TB"];
             double len = bytes;
             var order = 0;
             while (len >= 1024 && order < sizes.Length - 1)
             {
                 order++;
-                len = len / 1024;
+                len /= 1024;
             }
             return $"{len:0.##} {sizes[order]}";
         }
@@ -463,7 +463,7 @@ namespace EtwEventReader.IntegrationTests
             public string FilePath { get; set; } = string.Empty;
             public string FileName { get; set; } = string.Empty;
             public int TotalEvents { get; set; }
-            public List<ProviderStatistics> Providers { get; set; } = new List<ProviderStatistics>();
+            public List<ProviderStatistics> Providers { get; set; } = [];
         }
 
         /// <summary>
@@ -473,7 +473,7 @@ namespace EtwEventReader.IntegrationTests
         {
             public string ProviderName { get; set; } = string.Empty;
             public int EventCount { get; set; }
-            public List<EventTypeStatistics> EventTypes { get; set; } = new List<EventTypeStatistics>();
+            public List<EventTypeStatistics> EventTypes { get; set; } = [];
         }
 
         /// <summary>

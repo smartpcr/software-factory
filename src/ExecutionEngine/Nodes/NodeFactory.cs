@@ -37,7 +37,7 @@ public class NodeFactory
         var loggerFactory = serviceProvider?.GetService(typeof(ILoggerFactory)) as ILoggerFactory ?? NullLoggerFactory.Instance;
         this.logger = loggerFactory.CreateLogger<NodeFactory>();
 
-        this.assemblyNodeCache = new Dictionary<string, Type>();
+        this.assemblyNodeCache = [];
     }
 
     /// <summary>
@@ -86,7 +86,7 @@ public class NodeFactory
                     node = this.CreateCSharpScriptNode(definition);
                     break;
                 case Enums.RuntimeType.CSharpTask:
-                    node = this.CreateCSharpTaskNode(definition);
+                    node = CreateCSharpTaskNode(definition);
                     break;
                 case Enums.RuntimeType.PowerShell:
                     node = this.CreatePowerShellScriptNode(definition);
@@ -95,25 +95,25 @@ public class NodeFactory
                     node = this.CreatePowerShellTaskNode(definition);
                     break;
                 case Enums.RuntimeType.IfElse:
-                    node = this.CreateIfElseNode(definition);
+                    node = CreateIfElseNode(definition);
                     break;
                 case Enums.RuntimeType.ForEach:
-                    node = this.CreateForEachNode(definition);
+                    node = CreateForEachNode(definition);
                     break;
                 case Enums.RuntimeType.While:
-                    node = this.CreateWhileNode(definition);
+                    node = CreateWhileNode(definition);
                     break;
                 case Enums.RuntimeType.Switch:
-                    node = this.CreateSwitchNode(definition);
+                    node = CreateSwitchNode(definition);
                     break;
                 case Enums.RuntimeType.Subflow:
-                    node = this.CreateSubflowNode(definition);
+                    node = CreateSubflowNode(definition);
                     break;
                 case Enums.RuntimeType.Timer:
-                    node = this.CreateTimerNode(definition);
+                    node = CreateTimerNode(definition);
                     break;
                 case Enums.RuntimeType.Container:
-                    node = this.CreateContainerNode(definition);
+                    node = CreateContainerNode(definition);
                     break;
                 default:
                     this.logger.LogError("Runtime type '{RuntimeType}' is not supported for NodeId {NodeId}", definition.RuntimeType, definition.NodeId);
@@ -142,8 +142,7 @@ public class NodeFactory
     /// <returns>The created node.</returns>
     private ExecutableNodeBase? CreateCSharpNode(NodeDefinition definition)
     {
-        var csharpDef = definition as CSharpNodeDefinition;
-        if (csharpDef == null)
+        if (definition is not CSharpNodeDefinition csharpDef)
         {
             this.logger.LogError("Cannot create CSharp node: definition is not a CSharpNodeDefinition");
             throw new ArgumentException("Definition must be a CSharpNodeDefinition for CSharp runtime type.", nameof(definition));
@@ -192,8 +191,7 @@ public class NodeFactory
     /// <returns>The created node.</returns>
     private ExecutableNodeBase CreateCSharpScriptNode(NodeDefinition definition)
     {
-        var scriptDefinition = definition as CSharpScriptNodeDefinition;
-        if (scriptDefinition == null)
+        if (definition is not CSharpScriptNodeDefinition scriptDefinition)
         {
             this.logger.LogError("Cannot create CSharpScript node: definition is not a CSharpScriptNodeDefinition");
             throw new ArgumentException("Definition must be a CSharpScriptNodeDefinition for CSharpScript runtime type.", nameof(definition));
@@ -207,7 +205,7 @@ public class NodeFactory
     /// </summary>
     /// <param name="definition">The node definition.</param>
     /// <returns>The created node.</returns>
-    private ExecutableNodeBase CreateCSharpTaskNode(NodeDefinition definition)
+    private static ExecutableNodeBase CreateCSharpTaskNode(NodeDefinition definition)
     {
         // CSharpTaskNode supports both inline scripts (via Configuration["script"])
         // and compiled executors (set via SetExecutor after initialization)
@@ -222,8 +220,7 @@ public class NodeFactory
     /// <returns>The created node.</returns>
     private ExecutableNodeBase CreatePowerShellScriptNode(NodeDefinition definition)
     {
-        var scriptDefinition = definition as PowerShellScriptNodeDefinition;
-        if (scriptDefinition == null)
+        if (definition is not PowerShellScriptNodeDefinition scriptDefinition)
         {
             this.logger.LogError("Cannot create PowerShell node: definition is not a PowerShellScriptNodeDefinition");
             throw new ArgumentException("Definition must be a PowerShellScriptNodeDefinition for PowerShell runtime type.", nameof(definition));
@@ -239,8 +236,7 @@ public class NodeFactory
     /// <returns>The created node.</returns>
     private ExecutableNodeBase CreatePowerShellTaskNode(NodeDefinition definition)
     {
-        var psTaskDef = definition as PowerShellTaskNodeDefinition;
-        if (psTaskDef == null)
+        if (definition is not PowerShellTaskNodeDefinition psTaskDef)
         {
             this.logger.LogError("Cannot create PowerShellTask node: definition is not a PowerShellTaskNodeDefinition");
             throw new ArgumentException("Definition must be a PowerShellTaskNodeDefinition for PowerShellTask runtime type.", nameof(definition));
@@ -257,7 +253,7 @@ public class NodeFactory
     /// </summary>
     /// <param name="definition">The node definition.</param>
     /// <returns>The created node.</returns>
-    private ExecutableNodeBase CreateIfElseNode(NodeDefinition definition)
+    private static ExecutableNodeBase CreateIfElseNode(NodeDefinition definition)
     {
         // IfElseNode condition is provided via Configuration["Condition"]
         // Validation happens in Initialize/ExecuteAsync
@@ -269,7 +265,7 @@ public class NodeFactory
     /// </summary>
     /// <param name="definition">The node definition.</param>
     /// <returns>The created ForEach node.</returns>
-    private ExecutableNodeBase CreateForEachNode(NodeDefinition definition)
+    private static ExecutableNodeBase CreateForEachNode(NodeDefinition definition)
     {
         // ForEachNode configuration (CollectionExpression, ItemVariableName) is provided via Configuration
         // Validation happens in Initialize/ExecuteAsync
@@ -281,7 +277,7 @@ public class NodeFactory
     /// </summary>
     /// <param name="definition">The node definition.</param>
     /// <returns>The created While node.</returns>
-    private ExecutableNodeBase CreateWhileNode(NodeDefinition definition)
+    private static ExecutableNodeBase CreateWhileNode(NodeDefinition definition)
     {
         // WhileNode configuration (Condition, MaxIterations) is provided via Configuration
         // Validation happens in Initialize/ExecuteAsync
@@ -293,7 +289,7 @@ public class NodeFactory
     /// </summary>
     /// <param name="definition">The node definition.</param>
     /// <returns>The created Switch node.</returns>
-    private ExecutableNodeBase CreateSwitchNode(NodeDefinition definition)
+    private static ExecutableNodeBase CreateSwitchNode(NodeDefinition definition)
     {
         // SwitchNode configuration (Expression, Cases) is provided via Configuration
         // Validation happens in Initialize/ExecuteAsync
@@ -305,7 +301,7 @@ public class NodeFactory
     /// </summary>
     /// <param name="definition">The node definition.</param>
     /// <returns>The created Subflow node.</returns>
-    private ExecutableNodeBase CreateSubflowNode(NodeDefinition definition)
+    private static ExecutableNodeBase CreateSubflowNode(NodeDefinition definition)
     {
         // SubflowNode configuration (WorkflowFilePath, InputMappings, OutputMappings, Timeout) is provided via Configuration
         // Validation happens in Initialize/ExecuteAsync
@@ -317,7 +313,7 @@ public class NodeFactory
     /// </summary>
     /// <param name="definition">The node definition.</param>
     /// <returns>The created Timer node.</returns>
-    private ExecutableNodeBase CreateTimerNode(NodeDefinition definition)
+    private static ExecutableNodeBase CreateTimerNode(NodeDefinition definition)
     {
         // TimerNode configuration (Schedule, TriggerOnStart) is provided via Configuration
         // Validation happens in Initialize/ExecuteAsync
@@ -329,7 +325,7 @@ public class NodeFactory
     /// </summary>
     /// <param name="definition">The node definition.</param>
     /// <returns>The created Container node.</returns>
-    private ExecutableNodeBase CreateContainerNode(NodeDefinition definition)
+    private static ExecutableNodeBase CreateContainerNode(NodeDefinition definition)
     {
         return new ContainerNode();
     }

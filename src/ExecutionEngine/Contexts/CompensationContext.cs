@@ -13,49 +13,41 @@ namespace ExecutionEngine.Contexts
     /// Provides context information for compensation (undo) operations.
     /// Used in the Saga pattern to rollback completed operations when a workflow fails.
     /// </summary>
-    public class CompensationContext
+    /// <remarks>
+    /// Initializes a new instance of the <see cref="CompensationContext"/> class.
+    /// </remarks>
+    /// <param name="failedNodeId">The ID of the node that failed.</param>
+    /// <param name="failureReason">The exception that caused the failure.</param>
+    /// <param name="failedNodeOutput">The output data from the failed node (if any).</param>
+    public class CompensationContext(string failedNodeId, Exception failureReason, object? failedNodeOutput = null)
     {
-        /// <summary>
-        /// Initializes a new instance of the <see cref="CompensationContext"/> class.
-        /// </summary>
-        /// <param name="failedNodeId">The ID of the node that failed.</param>
-        /// <param name="failureReason">The exception that caused the failure.</param>
-        /// <param name="failedNodeOutput">The output data from the failed node (if any).</param>
-        public CompensationContext(string failedNodeId, Exception failureReason, object? failedNodeOutput = null)
-        {
-            this.FailedNodeId = failedNodeId ?? throw new ArgumentNullException(nameof(failedNodeId));
-            this.FailureReason = failureReason ?? throw new ArgumentNullException(nameof(failureReason));
-            this.FailedNodeOutput = failedNodeOutput;
-            this.NodesToCompensate = new List<string>();
-            this.FailureTimestamp = DateTime.UtcNow;
-        }
 
         /// <summary>
         /// Gets the ID of the node that failed and triggered compensation.
         /// </summary>
-        public string FailedNodeId { get; }
+        public string FailedNodeId { get; } = failedNodeId ?? throw new ArgumentNullException(nameof(failedNodeId));
 
         /// <summary>
         /// Gets the exception that caused the workflow to fail.
         /// </summary>
-        public Exception FailureReason { get; }
+        public Exception FailureReason { get; } = failureReason ?? throw new ArgumentNullException(nameof(failureReason));
 
         /// <summary>
         /// Gets the output data from the failed node, if any.
         /// May be null if the node failed before producing output.
         /// </summary>
-        public object? FailedNodeOutput { get; }
+        public object? FailedNodeOutput { get; } = failedNodeOutput;
 
         /// <summary>
         /// Gets the timestamp when the failure occurred.
         /// </summary>
-        public DateTime FailureTimestamp { get; }
+        public DateTime FailureTimestamp { get; } = DateTime.UtcNow;
 
         /// <summary>
         /// Gets the list of node IDs that need to be compensated.
         /// Populated in reverse order of completion.
         /// </summary>
-        public List<string> NodesToCompensate { get; }
+        public List<string> NodesToCompensate { get; } = [];
 
         /// <summary>
         /// Gets or sets a value indicating whether compensation should be partial.

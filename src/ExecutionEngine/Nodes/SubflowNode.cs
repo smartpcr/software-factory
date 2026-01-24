@@ -42,7 +42,7 @@ public class SubflowNode : ExecutableNodeBase
     /// Value: Child variable name
     /// Example: { "parentItemId" -> "itemId", "parentUserId" -> "userId" }
     /// </summary>
-    public Dictionary<string, string> InputMappings { get; set; } = new Dictionary<string, string>();
+    public Dictionary<string, string> InputMappings { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the output variable mappings from child to parent.
@@ -50,7 +50,7 @@ public class SubflowNode : ExecutableNodeBase
     /// Value: Parent variable name
     /// Example: { "result" -> "childResult", "status" -> "childStatus" }
     /// </summary>
-    public Dictionary<string, string> OutputMappings { get; set; } = new Dictionary<string, string>();
+    public Dictionary<string, string> OutputMappings { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the timeout for child workflow execution.
@@ -432,7 +432,7 @@ public class SubflowNode : ExecutableNodeBase
             // Check child workflow execution status
             if (this.ChildWorkflowContext.Status == WorkflowExecutionStatus.Failed)
             {
-                var childErrors = this.GetChildWorkflowErrors(this.ChildWorkflowContext, engine);
+                var childErrors = GetChildWorkflowErrors(this.ChildWorkflowContext, engine);
                 throw new InvalidOperationException(
                     $"Child workflow '{childWorkflowDef.WorkflowId}' failed with errors:{Environment.NewLine}{childErrors}");
             }
@@ -538,7 +538,7 @@ public class SubflowNode : ExecutableNodeBase
     /// <param name="childContext">Child workflow context.</param>
     /// <param name="engine">Workflow engine that executed the child.</param>
     /// <returns>Formatted error message.</returns>
-    private string GetChildWorkflowErrors(WorkflowExecutionContext childContext, WorkflowEngine engine)
+    private static string GetChildWorkflowErrors(WorkflowExecutionContext childContext, WorkflowEngine engine)
     {
         var errors = new List<string>();
 
@@ -550,6 +550,6 @@ public class SubflowNode : ExecutableNodeBase
             errors.Add($"  Node '{failedInstance.NodeId}': {failedInstance.ErrorMessage}");
         }
 
-        return errors.Any() ? string.Join(Environment.NewLine, errors) : "Unknown error";
+        return errors.Count != 0 ? string.Join(Environment.NewLine, errors) : "Unknown error";
     }
 }

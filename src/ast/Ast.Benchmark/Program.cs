@@ -4,6 +4,8 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+namespace Ast.Benchmark;
+
 using Ast.Benchmark.Benchmarks;
 using Ast.Benchmark.Services;
 using Ast.GraphDb;
@@ -14,20 +16,18 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Spectre.Console;
 
-namespace Ast.Benchmark;
-
 public class Program
 {
     public static async Task<int> Main(string[] args)
     {
         return await Parser.Default.ParseArguments<BenchmarkOptions, InteractiveOptions>(args)
             .MapResult(
-                (BenchmarkOptions opts) => RunBenchmarks(opts),
-                (InteractiveOptions opts) => RunInteractive(opts),
+                (BenchmarkOptions opts) => RunBenchmarksAsync(opts),
+                (InteractiveOptions opts) => RunInteractiveAsync(opts),
                 errs => Task.FromResult(1));
     }
 
-    private static Task<int> RunBenchmarks(BenchmarkOptions options)
+    private static Task<int> RunBenchmarksAsync(BenchmarkOptions options)
     {
         AnsiConsole.MarkupLine("[bold blue]AST Graph Benchmark Runner[/]");
         AnsiConsole.WriteLine();
@@ -64,7 +64,7 @@ public class Program
         return Task.FromResult(0);
     }
 
-    private static async Task<int> RunInteractive(InteractiveOptions options)
+    private static async Task<int> RunInteractiveAsync(InteractiveOptions options)
     {
         AnsiConsole.MarkupLine("[bold blue]AST Graph Interactive Benchmark[/]");
         AnsiConsole.WriteLine();
@@ -230,6 +230,8 @@ public class Program
         return 0;
     }
 
+    private static readonly string[] filter = new[] { "class" };
+
     private static async Task RunSampleQueriesAsync(Neo4jGraphStore store)
     {
         AnsiConsole.WriteLine();
@@ -251,7 +253,7 @@ public class Program
 
         // Query 2: Get nodes by type
         sw.Restart();
-        var classNodes = await store.GetNodesAsync(new NodeFilter { NodeTypes = new[] { "class" } }, limit: 50);
+        var classNodes = await store.GetNodesAsync(new NodeFilter { NodeTypes = filter }, limit: 50);
         sw.Stop();
         AnsiConsole.MarkupLine($"[dim]Get class nodes (limit 50): {sw.ElapsedMilliseconds}ms, found {classNodes.Count} nodes[/]");
 

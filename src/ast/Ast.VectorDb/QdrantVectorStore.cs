@@ -6,6 +6,8 @@
 
 namespace Ast.VectorDb;
 
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Qdrant.Client;
@@ -131,7 +133,7 @@ public sealed class QdrantVectorStore : IVectorStore
 
         var qdrantPoints = pointsList.Select(p => new PointStruct
         {
-            Id = new PointId { Uuid = p.Id },
+            Id = new PointId { Uuid = ToUuid(p.Id) },
             Vectors = p.Vector,
             Payload = { ConvertPayload(p.Payload) }
         }).ToList();
@@ -185,7 +187,7 @@ public sealed class QdrantVectorStore : IVectorStore
         {
             var results = await this.client.RetrieveAsync(
                 collectionName: collectionName,
-                ids: new[] { new PointId { Uuid = id } },
+                ids: new[] { new PointId { Uuid = ToUuid(id) } },
                 withPayload: true,
                 withVectors: true,
                 cancellationToken: cancellationToken);
@@ -199,7 +201,7 @@ public sealed class QdrantVectorStore : IVectorStore
             return new VectorPoint
             {
                 Id = point.Id.Uuid,
-                Vector = point.Vectors.Vector.Data.ToArray(),
+                Vector = [.. point.Vectors.Vector.Data],
                 Payload = ConvertPayloadFromQdrant(point.Payload)
             };
         }
@@ -235,7 +237,7 @@ public sealed class QdrantVectorStore : IVectorStore
                 {
                     HasId = new HasIdCondition
                     {
-                        HasId = { idsList.Select(id => new PointId { Uuid = id }) }
+                        HasId = { idsList.Select(id => new PointId { Uuid = ToUuid(id) }) }
                     }
                 }
             }
@@ -428,5 +430,58 @@ public sealed class QdrantVectorStore : IVectorStore
                 }
             }
         };
+    }
+
+    /// <summary>
+    /// Converts a string ID to a deterministic UUID.
+    /// If the ID is already a valid UUID, it is returned as-is.
+    /// Otherwise, a UUID v5 (SHA-1 based) is generated from the string.
+    /// </summary>
+    /// <param name="id">The string ID to convert.</param>
+    /// <returns>A valid UUID string.</returns>
+    private static string ToUuid(string id)
+    {
+        // If it's already a valid GUID, return it
+        if (Guid.TryParse(id, out var existingGuid))
+        {
+            return existingGuid.ToString();
+        }
+
+        // Generate a deterministic UUID v5 from the string ID
+        // Using a namespace UUID for AST nodes
+        var namespaceId = new Guid("6ba7b810-9dad-11d1-80b4-00c04fd430c8"); // URL namespace UUID
+
+        // Compute SHA-1 hash of namespace + name
+        var namespaceBytes = namespaceId.ToByteArray();
+        SwapByteOrder(namespaceBytes);
+
+        var nameBytes = Encoding.UTF8.GetBytes(id);
+        var data = new byte[namespaceBytes.Length + nameBytes.Length];
+        Buffer.BlockCopy(namespaceBytes, 0, data, 0, namespaceBytes.Length);
+        Buffer.BlockCopy(nameBytes, 0, data, namespaceBytes.Length, nameBytes.Length);
+
+        byte[] hash;
+        hash = SHA1.HashData(data);
+
+        // Set version (5) and variant bits
+        var newGuid = new byte[16];
+        Array.Copy(hash, 0, newGuid, 0, 16);
+
+        newGuid[6] = (byte)((newGuid[6] & 0x0F) | 0x50); // Version 5
+        newGuid[8] = (byte)((newGuid[8] & 0x3F) | 0x80); // Variant
+
+        SwapByteOrder(newGuid);
+        return new Guid(newGuid).ToString();
+    }
+
+    /// <summary>
+    /// Swaps byte order for UUID byte arrays between .NET and RFC 4122 format.
+    /// </summary>
+    private static void SwapByteOrder(byte[] guid)
+    {
+        (guid[0], guid[3]) = (guid[3], guid[0]);
+        (guid[1], guid[2]) = (guid[2], guid[1]);
+        (guid[4], guid[5]) = (guid[5], guid[4]);
+        (guid[6], guid[7]) = (guid[7], guid[6]);
     }
 }

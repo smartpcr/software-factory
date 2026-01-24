@@ -100,10 +100,7 @@ public class WorkflowSerializer
     /// <returns>JSON string representation of the workflow.</returns>
     public string ToJson(WorkflowDefinition workflow)
     {
-        if (workflow == null)
-        {
-            throw new ArgumentNullException(nameof(workflow));
-        }
+        ArgumentNullException.ThrowIfNull(workflow);
 
         return JsonSerializer.Serialize(workflow, this.jsonOptions);
     }
@@ -120,12 +117,7 @@ public class WorkflowSerializer
             throw new ArgumentException("JSON string cannot be null or empty.", nameof(json));
         }
 
-        var workflow = JsonSerializer.Deserialize<WorkflowDefinition>(json, this.jsonOptions);
-        if (workflow == null)
-        {
-            throw new InvalidOperationException("Failed to deserialize workflow from JSON.");
-        }
-
+        var workflow = JsonSerializer.Deserialize<WorkflowDefinition>(json, this.jsonOptions) ?? throw new InvalidOperationException("Failed to deserialize workflow from JSON.");
         return workflow;
     }
 
@@ -136,10 +128,7 @@ public class WorkflowSerializer
     /// <returns>YAML string representation of the workflow.</returns>
     public string ToYaml(WorkflowDefinition workflow)
     {
-        if (workflow == null)
-        {
-            throw new ArgumentNullException(nameof(workflow));
-        }
+        ArgumentNullException.ThrowIfNull(workflow);
 
         return this.yamlSerializer.Serialize(workflow);
     }
@@ -156,12 +145,7 @@ public class WorkflowSerializer
             throw new ArgumentException("YAML string cannot be null or empty.", nameof(yaml));
         }
 
-        var workflow = this.yamlDeserializer.Deserialize<WorkflowDefinition>(yaml);
-        if (workflow == null)
-        {
-            throw new InvalidOperationException("Failed to deserialize workflow from YAML.");
-        }
-
+        var workflow = this.yamlDeserializer.Deserialize<WorkflowDefinition>(yaml) ?? throw new InvalidOperationException("Failed to deserialize workflow from YAML.");
         return workflow;
     }
 
@@ -173,10 +157,7 @@ public class WorkflowSerializer
     /// <param name="filePath">The file path where the workflow should be saved.</param>
     public void SaveToFile(WorkflowDefinition workflow, string filePath)
     {
-        if (workflow == null)
-        {
-            throw new ArgumentNullException(nameof(workflow));
-        }
+        ArgumentNullException.ThrowIfNull(workflow);
 
         if (string.IsNullOrWhiteSpace(filePath))
         {
@@ -184,22 +165,12 @@ public class WorkflowSerializer
         }
 
         var extension = Path.GetExtension(filePath).ToLowerInvariant();
-        string content;
-
-        switch (extension)
+        var content = extension switch
         {
-            case ".json":
-                content = this.ToJson(workflow);
-                break;
-
-            case ".yaml":
-            case ".yml":
-                content = this.ToYaml(workflow);
-                break;
-
-            default:
-                throw new NotSupportedException($"File extension '{extension}' is not supported. Use .json, .yaml, or .yml");
-        }
+            ".json" => this.ToJson(workflow),
+            ".yaml" or ".yml" => this.ToYaml(workflow),
+            _ => throw new NotSupportedException($"File extension '{extension}' is not supported. Use .json, .yaml, or .yml"),
+        };
 
         // Ensure directory exists
         var directory = Path.GetDirectoryName(filePath);

@@ -188,38 +188,30 @@ public enum LspServerState
 /// <summary>
 /// Progress information for LSP enrichment.
 /// </summary>
-public class EnrichmentProgress
+public class EnrichmentProgress(int processed, int total, string currentFile, string? currentItem = null)
 {
     /// <summary>
     /// Number of items processed.
     /// </summary>
-    public int Processed { get; init; }
+    public int Processed { get; init; } = processed;
 
     /// <summary>
     /// Total number of items to process.
     /// </summary>
-    public int Total { get; init; }
+    public int Total { get; init; } = total;
 
     /// <summary>
     /// Current file being processed.
     /// </summary>
-    public string CurrentFile { get; init; } = string.Empty;
+    public string CurrentFile { get; init; } = currentFile;
 
     /// <summary>
     /// Current item being processed.
     /// </summary>
-    public string? CurrentItem { get; init; }
+    public string? CurrentItem { get; init; } = currentItem;
 
     /// <summary>
     /// Progress percentage (0-100).
     /// </summary>
-    public double Percentage => Total > 0 ? (double)Processed / Total * 100 : 0;
-
-    public EnrichmentProgress(int processed, int total, string currentFile, string? currentItem = null)
-    {
-        Processed = processed;
-        Total = total;
-        CurrentFile = currentFile;
-        CurrentItem = currentItem;
-    }
+    public double Percentage => this.Total > 0 ? (double)this.Processed / this.Total * 100 : 0;
 }

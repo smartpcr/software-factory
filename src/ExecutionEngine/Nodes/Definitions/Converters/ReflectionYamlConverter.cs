@@ -14,7 +14,7 @@ using YamlDotNet.Serialization;
 
 public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, new()
 {
-    private static readonly Dictionary<string, PropertyInfo> PropertyMap = BuildPropertyMap();
+    private static readonly Dictionary<string, PropertyInfo> propertyMap = BuildpropertyMap();
 
     public override T? Read(IParser parser, Type type, ObjectDeserializer rootDeserializer)
     {
@@ -36,14 +36,14 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
             var propertyName = keyScalar.Value;
             parser.MoveNext();
 
-            if (ReflectionYamlConverter<T>.PropertyMap.TryGetValue(propertyName, out var property))
+            if (ReflectionYamlConverter<T>.propertyMap.TryGetValue(propertyName, out var property))
             {
                 var value = this.ReadProperty(parser, property.PropertyType, rootDeserializer);
                 property.SetValue(instance, value);
             }
             else
             {
-                this.SkipValue(parser);
+                ReflectionYamlConverter<T>.SkipValue(parser);
             }
         }
 
@@ -68,7 +68,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
             emitter.Emit(new Scalar(nodeDef.RuntimeType.ToString()));
         }
 
-        foreach (var (name, property) in ReflectionYamlConverter<T>.PropertyMap)
+        foreach (var (name, property) in ReflectionYamlConverter<T>.propertyMap)
         {
             var propValue = property.GetValue(value);
 
@@ -79,7 +79,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
         emitter.Emit(new MappingEnd());
     }
 
-    private static Dictionary<string, PropertyInfo> BuildPropertyMap()
+    private static Dictionary<string, PropertyInfo> BuildpropertyMap()
     {
         return typeof(T)
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
@@ -196,7 +196,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
             parser.MoveNext();
 
             var value = this.ReadProperty(parser, valueType, deserializer);
-            addMethod.Invoke(dict, new[] { key, value });
+            addMethod.Invoke(dict, [key, value]);
         }
 
         parser.MoveNext(); // Move past MappingEnd
@@ -263,18 +263,10 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
             throw new YamlException($"Cannot deserialize abstract type {objectType.Name} without 'runtimeType' discriminator");
         }
 
-        var concreteType = MapRuntimeTypeToClass(runtimeType);
-        if (concreteType == null)
-        {
-            throw new YamlException($"Unknown runtime type: {runtimeType}");
-        }
+        var concreteType = ReflectionYamlConverter<T>.MapRuntimeTypeToClass(runtimeType) ?? throw new YamlException($"Unknown runtime type: {runtimeType}");
 
         // Create instance and set properties
-        var instance = Activator.CreateInstance(concreteType);
-        if (instance == null)
-        {
-            throw new YamlException($"Failed to create instance of type {concreteType.Name}");
-        }
+        var instance = Activator.CreateInstance(concreteType) ?? throw new YamlException($"Failed to create instance of type {concreteType.Name}");
 
         // Set properties using reflection
         var propertyMap = concreteType
@@ -289,7 +281,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
                 try
                 {
                     // Convert value to correct type if needed
-                    object? convertedValue = ConvertPropertyValue(value, property.PropertyType);
+                    var convertedValue = this.ConvertPropertyValue(value, property.PropertyType);
                     property.SetValue(instance, convertedValue);
                 }
                 catch (Exception ex)
@@ -374,7 +366,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
         return dict;
     }
 
-    private Type? MapRuntimeTypeToClass(string? runtimeType)
+    private static Type? MapRuntimeTypeToClass(string? runtimeType)
     {
         return runtimeType switch
         {
@@ -414,7 +406,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
         }
         else if (IsComplexType(value.GetType()))
         {
-            this.WriteNestedObject(emitter, value, value.GetType(), serializer);
+            ReflectionYamlConverter<T>.WriteNestedObject(emitter, value, value.GetType(), serializer);
         }
         else
         {
@@ -434,7 +426,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
             }
             else if (IsComplexType(item.GetType()))
             {
-                this.WriteNestedObject(emitter, item, item.GetType(), serializer);
+                ReflectionYamlConverter<T>.WriteNestedObject(emitter, item, item.GetType(), serializer);
             }
             else
             {
@@ -449,8 +441,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
     {
         emitter.Emit(new MappingStart());
 
-        var dict = value as System.Collections.IDictionary;
-        if (dict != null)
+        if (value is System.Collections.IDictionary dict)
         {
             var valueType = dictionaryType.GetGenericArguments().Length > 1
                 ? dictionaryType.GetGenericArguments()[1]
@@ -470,7 +461,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
         emitter.Emit(new MappingEnd());
     }
 
-    private void WriteNestedObject(IEmitter emitter, object value, Type objectType, ObjectSerializer serializer)
+    private static void WriteNestedObject(IEmitter emitter, object value, Type objectType, ObjectSerializer serializer)
     {
         // Use the actual runtime type instead of the declared type to ensure
         // derived class properties are serialized (e.g., CSharpScriptNodeDefinition properties)
@@ -612,7 +603,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
 
             foreach (var item in listValue)
             {
-                var convertedItem = ConvertPropertyValue(item, elementType);
+                var convertedItem = this.ConvertPropertyValue(item, elementType);
                 list.Add(convertedItem);
             }
 
@@ -645,14 +636,14 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
 
                 foreach (var (key, val) in dictValue)
                 {
-                    var convertedVal = ConvertPropertyValue(val, valueType);
-                    addMethod.Invoke(newDict, new[] { key, convertedVal });
+                    var convertedVal = this.ConvertPropertyValue(val, valueType);
+                    addMethod.Invoke(newDict, [key, convertedVal]);
                 }
                 return newDict;
             }
             else
             {
-                return ConvertDictionaryToObject(dictValue, targetType);
+                return this.ConvertDictionaryToObject(dictValue, targetType);
             }
         }
 
@@ -668,14 +659,10 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
             // Look for runtimeType discriminator
             if (dict.TryGetValue("runtimeType", out var runtimeTypeValue) && runtimeTypeValue is string runtimeTypeStr)
             {
-                var concreteType = MapRuntimeTypeToClass(runtimeTypeStr);
+                var concreteType = ReflectionYamlConverter<T>.MapRuntimeTypeToClass(runtimeTypeStr);
                 if (concreteType != null)
                 {
-                    var instance = Activator.CreateInstance(concreteType);
-                    if (instance == null)
-                    {
-                        throw new YamlException($"Failed to create instance of type {concreteType.Name}");
-                    }
+                    var instance = Activator.CreateInstance(concreteType) ?? throw new YamlException($"Failed to create instance of type {concreteType.Name}");
 
                     // Set properties using reflection
                     var propertyMap = concreteType
@@ -692,7 +679,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
 
                         if (propertyMap.TryGetValue(name, out var property))
                         {
-                            var convertedValue = ConvertPropertyValue(value, property.PropertyType);
+                            var convertedValue = this.ConvertPropertyValue(value, property.PropertyType);
                             property.SetValue(instance, convertedValue);
                         }
                     }
@@ -718,7 +705,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
         {
             if (props.TryGetValue(name, out var property))
             {
-                var convertedValue = ConvertPropertyValue(value, property.PropertyType);
+                var convertedValue = this.ConvertPropertyValue(value, property.PropertyType);
                 property.SetValue(targetInstance, convertedValue);
             }
         }
@@ -726,7 +713,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
         return targetInstance;
     }
 
-    private void SkipValue(IParser parser)
+    private static void SkipValue(IParser parser)
     {
         var depth = 0;
         do

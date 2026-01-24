@@ -97,6 +97,8 @@ public class WorkflowDefinitionTests
         workflow.Connections[0].Should().BeSameAs(connection);
     }
 
+    private static readonly string[] expectation = new[] { "test", "demo" };
+
     [TestMethod]
     public void Metadata_ShouldBeModifiable()
     {
@@ -112,7 +114,7 @@ public class WorkflowDefinitionTests
         workflow.Metadata.Should().HaveCount(3);
         workflow.Metadata["author"].Should().Be("Test User");
         workflow.Metadata["created"].Should().BeOfType<DateTime>();
-        workflow.Metadata["tags"].Should().BeEquivalentTo(new[] { "test", "demo" });
+        workflow.Metadata["tags"].Should().BeEquivalentTo(expectation);
     }
 
     [TestMethod]
@@ -129,17 +131,17 @@ public class WorkflowDefinitionTests
             MaxConcurrency = 10,
             AllowPause = true,
             TimeoutSeconds = 600,
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition { NodeId = "start-node", ScriptPath = "start.csx" },
                 new PowerShellScriptNodeDefinition { NodeId = "process-node", ScriptPath = "process.ps1" },
                 new CSharpScriptNodeDefinition { NodeId = "end-node", ScriptPath = "end.csx" }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "start-node", TargetNodeId = "process-node" },
                 new NodeConnection { SourceNodeId = "process-node", TargetNodeId = "end-node" }
-            },
+            ],
             Metadata = new Dictionary<string, object>
             {
                 { "environment", "production" },

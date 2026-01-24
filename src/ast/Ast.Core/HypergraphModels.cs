@@ -119,10 +119,11 @@ public class HypergraphNode
     /// </summary>
     public string GetEnhancedEmbeddingText()
     {
-        var parts = new List<string>();
-
-        // 1. Symbol identification
-        parts.Add($"{this.NodeType}: {this.Name}");
+        var parts = new List<string>
+        {
+            // 1. Symbol identification
+            $"{this.NodeType}: {this.Name}"
+        };
 
         // 2. Documentation (from LSP hover) - most important for search
         if (this.Metadata.TryGetValue("Documentation", out var doc) && doc is string docStr && !string.IsNullOrEmpty(docStr))

@@ -47,8 +47,7 @@ public class CircularBuffer : ICircularBuffer
     /// <inheritdoc/>
     public Task<bool> EnqueueAsync(MessageEnvelope envelope, CancellationToken cancellationToken = default)
     {
-        if (envelope == null)
-            throw new ArgumentNullException(nameof(envelope));
+        ArgumentNullException.ThrowIfNull(envelope);
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -108,8 +107,7 @@ public class CircularBuffer : ICircularBuffer
         TimeSpan leaseDuration,
         CancellationToken cancellationToken = default)
     {
-        if (messageType == null)
-            throw new ArgumentNullException(nameof(messageType));
+        ArgumentNullException.ThrowIfNull(messageType);
         if (string.IsNullOrWhiteSpace(handlerId))
             throw new ArgumentException("Handler ID cannot be null or whitespace.", nameof(handlerId));
 
@@ -302,7 +300,7 @@ public class CircularBuffer : ICircularBuffer
             NotBefore = notBefore // Set visibility delay
         };
 
-        return EnqueueAsync(requeued, cancellationToken);
+        return this.EnqueueAsync(requeued, cancellationToken);
     }
 
     /// <inheritdoc/>
@@ -311,8 +309,7 @@ public class CircularBuffer : ICircularBuffer
         string deduplicationKey,
         CancellationToken cancellationToken = default)
     {
-        if (envelope == null)
-            throw new ArgumentNullException(nameof(envelope));
+        ArgumentNullException.ThrowIfNull(envelope);
         if (string.IsNullOrWhiteSpace(deduplicationKey))
             throw new ArgumentException("Deduplication key cannot be null or whitespace.", nameof(deduplicationKey));
 
@@ -349,7 +346,7 @@ public class CircularBuffer : ICircularBuffer
                 if (ReferenceEquals(original, existing))
                 {
                     // Successfully superseded, now enqueue the new message
-                    return EnqueueAsync(envelope, cancellationToken);
+                    return this.EnqueueAsync(envelope, cancellationToken);
                 }
             }
         }
@@ -384,8 +381,7 @@ public class CircularBuffer : ICircularBuffer
     /// <inheritdoc/>
     public Task<bool> RestoreAsync(MessageEnvelope envelope, CancellationToken cancellationToken = default)
     {
-        if (envelope == null)
-            throw new ArgumentNullException(nameof(envelope));
+        ArgumentNullException.ThrowIfNull(envelope);
 
         cancellationToken.ThrowIfCancellationRequested();
 

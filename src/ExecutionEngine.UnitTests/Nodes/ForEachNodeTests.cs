@@ -200,7 +200,7 @@ public class ForEachNodeTests
         var definition = new ForEachNodeDefinition
         {
             NodeId = "foreach-1",
-            CollectionExpression =  "GetGlobal(\"myList\")",
+            CollectionExpression = "GetGlobal(\"myList\")",
             ItemVariableName = "myItem",
         };
 
@@ -230,7 +230,7 @@ public class ForEachNodeTests
     {
         var node = new ForEachNode();
 
-        var ports = node.GetAvailablePorts();
+        var ports = ForEachNode.GetAvailablePorts();
 
         ports.Should().NotBeNull();
         ports.Should().HaveCount(1);
@@ -427,7 +427,7 @@ public class ForEachNodeTests
         ExecutionEngine.Core.NodeNextEventArgs? firstEvent = null;
         node.OnNext += (sender, args) =>
         {
-            if (firstEvent == null) firstEvent = args;
+            firstEvent ??= args;
         };
 
         await node.ExecuteAsync(workflowContext, nodeContext, CancellationToken.None);

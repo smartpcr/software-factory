@@ -79,7 +79,7 @@ public class CSharpTaskNode : ExecutableNodeBase
             });
 
             // Create execution state for script/executor
-            var state = this.CreateExecutionState(workflowContext, nodeContext);
+            var state = CreateExecutionState(workflowContext, nodeContext);
 
             Dictionary<string, object>? result;
 

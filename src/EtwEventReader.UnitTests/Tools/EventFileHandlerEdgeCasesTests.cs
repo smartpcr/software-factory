@@ -67,7 +67,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+            var result = handler.ResolveAllPaths([this.testDirectory]);
 
             // Assert
             Assert.IsNotNull(result);
@@ -96,7 +96,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+            var result = handler.ResolveAllPaths([this.testDirectory]);
 
             // Assert
             Assert.IsNotNull(result);
@@ -129,7 +129,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+            var result = handler.ResolveAllPaths([this.testDirectory]);
 
             // Assert
             Assert.IsNotNull(result);
@@ -146,7 +146,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+            var result = handler.ResolveAllPaths([this.testDirectory]);
 
             // Assert
             Assert.IsNotNull(result);
@@ -169,7 +169,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+            var result = handler.ResolveAllPaths([this.testDirectory]);
 
             // Assert
             Assert.IsNotNull(result);
@@ -191,7 +191,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+            var result = handler.ResolveAllPaths([this.testDirectory]);
 
             // Assert
             Assert.IsNotNull(result);
@@ -218,7 +218,7 @@ namespace EtwEventReader.UnitTests.Tools
                 using var handler = new EventFileHandler();
 
                 // Act
-                var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+                var result = handler.ResolveAllPaths([this.testDirectory]);
 
                 // Assert
                 Assert.IsNotNull(result);
@@ -247,7 +247,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { validFile, nonExistentPath, invalidPath });
+            var result = handler.ResolveAllPaths([validFile, nonExistentPath, invalidPath]);
 
             // Assert
             Assert.IsNotNull(result);
@@ -271,7 +271,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+            var result = handler.ResolveAllPaths([this.testDirectory]);
 
             // Assert
             Assert.IsNotNull(result);
@@ -293,7 +293,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+            var result = handler.ResolveAllPaths([this.testDirectory]);
 
             // Assert
             Assert.IsNotNull(result);
@@ -319,7 +319,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+            var result = handler.ResolveAllPaths([this.testDirectory]);
 
             // Assert
             Assert.IsNotNull(result);
@@ -337,15 +337,17 @@ namespace EtwEventReader.UnitTests.Tools
             File.WriteAllText(readOnlyFile, "content");
 
             // Make file read-only
-            var fileInfo = new FileInfo(readOnlyFile);
-            fileInfo.IsReadOnly = true;
+            var fileInfo = new FileInfo(readOnlyFile)
+            {
+                IsReadOnly = true
+            };
 
             using var handler = new EventFileHandler();
 
             try
             {
                 // Act
-                var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+                var result = handler.ResolveAllPaths([this.testDirectory]);
 
                 // Assert
                 Assert.IsNotNull(result);
@@ -382,7 +384,7 @@ namespace EtwEventReader.UnitTests.Tools
                 using var handler = new EventFileHandler();
 
                 // Act
-                var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+                var result = handler.ResolveAllPaths([this.testDirectory]);
 
                 // Assert
                 Assert.IsNotNull(result);
@@ -422,7 +424,7 @@ namespace EtwEventReader.UnitTests.Tools
                 using var handler = new EventFileHandler();
 
                 // Act
-                var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+                var result = handler.ResolveAllPaths([this.testDirectory]);
 
                 // Assert
                 Assert.IsNotNull(result);
@@ -459,7 +461,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new string[0]);
+            var result = handler.ResolveAllPaths([]);
 
             // Assert
             Assert.IsNotNull(result);
@@ -479,7 +481,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { validFile, null!, this.testDirectory });
+            var result = handler.ResolveAllPaths([validFile, null!, this.testDirectory]);
 
             // Assert
             Assert.IsNotNull(result);

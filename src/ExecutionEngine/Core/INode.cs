@@ -52,7 +52,7 @@ public interface INode
     /// <returns>Array of port names, or empty array for default single port.</returns>
     string[] GetAvailablePorts()
     {
-        return Array.Empty<string>();
+        return [];
     }
 
     /// <summary>

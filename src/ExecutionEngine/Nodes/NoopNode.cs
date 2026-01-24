@@ -33,7 +33,7 @@ namespace ExecutionEngine.Nodes
                 Status = NodeExecutionStatus.Completed,
                 EndTime = DateTime.UtcNow,
                 ExecutionContext = nodeContext,
-                WorkflowInstanceId =  workflowContext.InstanceId,
+                WorkflowInstanceId = workflowContext.InstanceId,
                 StartTime = startTime,
             };
         }

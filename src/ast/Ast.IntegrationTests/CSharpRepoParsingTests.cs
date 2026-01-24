@@ -272,7 +272,7 @@ public class CSharpRepoParsingTests
                 .ToDictionary(g => g.Key, g => g.Count()),
             Endpoints = allEndpoints.Select(e => new
             {
-                File = e.File,
+                e.File,
                 HttpMethod = e.Endpoint.Metadata.GetValueOrDefault("http_method"),
                 Route = e.Endpoint.Metadata.GetValueOrDefault("route"),
                 Controller = e.Endpoint.Metadata.GetValueOrDefault("controller"),
@@ -351,7 +351,7 @@ public class CSharpRepoParsingTests
                 .ToDictionary(g => g.Key, g => g.Count()),
             SampleCalls = allLoggingCalls.Take(50).Select(l => new
             {
-                File = l.File,
+                l.File,
                 Level = l.LogCall.Metadata.GetValueOrDefault("log_level"),
                 Scope = l.LogCall.Metadata.GetValueOrDefault("scope"),
                 HasException = l.LogCall.Metadata.GetValueOrDefault("has_exception"),
@@ -437,7 +437,7 @@ public class CSharpRepoParsingTests
                     .ToDictionary(g => g.Key, g => g.Count()),
                 Samples = httpClientUsages.Take(20).Select(h => new
                 {
-                    File = h.File,
+                    h.File,
                     Method = h.Usage.Metadata.GetValueOrDefault("http_method"),
                     Url = h.Usage.Metadata.GetValueOrDefault("url")
                 })
@@ -450,7 +450,7 @@ public class CSharpRepoParsingTests
                     .ToDictionary(g => g.Key, g => g.Count()),
                 Samples = databaseAccesses.Take(20).Select(d => new
                 {
-                    File = d.File,
+                    d.File,
                     DbType = d.Access.Metadata.GetValueOrDefault("db_type"),
                     Technology = d.Access.Metadata.GetValueOrDefault("technology")
                 })
@@ -463,7 +463,7 @@ public class CSharpRepoParsingTests
                     .ToDictionary(g => g.Key, g => g.Count()),
                 Samples = fileSystemAccesses.Take(20).Select(f => new
                 {
-                    File = f.File,
+                    f.File,
                     Operation = f.Access.Metadata.GetValueOrDefault("operation"),
                     Method = f.Access.Metadata.GetValueOrDefault("method")
                 })

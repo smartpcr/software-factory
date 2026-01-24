@@ -35,7 +35,7 @@ public class GraphDbIntegrationTests
     private static HypergraphData? powershellData;
 
     [ClassInitialize]
-    public static async Task ClassInitialize(TestContext context)
+    public static async Task ClassInitializeAsync(TestContext context)
     {
         // Initialize logging with TestContext for colored console output
         TestLoggerFactory.Initialize(context);
@@ -99,7 +99,7 @@ public class GraphDbIntegrationTests
     }
 
     [TestInitialize]
-    public async Task TestInitialize()
+    public async Task TestInitializeAsync()
     {
         // Verify Neo4j is healthy before each test
         if (!Neo4jDockerFixture.IsHealthy)
@@ -217,7 +217,7 @@ public class GraphDbIntegrationTests
     #region Fluent Query API Tests
 
     [TestMethod]
-    public async Task FluentQuery_Nodes_ReturnsAllNodes()
+    public async Task FluentQuery_Nodes_ReturnsAllNodesAsync()
     {
         // Skip if no data was indexed
         if (csharpData?.Nodes.Count == 0 && powershellData?.Nodes.Count == 0)
@@ -236,7 +236,7 @@ public class GraphDbIntegrationTests
     }
 
     [TestMethod]
-    public async Task FluentQuery_Classes_ReturnsOnlyClasses()
+    public async Task FluentQuery_Classes_ReturnsOnlyClassesAsync()
     {
         // Act - Query classes only
         var result = await query!.Nodes().Classes().Take(50).ToListAsync();
@@ -251,7 +251,7 @@ public class GraphDbIntegrationTests
     }
 
     [TestMethod]
-    public async Task FluentQuery_Methods_ReturnsOnlyMethods()
+    public async Task FluentQuery_Methods_ReturnsOnlyMethodsAsync()
     {
         // Act - Query methods only
         var result = await query!.Nodes().Methods().Take(50).ToListAsync();
@@ -266,7 +266,7 @@ public class GraphDbIntegrationTests
     }
 
     [TestMethod]
-    public async Task FluentQuery_OfLanguage_FiltersByLanguage()
+    public async Task FluentQuery_OfLanguage_FiltersByLanguageAsync()
     {
         // Act - Query C# nodes only
         var csharpResult = await query!.Nodes().OfLanguage("csharp").Take(50).ToListAsync();
@@ -288,7 +288,7 @@ public class GraphDbIntegrationTests
     }
 
     [TestMethod]
-    public async Task FluentQuery_WithName_FiltersByNamePattern()
+    public async Task FluentQuery_WithName_FiltersByNamePatternAsync()
     {
         // Act - Query nodes with name pattern
         var result = await query!.Nodes().WithName("*Service*").Take(20).ToListAsync();
@@ -303,7 +303,7 @@ public class GraphDbIntegrationTests
     }
 
     [TestMethod]
-    public async Task FluentQuery_NodeById_ReturnsSpecificNode()
+    public async Task FluentQuery_NodeById_ReturnsSpecificNodeAsync()
     {
         // First get any node
         var anyNode = (await query!.Nodes().Take(1).ToListAsync()).FirstOrDefault();
@@ -324,7 +324,7 @@ public class GraphDbIntegrationTests
     }
 
     [TestMethod]
-    public async Task FluentQuery_NodeByName_ReturnsNode()
+    public async Task FluentQuery_NodeByName_ReturnsNodeAsync()
     {
         // First get any node
         var anyNode = (await query!.Nodes().Take(1).ToListAsync()).FirstOrDefault();
@@ -344,7 +344,7 @@ public class GraphDbIntegrationTests
     }
 
     [TestMethod]
-    public async Task FluentQuery_Callers_ReturnsCallingNodes()
+    public async Task FluentQuery_Callers_ReturnsCallingNodesAsync()
     {
         // Get a method node
         var method = (await query!.Nodes().Methods().Take(10).ToListAsync()).FirstOrDefault();
@@ -367,7 +367,7 @@ public class GraphDbIntegrationTests
     }
 
     [TestMethod]
-    public async Task FluentQuery_Callees_ReturnsCalledNodes()
+    public async Task FluentQuery_Callees_ReturnsCalledNodesAsync()
     {
         // Get a method node
         var method = (await query!.Nodes().Methods().Take(10).ToListAsync()).FirstOrDefault();
@@ -390,7 +390,7 @@ public class GraphDbIntegrationTests
     }
 
     [TestMethod]
-    public async Task FluentQuery_Edges_ReturnsConnectedEdges()
+    public async Task FluentQuery_Edges_ReturnsConnectedEdgesAsync()
     {
         // Get any node
         var node = (await query!.Nodes().Take(10).ToListAsync()).FirstOrDefault();
@@ -409,7 +409,7 @@ public class GraphDbIntegrationTests
     }
 
     [TestMethod]
-    public async Task FluentQuery_Impact_ReturnsImpactAnalysis()
+    public async Task FluentQuery_Impact_ReturnsImpactAnalysisAsync()
     {
         // Get a method node
         var method = (await query!.Nodes().Methods().Take(10).ToListAsync()).FirstOrDefault();
@@ -431,7 +431,7 @@ public class GraphDbIntegrationTests
     }
 
     [TestMethod]
-    public async Task FluentQuery_PathsBetween_FindsPaths()
+    public async Task FluentQuery_PathsBetween_FindsPathsAsync()
     {
         // Get two nodes
         var nodes = await query!.Nodes().Take(20).ToListAsync();
@@ -461,7 +461,7 @@ public class GraphDbIntegrationTests
     }
 
     [TestMethod]
-    public async Task FluentQuery_ChainedFilters_WorkCorrectly()
+    public async Task FluentQuery_ChainedFilters_WorkCorrectlyAsync()
     {
         // Act - Chain multiple filters
         var result = await query!.Nodes()
@@ -484,7 +484,7 @@ public class GraphDbIntegrationTests
     }
 
     [TestMethod]
-    public async Task FluentQuery_CountAsync_ReturnsCount()
+    public async Task FluentQuery_CountAsync_ReturnsCountAsync()
     {
         // Act
         var count = await query!.Nodes().Classes().CountAsync();
@@ -499,7 +499,7 @@ public class GraphDbIntegrationTests
     #region GraphQueryService Tests
 
     [TestMethod]
-    public async Task GraphQueryService_GetStatistics_ReturnsStats()
+    public async Task GraphQueryService_GetStatistics_ReturnsStatsAsync()
     {
         // Act
         var stats = await graphQueryService!.GetStatisticsAsync();
@@ -521,7 +521,7 @@ public class GraphDbIntegrationTests
     }
 
     [TestMethod]
-    public async Task GraphQueryService_GetNodesInFile_ReturnsFileNodes()
+    public async Task GraphQueryService_GetNodesInFile_ReturnsFileNodesAsync()
     {
         // Get any node to find a file path
         var anyNode = (await query!.Nodes().Take(1).ToListAsync()).FirstOrDefault();
@@ -541,7 +541,7 @@ public class GraphDbIntegrationTests
     }
 
     [TestMethod]
-    public async Task GraphQueryService_GetNodesByType_ReturnsTypedNodes()
+    public async Task GraphQueryService_GetNodesByType_ReturnsTypedNodesAsync()
     {
         // Act
         var classes = await graphQueryService!.GetNodesByTypeAsync("Class", 20);

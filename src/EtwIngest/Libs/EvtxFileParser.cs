@@ -10,16 +10,10 @@ namespace EtwIngest.Libs
     using System.Diagnostics.Eventing.Reader;
     using evtx;
 
-    public class EvtxFileParser
+    public class EvtxFileParser(string evtxFile)
     {
-        private readonly string evtxFile;
-        private readonly long fileSize;
-
-        public EvtxFileParser(string evtxFile)
-        {
-            this.evtxFile = evtxFile;
-            this.fileSize = new FileInfo(evtxFile).Length;
-        }
+        private readonly string evtxFile = evtxFile;
+        private readonly long fileSize = new FileInfo(evtxFile).Length;
 
         public List<EvtxRecord> Parse()
         {

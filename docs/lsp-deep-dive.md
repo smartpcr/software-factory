@@ -550,3 +550,410 @@ LSP integration enables OpenCode to:
 6. **Reduce hallucination** - Ground AI responses in actual type information
 
 The result is an AI coding agent that truly understands your codebase at the same level as your IDE, not just as text files.
+
+---
+
+## C# LSP Setup and Usage in .NET
+
+This section covers how to use LSP in C# applications using the `Ast.Lsp` library.
+
+### Installing Language Servers
+
+#### csharp-ls (Recommended - Lightweight)
+
+The `csharp-ls` language server is a lightweight, fast option for C# code intelligence:
+
+```bash
+# Install globally
+dotnet tool install -g csharp-ls
+
+# Verify installation
+csharp-ls --version
+```
+
+**Advantages:**
+- Fast startup time
+- Low memory footprint
+- Works well with solution files
+- No additional dependencies
+
+#### OmniSharp (Full-Featured)
+
+OmniSharp provides comprehensive C# language services:
+
+```bash
+# Download from GitHub releases
+# https://github.com/OmniSharp/omnisharp-roslyn/releases
+
+# Or install via package manager (macOS)
+brew install omnisharp
+```
+
+**Advantages:**
+- Full Roslyn-powered analysis
+- Better support for complex solutions
+- More LSP features (refactoring, code actions)
+
+### Configuration
+
+Configure the LSP client through `LspConfiguration`:
+
+```csharp
+using Ast.Lsp;
+using Microsoft.Extensions.Options;
+
+// Configure LSP settings
+var config = new LspConfiguration
+{
+    Enabled = true,
+    TimeoutMs = 30000,  // 30 second timeout
+    MaxReferences = 100,
+    CollectDiagnostics = true,
+    CollectCallHierarchy = true,
+
+    CSharp = new CSharpLspConfiguration
+    {
+        Enabled = true,
+        ServerType = CSharpLspServerType.CSharpLs,  // or OmniSharp
+        ServerPath = null  // Uses PATH if null
+    },
+
+    PowerShell = new PowerShellLspConfiguration
+    {
+        Enabled = true,
+        LogLevel = PowerShellLspLogLevel.Normal
+    }
+};
+```
+
+### Dependency Injection Setup
+
+Register LSP services in your DI container:
+
+```csharp
+using Ast.Lsp;
+
+// In Program.cs or Startup.cs
+services.AddLspServices(options =>
+{
+    options.Enabled = true;
+    options.CSharp.Enabled = true;
+    options.CSharp.ServerType = CSharpLspServerType.CSharpLs;
+});
+
+// Or use convenience methods
+services.AddCSharpLsp();       // C# only
+services.AddPowerShellLsp();   // PowerShell only
+services.AddAllLspServices();  // Both languages
+```
+
+### Using the LSP Client
+
+#### Basic Usage
+
+```csharp
+using Ast.Lsp;
+
+// Get or create a client for a workspace
+var serverManager = serviceProvider.GetRequiredService<LspServerManager>();
+var client = await serverManager.GetOrCreateClientAsync(
+    LspLanguage.CSharp,
+    workspacePath: "/path/to/solution");
+
+// Open a document
+var content = await File.ReadAllTextAsync(filePath);
+await client.OpenDocumentAsync(filePath, content);
+
+// Get hover information (type signatures)
+var hover = await client.GetHoverAsync(filePath, line: 10, character: 15);
+Console.WriteLine($"Type info: {hover?.Contents}");
+
+// Get definitions (go to definition)
+var definitions = await client.GetDefinitionsAsync(filePath, line: 10, character: 15);
+foreach (var def in definitions)
+{
+    Console.WriteLine($"Defined at: {def.Uri}:{def.Range.Start.Line}");
+}
+
+// Get references (find all usages)
+var references = await client.GetReferencesAsync(filePath, line: 10, character: 15);
+Console.WriteLine($"Found {references.Count} references");
+
+// Get document symbols (outline)
+var symbols = await client.GetDocumentSymbolsAsync(filePath);
+foreach (var symbol in symbols)
+{
+    Console.WriteLine($"{symbol.Kind}: {symbol.Name}");
+}
+
+// Close document when done
+await client.CloseDocumentAsync(filePath);
+```
+
+#### Workspace Symbol Search
+
+```csharp
+// Search for symbols across the workspace
+var symbols = await client.GetWorkspaceSymbolsAsync("UserService");
+foreach (var symbol in symbols)
+{
+    Console.WriteLine($"{symbol.Kind} {symbol.Name} in {symbol.Location.Uri}");
+}
+```
+
+#### Call Hierarchy
+
+```csharp
+// Get incoming calls (who calls this method)
+var incomingCalls = await client.GetIncomingCallsAsync(filePath, line, character);
+foreach (var call in incomingCalls)
+{
+    Console.WriteLine($"Called by: {call.From.Name}");
+}
+
+// Get outgoing calls (what does this method call)
+var outgoingCalls = await client.GetOutgoingCallsAsync(filePath, line, character);
+foreach (var call in outgoingCalls)
+{
+    Console.WriteLine($"Calls: {call.To.Name}");
+}
+```
+
+#### Diagnostics
+
+```csharp
+// Subscribe to diagnostics events
+client.DiagnosticsReceived += (sender, args) =>
+{
+    foreach (var diagnostic in args.Diagnostics)
+    {
+        Console.WriteLine($"{diagnostic.Severity}: {diagnostic.Message}");
+    }
+};
+
+// Or get diagnostics for a specific file
+var diagnostics = client.GetDiagnostics(filePath);
+```
+
+### Enriching Hypergraph Nodes with LSP Data
+
+The `LspEnrichmentService` enriches AST nodes with semantic data from LSP:
+
+```csharp
+using Ast.Lsp;
+using Ast.Core;
+
+var enrichmentService = serviceProvider.GetRequiredService<LspEnrichmentService>();
+
+// Enrich a single node
+var enrichedNode = await enrichmentService.EnrichNodeAsync(node);
+
+// Enrich multiple nodes (optimized for batch processing)
+var enrichedNodes = await enrichmentService.EnrichBatchAsync(nodes);
+
+// Enrich an entire hypergraph
+var enrichedGraph = await enrichmentService.EnrichHypergraphAsync(hypergraph);
+
+// Access enriched metadata
+var signature = enrichedNode.Metadata.GetValueOrDefault("Signature");
+var returnType = enrichedNode.Metadata.GetValueOrDefault("ReturnType");
+var callers = enrichedNode.Metadata.GetValueOrDefault("Callers") as List<string>;
+var referenceCount = enrichedNode.Metadata.GetValueOrDefault("ReferenceCount");
+```
+
+### Enhanced Embedding Text
+
+Use LSP-enriched metadata for better embeddings:
+
+```csharp
+// The GetEnhancedEmbeddingText() method includes LSP data
+var embeddingText = node.GetEnhancedEmbeddingText();
+
+// This includes:
+// - Symbol name and type
+// - Full type signature from LSP hover
+// - Documentation/docstrings
+// - Callers and callees (call hierarchy)
+// - Reference count
+// - Original code content
+```
+
+### Integration Test Example
+
+See `Ast.Lsp.IntegrationTests` for real-world examples:
+
+```csharp
+[TestClass]
+[TestCategory("lsp")]
+public class CSharpRepoLspTests
+{
+    private static LspServerManager _serverManager;
+    private static ILspClient _lspClient;
+
+    [ClassInitialize]
+    public static async Task ClassInitialize(TestContext context)
+    {
+        var config = new LspConfiguration
+        {
+            Enabled = true,
+            CSharp = new CSharpLspConfiguration
+            {
+                Enabled = true,
+                ServerType = CSharpLspServerType.CSharpLs
+            }
+        };
+
+        _serverManager = new LspServerManager(
+            Options.Create(config),
+            loggerFactory);
+
+        _lspClient = await _serverManager.GetOrCreateClientAsync(
+            LspLanguage.CSharp,
+            workspacePath);
+    }
+
+    [TestMethod]
+    public async Task ExtractRepoMetadata()
+    {
+        // Find entry points
+        var symbols = await _lspClient.GetDocumentSymbolsAsync("Program.cs");
+        var mainMethod = symbols.FirstOrDefault(s => s.Name == "Main");
+
+        // Get type information
+        var hover = await _lspClient.GetHoverAsync(
+            "Program.cs",
+            mainMethod.Range.Start.Line,
+            mainMethod.Range.Start.Character);
+
+        // Find all controller classes
+        var controllers = await _lspClient.GetWorkspaceSymbolsAsync("Controller");
+    }
+
+    [ClassCleanup]
+    public static async Task ClassCleanup()
+    {
+        await _serverManager.DisposeAsync();
+    }
+}
+```
+
+### Repository Analysis Features
+
+The `Ast.Lsp.IntegrationTests` project demonstrates LSP-powered repository analysis:
+
+#### C# Repository Analysis
+
+1. **Entry Point Detection**: Finds `Main` methods, top-level statements, `WebApplication.CreateBuilder`
+2. **DI Registration Extraction**: Detects `AddSingleton`, `AddScoped`, `AddTransient`, Unity container registrations
+3. **API Controller Mapping**: Extracts routes, HTTP methods, controller hierarchies
+4. **Component Diagrams**: Generates Mermaid diagrams showing project/namespace dependencies
+
+#### PowerShell Repository Analysis
+
+1. **Module Discovery**: Finds `.psm1` and `.psd1` files with their exports
+2. **Class Hierarchy**: Maps class inheritance across modules
+3. **Interaction Diagrams**: Shows module imports and function calls
+4. **Dependency Graphs**: Visualizes `using module` and `Import-Module` relationships
+
+### Output Formats
+
+Test outputs include:
+
+```
+output/lsp/
+├── csharp/
+│   ├── _lsp_repo_metadata.json    # Entry points, DI, API controllers
+│   ├── _component_diagram.json     # Nodes and edges
+│   └── _component_diagram.mmd      # Mermaid diagram
+└── powershell/
+    ├── _interaction_diagram.json   # Modules and interactions
+    ├── _sequence_diagram.mmd       # Mermaid sequence diagram
+    ├── _class_diagram.mmd          # Mermaid class diagram
+    └── _module_hierarchy.json      # Module dependency graph
+```
+
+### PowerShell Editor Services Setup
+
+PowerShell Editor Services (PSES) provides LSP support for PowerShell. Unlike csharp-ls, it's not distributed via NuGet but through the VS Code extension or GitHub releases.
+
+#### Option 1: VS Code Extension (Recommended)
+
+1. Install the PowerShell extension in VS Code
+2. The extension automatically installs PSES to:
+   - Windows: `%USERPROFILE%\.vscode\extensions\ms-vscode.powershell-*\modules`
+   - macOS/Linux: `~/.vscode/extensions/ms-vscode.powershell-*/modules`
+
+3. Configure the path in your application:
+```csharp
+var config = new LspConfiguration
+{
+    PowerShell = new PowerShellLspConfiguration
+    {
+        Enabled = true,
+        EditorServicesPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".vscode", "extensions", "ms-vscode.powershell-2024.0.0", // adjust version
+            "modules", "PowerShellEditorServices")
+    }
+};
+```
+
+#### Option 2: GitHub Release
+
+1. Download from [PowerShell Editor Services Releases](https://github.com/PowerShell/PowerShellEditorServices/releases)
+2. Extract to a known location
+3. Configure the path in your application
+
+#### Option 3: Manual Build
+
+```bash
+git clone https://github.com/PowerShell/PowerShellEditorServices.git
+cd PowerShellEditorServices
+./build.ps1
+```
+
+### Troubleshooting
+
+#### LSP Server Not Starting
+
+```bash
+# Check if csharp-ls is installed
+which csharp-ls
+dotnet tool list -g | grep csharp-ls
+
+# Reinstall if needed
+dotnet tool uninstall -g csharp-ls
+dotnet tool install -g csharp-ls
+
+# For PowerShell, ensure PowerShell 7+ is installed
+pwsh --version
+
+# Check if PSES module exists
+ls ~/.vscode/extensions/ms-vscode.powershell-*/modules/PowerShellEditorServices
+```
+
+#### Timeout Issues
+
+```csharp
+// Increase timeout for large repositories
+var config = new LspConfiguration
+{
+    TimeoutMs = 120000  // 2 minutes
+};
+```
+
+#### Server Crashes
+
+Check logs and ensure:
+- The solution/project builds successfully
+- No syntax errors in the codebase
+- Sufficient memory available
+
+---
+
+## References
+
+- [LSP Specification](https://microsoft.github.io/language-server-protocol/specifications/specification-current/)
+- [csharp-ls GitHub](https://github.com/razzmatazz/csharp-language-server)
+- [OmniSharp GitHub](https://github.com/OmniSharp/omnisharp-roslyn)
+- [PowerShell Editor Services](https://github.com/PowerShell/PowerShellEditorServices)

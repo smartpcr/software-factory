@@ -1,9 +1,9 @@
+namespace ExecutionEngine.Example.Nodes;
+
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
 using ExecutionEngine.Nodes;
-
-namespace ExecutionEngine.Example.Nodes;
 
 using ExecutionEngine.Nodes.Definitions;
 

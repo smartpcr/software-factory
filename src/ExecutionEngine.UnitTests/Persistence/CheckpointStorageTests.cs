@@ -169,17 +169,17 @@ public class FileCheckpointStorageTests
     public void Setup()
     {
         // Create a temporary directory for test checkpoints
-        testDirectory = Path.Combine(Path.GetTempPath(), $"checkpoint-tests-{Guid.NewGuid()}");
-        Directory.CreateDirectory(testDirectory);
+        this.testDirectory = Path.Combine(Path.GetTempPath(), $"checkpoint-tests-{Guid.NewGuid()}");
+        Directory.CreateDirectory(this.testDirectory);
     }
 
     [TestCleanup]
     public void Cleanup()
     {
         // Delete the test directory
-        if (Directory.Exists(testDirectory))
+        if (Directory.Exists(this.testDirectory))
         {
-            Directory.Delete(testDirectory, recursive: true);
+            Directory.Delete(this.testDirectory, recursive: true);
         }
     }
 
@@ -187,14 +187,14 @@ public class FileCheckpointStorageTests
     public async Task SaveCheckpointAsync_NewCheckpoint_ShouldCreateFile()
     {
         // Arrange
-        var storage = new FileCheckpointStorage(testDirectory);
+        var storage = new FileCheckpointStorage(this.testDirectory);
         var checkpoint = CreateTestCheckpoint();
 
         // Act
         await storage.SaveCheckpointAsync(checkpoint);
 
         // Assert
-        var filePath = Path.Combine(testDirectory, $"{checkpoint.WorkflowInstanceId}.json");
+        var filePath = Path.Combine(this.testDirectory, $"{checkpoint.WorkflowInstanceId}.json");
         File.Exists(filePath).Should().BeTrue();
     }
 
@@ -202,7 +202,7 @@ public class FileCheckpointStorageTests
     public async Task SaveCheckpointAsync_UpdateExisting_ShouldOverwriteFile()
     {
         // Arrange
-        var storage = new FileCheckpointStorage(testDirectory);
+        var storage = new FileCheckpointStorage(this.testDirectory);
         var checkpoint = CreateTestCheckpoint();
         await storage.SaveCheckpointAsync(checkpoint);
 
@@ -220,7 +220,7 @@ public class FileCheckpointStorageTests
     public async Task LoadCheckpointAsync_ExistingCheckpoint_ShouldDeserializeCorrectly()
     {
         // Arrange
-        var storage = new FileCheckpointStorage(testDirectory);
+        var storage = new FileCheckpointStorage(this.testDirectory);
         var checkpoint = CreateTestCheckpoint();
         await storage.SaveCheckpointAsync(checkpoint);
 
@@ -240,7 +240,7 @@ public class FileCheckpointStorageTests
     public async Task LoadCheckpointAsync_NonExistent_ShouldReturnNull()
     {
         // Arrange
-        var storage = new FileCheckpointStorage(testDirectory);
+        var storage = new FileCheckpointStorage(this.testDirectory);
         var nonExistentId = Guid.NewGuid();
 
         // Act
@@ -254,7 +254,7 @@ public class FileCheckpointStorageTests
     public async Task DeleteCheckpointAsync_ExistingCheckpoint_ShouldDeleteFile()
     {
         // Arrange
-        var storage = new FileCheckpointStorage(testDirectory);
+        var storage = new FileCheckpointStorage(this.testDirectory);
         var checkpoint = CreateTestCheckpoint();
         await storage.SaveCheckpointAsync(checkpoint);
 
@@ -263,7 +263,7 @@ public class FileCheckpointStorageTests
 
         // Assert
         deleted.Should().BeTrue();
-        var filePath = Path.Combine(testDirectory, $"{checkpoint.WorkflowInstanceId}.json");
+        var filePath = Path.Combine(this.testDirectory, $"{checkpoint.WorkflowInstanceId}.json");
         File.Exists(filePath).Should().BeFalse();
     }
 
@@ -271,7 +271,7 @@ public class FileCheckpointStorageTests
     public async Task ListCheckpointsAsync_MultipleCheckpoints_ShouldReturnAll()
     {
         // Arrange
-        var storage = new FileCheckpointStorage(testDirectory);
+        var storage = new FileCheckpointStorage(this.testDirectory);
         var checkpoint1 = CreateTestCheckpoint();
         var checkpoint2 = CreateTestCheckpoint();
         var checkpoint3 = CreateTestCheckpoint();

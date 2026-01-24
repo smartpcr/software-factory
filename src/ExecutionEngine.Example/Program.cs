@@ -162,7 +162,7 @@ public class Program
         if (nodeDef is ContainerNodeDefinition containerNodeDefinition)
         {
             executionMode = containerNodeDefinition.ExecutionMode;
-            childNodes = containerNodeDefinition.ChildNodes ?? new List<NodeDefinition>();
+            childNodes = containerNodeDefinition.ChildNodes ?? [];
         }
 
         // Create progress node for this node
@@ -174,7 +174,7 @@ public class Program
         nodeProgressMap[nodeDef.NodeId] = progressNode;
 
         // Check if this is a ContainerNode with ChildNodes
-        if (childNodes.Any())
+        if (childNodes.Count != 0)
         {
             foreach (var childNode in childNodes)
             {

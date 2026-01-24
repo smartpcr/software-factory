@@ -18,16 +18,10 @@ namespace EtwIngest.Steps
     using Reqnroll;
 
     [Binding]
-    public class EtwIngestSteps
+    public class EtwIngestSteps(ScenarioContext context, IReqnrollOutputHelper outputWriter)
     {
-        private readonly ScenarioContext context;
-        private readonly IReqnrollOutputHelper outputWriter;
-
-        public EtwIngestSteps(ScenarioContext context, IReqnrollOutputHelper outputWriter)
-        {
-            this.context = context;
-            this.outputWriter = outputWriter;
-        }
+        private readonly ScenarioContext context = context;
+        private readonly IReqnrollOutputHelper outputWriter = outputWriter;
 
         [Given("kusto cluster uri \"([^\"]+)\"")]
         public async Task GivenKustoClusterUri(string kustoClusterUri)
@@ -342,7 +336,7 @@ namespace EtwIngest.Steps
             if (result.Read())
             {
                 var schemaResult = result.GetString(1);
-                var fields = schemaResult.Split(new []{','}, StringSplitOptions.RemoveEmptyEntries);
+                var fields = schemaResult.Split([','], StringSplitOptions.RemoveEmptyEntries);
                 foreach (var field in fields)
                 {
                     var fieldParts = field.Split(':');
@@ -529,7 +523,7 @@ namespace EtwIngest.Steps
             {
                 var kustoTableName = $"ETL-{providerName}.{eventName.Replace("/", "")}";
                 var recordCountCmd = $"['{kustoTableName}'] | count";
-                using var reader = await queryClient.ExecuteQueryAsync(dbName, recordCountCmd, this.GetClientRequestProps());
+                using var reader = await queryClient.ExecuteQueryAsync(dbName, recordCountCmd, GetClientRequestProps());
                 if (reader.Read())
                 {
                     var recordCount = reader.GetInt64(0);
@@ -583,7 +577,7 @@ namespace EtwIngest.Steps
             }
         }
 
-        private ClientRequestProperties GetClientRequestProps(TimeSpan timeout = default)
+        private static ClientRequestProperties GetClientRequestProps(TimeSpan timeout = default)
         {
             var requestProps = new ClientRequestProperties { ClientRequestId = Guid.NewGuid().ToString() };
             if (timeout != default)

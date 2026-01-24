@@ -24,7 +24,7 @@ namespace EtwEventReader.Tools
     {
         private readonly string outputDirectory;
         private readonly int maxDegreeOfParallelism;
-        private readonly object progressLock = new object();
+        private readonly object progressLock = new();
         private int totalFilesProcessed = 0;
         private int totalFiles = 0;
 
@@ -122,7 +122,7 @@ namespace EtwEventReader.Tools
                 Console.WriteLine("Processing complete. Generating final aggregates...");
 
                 // Generate final aggregates
-                batchAggregator.GenerateFinalAggregates(batchResults.ToList());
+                batchAggregator.GenerateFinalAggregates([.. batchResults]);
 
                 summary.EndTime = DateTime.Now;
                 summary.ProcessedFiles = batchResults.Count;
@@ -175,7 +175,7 @@ namespace EtwEventReader.Tools
 
                 var processor = new EventProcessor();
                 var events = processor.GetEvents(
-                    new[] { filePath },
+                    [filePath],
                     activityId,
                     providerName,
                     eventName);
@@ -195,17 +195,18 @@ namespace EtwEventReader.Tools
 
                     var eventType = evt.EventType ?? "Unknown";
 
-                    if (!result.Providers.ContainsKey(provider))
+                    if (!result.Providers.TryGetValue(provider, out var value))
                     {
-                        result.Providers[provider] = new Dictionary<string, int>();
+                        value = [];
+                        result.Providers[provider] = value;
                     }
 
-                    if (!result.Providers[provider].ContainsKey(eventType))
+                    if (!value.ContainsKey(eventType))
                     {
-                        result.Providers[provider][eventType] = 0;
+                        value[eventType] = 0;
                     }
 
-                    result.Providers[provider][eventType]++;
+                    value[eventType]++;
                 }
             }
 
@@ -257,7 +258,7 @@ namespace EtwEventReader.Tools
                 return "";
             }
 
-            if (field.Contains(",") || field.Contains("\"") || field.Contains("\n") || field.Contains("\r"))
+            if (field.Contains(',') || field.Contains('"') || field.Contains('\n') || field.Contains('\r'))
             {
                 return "\"" + field.Replace("\"", "\"\"") + "\"";
             }
@@ -301,7 +302,7 @@ namespace EtwEventReader.Tools
         public double ProcessingTimeMs { get; set; }
         public int EventCount { get; set; }
         public string CsvFilePath { get; set; } = string.Empty;
-        public Dictionary<string, Dictionary<string, int>> Providers { get; set; } = new Dictionary<string, Dictionary<string, int>>();
+        public Dictionary<string, Dictionary<string, int>> Providers { get; set; } = [];
     }
 
     /// <summary>
@@ -316,23 +317,18 @@ namespace EtwEventReader.Tools
         public long TotalEvents { get; set; }
         public int TotalProviders { get; set; }
         public string OutputDirectory { get; set; } = string.Empty;
-        public List<string> Errors { get; set; } = new List<string>();
+        public List<string> Errors { get; set; } = [];
 
-        public TimeSpan Duration => EndTime - StartTime;
+        public TimeSpan Duration => this.EndTime - this.StartTime;
     }
 
     /// <summary>
     /// Aggregates batch results and writes summary files.
     /// </summary>
-    public class BatchAggregator
+    public class BatchAggregator(string outputDirectory)
     {
-        private readonly string outputDirectory;
-        private readonly object writeLock = new object();
-
-        public BatchAggregator(string outputDirectory)
-        {
-            this.outputDirectory = outputDirectory;
-        }
+        private readonly string outputDirectory = outputDirectory;
+        private readonly object writeLock = new();
 
         /// <summary>
         /// Writes a batch aggregate file.
@@ -345,38 +341,36 @@ namespace EtwEventReader.Tools
 
             lock (this.writeLock)
             {
-                using (var writer = new StreamWriter(aggregateFilePath, false, Encoding.UTF8))
+                using var writer = new StreamWriter(aggregateFilePath, false, Encoding.UTF8);
+                writer.WriteLine($"Batch Aggregate Report");
+                writer.WriteLine($"======================");
+                writer.WriteLine($"File: {result.FileName}");
+                writer.WriteLine($"Path: {result.FilePath}");
+                writer.WriteLine($"Batch Index: {result.BatchIndex}");
+                writer.WriteLine($"Processing Time: {result.ProcessingTimeMs:F2} ms");
+                writer.WriteLine($"Total Events: {result.EventCount:N0}");
+                writer.WriteLine($"CSV Output: {Path.GetFileName(result.CsvFilePath)}");
+                writer.WriteLine();
+
+                writer.WriteLine($"Provider Statistics:");
+                writer.WriteLine($"-------------------");
+
+                foreach (var provider in result.Providers.OrderByDescending(p => p.Value.Values.Sum()))
                 {
-                    writer.WriteLine($"Batch Aggregate Report");
-                    writer.WriteLine($"======================");
-                    writer.WriteLine($"File: {result.FileName}");
-                    writer.WriteLine($"Path: {result.FilePath}");
-                    writer.WriteLine($"Batch Index: {result.BatchIndex}");
-                    writer.WriteLine($"Processing Time: {result.ProcessingTimeMs:F2} ms");
-                    writer.WriteLine($"Total Events: {result.EventCount:N0}");
-                    writer.WriteLine($"CSV Output: {Path.GetFileName(result.CsvFilePath)}");
-                    writer.WriteLine();
+                    var totalEvents = provider.Value.Values.Sum();
+                    writer.WriteLine($"\n{provider.Key}:");
+                    writer.WriteLine($"  Total Events: {totalEvents:N0}");
+                    writer.WriteLine($"  Event Types:");
 
-                    writer.WriteLine($"Provider Statistics:");
-                    writer.WriteLine($"-------------------");
-
-                    foreach (var provider in result.Providers.OrderByDescending(p => p.Value.Values.Sum()))
+                    foreach (var eventType in provider.Value.OrderByDescending(e => e.Value).Take(10))
                     {
-                        var totalEvents = provider.Value.Values.Sum();
-                        writer.WriteLine($"\n{provider.Key}:");
-                        writer.WriteLine($"  Total Events: {totalEvents:N0}");
-                        writer.WriteLine($"  Event Types:");
+                        var percentage = (double)eventType.Value / totalEvents * 100;
+                        writer.WriteLine($"    - {eventType.Key}: {eventType.Value:N0} ({percentage:F2}%)");
+                    }
 
-                        foreach (var eventType in provider.Value.OrderByDescending(e => e.Value).Take(10))
-                        {
-                            var percentage = (double)eventType.Value / totalEvents * 100;
-                            writer.WriteLine($"    - {eventType.Key}: {eventType.Value:N0} ({percentage:F2}%)");
-                        }
-
-                        if (provider.Value.Count > 10)
-                        {
-                            writer.WriteLine($"    ... and {provider.Value.Count - 10} more event types");
-                        }
+                    if (provider.Value.Count > 10)
+                    {
+                        writer.WriteLine($"    ... and {provider.Value.Count - 10} more event types");
                     }
                 }
             }
@@ -416,9 +410,10 @@ namespace EtwEventReader.Tools
                 {
                     foreach (var provider in result.Providers)
                     {
-                        if (!allProviders.ContainsKey(provider.Key))
+                        if (!allProviders.TryGetValue(provider.Key, out var value))
                         {
-                            allProviders[provider.Key] = new Dictionary<string, long>();
+                            value = [];
+                            allProviders[provider.Key] = value;
                         }
 
                         foreach (var eventType in provider.Value)
@@ -428,7 +423,7 @@ namespace EtwEventReader.Tools
                                 allProviders[provider.Key][eventType.Key] = 0;
                             }
 
-                            allProviders[provider.Key][eventType.Key] += eventType.Value;
+                            value[eventType.Key] += eventType.Value;
                         }
                     }
                 }
@@ -470,9 +465,10 @@ namespace EtwEventReader.Tools
                 {
                     foreach (var provider in result.Providers)
                     {
-                        if (!allProviders.ContainsKey(provider.Key))
+                        if (!allProviders.TryGetValue(provider.Key, out var value))
                         {
-                            allProviders[provider.Key] = new Dictionary<string, long>();
+                            value = [];
+                            allProviders[provider.Key] = value;
                         }
 
                         foreach (var eventType in provider.Value)
@@ -482,7 +478,7 @@ namespace EtwEventReader.Tools
                                 allProviders[provider.Key][eventType.Key] = 0;
                             }
 
-                            allProviders[provider.Key][eventType.Key] += eventType.Value;
+                            value[eventType.Key] += eventType.Value;
                         }
                     }
                 }
@@ -509,9 +505,10 @@ namespace EtwEventReader.Tools
                 {
                     foreach (var provider in result.Providers)
                     {
-                        if (!allProviders.ContainsKey(provider.Key))
+                        if (!allProviders.TryGetValue(provider.Key, out var value))
                         {
-                            allProviders[provider.Key] = new Dictionary<string, long>();
+                            value = [];
+                            allProviders[provider.Key] = value;
                         }
 
                         foreach (var eventType in provider.Value)
@@ -521,7 +518,7 @@ namespace EtwEventReader.Tools
                                 allProviders[provider.Key][eventType.Key] = 0;
                             }
 
-                            allProviders[provider.Key][eventType.Key] += eventType.Value;
+                            value[eventType.Key] += eventType.Value;
                         }
                     }
                 }

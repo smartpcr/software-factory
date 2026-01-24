@@ -22,12 +22,12 @@ namespace ExecutionEngine.Nodes.Definitions
         /// <summary>
         /// maps inbound variable name to global variable name
         /// </summary>
-        public Dictionary<string, string> InputMappings { get; set; } = new();
+        public Dictionary<string, string> InputMappings { get; set; } = [];
 
         /// <summary>
         /// maps outbound variable name to global variable name
         /// </summary>
-        public Dictionary<string, string> OutputMappings { get; set; } = new();
+        public Dictionary<string, string> OutputMappings { get; set; } = [];
 
         public TimeSpan Timeout { get; set; } = TimeSpan.FromMinutes(5);
 

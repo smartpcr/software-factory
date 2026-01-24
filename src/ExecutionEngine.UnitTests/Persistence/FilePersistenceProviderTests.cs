@@ -114,23 +114,20 @@ public class FilePersistenceProviderTests
         var context = new WorkflowExecutionContext { WorkflowId = "test" };
         var nodeInstances = new List<NodeInstance>
         {
-            new NodeInstance
-            {
+            new() {
                 NodeInstanceId = Guid.NewGuid(),
                 NodeId = "node1",
                 Status = NodeExecutionStatus.Completed,
                 StartTime = DateTime.UtcNow.AddMinutes(-5),
                 EndTime = DateTime.UtcNow.AddMinutes(-4)
             },
-            new NodeInstance
-            {
+            new() {
                 NodeInstanceId = Guid.NewGuid(),
                 NodeId = "node2",
                 Status = NodeExecutionStatus.Running,
                 StartTime = DateTime.UtcNow.AddMinutes(-3)
             },
-            new NodeInstance
-            {
+            new() {
                 NodeInstanceId = Guid.NewGuid(),
                 NodeId = "node3",
                 Status = NodeExecutionStatus.Pending
@@ -306,9 +303,9 @@ public class FilePersistenceProviderTests
 
         var nodeInstances = new List<NodeInstance>
         {
-            new NodeInstance { NodeId = "node1", Status = NodeExecutionStatus.Completed },
-            new NodeInstance { NodeId = "node2", Status = NodeExecutionStatus.Completed },
-            new NodeInstance { NodeId = "node3", Status = NodeExecutionStatus.Running }
+            new() { NodeId = "node1", Status = NodeExecutionStatus.Completed },
+            new() { NodeId = "node2", Status = NodeExecutionStatus.Completed },
+            new() { NodeId = "node3", Status = NodeExecutionStatus.Running }
         };
 
         var checkpointId = "checkpoint-restore";
@@ -352,22 +349,20 @@ public class FilePersistenceProviderTests
         var context = new WorkflowExecutionContext { WorkflowId = "node-state-restore" };
         var nodeInstances = new List<NodeInstance>
         {
-            new NodeInstance
-            {
+            new() {
                 NodeId = "completed1",
                 Status = NodeExecutionStatus.Completed,
                 StartTime = DateTime.UtcNow.AddMinutes(-10),
                 EndTime = DateTime.UtcNow.AddMinutes(-5)
             },
-            new NodeInstance
-            {
+            new() {
                 NodeId = "completed2",
                 Status = NodeExecutionStatus.Completed,
                 StartTime = DateTime.UtcNow.AddMinutes(-5),
                 EndTime = DateTime.UtcNow.AddMinutes(-2)
             },
-            new NodeInstance { NodeId = "pending1", Status = NodeExecutionStatus.Pending },
-            new NodeInstance { NodeId = "pending2", Status = NodeExecutionStatus.Pending }
+            new() { NodeId = "pending1", Status = NodeExecutionStatus.Pending },
+            new() { NodeId = "pending2", Status = NodeExecutionStatus.Pending }
         };
 
         var checkpointId = "checkpoint-states";

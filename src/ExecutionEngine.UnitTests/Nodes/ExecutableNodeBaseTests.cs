@@ -232,7 +232,7 @@ public class TestExecutableNode : ExecutableNodeBase
         return new NodeInstance
         {
             NodeInstanceId = Guid.NewGuid(),
-            NodeId = NodeId,
+            NodeId = this.NodeId,
             WorkflowInstanceId = workflowContext.InstanceId,
             Status = NodeExecutionStatus.Completed,
             StartTime = DateTime.UtcNow,
@@ -251,7 +251,7 @@ public class TestExecutableNode : ExecutableNodeBase
     // Test methods to trigger events
     public void TriggerOnStart()
     {
-        RaiseOnStart(new NodeStartEventArgs
+        this.RaiseOnStart(new NodeStartEventArgs
         {
             NodeId = "test-start",
             NodeInstanceId = Guid.NewGuid(),
@@ -261,7 +261,7 @@ public class TestExecutableNode : ExecutableNodeBase
 
     public void TriggerOnProgress()
     {
-        RaiseOnProgress(new ProgressEventArgs
+        this.RaiseOnProgress(new ProgressEventArgs
         {
             Status = "Processing",
             ProgressPercent = 50

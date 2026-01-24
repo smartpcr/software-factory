@@ -20,7 +20,7 @@ namespace EtwEventReader.Tools
         /// <summary>
         /// Default allowed file extensions for event files.
         /// </summary>
-        private static readonly string[] DefaultAllowedExtensions = new[] { ".zip", ".etl", ".evtx" };
+        private static readonly string[] defaultAllowedExtensions = [".zip", ".etl", ".evtx"];
 
         /// <summary>
         /// Allowed file extensions for event files.
@@ -30,7 +30,7 @@ namespace EtwEventReader.Tools
         /// <summary>
         /// List of temporary paths created during processing.
         /// </summary>
-        private readonly List<string> tempPaths = new List<string>();
+        private readonly List<string> tempPaths = [];
 
         /// <summary>
         /// Indicates whether this instance has been disposed.
@@ -41,7 +41,7 @@ namespace EtwEventReader.Tools
         /// Initializes a new instance of the <see cref="EventFileHandler"/> class with default allowed extensions.
         /// </summary>
         public EventFileHandler()
-            : this(DefaultAllowedExtensions)
+            : this(defaultAllowedExtensions)
         {
         }
 
@@ -78,7 +78,7 @@ namespace EtwEventReader.Tools
                 try
                 {
                     // Handle wildcards and zip files
-                    if (paths[i].Contains("*") || paths[i].EndsWith(".zip"))
+                    if (paths[i].Contains('*') || paths[i].EndsWith(".zip"))
                     {
                         var directory = Path.GetDirectoryName(paths[i]) ?? Directory.GetCurrentDirectory();
                         var searchPattern = Path.GetFileName(paths[i]);
@@ -119,7 +119,7 @@ namespace EtwEventReader.Tools
                                 this.tempPaths.Add(tempZipExtractionDirName);
                             }
 
-                            this.ExtractFileToDirectory(zipFile, tempZipExtractionDirName);
+                            ExtractFileToDirectory(zipFile, tempZipExtractionDirName);
                         }
                         else
                         {
@@ -152,7 +152,7 @@ namespace EtwEventReader.Tools
             // Filter by allowed extensions and remove zero-length files
             var filteredPaths = resolvedPaths
                 .Where(path => this.HasAllowedExtension(path))
-                .Where(path => !this.IsZeroLengthFile(path))
+                .Where(path => !IsZeroLengthFile(path))
                 .Distinct()
                 .ToList();
 
@@ -175,7 +175,7 @@ namespace EtwEventReader.Tools
         /// </summary>
         /// <param name="filePath">The file path to check.</param>
         /// <returns>True if the file is zero-length, false otherwise.</returns>
-        private bool IsZeroLengthFile(string filePath)
+        private static bool IsZeroLengthFile(string filePath)
         {
             try
             {
@@ -228,7 +228,7 @@ namespace EtwEventReader.Tools
         /// </summary>
         /// <param name="zipName">Zip File Name.</param>
         /// <param name="extractDirectory">Directory for extracting zip file.</param>
-        private void ExtractFileToDirectory(string zipName, string extractDirectory)
+        private static void ExtractFileToDirectory(string zipName, string extractDirectory)
         {
             using var zip = ZipFile.OpenRead(zipName);
             zip.ExtractToDirectory(extractDirectory);

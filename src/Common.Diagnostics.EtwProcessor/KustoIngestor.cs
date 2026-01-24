@@ -13,17 +13,12 @@ namespace EtwProcessor
     using Kusto.Ingest;
     using Microsoft.Extensions.Logging;
 
-    public class KustoIngestor
+    public class KustoIngestor(ILogger<KustoIngestor> logger)
     {
-        private readonly ILogger<KustoIngestor> logger;
+        private readonly ILogger<KustoIngestor> logger = logger;
         private string parsedDirectory = string.Empty;
         private string clusterUri = string.Empty;
         private string database = string.Empty;
-
-        public KustoIngestor(ILogger<KustoIngestor> logger)
-        {
-            this.logger = logger;
-        }
 
         public void Configure(string parsedDirectory, string clusterUri, string database)
         {

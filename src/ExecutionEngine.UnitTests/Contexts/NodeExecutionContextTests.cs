@@ -123,7 +123,7 @@ public class NodeExecutionContextTests
             }));
         }
 
-        Task.WaitAll(tasks.ToArray());
+        Task.WaitAll([.. tasks]);
 
         // Assert
         context.LocalVariables.Should().HaveCount(10);

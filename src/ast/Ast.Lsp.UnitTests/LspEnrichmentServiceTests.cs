@@ -51,7 +51,7 @@ public class LspEnrichmentServiceTests
     }
 
     [TestMethod]
-    public async Task EnrichBatchAsync_ShouldReturnOriginalNodes_WhenLspDisabled()
+    public async Task EnrichBatchAsync_ShouldReturnOriginalNodes_WhenLspDisabledAsync()
     {
         // Arrange
         var config = new LspConfiguration { Enabled = false };
@@ -62,8 +62,7 @@ public class LspEnrichmentServiceTests
 
         var nodes = new List<HypergraphNode>
         {
-            new HypergraphNode
-            {
+            new() {
                 Id = "node1",
                 Name = "Test",
                 NodeType = "Method",
@@ -81,7 +80,7 @@ public class LspEnrichmentServiceTests
     }
 
     [TestMethod]
-    public async Task EnrichBatchAsync_ShouldReturnEmpty_WhenNoNodes()
+    public async Task EnrichBatchAsync_ShouldReturnEmpty_WhenNoNodesAsync()
     {
         // Arrange
         var config = new LspConfiguration { Enabled = true };

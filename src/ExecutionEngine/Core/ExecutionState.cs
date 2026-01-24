@@ -33,7 +33,7 @@ public class ExecutionState
     /// <summary>
     /// Gets or sets the input data from previous node.
     /// </summary>
-    public Dictionary<string, object> Input { get; set; } = new();
+    public Dictionary<string, object> Input { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the local variables for this node.
@@ -43,7 +43,7 @@ public class ExecutionState
     /// <summary>
     /// Gets or sets the output data for downstream nodes.
     /// </summary>
-    public Dictionary<string, object> Output { get; set; } = new();
+    public Dictionary<string, object> Output { get; set; } = [];
 
     /// <summary>
     /// Helper function to set output value.

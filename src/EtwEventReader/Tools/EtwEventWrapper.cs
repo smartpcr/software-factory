@@ -20,12 +20,12 @@ namespace EtwEventReader.Tools
         /// <summary>
         /// Tracks events which have been created so far and uses this information to populate Start/Stop pairs.
         /// </summary>
-        private EtwScopeTracker<EtwEventObject> tracker;
+        private readonly EtwScopeTracker<EtwEventObject> tracker;
 
         /// <summary>
         /// Event formatter map.
         /// </summary>
-        private EventFormatterMap eventFormatMap = new EventFormatterMap();
+        private readonly EventFormatterMap eventFormatMap = new();
 
         /// <summary>
         /// Initializes a new instance of the <see cref="EtwEventWrapper"/> class.
@@ -47,8 +47,7 @@ namespace EtwEventReader.Tools
 
             foreach (var payloadName in traceEvent.PayloadNames)
             {
-                object? payload = null;
-
+                object? payload;
                 try
                 {
                     payload = traceEvent.PayloadByName(payloadName);
@@ -64,13 +63,7 @@ namespace EtwEventReader.Tools
                 }
             }
 
-            var eventSource = traceEvent.Source as ETWTraceEventSource;
-
-            if (eventSource == null)
-            {
-                throw new ArgumentNullException("traceEvent", "Event source was not an ETW trace event source and so the log file location could not be determined from the event object.");
-            }
-
+            var eventSource = traceEvent.Source as ETWTraceEventSource ?? throw new ArgumentNullException(nameof(traceEvent), "Event source was not an ETW trace event source and so the log file location could not be determined from the event object.");
             result.DefaultDisplayNames.Add(PropertyNames.EventType);
             result.DefaultDisplayNames.Add(PropertyNames.TimeStamp);
             result.DefaultDisplayNames.Add(PropertyNames.FormattedMessage);
@@ -99,7 +92,7 @@ namespace EtwEventReader.Tools
 
                 if (wrappedStartEvent != null)
                 {
-                    this.UpdateStartAndEndPair(wrappedStartEvent, result);
+                    UpdateStartAndEndPair(wrappedStartEvent, result);
                 }
             }
 
@@ -116,7 +109,7 @@ namespace EtwEventReader.Tools
         /// </summary>
         /// <param name="startEvent">The EtwEventObject wrapping the start event.</param>
         /// <param name="endEvent">The EtwEventObject wrapping the end event.</param>
-        private void UpdateStartAndEndPair(EtwEventObject startEvent, EtwEventObject endEvent)
+        private static void UpdateStartAndEndPair(EtwEventObject startEvent, EtwEventObject endEvent)
         {
             // The end event often has the meat of the properties such as failure information. Copy this to the start event for ease of parsing when the
             // user looks at the events.

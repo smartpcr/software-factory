@@ -14,8 +14,8 @@ public static class SimpleSequentialWorkflow
         {
             WorkflowId = "customer-order-processing",
             WorkflowName = "Customer Order Processing Pipeline",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpNodeDefinition
                 {
                     NodeId = "validate-order",
@@ -49,12 +49,12 @@ public static class SimpleSequentialWorkflow
                         ["message"] = "Sending confirmation email to customer"
                     }
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "validate-order", TargetNodeId = "process-payment" },
                 new NodeConnection { SourceNodeId = "process-payment", TargetNodeId = "send-confirmation" }
-            }
+            ]
         };
     }
 }

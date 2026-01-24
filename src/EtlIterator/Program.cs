@@ -25,7 +25,7 @@ namespace EtlIterator
             // MoveEtlFiles(etlFolder);
 
             var etlFiles = Directory.GetFiles(etlFolder, "*.etl", SearchOption.TopDirectoryOnly);
-            etlFiles = etlFiles.Where(f => new FileInfo(f).Length > 0).ToArray();
+            etlFiles = [.. etlFiles.Where(f => new FileInfo(f).Length > 0)];
             Console.WriteLine($"total of {etlFiles.Length} etl files found");
 
             var batchSize = 1;
@@ -93,7 +93,7 @@ namespace EtlIterator
                 Directory.CreateDirectory(csvOutputFolder);
             }
             var (successfulIngests, failedIngests) = ExtractCsvFiles(
-                goodEtlFiles.ToList(),
+                [.. goodEtlFiles],
                 allEtwEvents,
                 allKustoTableNames,
                 csvOutputFolder,
@@ -291,7 +291,7 @@ namespace EtlIterator
                 if (uniqueFileNames.Add(fileName))
                 {
                     total++;
-                    if (total % 10 ==0)
+                    if (total % 10 == 0)
                     {
                         Console.WriteLine($"Found {total} distinct ETL files so far...");
                     }

@@ -79,14 +79,9 @@ public static class TestLoggerFactory
     /// <summary>
     /// Serilog sink that writes to MSTest TestContext.
     /// </summary>
-    private sealed class TestContextSink : Serilog.Core.ILogEventSink
+    private sealed class TestContextSink(TestContext context) : Serilog.Core.ILogEventSink
     {
-        private readonly TestContext context;
-
-        public TestContextSink(TestContext context)
-        {
-            this.context = context;
-        }
+        private readonly TestContext context = context;
 
         public void Emit(LogEvent logEvent)
         {

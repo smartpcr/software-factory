@@ -49,29 +49,29 @@ public class WorkflowCheckpoint
     /// <summary>
     /// Gets or sets the workflow-level global variables.
     /// </summary>
-    public Dictionary<string, object> Variables { get; set; } = new();
+    public Dictionary<string, object> Variables { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the serialized node instance states.
     /// Key: NodeId, Value: NodeInstance state
     /// </summary>
-    public Dictionary<string, NodeInstanceState> NodeStates { get; set; } = new();
+    public Dictionary<string, NodeInstanceState> NodeStates { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the serialized message queue states.
     /// Key: NodeId, Value: Queue messages
     /// </summary>
-    public Dictionary<string, List<SerializedMessage>> MessageQueues { get; set; } = new();
+    public Dictionary<string, List<SerializedMessage>> MessageQueues { get; set; } = [];
 
     /// <summary>
     /// Gets or sets error messages collected during execution.
     /// </summary>
-    public List<string> ErrorMessages { get; set; } = new();
+    public List<string> ErrorMessages { get; set; } = [];
 
     /// <summary>
     /// Gets or sets custom metadata for the checkpoint.
     /// </summary>
-    public Dictionary<string, string> Metadata { get; set; } = new();
+    public Dictionary<string, string> Metadata { get; set; } = [];
 }
 
 /// <summary>
@@ -107,12 +107,12 @@ public class NodeInstanceState
     /// <summary>
     /// Gets or sets the input data for the node.
     /// </summary>
-    public Dictionary<string, object> InputData { get; set; } = new();
+    public Dictionary<string, object> InputData { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the output data from the node.
     /// </summary>
-    public Dictionary<string, object> OutputData { get; set; } = new();
+    public Dictionary<string, object> OutputData { get; set; } = [];
 }
 
 /// <summary>

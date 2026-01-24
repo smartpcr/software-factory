@@ -17,17 +17,17 @@ public class CodeQueryResult
     /// <summary>
     /// Gets or sets the matching nodes.
     /// </summary>
-    public List<HypergraphNode> Nodes { get; set; } = new();
+    public List<HypergraphNode> Nodes { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the matching edges.
     /// </summary>
-    public List<Hyperedge> Edges { get; set; } = new();
+    public List<Hyperedge> Edges { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the paths found (for path queries).
     /// </summary>
-    public List<GraphPath> Paths { get; set; } = new();
+    public List<GraphPath> Paths { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the impact analysis (if requested).
@@ -37,17 +37,17 @@ public class CodeQueryResult
     /// <summary>
     /// Gets or sets semantic search results with scores.
     /// </summary>
-    public List<ScoredNode> SemanticMatches { get; set; } = new();
+    public List<ScoredNode> SemanticMatches { get; set; } = [];
 
     /// <summary>
     /// Gets the total count of results.
     /// </summary>
-    public int TotalCount => Nodes.Count + SemanticMatches.Count;
+    public int TotalCount => this.Nodes.Count + this.SemanticMatches.Count;
 
     /// <summary>
     /// Gets whether the query returned any results.
     /// </summary>
-    public bool HasResults => TotalCount > 0 || Paths.Count > 0 || Impact != null;
+    public bool HasResults => this.TotalCount > 0 || this.Paths.Count > 0 || this.Impact != null;
 }
 
 /// <summary>

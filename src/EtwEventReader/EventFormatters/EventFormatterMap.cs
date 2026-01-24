@@ -19,7 +19,7 @@ namespace EtwEventReader.EventFormatters
         /// <summary>
         /// Lazy-initialized event provider guid to event formatter map.
         /// </summary>
-        private static readonly Lazy<Dictionary<Guid, EventFormatterBase>> LazyEventFormatterMap = new Lazy<Dictionary<Guid, EventFormatterBase>>(
+        private static readonly Lazy<Dictionary<Guid, EventFormatterBase>> lazyEventFormatterMap = new(
             () =>
             {
                 var map = new Dictionary<Guid, EventFormatterBase>();
@@ -38,13 +38,13 @@ namespace EtwEventReader.EventFormatters
         /// <summary>
         /// Event provider guid to event formatter map.
         /// </summary>
-        private Dictionary<Guid, EventFormatterBase> Map => LazyEventFormatterMap.Value;
+        private static Dictionary<Guid, EventFormatterBase> Map => lazyEventFormatterMap.Value;
 
         /// <summary>
         /// Gets the EventFormatterBase instance corresponding to the specified event provider guid.
         /// </summary>
         /// <param name="providerGuid">Event provider guid.</param>
         /// <returns>Returns the EventFormatterBase instance corresponding to the specified event provider guid.</returns>
-        public EventFormatterBase? this[Guid providerGuid] => this.Map.ContainsKey(providerGuid) ? this.Map[providerGuid] : default;
+        public EventFormatterBase? this[Guid providerGuid] => Map.TryGetValue(providerGuid, out var value) ? value : default;
     }
 }

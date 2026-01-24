@@ -13,27 +13,20 @@ using Microsoft.Extensions.Options;
 /// <summary>
 /// Manages LSP server instances for multiple workspaces and languages.
 /// </summary>
-public class LspServerManager : IAsyncDisposable
+/// <remarks>
+/// Creates a new LSP server manager.
+/// </remarks>
+/// <param name="options">LSP configuration options.</param>
+/// <param name="loggerFactory">Logger factory for creating loggers.</param>
+public class LspServerManager(
+    IOptions<LspConfiguration> options,
+    ILoggerFactory loggerFactory) : IAsyncDisposable
 {
-    private readonly LspConfiguration _config;
-    private readonly ILoggerFactory _loggerFactory;
-    private readonly ILogger<LspServerManager> _logger;
-    private readonly ConcurrentDictionary<string, ILspClient> _clients = new();
-    private readonly SemaphoreSlim _initLock = new(1, 1);
-
-    /// <summary>
-    /// Creates a new LSP server manager.
-    /// </summary>
-    /// <param name="options">LSP configuration options.</param>
-    /// <param name="loggerFactory">Logger factory for creating loggers.</param>
-    public LspServerManager(
-        IOptions<LspConfiguration> options,
-        ILoggerFactory loggerFactory)
-    {
-        _config = options.Value;
-        _loggerFactory = loggerFactory;
-        _logger = loggerFactory.CreateLogger<LspServerManager>();
-    }
+    private readonly LspConfiguration config = options.Value;
+    private readonly ILoggerFactory loggerFactory = loggerFactory;
+    private readonly ILogger<LspServerManager> logger = loggerFactory.CreateLogger<LspServerManager>();
+    private readonly ConcurrentDictionary<string, ILspClient> clients = new();
+    private readonly SemaphoreSlim initLock = new(1, 1);
 
     /// <summary>
     /// Gets or creates an LSP client for the specified language and workspace.
@@ -49,22 +42,22 @@ public class LspServerManager : IAsyncDisposable
     {
         var key = GetClientKey(language, workspacePath);
 
-        if (_clients.TryGetValue(key, out var existingClient) && existingClient.State == LspServerState.Running)
+        if (this.clients.TryGetValue(key, out var existingClient) && existingClient.State == LspServerState.Running)
         {
             return existingClient;
         }
 
-        await _initLock.WaitAsync(cancellationToken);
+        await this.initLock.WaitAsync(cancellationToken);
         try
         {
             // Double-check after acquiring lock
-            if (_clients.TryGetValue(key, out existingClient) && existingClient.State == LspServerState.Running)
+            if (this.clients.TryGetValue(key, out existingClient) && existingClient.State == LspServerState.Running)
             {
                 return existingClient;
             }
 
             // Check if language is enabled
-            if (!IsLanguageEnabled(language))
+            if (!this.IsLanguageEnabled(language))
             {
                 throw new InvalidOperationException($"LSP for {language} is not enabled in configuration");
             }
@@ -73,25 +66,25 @@ public class LspServerManager : IAsyncDisposable
             if (existingClient != null)
             {
                 await existingClient.DisposeAsync();
-                _clients.TryRemove(key, out _);
+                this.clients.TryRemove(key, out _);
             }
 
             // Create new client
             var client = new LspClient(
                 language,
-                _config,
-                _loggerFactory.CreateLogger<LspClient>());
+                this.config,
+                this.loggerFactory.CreateLogger<LspClient>());
 
-            _logger.LogInformation("Initializing {Language} LSP client for workspace: {Path}", language, workspacePath);
+            this.logger.LogInformation("Initializing {Language} LSP client for workspace: {Path}", language, workspacePath);
 
             await client.InitializeAsync(workspacePath, cancellationToken);
-            _clients[key] = client;
+            this.clients[key] = client;
 
             return client;
         }
         finally
         {
-            _initLock.Release();
+            this.initLock.Release();
         }
     }
 
@@ -104,7 +97,7 @@ public class LspServerManager : IAsyncDisposable
     public ILspClient? GetClient(LspLanguage language, string workspacePath)
     {
         var key = GetClientKey(language, workspacePath);
-        return _clients.TryGetValue(key, out var client) && client.State == LspServerState.Running
+        return this.clients.TryGetValue(key, out var client) && client.State == LspServerState.Running
             ? client
             : null;
     }
@@ -115,7 +108,7 @@ public class LspServerManager : IAsyncDisposable
     /// <returns>Collection of active clients.</returns>
     public IReadOnlyCollection<ILspClient> GetActiveClients()
     {
-        return _clients.Values
+        return this.clients.Values
             .Where(c => c.State == LspServerState.Running)
             .ToList();
     }
@@ -133,9 +126,9 @@ public class LspServerManager : IAsyncDisposable
     {
         var key = GetClientKey(language, workspacePath);
 
-        if (_clients.TryRemove(key, out var client))
+        if (this.clients.TryRemove(key, out var client))
         {
-            _logger.LogInformation("Shutting down {Language} LSP client for workspace: {Path}", language, workspacePath);
+            this.logger.LogInformation("Shutting down {Language} LSP client for workspace: {Path}", language, workspacePath);
             await client.ShutdownAsync(cancellationToken);
         }
     }
@@ -146,9 +139,9 @@ public class LspServerManager : IAsyncDisposable
     /// <param name="cancellationToken">Cancellation token.</param>
     public async Task ShutdownAllAsync(CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("Shutting down all LSP clients ({Count} active)", _clients.Count);
+        this.logger.LogInformation("Shutting down all LSP clients ({Count} active)", this.clients.Count);
 
-        var tasks = _clients.Values.Select(async client =>
+        var tasks = this.clients.Values.Select(async client =>
         {
             try
             {
@@ -156,12 +149,12 @@ public class LspServerManager : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Error shutting down LSP client");
+                this.logger.LogWarning(ex, "Error shutting down LSP client");
             }
         });
 
         await Task.WhenAll(tasks);
-        _clients.Clear();
+        this.clients.Clear();
     }
 
     /// <summary>
@@ -187,16 +180,16 @@ public class LspServerManager : IAsyncDisposable
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
-        await ShutdownAllAsync();
-        _initLock.Dispose();
+        await this.ShutdownAllAsync();
+        this.initLock.Dispose();
     }
 
     private bool IsLanguageEnabled(LspLanguage language)
     {
         return language switch
         {
-            LspLanguage.CSharp => _config.Enabled && _config.CSharp.Enabled,
-            LspLanguage.PowerShell => _config.Enabled && _config.PowerShell.Enabled,
+            LspLanguage.CSharp => this.config.Enabled && this.config.CSharp.Enabled,
+            LspLanguage.PowerShell => this.config.Enabled && this.config.PowerShell.Enabled,
             _ => false
         };
     }

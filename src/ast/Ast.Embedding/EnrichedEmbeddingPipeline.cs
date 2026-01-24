@@ -14,37 +14,29 @@ using Microsoft.Extensions.Options;
 /// <summary>
 /// Pipeline that combines LSP enrichment with embedding generation for enhanced code understanding.
 /// </summary>
-public sealed class EnrichedEmbeddingPipeline : IAsyncDisposable
+/// <remarks>
+/// Initializes a new instance of the <see cref="EnrichedEmbeddingPipeline"/> class.
+/// </remarks>
+/// <param name="embeddingService">The embedding service.</param>
+/// <param name="options">Pipeline configuration options.</param>
+/// <param name="logger">Logger instance.</param>
+/// <param name="lspEnrichmentService">Optional LSP enrichment service.</param>
+public sealed class EnrichedEmbeddingPipeline(
+    CodeEmbeddingService embeddingService,
+    IOptions<EnrichedEmbeddingOptions> options,
+    ILogger<EnrichedEmbeddingPipeline> logger,
+    LspEnrichmentService? lspEnrichmentService = null) : IAsyncDisposable
 {
-    private readonly LspEnrichmentService? _lspEnrichmentService;
-    private readonly CodeEmbeddingService _embeddingService;
-    private readonly EnrichedEmbeddingOptions _options;
-    private readonly ILogger<EnrichedEmbeddingPipeline> _logger;
-    private bool _disposed;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="EnrichedEmbeddingPipeline"/> class.
-    /// </summary>
-    /// <param name="embeddingService">The embedding service.</param>
-    /// <param name="options">Pipeline configuration options.</param>
-    /// <param name="logger">Logger instance.</param>
-    /// <param name="lspEnrichmentService">Optional LSP enrichment service.</param>
-    public EnrichedEmbeddingPipeline(
-        CodeEmbeddingService embeddingService,
-        IOptions<EnrichedEmbeddingOptions> options,
-        ILogger<EnrichedEmbeddingPipeline> logger,
-        LspEnrichmentService? lspEnrichmentService = null)
-    {
-        _embeddingService = embeddingService;
-        _options = options.Value;
-        _logger = logger;
-        _lspEnrichmentService = lspEnrichmentService;
-    }
+    private readonly LspEnrichmentService? lspEnrichmentService = lspEnrichmentService;
+    private readonly CodeEmbeddingService embeddingService = embeddingService;
+    private readonly EnrichedEmbeddingOptions options = options.Value;
+    private readonly ILogger<EnrichedEmbeddingPipeline> logger = logger;
+    private bool disposed;
 
     /// <summary>
     /// Gets whether LSP enrichment is available.
     /// </summary>
-    public bool IsLspEnrichmentAvailable => _lspEnrichmentService != null && _options.EnableLspEnrichment;
+    public bool IsLspEnrichmentAvailable => this.lspEnrichmentService != null && this.options.EnableLspEnrichment;
 
     /// <summary>
     /// Processes a hypergraph through the full pipeline: LSP enrichment then embedding generation.
@@ -60,7 +52,7 @@ public sealed class EnrichedEmbeddingPipeline : IAsyncDisposable
         IProgress<PipelineProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(this.disposed, this);
 
         var result = new EnrichedEmbeddingResult
         {
@@ -70,13 +62,13 @@ public sealed class EnrichedEmbeddingPipeline : IAsyncDisposable
         var processedData = data;
         var totalNodes = data.Nodes.Count;
         var currentStep = 0;
-        var totalSteps = IsLspEnrichmentAvailable ? 2 : 1;
+        var totalSteps = this.IsLspEnrichmentAvailable ? 2 : 1;
 
         // Step 1: LSP Enrichment (if enabled)
-        if (IsLspEnrichmentAvailable && _lspEnrichmentService != null)
+        if (this.IsLspEnrichmentAvailable && this.lspEnrichmentService != null)
         {
             currentStep++;
-            _logger.LogInformation("Starting LSP enrichment for {NodeCount} nodes", totalNodes);
+            this.logger.LogInformation("Starting LSP enrichment for {NodeCount} nodes", totalNodes);
 
             var enrichmentProgress = new Progress<EnrichmentProgress>(p =>
             {
@@ -92,20 +84,20 @@ public sealed class EnrichedEmbeddingPipeline : IAsyncDisposable
                 });
             });
 
-            processedData = await _lspEnrichmentService.EnrichHypergraphAsync(
+            processedData = await this.lspEnrichmentService.EnrichHypergraphAsync(
                 data,
                 workspacePath,
                 enrichmentProgress,
                 cancellationToken);
 
             result.NodesEnriched = processedData.Nodes.Values.Count(n => n.IsLspEnriched);
-            _logger.LogInformation("LSP enrichment completed: {Enriched}/{Total} nodes enriched",
+            this.logger.LogInformation("LSP enrichment completed: {Enriched}/{Total} nodes enriched",
                 result.NodesEnriched, totalNodes);
         }
 
         // Step 2: Embedding Generation
         currentStep++;
-        _logger.LogInformation("Starting embedding generation for {NodeCount} nodes", totalNodes);
+        this.logger.LogInformation("Starting embedding generation for {NodeCount} nodes", totalNodes);
 
         var embeddingProgress = new Progress<EmbeddingProgress>(p =>
         {
@@ -121,7 +113,7 @@ public sealed class EnrichedEmbeddingPipeline : IAsyncDisposable
         });
 
         // Use enhanced embedding text for LSP-enriched nodes
-        var embeddings = await GenerateEnhancedEmbeddingsAsync(
+        var embeddings = await this.GenerateEnhancedEmbeddingsAsync(
             processedData,
             embeddingProgress,
             cancellationToken);
@@ -130,7 +122,7 @@ public sealed class EnrichedEmbeddingPipeline : IAsyncDisposable
         result.EndTime = DateTimeOffset.UtcNow;
         result.TotalNodesProcessed = totalNodes;
 
-        _logger.LogInformation(
+        this.logger.LogInformation(
             "Pipeline completed: {Embeddings} embeddings generated, {Enriched} nodes LSP-enriched in {Duration:F2}s",
             embeddings.Count,
             result.NodesEnriched,
@@ -153,14 +145,14 @@ public sealed class EnrichedEmbeddingPipeline : IAsyncDisposable
         IProgress<PipelineProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(this.disposed, this);
 
         var processedNodes = nodes;
 
         // Step 1: LSP Enrichment (if enabled)
-        if (IsLspEnrichmentAvailable && _lspEnrichmentService != null)
+        if (this.IsLspEnrichmentAvailable && this.lspEnrichmentService != null)
         {
-            _logger.LogInformation("Starting LSP enrichment for {NodeCount} nodes", nodes.Count);
+            this.logger.LogInformation("Starting LSP enrichment for {NodeCount} nodes", nodes.Count);
 
             var enrichmentProgress = new Progress<EnrichmentProgress>(p =>
             {
@@ -176,7 +168,7 @@ public sealed class EnrichedEmbeddingPipeline : IAsyncDisposable
                 });
             });
 
-            processedNodes = await _lspEnrichmentService.EnrichBatchAsync(
+            processedNodes = await this.lspEnrichmentService.EnrichBatchAsync(
                 nodes,
                 workspacePath,
                 enrichmentProgress,
@@ -190,7 +182,7 @@ public sealed class EnrichedEmbeddingPipeline : IAsyncDisposable
         var nodeTexts = processedNodes.Select(n =>
             n.IsLspEnriched ? n.GetEnhancedEmbeddingText() : n.GetEmbeddingText()).ToList();
 
-        var embeddings = await _embeddingService.Generator.GenerateBatchEmbeddingsAsync(
+        var embeddings = await this.embeddingService.Generator.GenerateBatchEmbeddingsAsync(
             nodeTexts, cancellationToken);
 
         for (var i = 0; i < processedNodes.Count; i++)
@@ -224,8 +216,8 @@ public sealed class EnrichedEmbeddingPipeline : IAsyncDisposable
                 progress?.Report(new PipelineProgress
                 {
                     CurrentStep = PipelineStep.EmbeddingGeneration,
-                    StepNumber = IsLspEnrichmentAvailable ? 2 : 1,
-                    TotalSteps = IsLspEnrichmentAvailable ? 2 : 1,
+                    StepNumber = this.IsLspEnrichmentAvailable ? 2 : 1,
+                    TotalSteps = this.IsLspEnrichmentAvailable ? 2 : 1,
                     ItemsProcessed = i + 1,
                     TotalItems = processedNodes.Count,
                     CurrentItem = node.Name
@@ -253,7 +245,7 @@ public sealed class EnrichedEmbeddingPipeline : IAsyncDisposable
             n.IsLspEnriched ? n.GetEnhancedEmbeddingText() : n.GetEmbeddingText()).ToList();
 
         // Generate embeddings in batch
-        var embeddings = await _embeddingService.Generator.GenerateBatchEmbeddingsAsync(
+        var embeddings = await this.embeddingService.Generator.GenerateBatchEmbeddingsAsync(
             nodeTexts, cancellationToken);
 
         for (var i = 0; i < nodes.Count; i++)
@@ -293,7 +285,7 @@ public sealed class EnrichedEmbeddingPipeline : IAsyncDisposable
                     CurrentItem = node.Name
                 });
 
-                _logger.LogDebug(
+                this.logger.LogDebug(
                     "Generated embeddings for {Processed}/{Total} nodes",
                     processedCount,
                     nodes.Count);
@@ -306,21 +298,21 @@ public sealed class EnrichedEmbeddingPipeline : IAsyncDisposable
     /// <inheritdoc/>
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (this.disposed)
         {
             return;
         }
 
-        _disposed = true;
+        this.disposed = true;
 
-        if (_lspEnrichmentService != null)
+        if (this.lspEnrichmentService != null)
         {
-            await _lspEnrichmentService.DisposeAsync();
+            await this.lspEnrichmentService.DisposeAsync();
         }
 
-        _embeddingService.Dispose();
+        this.embeddingService.Dispose();
 
-        _logger.LogInformation("EnrichedEmbeddingPipeline disposed");
+        this.logger.LogInformation("EnrichedEmbeddingPipeline disposed");
     }
 }
 
@@ -398,13 +390,13 @@ public class EnrichedEmbeddingResult
     /// <summary>
     /// Gets the total processing duration.
     /// </summary>
-    public TimeSpan Duration => EndTime - StartTime;
+    public TimeSpan Duration => this.EndTime - this.StartTime;
 
     /// <summary>
     /// Gets the enrichment percentage.
     /// </summary>
     public double EnrichmentPercentage =>
-        TotalNodesProcessed == 0 ? 0 : (double)NodesEnriched / TotalNodesProcessed * 100;
+        this.TotalNodesProcessed == 0 ? 0 : (double)this.NodesEnriched / this.TotalNodesProcessed * 100;
 }
 
 /// <summary>
@@ -500,10 +492,10 @@ public class PipelineProgress
     {
         get
         {
-            if (TotalSteps == 0) return 0;
-            var stepWeight = 100.0 / TotalSteps;
-            var completedSteps = (StepNumber - 1) * stepWeight;
-            var currentStepProgress = TotalItems == 0 ? 0 : (double)ItemsProcessed / TotalItems * stepWeight;
+            if (this.TotalSteps == 0) return 0;
+            var stepWeight = 100.0 / this.TotalSteps;
+            var completedSteps = (this.StepNumber - 1) * stepWeight;
+            var currentStepProgress = this.TotalItems == 0 ? 0 : (double)this.ItemsProcessed / this.TotalItems * stepWeight;
             return completedSteps + currentStepProgress;
         }
     }
@@ -511,7 +503,7 @@ public class PipelineProgress
     /// <summary>
     /// Gets the current step progress percentage.
     /// </summary>
-    public double StepPercentage => TotalItems == 0 ? 0 : (double)ItemsProcessed / TotalItems * 100;
+    public double StepPercentage => this.TotalItems == 0 ? 0 : (double)this.ItemsProcessed / this.TotalItems * 100;
 }
 
 /// <summary>

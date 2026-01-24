@@ -13,16 +13,10 @@ using System.Xml.Linq;
 /// <summary>
 /// Extracts project and repository level metadata from solution files, project files, and manifests.
 /// </summary>
-public class ProjectMetadataExtractor
+public partial class ProjectMetadataExtractor(string repoPath, AstConfiguration? config = null)
 {
-    private readonly string repoPath;
-    private readonly AstConfiguration config;
-
-    public ProjectMetadataExtractor(string repoPath, AstConfiguration? config = null)
-    {
-        this.repoPath = Path.GetFullPath(repoPath);
-        this.config = config ?? new AstConfiguration();
-    }
+    private readonly string repoPath = Path.GetFullPath(repoPath);
+    private readonly AstConfiguration config = config ?? new AstConfiguration();
 
     /// <summary>
     /// Extract repository-level metadata.
@@ -291,7 +285,7 @@ public class ProjectMetadataExtractor
             if (File.Exists(configPath))
             {
                 var configContent = File.ReadAllText(configPath);
-                var remoteMatch = Regex.Match(configContent, @"url\s*=\s*(.+)");
+                var remoteMatch = MyRegex().Match(configContent);
                 if (remoteMatch.Success)
                 {
                     metadata.GitRemoteUrl = remoteMatch.Groups[1].Value.Trim();
@@ -400,4 +394,7 @@ public class ProjectMetadataExtractor
 
         return modules;
     }
+
+    [GeneratedRegex(@"url\s*=\s*(.+)")]
+    private static partial Regex MyRegex();
 }

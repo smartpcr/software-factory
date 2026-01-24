@@ -18,7 +18,7 @@ public class PowerShellAstParserTests
         var code = "";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert - empty code still creates a script block
         nodes.Should().ContainSingle(n => n.NodeType == PsAstNodeType.ScriptBlock);
@@ -35,7 +35,7 @@ function Get-Greeting {
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         nodes.Should().Contain(n => n.NodeType == PsAstNodeType.Function);
@@ -59,7 +59,7 @@ function Set-Configuration {
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         var funcNode = nodes.First(n => n.NodeType == PsAstNodeType.Function);
@@ -89,7 +89,7 @@ class Person {
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         nodes.Should().Contain(n => n.NodeType == PsAstNodeType.Class);
@@ -110,7 +110,7 @@ class Employee : Person {
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         var classNode = nodes.First(n => n.NodeType == PsAstNodeType.Class);
@@ -131,7 +131,7 @@ enum Status {
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         nodes.Should().Contain(n => n.NodeType == PsAstNodeType.Enum);
@@ -150,7 +150,7 @@ param(
 )";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         nodes.Should().Contain(n => n.NodeType == PsAstNodeType.ParamBlock);
@@ -168,7 +168,7 @@ function Broken {
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         nodes.Should().Contain(n => n.NodeType == PsAstNodeType.Error);
@@ -187,7 +187,7 @@ function Second {
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         var first = nodes.First(n => n.NodeType == PsAstNodeType.Function && n.Name == "First");
@@ -205,7 +205,7 @@ function Second {
         var filePath = "scripts/Deploy.ps1";
 
         // Act
-        var nodes = parser.ParseCode(code, filePath).ToList();
+        var nodes = this.parser.ParseCode(code, filePath).ToList();
 
         // Assert
         nodes.Should().OnlyContain(n => n.FilePath == filePath);
@@ -227,7 +227,7 @@ function Get-UserConfig {
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         var funcNode = nodes.First(n => n.NodeType == PsAstNodeType.Function);
@@ -244,7 +244,7 @@ function Set-Data { }
 function Remove-Data { }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         var functions = nodes.Where(n => n.NodeType == PsAstNodeType.Function).ToList();
@@ -264,7 +264,7 @@ $config = Import-Config
 Start-Process -FilePath $config.Path";
 
         // Act
-        var nodes = parser.ParseCode(code, "script.ps1").ToList();
+        var nodes = this.parser.ParseCode(code, "script.ps1").ToList();
 
         // Assert
         nodes.Should().Contain(n => n.NodeType == PsAstNodeType.ScriptBlock);
@@ -291,7 +291,7 @@ function Invoke-Process {
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         var funcNode = nodes.First(n => n.NodeType == PsAstNodeType.Function);

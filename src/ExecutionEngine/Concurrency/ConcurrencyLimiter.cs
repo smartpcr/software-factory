@@ -19,7 +19,7 @@ namespace ExecutionEngine.Concurrency
         private readonly SemaphoreSlim semaphore;
         private readonly int maxConcurrency;
         private readonly Dictionary<NodePriority, Queue<TaskCompletionSource<bool>>> priorityQueues;
-        private readonly object queueLock = new object();
+        private readonly object queueLock = new();
         private int currentPriorityIndex = 0;
         private bool disposed = false;
 

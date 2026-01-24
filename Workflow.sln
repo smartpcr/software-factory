@@ -115,6 +115,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ast.Lsp", "src\ast\Ast.Lsp\
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ast.Lsp.UnitTests", "src\ast\Ast.Lsp.UnitTests\Ast.Lsp.UnitTests.csproj", "{12D8BB81-960D-4906-808F-EAE336DB618A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ast.E2E.IntegrationTests", "src\ast\Ast.E2E.IntegrationTests\Ast.E2E.IntegrationTests.csproj", "{4D6EB38C-8C86-4DA7-9A65-EEA81DCC6D43}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ast.Lsp.IntegrationTests", "src\ast\Ast.Lsp.IntegrationTests\Ast.Lsp.IntegrationTests.csproj", "{E93AB600-8C90-44D4-B128-B03480C6F1BB}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -257,6 +261,14 @@ Global
 		{12D8BB81-960D-4906-808F-EAE336DB618A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{12D8BB81-960D-4906-808F-EAE336DB618A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{12D8BB81-960D-4906-808F-EAE336DB618A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4D6EB38C-8C86-4DA7-9A65-EEA81DCC6D43}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4D6EB38C-8C86-4DA7-9A65-EEA81DCC6D43}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4D6EB38C-8C86-4DA7-9A65-EEA81DCC6D43}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4D6EB38C-8C86-4DA7-9A65-EEA81DCC6D43}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E93AB600-8C90-44D4-B128-B03480C6F1BB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E93AB600-8C90-44D4-B128-B03480C6F1BB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E93AB600-8C90-44D4-B128-B03480C6F1BB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E93AB600-8C90-44D4-B128-B03480C6F1BB}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -301,5 +313,7 @@ Global
 		{0D5D5033-6915-4C93-B23F-48E41C3A306E} = {1EC60D17-4A69-4F14-B462-44018B071C57}
 		{449886B2-1EF9-445B-9806-CB8AEBD5CB59} = {1EC60D17-4A69-4F14-B462-44018B071C57}
 		{12D8BB81-960D-4906-808F-EAE336DB618A} = {1EC60D17-4A69-4F14-B462-44018B071C57}
+		{4D6EB38C-8C86-4DA7-9A65-EEA81DCC6D43} = {1EC60D17-4A69-4F14-B462-44018B071C57}
+		{E93AB600-8C90-44D4-B128-B03480C6F1BB} = {1EC60D17-4A69-4F14-B462-44018B071C57}
 	EndGlobalSection
 EndGlobal

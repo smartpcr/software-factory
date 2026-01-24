@@ -41,7 +41,7 @@ namespace EtwEventReader.IntegrationTests
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { TestDataDirectory });
+            var result = handler.ResolveAllPaths([TestDataDirectory]);
 
             // Assert
             Assert.IsNotNull(result);
@@ -83,7 +83,7 @@ namespace EtwEventReader.IntegrationTests
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { wildcardPath });
+            var result = handler.ResolveAllPaths([wildcardPath]);
 
             // Assert
             Assert.IsNotNull(result);
@@ -131,7 +131,7 @@ namespace EtwEventReader.IntegrationTests
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { wildcardPath });
+            var result = handler.ResolveAllPaths([wildcardPath]);
 
             // Assert
             Assert.IsNotNull(result);
@@ -181,7 +181,7 @@ namespace EtwEventReader.IntegrationTests
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { etlPattern, zipPattern });
+            var result = handler.ResolveAllPaths([etlPattern, zipPattern]);
 
             // Assert
             Assert.IsNotNull(result);
@@ -272,7 +272,7 @@ namespace EtwEventReader.IntegrationTests
             var startTime = DateTime.UtcNow;
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { TestDataDirectory });
+            var result = handler.ResolveAllPaths([TestDataDirectory]);
 
             // Assert
             var duration = DateTime.UtcNow - startTime;
@@ -309,7 +309,7 @@ namespace EtwEventReader.IntegrationTests
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { TestDataDirectory });
+            var result = handler.ResolveAllPaths([TestDataDirectory]);
 
             // Get actual count including subdirectories for comparison
             var allFiles = Directory.GetFiles(TestDataDirectory, "*", SearchOption.AllDirectories);
@@ -365,7 +365,7 @@ namespace EtwEventReader.IntegrationTests
             // Act
             using (var handler = new EventFileHandler())
             {
-                var result = handler.ResolveAllPaths(new[] { zipFiles[0] });
+                var result = handler.ResolveAllPaths([zipFiles[0]]);
                 Console.WriteLine($"Extracted {result.Count} files from {Path.GetFileName(zipFiles[0])}");
             }
 
@@ -408,7 +408,7 @@ namespace EtwEventReader.IntegrationTests
             // Act - Should handle any issues gracefully without throwing
             try
             {
-                var result = handler.ResolveAllPaths(new[] { TestDataDirectory });
+                var result = handler.ResolveAllPaths([TestDataDirectory]);
 
                 // Assert
                 Assert.IsNotNull(result);
@@ -428,13 +428,13 @@ namespace EtwEventReader.IntegrationTests
         /// <returns>Formatted string.</returns>
         private static string FormatFileSize(long bytes)
         {
-            string[] sizes = { "B", "KB", "MB", "GB", "TB" };
+            string[] sizes = ["B", "KB", "MB", "GB", "TB"];
             double len = bytes;
             var order = 0;
             while (len >= 1024 && order < sizes.Length - 1)
             {
                 order++;
-                len = len / 1024;
+                len /= 1024;
             }
             return $"{len:0.##} {sizes[order]}";
         }

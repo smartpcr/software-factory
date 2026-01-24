@@ -272,7 +272,7 @@ public class HypergraphSerializerTests
         };
 
         var data = new HypergraphData();
-        for (int i = 0; i < edgeTypes.Length; i++)
+        for (var i = 0; i < edgeTypes.Length; i++)
         {
             data.Hyperedges.Add(new Hyperedge
             {
@@ -289,7 +289,7 @@ public class HypergraphSerializerTests
 
         // Assert
         restored.Hyperedges.Should().HaveCount(edgeTypes.Length);
-        for (int i = 0; i < edgeTypes.Length; i++)
+        for (var i = 0; i < edgeTypes.Length; i++)
         {
             restored.Hyperedges[i].EdgeType.Should().Be(edgeTypes[i]);
         }

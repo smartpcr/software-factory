@@ -14,32 +14,24 @@ using Microsoft.Extensions.Options;
 /// <summary>
 /// High-level service for storing and searching code embeddings.
 /// </summary>
-public sealed class CodeVectorService : IDisposable
+/// <remarks>
+/// Initializes a new instance of the <see cref="CodeVectorService"/> class.
+/// </remarks>
+/// <param name="vectorStore">The vector store.</param>
+/// <param name="embeddingGenerator">The embedding generator.</param>
+/// <param name="options">The vector store options.</param>
+/// <param name="logger">The logger.</param>
+public sealed class CodeVectorService(
+    IVectorStore vectorStore,
+    IEmbeddingGenerator embeddingGenerator,
+    IOptions<VectorStoreOptions> options,
+    ILogger<CodeVectorService> logger) : IDisposable
 {
-    private readonly IVectorStore vectorStore;
-    private readonly IEmbeddingGenerator embeddingGenerator;
-    private readonly ILogger<CodeVectorService> logger;
-    private readonly VectorStoreOptions options;
+    private readonly IVectorStore vectorStore = vectorStore;
+    private readonly IEmbeddingGenerator embeddingGenerator = embeddingGenerator;
+    private readonly ILogger<CodeVectorService> logger = logger;
+    private readonly VectorStoreOptions options = options.Value;
     private bool disposed;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="CodeVectorService"/> class.
-    /// </summary>
-    /// <param name="vectorStore">The vector store.</param>
-    /// <param name="embeddingGenerator">The embedding generator.</param>
-    /// <param name="options">The vector store options.</param>
-    /// <param name="logger">The logger.</param>
-    public CodeVectorService(
-        IVectorStore vectorStore,
-        IEmbeddingGenerator embeddingGenerator,
-        IOptions<VectorStoreOptions> options,
-        ILogger<CodeVectorService> logger)
-    {
-        this.vectorStore = vectorStore;
-        this.embeddingGenerator = embeddingGenerator;
-        this.options = options.Value;
-        this.logger = logger;
-    }
 
     /// <summary>
     /// Initializes the collections for storing code data.
@@ -277,15 +269,15 @@ public sealed class CodeVectorService : IDisposable
             {
                 vectorFilter = new VectorFilter
                 {
-                    Must = new List<FilterCondition>
-                    {
+                    Must =
+                    [
                         new FilterCondition
                         {
                             Field = "edge_type",
                             Operator = FilterOperator.In,
                             Value = typeStrings
                         }
-                    }
+                    ]
                 };
             }
         }
@@ -308,8 +300,8 @@ public sealed class CodeVectorService : IDisposable
             Cardinality = r.Payload.GetValueOrDefault("cardinality") is long c ? (int)c : 0,
             IsCrossLanguage = r.Payload.GetValueOrDefault("is_cross_language") is bool b && b,
             NodeIds = r.Payload.GetValueOrDefault("node_ids") as IList<object> is { } list
-                ? list.Select(x => x.ToString()!).ToList()
-                : new List<string>()
+                ? [.. list.Select(x => x.ToString()!)]
+                : []
         }).ToList();
     }
 
@@ -427,7 +419,7 @@ public class IndexingProgress
     public int CurrentBatch { get; set; }
 
     /// <summary>Gets the completion percentage.</summary>
-    public double PercentComplete => TotalItems == 0 ? 0 : (double)IndexedItems / TotalItems * 100;
+    public double PercentComplete => this.TotalItems == 0 ? 0 : (double)this.IndexedItems / this.TotalItems * 100;
 }
 
 /// <summary>
@@ -496,7 +488,7 @@ public class EdgeSearchResult
     public bool IsCrossLanguage { get; set; }
 
     /// <summary>Gets or sets the connected node IDs.</summary>
-    public List<string> NodeIds { get; set; } = new();
+    public List<string> NodeIds { get; set; } = [];
 }
 
 /// <summary>

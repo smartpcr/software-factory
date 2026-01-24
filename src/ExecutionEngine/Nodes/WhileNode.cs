@@ -92,10 +92,10 @@ public class WhileNode : ExecutableNodeBase
     /// Gets the available output ports for this node.
     /// </summary>
     /// <returns>Array of available port names.</returns>
-    public string[] GetAvailablePorts()
+    public static string[] GetAvailablePorts()
     {
         // While node has LoopBody port for iteration messages
-        return new[] { LoopBodyPort };
+        return [LoopBodyPort];
     }
 
     /// <inheritdoc/>
@@ -160,7 +160,7 @@ public class WhileNode : ExecutableNodeBase
                     {
                         { "iterationIndex", iterationCount }
                     },
-                    OutputData = new Dictionary<string, object>()
+                    OutputData = []
                 };
 
                 // Emit OnNext event to trigger child node execution for this iteration
@@ -271,7 +271,7 @@ public class WhileNode : ExecutableNodeBase
         }
 
         // Create execution state for script evaluation
-        var state = this.CreateExecutionState(workflowContext, nodeContext);
+        var state = CreateExecutionState(workflowContext, nodeContext);
 
         try
         {

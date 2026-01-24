@@ -15,10 +15,10 @@ public class PsAstNode
     public int EndLine { get; set; }
     public string? Code { get; set; }
     public string? Summary { get; set; }
-    public List<string> BaseTypes { get; set; } = new();
-    public List<PsParameterInfo> Parameters { get; set; } = new();
-    public List<string> Methods { get; set; } = new();
-    public List<string> Properties { get; set; } = new();
+    public List<string> BaseTypes { get; set; } = [];
+    public List<PsParameterInfo> Parameters { get; set; } = [];
+    public List<string> Methods { get; set; } = [];
+    public List<string> Properties { get; set; } = [];
 
     public string GetEmbeddingText()
     {

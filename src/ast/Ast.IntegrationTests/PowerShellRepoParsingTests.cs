@@ -204,7 +204,7 @@ public class PowerShellRepoParsingTests
                 .ToList(),
             Imports = allModuleImports.Select(i => new
             {
-                File = i.File,
+                i.File,
                 ModuleName = i.Import.Metadata.GetValueOrDefault("module_name"),
                 Version = i.Import.Metadata.GetValueOrDefault("version"),
                 Prefix = i.Import.Metadata.GetValueOrDefault("prefix"),
@@ -288,7 +288,7 @@ public class PowerShellRepoParsingTests
                 r.Execution.Metadata.GetValueOrDefault("use_ssl") is true),
             Executions = allRemoteExecutions.Select(r => new
             {
-                File = r.File,
+                r.File,
                 Cmdlet = r.Execution.Metadata.GetValueOrDefault("cmdlet"),
                 ComputerName = r.Execution.Metadata.GetValueOrDefault("computer_name"),
                 HasCredential = r.Execution.Metadata.GetValueOrDefault("credential") != null,
@@ -370,7 +370,7 @@ public class PowerShellRepoParsingTests
                 .ToDictionary(g => g.Key, g => g.Count()),
             Functions = allFunctions.Select(f => new
             {
-                File = f.File,
+                f.File,
                 IsFilter = f.Function.Metadata.GetValueOrDefault("is_filter"),
                 IsWorkflow = f.Function.Metadata.GetValueOrDefault("is_workflow"),
                 NodeCount = f.Function.NodeIds.Count
@@ -450,7 +450,7 @@ public class PowerShellRepoParsingTests
                 .Take(20)
                 .Select(p => new
                 {
-                    File = p.File,
+                    p.File,
                     Length = p.Pipeline.Metadata.GetValueOrDefault("pipeline_length"),
                     Stages = p.Pipeline.NodeIds.Count
                 })

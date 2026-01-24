@@ -370,7 +370,7 @@ public class WhileNodeTests
         var node = new WhileNode();
 
         // Act
-        var ports = node.GetAvailablePorts();
+        var ports = WhileNode.GetAvailablePorts();
 
         // Assert
         ports.Should().NotBeNull();
@@ -571,7 +571,7 @@ public class WhileNodeTests
         ExecutionEngine.Core.NodeNextEventArgs? firstEvent = null;
         node.OnNext += (sender, args) =>
         {
-            if (firstEvent == null) firstEvent = args;
+            firstEvent ??= args;
 
             var count = (int)workflowContext.Variables["count"];
             workflowContext.Variables["count"] = count + 1;

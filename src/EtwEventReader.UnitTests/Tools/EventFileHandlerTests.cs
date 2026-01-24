@@ -75,7 +75,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { testFile });
+            var result = handler.ResolveAllPaths([testFile]);
 
             // Assert
             Assert.AreEqual(1, result.Count);
@@ -96,7 +96,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+            var result = handler.ResolveAllPaths([this.testDirectory]);
 
             // Assert
             Assert.AreEqual(2, result.Count);
@@ -119,7 +119,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { wildcardPath });
+            var result = handler.ResolveAllPaths([wildcardPath]);
 
             // Assert
             Assert.AreEqual(1, result.Count);
@@ -137,7 +137,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { nonExistentPath });
+            var result = handler.ResolveAllPaths([nonExistentPath]);
 
             // Assert
             Assert.AreEqual(0, result.Count);
@@ -168,7 +168,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { zipFilePath });
+            var result = handler.ResolveAllPaths([zipFilePath]);
 
             // Assert
             Assert.AreEqual(1, result.Count);
@@ -188,7 +188,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { zeroLengthZip });
+            var result = handler.ResolveAllPaths([zeroLengthZip]);
 
             // Assert
             Assert.AreEqual(0, result.Count);
@@ -206,7 +206,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { testFile, testFile, testFile });
+            var result = handler.ResolveAllPaths([testFile, testFile, testFile]);
 
             // Assert
             Assert.AreEqual(1, result.Count);
@@ -237,7 +237,7 @@ namespace EtwEventReader.UnitTests.Tools
             // Act - Dispose should complete without exception
             using (var handler = new EventFileHandler())
             {
-                result = handler.ResolveAllPaths(new[] { zipFilePath });
+                result = handler.ResolveAllPaths([zipFilePath]);
             }
 
             // Assert - We got results and dispose completed
@@ -268,7 +268,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { file1, subDir });
+            var result = handler.ResolveAllPaths([file1, subDir]);
 
             // Assert
             Assert.AreEqual(2, result.Count);

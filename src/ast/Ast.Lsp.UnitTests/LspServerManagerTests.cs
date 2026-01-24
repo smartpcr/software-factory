@@ -92,7 +92,7 @@ public class LspServerManagerTests
     }
 
     [TestMethod]
-    public async Task ShutdownAllAsync_ShouldNotThrow_WhenNoClients()
+    public async Task ShutdownAllAsync_ShouldNotThrow_WhenNoClientsAsync()
     {
         // Arrange
         var options = Options.Create(new LspConfiguration());
@@ -104,7 +104,7 @@ public class LspServerManagerTests
     }
 
     [TestMethod]
-    public async Task DisposeAsync_ShouldNotThrow_WhenNoClients()
+    public async Task DisposeAsync_ShouldNotThrow_WhenNoClientsAsync()
     {
         // Arrange
         var options = Options.Create(new LspConfiguration());
@@ -116,7 +116,7 @@ public class LspServerManagerTests
     }
 
     [TestMethod]
-    public async Task GetOrCreateClientAsync_ShouldThrow_WhenLanguageDisabled()
+    public async Task GetOrCreateClientAsync_ShouldThrow_WhenLanguageDisabledAsync()
     {
         // Arrange
         var config = new LspConfiguration
@@ -134,7 +134,7 @@ public class LspServerManagerTests
     }
 
     [TestMethod]
-    public async Task GetOrCreateClientAsync_ShouldThrow_WhenLspDisabled()
+    public async Task GetOrCreateClientAsync_ShouldThrow_WhenLspDisabledAsync()
     {
         // Arrange
         var config = new LspConfiguration { Enabled = false };

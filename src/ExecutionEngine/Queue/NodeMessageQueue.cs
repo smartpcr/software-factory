@@ -98,10 +98,7 @@ namespace ExecutionEngine.Queue
         /// <returns>True if enqueued successfully, false if queue is at capacity.</returns>
         public async Task<bool> EnqueueAsync(INodeMessage message, CancellationToken cancellationToken = default)
         {
-            if (message == null)
-            {
-                throw new ArgumentNullException(nameof(message));
-            }
+            ArgumentNullException.ThrowIfNull(message);
 
             var envelope = new MessageEnvelope
             {
@@ -185,10 +182,7 @@ namespace ExecutionEngine.Queue
         /// <returns>A task representing the completion.</returns>
         public async Task CompleteAsync(MessageLease lease, CancellationToken cancellationToken = default)
         {
-            if (lease == null)
-            {
-                throw new ArgumentNullException(nameof(lease));
-            }
+            ArgumentNullException.ThrowIfNull(lease);
 
             await this.buffer.AcknowledgeAsync(lease.MessageId, cancellationToken);
         }
@@ -202,10 +196,7 @@ namespace ExecutionEngine.Queue
         /// <returns>A task representing the abandonment.</returns>
         public async Task AbandonAsync(MessageLease lease, CancellationToken cancellationToken = default)
         {
-            if (lease == null)
-            {
-                throw new ArgumentNullException(nameof(lease));
-            }
+            ArgumentNullException.ThrowIfNull(lease);
 
             // Get all messages from buffer to find the one we're abandoning
             var allMessages = await this.buffer.GetAllMessagesAsync(cancellationToken);
@@ -246,10 +237,7 @@ namespace ExecutionEngine.Queue
         /// <returns>A task representing the operation.</returns>
         public async Task MoveToDeadLetterAsync(MessageLease lease, string reason, CancellationToken cancellationToken = default)
         {
-            if (lease == null)
-            {
-                throw new ArgumentNullException(nameof(lease));
-            }
+            ArgumentNullException.ThrowIfNull(lease);
 
             // Get all messages from buffer to find the one we're moving
             var allMessages = await this.buffer.GetAllMessagesAsync(cancellationToken);
@@ -301,10 +289,7 @@ namespace ExecutionEngine.Queue
         /// <returns>True if restored successfully.</returns>
         public async Task<bool> RestoreFromCheckpointAsync(MessageEnvelope envelope, CancellationToken cancellationToken = default)
         {
-            if (envelope == null)
-            {
-                throw new ArgumentNullException(nameof(envelope));
-            }
+            ArgumentNullException.ThrowIfNull(envelope);
 
             // Restore the message to the buffer
             var restored = await this.buffer.RestoreAsync(envelope, cancellationToken);

@@ -71,15 +71,15 @@ public class GraphModelsTests
         var analysis = new ImpactAnalysis
         {
             SourceNode = CreateTestNode("source"),
-            DirectlyAffected = new List<NodeWithDepth>
-            {
+            DirectlyAffected =
+            [
                 new() { Node = CreateTestNode("1"), Depth = 1, RelationshipType = HyperedgeType.MethodInvocation },
                 new() { Node = CreateTestNode("2"), Depth = 1, RelationshipType = HyperedgeType.MethodInvocation }
-            },
-            IndirectlyAffected = new List<NodeWithDepth>
-            {
+            ],
+            IndirectlyAffected =
+            [
                 new() { Node = CreateTestNode("3"), Depth = 2, RelationshipType = HyperedgeType.MethodInvocation }
-            }
+            ]
         };
 
         // Act & Assert
@@ -252,8 +252,8 @@ public class GraphModelsTests
         {
             Id = id,
             EdgeType = HyperedgeType.MethodInvocation,
-            NodeIds = new List<string> { "source", "target" },
-            Roles = new Dictionary<string, string>()
+            NodeIds = ["source", "target"],
+            Roles = []
         };
     }
 }

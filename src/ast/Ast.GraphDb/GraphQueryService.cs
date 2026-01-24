@@ -12,21 +12,15 @@ using Microsoft.Extensions.Logging;
 /// <summary>
 /// High-level service for querying code graphs.
 /// </summary>
-public class GraphQueryService
+/// <remarks>
+/// Initializes a new instance of the <see cref="GraphQueryService"/> class.
+/// </remarks>
+/// <param name="graphStore">The graph store.</param>
+/// <param name="logger">The logger.</param>
+public class GraphQueryService(IGraphStore graphStore, ILogger<GraphQueryService> logger)
 {
-    private readonly IGraphStore graphStore;
-    private readonly ILogger<GraphQueryService> logger;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="GraphQueryService"/> class.
-    /// </summary>
-    /// <param name="graphStore">The graph store.</param>
-    /// <param name="logger">The logger.</param>
-    public GraphQueryService(IGraphStore graphStore, ILogger<GraphQueryService> logger)
-    {
-        this.graphStore = graphStore ?? throw new ArgumentNullException(nameof(graphStore));
-        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
-    }
+    private readonly IGraphStore graphStore = graphStore ?? throw new ArgumentNullException(nameof(graphStore));
+    private readonly ILogger<GraphQueryService> logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     /// <summary>
     /// Indexes a code hypergraph into the graph store.

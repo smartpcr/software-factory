@@ -75,7 +75,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+            var result = handler.ResolveAllPaths([this.testDirectory]);
 
             // Assert
             Assert.AreEqual(3, result.Count, "Should find 3 ETL files recursively, excluding non-ETL files");
@@ -112,7 +112,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { wildcardPath });
+            var result = handler.ResolveAllPaths([wildcardPath]);
 
             // Assert
             Assert.AreEqual(3, result.Count, "Should find 3 ETL files recursively");
@@ -141,7 +141,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+            var result = handler.ResolveAllPaths([this.testDirectory]);
 
             // Assert
             Assert.AreEqual(5, result.Count, "Should find all 5 files in nested structure");
@@ -182,7 +182,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+            var result = handler.ResolveAllPaths([this.testDirectory]);
 
             // Assert
             // Should find 4 ETL files (root.etl, log1.etl, old.etl, new.etl)
@@ -216,7 +216,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { this.testDirectory });
+            var result = handler.ResolveAllPaths([this.testDirectory]);
 
             // Assert
             Assert.AreEqual(2, result.Count, "Should find 2 files, ignoring empty directories");
@@ -241,7 +241,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { wildcardPath });
+            var result = handler.ResolveAllPaths([wildcardPath]);
 
             // Assert
             Assert.AreEqual(2, result.Count, "Should find 2 ETL files recursively");
@@ -271,7 +271,7 @@ namespace EtwEventReader.UnitTests.Tools
             using var handler = new EventFileHandler();
 
             // Act
-            var result = handler.ResolveAllPaths(new[] { dir1, dir2 });
+            var result = handler.ResolveAllPaths([dir1, dir2]);
 
             // Assert
             Assert.AreEqual(4, result.Count, "Should find all 4 files from both directory trees");

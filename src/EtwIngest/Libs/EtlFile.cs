@@ -14,20 +14,14 @@ namespace EtwIngest.Libs
     using Microsoft.Diagnostics.Tracing;
     using Microsoft.Diagnostics.Tracing.Parsers;
 
-    public class EtlFile
+    public class EtlFile(string etlFile)
     {
-        private readonly string etlFile;
-        private readonly long fileSize;
-
-        public EtlFile(string etlFile)
-        {
-            this.etlFile = etlFile;
-            fileSize = new FileInfo(etlFile).Length;
-        }
+        private readonly string etlFile = etlFile;
+        private readonly long fileSize = new FileInfo(etlFile).Length;
 
         public void Parse(ConcurrentDictionary<(string providerName, string eventName), EtwEvent> eventSchema, ref bool failed)
         {
-            using var source = new ETWTraceEventSource(etlFile);
+            using var source = new ETWTraceEventSource(this.etlFile);
             var parser = new DynamicTraceEventParser(source);
 
             var stopwatch = Stopwatch.StartNew();
@@ -37,7 +31,7 @@ namespace EtwIngest.Libs
             {
                 if ((DateTime.UtcNow - lastEventTime).TotalSeconds >= 10)
                 {
-                    Console.WriteLine($"No events received in the last 10 seconds. Stopping processing {etlFile}  (file size: {fileSize} bytes) after {Math.Round(stopwatch.Elapsed.TotalSeconds)} seconds.");
+                    Console.WriteLine($"No events received in the last 10 seconds. Stopping processing {this.etlFile}  (file size: {this.fileSize} bytes) after {Math.Round(stopwatch.Elapsed.TotalSeconds)} seconds.");
                     source.StopProcessing();
                     timer.Stop();
                 }
@@ -60,8 +54,8 @@ namespace EtwIngest.Libs
                         {
                             ProviderName = providerName,
                             EventName = eventName,
-                            PayloadSchema = new List<(string fieldName, Type fieldType)>(),
-                            Payload = new Dictionary<string, object>(),
+                            PayloadSchema = [],
+                            Payload = [],
                         };
 
                         etwEvent.PayloadSchema.Add((nameof(traceEvent.TimeStamp), typeof(DateTime)));
@@ -118,7 +112,7 @@ namespace EtwIngest.Libs
         public Dictionary<(string providerName, string eventName), List<string>> Process(
             Dictionary<(string providerName, string eventName), EtwEvent> eventSchemas)
         {
-            using var source = new ETWTraceEventSource(etlFile);
+            using var source = new ETWTraceEventSource(this.etlFile);
             var parser = new DynamicTraceEventParser(source);
 
             var stopwatch = Stopwatch.StartNew();
@@ -128,7 +122,7 @@ namespace EtwIngest.Libs
             {
                 if ((DateTime.UtcNow - lastEventTime).TotalSeconds >= 10)
                 {
-                    Console.WriteLine($"No events received in the last 10 seconds. Stopping processing {etlFile}  (file size: {fileSize} bytes) after {Math.Round(stopwatch.Elapsed.TotalSeconds)} seconds.");
+                    Console.WriteLine($"No events received in the last 10 seconds. Stopping processing {this.etlFile}  (file size: {this.fileSize} bytes) after {Math.Round(stopwatch.Elapsed.TotalSeconds)} seconds.");
                     source.StopProcessing();
                     timer.Stop();
                 }
@@ -144,7 +138,7 @@ namespace EtwIngest.Libs
                 var eventName = traceEvent.EventName;
                 if (!fileContentsByProviderEvednts.TryGetValue((providerName, eventName), out var csvLines))
                 {
-                    csvLines = new List<string>();
+                    csvLines = [];
                     fileContentsByProviderEvednts.Add((providerName, eventName), csvLines);
                 }
 
@@ -178,11 +172,11 @@ namespace EtwIngest.Libs
                                 if (fieldType == typeof(string) && traceEvent.PayloadByName(fieldName) is string fieldValue)
                                 {
                                     var containsSpecialCharacters =
-                                        fieldValue.Contains("\"") ||
-                                        fieldValue.Contains(",") ||
-                                        fieldValue.Contains(" ") ||
-                                        fieldValue.Contains("\n") ||
-                                        fieldValue.Contains("\r");
+                                        fieldValue.Contains('"') ||
+                                        fieldValue.Contains(',') ||
+                                        fieldValue.Contains(' ') ||
+                                        fieldValue.Contains('\n') ||
+                                        fieldValue.Contains('\r');
                                     if (containsSpecialCharacters)
                                     {
                                         // Escape quotes by doubling them
@@ -202,7 +196,7 @@ namespace EtwIngest.Libs
 
                         if (i < eventSchema.PayloadSchema.Count - 1)
                         {
-                            rowBuilder.Append(",");
+                            rowBuilder.Append(',');
                         }
                     }
 

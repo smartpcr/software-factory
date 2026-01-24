@@ -15,116 +15,109 @@ using StreamJsonRpc;
 /// <summary>
 /// LSP client implementation using JSON-RPC over stdio.
 /// </summary>
-public class LspClient : ILspClient
+/// <remarks>
+/// Creates a new LSP client for the specified language.
+/// </remarks>
+/// <param name="language">The language to support.</param>
+/// <param name="config">LSP configuration.</param>
+/// <param name="logger">Logger instance.</param>
+public class LspClient(LspLanguage language, LspConfiguration config, ILogger<LspClient> logger) : ILspClient
 {
-    private readonly ILogger<LspClient> _logger;
-    private readonly LspConfiguration _config;
-    private readonly ConcurrentDictionary<string, List<Diagnostic>> _diagnostics = new();
-    private readonly ConcurrentDictionary<string, int> _documentVersions = new();
+    private readonly ILogger<LspClient> logger = logger;
+    private readonly LspConfiguration config = config;
+    private readonly ConcurrentDictionary<string, List<Diagnostic>> diagnostics = new();
+    private readonly ConcurrentDictionary<string, int> documentVersions = new();
 
-    private Process? _serverProcess;
-    private JsonRpc? _rpc;
-    private LspServerState _state = LspServerState.NotStarted;
-    private string? _rootPath;
-    private ServerCapabilities? _capabilities;
-
-    /// <inheritdoc />
-    public LspLanguage Language { get; }
+    private Process? serverProcess;
+    private JsonRpc? rpc;
+    private LspServerState state = LspServerState.NotStarted;
+    private string? rootPath;
+    private ServerCapabilities? capabilities;
 
     /// <inheritdoc />
-    public LspServerState State => _state;
+    public LspLanguage Language { get; } = language;
 
     /// <inheritdoc />
-    public string? RootPath => _rootPath;
+    public LspServerState State => this.state;
 
     /// <inheritdoc />
-    public ServerCapabilities? Capabilities => _capabilities;
+    public string? RootPath => this.rootPath;
+
+    /// <inheritdoc />
+    public ServerCapabilities? Capabilities => this.capabilities;
 
     /// <inheritdoc />
     public event EventHandler<DiagnosticsEventArgs>? DiagnosticsReceived;
 
-    /// <summary>
-    /// Creates a new LSP client for the specified language.
-    /// </summary>
-    /// <param name="language">The language to support.</param>
-    /// <param name="config">LSP configuration.</param>
-    /// <param name="logger">Logger instance.</param>
-    public LspClient(LspLanguage language, LspConfiguration config, ILogger<LspClient> logger)
-    {
-        Language = language;
-        _config = config;
-        _logger = logger;
-    }
-
     /// <inheritdoc />
     public async Task InitializeAsync(string rootPath, CancellationToken cancellationToken = default)
     {
-        if (_state == LspServerState.Running)
+        if (this.state == LspServerState.Running)
         {
-            _logger.LogWarning("LSP client already initialized for {RootPath}", _rootPath);
+            this.logger.LogWarning("LSP client already initialized for {RootPath}", this.rootPath);
             return;
         }
 
-        _state = LspServerState.Starting;
-        _rootPath = rootPath;
+        this.state = LspServerState.Starting;
+        this.rootPath = rootPath;
 
         try
         {
             // Start the language server process
-            var startInfo = CreateProcessStartInfo(rootPath);
-            _serverProcess = new Process { StartInfo = startInfo };
+            var startInfo = this.CreateProcessStartInfo(rootPath);
+            this.serverProcess = new Process { StartInfo = startInfo };
 
-            _serverProcess.Start();
-            _logger.LogInformation("Started {Language} LSP server (PID: {Pid})", Language, _serverProcess.Id);
+            this.serverProcess.Start();
+            this.logger.LogInformation("Started {Language} LSP server (PID: {Pid})", this.Language, this.serverProcess.Id);
 
             // Create JSON-RPC connection over stdio
-            _rpc = new JsonRpc(
-                _serverProcess.StandardInput.BaseStream,
-                _serverProcess.StandardOutput.BaseStream);
+            this.rpc = new JsonRpc(
+                this.serverProcess.StandardInput.BaseStream,
+                this.serverProcess.StandardOutput.BaseStream);
 
             // Register notification handlers
-            _rpc.AddLocalRpcMethod("textDocument/publishDiagnostics", new Action<PublishDiagnosticsParams>(OnPublishDiagnostics));
+            this.rpc.AddLocalRpcMethod("textDocument/publishDiagnostics", new Action<PublishDiagnosticsParams>(this.OnPublishDiagnostics));
 
-            _rpc.StartListening();
+            this.rpc.StartListening();
 
             // Send initialize request
             var initParams = CreateInitializeParams(rootPath);
-            var result = await _rpc.InvokeWithParameterObjectAsync<InitializeResult>(
+            var result = await this.rpc.InvokeWithParameterObjectAsync<InitializeResult>(
                 "initialize",
                 initParams,
                 cancellationToken);
 
-            _capabilities = result.Capabilities;
+            this.capabilities = result.Capabilities;
 
             // Send initialized notification
-            await _rpc.NotifyAsync("initialized");
+            await this.rpc.NotifyAsync("initialized");
 
-            _state = LspServerState.Running;
-            _logger.LogInformation(
+            this.state = LspServerState.Running;
+            this.logger.LogInformation(
                 "{Language} LSP server initialized. Hover: {Hover}, Definition: {Def}, References: {Refs}, CallHierarchy: {Call}",
-                Language,
-                _capabilities.HoverProvider,
-                _capabilities.DefinitionProvider,
-                _capabilities.ReferencesProvider,
-                _capabilities.CallHierarchyProvider);
+                this.Language,
+                ServerCapabilities.IsCapabilityEnabled(this.capabilities.HoverProvider),
+                ServerCapabilities.IsCapabilityEnabled(this.capabilities.DefinitionProvider),
+                ServerCapabilities.IsCapabilityEnabled(this.capabilities.ReferencesProvider),
+                ServerCapabilities.IsCapabilityEnabled(this.capabilities.CallHierarchyProvider));
         }
         catch (Exception ex)
         {
-            _state = LspServerState.Failed;
-            _logger.LogError(ex, "Failed to initialize {Language} LSP server", Language);
-            throw new LspException($"Failed to initialize {Language} LSP server", ex);
+            this.state = LspServerState.Failed;
+            this.logger.LogError(ex, "Failed to initialize {Language} LSP server", this.Language);
+            throw new LspException($"Failed to initialize {this.Language} LSP server", ex);
         }
     }
 
     /// <inheritdoc />
     public async Task OpenDocumentAsync(string filePath, string content, CancellationToken cancellationToken = default)
     {
-        EnsureInitialized();
+        this.EnsureInitialized();
 
         var uri = PathToUri(filePath);
-        var version = _documentVersions.AddOrUpdate(uri, 1, (_, v) => v + 1);
+        var version = this.documentVersions.AddOrUpdate(uri, 1, (_, v) => v + 1);
 
-        var languageId = Language switch
+        var languageId = this.Language switch
         {
             LspLanguage.CSharp => "csharp",
             LspLanguage.PowerShell => "powershell",
@@ -142,14 +135,14 @@ public class LspClient : ILspClient
             }
         };
 
-        await _rpc!.NotifyWithParameterObjectAsync("textDocument/didOpen", param);
-        _logger.LogDebug("Opened document: {Uri}", uri);
+        await this.rpc!.NotifyWithParameterObjectAsync("textDocument/didOpen", param);
+        this.logger.LogDebug("Opened document: {Uri}", uri);
     }
 
     /// <inheritdoc />
     public async Task CloseDocumentAsync(string filePath, CancellationToken cancellationToken = default)
     {
-        EnsureInitialized();
+        this.EnsureInitialized();
 
         var uri = PathToUri(filePath);
         var param = new DidCloseTextDocumentParams
@@ -157,10 +150,10 @@ public class LspClient : ILspClient
             TextDocument = new TextDocumentIdentifier(uri)
         };
 
-        await _rpc!.NotifyWithParameterObjectAsync("textDocument/didClose", param);
-        _documentVersions.TryRemove(uri, out _);
-        _diagnostics.TryRemove(uri, out _);
-        _logger.LogDebug("Closed document: {Uri}", uri);
+        await this.rpc!.NotifyWithParameterObjectAsync("textDocument/didClose", param);
+        this.documentVersions.TryRemove(uri, out _);
+        this.diagnostics.TryRemove(uri, out _);
+        this.logger.LogDebug("Closed document: {Uri}", uri);
     }
 
     /// <inheritdoc />
@@ -170,11 +163,11 @@ public class LspClient : ILspClient
         int character,
         CancellationToken cancellationToken = default)
     {
-        EnsureInitialized();
+        this.EnsureInitialized();
 
-        if (_capabilities?.HoverProvider != true)
+        if (!ServerCapabilities.IsCapabilityEnabled(this.capabilities?.HoverProvider))
         {
-            _logger.LogDebug("Hover not supported by server");
+            this.logger.LogDebug("Hover not supported by server");
             return null;
         }
 
@@ -185,9 +178,9 @@ public class LspClient : ILspClient
         try
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(_config.TimeoutMs);
+            timeoutCts.CancelAfter(this.config.TimeoutMs);
 
-            var result = await _rpc!.InvokeWithParameterObjectAsync<HoverResult?>(
+            var result = await this.rpc!.InvokeWithParameterObjectAsync<HoverResult?>(
                 "textDocument/hover",
                 param,
                 timeoutCts.Token);
@@ -196,12 +189,12 @@ public class LspClient : ILspClient
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogWarning("Hover request timed out for {File}:{Line}:{Char}", filePath, line, character);
+            this.logger.LogWarning("Hover request timed out for {File}:{Line}:{Char}", filePath, line, character);
             return null;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Hover request failed for {File}:{Line}:{Char}", filePath, line, character);
+            this.logger.LogWarning(ex, "Hover request failed for {File}:{Line}:{Char}", filePath, line, character);
             return null;
         }
     }
@@ -213,11 +206,11 @@ public class LspClient : ILspClient
         int character,
         CancellationToken cancellationToken = default)
     {
-        EnsureInitialized();
+        this.EnsureInitialized();
 
-        if (_capabilities?.DefinitionProvider != true)
+        if (!ServerCapabilities.IsCapabilityEnabled(this.capabilities?.DefinitionProvider))
         {
-            _logger.LogDebug("Definition not supported by server");
+            this.logger.LogDebug("Definition not supported by server");
             return [];
         }
 
@@ -228,9 +221,9 @@ public class LspClient : ILspClient
         try
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(_config.TimeoutMs);
+            timeoutCts.CancelAfter(this.config.TimeoutMs);
 
-            var result = await _rpc!.InvokeWithParameterObjectAsync<JsonElement>(
+            var result = await this.rpc!.InvokeWithParameterObjectAsync<JsonElement>(
                 "textDocument/definition",
                 param,
                 timeoutCts.Token);
@@ -239,12 +232,12 @@ public class LspClient : ILspClient
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogWarning("Definition request timed out for {File}:{Line}:{Char}", filePath, line, character);
+            this.logger.LogWarning("Definition request timed out for {File}:{Line}:{Char}", filePath, line, character);
             return [];
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Definition request failed for {File}:{Line}:{Char}", filePath, line, character);
+            this.logger.LogWarning(ex, "Definition request failed for {File}:{Line}:{Char}", filePath, line, character);
             return [];
         }
     }
@@ -257,11 +250,11 @@ public class LspClient : ILspClient
         bool includeDeclaration = true,
         CancellationToken cancellationToken = default)
     {
-        EnsureInitialized();
+        this.EnsureInitialized();
 
-        if (_capabilities?.ReferencesProvider != true)
+        if (!ServerCapabilities.IsCapabilityEnabled(this.capabilities?.ReferencesProvider))
         {
-            _logger.LogDebug("References not supported by server");
+            this.logger.LogDebug("References not supported by server");
             return [];
         }
 
@@ -273,9 +266,9 @@ public class LspClient : ILspClient
         try
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(_config.TimeoutMs);
+            timeoutCts.CancelAfter(this.config.TimeoutMs);
 
-            var result = await _rpc!.InvokeWithParameterObjectAsync<List<Location>?>(
+            var result = await this.rpc!.InvokeWithParameterObjectAsync<List<Location>?>(
                 "textDocument/references",
                 param,
                 timeoutCts.Token);
@@ -283,21 +276,21 @@ public class LspClient : ILspClient
             var locations = result ?? [];
 
             // Limit results
-            if (locations.Count > _config.MaxReferences)
+            if (locations.Count > this.config.MaxReferences)
             {
-                locations = locations.Take(_config.MaxReferences).ToList();
+                locations = [.. locations.Take(this.config.MaxReferences)];
             }
 
             return locations;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogWarning("References request timed out for {File}:{Line}:{Char}", filePath, line, character);
+            this.logger.LogWarning("References request timed out for {File}:{Line}:{Char}", filePath, line, character);
             return [];
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "References request failed for {File}:{Line}:{Char}", filePath, line, character);
+            this.logger.LogWarning(ex, "References request failed for {File}:{Line}:{Char}", filePath, line, character);
             return [];
         }
     }
@@ -307,11 +300,11 @@ public class LspClient : ILspClient
         string filePath,
         CancellationToken cancellationToken = default)
     {
-        EnsureInitialized();
+        this.EnsureInitialized();
 
-        if (_capabilities?.DocumentSymbolProvider != true)
+        if (!ServerCapabilities.IsCapabilityEnabled(this.capabilities?.DocumentSymbolProvider))
         {
-            _logger.LogDebug("Document symbols not supported by server");
+            this.logger.LogDebug("Document symbols not supported by server");
             return [];
         }
 
@@ -323,9 +316,9 @@ public class LspClient : ILspClient
         try
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(_config.TimeoutMs);
+            timeoutCts.CancelAfter(this.config.TimeoutMs);
 
-            var result = await _rpc!.InvokeWithParameterObjectAsync<List<DocumentSymbol>?>(
+            var result = await this.rpc!.InvokeWithParameterObjectAsync<List<DocumentSymbol>?>(
                 "textDocument/documentSymbol",
                 param,
                 timeoutCts.Token);
@@ -334,12 +327,12 @@ public class LspClient : ILspClient
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogWarning("Document symbols request timed out for {File}", filePath);
+            this.logger.LogWarning("Document symbols request timed out for {File}", filePath);
             return [];
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Document symbols request failed for {File}", filePath);
+            this.logger.LogWarning(ex, "Document symbols request failed for {File}", filePath);
             return [];
         }
     }
@@ -349,11 +342,11 @@ public class LspClient : ILspClient
         string query,
         CancellationToken cancellationToken = default)
     {
-        EnsureInitialized();
+        this.EnsureInitialized();
 
-        if (_capabilities?.WorkspaceSymbolProvider != true)
+        if (!ServerCapabilities.IsCapabilityEnabled(this.capabilities?.WorkspaceSymbolProvider))
         {
-            _logger.LogDebug("Workspace symbols not supported by server");
+            this.logger.LogDebug("Workspace symbols not supported by server");
             return [];
         }
 
@@ -362,9 +355,9 @@ public class LspClient : ILspClient
         try
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(_config.TimeoutMs);
+            timeoutCts.CancelAfter(this.config.TimeoutMs);
 
-            var result = await _rpc!.InvokeWithParameterObjectAsync<List<WorkspaceSymbol>?>(
+            var result = await this.rpc!.InvokeWithParameterObjectAsync<List<WorkspaceSymbol>?>(
                 "workspace/symbol",
                 param,
                 timeoutCts.Token);
@@ -373,12 +366,12 @@ public class LspClient : ILspClient
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogWarning("Workspace symbols request timed out for query: {Query}", query);
+            this.logger.LogWarning("Workspace symbols request timed out for query: {Query}", query);
             return [];
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Workspace symbols request failed for query: {Query}", query);
+            this.logger.LogWarning(ex, "Workspace symbols request failed for query: {Query}", query);
             return [];
         }
     }
@@ -390,18 +383,18 @@ public class LspClient : ILspClient
         int character,
         CancellationToken cancellationToken = default)
     {
-        EnsureInitialized();
+        this.EnsureInitialized();
 
-        if (_capabilities?.CallHierarchyProvider != true)
+        if (!ServerCapabilities.IsCapabilityEnabled(this.capabilities?.CallHierarchyProvider))
         {
-            _logger.LogDebug("Call hierarchy not supported by server");
+            this.logger.LogDebug("Call hierarchy not supported by server");
             return [];
         }
 
         try
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(_config.TimeoutMs);
+            timeoutCts.CancelAfter(this.config.TimeoutMs);
 
             // First, prepare the call hierarchy item
             var prepareParam = new CallHierarchyPrepareParams
@@ -410,7 +403,7 @@ public class LspClient : ILspClient
                 Position = new Position(line, character)
             };
 
-            var items = await _rpc!.InvokeWithParameterObjectAsync<List<CallHierarchyItem>?>(
+            var items = await this.rpc!.InvokeWithParameterObjectAsync<List<CallHierarchyItem>?>(
                 "textDocument/prepareCallHierarchy",
                 prepareParam,
                 timeoutCts.Token);
@@ -422,7 +415,7 @@ public class LspClient : ILspClient
 
             // Then get incoming calls for the first item
             var incomingParam = new CallHierarchyIncomingCallsParams { Item = items[0] };
-            var result = await _rpc.InvokeWithParameterObjectAsync<List<CallHierarchyIncomingCall>?>(
+            var result = await this.rpc.InvokeWithParameterObjectAsync<List<CallHierarchyIncomingCall>?>(
                 "callHierarchy/incomingCalls",
                 incomingParam,
                 timeoutCts.Token);
@@ -431,12 +424,12 @@ public class LspClient : ILspClient
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogWarning("Incoming calls request timed out for {File}:{Line}:{Char}", filePath, line, character);
+            this.logger.LogWarning("Incoming calls request timed out for {File}:{Line}:{Char}", filePath, line, character);
             return [];
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Incoming calls request failed for {File}:{Line}:{Char}", filePath, line, character);
+            this.logger.LogWarning(ex, "Incoming calls request failed for {File}:{Line}:{Char}", filePath, line, character);
             return [];
         }
     }
@@ -448,18 +441,18 @@ public class LspClient : ILspClient
         int character,
         CancellationToken cancellationToken = default)
     {
-        EnsureInitialized();
+        this.EnsureInitialized();
 
-        if (_capabilities?.CallHierarchyProvider != true)
+        if (!ServerCapabilities.IsCapabilityEnabled(this.capabilities?.CallHierarchyProvider))
         {
-            _logger.LogDebug("Call hierarchy not supported by server");
+            this.logger.LogDebug("Call hierarchy not supported by server");
             return [];
         }
 
         try
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(_config.TimeoutMs);
+            timeoutCts.CancelAfter(this.config.TimeoutMs);
 
             // First, prepare the call hierarchy item
             var prepareParam = new CallHierarchyPrepareParams
@@ -468,7 +461,7 @@ public class LspClient : ILspClient
                 Position = new Position(line, character)
             };
 
-            var items = await _rpc!.InvokeWithParameterObjectAsync<List<CallHierarchyItem>?>(
+            var items = await this.rpc!.InvokeWithParameterObjectAsync<List<CallHierarchyItem>?>(
                 "textDocument/prepareCallHierarchy",
                 prepareParam,
                 timeoutCts.Token);
@@ -480,7 +473,7 @@ public class LspClient : ILspClient
 
             // Then get outgoing calls for the first item
             var outgoingParam = new CallHierarchyOutgoingCallsParams { Item = items[0] };
-            var result = await _rpc.InvokeWithParameterObjectAsync<List<CallHierarchyOutgoingCall>?>(
+            var result = await this.rpc.InvokeWithParameterObjectAsync<List<CallHierarchyOutgoingCall>?>(
                 "callHierarchy/outgoingCalls",
                 outgoingParam,
                 timeoutCts.Token);
@@ -489,12 +482,12 @@ public class LspClient : ILspClient
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogWarning("Outgoing calls request timed out for {File}:{Line}:{Char}", filePath, line, character);
+            this.logger.LogWarning("Outgoing calls request timed out for {File}:{Line}:{Char}", filePath, line, character);
             return [];
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Outgoing calls request failed for {File}:{Line}:{Char}", filePath, line, character);
+            this.logger.LogWarning(ex, "Outgoing calls request failed for {File}:{Line}:{Char}", filePath, line, character);
             return [];
         }
     }
@@ -503,7 +496,7 @@ public class LspClient : ILspClient
     public IReadOnlyList<Diagnostic> GetDiagnostics(string filePath)
     {
         var uri = PathToUri(filePath);
-        return _diagnostics.TryGetValue(uri, out var diagnostics)
+        return this.diagnostics.TryGetValue(uri, out var diagnostics)
             ? diagnostics
             : [];
     }
@@ -511,7 +504,7 @@ public class LspClient : ILspClient
     /// <inheritdoc />
     public IReadOnlyDictionary<string, IReadOnlyList<Diagnostic>> GetAllDiagnostics()
     {
-        return _diagnostics.ToDictionary(
+        return this.diagnostics.ToDictionary(
             kvp => kvp.Key,
             kvp => (IReadOnlyList<Diagnostic>)kvp.Value);
     }
@@ -519,78 +512,84 @@ public class LspClient : ILspClient
     /// <inheritdoc />
     public async Task ShutdownAsync(CancellationToken cancellationToken = default)
     {
-        if (_state != LspServerState.Running)
+        if (this.state != LspServerState.Running)
         {
             return;
         }
 
-        _state = LspServerState.Stopping;
+        this.state = LspServerState.Stopping;
 
         try
         {
-            if (_rpc != null)
+            if (this.rpc != null)
             {
                 // Send shutdown request
-                await _rpc.InvokeAsync("shutdown", cancellationToken);
+                await this.rpc.InvokeAsync("shutdown", cancellationToken);
 
                 // Send exit notification
-                await _rpc.NotifyAsync("exit");
+                await this.rpc.NotifyAsync("exit");
             }
+        }
+        catch (StreamJsonRpc.RemoteInvocationException ex)
+        {
+            // PowerShell Editor Services may return "Internal Error" during shutdown
+            // which is expected behavior and can be safely ignored
+            this.logger.LogDebug(ex, "LSP server returned error during shutdown (expected for some servers)");
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error during LSP shutdown");
+            this.logger.LogWarning(ex, "Error during LSP shutdown");
         }
         finally
         {
-            await DisposeAsync();
+            await this.DisposeAsync();
         }
     }
 
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
-        _state = LspServerState.Stopped;
+        this.state = LspServerState.Stopped;
 
-        _rpc?.Dispose();
-        _rpc = null;
+        this.rpc?.Dispose();
+        this.rpc = null;
 
-        if (_serverProcess != null)
+        if (this.serverProcess != null)
         {
             try
             {
-                if (!_serverProcess.HasExited)
+                if (!this.serverProcess.HasExited)
                 {
-                    _serverProcess.Kill();
-                    await _serverProcess.WaitForExitAsync();
+                    this.serverProcess.Kill();
+                    await this.serverProcess.WaitForExitAsync();
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Error killing LSP server process");
+                this.logger.LogWarning(ex, "Error killing LSP server process");
             }
 
-            _serverProcess.Dispose();
-            _serverProcess = null;
+            this.serverProcess.Dispose();
+            this.serverProcess = null;
         }
 
-        _diagnostics.Clear();
-        _documentVersions.Clear();
+        this.diagnostics.Clear();
+        this.documentVersions.Clear();
     }
 
     private ProcessStartInfo CreateProcessStartInfo(string rootPath)
     {
-        return Language switch
+        return this.Language switch
         {
-            LspLanguage.CSharp => CreateCSharpServerStartInfo(rootPath),
-            LspLanguage.PowerShell => CreatePowerShellServerStartInfo(rootPath),
-            _ => throw new NotSupportedException($"Language {Language} is not supported")
+            LspLanguage.CSharp => this.CreateCSharpServerStartInfo(rootPath),
+            LspLanguage.PowerShell => this.CreatePowerShellServerStartInfo(rootPath),
+            _ => throw new NotSupportedException($"Language {this.Language} is not supported")
         };
     }
 
     private ProcessStartInfo CreateCSharpServerStartInfo(string rootPath)
     {
-        var csConfig = _config.CSharp;
+        var csConfig = this.config.CSharp;
 
         string fileName;
         string arguments;
@@ -629,11 +628,11 @@ public class LspClient : ILspClient
 
     private ProcessStartInfo CreatePowerShellServerStartInfo(string rootPath)
     {
-        var psConfig = _config.PowerShell;
+        var psConfig = this.config.PowerShell;
         var pwsh = psConfig.PowerShellPath ?? "pwsh";
 
         // Build the command to start PSES
-        var editorServicesModule = psConfig.EditorServicesPath ?? "PowerShellEditorServices";
+        var editorServicesModule = psConfig.EditorServicesPath ?? "it ";
         var startCommand = $"Import-Module '{editorServicesModule}'; " +
                           $"Start-EditorServices -HostName 'AstLsp' " +
                           $"-HostProfileId 'AstLsp' " +
@@ -656,7 +655,7 @@ public class LspClient : ILspClient
         };
     }
 
-    private InitializeParams CreateInitializeParams(string rootPath)
+    private static InitializeParams CreateInitializeParams(string rootPath)
     {
         var rootUri = PathToUri(rootPath);
 
@@ -705,7 +704,7 @@ public class LspClient : ILspClient
 
     private void OnPublishDiagnostics(PublishDiagnosticsParams param)
     {
-        _diagnostics[param.Uri] = param.Diagnostics;
+        this.diagnostics[param.Uri] = param.Diagnostics;
 
         DiagnosticsReceived?.Invoke(this, new DiagnosticsEventArgs
         {
@@ -713,14 +712,14 @@ public class LspClient : ILspClient
             Diagnostics = param.Diagnostics
         });
 
-        _logger.LogDebug("Received {Count} diagnostics for {Uri}", param.Diagnostics.Count, param.Uri);
+        this.logger.LogDebug("Received {Count} diagnostics for {Uri}", param.Diagnostics.Count, param.Uri);
     }
 
     private void EnsureInitialized()
     {
-        if (_state != LspServerState.Running)
+        if (this.state != LspServerState.Running)
         {
-            throw new InvalidOperationException($"LSP client is not running (state: {_state}). Call InitializeAsync first.");
+            throw new InvalidOperationException($"LSP client is not running (state: {this.state}). Call InitializeAsync first.");
         }
     }
 

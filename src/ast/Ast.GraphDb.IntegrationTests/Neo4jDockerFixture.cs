@@ -394,12 +394,7 @@ public static class Neo4jDockerFixture
             RedirectStandardError = true
         };
 
-        using var process = Process.Start(startInfo);
-        if (process == null)
-        {
-            throw new InvalidOperationException($"Failed to start {ComposeCommand} {ComposeArgs}");
-        }
-
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException($"Failed to start {ComposeCommand} {ComposeArgs}");
         var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
         var error = await process.StandardError.ReadToEndAsync(cancellationToken);
 

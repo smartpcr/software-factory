@@ -1,9 +1,8 @@
-using ExecutionEngine.Enums;
-using ExecutionEngine.Workflow;
-
 namespace ExecutionEngine.Example.Workflows;
 
+using ExecutionEngine.Enums;
 using ExecutionEngine.Nodes.Definitions;
+using ExecutionEngine.Workflow;
 
 public static class FanOutWorkflow
 {
@@ -15,8 +14,8 @@ public static class FanOutWorkflow
         {
             WorkflowId = "fanout-workflow",
             WorkflowName = "Fan-Out Parallel Processing",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpNodeDefinition()
                 {
                     NodeId = "start",
@@ -70,9 +69,9 @@ public static class FanOutWorkflow
                     // NOTE: Temporarily removed JoinType.All due to possible engine bug
                     // JoinType = JoinType.All // Wait for all upstreams
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 // Fan-out from start
                 new NodeConnection { SourceNodeId = "start", TargetNodeId = "process1" },
                 new NodeConnection { SourceNodeId = "start", TargetNodeId = "process2" },
@@ -82,7 +81,7 @@ public static class FanOutWorkflow
                 new NodeConnection { SourceNodeId = "process1", TargetNodeId = "aggregate" },
                 new NodeConnection { SourceNodeId = "process2", TargetNodeId = "aggregate" },
                 new NodeConnection { SourceNodeId = "process3", TargetNodeId = "aggregate" }
-            }
+            ]
         };
     }
 }

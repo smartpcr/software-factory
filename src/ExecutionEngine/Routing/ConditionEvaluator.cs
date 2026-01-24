@@ -31,10 +31,7 @@ public class ConditionEvaluator
             throw new ArgumentNullException(nameof(condition));
         }
 
-        if (context == null)
-        {
-            throw new ArgumentNullException(nameof(context));
-        }
+        ArgumentNullException.ThrowIfNull(context);
 
         // Trim whitespace
         condition = condition.Trim();

@@ -18,7 +18,7 @@ public class CsharpAstParserTests
         var code = "";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         nodes.Should().BeEmpty();
@@ -34,7 +34,7 @@ public class MyClass
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         nodes.Should().ContainSingle(n => n.NodeType == AstNodeType.Class);
@@ -53,7 +53,7 @@ public class Dog : Animal, IBarking
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         var classNode = nodes.First(n => n.NodeType == AstNodeType.Class);
@@ -73,7 +73,7 @@ public interface IRepository<T> where T : class
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         nodes.Should().ContainSingle(n => n.NodeType == AstNodeType.Interface);
@@ -93,7 +93,7 @@ public readonly struct Point
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         nodes.Should().Contain(n => n.NodeType == AstNodeType.Struct);
@@ -110,7 +110,7 @@ public readonly struct Point
 public record Person(string Name, int Age);";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         nodes.Should().Contain(n => n.NodeType == AstNodeType.Record);
@@ -131,7 +131,7 @@ public enum Status
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         nodes.Should().Contain(n => n.NodeType == AstNodeType.Enum);
@@ -153,7 +153,7 @@ public class Calculator
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         nodes.Should().Contain(n => n.NodeType == AstNodeType.Method);
@@ -176,7 +176,7 @@ public class Person
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         nodes.Should().Contain(n => n.NodeType == AstNodeType.Property);
@@ -196,7 +196,7 @@ public class Counter
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         nodes.Should().Contain(n => n.NodeType == AstNodeType.Field);
@@ -222,7 +222,7 @@ public class Service
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         nodes.Should().Contain(n => n.NodeType == AstNodeType.Constructor);
@@ -244,7 +244,7 @@ namespace MyApp.Services
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         nodes.Should().Contain(n => n.NodeType == AstNodeType.Namespace);
@@ -262,7 +262,7 @@ namespace MyApp.Services;
 public class Service { }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         nodes.Should().Contain(n => n.NodeType == AstNodeType.Namespace);
@@ -284,7 +284,7 @@ public class Calculator
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         var methodNode = nodes.First(n => n.NodeType == AstNodeType.Method);
@@ -303,7 +303,7 @@ public class Calculator
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         var classNode = nodes.First(n => n.NodeType == AstNodeType.Class);
@@ -329,7 +329,7 @@ public class Outer
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         var classes = nodes.Where(n => n.NodeType == AstNodeType.Class).ToList();
@@ -352,7 +352,7 @@ public class Service
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         var methodNode = nodes.First(n => n.NodeType == AstNodeType.Method);
@@ -374,7 +374,7 @@ public class Repository
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
 
         // Assert
         var methodNode = nodes.First(n => n.NodeType == AstNodeType.Method);
@@ -390,7 +390,7 @@ public class Repository
         var filePath = "src/Services/TestService.cs";
 
         // Act
-        var nodes = parser.ParseCode(code, filePath).ToList();
+        var nodes = this.parser.ParseCode(code, filePath).ToList();
 
         // Assert
         nodes.Should().OnlyContain(n => n.FilePath == filePath);
@@ -413,7 +413,7 @@ public class Service
 }";
 
         // Act
-        var nodes = parser.ParseCode(code).ToList();
+        var nodes = this.parser.ParseCode(code).ToList();
         var methodNode = nodes.First(n => n.NodeType == AstNodeType.Method);
         var embeddingText = methodNode.GetEmbeddingText();
 

@@ -20,7 +20,7 @@ public class SubflowNodeTests
     public async Task ExecuteAsync_LoadAndExecuteChildWorkflow_ReturnsSuccess()
     {
         // Arrange
-        var childWorkflow = this.CreateSimpleChildWorkflow("child-workflow");
+        var childWorkflow = CreateSimpleChildWorkflow("child-workflow");
         var node = new SubflowNode();
         var definition = new SubflowNodeDefinition
         {
@@ -48,7 +48,7 @@ public class SubflowNodeTests
     public async Task ExecuteAsync_WithInputMappings_PassesVariablesToChild()
     {
         // Arrange
-        var childWorkflow = this.CreateChildWorkflowThatReadsVariable("child-workflow", "childVar");
+        var childWorkflow = CreateChildWorkflowThatReadsVariable("child-workflow", "childVar");
         var node = new SubflowNode();
         var definition = new SubflowNodeDefinition
         {
@@ -79,7 +79,7 @@ public class SubflowNodeTests
     public async Task ExecuteAsync_WithOutputMappings_CapturesChildResults()
     {
         // Arrange
-        var childWorkflow = this.CreateChildWorkflowThatSetsVariable("child-workflow", "childResult", "child-output");
+        var childWorkflow = CreateChildWorkflowThatSetsVariable("child-workflow", "childResult", "child-output");
         var node = new SubflowNode();
         var definition = new SubflowNodeDefinition
         {
@@ -108,7 +108,7 @@ public class SubflowNodeTests
     public async Task ExecuteAsync_ChildWorkflowFails_PropagatesFailure()
     {
         // Arrange
-        var childWorkflow = this.CreateFailingChildWorkflow("child-workflow");
+        var childWorkflow = CreateFailingChildWorkflow("child-workflow");
         var node = new SubflowNode();
         var definition = new SubflowNodeDefinition
         {
@@ -134,7 +134,7 @@ public class SubflowNodeTests
     public async Task ExecuteAsync_ContextIsolation_ParentVarsNotVisibleToChild()
     {
         // Arrange
-        var childWorkflow = this.CreateSimpleChildWorkflow("child-workflow");
+        var childWorkflow = CreateSimpleChildWorkflow("child-workflow");
         var node = new SubflowNode();
         var definition = new SubflowNodeDefinition
         {
@@ -161,36 +161,36 @@ public class SubflowNodeTests
     public async Task ExecuteAsync_NestedSubflows_ThreeLevelDeep()
     {
         // Arrange - Create three-level nested workflow structure
-        var level3Workflow = this.CreateChildWorkflowThatSetsVariable("level3", "level3Result", "level3-value");
+        var level3Workflow = CreateChildWorkflowThatSetsVariable("level3", "level3Result", "level3-value");
 
         var level2Workflow = new WorkflowDefinition
         {
             WorkflowId = "level2",
             EntryPointNodeId = "subflow-level3",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new SubflowNodeDefinition
                 {
                     NodeId = "subflow-level3",
                     WorkflowDefinition = level3Workflow,
                     OutputMappings = new Dictionary<string, string> { { "level3Result", "level2Result" } },
                 }
-            }
+            ]
         };
 
         var level1Workflow = new WorkflowDefinition
         {
             WorkflowId = "level1",
             EntryPointNodeId = "subflow-level2",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new SubflowNodeDefinition
                 {
                     NodeId = "subflow-level2",
                     WorkflowDefinition = level2Workflow,
                     OutputMappings = new Dictionary<string, string> { { "level2Result", "level1Result" } },
                 }
-            }
+            ]
         };
 
         var node = new SubflowNode();
@@ -221,7 +221,7 @@ public class SubflowNodeTests
     public async Task ExecuteAsync_WithTimeout_ChildExceedsTimeout()
     {
         // Arrange - Create a child workflow with long-running task
-        var childWorkflow = this.CreateLongRunningChildWorkflow("child-workflow", TimeSpan.FromSeconds(5));
+        var childWorkflow = CreateLongRunningChildWorkflow("child-workflow", TimeSpan.FromSeconds(5));
         var node = new SubflowNode();
         var definition = new SubflowNodeDefinition
         {
@@ -247,7 +247,7 @@ public class SubflowNodeTests
     public async Task ExecuteAsync_Cancellation_CancelsChildWorkflow()
     {
         // Arrange
-        var childWorkflow = this.CreateLongRunningChildWorkflow("child-workflow", TimeSpan.FromSeconds(10));
+        var childWorkflow = CreateLongRunningChildWorkflow("child-workflow", TimeSpan.FromSeconds(10));
         var node = new SubflowNode();
         var definition = new SubflowNodeDefinition
         {
@@ -279,7 +279,7 @@ public class SubflowNodeTests
     {
         // Arrange - Create a temporary workflow file
         var tempFile = Path.Combine(Path.GetTempPath(), $"test-workflow-{Guid.NewGuid()}.json");
-        var childWorkflow = this.CreateSimpleChildWorkflow("file-workflow");
+        var childWorkflow = CreateSimpleChildWorkflow("file-workflow");
         // Use WorkflowSerializer to ensure consistent serialization format (camelCase)
         var serializer = new WorkflowSerializer();
         var json = serializer.ToJson(childWorkflow);
@@ -361,7 +361,7 @@ public class SubflowNodeTests
     public async Task ExecuteAsync_ChildOutputData_AvailableInNodeContext()
     {
         // Arrange
-        var childWorkflow = this.CreateChildWorkflowThatSetsVariable("child-workflow", "result", "test-result");
+        var childWorkflow = CreateChildWorkflowThatSetsVariable("child-workflow", "result", "test-result");
         var node = new SubflowNode();
         var definition = new SubflowNodeDefinition
         {
@@ -393,7 +393,7 @@ public class SubflowNodeTests
     public void Initialize_WithConfiguration_SetsProperties()
     {
         // Arrange
-        var childWorkflow = this.CreateSimpleChildWorkflow("test-child");
+        var childWorkflow = CreateSimpleChildWorkflow("test-child");
         var node = new SubflowNode();
         var definition = new SubflowNodeDefinition
         {
@@ -443,7 +443,7 @@ public class SubflowNodeTests
     public async Task ExecuteAsync_ShouldRaiseOnStartEvent()
     {
         // Arrange
-        var childWorkflow = this.CreateSimpleChildWorkflow("child-workflow");
+        var childWorkflow = CreateSimpleChildWorkflow("child-workflow");
         var node = new SubflowNode();
         var definition = new SubflowNodeDefinition
         {
@@ -469,7 +469,7 @@ public class SubflowNodeTests
     public void NodeFactory_CreateSubflowNode_ShouldSucceed()
     {
         // Arrange
-        var childWorkflow = this.CreateSimpleChildWorkflow("test-child");
+        var childWorkflow = CreateSimpleChildWorkflow("test-child");
         var factory = new NodeFactory();
         var definition = new SubflowNodeDefinition
         {
@@ -526,7 +526,7 @@ public class SubflowNodeTests
     public void Initialize_WithValidWorkflow_ShouldValidateSuccessfully()
     {
         // Arrange
-        var childWorkflow = this.CreateSimpleChildWorkflow("test-child");
+        var childWorkflow = CreateSimpleChildWorkflow("test-child");
         var node = new SubflowNode();
         var definition = new SubflowNodeDefinition
         {
@@ -545,88 +545,88 @@ public class SubflowNodeTests
 
     // Helper methods to create test workflows
 
-    private WorkflowDefinition CreateSimpleChildWorkflow(string workflowId)
+    private static WorkflowDefinition CreateSimpleChildWorkflow(string workflowId)
     {
         return new WorkflowDefinition
         {
             WorkflowId = workflowId,
             EntryPointNodeId = "task-1",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpTaskNodeDefinition
                 {
                     NodeId = "task-1",
                     ScriptContent = "// Simple task"
                 }
-            }
+            ]
         };
     }
 
-    private WorkflowDefinition CreateChildWorkflowThatReadsVariable(string workflowId, string variableName)
+    private static WorkflowDefinition CreateChildWorkflowThatReadsVariable(string workflowId, string variableName)
     {
         return new WorkflowDefinition
         {
             WorkflowId = workflowId,
             EntryPointNodeId = "task-1",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpTaskNodeDefinition
                 {
                     NodeId = "task-1",
                     ScriptContent = $"var value = GetGlobal(\"{variableName}\");"
                 }
-            }
+            ]
         };
     }
 
-    private WorkflowDefinition CreateChildWorkflowThatSetsVariable(string workflowId, string variableName, string value)
+    private static WorkflowDefinition CreateChildWorkflowThatSetsVariable(string workflowId, string variableName, string value)
     {
         return new WorkflowDefinition
         {
             WorkflowId = workflowId,
             EntryPointNodeId = "task-1",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpTaskNodeDefinition
                 {
                     NodeId = "task-1",
                     ScriptContent = $"SetGlobal(\"{variableName}\", \"{value}\");"
                 }
-            }
+            ]
         };
     }
 
-    private WorkflowDefinition CreateFailingChildWorkflow(string workflowId)
+    private static WorkflowDefinition CreateFailingChildWorkflow(string workflowId)
     {
         return new WorkflowDefinition
         {
             WorkflowId = workflowId,
             EntryPointNodeId = "task-1",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpTaskNodeDefinition
                 {
                     NodeId = "task-1",
                     ScriptContent = "throw new Exception(\"Child workflow failure\");"
                 }
-            }
+            ]
         };
     }
 
-    private WorkflowDefinition CreateLongRunningChildWorkflow(string workflowId, TimeSpan duration)
+    private static WorkflowDefinition CreateLongRunningChildWorkflow(string workflowId, TimeSpan duration)
     {
         return new WorkflowDefinition
         {
             WorkflowId = workflowId,
             EntryPointNodeId = "task-1",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpTaskNodeDefinition
                 {
                     NodeId = "task-1",
                     ScriptContent = $"await Task.Delay({(int)duration.TotalMilliseconds});"
                 }
-            }
+            ]
         };
     }
 }

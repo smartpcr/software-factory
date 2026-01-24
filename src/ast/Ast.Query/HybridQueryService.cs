@@ -15,27 +15,19 @@ using Microsoft.Extensions.Logging;
 /// <summary>
 /// Service that combines graph and vector search for hybrid queries.
 /// </summary>
-public class HybridQueryService
+/// <remarks>
+/// Initializes a new instance of the <see cref="HybridQueryService"/> class.
+/// </remarks>
+public class HybridQueryService(
+    IGraphStore graphStore,
+    ILogger<HybridQueryService> logger,
+    IVectorStore? vectorStore = null,
+    IEmbeddingGenerator? embeddingGenerator = null)
 {
-    private readonly IGraphStore graphStore;
-    private readonly IVectorStore? vectorStore;
-    private readonly IEmbeddingGenerator? embeddingGenerator;
-    private readonly ILogger<HybridQueryService> logger;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="HybridQueryService"/> class.
-    /// </summary>
-    public HybridQueryService(
-        IGraphStore graphStore,
-        ILogger<HybridQueryService> logger,
-        IVectorStore? vectorStore = null,
-        IEmbeddingGenerator? embeddingGenerator = null)
-    {
-        this.graphStore = graphStore ?? throw new ArgumentNullException(nameof(graphStore));
-        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        this.vectorStore = vectorStore;
-        this.embeddingGenerator = embeddingGenerator;
-    }
+    private readonly IGraphStore graphStore = graphStore ?? throw new ArgumentNullException(nameof(graphStore));
+    private readonly IVectorStore? vectorStore = vectorStore;
+    private readonly IEmbeddingGenerator? embeddingGenerator = embeddingGenerator;
+    private readonly ILogger<HybridQueryService> logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     /// <summary>
     /// Gets whether semantic search is available.
@@ -226,12 +218,12 @@ public class HybridQueryService
             return result;
         }
 
-        result[0] = new List<HypergraphNode> { startNode };
+        result[0] = [startNode];
         visited.Add(startNodeId);
 
-        for (int currentDepth = 1; currentDepth <= depth; currentDepth++)
+        for (var currentDepth = 1; currentDepth <= depth; currentDepth++)
         {
-            result[currentDepth] = new List<HypergraphNode>();
+            result[currentDepth] = [];
 
             foreach (var node in result[currentDepth - 1])
             {

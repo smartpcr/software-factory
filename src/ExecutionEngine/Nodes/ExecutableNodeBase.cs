@@ -75,7 +75,7 @@ public abstract class ExecutableNodeBase : INode
     /// <param name="workflowContext">Workflow context.</param>
     /// <param name="nodeContext">Node context.</param>
     /// <returns>Execution state with helper functions.</returns>
-    protected ExecutionState CreateExecutionState(
+    protected static ExecutionState CreateExecutionState(
         WorkflowExecutionContext workflowContext,
         NodeExecutionContext nodeContext)
     {

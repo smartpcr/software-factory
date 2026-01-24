@@ -18,13 +18,13 @@ public class NodeExecutionContext
     /// Gets the input data passed from upstream nodes.
     /// This is populated from the OutputData of the previous node.
     /// </summary>
-    public Dictionary<string, object> InputData { get; set; } = new();
+    public Dictionary<string, object> InputData { get; set; } = [];
 
     /// <summary>
     /// Gets the output data that will be passed to downstream nodes.
     /// Nodes populate this during execution.
     /// </summary>
-    public Dictionary<string, object> OutputData { get; set; } = new();
+    public Dictionary<string, object> OutputData { get; set; } = [];
 
     /// <summary>
     /// Gets the local variables for this node execution.
@@ -35,5 +35,5 @@ public class NodeExecutionContext
     /// <summary>
     /// Gets metadata about this node execution.
     /// </summary>
-    public Dictionary<string, object> Metadata { get; } = new();
+    public Dictionary<string, object> Metadata { get; } = [];
 }

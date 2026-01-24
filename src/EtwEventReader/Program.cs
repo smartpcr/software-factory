@@ -52,7 +52,7 @@ namespace EtwEventReader
 
                 var processor = new EventProcessor();
                 var events = processor.GetEvents(
-                    options.Paths.ToArray(),
+                    [.. options.Paths],
                     options.ActivityId,
                     options.ProviderName,
                     options.EventName);
@@ -96,7 +96,7 @@ namespace EtwEventReader
 
                 // Display error summary if any events failed
                 var failedEvents = events.Where(e => !e.Success).ToList();
-                if (failedEvents.Any())
+                if (failedEvents.Count != 0)
                 {
                     Console.WriteLine();
                     Console.WriteLine($"Failed events: {failedEvents.Count}");
@@ -243,7 +243,7 @@ namespace EtwEventReader
         {
             // For simplicity, we'll just return events at hierarchy level 0
             // A more sophisticated implementation would build the full tree
-            return events.Where(e => e.HierarchyLevel == 0).ToList();
+            return [.. events.Where(e => e.HierarchyLevel == 0)];
         }
 
         /// <summary>
@@ -269,7 +269,7 @@ namespace EtwEventReader
             public string? EventName { get; set; }
             public OutputFormat OutputFormat { get; set; } = OutputFormat.Summary;
             public bool ShowErrors { get; set; }
-            public List<string> Paths { get; set; } = new List<string>();
+            public List<string> Paths { get; set; } = [];
         }
 
         /// <summary>

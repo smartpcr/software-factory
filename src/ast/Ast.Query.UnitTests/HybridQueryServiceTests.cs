@@ -25,89 +25,89 @@ public class HybridQueryServiceTests
     [TestInitialize]
     public void Setup()
     {
-        mockGraphStore = new Mock<IGraphStore>();
-        mockVectorStore = new Mock<IVectorStore>();
-        mockEmbeddingGenerator = new Mock<IEmbeddingGenerator>();
-        mockLogger = new Mock<ILogger<HybridQueryService>>();
-        service = new HybridQueryService(
-            mockGraphStore.Object,
-            mockLogger.Object,
-            mockVectorStore.Object,
-            mockEmbeddingGenerator.Object);
+        this.mockGraphStore = new Mock<IGraphStore>();
+        this.mockVectorStore = new Mock<IVectorStore>();
+        this.mockEmbeddingGenerator = new Mock<IEmbeddingGenerator>();
+        this.mockLogger = new Mock<ILogger<HybridQueryService>>();
+        this.service = new HybridQueryService(
+            this.mockGraphStore.Object,
+            this.mockLogger.Object,
+            this.mockVectorStore.Object,
+            this.mockEmbeddingGenerator.Object);
     }
 
     [TestMethod]
     public void Constructor_WithNullGraphStore_ThrowsArgumentNullException()
     {
-        var act = () => new HybridQueryService(null!, mockLogger.Object);
+        var act = () => new HybridQueryService(null!, this.mockLogger.Object);
         act.Should().Throw<ArgumentNullException>().WithParameterName("graphStore");
     }
 
     [TestMethod]
     public void Constructor_WithNullLogger_ThrowsArgumentNullException()
     {
-        var act = () => new HybridQueryService(mockGraphStore.Object, null!);
+        var act = () => new HybridQueryService(this.mockGraphStore.Object, null!);
         act.Should().Throw<ArgumentNullException>().WithParameterName("logger");
     }
 
     [TestMethod]
     public void SemanticSearchAvailable_WithBothDependencies_ReturnsTrue()
     {
-        service.SemanticSearchAvailable.Should().BeTrue();
+        this.service.SemanticSearchAvailable.Should().BeTrue();
     }
 
     [TestMethod]
     public void SemanticSearchAvailable_WithoutVectorStore_ReturnsFalse()
     {
-        var svc = new HybridQueryService(mockGraphStore.Object, mockLogger.Object);
+        var svc = new HybridQueryService(this.mockGraphStore.Object, this.mockLogger.Object);
         svc.SemanticSearchAvailable.Should().BeFalse();
     }
 
     [TestMethod]
     public void Query_ReturnsCodeQueryBuilder()
     {
-        var query = service.Query();
+        var query = this.service.Query();
         query.Should().NotBeNull();
         query.Should().BeAssignableTo<ICodeQuery>();
     }
 
     [TestMethod]
-    public async Task HybridSearchAsync_WithNullSearchText_ThrowsArgumentException()
+    public async Task HybridSearchAsync_WithNullSearchText_ThrowsArgumentExceptionAsync()
     {
-        var act = () => service.HybridSearchAsync(null!);
+        var act = () => this.service.HybridSearchAsync(null!);
         await act.Should().ThrowAsync<ArgumentException>();
     }
 
     [TestMethod]
-    public async Task HybridSearchAsync_WithEmptySearchText_ThrowsArgumentException()
+    public async Task HybridSearchAsync_WithEmptySearchText_ThrowsArgumentExceptionAsync()
     {
-        var act = () => service.HybridSearchAsync("");
+        var act = () => this.service.HybridSearchAsync("");
         await act.Should().ThrowAsync<ArgumentException>();
     }
 
     [TestMethod]
-    public async Task HybridSearchAsync_PerformsGraphSearch()
+    public async Task HybridSearchAsync_PerformsGraphSearchAsync()
     {
         var nodes = new List<HypergraphNode>
         {
             CreateTestNode("1", "TestHelper", "Class")
         };
 
-        mockGraphStore.Setup(x => x.GetNodesAsync(
+        this.mockGraphStore.Setup(x => x.GetNodesAsync(
             It.IsAny<NodeFilter>(),
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(nodes);
 
         var options = new QueryOptions { UseGraphSearch = true, UseSemanticSearch = false };
-        var result = await service.HybridSearchAsync("TestHelper", options);
+        var result = await this.service.HybridSearchAsync("TestHelper", options);
 
         result.Should().NotBeNull();
         result.Nodes.Should().HaveCount(1);
     }
 
     [TestMethod]
-    public async Task HybridSearchAsync_PerformsSemanticSearch_WhenEnabled()
+    public async Task HybridSearchAsync_PerformsSemanticSearch_WhenEnabledAsync()
     {
         var embedding = new float[] { 0.1f, 0.2f, 0.3f };
         var searchResults = new List<VectorSearchResult>
@@ -115,10 +115,10 @@ public class HybridQueryServiceTests
             new() { Id = "1", Score = 0.9f }
         };
 
-        mockEmbeddingGenerator.Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        this.mockEmbeddingGenerator.Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(embedding);
 
-        mockVectorStore.Setup(x => x.SearchAsync(
+        this.mockVectorStore.Setup(x => x.SearchAsync(
             It.IsAny<string>(),
             It.IsAny<float[]>(),
             It.IsAny<int>(),
@@ -126,37 +126,37 @@ public class HybridQueryServiceTests
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(searchResults);
 
-        mockGraphStore.Setup(x => x.GetNodeAsync("1", It.IsAny<CancellationToken>()))
+        this.mockGraphStore.Setup(x => x.GetNodeAsync("1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateTestNode("1", "TestClass", "Class"));
 
-        mockGraphStore.Setup(x => x.GetNodesAsync(
+        this.mockGraphStore.Setup(x => x.GetNodesAsync(
             It.IsAny<NodeFilter>(),
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<HypergraphNode>());
 
         var options = new QueryOptions { UseGraphSearch = false, UseSemanticSearch = true, MinScore = 0.5f };
-        var result = await service.HybridSearchAsync("test query", options);
+        var result = await this.service.HybridSearchAsync("test query", options);
 
         result.Should().NotBeNull();
         result.SemanticMatches.Should().HaveCount(1);
     }
 
     [TestMethod]
-    public async Task HybridSearchAsync_DeduplicatesResults()
+    public async Task HybridSearchAsync_DeduplicatesResultsAsync()
     {
         var node = CreateTestNode("1", "TestClass", "Class");
 
-        mockGraphStore.Setup(x => x.GetNodesAsync(
+        this.mockGraphStore.Setup(x => x.GetNodesAsync(
             It.IsAny<NodeFilter>(),
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<HypergraphNode> { node });
 
-        mockEmbeddingGenerator.Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new float[] { 0.1f });
+        this.mockEmbeddingGenerator.Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([0.1f]);
 
-        mockVectorStore.Setup(x => x.SearchAsync(
+        this.mockVectorStore.Setup(x => x.SearchAsync(
             It.IsAny<string>(),
             It.IsAny<float[]>(),
             It.IsAny<int>(),
@@ -164,18 +164,18 @@ public class HybridQueryServiceTests
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<VectorSearchResult> { new() { Id = "1", Score = 0.9f } });
 
-        mockGraphStore.Setup(x => x.GetNodeAsync("1", It.IsAny<CancellationToken>()))
+        this.mockGraphStore.Setup(x => x.GetNodeAsync("1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(node);
 
         var options = new QueryOptions { UseGraphSearch = true, UseSemanticSearch = true };
-        var result = await service.HybridSearchAsync("TestClass", options);
+        var result = await this.service.HybridSearchAsync("TestClass", options);
 
         // Should have 1 node (deduplicated) + 1 semantic match
         result.Nodes.Should().HaveCount(1);
     }
 
     [TestMethod]
-    public async Task FindSimilarAsync_WithoutSemanticSearch_UsesGraphBasedSimilarity()
+    public async Task FindSimilarAsync_WithoutSemanticSearch_UsesGraphBasedSimilarityAsync()
     {
         var node = CreateTestNode("1", "TestClass", "Class");
         var similarNodes = new List<HypergraphNode>
@@ -184,12 +184,12 @@ public class HybridQueryServiceTests
             CreateTestNode("3", "AnotherClass", "Class")
         };
 
-        var serviceWithoutSemantic = new HybridQueryService(mockGraphStore.Object, mockLogger.Object);
+        var serviceWithoutSemantic = new HybridQueryService(this.mockGraphStore.Object, this.mockLogger.Object);
 
-        mockGraphStore.Setup(x => x.GetNodeAsync("1", It.IsAny<CancellationToken>()))
+        this.mockGraphStore.Setup(x => x.GetNodeAsync("1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(node);
 
-        mockGraphStore.Setup(x => x.GetNodesAsync(
+        this.mockGraphStore.Setup(x => x.GetNodesAsync(
             It.Is<NodeFilter>(f => f.NodeTypes != null && f.NodeTypes.Contains("Class")),
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
@@ -202,18 +202,18 @@ public class HybridQueryServiceTests
     }
 
     [TestMethod]
-    public async Task FindSimilarAsync_WithNodeNotFound_ReturnsEmpty()
+    public async Task FindSimilarAsync_WithNodeNotFound_ReturnsEmptyAsync()
     {
-        mockGraphStore.Setup(x => x.GetNodeAsync("unknown", It.IsAny<CancellationToken>()))
+        this.mockGraphStore.Setup(x => x.GetNodeAsync("unknown", It.IsAny<CancellationToken>()))
             .ReturnsAsync((HypergraphNode?)null);
 
-        var result = await service.FindSimilarAsync("unknown");
+        var result = await this.service.FindSimilarAsync("unknown");
 
         result.Should().BeEmpty();
     }
 
     [TestMethod]
-    public async Task ExploreAsync_ReturnsNodesAtEachDepth()
+    public async Task ExploreAsync_ReturnsNodesAtEachDepthAsync()
     {
         var startNode = CreateTestNode("start", "StartClass", "Class");
         var depth1Nodes = new List<NodeWithDepth>
@@ -221,22 +221,22 @@ public class HybridQueryServiceTests
             new() { Node = CreateTestNode("d1n1", "Depth1Node1", "Method"), Depth = 1, RelationshipType = HyperedgeType.MethodInvocation }
         };
 
-        mockGraphStore.Setup(x => x.GetNodeAsync("start", It.IsAny<CancellationToken>()))
+        this.mockGraphStore.Setup(x => x.GetNodeAsync("start", It.IsAny<CancellationToken>()))
             .ReturnsAsync(startNode);
 
-        mockGraphStore.Setup(x => x.GetCalleesAsync("start", 1, It.IsAny<CancellationToken>()))
+        this.mockGraphStore.Setup(x => x.GetCalleesAsync("start", 1, It.IsAny<CancellationToken>()))
             .ReturnsAsync(depth1Nodes);
 
-        mockGraphStore.Setup(x => x.GetCallersAsync("start", 1, It.IsAny<CancellationToken>()))
+        this.mockGraphStore.Setup(x => x.GetCallersAsync("start", 1, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<NodeWithDepth>());
 
-        mockGraphStore.Setup(x => x.GetCalleesAsync("d1n1", 1, It.IsAny<CancellationToken>()))
+        this.mockGraphStore.Setup(x => x.GetCalleesAsync("d1n1", 1, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<NodeWithDepth>());
 
-        mockGraphStore.Setup(x => x.GetCallersAsync("d1n1", 1, It.IsAny<CancellationToken>()))
+        this.mockGraphStore.Setup(x => x.GetCallersAsync("d1n1", 1, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<NodeWithDepth>());
 
-        var result = await service.ExploreAsync("start", depth: 2);
+        var result = await this.service.ExploreAsync("start", depth: 2);
 
         result.Should().ContainKey(0);
         result[0].Should().HaveCount(1);
@@ -244,27 +244,27 @@ public class HybridQueryServiceTests
     }
 
     [TestMethod]
-    public async Task ExploreAsync_WithInvalidNode_ReturnsEmpty()
+    public async Task ExploreAsync_WithInvalidNode_ReturnsEmptyAsync()
     {
-        mockGraphStore.Setup(x => x.GetNodeAsync("unknown", It.IsAny<CancellationToken>()))
+        this.mockGraphStore.Setup(x => x.GetNodeAsync("unknown", It.IsAny<CancellationToken>()))
             .ReturnsAsync((HypergraphNode?)null);
 
-        var result = await service.ExploreAsync("unknown");
+        var result = await this.service.ExploreAsync("unknown");
 
         result.Should().BeEmpty();
     }
 
     [TestMethod]
-    public async Task AnswerQuestionAsync_WithoutSemanticSearch_FallsBackToGraphSearch()
+    public async Task AnswerQuestionAsync_WithoutSemanticSearch_FallsBackToGraphSearchAsync()
     {
-        var serviceWithoutSemantic = new HybridQueryService(mockGraphStore.Object, mockLogger.Object);
+        var serviceWithoutSemantic = new HybridQueryService(this.mockGraphStore.Object, this.mockLogger.Object);
 
         var nodes = new List<HypergraphNode>
         {
             CreateTestNode("1", "AuthenticationService", "Class")
         };
 
-        mockGraphStore.Setup(x => x.GetNodesAsync(
+        this.mockGraphStore.Setup(x => x.GetNodesAsync(
             It.IsAny<NodeFilter>(),
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))

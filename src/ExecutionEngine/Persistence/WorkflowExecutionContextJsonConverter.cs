@@ -85,7 +85,7 @@ public class WorkflowExecutionContextJsonConverter : JsonConverter<WorkflowExecu
 
                 case "variables":
                     // Populate the existing Variables dictionary
-                    var variables = dictionaryConverter.Read(ref reader, typeof(System.Collections.Concurrent.ConcurrentDictionary<string, object>), options);
+                    var variables = this.dictionaryConverter.Read(ref reader, typeof(System.Collections.Concurrent.ConcurrentDictionary<string, object>), options);
                     if (variables != null)
                     {
                         foreach (var kvp in variables)
@@ -97,7 +97,7 @@ public class WorkflowExecutionContextJsonConverter : JsonConverter<WorkflowExecu
 
                 case "nodequeues":
                     // Populate the existing NodeQueues dictionary
-                    var nodeQueues = dictionaryConverter.Read(ref reader, typeof(System.Collections.Concurrent.ConcurrentDictionary<string, object>), options);
+                    var nodeQueues = this.dictionaryConverter.Read(ref reader, typeof(System.Collections.Concurrent.ConcurrentDictionary<string, object>), options);
                     if (nodeQueues != null)
                     {
                         foreach (var kvp in nodeQueues)
@@ -143,11 +143,11 @@ public class WorkflowExecutionContextJsonConverter : JsonConverter<WorkflowExecu
 
         // Write Variables
         writer.WritePropertyName(GetPropertyName("Variables", options));
-        dictionaryConverter.Write(writer, value.Variables, options);
+        this.dictionaryConverter.Write(writer, value.Variables, options);
 
         // Write NodeQueues
         writer.WritePropertyName(GetPropertyName("NodeQueues", options));
-        dictionaryConverter.Write(writer, value.NodeQueues, options);
+        this.dictionaryConverter.Write(writer, value.NodeQueues, options);
 
         writer.WriteEndObject();
     }

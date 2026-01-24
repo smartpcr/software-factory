@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 
 namespace Ast.PowerShell;
+
 using System.Management.Automation.Language;
 
 public class PowerShellAstParser
@@ -64,11 +65,11 @@ public class PowerShellAstParser
         {
             var result = node switch
             {
-                FunctionDefinitionAst func => this.CreateFunctionNode(func, filePath),
-                TypeDefinitionAst typeDef => this.CreateTypeDefinitionNode(typeDef, filePath),
-                ParamBlockAst param => this.CreateParamBlockNode(param, filePath),
+                FunctionDefinitionAst func => CreateFunctionNode(func, filePath),
+                TypeDefinitionAst typeDef => CreateTypeDefinitionNode(typeDef, filePath),
+                ParamBlockAst param => CreateParamBlockNode(param, filePath),
                 ScriptBlockAst script when script.Parent is FunctionDefinitionAst => null,
-                ScriptBlockAst script => this.CreateScriptBlockNode(script, filePath),
+                ScriptBlockAst script => CreateScriptBlockNode(script, filePath),
                 _ => null
             };
 
@@ -79,7 +80,7 @@ public class PowerShellAstParser
         }
     }
 
-    private PsAstNode CreateFunctionNode(FunctionDefinitionAst func, string filePath)
+    private static PsAstNode CreateFunctionNode(FunctionDefinitionAst func, string filePath)
     {
         var parameters = new List<PsParameterInfo>();
 
@@ -111,7 +112,7 @@ public class PowerShellAstParser
         };
     }
 
-    private PsAstNode CreateTypeDefinitionNode(TypeDefinitionAst typeDef, string filePath)
+    private static PsAstNode CreateTypeDefinitionNode(TypeDefinitionAst typeDef, string filePath)
     {
         var methods = new List<string>();
         var properties = new List<string>();
@@ -138,13 +139,13 @@ public class PowerShellAstParser
             StartLine = typeDef.Extent.StartLineNumber,
             EndLine = typeDef.Extent.EndLineNumber,
             Code = typeDef.Extent.Text,
-            BaseTypes = typeDef.BaseTypes?.Select(b => b.TypeName.Name).ToList() ?? new List<string>(),
+            BaseTypes = typeDef.BaseTypes?.Select(b => b.TypeName.Name).ToList() ?? [],
             Methods = methods,
             Properties = properties
         };
     }
 
-    private PsAstNode CreateParamBlockNode(ParamBlockAst param, string filePath)
+    private static PsAstNode CreateParamBlockNode(ParamBlockAst param, string filePath)
     {
         var parameters = param.Parameters.Select(p => new PsParameterInfo
         {
@@ -167,7 +168,7 @@ public class PowerShellAstParser
         };
     }
 
-    private PsAstNode CreateScriptBlockNode(ScriptBlockAst script, string filePath)
+    private static PsAstNode CreateScriptBlockNode(ScriptBlockAst script, string filePath)
     {
         return new PsAstNode
         {

@@ -56,10 +56,10 @@ public class ForEachNode : ExecutableNodeBase
     /// Gets the available output ports for this node.
     /// </summary>
     /// <returns>Array of available port names.</returns>
-    public string[] GetAvailablePorts()
+    public static string[] GetAvailablePorts()
     {
         // ForEach node has LoopBody port for iteration messages
-        return new[] { LoopBodyPort };
+        return [LoopBodyPort];
     }
 
     /// <inheritdoc/>
@@ -88,12 +88,7 @@ public class ForEachNode : ExecutableNodeBase
             });
 
             // Evaluate collection expression
-            var collection = await this.EvaluateCollectionAsync(workflowContext, nodeContext, cancellationToken);
-
-            if (collection == null)
-            {
-                throw new InvalidOperationException("Collection expression evaluated to null");
-            }
+            var collection = await this.EvaluateCollectionAsync(workflowContext, nodeContext, cancellationToken) ?? throw new InvalidOperationException("Collection expression evaluated to null");
 
             // Iterate over collection
             var itemCount = 0;
@@ -119,7 +114,7 @@ public class ForEachNode : ExecutableNodeBase
                         { this.ItemVariableName, item },
                         { $"{this.ItemVariableName}Index", itemCount }
                     },
-                    OutputData = new Dictionary<string, object>()
+                    OutputData = []
                 };
 
                 // Emit OnNext event to trigger child node execution for this iteration
@@ -212,7 +207,7 @@ public class ForEachNode : ExecutableNodeBase
         }
 
         // Create execution state for script evaluation
-        var state = this.CreateExecutionState(workflowContext, nodeContext);
+        var state = CreateExecutionState(workflowContext, nodeContext);
 
         try
         {
@@ -237,13 +232,7 @@ public class ForEachNode : ExecutableNodeBase
 
             // Execute the script and get the result
             var scriptState = await script.RunAsync(state, cancellationToken);
-            var result = scriptState.ReturnValue;
-
-            // Check for null result
-            if (result == null)
-            {
-                throw new InvalidOperationException("Collection expression evaluated to null");
-            }
+            var result = scriptState.ReturnValue ?? throw new InvalidOperationException("Collection expression evaluated to null");
 
             // Convert result to IEnumerable
             if (result is IEnumerable enumerable)

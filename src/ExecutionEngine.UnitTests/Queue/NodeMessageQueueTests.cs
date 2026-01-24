@@ -249,9 +249,9 @@ namespace ExecutionEngine.UnitTests.Queue
             var queue = new NodeMessageQueue(capacity: 100);
             var messages = new List<NodeCompleteMessage>
             {
-                new NodeCompleteMessage { NodeId = "node-1", Timestamp = DateTime.UtcNow },
-                new NodeCompleteMessage { NodeId = "node-2", Timestamp = DateTime.UtcNow },
-                new NodeCompleteMessage { NodeId = "node-3", Timestamp = DateTime.UtcNow }
+                new() { NodeId = "node-1", Timestamp = DateTime.UtcNow },
+                new() { NodeId = "node-2", Timestamp = DateTime.UtcNow },
+                new() { NodeId = "node-3", Timestamp = DateTime.UtcNow }
             };
 
             foreach (var msg in messages)

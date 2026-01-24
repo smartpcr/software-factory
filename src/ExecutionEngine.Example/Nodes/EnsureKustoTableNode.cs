@@ -6,15 +6,15 @@
 
 namespace ExecutionEngine.Example.Nodes;
 
+using EtwIngest.Libs;
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
 using ExecutionEngine.Nodes;
+using ExecutionEngine.Nodes.Definitions;
 using Kusto.Data;
 using Kusto.Data.Common;
 using Kusto.Data.Net.Client;
-using EtwIngest.Libs;
-using ExecutionEngine.Nodes.Definitions;
 
 /// <summary>
 /// Node that ensures Kusto tables exist for CSV files.
@@ -58,7 +58,8 @@ public class EnsureKustoTableNode : ExecutableNodeBase
     {
         var instance = new NodeInstance
         {
-            NodeInstanceId = Guid.NewGuid(),            WorkflowInstanceId = workflowContext.InstanceId,
+            NodeInstanceId = Guid.NewGuid(),
+            WorkflowInstanceId = workflowContext.InstanceId,
             Status = NodeExecutionStatus.Running,
             StartTime = DateTime.UtcNow,
             ExecutionContext = nodeContext
@@ -67,7 +68,8 @@ public class EnsureKustoTableNode : ExecutableNodeBase
         try
         {
             this.RaiseOnStart(new NodeStartEventArgs
-            {                Timestamp = DateTime.UtcNow
+            {
+                Timestamp = DateTime.UtcNow
             });
 
             if (string.IsNullOrWhiteSpace(this.ConnectionString))
@@ -105,7 +107,7 @@ public class EnsureKustoTableNode : ExecutableNodeBase
                 throw new InvalidOperationException("CSV files not found in input data.");
             }
 
-            var csvFiles = csvFilesObj as string[] ?? Array.Empty<string>();
+            var csvFiles = csvFilesObj as string[] ?? [];
 
             // Create Kusto connection with database
             var kcsb = new KustoConnectionStringBuilder(this.ConnectionString)
@@ -131,7 +133,7 @@ public class EnsureKustoTableNode : ExecutableNodeBase
                 if (!tableExists)
                 {
                     // Read CSV header to get schema
-                    var fields = this.ReadCsvSchema(csvFile);
+                    var fields = ReadCsvSchema(csvFile);
 
                     // Generate and execute create table command
                     var createTableCommand = KustoExtension.GenerateCreateTableCommand(tableName, fields);
@@ -158,7 +160,8 @@ public class EnsureKustoTableNode : ExecutableNodeBase
             instance.EndTime = DateTime.UtcNow;
 
             this.RaiseOnProgress(new ProgressEventArgs
-            {                Status = $"Ensured {tableNames.Count} tables ({tablesCreated} created, {tablesAlreadyExist} already exist)",
+            {
+                Status = $"Ensured {tableNames.Count} tables ({tablesCreated} created, {tablesAlreadyExist} already exist)",
                 ProgressPercent = 100
             });
         }
@@ -178,7 +181,7 @@ public class EnsureKustoTableNode : ExecutableNodeBase
     /// </summary>
     /// <param name="csvFilePath">Path to the CSV file.</param>
     /// <returns>List of field names and types.</returns>
-    private List<(string fieldName, Type fieldType)> ReadCsvSchema(string csvFilePath)
+    private static List<(string fieldName, Type fieldType)> ReadCsvSchema(string csvFilePath)
     {
         var fields = new List<(string fieldName, Type fieldType)>();
 

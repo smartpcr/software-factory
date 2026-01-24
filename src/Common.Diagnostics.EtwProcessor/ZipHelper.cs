@@ -10,14 +10,9 @@ namespace EtwProcessor
     using Microsoft.Extensions.Logging;
     using Spectre.Console;
 
-    public class ZipHelper
+    public class ZipHelper(ILogger<ZipHelper> logger)
     {
-        private readonly ILogger<ZipHelper> logger;
-
-        public ZipHelper(ILogger<ZipHelper> logger)
-        {
-            this.logger = logger;
-        }
+        private readonly ILogger<ZipHelper> logger = logger;
 
         public void ExtractAllWithProgress(
             IEnumerable<string> zipFiles,

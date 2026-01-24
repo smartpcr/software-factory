@@ -22,17 +22,18 @@ using Microsoft.Extensions.Options;
 [RankColumn]
 public class QueryBenchmarks
 {
-    private static readonly string RepoPath = OperatingSystem.IsWindows()
+    private static readonly string repoPath = OperatingSystem.IsWindows()
         ? @"E:\work\hci\update"
         : "/mnt/e/work/hci/update";
 
     private Neo4jGraphStore? graphStore;
-    private List<string> sampleNodeIds = new();
-    private List<string> methodNodeIds = new();
-    private List<string> classNodeIds = new();
+    private List<string> sampleNodeIds = [];
+    private List<string> methodNodeIds = [];
+    private List<string> classNodeIds = [];
+    private static readonly string[] filter = new[] { "class" };
 
     [GlobalSetup]
-    public void Setup()
+    public async Task SetupAsync()
     {
         // Create graph store
         var options = Options.Create(new GraphStoreOptions
@@ -45,28 +46,29 @@ public class QueryBenchmarks
         this.graphStore = new Neo4jGraphStore(options, NullLogger<Neo4jGraphStore>.Instance);
 
         // Verify connection
-        var available = this.graphStore.IsAvailableAsync().GetAwaiter().GetResult();
+        var available = await this.graphStore.IsAvailableAsync();
         if (!available)
         {
             throw new InvalidOperationException("Neo4j is not available. Make sure it's running.");
         }
 
         // Check if there's data in the database
-        var stats = this.graphStore.GetStatisticsAsync().GetAwaiter().GetResult();
+        var stats = await this.graphStore.GetStatisticsAsync();
         if (stats.TotalNodes < 100)
         {
-            // Need to populate the database first
-            this.PopulateDatabase();
-            stats = this.graphStore.GetStatisticsAsync().GetAwaiter().GetResult();
+            await
+                        // Need to populate the database first
+                        this.PopulateDatabaseAsync();
+            stats = await this.graphStore.GetStatisticsAsync();
         }
 
         // Get sample node IDs for queries
-        var nodes = this.graphStore.GetNodesAsync(limit: 1000).GetAwaiter().GetResult();
-        this.sampleNodeIds = nodes.Select(n => n.Id).ToList();
-        this.methodNodeIds = nodes.Where(n => n.NodeType.Equals("method", StringComparison.OrdinalIgnoreCase))
-            .Select(n => n.Id).Take(100).ToList();
-        this.classNodeIds = nodes.Where(n => n.NodeType.Equals("class", StringComparison.OrdinalIgnoreCase))
-            .Select(n => n.Id).Take(50).ToList();
+        var nodes = await this.graphStore.GetNodesAsync(limit: 1000);
+        this.sampleNodeIds = [.. nodes.Select(n => n.Id)];
+        this.methodNodeIds = [.. nodes.Where(n => n.NodeType.Equals("method", StringComparison.OrdinalIgnoreCase))
+            .Select(n => n.Id).Take(100)];
+        this.classNodeIds = [.. nodes.Where(n => n.NodeType.Equals("class", StringComparison.OrdinalIgnoreCase))
+            .Select(n => n.Id).Take(50)];
 
         if (this.sampleNodeIds.Count == 0)
         {
@@ -81,28 +83,28 @@ public class QueryBenchmarks
     }
 
     [Benchmark(Description = "Get node by ID")]
-    public async Task<HypergraphNode?> GetNodeById()
+    public async Task<HypergraphNode?> GetNodeByIdAsync()
     {
         var nodeId = this.sampleNodeIds[Random.Shared.Next(this.sampleNodeIds.Count)];
         return await this.graphStore!.GetNodeAsync(nodeId);
     }
 
     [Benchmark(Description = "Get nodes (limit 100)")]
-    public async Task<IReadOnlyList<HypergraphNode>> GetNodes()
+    public async Task<IReadOnlyList<HypergraphNode>> GetNodesAsync()
     {
         return await this.graphStore!.GetNodesAsync(limit: 100);
     }
 
     [Benchmark(Description = "Get nodes by type (class)")]
-    public async Task<IReadOnlyList<HypergraphNode>> GetNodesByType()
+    public async Task<IReadOnlyList<HypergraphNode>> GetNodesByTypeAsync()
     {
         return await this.graphStore!.GetNodesAsync(
-            new NodeFilter { NodeTypes = new[] { "class" } },
+            new NodeFilter { NodeTypes = filter },
             limit: 50);
     }
 
     [Benchmark(Description = "Get nodes by language (csharp)")]
-    public async Task<IReadOnlyList<HypergraphNode>> GetNodesByLanguage()
+    public async Task<IReadOnlyList<HypergraphNode>> GetNodesByLanguageAsync()
     {
         return await this.graphStore!.GetNodesAsync(
             new NodeFilter { Language = "csharp" },
@@ -110,7 +112,7 @@ public class QueryBenchmarks
     }
 
     [Benchmark(Description = "Get nodes by name pattern")]
-    public async Task<IReadOnlyList<HypergraphNode>> GetNodesByNamePattern()
+    public async Task<IReadOnlyList<HypergraphNode>> GetNodesByNamePatternAsync()
     {
         return await this.graphStore!.GetNodesAsync(
             new NodeFilter { NamePattern = "*Service*" },
@@ -118,7 +120,7 @@ public class QueryBenchmarks
     }
 
     [Benchmark(Description = "Get callers (depth 1)")]
-    public async Task<IReadOnlyList<NodeWithDepth>> GetCallersDepth1()
+    public async Task<IReadOnlyList<NodeWithDepth>> GetCallersDepth1Async()
     {
         if (this.methodNodeIds.Count == 0) return new List<NodeWithDepth>();
         var nodeId = this.methodNodeIds[Random.Shared.Next(this.methodNodeIds.Count)];
@@ -126,7 +128,7 @@ public class QueryBenchmarks
     }
 
     [Benchmark(Description = "Get callers (depth 2)")]
-    public async Task<IReadOnlyList<NodeWithDepth>> GetCallersDepth2()
+    public async Task<IReadOnlyList<NodeWithDepth>> GetCallersDepth2Async()
     {
         if (this.methodNodeIds.Count == 0) return new List<NodeWithDepth>();
         var nodeId = this.methodNodeIds[Random.Shared.Next(this.methodNodeIds.Count)];
@@ -134,7 +136,7 @@ public class QueryBenchmarks
     }
 
     [Benchmark(Description = "Get callers (depth 3)")]
-    public async Task<IReadOnlyList<NodeWithDepth>> GetCallersDepth3()
+    public async Task<IReadOnlyList<NodeWithDepth>> GetCallersDepth3Async()
     {
         if (this.methodNodeIds.Count == 0) return new List<NodeWithDepth>();
         var nodeId = this.methodNodeIds[Random.Shared.Next(this.methodNodeIds.Count)];
@@ -142,7 +144,7 @@ public class QueryBenchmarks
     }
 
     [Benchmark(Description = "Get callees (depth 2)")]
-    public async Task<IReadOnlyList<NodeWithDepth>> GetCallees()
+    public async Task<IReadOnlyList<NodeWithDepth>> GetCalleesAsync()
     {
         if (this.methodNodeIds.Count == 0) return new List<NodeWithDepth>();
         var nodeId = this.methodNodeIds[Random.Shared.Next(this.methodNodeIds.Count)];
@@ -150,14 +152,14 @@ public class QueryBenchmarks
     }
 
     [Benchmark(Description = "Get edges for node")]
-    public async Task<IReadOnlyList<Hyperedge>> GetEdgesForNode()
+    public async Task<IReadOnlyList<Hyperedge>> GetEdgesForNodeAsync()
     {
         var nodeId = this.sampleNodeIds[Random.Shared.Next(this.sampleNodeIds.Count)];
         return await this.graphStore!.GetEdgesForNodeAsync(nodeId);
     }
 
     [Benchmark(Description = "Find paths between nodes")]
-    public async Task<IReadOnlyList<GraphPath>> FindPaths()
+    public async Task<IReadOnlyList<GraphPath>> FindPathsAsync()
     {
         if (this.classNodeIds.Count < 2) return new List<GraphPath>();
         var startId = this.classNodeIds[0];
@@ -166,7 +168,7 @@ public class QueryBenchmarks
     }
 
     [Benchmark(Description = "Analyze impact")]
-    public async Task<ImpactAnalysis> AnalyzeImpact()
+    public async Task<ImpactAnalysis> AnalyzeImpactAsync()
     {
         if (this.methodNodeIds.Count == 0)
             return new ImpactAnalysis { SourceNode = null! };
@@ -175,22 +177,22 @@ public class QueryBenchmarks
     }
 
     [Benchmark(Description = "Get statistics")]
-    public async Task<GraphStatistics> GetStatistics()
+    public async Task<GraphStatistics> GetStatisticsAsync()
     {
         return await this.graphStore!.GetStatisticsAsync();
     }
 
-    private void PopulateDatabase()
+    private async Task PopulateDatabaseAsync()
     {
-        var srcPath = Path.Combine(RepoPath, "src");
+        var srcPath = Path.Combine(repoPath, "src");
         if (!Directory.Exists(srcPath))
         {
-            srcPath = RepoPath;
+            srcPath = repoPath;
         }
 
         if (!Directory.Exists(srcPath))
         {
-            throw new InvalidOperationException($"Repository not found at {RepoPath}");
+            throw new InvalidOperationException($"Repository not found at {repoPath}");
         }
 
         var allFiles = Directory.GetFiles(srcPath, "*.cs", SearchOption.AllDirectories)
@@ -221,9 +223,11 @@ public class QueryBenchmarks
             }
         }
 
-        // Ingest data
-        this.graphStore!.CreateIndexesAsync().GetAwaiter().GetResult();
-        this.graphStore.CreateNodesAsync(allNodes.Values).GetAwaiter().GetResult();
-        this.graphStore.CreateEdgesAsync(allEdges).GetAwaiter().GetResult();
+        await
+
+                // Ingest data
+                this.graphStore!.CreateIndexesAsync();
+        await this.graphStore.CreateNodesAsync(allNodes.Values);
+        await this.graphStore.CreateEdgesAsync(allEdges);
     }
 }

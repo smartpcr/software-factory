@@ -19,23 +19,16 @@ using Microsoft.Extensions.Logging.Abstractions;
 /// Routes messages from source nodes to target node queues based on workflow graph edges.
 /// Supports conditional routing, broadcast, and error handling.
 /// </summary>
-public class MessageRouter : IMessageRouter
+/// <remarks>
+/// Initializes a new instance of the MessageRouter class.
+/// </remarks>
+/// <param name="deadLetterQueue">The dead letter queue for failed messages.</param>
+/// <param name="logger">Optional logger for diagnostic output.</param>
+public class MessageRouter(IDeadLetterQueue deadLetterQueue, ILogger<MessageRouter>? logger = null) : IMessageRouter
 {
-    private readonly ILogger<MessageRouter> logger;
-    private readonly ConcurrentDictionary<string, List<NodeConnection>> routingTable;
-    private readonly IDeadLetterQueue deadLetterQueue;
-
-    /// <summary>
-    /// Initializes a new instance of the MessageRouter class.
-    /// </summary>
-    /// <param name="deadLetterQueue">The dead letter queue for failed messages.</param>
-    /// <param name="logger">Optional logger for diagnostic output.</param>
-    public MessageRouter(IDeadLetterQueue deadLetterQueue, ILogger<MessageRouter>? logger = null)
-    {
-        this.logger = logger ?? NullLogger<MessageRouter>.Instance;
-        this.routingTable = new ConcurrentDictionary<string, List<NodeConnection>>();
-        this.deadLetterQueue = deadLetterQueue ?? throw new ArgumentNullException(nameof(deadLetterQueue));
-    }
+    private readonly ILogger<MessageRouter> logger = logger ?? NullLogger<MessageRouter>.Instance;
+    private readonly ConcurrentDictionary<string, List<NodeConnection>> routingTable = new();
+    private readonly IDeadLetterQueue deadLetterQueue = deadLetterQueue ?? throw new ArgumentNullException(nameof(deadLetterQueue));
 
     /// <summary>
     /// Adds a routing connection from source node to target node.
@@ -43,10 +36,7 @@ public class MessageRouter : IMessageRouter
     /// <param name="connection">The node connection to add.</param>
     public void AddRoute(NodeConnection connection)
     {
-        if (connection == null)
-        {
-            throw new ArgumentNullException(nameof(connection));
-        }
+        ArgumentNullException.ThrowIfNull(connection);
 
         if (string.IsNullOrWhiteSpace(connection.SourceNodeId))
         {
@@ -65,7 +55,7 @@ public class MessageRouter : IMessageRouter
 
         this.routingTable.AddOrUpdate(
             connection.SourceNodeId,
-            _ => new List<NodeConnection> { connection },
+            _ => [connection],
             (_, list) =>
             {
                 // Check if connection already exists (same source and target)
@@ -132,10 +122,10 @@ public class MessageRouter : IMessageRouter
     {
         if (this.routingTable.TryGetValue(sourceNodeId, out var connections))
         {
-            return connections.Select(c => c.TargetNodeId).ToArray();
+            return [.. connections.Select(c => c.TargetNodeId)];
         }
 
-        return Array.Empty<string>();
+        return [];
     }
 
     /// <summary>
@@ -147,10 +137,10 @@ public class MessageRouter : IMessageRouter
     {
         if (this.routingTable.TryGetValue(sourceNodeId, out var connections))
         {
-            return connections.ToArray();
+            return [.. connections];
         }
 
-        return Array.Empty<NodeConnection>();
+        return [];
     }
 
     /// <summary>
@@ -166,15 +156,9 @@ public class MessageRouter : IMessageRouter
         WorkflowExecutionContext workflowContext,
         CancellationToken cancellationToken = default)
     {
-        if (message == null)
-        {
-            throw new ArgumentNullException(nameof(message));
-        }
+        ArgumentNullException.ThrowIfNull(message);
 
-        if (workflowContext == null)
-        {
-            throw new ArgumentNullException(nameof(workflowContext));
-        }
+        ArgumentNullException.ThrowIfNull(workflowContext);
 
         // Get all connections for this source node
         var connections = this.GetConnections(message.NodeId);
@@ -303,20 +287,14 @@ public class MessageRouter : IMessageRouter
         WorkflowExecutionContext workflowContext,
         CancellationToken cancellationToken = default)
     {
-        if (message == null)
-        {
-            throw new ArgumentNullException(nameof(message));
-        }
+        ArgumentNullException.ThrowIfNull(message);
 
         if (targetNodeIds == null || targetNodeIds.Length == 0)
         {
             throw new ArgumentException("Target node IDs cannot be null or empty.", nameof(targetNodeIds));
         }
 
-        if (workflowContext == null)
-        {
-            throw new ArgumentNullException(nameof(workflowContext));
-        }
+        ArgumentNullException.ThrowIfNull(workflowContext);
 
         this.logger.LogDebug("Routing message to {TargetCount} specific targets", targetNodeIds.Length);
 

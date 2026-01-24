@@ -17,8 +17,8 @@ public class AstNode
     public string? Summary { get; set; }
     public string? Modifiers { get; set; }
     public string? ReturnType { get; set; }
-    public List<string> BaseTypes { get; set; } = new();
-    public List<ParameterInfo> Parameters { get; set; } = new();
+    public List<string> BaseTypes { get; set; } = [];
+    public List<ParameterInfo> Parameters { get; set; } = [];
 
     public string GetEmbeddingText()
     {

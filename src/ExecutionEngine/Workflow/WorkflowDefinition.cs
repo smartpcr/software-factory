@@ -37,17 +37,17 @@ public class WorkflowDefinition
     /// <summary>
     /// Gets or sets the collection of node definitions in the workflow.
     /// </summary>
-    public List<NodeDefinition> Nodes { get; set; } = new List<NodeDefinition>();
+    public List<NodeDefinition> Nodes { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the collection of connections between nodes.
     /// </summary>
-    public List<NodeConnection> Connections { get; set; } = new List<NodeConnection>();
+    public List<NodeConnection> Connections { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the metadata for the workflow.
     /// </summary>
-    public Dictionary<string, object> Metadata { get; set; } = new Dictionary<string, object>();
+    public Dictionary<string, object> Metadata { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the entry point node ID (optional - if not specified, nodes without incoming connections are entry points).

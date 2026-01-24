@@ -504,29 +504,61 @@ public class InitializeResult
 
 /// <summary>
 /// Server capabilities.
+/// LSP allows many providers to be either boolean or options objects.
 /// </summary>
 public class ServerCapabilities
 {
     [JsonPropertyName("textDocumentSync")]
     public object? TextDocumentSync { get; set; }
 
+    /// <summary>
+    /// Can be boolean or HoverOptions object.
+    /// </summary>
     [JsonPropertyName("hoverProvider")]
-    public bool HoverProvider { get; set; }
+    public object? HoverProvider { get; set; }
 
+    /// <summary>
+    /// Can be boolean or DefinitionOptions object.
+    /// </summary>
     [JsonPropertyName("definitionProvider")]
-    public bool DefinitionProvider { get; set; }
+    public object? DefinitionProvider { get; set; }
 
+    /// <summary>
+    /// Can be boolean or ReferenceOptions object.
+    /// </summary>
     [JsonPropertyName("referencesProvider")]
-    public bool ReferencesProvider { get; set; }
+    public object? ReferencesProvider { get; set; }
 
+    /// <summary>
+    /// Can be boolean or DocumentSymbolOptions object.
+    /// </summary>
     [JsonPropertyName("documentSymbolProvider")]
-    public bool DocumentSymbolProvider { get; set; }
+    public object? DocumentSymbolProvider { get; set; }
 
+    /// <summary>
+    /// Can be boolean or WorkspaceSymbolOptions object.
+    /// </summary>
     [JsonPropertyName("workspaceSymbolProvider")]
-    public bool WorkspaceSymbolProvider { get; set; }
+    public object? WorkspaceSymbolProvider { get; set; }
 
+    /// <summary>
+    /// Can be boolean or CallHierarchyOptions object.
+    /// </summary>
     [JsonPropertyName("callHierarchyProvider")]
-    public bool CallHierarchyProvider { get; set; }
+    public object? CallHierarchyProvider { get; set; }
+
+    /// <summary>
+    /// Helper to check if a capability is enabled (handles both bool and object).
+    /// </summary>
+    public static bool IsCapabilityEnabled(object? capability)
+    {
+        return capability switch
+        {
+            bool b => b,
+            not null => true, // If it's an options object, capability is enabled
+            _ => false
+        };
+    }
 }
 
 /// <summary>

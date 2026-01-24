@@ -30,16 +30,16 @@ namespace Common.Diagnostics.EtwParser.Models
         /// Gets the field by name
         /// </summary>
         public FieldSchema? GetField(string fieldName) =>
-            Fields.FirstOrDefault(f => f.Name.Equals(fieldName, StringComparison.OrdinalIgnoreCase));
+            this.Fields.FirstOrDefault(f => f.Name.Equals(fieldName, StringComparison.OrdinalIgnoreCase));
 
         /// <summary>
         /// Gets all standard fields (TimeStamp, ProcessID, etc.)
         /// </summary>
-        public IEnumerable<FieldSchema> StandardFields => Fields.Where(f => f.IsStandardField);
+        public IEnumerable<FieldSchema> StandardFields => this.Fields.Where(f => f.IsStandardField);
 
         /// <summary>
         /// Gets all payload fields (event-specific custom fields)
         /// </summary>
-        public IEnumerable<FieldSchema> PayloadFields => Fields.Where(f => !f.IsStandardField);
+        public IEnumerable<FieldSchema> PayloadFields => this.Fields.Where(f => !f.IsStandardField);
     }
 }
