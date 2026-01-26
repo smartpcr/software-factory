@@ -63,6 +63,7 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "docs", "docs", "{6A9DBAD1-8
 		docs\embedding_model_approach.md = docs\embedding_model_approach.md
 		docs\lsp-deep-dive.md = docs\lsp-deep-dive.md
 		docs\LSP_MIGRATION_PLAN.md = docs\LSP_MIGRATION_PLAN.md
+		docs\code_intelligence_implementation_plan.md = docs\code_intelligence_implementation_plan.md
 	EndProjectSection
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ExecutionEngine.UnitTests", "src\ExecutionEngine.UnitTests\ExecutionEngine.UnitTests.csproj", "{AA6DE5A7-B826-425D-882D-EAF9A9E0BD09}"
