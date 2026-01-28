@@ -1,0 +1,1634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NVL Graph - Open Source Graph Visualization</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    :root {
+      --bg-primary: #0a0a0f;
+      --bg-secondary: #12121a;
+      --bg-tertiary: #1a1a25;
+      --text-primary: #f0f0f5;
+      --text-secondary: #8888a0;
+      --text-muted: #55556a;
+      --accent: #6366f1;
+      --accent-glow: rgba(99, 102, 241, 0.4);
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --border: rgba(255, 255, 255, 0.06);
+      --border-active: rgba(99, 102, 241, 0.4);
+    }
+
+    body {
+      font-family: 'Outfit', sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      overflow: hidden;
+      height: 100vh;
+    }
+
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 20px;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-icon {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, var(--accent) 0%, #8b5cf6 100%);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      box-shadow: 0 4px 20px var(--accent-glow);
+    }
+
+    .logo-text h1 {
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    .logo-text p {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* Toolbar */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+
+    .toolbar-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .toolbar-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-right: 4px;
+    }
+
+    .toolbar-divider {
+      width: 1px;
+      height: 24px;
+      background: var(--border);
+      margin: 0 8px;
+    }
+
+    button, select {
+      font-family: 'Outfit', sans-serif;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 7px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    button:hover, select:hover {
+      background: rgba(99, 102, 241, 0.1);
+      border-color: var(--border-active);
+    }
+
+    button.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      box-shadow: 0 2px 12px var(--accent-glow);
+    }
+
+    select {
+      padding-right: 28px;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%238888a0'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 8px center;
+      background-size: 14px;
+    }
+
+    /* Main content */
+    .main {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Canvas */
+    .canvas {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      background: 
+        radial-gradient(circle at 50% 50%, rgba(99, 102, 241, 0.03) 0%, transparent 50%),
+        var(--bg-primary);
+    }
+
+    .canvas-grid {
+      position: absolute;
+      inset: 0;
+      background-image: 
+        radial-gradient(circle, var(--border) 1px, transparent 1px);
+      background-size: 30px 30px;
+      pointer-events: none;
+    }
+
+    #graph-container {
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+
+    /* Nodes */
+    .node {
+      position: absolute;
+      cursor: grab;
+      transition: transform 0.1s ease, box-shadow 0.2s ease;
+      user-select: none;
+    }
+
+    .node:active {
+      cursor: grabbing;
+    }
+
+    .node:hover {
+      transform: scale(1.08);
+    }
+
+    .node.selected {
+      transform: scale(1.1);
+    }
+
+    .node-circle {
+      width: var(--size, 56px);
+      height: var(--size, 56px);
+      border-radius: 50%;
+      background: var(--color, var(--accent));
+      border: 3px solid var(--border-color, rgba(255,255,255,0.2));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: calc(var(--size, 56px) * 0.35);
+      box-shadow: 
+        0 4px 20px rgba(0,0,0,0.3),
+        0 0 30px var(--glow, transparent),
+        inset 0 2px 10px rgba(255,255,255,0.1);
+      transition: all 0.2s ease;
+    }
+
+    .node.selected .node-circle {
+      border-color: #fbbf24;
+      box-shadow: 
+        0 0 0 4px rgba(251, 191, 36, 0.3),
+        0 4px 20px rgba(0,0,0,0.3),
+        0 0 40px var(--glow, transparent);
+    }
+
+    .node.dimmed .node-circle {
+      opacity: 0.3;
+    }
+
+    .node.highlighted .node-circle {
+      box-shadow: 
+        0 0 0 4px var(--accent-glow),
+        0 4px 20px rgba(0,0,0,0.3),
+        0 0 50px var(--accent-glow);
+    }
+
+    .node-label {
+      position: absolute;
+      bottom: -22px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 11px;
+      font-weight: 500;
+      white-space: nowrap;
+      color: var(--text-secondary);
+      text-shadow: 0 2px 8px var(--bg-primary);
+    }
+
+    .node-glyph {
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      font-weight: 700;
+      color: white;
+      border: 2px solid var(--bg-primary);
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    }
+
+    .node-glyph.top-right { top: -4px; right: -4px; }
+    .node-glyph.top-left { top: -4px; left: -4px; }
+    .node-glyph.bottom-right { bottom: -4px; right: -4px; }
+    .node-glyph.bottom-left { bottom: -4px; left: -4px; }
+
+    .node-metric {
+      position: absolute;
+      top: -10px;
+      right: -10px;
+      padding: 2px 6px;
+      border-radius: 10px;
+      background: var(--bg-tertiary);
+      font-size: 9px;
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 600;
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+    }
+
+    /* Edges */
+    .edges-container {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      overflow: visible;
+    }
+
+    .edges-container svg {
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+    }
+
+    .edge {
+      fill: none;
+      stroke: var(--text-muted);
+      stroke-width: 2;
+      stroke-linecap: round;
+      transition: stroke 0.2s ease, stroke-width 0.2s ease;
+    }
+
+    .edge.highlighted {
+      stroke: var(--accent);
+      stroke-width: 3;
+      filter: drop-shadow(0 0 6px var(--accent-glow));
+    }
+
+    .edge.dimmed {
+      opacity: 0.2;
+    }
+
+    .edge-animated {
+      stroke-dasharray: 8 4;
+      animation: flowAnimation 1s linear infinite;
+    }
+
+    @keyframes flowAnimation {
+      from { stroke-dashoffset: 24; }
+      to { stroke-dashoffset: 0; }
+    }
+
+    .edge-label {
+      font-size: 10px;
+      fill: var(--text-secondary);
+      font-family: 'Outfit', sans-serif;
+      text-anchor: middle;
+    }
+
+    /* Side Panel */
+    .side-panel {
+      width: 280px;
+      background: var(--bg-secondary);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .panel-header-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+    }
+
+    .panel-header h3 {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .panel-header p {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .panel-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+    }
+
+    .metric-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .metric-item:last-child {
+      border-bottom: none;
+    }
+
+    .metric-label {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .metric-value {
+      font-size: 13px;
+      font-weight: 600;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--accent);
+    }
+
+    /* Stats bar */
+    .stats-bar {
+      display: flex;
+      gap: 20px;
+      padding: 12px 16px;
+      background: var(--bg-tertiary);
+      border-top: 1px solid var(--border);
+    }
+
+    .stat {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .stat-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+    }
+
+    .stat-info {
+      font-size: 11px;
+    }
+
+    .stat-value {
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .stat-label {
+      color: var(--text-muted);
+    }
+
+    /* Time bar */
+    .time-bar {
+      padding: 16px 20px;
+      background: var(--bg-secondary);
+      border-top: 1px solid var(--border);
+    }
+
+    .time-bar-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .time-bar-header span {
+      font-size: 11px;
+      color: var(--text-secondary);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .time-bar-track {
+      height: 40px;
+      background: var(--bg-tertiary);
+      border-radius: 6px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .time-bar-histogram {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: flex-end;
+      gap: 2px;
+      padding: 4px;
+    }
+
+    .histogram-bar {
+      flex: 1;
+      background: var(--text-muted);
+      border-radius: 2px 2px 0 0;
+      transition: background 0.2s ease;
+    }
+
+    .histogram-bar.active {
+      background: var(--accent);
+    }
+
+    .time-bar-selection {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      background: rgba(99, 102, 241, 0.2);
+      border-left: 3px solid var(--accent);
+      border-right: 3px solid var(--accent);
+    }
+
+    /* MiniMap */
+    .minimap {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      width: 160px;
+      height: 100px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }
+
+    .minimap-viewport {
+      position: absolute;
+      border: 2px solid var(--accent);
+      background: rgba(99, 102, 241, 0.1);
+      border-radius: 2px;
+    }
+
+    .minimap-node {
+      position: absolute;
+      border-radius: 50%;
+    }
+
+    /* Controls */
+    .controls {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }
+
+    .control-btn {
+      width: 36px;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .control-btn:hover {
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+    }
+
+    .control-btn + .control-btn {
+      border-top: 1px solid var(--border);
+    }
+
+    /* Empty state */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--text-muted);
+    }
+
+    .empty-state-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+      opacity: 0.5;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--text-muted);
+    }
+
+    /* Animations */
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .animate-fadeIn {
+      animation: fadeIn 0.3s ease forwards;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <div class="logo-icon">📊</div>
+        <div class="logo-text">
+          <h1>NVL Graph</h1>
+          <p>Open Source • React Flow</p>
+        </div>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <button id="toggleTheme">☀️ Light</button>
+        <button onclick="exportData()">📥 Export</button>
+      </div>
+    </header>
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <span class="toolbar-label">Layout</span>
+        <select id="layoutSelect">
+          <option value="force">Force Directed</option>
+          <option value="hierarchical" selected>Hierarchical</option>
+          <option value="radial">Radial</option>
+          <option value="circular">Circular</option>
+          <option value="grid">Grid</option>
+          <option value="concentric">Concentric</option>
+        </select>
+      </div>
+
+      <div class="toolbar-divider"></div>
+
+      <div class="toolbar-group">
+        <span class="toolbar-label">Color by</span>
+        <select id="colorBySelect">
+          <option value="default">Default</option>
+          <option value="degree">Degree</option>
+          <option value="betweenness">Betweenness</option>
+          <option value="pagerank">PageRank</option>
+          <option value="community">Community</option>
+        </select>
+      </div>
+
+      <div class="toolbar-divider"></div>
+
+      <div class="toolbar-group">
+        <button id="findPathBtn">🔍 Find Path</button>
+        <button id="clearHighlightBtn">✨ Clear</button>
+        <button id="fitViewBtn">🎯 Fit View</button>
+      </div>
+
+      <div class="toolbar-divider"></div>
+
+      <div class="toolbar-group">
+        <button id="addNodeBtn">➕ Add Node</button>
+        <button id="resetBtn">🔄 Reset</button>
+      </div>
+    </div>
+
+    <!-- Main content -->
+    <div class="main">
+      <div class="canvas">
+        <div class="canvas-grid"></div>
+        <div id="graph-container">
+          <div class="edges-container">
+            <svg id="edges-svg"></svg>
+          </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+          <button class="control-btn" onclick="zoomIn()" title="Zoom In">➕</button>
+          <button class="control-btn" onclick="zoomOut()" title="Zoom Out">➖</button>
+          <button class="control-btn" onclick="fitView()" title="Fit View">⊡</button>
+          <button class="control-btn" onclick="toggleLock()" title="Lock">🔒</button>
+        </div>
+
+        <!-- MiniMap -->
+        <div class="minimap" id="minimap">
+          <div class="minimap-viewport" id="minimap-viewport"></div>
+        </div>
+      </div>
+
+      <!-- Side Panel -->
+      <div class="side-panel" id="sidePanel">
+        <div class="panel-header">
+          <div class="panel-header-icon" style="background: var(--accent);">📈</div>
+          <div>
+            <h3>Graph Statistics</h3>
+            <p>Network analysis metrics</p>
+          </div>
+        </div>
+        <div class="panel-content" id="panelContent">
+          <div class="metric-item">
+            <span class="metric-label">Total Nodes</span>
+            <span class="metric-value" id="totalNodes">15</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">Total Edges</span>
+            <span class="metric-value" id="totalEdges">21</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">Graph Density</span>
+            <span class="metric-value" id="graphDensity">0.200</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">Avg. Degree</span>
+            <span class="metric-value" id="avgDegree">2.80</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">Components</span>
+            <span class="metric-value" id="components">1</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">Avg. Clustering</span>
+            <span class="metric-value" id="avgClustering">0.234</span>
+          </div>
+          <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border);">
+            <h4 style="font-size: 12px; margin-bottom: 12px; color: var(--text-secondary);">Selected Node</h4>
+            <div id="selectedNodeInfo" style="color: var(--text-muted); font-size: 12px;">
+              Click a node to see details
+            </div>
+          </div>
+        </div>
+        <div class="stats-bar">
+          <div class="stat">
+            <div class="stat-icon" style="background: rgba(99, 102, 241, 0.2); color: var(--accent);">⚡</div>
+            <div class="stat-info">
+              <div class="stat-value" id="fpsCounter">60</div>
+              <div class="stat-label">FPS</div>
+            </div>
+          </div>
+          <div class="stat">
+            <div class="stat-icon" style="background: rgba(16, 185, 129, 0.2); color: var(--success);">🔗</div>
+            <div class="stat-info">
+              <div class="stat-value" id="selectedCount">0</div>
+              <div class="stat-label">Selected</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Time Bar -->
+    <div class="time-bar">
+      <div class="time-bar-header">
+        <span id="timeStart">Jan 1, 2024</span>
+        <span style="color: var(--accent); font-weight: 600;">15 items in range</span>
+        <span id="timeEnd">Jan 31, 2024</span>
+      </div>
+      <div class="time-bar-track">
+        <div class="time-bar-histogram" id="histogram"></div>
+        <div class="time-bar-selection" id="timeSelection" style="left: 10%; width: 80%;"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ==================== GRAPH DATA ====================
+    const graphData = {
+      nodes: [
+        { id: 'ceo', label: 'CEO', icon: '👔', color: '#6366f1', size: 72 },
+        { id: 'cto', label: 'CTO', icon: '💻', color: '#10b981', size: 64 },
+        { id: 'cfo', label: 'CFO', icon: '💰', color: '#f59e0b', size: 64 },
+        { id: 'hr', label: 'HR Director', icon: '👥', color: '#ec4899', size: 56 },
+        { id: 'eng1', label: 'Lead Engineer', icon: '⚙️', color: '#10b981', size: 52 },
+        { id: 'eng2', label: 'Senior Dev', icon: '🔧', color: '#10b981', size: 48 },
+        { id: 'eng3', label: 'Junior Dev', icon: '📝', color: '#10b981', size: 44 },
+        { id: 'design', label: 'Designer', icon: '🎨', color: '#8b5cf6', size: 48 },
+        { id: 'pm', label: 'Product Manager', icon: '📋', color: '#06b6d4', size: 52 },
+        { id: 'sales1', label: 'Sales Lead', icon: '📈', color: '#f59e0b', size: 52 },
+        { id: 'sales2', label: 'Account Exec', icon: '🤝', color: '#f59e0b', size: 48 },
+        { id: 'marketing', label: 'Marketing', icon: '📣', color: '#ef4444', size: 52 },
+        { id: 'support', label: 'Support', icon: '🎧', color: '#84cc16', size: 48 },
+        { id: 'intern1', label: 'Intern 1', icon: '🎓', color: '#94a3b8', size: 40 },
+        { id: 'intern2', label: 'Intern 2', icon: '🎓', color: '#94a3b8', size: 40 },
+      ],
+      edges: [
+        { id: 'e1', source: 'ceo', target: 'cto', label: 'manages' },
+        { id: 'e2', source: 'ceo', target: 'cfo', label: 'manages' },
+        { id: 'e3', source: 'ceo', target: 'hr', label: 'manages' },
+        { id: 'e4', source: 'cto', target: 'eng1', label: 'leads' },
+        { id: 'e5', source: 'cto', target: 'pm' },
+        { id: 'e6', source: 'eng1', target: 'eng2' },
+        { id: 'e7', source: 'eng1', target: 'eng3' },
+        { id: 'e8', source: 'eng2', target: 'eng3', label: 'mentors' },
+        { id: 'e9', source: 'pm', target: 'design' },
+        { id: 'e10', source: 'design', target: 'eng2' },
+        { id: 'e11', source: 'cfo', target: 'sales1' },
+        { id: 'e12', source: 'sales1', target: 'sales2' },
+        { id: 'e13', source: 'cfo', target: 'marketing' },
+        { id: 'e14', source: 'marketing', target: 'sales1', animated: true },
+        { id: 'e15', source: 'pm', target: 'marketing' },
+        { id: 'e16', source: 'support', target: 'sales2' },
+        { id: 'e17', source: 'eng1', target: 'support' },
+        { id: 'e18', source: 'hr', target: 'intern1' },
+        { id: 'e19', source: 'hr', target: 'intern2' },
+        { id: 'e20', source: 'intern1', target: 'eng3' },
+        { id: 'e21', source: 'intern2', target: 'marketing' },
+      ]
+    };
+
+    // Add glyphs to CEO node
+    graphData.nodes[0].glyphs = [
+      { position: 'top-right', color: '#22c55e', text: '✓' },
+      { position: 'bottom-right', color: '#3b82f6', text: '5' }
+    ];
+    graphData.nodes[1].glyphs = [
+      { position: 'top-right', color: '#ef4444', text: '!' }
+    ];
+
+    // ==================== STATE ====================
+    let state = {
+      nodes: [],
+      edges: [],
+      positions: new Map(),
+      selected: new Set(),
+      highlighted: new Set(),
+      highlightedEdges: new Set(),
+      zoom: 1,
+      pan: { x: 0, y: 0 },
+      dragging: null,
+      layout: 'hierarchical',
+      metrics: {
+        degree: new Map(),
+        betweenness: new Map(),
+        pagerank: new Map()
+      }
+    };
+
+    // ==================== LAYOUT ALGORITHMS ====================
+    function hierarchicalLayout(nodes, edges) {
+      const positions = new Map();
+      const adjacency = new Map();
+      const levels = new Map();
+      
+      nodes.forEach(n => adjacency.set(n.id, []));
+      edges.forEach(e => {
+        if (adjacency.has(e.source)) {
+          adjacency.get(e.source).push(e.target);
+        }
+      });
+
+      // Find root (CEO)
+      const targetSet = new Set(edges.map(e => e.target));
+      const root = nodes.find(n => !targetSet.has(n.id)) || nodes[0];
+      
+      // BFS for levels
+      const queue = [root.id];
+      levels.set(root.id, 0);
+      
+      while (queue.length > 0) {
+        const current = queue.shift();
+        const currentLevel = levels.get(current);
+        const children = adjacency.get(current) || [];
+        
+        children.forEach(child => {
+          if (!levels.has(child)) {
+            levels.set(child, currentLevel + 1);
+            queue.push(child);
+          }
+        });
+      }
+
+      // Assign positions by level
+      const levelGroups = new Map();
+      levels.forEach((level, nodeId) => {
+        if (!levelGroups.has(level)) levelGroups.set(level, []);
+        levelGroups.get(level).push(nodeId);
+      });
+
+      const container = document.getElementById('graph-container');
+      const width = container.clientWidth;
+      const height = container.clientHeight - 100;
+
+      levelGroups.forEach((nodeIds, level) => {
+        const y = 80 + level * 120;
+        const xStep = width / (nodeIds.length + 1);
+        
+        nodeIds.forEach((nodeId, i) => {
+          positions.set(nodeId, {
+            x: xStep * (i + 1),
+            y: y
+          });
+        });
+      });
+
+      // Handle nodes without levels
+      nodes.forEach(n => {
+        if (!positions.has(n.id)) {
+          positions.set(n.id, {
+            x: Math.random() * width * 0.8 + width * 0.1,
+            y: Math.random() * height * 0.8 + height * 0.1
+          });
+        }
+      });
+
+      return positions;
+    }
+
+    function forceLayout(nodes, edges) {
+      const positions = new Map();
+      const container = document.getElementById('graph-container');
+      const width = container.clientWidth;
+      const height = container.clientHeight - 100;
+      const centerX = width / 2;
+      const centerY = height / 2;
+
+      // Initialize positions
+      nodes.forEach((n, i) => {
+        const angle = (2 * Math.PI * i) / nodes.length;
+        positions.set(n.id, {
+          x: centerX + Math.cos(angle) * 200,
+          y: centerY + Math.sin(angle) * 200,
+          vx: 0,
+          vy: 0
+        });
+      });
+
+      // Simple force simulation
+      for (let iter = 0; iter < 100; iter++) {
+        // Repulsion between nodes
+        nodes.forEach(n1 => {
+          nodes.forEach(n2 => {
+            if (n1.id === n2.id) return;
+            const p1 = positions.get(n1.id);
+            const p2 = positions.get(n2.id);
+            const dx = p1.x - p2.x;
+            const dy = p1.y - p2.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+            const force = 5000 / (dist * dist);
+            p1.vx += (dx / dist) * force;
+            p1.vy += (dy / dist) * force;
+          });
+        });
+
+        // Attraction along edges
+        edges.forEach(e => {
+          const p1 = positions.get(e.source);
+          const p2 = positions.get(e.target);
+          if (!p1 || !p2) return;
+          const dx = p2.x - p1.x;
+          const dy = p2.y - p1.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          const force = (dist - 150) * 0.1;
+          p1.vx += (dx / dist) * force;
+          p1.vy += (dy / dist) * force;
+          p2.vx -= (dx / dist) * force;
+          p2.vy -= (dy / dist) * force;
+        });
+
+        // Center gravity
+        nodes.forEach(n => {
+          const p = positions.get(n.id);
+          p.vx += (centerX - p.x) * 0.01;
+          p.vy += (centerY - p.y) * 0.01;
+        });
+
+        // Apply velocities
+        positions.forEach(p => {
+          p.x += p.vx * 0.1;
+          p.y += p.vy * 0.1;
+          p.vx *= 0.9;
+          p.vy *= 0.9;
+        });
+      }
+
+      return positions;
+    }
+
+    function radialLayout(nodes, edges) {
+      const positions = new Map();
+      const container = document.getElementById('graph-container');
+      const centerX = container.clientWidth / 2;
+      const centerY = (container.clientHeight - 100) / 2;
+
+      // Find levels using BFS
+      const adjacency = new Map();
+      nodes.forEach(n => adjacency.set(n.id, []));
+      edges.forEach(e => {
+        if (adjacency.has(e.source)) adjacency.get(e.source).push(e.target);
+      });
+
+      const targetSet = new Set(edges.map(e => e.target));
+      const root = nodes.find(n => !targetSet.has(n.id)) || nodes[0];
+      
+      const levels = new Map();
+      const queue = [root.id];
+      levels.set(root.id, 0);
+      
+      while (queue.length > 0) {
+        const current = queue.shift();
+        (adjacency.get(current) || []).forEach(child => {
+          if (!levels.has(child)) {
+            levels.set(child, levels.get(current) + 1);
+            queue.push(child);
+          }
+        });
+      }
+
+      // Group by level
+      const levelGroups = new Map();
+      levels.forEach((level, nodeId) => {
+        if (!levelGroups.has(level)) levelGroups.set(level, []);
+        levelGroups.get(level).push(nodeId);
+      });
+
+      // Position nodes in concentric circles
+      levelGroups.forEach((nodeIds, level) => {
+        const radius = level * 120;
+        nodeIds.forEach((nodeId, i) => {
+          const angle = (2 * Math.PI * i) / nodeIds.length - Math.PI / 2;
+          positions.set(nodeId, {
+            x: centerX + radius * Math.cos(angle),
+            y: centerY + radius * Math.sin(angle)
+          });
+        });
+      });
+
+      // Handle orphan nodes
+      nodes.forEach(n => {
+        if (!positions.has(n.id)) {
+          positions.set(n.id, { x: centerX, y: centerY });
+        }
+      });
+
+      return positions;
+    }
+
+    function circularLayout(nodes) {
+      const positions = new Map();
+      const container = document.getElementById('graph-container');
+      const centerX = container.clientWidth / 2;
+      const centerY = (container.clientHeight - 100) / 2;
+      const radius = Math.min(centerX, centerY) * 0.7;
+
+      nodes.forEach((n, i) => {
+        const angle = (2 * Math.PI * i) / nodes.length - Math.PI / 2;
+        positions.set(n.id, {
+          x: centerX + radius * Math.cos(angle),
+          y: centerY + radius * Math.sin(angle)
+        });
+      });
+
+      return positions;
+    }
+
+    function gridLayout(nodes) {
+      const positions = new Map();
+      const container = document.getElementById('graph-container');
+      const cols = Math.ceil(Math.sqrt(nodes.length));
+      const spacing = 140;
+      const startX = (container.clientWidth - (cols - 1) * spacing) / 2;
+      const startY = 80;
+
+      nodes.forEach((n, i) => {
+        const row = Math.floor(i / cols);
+        const col = i % cols;
+        positions.set(n.id, {
+          x: startX + col * spacing,
+          y: startY + row * spacing
+        });
+      });
+
+      return positions;
+    }
+
+    function concentricLayout(nodes, edges) {
+      const positions = new Map();
+      const container = document.getElementById('graph-container');
+      const centerX = container.clientWidth / 2;
+      const centerY = (container.clientHeight - 100) / 2;
+
+      // Calculate degrees
+      const degrees = new Map();
+      nodes.forEach(n => degrees.set(n.id, 0));
+      edges.forEach(e => {
+        degrees.set(e.source, (degrees.get(e.source) || 0) + 1);
+        degrees.set(e.target, (degrees.get(e.target) || 0) + 1);
+      });
+
+      // Sort by degree
+      const sorted = [...nodes].sort((a, b) => 
+        (degrees.get(b.id) || 0) - (degrees.get(a.id) || 0)
+      );
+
+      // Group into rings
+      const rings = [[], [], [], []];
+      sorted.forEach((n, i) => {
+        rings[Math.min(Math.floor(i / 4), 3)].push(n.id);
+      });
+
+      rings.forEach((ring, ringIndex) => {
+        const radius = (ringIndex + 1) * 100;
+        ring.forEach((nodeId, i) => {
+          const angle = (2 * Math.PI * i) / ring.length - Math.PI / 2;
+          positions.set(nodeId, {
+            x: centerX + radius * Math.cos(angle),
+            y: centerY + radius * Math.sin(angle)
+          });
+        });
+      });
+
+      return positions;
+    }
+
+    function applyLayout(type) {
+      state.layout = type;
+      let positions;
+      
+      switch (type) {
+        case 'force':
+          positions = forceLayout(state.nodes, state.edges);
+          break;
+        case 'radial':
+          positions = radialLayout(state.nodes, state.edges);
+          break;
+        case 'circular':
+          positions = circularLayout(state.nodes);
+          break;
+        case 'grid':
+          positions = gridLayout(state.nodes);
+          break;
+        case 'concentric':
+          positions = concentricLayout(state.nodes, state.edges);
+          break;
+        default:
+          positions = hierarchicalLayout(state.nodes, state.edges);
+      }
+
+      state.positions = positions;
+      render();
+    }
+
+    // ==================== SNA ALGORITHMS ====================
+    function calculateMetrics() {
+      const n = state.nodes.length;
+      const degrees = new Map();
+      const betweenness = new Map();
+      const pagerank = new Map();
+
+      // Degree centrality
+      state.nodes.forEach(node => degrees.set(node.id, 0));
+      state.edges.forEach(edge => {
+        degrees.set(edge.source, (degrees.get(edge.source) || 0) + 1);
+        degrees.set(edge.target, (degrees.get(edge.target) || 0) + 1);
+      });
+
+      // Normalize degree
+      const maxDeg = Math.max(...degrees.values()) || 1;
+      degrees.forEach((v, k) => degrees.set(k, v / maxDeg));
+
+      // Simple PageRank
+      state.nodes.forEach(node => pagerank.set(node.id, 1 / n));
+      const outDegree = new Map();
+      state.nodes.forEach(node => outDegree.set(node.id, 0));
+      state.edges.forEach(edge => {
+        outDegree.set(edge.source, (outDegree.get(edge.source) || 0) + 1);
+      });
+
+      for (let iter = 0; iter < 20; iter++) {
+        const newRank = new Map();
+        state.nodes.forEach(node => newRank.set(node.id, 0.15 / n));
+        
+        state.edges.forEach(edge => {
+          const out = outDegree.get(edge.source) || 1;
+          const contribution = (pagerank.get(edge.source) || 0) / out;
+          newRank.set(edge.target, (newRank.get(edge.target) || 0) + 0.85 * contribution);
+        });
+
+        newRank.forEach((v, k) => pagerank.set(k, v));
+      }
+
+      // Simple betweenness (just use degree as proxy for demo)
+      degrees.forEach((v, k) => betweenness.set(k, v * 0.8));
+
+      state.metrics = { degree: degrees, betweenness, pagerank };
+      updateStats();
+    }
+
+    function updateStats() {
+      const n = state.nodes.length;
+      const e = state.edges.length;
+      const maxEdges = n * (n - 1) / 2;
+      const density = maxEdges > 0 ? (e / maxEdges).toFixed(3) : '0.000';
+      const avgDegree = n > 0 ? ((2 * e) / n).toFixed(2) : '0.00';
+
+      document.getElementById('totalNodes').textContent = n;
+      document.getElementById('totalEdges').textContent = e;
+      document.getElementById('graphDensity').textContent = density;
+      document.getElementById('avgDegree').textContent = avgDegree;
+    }
+
+    // ==================== RENDERING ====================
+    function render() {
+      const container = document.getElementById('graph-container');
+      const svg = document.getElementById('edges-svg');
+      
+      // Clear existing nodes (keep edges SVG)
+      container.querySelectorAll('.node').forEach(el => el.remove());
+      svg.innerHTML = '';
+
+      // Add arrow marker
+      svg.innerHTML = `
+        <defs>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#55556a" />
+          </marker>
+        </defs>
+      `;
+
+      // Render edges
+      state.edges.forEach(edge => {
+        const sourcePos = state.positions.get(edge.source);
+        const targetPos = state.positions.get(edge.target);
+        if (!sourcePos || !targetPos) return;
+
+        const sourceNode = state.nodes.find(n => n.id === edge.source);
+        const targetNode = state.nodes.find(n => n.id === edge.target);
+        const sourceSize = (sourceNode?.size || 56) / 2;
+        const targetSize = (targetNode?.size || 56) / 2;
+
+        // Calculate edge points
+        const dx = targetPos.x - sourcePos.x;
+        const dy = targetPos.y - sourcePos.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const nx = dx / dist;
+        const ny = dy / dist;
+
+        const x1 = sourcePos.x + nx * sourceSize;
+        const y1 = sourcePos.y + ny * sourceSize;
+        const x2 = targetPos.x - nx * (targetSize + 10);
+        const y2 = targetPos.y - ny * (targetSize + 10);
+
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        const midX = (x1 + x2) / 2;
+        const midY = (y1 + y2) / 2;
+        
+        // Curved path
+        const curvature = 0.2;
+        const cx = midX - (y2 - y1) * curvature;
+        const cy = midY + (x2 - x1) * curvature;
+        
+        path.setAttribute('d', `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`);
+        path.setAttribute('class', 'edge' + 
+          (state.highlightedEdges.has(edge.id) ? ' highlighted' : '') +
+          (edge.animated ? ' edge-animated' : '') +
+          (state.highlighted.size > 0 && !state.highlightedEdges.has(edge.id) ? ' dimmed' : ''));
+        path.setAttribute('marker-end', 'url(#arrowhead)');
+        path.dataset.id = edge.id;
+        svg.appendChild(path);
+
+        // Edge label
+        if (edge.label) {
+          const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+          text.setAttribute('x', cx);
+          text.setAttribute('y', cy - 8);
+          text.setAttribute('class', 'edge-label');
+          text.textContent = edge.label;
+          svg.appendChild(text);
+        }
+      });
+
+      // Render nodes
+      state.nodes.forEach(node => {
+        const pos = state.positions.get(node.id);
+        if (!pos) return;
+
+        const nodeEl = document.createElement('div');
+        nodeEl.className = 'node' + 
+          (state.selected.has(node.id) ? ' selected' : '') +
+          (state.highlighted.has(node.id) ? ' highlighted' : '') +
+          (state.highlighted.size > 0 && !state.highlighted.has(node.id) ? ' dimmed' : '');
+        nodeEl.dataset.id = node.id;
+        nodeEl.style.left = `${pos.x - (node.size || 56) / 2}px`;
+        nodeEl.style.top = `${pos.y - (node.size || 56) / 2}px`;
+        nodeEl.style.setProperty('--size', `${node.size || 56}px`);
+        nodeEl.style.setProperty('--color', node.color);
+        nodeEl.style.setProperty('--glow', node.color + '40');
+
+        nodeEl.innerHTML = `
+          <div class="node-circle">${node.icon || ''}</div>
+          <div class="node-label">${node.label}</div>
+          ${(node.glyphs || []).map(g => `
+            <div class="node-glyph ${g.position}" style="background: ${g.color}">${g.text}</div>
+          `).join('')}
+        `;
+
+        // Show metric if coloring by metric
+        const colorBy = document.getElementById('colorBySelect').value;
+        if (colorBy !== 'default' && colorBy !== 'community') {
+          const metricValue = state.metrics[colorBy]?.get(node.id);
+          if (metricValue !== undefined) {
+            nodeEl.innerHTML += `<div class="node-metric">${metricValue.toFixed(2)}</div>`;
+          }
+        }
+
+        container.appendChild(nodeEl);
+      });
+
+      renderMinimap();
+    }
+
+    function renderMinimap() {
+      const minimap = document.getElementById('minimap');
+      const container = document.getElementById('graph-container');
+      const scale = 0.1;
+
+      // Clear existing minimap nodes
+      minimap.querySelectorAll('.minimap-node').forEach(el => el.remove());
+
+      state.nodes.forEach(node => {
+        const pos = state.positions.get(node.id);
+        if (!pos) return;
+
+        const dot = document.createElement('div');
+        dot.className = 'minimap-node';
+        dot.style.left = `${pos.x * scale}px`;
+        dot.style.top = `${pos.y * scale}px`;
+        dot.style.width = '4px';
+        dot.style.height = '4px';
+        dot.style.background = node.color;
+        minimap.appendChild(dot);
+      });
+
+      // Update viewport
+      const viewport = document.getElementById('minimap-viewport');
+      viewport.style.left = `${(-state.pan.x * scale) / state.zoom}px`;
+      viewport.style.top = `${(-state.pan.y * scale) / state.zoom}px`;
+      viewport.style.width = `${(container.clientWidth * scale) / state.zoom}px`;
+      viewport.style.height = `${((container.clientHeight - 100) * scale) / state.zoom}px`;
+    }
+
+    // ==================== EVENT HANDLERS ====================
+    function setupEventListeners() {
+      const container = document.getElementById('graph-container');
+
+      // Node interactions
+      container.addEventListener('mousedown', e => {
+        const nodeEl = e.target.closest('.node');
+        if (nodeEl) {
+          state.dragging = nodeEl.dataset.id;
+          
+          if (!e.shiftKey) {
+            state.selected.clear();
+          }
+          state.selected.add(nodeEl.dataset.id);
+          updateSelectedInfo(nodeEl.dataset.id);
+          render();
+        }
+      });
+
+      document.addEventListener('mousemove', e => {
+        if (state.dragging) {
+          const pos = state.positions.get(state.dragging);
+          if (pos) {
+            pos.x += e.movementX / state.zoom;
+            pos.y += e.movementY / state.zoom;
+            render();
+          }
+        }
+      });
+
+      document.addEventListener('mouseup', () => {
+        state.dragging = null;
+      });
+
+      // Layout selector
+      document.getElementById('layoutSelect').addEventListener('change', e => {
+        applyLayout(e.target.value);
+      });
+
+      // Color by selector
+      document.getElementById('colorBySelect').addEventListener('change', e => {
+        colorByMetric(e.target.value);
+      });
+
+      // Buttons
+      document.getElementById('findPathBtn').addEventListener('click', findPath);
+      document.getElementById('clearHighlightBtn').addEventListener('click', clearHighlight);
+      document.getElementById('fitViewBtn').addEventListener('click', fitView);
+      document.getElementById('addNodeBtn').addEventListener('click', addNode);
+      document.getElementById('resetBtn').addEventListener('click', resetGraph);
+    }
+
+    function updateSelectedInfo(nodeId) {
+      const node = state.nodes.find(n => n.id === nodeId);
+      const infoEl = document.getElementById('selectedNodeInfo');
+      document.getElementById('selectedCount').textContent = state.selected.size;
+
+      if (node) {
+        const degree = state.metrics.degree?.get(nodeId)?.toFixed(3) || 'N/A';
+        const pagerank = state.metrics.pagerank?.get(nodeId)?.toFixed(4) || 'N/A';
+        
+        infoEl.innerHTML = `
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+            <div style="width: 36px; height: 36px; border-radius: 50%; background: ${node.color}; 
+                        display: flex; align-items: center; justify-content: center; font-size: 18px;">
+              ${node.icon}
+            </div>
+            <div>
+              <div style="font-weight: 600; color: var(--text-primary);">${node.label}</div>
+              <div style="font-size: 10px; color: var(--text-muted);">ID: ${node.id}</div>
+            </div>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">Degree</span>
+            <span class="metric-value">${degree}</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">PageRank</span>
+            <span class="metric-value">${pagerank}</span>
+          </div>
+        `;
+      }
+    }
+
+    function colorByMetric(metric) {
+      if (metric === 'default') {
+        state.nodes.forEach(n => {
+          const original = graphData.nodes.find(gn => gn.id === n.id);
+          n.color = original?.color || '#6366f1';
+        });
+      } else if (metric === 'community') {
+        // Simple community coloring based on edges
+        const colors = ['#6366f1', '#ec4899', '#10b981', '#f59e0b', '#8b5cf6', '#06b6d4'];
+        state.nodes.forEach((n, i) => {
+          n.color = colors[i % colors.length];
+        });
+      } else {
+        const metricMap = state.metrics[metric];
+        if (!metricMap) return;
+        
+        const values = Array.from(metricMap.values());
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        const range = max - min || 1;
+
+        state.nodes.forEach(n => {
+          const value = metricMap.get(n.id) || 0;
+          const normalized = (value - min) / range;
+          const hue = 250 - normalized * 150; // Purple to green
+          n.color = `hsl(${hue}, 70%, 50%)`;
+        });
+      }
+      render();
+    }
+
+    function findPath() {
+      if (state.selected.size < 2) {
+        // Default: find path from CEO to junior dev
+        highlightPath('ceo', 'eng3');
+      } else {
+        const [source, target] = Array.from(state.selected);
+        highlightPath(source, target);
+      }
+    }
+
+    function highlightPath(sourceId, targetId) {
+      // BFS to find shortest path
+      const adjacency = new Map();
+      state.nodes.forEach(n => adjacency.set(n.id, []));
+      state.edges.forEach(e => {
+        adjacency.get(e.source)?.push({ node: e.target, edge: e.id });
+        adjacency.get(e.target)?.push({ node: e.source, edge: e.id });
+      });
+
+      const visited = new Set();
+      const parent = new Map();
+      const queue = [sourceId];
+      visited.add(sourceId);
+
+      while (queue.length > 0) {
+        const current = queue.shift();
+        if (current === targetId) break;
+
+        (adjacency.get(current) || []).forEach(({ node, edge }) => {
+          if (!visited.has(node)) {
+            visited.add(node);
+            parent.set(node, { node: current, edge });
+            queue.push(node);
+          }
+        });
+      }
+
+      // Reconstruct path
+      state.highlighted.clear();
+      state.highlightedEdges.clear();
+
+      if (parent.has(targetId) || sourceId === targetId) {
+        let current = targetId;
+        while (current) {
+          state.highlighted.add(current);
+          const p = parent.get(current);
+          if (p) {
+            state.highlightedEdges.add(p.edge);
+            current = p.node;
+          } else {
+            break;
+          }
+        }
+      }
+
+      render();
+    }
+
+    function clearHighlight() {
+      state.highlighted.clear();
+      state.highlightedEdges.clear();
+      render();
+    }
+
+    function fitView() {
+      state.zoom = 1;
+      state.pan = { x: 0, y: 0 };
+      applyLayout(state.layout);
+    }
+
+    function zoomIn() {
+      state.zoom = Math.min(state.zoom * 1.2, 3);
+      render();
+    }
+
+    function zoomOut() {
+      state.zoom = Math.max(state.zoom / 1.2, 0.3);
+      render();
+    }
+
+    function toggleLock() {
+      // Toggle dragging capability
+    }
+
+    function addNode() {
+      const id = `node${Date.now()}`;
+      const icons = ['🆕', '⭐', '🔵', '🟢', '🔴', '🟡'];
+      const colors = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+      
+      state.nodes.push({
+        id,
+        label: `New Node`,
+        icon: icons[Math.floor(Math.random() * icons.length)],
+        color: colors[Math.floor(Math.random() * colors.length)],
+        size: 48
+      });
+
+      const container = document.getElementById('graph-container');
+      state.positions.set(id, {
+        x: container.clientWidth / 2 + (Math.random() - 0.5) * 200,
+        y: container.clientHeight / 2 + (Math.random() - 0.5) * 200
+      });
+
+      calculateMetrics();
+      render();
+    }
+
+    function resetGraph() {
+      state.nodes = JSON.parse(JSON.stringify(graphData.nodes));
+      state.edges = JSON.parse(JSON.stringify(graphData.edges));
+      state.selected.clear();
+      state.highlighted.clear();
+      state.highlightedEdges.clear();
+      calculateMetrics();
+      applyLayout('hierarchical');
+      document.getElementById('layoutSelect').value = 'hierarchical';
+      document.getElementById('colorBySelect').value = 'default';
+    }
+
+    function exportData() {
+      const data = {
+        nodes: state.nodes,
+        edges: state.edges,
+        positions: Object.fromEntries(state.positions)
+      };
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'graph-export.json';
+      a.click();
+    }
+
+    // ==================== HISTOGRAM ====================
+    function renderHistogram() {
+      const histogram = document.getElementById('histogram');
+      histogram.innerHTML = '';
+      
+      const bars = 30;
+      for (let i = 0; i < bars; i++) {
+        const bar = document.createElement('div');
+        bar.className = 'histogram-bar' + (i >= 3 && i <= 26 ? ' active' : '');
+        bar.style.height = `${Math.random() * 80 + 10}%`;
+        histogram.appendChild(bar);
+      }
+    }
+
+    // ==================== INITIALIZATION ====================
+    function init() {
+      state.nodes = JSON.parse(JSON.stringify(graphData.nodes));
+      state.edges = JSON.parse(JSON.stringify(graphData.edges));
+      
+      calculateMetrics();
+      applyLayout('hierarchical');
+      setupEventListeners();
+      renderHistogram();
+
+      // FPS counter
+      let lastTime = performance.now();
+      let frames = 0;
+      
+      function updateFPS() {
+        frames++;
+        const now = performance.now();
+        if (now - lastTime >= 1000) {
+          document.getElementById('fpsCounter').textContent = frames;
+          frames = 0;
+          lastTime = now;
+        }
+        requestAnimationFrame(updateFPS);
+      }
+      updateFPS();
+    }
+
+    // Start
+    window.addEventListener('load', init);
+    window.addEventListener('resize', () => applyLayout(state.layout));
+  </script>
+</body>
+</html>

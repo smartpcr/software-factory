@@ -328,7 +328,7 @@ public class IfElseNodeTests
         };
 
         // Act
-        var ports = node.GetAvailablePorts();
+        var ports = IfElseNode.GetAvailablePorts();
 
         // Assert
         ports.Should().HaveCount(2);
