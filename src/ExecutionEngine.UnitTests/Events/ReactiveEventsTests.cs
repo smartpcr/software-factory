@@ -17,7 +17,7 @@ namespace ExecutionEngine.UnitTests.Events
     [TestClass]
     public class ReactiveEventsTests
     {
-        private readonly List<string> tempFiles = new List<string>();
+        private readonly List<string> tempFiles = [];
 
         [TestCleanup]
         public void Cleanup()
@@ -49,15 +49,15 @@ namespace ExecutionEngine.UnitTests.Events
             {
                 WorkflowId = "test-workflow",
                 WorkflowName = "Test Workflow",
-                Nodes = new List<NodeDefinition>
-                {
+                Nodes =
+                [
                     new CSharpScriptNodeDefinition
                     {
                         NodeId = "node1",
                         NodeName = "Node 1",
                         ScriptPath = this.CreateTempScript("SetOutput(\"result\", 42);")
                     }
-                }
+                ]
             };
 
             // Act
@@ -80,15 +80,15 @@ namespace ExecutionEngine.UnitTests.Events
             {
                 WorkflowId = "test-workflow",
                 WorkflowName = "Test Workflow",
-                Nodes = new List<NodeDefinition>
-                {
+                Nodes =
+                [
                     new CSharpScriptNodeDefinition
                     {
                         NodeId = "node1",
                         NodeName = "Node 1",
                         ScriptPath = this.CreateTempScript("SetOutput(\"result\", 42);")
                     }
-                }
+                ]
             };
 
             var completedEvent = default(WorkflowCompletedEvent);
@@ -128,15 +128,15 @@ namespace ExecutionEngine.UnitTests.Events
             {
                 WorkflowId = "test-workflow",
                 WorkflowName = "Test Workflow",
-                Nodes = new List<NodeDefinition>
-                {
+                Nodes =
+                [
                     new CSharpScriptNodeDefinition
                     {
                         NodeId = "node1",
                         NodeName = "Node 1",
                         ScriptPath = this.CreateTempScript("await Task.Delay(50); SetOutput(\"result\", 42);")
                     }
-                }
+                ]
             };
 
             var allEvents = new List<WorkflowEvent>();
@@ -170,15 +170,15 @@ namespace ExecutionEngine.UnitTests.Events
             {
                 WorkflowId = "test-workflow",
                 WorkflowName = "Test Workflow",
-                Nodes = new List<NodeDefinition>
-                {
+                Nodes =
+                [
                     new CSharpScriptNodeDefinition
                     {
                         NodeId = "node1",
                         NodeName = "Node 1",
                         ScriptPath = this.CreateTempScript("SetOutput(\"result\", 42);")
                     }
-                }
+                ]
             };
 
             var subscriber1Events = new List<WorkflowEvent>();
@@ -210,15 +210,15 @@ namespace ExecutionEngine.UnitTests.Events
             {
                 WorkflowId = "test-workflow-123",
                 WorkflowName = "Test Workflow Name",
-                Nodes = new List<NodeDefinition>
-                {
+                Nodes =
+                [
                     new CSharpScriptNodeDefinition
                     {
                         NodeId = "node1",
                         NodeName = "Test Node 1",
                         ScriptPath = this.CreateTempScript("SetOutput(\"result\", 42);")
                     }
-                }
+                ]
             };
 
             var allEvents = new List<WorkflowEvent>();
@@ -256,15 +256,15 @@ namespace ExecutionEngine.UnitTests.Events
             {
                 WorkflowId = "test-workflow",
                 WorkflowName = "Test Workflow",
-                Nodes = new List<NodeDefinition>
-                {
+                Nodes =
+                [
                     new CSharpScriptNodeDefinition
                     {
                         NodeId = "node1",
                         NodeName = "Node 1",
                         ScriptPath = this.CreateTempScript("SetOutput(\"result\", 42);")
                     }
-                }
+                ]
             };
 
             var streamCompleted = false;

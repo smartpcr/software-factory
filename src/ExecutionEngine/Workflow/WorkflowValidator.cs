@@ -157,7 +157,7 @@ public class WorkflowValidator
         var validationErrors = nodeDefinition.Validate(validationContext)
             .Where(vr => !string.IsNullOrEmpty(vr.ErrorMessage))
             .ToList();
-        if (validationErrors.Any())
+        if (validationErrors.Count != 0)
         {
             this.logger.LogError("Node {NodeId} has {ErrorCount} configuration errors",
                 nodeDefinition.NodeId, validationErrors.Count);
@@ -233,7 +233,7 @@ public class WorkflowValidator
         var adjacencyList = new Dictionary<string, List<string>>();
         foreach (var nodeId in nodeIds)
         {
-            adjacencyList[nodeId] = new List<string>();
+            adjacencyList[nodeId] = [];
         }
 
         foreach (var connection in workflow.Connections.Where(c => c.IsEnabled))
@@ -256,7 +256,7 @@ public class WorkflowValidator
         {
             if (!visited.Contains(nodeId))
             {
-                if (this.HasCycleDFS(nodeId, adjacencyList, visited, recursionStack, whileNodes, workflow.Connections))
+                if (HasCycleDFS(nodeId, adjacencyList, visited, recursionStack, whileNodes, workflow.Connections))
                 {
                     this.logger.LogError("Cycle detected in workflow graph involving node {NodeId}", nodeId);
                     result.Errors.Add($"Cycle detected in workflow graph involving node '{nodeId}'. This will cause infinite loops.");
@@ -295,7 +295,7 @@ public class WorkflowValidator
     /// <param name="whileNodes">Set of While node IDs that can have feedback loops.</param>
     /// <param name="connections">All workflow connections for checking feedback loop validity.</param>
     /// <returns>True if a cycle is detected, false otherwise.</returns>
-    private bool HasCycleDFS(
+    private static bool HasCycleDFS(
         string nodeId,
         Dictionary<string, List<string>> adjacencyList,
         HashSet<string> visited,
@@ -310,7 +310,7 @@ public class WorkflowValidator
         {
             if (!visited.Contains(neighbor))
             {
-                if (this.HasCycleDFS(neighbor, adjacencyList, visited, recursionStack, whileNodes, connections))
+                if (HasCycleDFS(neighbor, adjacencyList, visited, recursionStack, whileNodes, connections))
                 {
                     return true;
                 }
@@ -351,12 +351,12 @@ public class ValidationResult
     /// <summary>
     /// Gets the list of validation errors.
     /// </summary>
-    public List<string> Errors { get; } = new List<string>();
+    public List<string> Errors { get; } = [];
 
     /// <summary>
     /// Gets the list of validation warnings.
     /// </summary>
-    public List<string> Warnings { get; } = new List<string>();
+    public List<string> Warnings { get; } = [];
 
     /// <summary>
     /// Gets a value indicating whether the validation passed (no errors).

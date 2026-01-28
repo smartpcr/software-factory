@@ -37,7 +37,7 @@ public class SwitchNode : ExecutableNodeBase
     /// Value: The port name to route to (e.g., "SuccessPort", "FailurePort")
     /// If value is null/empty, the key is used as the port name.
     /// </summary>
-    public Dictionary<string, string> Cases { get; set; } = new Dictionary<string, string>();
+    public Dictionary<string, string> Cases { get; set; } = [];
 
     /// <inheritdoc/>
     public override void Initialize(NodeDefinition definition)
@@ -102,7 +102,7 @@ public class SwitchNode : ExecutableNodeBase
         // Add default port
         ports.Add(DefaultPort);
 
-        return ports.ToArray();
+        return [.. ports];
     }
 
     /// <inheritdoc/>
@@ -192,7 +192,7 @@ public class SwitchNode : ExecutableNodeBase
         }
 
         // Create execution state for script evaluation
-        var state = this.CreateExecutionState(workflowContext, nodeContext);
+        var state = CreateExecutionState(workflowContext, nodeContext);
 
         try
         {

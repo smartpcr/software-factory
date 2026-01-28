@@ -18,16 +18,10 @@ namespace EtwIngest.Steps
 
 
     [Binding]
-    public class EvtxParserSteps
+    public class EvtxParserSteps(ScenarioContext context, IReqnrollOutputHelper outputWriter)
     {
-        private readonly ScenarioContext context;
-        private readonly IReqnrollOutputHelper outputWriter;
-
-        public EvtxParserSteps(ScenarioContext context, IReqnrollOutputHelper outputWriter)
-        {
-            this.context = context;
-            this.outputWriter = outputWriter;
-        }
+        private readonly ScenarioContext context = context;
+        private readonly IReqnrollOutputHelper outputWriter = outputWriter;
 
         [Given("a evtx file at \"([^\"]+)\"")]
         public void GivenAEvtxFileAt(string evtxFile)
@@ -93,7 +87,7 @@ namespace EtwIngest.Steps
             if (reader.Read())
             {
                 var schemaResult = reader.GetString(1);
-                var fields = schemaResult.Split(new []{','}, StringSplitOptions.RemoveEmptyEntries);
+                var fields = schemaResult.Split([','], StringSplitOptions.RemoveEmptyEntries);
                 foreach (var field in fields)
                 {
                     var fieldParts = field.Split(':');

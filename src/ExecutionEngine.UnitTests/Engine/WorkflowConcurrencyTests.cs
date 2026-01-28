@@ -80,8 +80,8 @@ public class WorkflowConcurrencyTests
             WorkflowId = "priority-test",
             WorkflowName = "Priority Test",
             MaxConcurrency = 1, // Force sequential execution
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpTaskNodeDefinition
                 {
                     NodeId = "low1",
@@ -103,8 +103,8 @@ public class WorkflowConcurrencyTests
                     Priority = NodePriority.Normal,
                     ScriptContent = "System.Threading.Thread.Sleep(10); return \"normal1\";"
                 }
-            },
-            Connections = new List<NodeConnection>(),
+            ],
+            Connections = [],
             EntryPointNodeId = null // All nodes are entry points
         };
 
@@ -141,8 +141,8 @@ public class WorkflowConcurrencyTests
             WorkflowId = "throttle-test",
             WorkflowName = "Throttle Test",
             MaxConcurrency = 10, // Allow high workflow concurrency
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpTaskNodeDefinition
                 {
                     NodeId = "throttled1",
@@ -164,8 +164,8 @@ public class WorkflowConcurrencyTests
                     MaxConcurrentExecutions = 2,
                     ScriptContent = "System.Threading.Thread.Sleep(50); return \"throttled3\";",
                 }
-            },
-            Connections = new List<NodeConnection>(),
+            ],
+            Connections = [],
             EntryPointNodeId = null // All nodes are entry points
         };
 
@@ -200,8 +200,8 @@ public class WorkflowConcurrencyTests
         {
             WorkflowId = "parallel-test",
             WorkflowName = "Parallel Test",
-            Nodes = new List<NodeDefinition>(),
-            Connections = new List<NodeConnection>()
+            Nodes = [],
+            Connections = []
         };
 
         for (var i = 0; i < nodeCount; i++)

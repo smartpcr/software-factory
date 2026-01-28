@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 
 namespace Ast.PowerShell;
+
 using System.Management.Automation.Language;
 using System.Security.Cryptography;
 using System.Text;
@@ -35,7 +36,7 @@ public class PowerShellHyperedgeExtractor
     private readonly List<string> loadedModules = [];
 
     // Remote execution cmdlets to track
-    private static readonly HashSet<string> RemoteExecutionCmdlets = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> remoteExecutionCmdlets = new(StringComparer.OrdinalIgnoreCase)
     {
         "Invoke-Command",
         "Enter-PSSession",
@@ -145,11 +146,11 @@ public class PowerShellHyperedgeExtractor
             string? moduleAlias = null;
             string? moduleVersion = null;
             string? prefix = null;
-            bool global = false;
-            bool force = false;
+            var global = false;
+            var force = false;
 
             string? currentParam = null;
-            for (int i = 1; i < cmd.CommandElements.Count; i++)
+            for (var i = 1; i < cmd.CommandElements.Count; i++)
             {
                 var element = cmd.CommandElements[i];
 
@@ -266,9 +267,9 @@ public class PowerShellHyperedgeExtractor
 
             // Arguments
             string? currentParamName = null;
-            int positionalIndex = 0;
+            var positionalIndex = 0;
 
-            for (int i = 1; i < cmd.CommandElements.Count; i++)
+            for (var i = 1; i < cmd.CommandElements.Count; i++)
             {
                 var element = cmd.CommandElements[i];
 
@@ -320,7 +321,7 @@ public class PowerShellHyperedgeExtractor
             .Where(c =>
             {
                 var name = c.GetCommandName();
-                return name != null && RemoteExecutionCmdlets.Contains(name);
+                return name != null && remoteExecutionCmdlets.Contains(name);
             });
 
         foreach (var cmd in commands)
@@ -339,13 +340,13 @@ public class PowerShellHyperedgeExtractor
             string? scriptBlock = null;
             string? filePath = null;
             string? configurationName = null;
-            bool useSSL = false;
+            var useSSL = false;
             int? port = null;
             string? authentication = null;
-            bool asJob = false;
+            var asJob = false;
 
             string? currentParam = null;
-            for (int i = 1; i < cmd.CommandElements.Count; i++)
+            for (var i = 1; i < cmd.CommandElements.Count; i++)
             {
                 var element = cmd.CommandElements[i];
 
@@ -362,7 +363,7 @@ public class PowerShellHyperedgeExtractor
                     // Handle inline argument
                     if (paramAst.Argument != null)
                     {
-                        this.ProcessRemoteParameter(currentParam, paramAst.Argument,
+                        ProcessRemoteParameter(currentParam, paramAst.Argument,
                             ref computerName, ref session, ref credential, ref scriptBlock,
                             ref filePath, ref configurationName, ref port, ref authentication);
                     }
@@ -371,7 +372,7 @@ public class PowerShellHyperedgeExtractor
                 {
                     if (currentParam != null)
                     {
-                        this.ProcessRemoteParameter(currentParam, element,
+                        ProcessRemoteParameter(currentParam, element,
                             ref computerName, ref session, ref credential, ref scriptBlock,
                             ref filePath, ref configurationName, ref port, ref authentication);
                         currentParam = null;
@@ -389,7 +390,7 @@ public class PowerShellHyperedgeExtractor
             {
                 // Could be a single value or array
                 var computers = computerName.Trim('\'', '"', '@', '(', ')').Split(',');
-                for (int i = 0; i < computers.Length; i++)
+                for (var i = 0; i < computers.Length; i++)
                 {
                     var computer = computers[i].Trim().Trim('\'', '"');
                     if (!string.IsNullOrEmpty(computer))
@@ -448,7 +449,7 @@ public class PowerShellHyperedgeExtractor
         }
     }
 
-    private void ProcessRemoteParameter(string paramName, System.Management.Automation.Language.Ast valueAst,
+    private static void ProcessRemoteParameter(string paramName, System.Management.Automation.Language.Ast valueAst,
         ref string? computerName, ref string? session, ref string? credential, ref string? scriptBlock,
         ref string? filePath, ref string? configurationName, ref int? port, ref string? authentication)
     {
@@ -499,7 +500,7 @@ public class PowerShellHyperedgeExtractor
         var paramBlock = func.Body.ParamBlock;
         if (paramBlock != null)
         {
-            for (int i = 0; i < paramBlock.Parameters.Count; i++)
+            for (var i = 0; i < paramBlock.Parameters.Count; i++)
             {
                 var param = paramBlock.Parameters[i];
                 var paramName = param.Name.VariablePath.UserPath;
@@ -590,7 +591,7 @@ public class PowerShellHyperedgeExtractor
             // Base types
             if (classAst.BaseTypes != null)
             {
-                for (int i = 0; i < classAst.BaseTypes.Count; i++)
+                for (var i = 0; i < classAst.BaseTypes.Count; i++)
                 {
                     var baseType = classAst.BaseTypes[i];
                     var baseNode = this.GetOrCreateNode(baseType.TypeName.Name, "base_type", baseType.Extent);
@@ -636,7 +637,7 @@ public class PowerShellHyperedgeExtractor
         }
 
         // Parameters
-        for (int i = 0; i < method.Parameters.Count; i++)
+        for (var i = 0; i < method.Parameters.Count; i++)
         {
             var param = method.Parameters[i];
             var paramNode = this.GetOrCreateNode(param.Name.VariablePath.UserPath, "parameter", param.Extent);
@@ -692,9 +693,9 @@ public class PowerShellHyperedgeExtractor
 
         // Parameters and arguments - ALL in one hyperedge
         string? currentParamName = null;
-        int positionalIndex = 0;
+        var positionalIndex = 0;
 
-        for (int i = 1; i < cmd.CommandElements.Count; i++)
+        for (var i = 1; i < cmd.CommandElements.Count; i++)
         {
             var element = cmd.CommandElements[i];
 
@@ -741,7 +742,7 @@ public class PowerShellHyperedgeExtractor
         if (nodes.Count > 0)
         {
             // Determine if this is a known cmdlet pattern
-            var isCmdlet = cmdName.Contains("-") && char.IsUpper(cmdName[0]);
+            var isCmdlet = cmdName.Contains('-') && char.IsUpper(cmdName[0]);
             this.AddHyperedge(HyperedgeType.CmdletCall, nodes, roles,
                 ("is_cmdlet", isCmdlet));
         }
@@ -758,7 +759,7 @@ public class PowerShellHyperedgeExtractor
             var nodes = new List<HypergraphNode>();
             var roles = new Dictionary<string, string>();
 
-            for (int i = 0; i < pipeline.PipelineElements.Count; i++)
+            for (var i = 0; i < pipeline.PipelineElements.Count; i++)
             {
                 var element = pipeline.PipelineElements[i];
                 string cmdName;
@@ -901,7 +902,7 @@ public class PowerShellHyperedgeExtractor
             nodes.Add(tryNode);
             roles[tryNode.Id] = "try_block";
 
-            for (int i = 0; i < tryStmt.CatchClauses.Count; i++)
+            for (var i = 0; i < tryStmt.CatchClauses.Count; i++)
             {
                 var catchClause = tryStmt.CatchClauses[i];
                 var exceptionTypes = catchClause.CatchTypes.Select(t => t.TypeName.Name).ToList();
@@ -1097,14 +1098,14 @@ public class PowerShellHyperedgeExtractor
             var nodes = new List<HypergraphNode>();
             var roles = new Dictionary<string, string>();
 
-            for (int i = 0; i < defLocations.Count; i++)
+            for (var i = 0; i < defLocations.Count; i++)
             {
                 var defNode = this.GetOrCreateNode($"${varName}@{defLocations[i]}", "definition", null);
                 nodes.Add(defNode);
                 roles[defNode.Id] = $"def_{i}";
             }
 
-            for (int i = 0; i < useLocations.Count; i++)
+            for (var i = 0; i < useLocations.Count; i++)
             {
                 var useNode = this.GetOrCreateNode($"${varName}@{useLocations[i]}", "use", null);
                 nodes.Add(useNode);
@@ -1159,7 +1160,7 @@ public class PowerShellHyperedgeExtractor
         {
             Id = $"he_{++this.edgeCounter:D4}",
             EdgeType = edgeType,
-            NodeIds = nodes.Select(n => n.Id).ToList(),
+            NodeIds = [.. nodes.Select(n => n.Id)],
             Roles = roles,
             Languages = ["powershell"],
             Metadata = metadata.ToDictionary(m => m.Key, m => m.Value)

@@ -6,32 +6,21 @@
 
 namespace ProgressTree
 {
-    public struct NodeProgress
+    public struct NodeProgress(
+        ProgressStatus status,
+        double durationMs,
+        double progressPercent,
+        DateTime? startTime,
+        DateTime? finishTime,
+        string statusMessage,
+        string errorMessage)
     {
-        public ProgressStatus Status;
-        public double DurationMs;
-        public double ProgressPercent;
-        public DateTime? StartTime;
-        public DateTime? FinishTime;
-        public string StatusMessage;
-        public string ErrorMessage;
-
-        public NodeProgress(
-            ProgressStatus status,
-            double durationMs,
-            double progressPercent,
-            DateTime? startTime,
-            DateTime? finishTime,
-            string statusMessage,
-            string errorMessage)
-        {
-            this.Status = status;
-            this.DurationMs = durationMs;
-            this.ProgressPercent = progressPercent;
-            this.StartTime = startTime;
-            this.FinishTime = finishTime;
-            this.StatusMessage = statusMessage;
-            this.ErrorMessage = errorMessage;
-        }
+        public ProgressStatus Status = status;
+        public double DurationMs = durationMs;
+        public double ProgressPercent = progressPercent;
+        public DateTime? StartTime = startTime;
+        public DateTime? FinishTime = finishTime;
+        public string StatusMessage = statusMessage;
+        public string ErrorMessage = errorMessage;
     }
 }

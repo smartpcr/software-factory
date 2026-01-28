@@ -42,7 +42,7 @@ namespace Common.Diagnostics.EtwParser.Extensions
                 sb.AppendLine();
             }
 
-            sb.Append(")");
+            sb.Append(')');
 
             return sb.ToString();
         }
@@ -72,7 +72,7 @@ namespace Common.Diagnostics.EtwParser.Extensions
 
                 if (i < schema.Fields.Count - 1)
                 {
-                    sb.Append(",");
+                    sb.Append(',');
                 }
             }
 

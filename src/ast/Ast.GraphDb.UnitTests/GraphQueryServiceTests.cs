@@ -21,16 +21,16 @@ public class GraphQueryServiceTests
     [TestInitialize]
     public void Setup()
     {
-        mockGraphStore = new Mock<IGraphStore>();
-        mockLogger = new Mock<ILogger<GraphQueryService>>();
-        service = new GraphQueryService(mockGraphStore.Object, mockLogger.Object);
+        this.mockGraphStore = new Mock<IGraphStore>();
+        this.mockLogger = new Mock<ILogger<GraphQueryService>>();
+        this.service = new GraphQueryService(this.mockGraphStore.Object, this.mockLogger.Object);
     }
 
     [TestMethod]
     public void Constructor_WithNullGraphStore_ThrowsArgumentNullException()
     {
         // Act
-        var act = () => new GraphQueryService(null!, mockLogger.Object);
+        var act = () => new GraphQueryService(null!, this.mockLogger.Object);
 
         // Assert
         act.Should().Throw<ArgumentNullException>()
@@ -41,7 +41,7 @@ public class GraphQueryServiceTests
     public void Constructor_WithNullLogger_ThrowsArgumentNullException()
     {
         // Act
-        var act = () => new GraphQueryService(mockGraphStore.Object, null!);
+        var act = () => new GraphQueryService(this.mockGraphStore.Object, null!);
 
         // Assert
         act.Should().Throw<ArgumentNullException>()
@@ -59,35 +59,35 @@ public class GraphQueryServiceTests
                 ["node1"] = CreateTestNode("node1", "TestClass"),
                 ["node2"] = CreateTestNode("node2", "TestMethod")
             },
-            Hyperedges = new List<Hyperedge>
-            {
-                CreateTestEdge("edge1", HyperedgeType.MethodInvocation, new[] { "node1", "node2" })
-            }
+            Hyperedges =
+            [
+                CreateTestEdge("edge1", HyperedgeType.MethodInvocation, ["node1", "node2"])
+            ]
         };
 
-        mockGraphStore.Setup(x => x.CreateNodesAsync(
+        this.mockGraphStore.Setup(x => x.CreateNodesAsync(
             It.IsAny<IEnumerable<HypergraphNode>>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(2);
 
-        mockGraphStore.Setup(x => x.CreateEdgesAsync(
+        this.mockGraphStore.Setup(x => x.CreateEdgesAsync(
             It.IsAny<IEnumerable<Hyperedge>>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(1);
 
         // Act
-        var result = await service.IndexHypergraphAsync(hypergraph);
+        var (NodesIndexed, EdgesIndexed) = await this.service.IndexHypergraphAsync(hypergraph);
 
         // Assert
-        result.NodesIndexed.Should().Be(2);
-        result.EdgesIndexed.Should().Be(1);
+        NodesIndexed.Should().Be(2);
+        EdgesIndexed.Should().Be(1);
     }
 
     [TestMethod]
     public async Task IndexHypergraphAsync_WithNullHypergraph_ThrowsArgumentNullException()
     {
         // Act
-        var act = () => service.IndexHypergraphAsync(null!);
+        var act = () => this.service.IndexHypergraphAsync(null!);
 
         // Assert
         await act.Should().ThrowAsync<ArgumentNullException>();
@@ -100,20 +100,19 @@ public class GraphQueryServiceTests
         var interfaceNode = CreateTestNode("iface1", "ITestInterface", "Interface");
         var classNode = CreateTestNode("class1", "TestClass", "Class");
 
-        mockGraphStore.Setup(x => x.GetNodesAsync(
+        this.mockGraphStore.Setup(x => x.GetNodesAsync(
             It.Is<NodeFilter>(f => f.NodeTypes!.Contains("Interface")),
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<HypergraphNode> { interfaceNode });
 
-        mockGraphStore.Setup(x => x.GetCallersAsync(
+        this.mockGraphStore.Setup(x => x.GetCallersAsync(
             "iface1",
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<NodeWithDepth>
             {
-                new NodeWithDepth
-                {
+                new() {
                     Node = classNode,
                     Depth = 1,
                     RelationshipType = HyperedgeType.Implements
@@ -121,7 +120,7 @@ public class GraphQueryServiceTests
             });
 
         // Act
-        var result = await service.FindImplementationsAsync("ITestInterface");
+        var result = await this.service.FindImplementationsAsync("ITestInterface");
 
         // Assert
         result.Should().HaveCount(1);
@@ -132,14 +131,14 @@ public class GraphQueryServiceTests
     public async Task FindImplementationsAsync_WhenInterfaceNotFound_ReturnsEmpty()
     {
         // Arrange
-        mockGraphStore.Setup(x => x.GetNodesAsync(
+        this.mockGraphStore.Setup(x => x.GetNodesAsync(
             It.IsAny<NodeFilter>(),
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<HypergraphNode>());
 
         // Act
-        var result = await service.FindImplementationsAsync("NonExistent");
+        var result = await this.service.FindImplementationsAsync("NonExistent");
 
         // Assert
         result.Should().BeEmpty();
@@ -149,7 +148,7 @@ public class GraphQueryServiceTests
     public async Task FindImplementationsAsync_WithEmptyName_ThrowsArgumentException()
     {
         // Act
-        var act = () => service.FindImplementationsAsync("");
+        var act = () => this.service.FindImplementationsAsync("");
 
         // Assert
         await act.Should().ThrowAsync<ArgumentException>();
@@ -162,20 +161,19 @@ public class GraphQueryServiceTests
         var baseClass = CreateTestNode("base1", "BaseClass", "Class");
         var derivedClass = CreateTestNode("derived1", "DerivedClass", "Class");
 
-        mockGraphStore.Setup(x => x.GetNodesAsync(
+        this.mockGraphStore.Setup(x => x.GetNodesAsync(
             It.Is<NodeFilter>(f => f.NodeTypes!.Contains("Class")),
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<HypergraphNode> { baseClass });
 
-        mockGraphStore.Setup(x => x.GetCallersAsync(
+        this.mockGraphStore.Setup(x => x.GetCallersAsync(
             "base1",
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<NodeWithDepth>
             {
-                new NodeWithDepth
-                {
+                new() {
                     Node = derivedClass,
                     Depth = 1,
                     RelationshipType = HyperedgeType.Extends
@@ -183,7 +181,7 @@ public class GraphQueryServiceTests
             });
 
         // Act
-        var result = await service.FindDerivedClassesAsync("BaseClass");
+        var result = await this.service.FindDerivedClassesAsync("BaseClass");
 
         // Assert
         result.Should().HaveCount(1);
@@ -199,22 +197,22 @@ public class GraphQueryServiceTests
         var path = new GraphPath
         {
             Nodes = { sourceMethod, targetMethod },
-            Edges = { CreateTestEdge("e1", HyperedgeType.MethodInvocation, new[] { "method1", "method2" }) }
+            Edges = { CreateTestEdge("e1", HyperedgeType.MethodInvocation, ["method1", "method2"]) }
         };
 
-        mockGraphStore.Setup(x => x.GetNodesAsync(
+        this.mockGraphStore.Setup(x => x.GetNodesAsync(
             It.Is<NodeFilter>(f => f.NamePattern == "SourceMethod"),
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<HypergraphNode> { sourceMethod });
 
-        mockGraphStore.Setup(x => x.GetNodesAsync(
+        this.mockGraphStore.Setup(x => x.GetNodesAsync(
             It.Is<NodeFilter>(f => f.NamePattern == "TargetMethod"),
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<HypergraphNode> { targetMethod });
 
-        mockGraphStore.Setup(x => x.FindPathsAsync(
+        this.mockGraphStore.Setup(x => x.FindPathsAsync(
             "method1",
             "method2",
             It.IsAny<int>(),
@@ -222,7 +220,7 @@ public class GraphQueryServiceTests
             .ReturnsAsync(new List<GraphPath> { path });
 
         // Act
-        var result = await service.FindCallChainAsync("SourceMethod", "TargetMethod");
+        var result = await this.service.FindCallChainAsync("SourceMethod", "TargetMethod");
 
         // Assert
         result.Should().HaveCount(1);
@@ -233,14 +231,14 @@ public class GraphQueryServiceTests
     public async Task FindCallChainAsync_WhenSourceNotFound_ReturnsEmpty()
     {
         // Arrange
-        mockGraphStore.Setup(x => x.GetNodesAsync(
+        this.mockGraphStore.Setup(x => x.GetNodesAsync(
             It.IsAny<NodeFilter>(),
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<HypergraphNode>());
 
         // Act
-        var result = await service.FindCallChainAsync("NonExistent", "TargetMethod");
+        var result = await this.service.FindCallChainAsync("NonExistent", "TargetMethod");
 
         // Assert
         result.Should().BeEmpty();
@@ -253,20 +251,19 @@ public class GraphQueryServiceTests
         var method = CreateTestNode("method1", "TestMethod", "Method");
         var dependency = CreateTestNode("dep1", "HelperMethod", "Method");
 
-        mockGraphStore.Setup(x => x.GetNodesAsync(
+        this.mockGraphStore.Setup(x => x.GetNodesAsync(
             It.IsAny<NodeFilter>(),
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<HypergraphNode> { method });
 
-        mockGraphStore.Setup(x => x.GetCalleesAsync(
+        this.mockGraphStore.Setup(x => x.GetCalleesAsync(
             "method1",
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<NodeWithDepth>
             {
-                new NodeWithDepth
-                {
+                new() {
                     Node = dependency,
                     Depth = 1,
                     RelationshipType = HyperedgeType.MethodInvocation
@@ -274,7 +271,7 @@ public class GraphQueryServiceTests
             });
 
         // Act
-        var result = await service.GetMethodDependenciesAsync("TestMethod");
+        var result = await this.service.GetMethodDependenciesAsync("TestMethod");
 
         // Assert
         result.Should().HaveCount(1);
@@ -288,20 +285,19 @@ public class GraphQueryServiceTests
         var method = CreateTestNode("method1", "TestMethod", "Method");
         var caller = CreateTestNode("caller1", "CallerMethod", "Method");
 
-        mockGraphStore.Setup(x => x.GetNodesAsync(
+        this.mockGraphStore.Setup(x => x.GetNodesAsync(
             It.IsAny<NodeFilter>(),
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<HypergraphNode> { method });
 
-        mockGraphStore.Setup(x => x.GetCallersAsync(
+        this.mockGraphStore.Setup(x => x.GetCallersAsync(
             "method1",
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<NodeWithDepth>
             {
-                new NodeWithDepth
-                {
+                new() {
                     Node = caller,
                     Depth = 1,
                     RelationshipType = HyperedgeType.MethodInvocation
@@ -309,7 +305,7 @@ public class GraphQueryServiceTests
             });
 
         // Act
-        var result = await service.GetMethodCallersAsync("TestMethod");
+        var result = await this.service.GetMethodCallersAsync("TestMethod");
 
         // Assert
         result.Should().HaveCount(1);
@@ -324,24 +320,24 @@ public class GraphQueryServiceTests
         var impactAnalysis = new ImpactAnalysis
         {
             SourceNode = node,
-            DirectlyAffected = new List<NodeWithDepth>(),
-            IndirectlyAffected = new List<NodeWithDepth>()
+            DirectlyAffected = [],
+            IndirectlyAffected = []
         };
 
-        mockGraphStore.Setup(x => x.GetNodesAsync(
+        this.mockGraphStore.Setup(x => x.GetNodesAsync(
             It.Is<NodeFilter>(f => f.NamePattern == "TestClass"),
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<HypergraphNode> { node });
 
-        mockGraphStore.Setup(x => x.AnalyzeImpactAsync(
+        this.mockGraphStore.Setup(x => x.AnalyzeImpactAsync(
             "node1",
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(impactAnalysis);
 
         // Act
-        var result = await service.AnalyzeChangeImpactAsync("TestClass");
+        var result = await this.service.AnalyzeChangeImpactAsync("TestClass");
 
         // Assert
         result.Should().NotBeNull();
@@ -352,14 +348,14 @@ public class GraphQueryServiceTests
     public async Task AnalyzeChangeImpactAsync_WhenNodeNotFound_ReturnsNull()
     {
         // Arrange
-        mockGraphStore.Setup(x => x.GetNodesAsync(
+        this.mockGraphStore.Setup(x => x.GetNodesAsync(
             It.IsAny<NodeFilter>(),
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<HypergraphNode>());
 
         // Act
-        var result = await service.AnalyzeChangeImpactAsync("NonExistent");
+        var result = await this.service.AnalyzeChangeImpactAsync("NonExistent");
 
         // Assert
         result.Should().BeNull();
@@ -375,14 +371,14 @@ public class GraphQueryServiceTests
             CreateTestNode("node2", "Method1", "Method")
         };
 
-        mockGraphStore.Setup(x => x.GetNodesAsync(
+        this.mockGraphStore.Setup(x => x.GetNodesAsync(
             It.Is<NodeFilter>(f => f.FilePath == "/test/file.cs"),
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(nodes);
 
         // Act
-        var result = await service.GetNodesInFileAsync("/test/file.cs");
+        var result = await this.service.GetNodesInFileAsync("/test/file.cs");
 
         // Assert
         result.Should().HaveCount(2);
@@ -398,14 +394,14 @@ public class GraphQueryServiceTests
             CreateTestNode("class2", "Class2", "Class")
         };
 
-        mockGraphStore.Setup(x => x.GetNodesAsync(
+        this.mockGraphStore.Setup(x => x.GetNodesAsync(
             It.Is<NodeFilter>(f => f.NodeTypes!.Contains("Class")),
             It.IsAny<int>(),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(nodes);
 
         // Act
-        var result = await service.GetNodesByTypeAsync("Class");
+        var result = await this.service.GetNodesByTypeAsync("Class");
 
         // Assert
         result.Should().HaveCount(2);
@@ -422,11 +418,11 @@ public class GraphQueryServiceTests
             UniqueFiles = 10
         };
 
-        mockGraphStore.Setup(x => x.GetStatisticsAsync(It.IsAny<CancellationToken>()))
+        this.mockGraphStore.Setup(x => x.GetStatisticsAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(stats);
 
         // Act
-        var result = await service.GetStatisticsAsync();
+        var result = await this.service.GetStatisticsAsync();
 
         // Assert
         result.TotalNodes.Should().Be(100);
@@ -437,20 +433,20 @@ public class GraphQueryServiceTests
     public async Task EnsureIndexesAsync_CallsGraphStore()
     {
         // Act
-        await service.EnsureIndexesAsync();
+        await this.service.EnsureIndexesAsync();
 
         // Assert
-        mockGraphStore.Verify(x => x.CreateIndexesAsync(It.IsAny<CancellationToken>()), Times.Once);
+        this.mockGraphStore.Verify(x => x.CreateIndexesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
     public async Task ClearAsync_CallsGraphStore()
     {
         // Act
-        await service.ClearAsync();
+        await this.service.ClearAsync();
 
         // Assert
-        mockGraphStore.Verify(x => x.ClearAsync(It.IsAny<CancellationToken>()), Times.Once);
+        this.mockGraphStore.Verify(x => x.ClearAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
     private static HypergraphNode CreateTestNode(string id, string name, string nodeType = "Class")
@@ -473,8 +469,8 @@ public class GraphQueryServiceTests
         {
             Id = id,
             EdgeType = edgeType,
-            NodeIds = nodeIds.ToList(),
-            Roles = new Dictionary<string, string>()
+            NodeIds = [.. nodeIds],
+            Roles = []
         };
     }
 }

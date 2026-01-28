@@ -85,6 +85,8 @@ public class MessageRouterTests
         act.Should().Throw<ArgumentException>();
     }
 
+    private static readonly string[] expected = new[] { "node-2", "node-3", "node-4" };
+
     [TestMethod]
     public void AddRoute_MultipleTargets_ShouldAddAll()
     {
@@ -100,7 +102,7 @@ public class MessageRouterTests
         // Assert
         var targets = router.GetTargets("node-1");
         targets.Should().HaveCount(3);
-        targets.Should().Contain(new[] { "node-2", "node-3", "node-4" });
+        targets.Should().Contain(expected);
         router.RouteCount.Should().Be(3);
     }
 
@@ -332,7 +334,7 @@ public class MessageRouterTests
         // Act - Route to specific targets, ignoring routing table
         var deliveryCount = await router.RouteToTargetsAsync(
             message,
-            new[] { "node-3" },
+            ["node-3"],
             workflowContext);
 
         // Assert
@@ -437,7 +439,7 @@ public class MessageRouterTests
         };
 
         // Act
-        Func<Task> act = async () => await router.RouteToTargetsAsync(message, Array.Empty<string>(), workflowContext);
+        Func<Task> act = async () => await router.RouteToTargetsAsync(message, [], workflowContext);
 
         // Assert
         await act.Should().ThrowAsync<ArgumentException>();
@@ -461,7 +463,7 @@ public class MessageRouterTests
         };
 
         // Act
-        var deliveryCount = await router.RouteToTargetsAsync(message, new[] { "node-2" }, workflowContext);
+        var deliveryCount = await router.RouteToTargetsAsync(message, ["node-2"], workflowContext);
 
         // Assert
         deliveryCount.Should().Be(0);
@@ -515,7 +517,7 @@ public class MessageRouterTests
         // Act
         var deliveryCount = await router.RouteToTargetsAsync(
             message,
-            new[] { "node-2", "node-3" },
+            ["node-2", "node-3"],
             workflowContext);
 
         // Assert

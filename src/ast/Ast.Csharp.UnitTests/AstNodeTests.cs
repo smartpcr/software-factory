@@ -134,7 +134,7 @@ public class AstNodeTests
             NodeType = AstNodeType.Class,
             Name = "UserService",
             FilePath = "service.cs",
-            BaseTypes = new List<string> { "BaseService", "IUserService", "IDisposable" }
+            BaseTypes = ["BaseService", "IUserService", "IDisposable"]
         };
 
         // Act
@@ -153,12 +153,12 @@ public class AstNodeTests
             NodeType = AstNodeType.Method,
             Name = "CreateUser",
             FilePath = "user.cs",
-            Parameters = new List<ParameterInfo>
-            {
+            Parameters =
+            [
                 new() { Name = "name", Type = "string" },
                 new() { Name = "age", Type = "int" },
                 new() { Name = "email", Type = "string?" }
-            }
+            ]
         };
 
         // Act
@@ -201,12 +201,12 @@ public class AstNodeTests
             Summary = "Processes an order and returns the result.",
             Modifiers = "public async",
             ReturnType = "Task<OrderResult>",
-            BaseTypes = new List<string>(), // Empty, should not appear
-            Parameters = new List<ParameterInfo>
-            {
+            BaseTypes = [], // Empty, should not appear
+            Parameters =
+            [
                 new() { Name = "order", Type = "Order" },
                 new() { Name = "cancellationToken", Type = "CancellationToken" }
-            },
+            ],
             Code = "public async Task<OrderResult> ProcessOrder(Order order, CancellationToken ct) { }"
         };
 

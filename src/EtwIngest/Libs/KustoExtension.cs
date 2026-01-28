@@ -80,17 +80,17 @@ namespace EtwIngest.Libs
             var createTableCmd = new StringBuilder($".create table ['{tableName}'] ({Environment.NewLine}");
             for (var i = 0; i < fields.Count; i++)
             {
-                var field = fields.ElementAt(i);
+                var (fieldName, fieldType) = fields.ElementAt(i);
                 if (i < fields.Count - 1)
                 {
-                    createTableCmd.Append($"  {field.fieldName} : {field.fieldType.ToKustoColumnType()},{Environment.NewLine}");
+                    createTableCmd.Append($"  {fieldName} : {fieldType.ToKustoColumnType()},{Environment.NewLine}");
                 }
                 else
                 {
-                    createTableCmd.Append($"  {field.fieldName} : {field.fieldType.ToKustoColumnType()}{Environment.NewLine}");
+                    createTableCmd.Append($"  {fieldName} : {fieldType.ToKustoColumnType()}{Environment.NewLine}");
                 }
             }
-            createTableCmd.Append(")");
+            createTableCmd.Append(')');
             return createTableCmd.ToString();
         }
 
@@ -100,11 +100,11 @@ namespace EtwIngest.Libs
             var csvMappingCmd = new StringBuilder(@$".create-or-alter table ['{tableName}'] ingestion csv mapping '{mappingName}' '[");
             for (var ordinal = 0; ordinal < fields.Count; ordinal++)
             {
-                var eventField = fields.ElementAt(ordinal);
-                csvMappingCmd.Append($"{{\"column\":\"{eventField.fieldName}\",\"datatype\":\"{eventField.fieldType.ToKustoColumnType()}\",\"Ordinal\":{ordinal}}}");
+                var (fieldName, fieldType) = fields.ElementAt(ordinal);
+                csvMappingCmd.Append($"{{\"column\":\"{fieldName}\",\"datatype\":\"{fieldType.ToKustoColumnType()}\",\"Ordinal\":{ordinal}}}");
                 if (ordinal < fields.Count - 1)
                 {
-                    csvMappingCmd.Append(",");
+                    csvMappingCmd.Append(',');
                 }
             }
             csvMappingCmd.Append("]'");

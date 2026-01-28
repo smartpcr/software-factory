@@ -22,7 +22,7 @@ using Microsoft.Extensions.Options;
 [RankColumn]
 public class IngestionBenchmarks
 {
-    private static readonly string RepoPath = OperatingSystem.IsWindows()
+    private static readonly string repoPath = OperatingSystem.IsWindows()
         ? @"E:\work\hci\update"
         : "/mnt/e/work/hci/update";
 
@@ -35,7 +35,7 @@ public class IngestionBenchmarks
     public int BatchSize { get; set; }
 
     [GlobalSetup]
-    public void Setup()
+    public async Task SetupAsync()
     {
         // Create graph store
         var options = Options.Create(new GraphStoreOptions
@@ -48,15 +48,15 @@ public class IngestionBenchmarks
         this.graphStore = new Neo4jGraphStore(options, NullLogger<Neo4jGraphStore>.Instance);
 
         // Pre-extract data for different sizes
-        var srcPath = Path.Combine(RepoPath, "src");
+        var srcPath = Path.Combine(repoPath, "src");
         if (!Directory.Exists(srcPath))
         {
-            srcPath = RepoPath;
+            srcPath = repoPath;
         }
 
         if (!Directory.Exists(srcPath))
         {
-            throw new InvalidOperationException($"Repository not found at {RepoPath}");
+            throw new InvalidOperationException($"Repository not found at {repoPath}");
         }
 
         var allFiles = Directory.GetFiles(srcPath, "*.cs", SearchOption.AllDirectories)
@@ -64,19 +64,19 @@ public class IngestionBenchmarks
             .ToList();
 
         // Extract different sized datasets
-        this.smallData = this.ExtractFiles(allFiles.Take(20).ToList());
-        this.mediumData = this.ExtractFiles(allFiles.Take(100).ToList());
-        this.largeData = this.ExtractFiles(allFiles.Take(500).ToList());
+        this.smallData = ExtractFiles([.. allFiles.Take(20)]);
+        this.mediumData = ExtractFiles([.. allFiles.Take(100)]);
+        this.largeData = ExtractFiles([.. allFiles.Take(500)]);
 
         // Verify connection
-        var available = this.graphStore.IsAvailableAsync().GetAwaiter().GetResult();
+        var available = await this.graphStore.IsAvailableAsync();
         if (!available)
         {
             throw new InvalidOperationException("Neo4j is not available. Make sure it's running.");
         }
 
         // Create indexes once
-        this.graphStore.CreateIndexesAsync().GetAwaiter().GetResult();
+        await this.graphStore.CreateIndexesAsync();
     }
 
     [GlobalCleanup]
@@ -86,38 +86,38 @@ public class IngestionBenchmarks
     }
 
     [IterationSetup]
-    public void IterationSetup()
+    public async Task IterationSetupAsync()
     {
         // Clear database before each iteration
-        this.graphStore?.ClearAsync().GetAwaiter().GetResult();
+        await this.graphStore!.ClearAsync();
     }
 
     [Benchmark(Description = "Ingest small dataset (~20 files)")]
-    public async Task<int> IngestSmallDataset()
+    public async Task<int> IngestSmallDatasetAsync()
     {
         return await this.IngestDataAsync(this.smallData);
     }
 
     [Benchmark(Description = "Ingest medium dataset (~100 files)")]
-    public async Task<int> IngestMediumDataset()
+    public async Task<int> IngestMediumDatasetAsync()
     {
         return await this.IngestDataAsync(this.mediumData);
     }
 
     [Benchmark(Description = "Ingest large dataset (~500 files)")]
-    public async Task<int> IngestLargeDataset()
+    public async Task<int> IngestLargeDatasetAsync()
     {
         return await this.IngestDataAsync(this.largeData);
     }
 
     [Benchmark(Description = "Ingest nodes only (medium)")]
-    public async Task<int> IngestNodesOnly()
+    public async Task<int> IngestNodesOnlyAsync()
     {
         return await this.graphStore!.CreateNodesAsync(this.mediumData.Nodes.Values);
     }
 
     [Benchmark(Description = "Ingest edges only (medium)")]
-    public async Task<int> IngestEdgesOnly()
+    public async Task<int> IngestEdgesOnlyAsync()
     {
         // First ingest nodes (required for edges)
         await this.graphStore!.CreateNodesAsync(this.mediumData.Nodes.Values);
@@ -131,7 +131,7 @@ public class IngestionBenchmarks
         return nodesCreated + edgesCreated;
     }
 
-    private HypergraphData ExtractFiles(List<string> files)
+    private static HypergraphData ExtractFiles(List<string> files)
     {
         var allNodes = new Dictionary<string, HypergraphNode>();
         var allEdges = new List<Hyperedge>();

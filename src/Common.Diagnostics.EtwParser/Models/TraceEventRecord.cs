@@ -41,7 +41,7 @@ namespace Common.Diagnostics.EtwParser.Models
         /// </summary>
         public object? GetValue(string fieldName)
         {
-            return FieldValues.TryGetValue(fieldName, out var value) ? value : null;
+            return this.FieldValues.TryGetValue(fieldName, out var value) ? value : null;
         }
 
         /// <summary>
@@ -49,7 +49,7 @@ namespace Common.Diagnostics.EtwParser.Models
         /// </summary>
         public T? GetValue<T>(string fieldName)
         {
-            var value = GetValue(fieldName);
+            var value = this.GetValue(fieldName);
             if (value == null) return default;
 
             try

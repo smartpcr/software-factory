@@ -6,11 +6,11 @@
 
 namespace ExecutionEngine.Example.Nodes;
 
+using EtwEventReader.Tools;
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
 using ExecutionEngine.Nodes;
-using EtwEventReader.Tools;
 using ExecutionEngine.Nodes.Definitions;
 
 /// <summary>
@@ -58,7 +58,8 @@ public class ParseEtlFileNode : ExecutableNodeBase
     {
         var instance = new NodeInstance
         {
-            NodeInstanceId = Guid.NewGuid(),            WorkflowInstanceId = workflowContext.InstanceId,
+            NodeInstanceId = Guid.NewGuid(),
+            WorkflowInstanceId = workflowContext.InstanceId,
             Status = NodeExecutionStatus.Running,
             StartTime = DateTime.UtcNow,
             ExecutionContext = nodeContext
@@ -67,7 +68,8 @@ public class ParseEtlFileNode : ExecutableNodeBase
         try
         {
             this.RaiseOnStart(new NodeStartEventArgs
-            {                Timestamp = DateTime.UtcNow
+            {
+                Timestamp = DateTime.UtcNow
             });
 
             // Get the ETL file path from input data
@@ -92,16 +94,18 @@ public class ParseEtlFileNode : ExecutableNodeBase
             }
 
             this.RaiseOnProgress(new ProgressEventArgs
-            {                Status = $"Processing {Path.GetFileName(etlFilePath)}...",
+            {
+                Status = $"Processing {Path.GetFileName(etlFilePath)}...",
                 ProgressPercent = 10
             });
 
             // Use ScalableEventProcessor to process the file
             var processor = new ScalableEventProcessor(this.OutputDirectory, maxDegreeOfParallelism: 1);
-            var summary = processor.ProcessFiles(new[] { etlFilePath });
+            var summary = processor.ProcessFiles([etlFilePath]);
 
             this.RaiseOnProgress(new ProgressEventArgs
-            {                Status = "Processing complete, finding generated CSV files...",
+            {
+                Status = "Processing complete, finding generated CSV files...",
                 ProgressPercent = 80
             });
 
@@ -134,7 +138,8 @@ public class ParseEtlFileNode : ExecutableNodeBase
             instance.EndTime = DateTime.UtcNow;
 
             this.RaiseOnProgress(new ProgressEventArgs
-            {                Status = $"Processed {summary.TotalEvents:N0} events into {csvFiles.Length} CSV files ({batchFiles.Count} batches)",
+            {
+                Status = $"Processed {summary.TotalEvents:N0} events into {csvFiles.Length} CSV files ({batchFiles.Count} batches)",
                 ProgressPercent = 100
             });
         }

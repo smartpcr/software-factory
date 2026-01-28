@@ -9,23 +9,16 @@ namespace EtwIngest.Libs
     using System.IO;
     using System.IO.Compression;
 
-    public class UnzipHelper
+    public class UnzipHelper(string zipFile, string outputFolder, string ext)
     {
-        private readonly string zipFile;
-        private readonly string outputFolder;
-        private readonly string ext;
-
-        public UnzipHelper(string zipFile, string outputFolder, string ext)
-        {
-            this.zipFile = zipFile;
-            this.outputFolder = outputFolder;
-            this.ext = ext;
-        }
+        private readonly string zipFile = zipFile;
+        private readonly string outputFolder = outputFolder;
+        private readonly string ext = ext;
 
         public void Process()
         {
             var tempFolder = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
-            this.ExtractZipFile(this.zipFile, tempFolder);
+            ExtractZipFile(this.zipFile, tempFolder);
             var files = Directory.GetFiles(tempFolder, $"*.{this.ext}", SearchOption.AllDirectories);
             foreach (var filePath in files)
             {
@@ -34,7 +27,7 @@ namespace EtwIngest.Libs
             Directory.Delete(tempFolder, true);
         }
 
-        private void ExtractZipFile(string zipFilePath, string extractionPath)
+        private static void ExtractZipFile(string zipFilePath, string extractionPath)
         {
             // Create the extraction directory if it doesn't exist
             if (!Directory.Exists(extractionPath))

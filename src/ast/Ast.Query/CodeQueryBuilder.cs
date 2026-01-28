@@ -14,24 +14,17 @@ using Microsoft.Extensions.Logging;
 /// <summary>
 /// Implementation of the fluent code query builder.
 /// </summary>
-public class CodeQueryBuilder : ICodeQuery
+/// <remarks>
+/// Initializes a new instance of the <see cref="CodeQueryBuilder"/> class.
+/// </remarks>
+public class CodeQueryBuilder(
+    IGraphStore graphStore,
+    ILogger<CodeQueryBuilder> logger,
+    IVectorStore? vectorStore = null) : ICodeQuery
 {
-    private readonly IGraphStore graphStore;
-    private readonly IVectorStore? vectorStore;
-    private readonly ILogger<CodeQueryBuilder> logger;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="CodeQueryBuilder"/> class.
-    /// </summary>
-    public CodeQueryBuilder(
-        IGraphStore graphStore,
-        ILogger<CodeQueryBuilder> logger,
-        IVectorStore? vectorStore = null)
-    {
-        this.graphStore = graphStore ?? throw new ArgumentNullException(nameof(graphStore));
-        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        this.vectorStore = vectorStore;
-    }
+    private readonly IGraphStore graphStore = graphStore ?? throw new ArgumentNullException(nameof(graphStore));
+    private readonly IVectorStore? vectorStore = vectorStore;
+    private readonly ILogger<CodeQueryBuilder> logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     /// <inheritdoc/>
     public INodeQuery Nodes() => new NodeQueryBuilder(this.graphStore, this.logger);
@@ -64,20 +57,14 @@ public class CodeQueryBuilder : ICodeQuery
 /// <summary>
 /// Node query builder implementation.
 /// </summary>
-internal class NodeQueryBuilder : INodeQuery
+internal class NodeQueryBuilder(IGraphStore graphStore, ILogger logger) : INodeQuery
 {
-    private readonly IGraphStore graphStore;
-    private readonly ILogger logger;
+    private readonly IGraphStore graphStore = graphStore;
+    private readonly ILogger logger = logger;
     private readonly NodeFilter filter = new();
     private int limit = 100;
     private int skip = 0;
-    private readonly List<string> nodeTypes = new();
-
-    public NodeQueryBuilder(IGraphStore graphStore, ILogger logger)
-    {
-        this.graphStore = graphStore;
-        this.logger = logger;
-    }
+    private readonly List<string> nodeTypes = [];
 
     public INodeQuery OfLanguage(string language)
     {
@@ -148,7 +135,7 @@ internal class NodeQueryBuilder : INodeQuery
     public async Task<CodeQueryResult> ExecuteAsync(CancellationToken cancellationToken = default)
     {
         var nodes = await this.ToListAsync(cancellationToken);
-        return new CodeQueryResult { Nodes = nodes.ToList() };
+        return new CodeQueryResult { Nodes = [.. nodes] };
     }
 
     public async Task<IReadOnlyList<HypergraphNode>> ToListAsync(CancellationToken cancellationToken = default)
@@ -178,27 +165,18 @@ internal class NodeQueryBuilder : INodeQuery
 /// <summary>
 /// Single node query builder implementation.
 /// </summary>
-internal class SingleNodeQueryBuilder : ISingleNodeQuery
+internal class SingleNodeQueryBuilder(
+    IGraphStore graphStore,
+    IVectorStore? vectorStore,
+    ILogger logger,
+    string identifier,
+    bool byName) : ISingleNodeQuery
 {
-    private readonly IGraphStore graphStore;
-    private readonly IVectorStore? vectorStore;
-    private readonly ILogger logger;
-    private readonly string identifier;
-    private readonly bool byName;
-
-    public SingleNodeQueryBuilder(
-        IGraphStore graphStore,
-        IVectorStore? vectorStore,
-        ILogger logger,
-        string identifier,
-        bool byName)
-    {
-        this.graphStore = graphStore;
-        this.vectorStore = vectorStore;
-        this.logger = logger;
-        this.identifier = identifier;
-        this.byName = byName;
-    }
+    private readonly IGraphStore graphStore = graphStore;
+    private readonly IVectorStore? vectorStore = vectorStore;
+    private readonly ILogger logger = logger;
+    private readonly string identifier = identifier;
+    private readonly bool byName = byName;
 
     public async Task<HypergraphNode?> GetAsync(CancellationToken cancellationToken = default)
     {
@@ -246,7 +224,7 @@ internal class TraversalQueryBuilder : ITraversalQuery
     private readonly string identifier;
     private readonly bool byName;
     private readonly TraversalDirection direction;
-    private readonly List<HyperedgeType> edgeTypes = new();
+    private readonly List<HyperedgeType> edgeTypes = [];
     private int depth = 1;
     private string? language;
     private bool includeCrossLanguage;
@@ -314,7 +292,7 @@ internal class TraversalQueryBuilder : ITraversalQuery
         var nodesWithDepth = await this.ToListAsync(cancellationToken);
         return new CodeQueryResult
         {
-            Nodes = nodesWithDepth.Select(n => n.Node).ToList()
+            Nodes = [.. nodesWithDepth.Select(n => n.Node)]
         };
     }
 
@@ -376,22 +354,14 @@ internal class TraversalQueryBuilder : ITraversalQuery
 /// <summary>
 /// Impact query builder implementation.
 /// </summary>
-internal class ImpactQueryBuilder : IImpactQuery
+internal class ImpactQueryBuilder(IGraphStore graphStore, ILogger logger, string identifier, bool byName) : IImpactQuery
 {
-    private readonly IGraphStore graphStore;
-    private readonly ILogger logger;
-    private readonly string identifier;
-    private readonly bool byName;
+    private readonly IGraphStore graphStore = graphStore;
+    private readonly ILogger logger = logger;
+    private readonly string identifier = identifier;
+    private readonly bool byName = byName;
     private int depth = 3;
     private bool directOnly;
-
-    public ImpactQueryBuilder(IGraphStore graphStore, ILogger logger, string identifier, bool byName)
-    {
-        this.graphStore = graphStore;
-        this.logger = logger;
-        this.identifier = identifier;
-        this.byName = byName;
-    }
 
     public IImpactQuery WithDepth(int depth)
     {
@@ -408,12 +378,7 @@ internal class ImpactQueryBuilder : IImpactQuery
 
     public async Task<ImpactAnalysis> ExecuteAsync(CancellationToken cancellationToken = default)
     {
-        var nodeId = await this.ResolveNodeIdAsync(cancellationToken);
-        if (nodeId == null)
-        {
-            throw new InvalidOperationException($"Node not found: {this.identifier}");
-        }
-
+        var nodeId = await this.ResolveNodeIdAsync(cancellationToken) ?? throw new InvalidOperationException($"Node not found: {this.identifier}");
         var impact = await this.graphStore.AnalyzeImpactAsync(nodeId, this.depth, cancellationToken);
 
         if (this.directOnly)
@@ -442,22 +407,14 @@ internal class ImpactQueryBuilder : IImpactQuery
 /// <summary>
 /// Edge query builder implementation.
 /// </summary>
-internal class EdgeQueryBuilder : IEdgeQuery
+internal class EdgeQueryBuilder(IGraphStore graphStore, ILogger logger, string identifier, bool byName) : IEdgeQuery
 {
-    private readonly IGraphStore graphStore;
-    private readonly ILogger logger;
-    private readonly string identifier;
-    private readonly bool byName;
-    private readonly List<HyperedgeType> edgeTypes = new();
+    private readonly IGraphStore graphStore = graphStore;
+    private readonly ILogger logger = logger;
+    private readonly string identifier = identifier;
+    private readonly bool byName = byName;
+    private readonly List<HyperedgeType> edgeTypes = [];
     private TraversalDirection? direction;
-
-    public EdgeQueryBuilder(IGraphStore graphStore, ILogger logger, string identifier, bool byName)
-    {
-        this.graphStore = graphStore;
-        this.logger = logger;
-        this.identifier = identifier;
-        this.byName = byName;
-    }
 
     public IEdgeQuery OfType(HyperedgeType edgeType)
     {
@@ -518,30 +475,22 @@ internal class EdgeQueryBuilder : IEdgeQuery
 /// <summary>
 /// Semantic query builder implementation.
 /// </summary>
-internal class SemanticQueryBuilder : ISemanticQuery
+internal class SemanticQueryBuilder(
+    IGraphStore graphStore,
+    IVectorStore vectorStore,
+    ILogger logger,
+    string searchText) : ISemanticQuery
 {
-    private readonly IGraphStore graphStore;
-    private readonly IVectorStore vectorStore;
-    private readonly ILogger logger;
-    private readonly string searchText;
+    private readonly IGraphStore graphStore = graphStore;
+    private readonly IVectorStore vectorStore = vectorStore;
+    private readonly ILogger logger = logger;
+    private readonly string searchText = searchText;
     private string? language;
     private string? nodeType;
     private string? filePath;
     private float minScore = 0.5f;
     private int limit = 10;
     private int graphExpansionDepth = 0;
-
-    public SemanticQueryBuilder(
-        IGraphStore graphStore,
-        IVectorStore vectorStore,
-        ILogger logger,
-        string searchText)
-    {
-        this.graphStore = graphStore;
-        this.vectorStore = vectorStore;
-        this.logger = logger;
-        this.searchText = searchText;
-    }
 
     public ISemanticQuery InLanguage(string language)
     {
@@ -584,7 +533,7 @@ internal class SemanticQueryBuilder : ISemanticQuery
         var scoredNodes = await this.ToListAsync(cancellationToken);
         var result = new CodeQueryResult
         {
-            SemanticMatches = scoredNodes.ToList()
+            SemanticMatches = [.. scoredNodes]
         };
 
         // Graph expansion if requested
@@ -599,7 +548,7 @@ internal class SemanticQueryBuilder : ISemanticQuery
                     relatedNodes.Add(callee.Node);
                 }
             }
-            result.Nodes = relatedNodes.ToList();
+            result.Nodes = [.. relatedNodes];
         }
 
         return result;
@@ -650,31 +599,22 @@ internal class SemanticQueryBuilder : ISemanticQuery
 /// <summary>
 /// Path query builder implementation.
 /// </summary>
-internal class PathQueryBuilder : IPathQuery
+internal class PathQueryBuilder(
+    IGraphStore graphStore,
+    ILogger logger,
+    string fromIdentifier,
+    string toIdentifier,
+    bool byName) : IPathQuery
 {
-    private readonly IGraphStore graphStore;
-    private readonly ILogger logger;
-    private readonly string fromIdentifier;
-    private readonly string toIdentifier;
-    private readonly bool byName;
+    private readonly IGraphStore graphStore = graphStore;
+    private readonly ILogger logger = logger;
+    private readonly string fromIdentifier = fromIdentifier;
+    private readonly string toIdentifier = toIdentifier;
+    private readonly bool byName = byName;
     private int maxLength = 5;
-    private readonly List<HyperedgeType> edgeTypes = new();
+    private readonly List<HyperedgeType> edgeTypes = [];
     private int limit = 10;
     private bool shortestOnly = true;
-
-    public PathQueryBuilder(
-        IGraphStore graphStore,
-        ILogger logger,
-        string fromIdentifier,
-        string toIdentifier,
-        bool byName)
-    {
-        this.graphStore = graphStore;
-        this.logger = logger;
-        this.fromIdentifier = fromIdentifier;
-        this.toIdentifier = toIdentifier;
-        this.byName = byName;
-    }
 
     public IPathQuery WithMaxLength(int maxLength)
     {
@@ -703,7 +643,7 @@ internal class PathQueryBuilder : IPathQuery
     public async Task<CodeQueryResult> ExecuteAsync(CancellationToken cancellationToken = default)
     {
         var paths = await this.ToListAsync(cancellationToken);
-        return new CodeQueryResult { Paths = paths.ToList() };
+        return new CodeQueryResult { Paths = [.. paths] };
     }
 
     public async Task<IReadOnlyList<GraphPath>> ToListAsync(CancellationToken cancellationToken = default)

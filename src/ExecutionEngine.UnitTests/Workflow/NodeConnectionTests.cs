@@ -56,10 +56,11 @@ public class NodeConnectionTests
     public void TriggerMessageType_ShouldSupportAllMessageTypes()
     {
         // Arrange
-        var connection = new NodeConnection();
-
-        // Act & Assert - Complete
-        connection.TriggerMessageType = MessageType.Complete;
+        var connection = new NodeConnection
+        {
+            // Act & Assert - Complete
+            TriggerMessageType = MessageType.Complete
+        };
         connection.TriggerMessageType.Should().Be(MessageType.Complete);
 
         // Act & Assert - Fail

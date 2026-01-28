@@ -33,35 +33,35 @@ public class WorkflowLoaderTests
         }
     }
 
-    private WorkflowDefinition CreateValidWorkflow()
+    private static WorkflowDefinition CreateValidWorkflow()
     {
         return new WorkflowDefinition
         {
             WorkflowId = "valid-workflow",
             WorkflowName = "Valid Workflow",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "node-1",
                     ScriptPath = @"TestData\Scripts\script.csx"
                 }
-            }
+            ]
         };
     }
 
-    private WorkflowDefinition CreateInvalidWorkflow()
+    private static WorkflowDefinition CreateInvalidWorkflow()
     {
         return new WorkflowDefinition
         {
             WorkflowId = string.Empty, // Invalid - empty ID
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "node-1",
                 }
-            }
+            ]
         };
     }
 
@@ -69,7 +69,7 @@ public class WorkflowLoaderTests
     public void Load_WithValidWorkflow_ShouldLoadAndValidate()
     {
         // Arrange
-        var workflow = this.CreateValidWorkflow();
+        var workflow = CreateValidWorkflow();
         var filePath = Path.Combine(this.testDirectory, "valid.json");
         this.loader.Save(workflow, filePath, validateBeforeSave: false);
 
@@ -85,7 +85,7 @@ public class WorkflowLoaderTests
     public void Load_WithInvalidWorkflow_WhenValidationEnabled_ShouldThrowException()
     {
         // Arrange
-        var workflow = this.CreateInvalidWorkflow();
+        var workflow = CreateInvalidWorkflow();
         var filePath = Path.Combine(this.testDirectory, "invalid.json");
         this.loader.Save(workflow, filePath, validateBeforeSave: false);
 
@@ -101,7 +101,7 @@ public class WorkflowLoaderTests
     public void Load_WithInvalidWorkflow_WhenValidationDisabled_ShouldLoad()
     {
         // Arrange
-        var workflow = this.CreateInvalidWorkflow();
+        var workflow = CreateInvalidWorkflow();
         var filePath = Path.Combine(this.testDirectory, "invalid.json");
         this.loader.Save(workflow, filePath, validateBeforeSave: false);
 
@@ -116,7 +116,7 @@ public class WorkflowLoaderTests
     public void Save_WithValidWorkflow_ShouldSave()
     {
         // Arrange
-        var workflow = this.CreateValidWorkflow();
+        var workflow = CreateValidWorkflow();
         var filePath = Path.Combine(this.testDirectory, "output.json");
 
         // Act
@@ -130,7 +130,7 @@ public class WorkflowLoaderTests
     public void Save_WithInvalidWorkflow_WhenValidationEnabled_ShouldThrowException()
     {
         // Arrange
-        var workflow = this.CreateInvalidWorkflow();
+        var workflow = CreateInvalidWorkflow();
         var filePath = Path.Combine(this.testDirectory, "output.json");
 
         // Act
@@ -145,7 +145,7 @@ public class WorkflowLoaderTests
     public void Save_WithInvalidWorkflow_WhenValidationDisabled_ShouldSave()
     {
         // Arrange
-        var workflow = this.CreateInvalidWorkflow();
+        var workflow = CreateInvalidWorkflow();
         var filePath = Path.Combine(this.testDirectory, "output.json");
 
         // Act
@@ -159,7 +159,7 @@ public class WorkflowLoaderTests
     public void Validate_WithValidWorkflow_ShouldReturnValid()
     {
         // Arrange
-        var workflow = this.CreateValidWorkflow();
+        var workflow = CreateValidWorkflow();
 
         // Act
         var result = this.loader.Validate(workflow);
@@ -173,7 +173,7 @@ public class WorkflowLoaderTests
     public void Validate_WithInvalidWorkflow_ShouldReturnInvalid()
     {
         // Arrange
-        var workflow = this.CreateInvalidWorkflow();
+        var workflow = CreateInvalidWorkflow();
 
         // Act
         var result = this.loader.Validate(workflow);
@@ -187,7 +187,7 @@ public class WorkflowLoaderTests
     public void LoadWithoutValidation_ShouldLoadWorkflow()
     {
         // Arrange
-        var workflow = this.CreateInvalidWorkflow();
+        var workflow = CreateInvalidWorkflow();
         var filePath = Path.Combine(this.testDirectory, "test.json");
         this.loader.Save(workflow, filePath, validateBeforeSave: false);
 
@@ -203,7 +203,7 @@ public class WorkflowLoaderTests
     public void Load_JsonAndYamlRoundTrip_ShouldBeEquivalent()
     {
         // Arrange
-        var original = this.CreateValidWorkflow();
+        var original = CreateValidWorkflow();
         var jsonPath = Path.Combine(this.testDirectory, "test.json");
         var yamlPath = Path.Combine(this.testDirectory, "test.yaml");
 

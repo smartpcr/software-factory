@@ -56,7 +56,8 @@ public class IngestToKustoNode : ExecutableNodeBase
     {
         var instance = new NodeInstance
         {
-            NodeInstanceId = Guid.NewGuid(),            WorkflowInstanceId = workflowContext.InstanceId,
+            NodeInstanceId = Guid.NewGuid(),
+            WorkflowInstanceId = workflowContext.InstanceId,
             Status = NodeExecutionStatus.Running,
             StartTime = DateTime.UtcNow,
             ExecutionContext = nodeContext
@@ -65,7 +66,8 @@ public class IngestToKustoNode : ExecutableNodeBase
         try
         {
             this.RaiseOnStart(new NodeStartEventArgs
-            {                Timestamp = DateTime.UtcNow
+            {
+                Timestamp = DateTime.UtcNow
             });
 
             if (string.IsNullOrWhiteSpace(this.ConnectionString))
@@ -103,7 +105,7 @@ public class IngestToKustoNode : ExecutableNodeBase
                 throw new InvalidOperationException("CSV files not found in input data.");
             }
 
-            var csvFiles = csvFilesObj as string[] ?? Array.Empty<string>();
+            var csvFiles = csvFilesObj as string[] ?? [];
 
             // Create Kusto admin client
             var kcsb = new KustoConnectionStringBuilder(this.ConnectionString)
@@ -128,7 +130,8 @@ public class IngestToKustoNode : ExecutableNodeBase
                 filesIngested++;
 
                 this.RaiseOnProgress(new ProgressEventArgs
-                {                    Status = $"Ingested {filesIngested}/{csvFiles.Length} files",
+                {
+                    Status = $"Ingested {filesIngested}/{csvFiles.Length} files",
                     ProgressPercent = (int)((filesIngested / (double)csvFiles.Length) * 100)
                 });
             }
@@ -141,7 +144,8 @@ public class IngestToKustoNode : ExecutableNodeBase
             instance.EndTime = DateTime.UtcNow;
 
             this.RaiseOnProgress(new ProgressEventArgs
-            {                Status = $"Ingested {filesIngested} files into Kusto",
+            {
+                Status = $"Ingested {filesIngested} files into Kusto",
                 ProgressPercent = 100
             });
         }

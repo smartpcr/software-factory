@@ -99,7 +99,7 @@ namespace ProgressTree
             this.workerFunc = workerFunc;
             this.ProgressTask = this.ctx.AddTask(id, maxValue: 100);
             this.Parent = parent;
-            this.Children = new List<IProgressNode>();
+            this.Children = [];
             this.Depth = this.Parent == null ? 0 : this.Parent.Depth + 1;
             this.CreationTime = DateTime.UtcNow;
             this.Status = ProgressStatus.NotStarted;
@@ -124,7 +124,7 @@ namespace ProgressTree
                 await this.workerFunc(this, cancel);
             }
 
-            if (this.Children.Any())
+            if (this.Children.Count != 0)
             {
                 if (this.runChildrenInParallel)
                 {
@@ -135,7 +135,7 @@ namespace ProgressTree
                 {
                     foreach (var child in this.Children)
                     {
-                        await  child.ExecuteAsync(cancel);
+                        await child.ExecuteAsync(cancel);
                     }
                 }
             }

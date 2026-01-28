@@ -35,7 +35,7 @@ namespace ExecutionEngine.Nodes.Definitions
         {
             if (string.IsNullOrEmpty(this.ScriptPath) && string.IsNullOrEmpty(this.ScriptContent))
             {
-                yield return  new ValidationResult(
+                yield return new ValidationResult(
                     "Script path and content cannot both be empty.",
                     new[] { nameof(this.ScriptPath), nameof(this.ScriptContent) });
             }
@@ -49,7 +49,7 @@ namespace ExecutionEngine.Nodes.Definitions
 
                 if (!File.Exists(this.ScriptPath))
                 {
-                    yield return new  ValidationResult(
+                    yield return new ValidationResult(
                         $"Script file does not exist on {this.ScriptPath}.",
                         new[] { nameof(this.ScriptPath) });
                 }

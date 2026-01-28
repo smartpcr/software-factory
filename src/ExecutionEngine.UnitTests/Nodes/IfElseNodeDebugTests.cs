@@ -17,7 +17,7 @@ using FluentAssertions;
 [TestClass]
 public class IfElseNodeDebugTests
 {
-    private readonly List<string> tempFiles = new List<string>();
+    private readonly List<string> tempFiles = [];
 
     [TestCleanup]
     public void Cleanup()
@@ -42,8 +42,8 @@ public class IfElseNodeDebugTests
         {
             WorkflowId = "debug-simple-true",
             WorkflowName = "Debug Simple True",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new IfElseNodeDefinition
                 {
                     NodeId = "if-node",
@@ -59,9 +59,9 @@ public class IfElseNodeDebugTests
                     NodeId = "false-node",
                     ScriptPath = this.CreateTempScript("SetGlobal(\"executed\", \"false-branch\");")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "if-node",
@@ -74,7 +74,7 @@ public class IfElseNodeDebugTests
                     TargetNodeId = "false-node",
                     SourcePort = IfElseNode.FalseBranchPort
                 }
-            }
+            ]
         };
 
         // Act
@@ -100,8 +100,8 @@ public class IfElseNodeDebugTests
         {
             WorkflowId = "debug-simple-false",
             WorkflowName = "Debug Simple False",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new IfElseNodeDefinition
                 {
                     NodeId = "if-node",
@@ -117,9 +117,9 @@ public class IfElseNodeDebugTests
                     NodeId = "false-node",
                     ScriptPath = this.CreateTempScript("SetGlobal(\"executed\", \"false-branch\");")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "if-node",
@@ -132,7 +132,7 @@ public class IfElseNodeDebugTests
                     TargetNodeId = "false-node",
                     SourcePort = IfElseNode.FalseBranchPort
                 }
-            }
+            ]
         };
 
         // Act
@@ -158,8 +158,8 @@ public class IfElseNodeDebugTests
         {
             WorkflowId = "debug-no-port",
             WorkflowName = "Debug No Source Port",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new IfElseNodeDefinition
                 {
                     NodeId = "if-node",
@@ -170,16 +170,16 @@ public class IfElseNodeDebugTests
                     NodeId = "next-node",
                     ScriptPath = this.CreateTempScript("SetGlobal(\"executed\", \"next-node\");")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "if-node",
                     TargetNodeId = "next-node"
                     // No SourcePort specified - should match any output
                 }
-            }
+            ]
         };
 
         // Act

@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 
 namespace ExecutionEngine.Nodes.Definitions.Converters;
+
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -18,9 +19,9 @@ using System.Text.Json.Serialization;
 /// </summary>
 public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new()
 {
-    private static readonly Dictionary<string, PropertyInfo> PropertyMap = BuildPropertyMap();
-    private static readonly Dictionary<string, Dictionary<string, PropertyInfo>> PropertyMapByJsonNameCache = new();
-    private static readonly object CacheLock = new();
+    private static readonly Dictionary<string, PropertyInfo> propertyMap = BuildpropertyMap();
+    private static readonly Dictionary<string, Dictionary<string, PropertyInfo>> propertyMapByJsonNameCache = [];
+    private static readonly object cacheLock = new();
 
     public override T? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
@@ -51,12 +52,12 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
             var propertyName = reader.GetString()!;
 
             // Get property map based on the naming policy from options
-            var propertyMapByJsonName = GetPropertyMapByJsonName(options);
+            var propertyMapByJsonName = GetpropertyMapByJsonName(options);
 
             // Try to find property by JSON name first, then by actual property name
             if (!propertyMapByJsonName.TryGetValue(propertyName, out var property))
             {
-                ReflectionJsonConverter<T>.PropertyMap.TryGetValue(propertyName, out property);
+                ReflectionJsonConverter<T>.propertyMap.TryGetValue(propertyName, out property);
             }
 
             reader.Read(); // Move to property value
@@ -93,7 +94,7 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
             writer.WriteString("runtimeType", runtimeTypeValue);
         }
 
-        foreach (var property in ReflectionJsonConverter<T>.PropertyMap.Values.Distinct())
+        foreach (var property in ReflectionJsonConverter<T>.propertyMap.Values.Distinct())
         {
             var propValue = property.GetValue(value);
             var jsonName = GetJsonPropertyName(property, options);
@@ -105,7 +106,7 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
         writer.WriteEndObject();
     }
 
-    private static Dictionary<string, PropertyInfo> BuildPropertyMap()
+    private static Dictionary<string, PropertyInfo> BuildpropertyMap()
     {
         return typeof(T)
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
@@ -117,37 +118,37 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
             );
     }
 
-    private static Dictionary<string, PropertyInfo> GetPropertyMapByJsonName(JsonSerializerOptions options)
+    private static Dictionary<string, PropertyInfo> GetpropertyMapByJsonName(JsonSerializerOptions options)
     {
         // Create a cache key based on the naming policy type
         var cacheKey = options.PropertyNamingPolicy?.GetType().FullName ?? "null";
 
         // Check cache first
-        lock (CacheLock)
+        lock (cacheLock)
         {
-            if (PropertyMapByJsonNameCache.TryGetValue(cacheKey, out var cachedMap))
+            if (propertyMapByJsonNameCache.TryGetValue(cacheKey, out var cachedMap))
             {
                 return cachedMap;
             }
         }
 
         // Build new map for this naming policy
-        var map = BuildPropertyMapByJsonName(options);
+        var map = BuildpropertyMapByJsonName(options);
 
         // Cache it
-        lock (CacheLock)
+        lock (cacheLock)
         {
-            PropertyMapByJsonNameCache[cacheKey] = map;
+            propertyMapByJsonNameCache[cacheKey] = map;
         }
 
         return map;
     }
 
-    private static Dictionary<string, PropertyInfo> BuildPropertyMapByJsonName(JsonSerializerOptions options)
+    private static Dictionary<string, PropertyInfo> BuildpropertyMapByJsonName(JsonSerializerOptions options)
     {
         var map = new Dictionary<string, PropertyInfo>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var property in ReflectionJsonConverter<T>.PropertyMap.Values)
+        foreach (var property in ReflectionJsonConverter<T>.propertyMap.Values)
         {
             // Use the naming policy from options to get the JSON property name
             var jsonName = GetJsonPropertyName(property, options);
@@ -182,7 +183,7 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
             return name;
         }
 
-        return char.ToLowerInvariant(name[0]) + name.Substring(1);
+        return char.ToLowerInvariant(name[0]) + name[1..];
     }
 
     private object? ReadProperty(ref Utf8JsonReader reader, Type propertyType, JsonSerializerOptions options)
@@ -206,7 +207,7 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
         }
 
         // Handle scalars
-        return this.ReadScalar(ref reader, propertyType);
+        return ReflectionJsonConverter<T>.ReadScalar(ref reader, propertyType);
     }
 
     private object? ReadCollection(ref Utf8JsonReader reader, Type collectionType, JsonSerializerOptions options)
@@ -251,14 +252,13 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
             var root = doc.RootElement;
 
             // Look for runtimeType discriminator (try both camelCase and PascalCase)
-            JsonElement runtimeTypeProp = default;
-            bool foundRuntimeType = root.TryGetProperty("runtimeType", out runtimeTypeProp) ||
+            var foundRuntimeType = root.TryGetProperty("runtimeType", out var runtimeTypeProp) ||
                                    root.TryGetProperty("RuntimeType", out runtimeTypeProp);
 
             if (foundRuntimeType)
             {
                 var runtimeTypeName = runtimeTypeProp.GetString();
-                var concreteType = MapRuntimeTypeToClass(runtimeTypeName);
+                var concreteType = ReflectionJsonConverter<T>.MapRuntimeTypeToClass(runtimeTypeName);
                 if (concreteType != null)
                 {
                     var json = root.GetRawText();
@@ -276,7 +276,7 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
         return element;
     }
 
-    private Type? MapRuntimeTypeToClass(string? runtimeType)
+    private static Type? MapRuntimeTypeToClass(string? runtimeType)
     {
         return runtimeType switch
         {
@@ -297,7 +297,7 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
         };
     }
 
-    private object? ReadScalar(ref Utf8JsonReader reader, Type targetType)
+    private static object? ReadScalar(ref Utf8JsonReader reader, Type targetType)
     {
         var underlyingType = Nullable.GetUnderlyingType(targetType) ?? targetType;
 
@@ -364,12 +364,12 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
         // Handle nested objects
         if (IsComplexType(propertyType))
         {
-            this.WriteNestedObject(writer, value, propertyType, options);
+            ReflectionJsonConverter<T>.WriteNestedObject(writer, value, propertyType, options);
             return;
         }
 
         // Handle scalars
-        this.WriteScalar(writer, value, propertyType);
+        ReflectionJsonConverter<T>.WriteScalar(writer, value, propertyType);
     }
 
     private void WriteCollection(Utf8JsonWriter writer, IEnumerable collection, Type collectionType, JsonSerializerOptions options)
@@ -424,7 +424,7 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
         writer.WriteEndObject();
     }
 
-    private void WriteNestedObject(Utf8JsonWriter writer, object value, Type objectType, JsonSerializerOptions options)
+    private static void WriteNestedObject(Utf8JsonWriter writer, object value, Type objectType, JsonSerializerOptions options)
     {
         // Use the actual runtime type instead of the declared type to ensure
         // derived class properties are serialized (e.g., CSharpScriptNodeDefinition properties)
@@ -432,7 +432,7 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
         JsonSerializer.Serialize(writer, value, actualType, options);
     }
 
-    private void WriteScalar(Utf8JsonWriter writer, object value, Type valueType)
+    private static void WriteScalar(Utf8JsonWriter writer, object value, Type valueType)
     {
         var underlyingType = Nullable.GetUnderlyingType(valueType) ?? valueType;
 

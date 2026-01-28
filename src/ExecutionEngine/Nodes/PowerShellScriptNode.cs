@@ -71,7 +71,7 @@ public class PowerShellScriptNode : ExecutableNodeBase
             }
 
             // Create execution state for script
-            var state = this.CreateExecutionState(workflowContext, nodeContext);
+            var state = CreateExecutionState(workflowContext, nodeContext);
 
             // Execute the script
             await this.ExecuteScriptAsync(state, cancellationToken);
@@ -101,12 +101,7 @@ public class PowerShellScriptNode : ExecutableNodeBase
             throw new InvalidOperationException("Node has not been initialized.");
         }
 
-        var scriptDefinition = this.Definition as PowerShellScriptNodeDefinition;
-        if (scriptDefinition == null)
-        {
-            throw new InvalidOperationException("Node definition is not of type PowerShellScriptNodeDefinition.");
-        }
-
+        var scriptDefinition = this.Definition as PowerShellScriptNodeDefinition ?? throw new InvalidOperationException("Node definition is not of type PowerShellScriptNodeDefinition.");
         if (string.IsNullOrWhiteSpace(scriptDefinition.ScriptPath))
         {
             throw new InvalidOperationException("ScriptPath is not defined.");
@@ -131,11 +126,7 @@ public class PowerShellScriptNode : ExecutableNodeBase
         // This creates a minimal session state without loading Windows-specific snapins
         var initialSessionState = InitialSessionState.CreateDefault2();
 
-        var scriptDefinition = this.Definition as PowerShellScriptNodeDefinition;
-        if (scriptDefinition == null)
-        {
-            throw new InvalidOperationException("Node definition is not of type PowerShellScriptNodeDefinition.");
-        }
+        var scriptDefinition = this.Definition as PowerShellScriptNodeDefinition ?? throw new InvalidOperationException("Node definition is not of type PowerShellScriptNodeDefinition.");
 
         // Import required modules if specified
         if (scriptDefinition.RequiredModules != null)
@@ -147,11 +138,11 @@ public class PowerShellScriptNode : ExecutableNodeBase
                 {
                     // Normalize path for cross-platform compatibility
                     var normalizedPath = Path.GetFullPath(modulePath);
-                    initialSessionState.ImportPSModule(new[] { normalizedPath });
+                    initialSessionState.ImportPSModule([normalizedPath]);
                 }
                 else
                 {
-                    initialSessionState.ImportPSModule(new[] { moduleName });
+                    initialSessionState.ImportPSModule([moduleName]);
                 }
             }
         }
@@ -285,18 +276,13 @@ public class PowerShellScriptNode : ExecutableNodeBase
 /// Wrapper class that exposes ExecutionState functionality as PowerShell-friendly methods.
 /// PowerShell can call these methods directly without needing to invoke delegates.
 /// </summary>
-public class PowerShellStateWrapper
+/// <remarks>
+/// Initializes a new instance of the PowerShellStateWrapper class.
+/// </remarks>
+/// <param name="state">The execution state to wrap.</param>
+public class PowerShellStateWrapper(ExecutionState state)
 {
-    private readonly ExecutionState state;
-
-    /// <summary>
-    /// Initializes a new instance of the PowerShellStateWrapper class.
-    /// </summary>
-    /// <param name="state">The execution state to wrap.</param>
-    public PowerShellStateWrapper(ExecutionState state)
-    {
-        this.state = state ?? throw new ArgumentNullException(nameof(state));
-    }
+    private readonly ExecutionState state = state ?? throw new ArgumentNullException(nameof(state));
 
     /// <summary>
     /// Gets an input value by key.

@@ -20,7 +20,7 @@ using FluentAssertions;
 [TestClass]
 public class SwitchNodeIntegrationTests
 {
-    private readonly List<string> tempFiles = new List<string>();
+    private readonly List<string> tempFiles = [];
 
     [TestMethod]
     public async Task SwitchWithMultipleBranches_ShouldRouteToCorrectBranch()
@@ -31,8 +31,8 @@ public class SwitchNodeIntegrationTests
         {
             WorkflowId = "switch-branches-test",
             WorkflowName = "Switch Multiple Branches Test",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpTaskNodeDefinition
                 {
                     NodeId = "setup",
@@ -64,9 +64,9 @@ public class SwitchNodeIntegrationTests
                     NodeId = "pending-handler",
                     ScriptContent = "SetOutput(\"branch\", \"pending\");",
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "setup",
@@ -94,7 +94,7 @@ public class SwitchNodeIntegrationTests
                     TargetNodeId = "pending-handler",
                     TriggerMessageType = MessageType.Complete
                 }
-            }
+            ]
         };
 
         // Act
@@ -136,8 +136,8 @@ public class SwitchNodeIntegrationTests
         {
             WorkflowId = "switch-default-test",
             WorkflowName = "Switch Default Case Test",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpTaskNodeDefinition
                 {
                     NodeId = "setup",
@@ -163,9 +163,9 @@ public class SwitchNodeIntegrationTests
                     NodeId = "default-handler",
                     ScriptContent = "SetOutput(\"branch\", \"default\");"
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "setup",
@@ -186,7 +186,7 @@ public class SwitchNodeIntegrationTests
                     TargetNodeId = "default-handler",
                     TriggerMessageType = MessageType.Complete
                 }
-            }
+            ]
         };
 
         // Act
@@ -223,8 +223,8 @@ public class SwitchNodeIntegrationTests
         {
             WorkflowId = "switch-downstream-test",
             WorkflowName = "Switch Downstream Node Test",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpTaskNodeDefinition
                 {
                     NodeId = "setup",
@@ -258,9 +258,9 @@ public class SwitchNodeIntegrationTests
                             SetOutput(""result"", $""Aggregated: {processed}"");
                         ",
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "setup",
@@ -294,7 +294,7 @@ public class SwitchNodeIntegrationTests
                     TargetNodeId = "downstream-aggregator",
                     TriggerMessageType = MessageType.Complete
                 }
-            }
+            ]
         };
 
         // Act
@@ -341,8 +341,8 @@ public class SwitchNodeIntegrationTests
         {
             WorkflowId = "switch-integer-test",
             WorkflowName = "Switch Integer Expression Test",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpTaskNodeDefinition
                 {
                     NodeId = "setup",
@@ -374,9 +374,9 @@ public class SwitchNodeIntegrationTests
                     NodeId = "error-handler",
                     ScriptContent = "SetOutput(\"status\", \"Server Error\");",
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "setup",
@@ -404,7 +404,7 @@ public class SwitchNodeIntegrationTests
                     TargetNodeId = "error-handler",
                     TriggerMessageType = MessageType.Complete
                 }
-            }
+            ]
         };
 
         // Act
@@ -440,8 +440,8 @@ public class SwitchNodeIntegrationTests
         {
             WorkflowId = "switch-fail-test",
             WorkflowName = "Switch OnFail Test",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new SwitchNodeDefinition
                 {
                     NodeId = "switch-1",
@@ -456,16 +456,16 @@ public class SwitchNodeIntegrationTests
                     NodeId = "error-handler",
                     ScriptContent = "SetOutput(\"errorHandled\", true);"
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "switch-1",
                     TargetNodeId = "error-handler",
                     TriggerMessageType = MessageType.Fail
                 }
-            }
+            ]
         };
 
         // Act
@@ -499,8 +499,8 @@ public class SwitchNodeIntegrationTests
         {
             WorkflowId = "switch-conditional-test",
             WorkflowName = "Switch Conditional Expression Test",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpTaskNodeDefinition
                 {
                     NodeId = "setup",
@@ -532,9 +532,9 @@ public class SwitchNodeIntegrationTests
                     NodeId = "poor-handler",
                     ScriptContent = "SetOutput(\"grade\", \"C\");"
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "setup",
@@ -562,7 +562,7 @@ public class SwitchNodeIntegrationTests
                     TargetNodeId = "poor-handler",
                     TriggerMessageType = MessageType.Complete
                 }
-            }
+            ]
         };
 
         // Act

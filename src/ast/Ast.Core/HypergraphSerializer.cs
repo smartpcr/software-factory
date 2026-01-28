@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 
 namespace Ast.Core;
+
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -14,7 +15,7 @@ using System.Text.Json.Serialization;
 /// </summary>
 public static class HypergraphSerializer
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerOptions jsonOptions = new()
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -41,7 +42,7 @@ public static class HypergraphSerializer
                     Modifiers = kvp.Value.Modifiers,
                     Metadata = kvp.Value.Metadata
                 }),
-            Hyperedges = data.Hyperedges.Select(he => new HyperedgeExport
+            Hyperedges = [.. data.Hyperedges.Select(he => new HyperedgeExport
             {
                 Id = he.Id,
                 EdgeType = he.EdgeType.ToString(),
@@ -50,7 +51,7 @@ public static class HypergraphSerializer
                 Languages = he.Languages,
                 Weight = he.Weight,
                 Metadata = he.Metadata
-            }).ToList(),
+            })],
             Metadata = new MetadataExport
             {
                 RepoPath = data.Metadata.RepoPath,
@@ -65,7 +66,7 @@ public static class HypergraphSerializer
             }
         };
 
-        var json = JsonSerializer.Serialize(exportData, JsonOptions);
+        var json = JsonSerializer.Serialize(exportData, jsonOptions);
         File.WriteAllText(filePath, json);
     }
 
@@ -88,7 +89,7 @@ public static class HypergraphSerializer
                     Modifiers = kvp.Value.Modifiers,
                     Metadata = kvp.Value.Metadata
                 }),
-            Hyperedges = data.Hyperedges.Select(he => new HyperedgeExport
+            Hyperedges = [.. data.Hyperedges.Select(he => new HyperedgeExport
             {
                 Id = he.Id,
                 EdgeType = he.EdgeType.ToString(),
@@ -97,7 +98,7 @@ public static class HypergraphSerializer
                 Languages = he.Languages,
                 Weight = he.Weight,
                 Metadata = he.Metadata
-            }).ToList(),
+            })],
             Metadata = new MetadataExport
             {
                 RepoPath = data.Metadata.RepoPath,
@@ -112,7 +113,7 @@ public static class HypergraphSerializer
             }
         };
 
-        return JsonSerializer.Serialize(exportData, JsonOptions);
+        return JsonSerializer.Serialize(exportData, jsonOptions);
     }
 
     public static HypergraphData LoadFromJson(string filePath)
@@ -123,7 +124,7 @@ public static class HypergraphSerializer
 
     public static HypergraphData FromJson(string json)
     {
-        var exportData = JsonSerializer.Deserialize<ExportData>(json, JsonOptions)
+        var exportData = JsonSerializer.Deserialize<ExportData>(json, jsonOptions)
             ?? throw new InvalidOperationException("Failed to deserialize hypergraph data");
 
         return new HypergraphData
@@ -143,7 +144,7 @@ public static class HypergraphSerializer
                     Modifiers = kvp.Value.Modifiers,
                     Metadata = kvp.Value.Metadata
                 }),
-            Hyperedges = exportData.Hyperedges.Select(he => new Hyperedge
+            Hyperedges = [.. exportData.Hyperedges.Select(he => new Hyperedge
             {
                 Id = he.Id,
                 EdgeType = Enum.Parse<HyperedgeType>(he.EdgeType, ignoreCase: true),
@@ -152,7 +153,7 @@ public static class HypergraphSerializer
                 Languages = he.Languages,
                 Weight = he.Weight,
                 Metadata = he.Metadata
-            }).ToList(),
+            })],
             Metadata = new HypergraphMetadata
             {
                 RepoPath = exportData.Metadata.RepoPath,
@@ -185,7 +186,7 @@ public static class HypergraphSerializer
             he => he.NodeIds.ToArray()
         );
 
-        return JsonSerializer.Serialize(edgeDict, JsonOptions);
+        return JsonSerializer.Serialize(edgeDict, jsonOptions);
     }
 
     // Export DTOs

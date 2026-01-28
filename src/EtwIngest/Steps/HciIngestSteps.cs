@@ -13,21 +13,15 @@ namespace EtwIngest.Steps
     using Reqnroll;
 
     [Binding]
-    public class HciIngestSteps
+    public class HciIngestSteps(ScenarioContext context, IReqnrollOutputHelper outputWriter)
     {
-        private readonly ScenarioContext context;
-        private readonly IReqnrollOutputHelper outputWriter;
-
-        public HciIngestSteps(ScenarioContext context, IReqnrollOutputHelper outputWriter)
-        {
-            this.context = context;
-            this.outputWriter = outputWriter;
-        }
+        private readonly ScenarioContext context = context;
+        private readonly IReqnrollOutputHelper outputWriter = outputWriter;
 
         [When("I parse etl files in folder \"([^\"]+)\"")]
         public void WhenIParseEtlFilesInFolder(string etlFolder)
         {
-            etlFolder = this.NormalizeFolderPath(etlFolder);
+            etlFolder = NormalizeFolderPath(etlFolder);
             var etlFiles = Directory.GetFiles(etlFolder, "*.etl", SearchOption.TopDirectoryOnly);
             this.outputWriter.WriteInfo($"Found {etlFiles.Length} etl files in {etlFolder}");
             var allEtwEvents = new ConcurrentDictionary<(string providerName, string eventName), EtwEvent>();
@@ -144,11 +138,11 @@ namespace EtwIngest.Steps
         [When(@"I extract etl files in folder ""([^""]+)"" to csv files in folder ""([^""]+)""")]
         public void WhenIExtractEtlFilesInFolderToCsvFolder(string etlFolder, string csvFolder)
         {
-            etlFolder = this.NormalizeFolderPath(etlFolder);
+            etlFolder = NormalizeFolderPath(etlFolder);
             var etlFiles = Directory.GetFiles(etlFolder, "*.etl", SearchOption.TopDirectoryOnly);
             this.outputWriter.WriteInfo($"Found {etlFiles.Length} etl files in {etlFolder}");
 
-            csvFolder = this.NormalizeFolderPath(csvFolder);
+            csvFolder = NormalizeFolderPath(csvFolder);
             if (!Directory.Exists(csvFolder))
             {
                 Directory.CreateDirectory(csvFolder);
@@ -216,7 +210,7 @@ namespace EtwIngest.Steps
                 }
             }
 
-            foreach(var kvp in allFileContents)
+            foreach (var kvp in allFileContents)
             {
                 var csvFileName = $"ETL-{kvp.Key.providerName}.{kvp.Key.eventName.Replace("/", "")}.csv";
                 var csvFilePath = Path.Combine(csvFolder, csvFileName);
@@ -238,7 +232,7 @@ namespace EtwIngest.Steps
         [Then(@"I should see following csv files in folder ""([^""]+)""")]
         public void ThenIShouldSeeFollowingCsvFilesInFolder(string csvFolder, Table table)
         {
-            csvFolder = this.NormalizeFolderPath(csvFolder);
+            csvFolder = NormalizeFolderPath(csvFolder);
             var csvFiles = Directory.GetFiles(csvFolder, "*.csv", SearchOption.TopDirectoryOnly)
                 .Select(Path.GetFileName).ToList();
             csvFiles.Should().NotBeNullOrEmpty();
@@ -253,7 +247,7 @@ namespace EtwIngest.Steps
         [When(@"I parse evtx files in folder ""([^""]+)""")]
         public void WhenIParseEvtxFilesInFolder(string evtxFolder)
         {
-            evtxFolder = this.NormalizeFolderPath(evtxFolder);
+            evtxFolder = NormalizeFolderPath(evtxFolder);
             var evtxFiles = Directory.GetFiles(evtxFolder, "*.evtx", SearchOption.TopDirectoryOnly);
             this.outputWriter.WriteInfo($"Found {evtxFiles.Length} evtx files in {evtxFolder}");
             var allEvtxRecords = new ConcurrentBag<EvtxRecord>();
@@ -341,7 +335,7 @@ namespace EtwIngest.Steps
         [When(@"I extract evtx records to csv files in folder ""([^""]+)""")]
         public void WhenIExtractEvtxRecordsToCsvFilesInFolder(string csvFolder)
         {
-            csvFolder = this.NormalizeFolderPath(csvFolder);
+            csvFolder = NormalizeFolderPath(csvFolder);
             if (!Directory.Exists(csvFolder))
             {
                 Directory.CreateDirectory(csvFolder);
@@ -361,11 +355,11 @@ namespace EtwIngest.Steps
                 var description = evtxRecord.Description;
                 var containsSpecialCharacters =
                     !string.IsNullOrEmpty(description) && (
-                    description.Contains("\"") ||
-                    description.Contains(",") ||
-                    description.Contains(" ") ||
-                    description.Contains("\n") ||
-                    description.Contains("\r"));
+                    description.Contains('"') ||
+                    description.Contains(',') ||
+                    description.Contains(' ') ||
+                    description.Contains('\n') ||
+                    description.Contains('\r'));
                 if (containsSpecialCharacters)
                 {
                     description = description.Replace("\"", "\"\"");
@@ -382,7 +376,7 @@ namespace EtwIngest.Steps
         [Then(@"I should see following csv file ""([^""]+)"" in folder ""([^""]+)""")]
         public void ThenIShouldSeeFollowingCsvFileInFolder(string expectedCsvFile, string csvFolder)
         {
-            csvFolder = this.NormalizeFolderPath(csvFolder);
+            csvFolder = NormalizeFolderPath(csvFolder);
             var csvFileName = Path.Combine(csvFolder, expectedCsvFile);
             File.Exists(csvFileName).Should().BeTrue();
         }
@@ -390,7 +384,7 @@ namespace EtwIngest.Steps
         [When(@"I ingest csv files in folder ""([^""]+)"" to kusto")]
         public void WhenIIngestCsvFilesInFolderToKusto(string csvFolder)
         {
-            csvFolder = this.NormalizeFolderPath(csvFolder);
+            csvFolder = NormalizeFolderPath(csvFolder);
             var adminClient = this.context.Get<ICslAdminProvider>("adminClient");
             var etlEventSchemas = this.context.Get<ConcurrentDictionary<(string providerName, string eventName), EtwEvent>>("etlEventSchemas");
             var volumeBindingHostPath = this.context.Get<string>("hostPath");
@@ -466,7 +460,7 @@ namespace EtwIngest.Steps
             }
         }
 
-        private string NormalizeFolderPath(string folderPath)
+        private static string NormalizeFolderPath(string folderPath)
         {
             if (folderPath.Contains("%HOME%", StringComparison.OrdinalIgnoreCase))
             {

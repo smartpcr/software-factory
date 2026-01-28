@@ -24,7 +24,7 @@ public class VectorPoint
     /// <summary>
     /// Gets or sets the payload (metadata) associated with this point.
     /// </summary>
-    public Dictionary<string, object> Payload { get; set; } = new();
+    public Dictionary<string, object> Payload { get; set; } = [];
 }
 
 /// <summary>
@@ -50,7 +50,7 @@ public class VectorSearchResult
     /// <summary>
     /// Gets or sets the payload (metadata).
     /// </summary>
-    public Dictionary<string, object> Payload { get; set; } = new();
+    public Dictionary<string, object> Payload { get; set; } = [];
 }
 
 /// <summary>
@@ -61,17 +61,17 @@ public class VectorFilter
     /// <summary>
     /// Gets or sets the must conditions (AND).
     /// </summary>
-    public List<FilterCondition> Must { get; set; } = new();
+    public List<FilterCondition> Must { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the should conditions (OR).
     /// </summary>
-    public List<FilterCondition> Should { get; set; } = new();
+    public List<FilterCondition> Should { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the must not conditions (NOT).
     /// </summary>
-    public List<FilterCondition> MustNot { get; set; } = new();
+    public List<FilterCondition> MustNot { get; set; } = [];
 }
 
 /// <summary>

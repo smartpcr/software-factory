@@ -85,7 +85,7 @@ public class PowerShellTaskNode : ExecutableNodeBase
             }
 
             // Create execution state for script
-            var state = this.CreateExecutionState(workflowContext, nodeContext);
+            var state = CreateExecutionState(workflowContext, nodeContext);
 
             // Execute the script
             await this.ExecuteScriptAsync(state, cancellationToken);
@@ -115,12 +115,7 @@ public class PowerShellTaskNode : ExecutableNodeBase
             throw new InvalidOperationException("Node has not been initialized.");
         }
 
-        var psTaskDef = this.Definition as PowerShellTaskNodeDefinition;
-        if (psTaskDef == null)
-        {
-            throw new InvalidOperationException("Node definition is not of type PowerShellTaskNodeDefinition.");
-        }
-
+        var psTaskDef = this.Definition as PowerShellTaskNodeDefinition ?? throw new InvalidOperationException("Node definition is not of type PowerShellTaskNodeDefinition.");
         if (string.IsNullOrWhiteSpace(psTaskDef.ScriptPath))
         {
             throw new InvalidOperationException("PowerShellTaskNode must have either inline script or ScriptPath.");
@@ -145,11 +140,7 @@ public class PowerShellTaskNode : ExecutableNodeBase
         // This creates a minimal session state without loading Windows-specific snapins
         var initialSessionState = InitialSessionState.CreateDefault2();
 
-        var psTaskDef = this.Definition as PowerShellTaskNodeDefinition;
-        if (psTaskDef == null)
-        {
-            throw new InvalidOperationException("Node definition is not of type PowerShellTaskNodeDefinition.");
-        }
+        var psTaskDef = this.Definition as PowerShellTaskNodeDefinition ?? throw new InvalidOperationException("Node definition is not of type PowerShellTaskNodeDefinition.");
 
         // Add custom cmdlets for workflow integration
         var getInputCmdlet = new SessionStateCmdletEntry("Get-Input", typeof(GetInputCmdlet), null);
@@ -172,11 +163,11 @@ public class PowerShellTaskNode : ExecutableNodeBase
                 {
                     // Normalize path for cross-platform compatibility
                     var normalizedPath = Path.GetFullPath(modulePath);
-                    initialSessionState.ImportPSModule(new[] { normalizedPath });
+                    initialSessionState.ImportPSModule([normalizedPath]);
                 }
                 else
                 {
-                    initialSessionState.ImportPSModule(new[] { moduleName });
+                    initialSessionState.ImportPSModule([moduleName]);
                 }
             }
         }
@@ -317,8 +308,7 @@ public class GetInputCmdlet : PSCmdlet
     /// </summary>
     protected override void ProcessRecord()
     {
-        var state = this.SessionState.PSVariable.GetValue("State") as ExecutionState;
-        if (state != null && state.Input.TryGetValue(this.Key, out var value))
+        if (this.SessionState.PSVariable.GetValue("State") is ExecutionState state && state.Input.TryGetValue(this.Key, out var value))
         {
             this.WriteObject(value);
         }
@@ -352,8 +342,7 @@ public class SetOutputCmdlet : PSCmdlet
     /// </summary>
     protected override void ProcessRecord()
     {
-        var state = this.SessionState.PSVariable.GetValue("State") as ExecutionState;
-        if (state != null)
+        if (this.SessionState.PSVariable.GetValue("State") is ExecutionState state)
         {
             state.SetOutput(this.Key, this.Value!);
         }
@@ -377,8 +366,7 @@ public class GetGlobalCmdlet : PSCmdlet
     /// </summary>
     protected override void ProcessRecord()
     {
-        var state = this.SessionState.PSVariable.GetValue("State") as ExecutionState;
-        if (state != null)
+        if (this.SessionState.PSVariable.GetValue("State") is ExecutionState state)
         {
             var value = state.GetGlobal(this.Key);
             this.WriteObject(value);
@@ -413,8 +401,7 @@ public class SetGlobalCmdlet : PSCmdlet
     /// </summary>
     protected override void ProcessRecord()
     {
-        var state = this.SessionState.PSVariable.GetValue("State") as ExecutionState;
-        if (state != null)
+        if (this.SessionState.PSVariable.GetValue("State") is ExecutionState state)
         {
             state.SetGlobal(this.Key, this.Value!);
         }

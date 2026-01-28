@@ -42,17 +42,17 @@ namespace Common.Diagnostics.EtwParser.Parsers
 
             try
             {
-                using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read);
+                using var fs = new FileStream(this.filePath, FileMode.Open, FileAccess.Read);
                 var eventLog = new evtx.EventLog(fs);
 
                 // EVTX files have a consistent schema across all records
-                var eventId = new EventIdentifier("WindowsEventLog", Path.GetFileNameWithoutExtension(filePath));
+                var eventId = new EventIdentifier("WindowsEventLog", Path.GetFileNameWithoutExtension(this.filePath));
                 var schema = CreateEvtxSchema(eventId);
 
                 eventSchemas[eventId] = schema;
 
                 stopwatch.Stop();
-                return ParseResult.Successful(1, fileSize, stopwatch.Elapsed);
+                return ParseResult.Successful(1, this.fileSize, stopwatch.Elapsed);
             }
             catch (Exception ex)
             {
@@ -69,10 +69,10 @@ namespace Common.Diagnostics.EtwParser.Parsers
 
             try
             {
-                using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read);
+                using var fs = new FileStream(this.filePath, FileMode.Open, FileAccess.Read);
                 var eventLog = new evtx.EventLog(fs);
 
-                var eventId = new EventIdentifier("WindowsEventLog", Path.GetFileNameWithoutExtension(filePath));
+                var eventId = new EventIdentifier("WindowsEventLog", Path.GetFileNameWithoutExtension(this.filePath));
                 var records = new List<TraceEventRecord>();
 
                 foreach (var record in eventLog.GetEventRecords())

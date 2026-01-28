@@ -15,20 +15,14 @@ namespace EtwProcessor
     using Common.Diagnostics.EtwParser.Parsers;
     using Microsoft.Extensions.Logging;
 
-    public class EtwParser
+    public class EtwParser(ILogger<EtwParser> logger, ZipHelper zipHelper)
     {
-        private readonly ILogger<EtwParser> logger;
-        private readonly ZipHelper zipHelper;
+        private readonly ILogger<EtwParser> logger = logger;
+        private readonly ZipHelper zipHelper = zipHelper;
         private string inputDirectory = string.Empty;
         private string outputDirectory = string.Empty;
         private string tempDirectory = string.Empty;
         private CancellationToken cancellationToken;
-
-        public EtwParser(ILogger<EtwParser> logger, ZipHelper zipHelper)
-        {
-            this.logger = logger;
-            this.zipHelper = zipHelper;
-        }
 
         public string TempDirectory => this.tempDirectory;
 
@@ -174,7 +168,7 @@ namespace EtwProcessor
 
                         foreach (var kvp in events)
                         {
-                            var list = allEvents.GetOrAdd(kvp.Key, _ => new List<TraceEventRecord>());
+                            var list = allEvents.GetOrAdd(kvp.Key, _ => []);
                             lock (list)
                             {
                                 foreach (var record in kvp.Value)
@@ -213,7 +207,7 @@ namespace EtwProcessor
 
                 var providerSchemas = schemasByProvider.TryGetValue(providerName, out var ps)
                     ? ps
-                    : new Dictionary<EventIdentifier, TraceEventSchema>();
+                    : [];
 
                 var exporter = new CsvExporter(providerDir, filePrefix: null, includeHeaders: true);
                 var result = exporter.ExportAsync(providerGroup.Value, providerSchemas).GetAwaiter().GetResult();
@@ -256,10 +250,9 @@ namespace EtwProcessor
 
             traceFiles.AddRange(FileHelper.FindTraceFiles(this.inputDirectory));
 
-            return traceFiles
+            return [.. traceFiles
                 .Distinct()
-                .Where(f => new FileInfo(f).Length > 0)
-                .ToList();
+                .Where(f => new FileInfo(f).Length > 0)];
         }
 
         private static ITraceEventParser CreateParser(string filePath)

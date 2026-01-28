@@ -129,7 +129,7 @@ namespace ExecutionEngine.Engine
             TimeSpan? timeout = null,
             CancellationToken cancellationToken = default)
         {
-            return await this.StartAsync(workflowDefinition, new Dictionary<string, object>(), timeout, cancellationToken);
+            return await this.StartAsync(workflowDefinition, [], timeout, cancellationToken);
         }
 
         public async Task<WorkflowExecutionContext> StartAsync(
@@ -138,10 +138,7 @@ namespace ExecutionEngine.Engine
             TimeSpan? timeout = null,
             CancellationToken cancellationToken = default)
         {
-            if (workflowDefinition == null)
-            {
-                throw new ArgumentNullException(nameof(workflowDefinition));
-            }
+            ArgumentNullException.ThrowIfNull(workflowDefinition);
 
             // Validate workflow definition before execution
             var validator = new Workflow.WorkflowValidator();
@@ -221,23 +218,14 @@ namespace ExecutionEngine.Engine
             }
 
             // Load checkpoint
-            var checkpoint = await this.checkpointStorage.LoadCheckpointAsync(workflowInstanceId, cancellationToken);
-            if (checkpoint == null)
-            {
-                throw new InvalidOperationException($"Checkpoint not found for workflow {workflowInstanceId}");
-            }
-
+            var checkpoint = await this.checkpointStorage.LoadCheckpointAsync(workflowInstanceId, cancellationToken) ?? throw new InvalidOperationException($"Checkpoint not found for workflow {workflowInstanceId}");
             if (checkpoint.Status != WorkflowExecutionStatus.Paused)
             {
                 throw new InvalidOperationException($"Cannot resume workflow in status {checkpoint.Status}");
             }
 
             // Deserialize workflow definition
-            var workflowDef = JsonSerializer.Deserialize<WorkflowDefinition>(checkpoint.WorkflowDefinitionJson);
-            if (workflowDef == null)
-            {
-                throw new InvalidOperationException("Failed to deserialize workflow definition from checkpoint");
-            }
+            var workflowDef = JsonSerializer.Deserialize<WorkflowDefinition>(checkpoint.WorkflowDefinitionJson) ?? throw new InvalidOperationException("Failed to deserialize workflow definition from checkpoint");
 
             // Create a new execution context with the saved instance ID
             var context = new WorkflowExecutionContext
@@ -260,10 +248,10 @@ namespace ExecutionEngine.Engine
             }
 
             // Set up message queues for each node
-            this.SetupMessageQueues(workflowDef, context);
+            SetupMessageQueues(workflowDef, context);
 
             // Set up message router
-            this.SetupMessageRouter(workflowDef, context);
+            SetupMessageRouter(workflowDef, context);
 
             // Restore node execution tracking
             foreach (var kvp in checkpoint.NodeStates)
@@ -377,11 +365,7 @@ namespace ExecutionEngine.Engine
             }
 
             // Create checkpoint before pausing
-            var checkpoint = await this.CreateCheckpointAsync(workflowInstanceId, cancellationToken);
-            if (checkpoint == null)
-            {
-                throw new InvalidOperationException($"Failed to create checkpoint for workflow {workflowInstanceId}");
-            }
+            var checkpoint = await this.CreateCheckpointAsync(workflowInstanceId, cancellationToken) ?? throw new InvalidOperationException($"Failed to create checkpoint for workflow {workflowInstanceId}");
 
             // Update checkpoint status to Paused
             checkpoint.Status = WorkflowExecutionStatus.Paused;
@@ -544,7 +528,7 @@ namespace ExecutionEngine.Engine
             WorkflowDefinition workflowDefinition,
             CancellationToken cancellationToken = default)
         {
-            return await this.ExecuteAsync(workflowDefinition, new Dictionary<string, object>(), cancellationToken);
+            return await this.ExecuteAsync(workflowDefinition, [], cancellationToken);
         }
 
         private async Task<WorkflowExecutionContext> ExecuteAsync(
@@ -552,10 +536,7 @@ namespace ExecutionEngine.Engine
             Dictionary<string, object> initialVariables,
             CancellationToken cancellationToken = default)
         {
-            if (workflowDefinition == null)
-            {
-                throw new ArgumentNullException(nameof(workflowDefinition));
-            }
+            ArgumentNullException.ThrowIfNull(workflowDefinition);
 
             // Create execution context
             var context = new WorkflowExecutionContext
@@ -597,10 +578,10 @@ namespace ExecutionEngine.Engine
                 });
 
                 // Step 1: Set up message queues for each node
-                this.SetupMessageQueues(workflowDefinition, context);
+                SetupMessageQueues(workflowDefinition, context);
 
                 // Step 2: Set up message router
-                this.SetupMessageRouter(workflowDefinition, context);
+                SetupMessageRouter(workflowDefinition, context);
 
                 // Step 3: Setup upstream tracking for ALL join nodes
                 this.SetupUpstreamTracking(workflowDefinition);
@@ -609,7 +590,7 @@ namespace ExecutionEngine.Engine
                 this.SetupConcurrencyControl(context.InstanceId, workflowDefinition);
 
                 // Step 4: Find and trigger entry point nodes
-                var entryNodes = this.FindEntryPointNodes(workflowDefinition);
+                var entryNodes = FindEntryPointNodes(workflowDefinition);
 
                 if (entryNodes.Count == 0)
                 {
@@ -617,7 +598,7 @@ namespace ExecutionEngine.Engine
                 }
 
                 // Step 5: Trigger entry point nodes by enqueueing initial messages
-                await this.TriggerEntryPointNodesAsync(entryNodes, context, cancellationToken);
+                await TriggerEntryPointNodesAsync(entryNodes, context, cancellationToken);
 
                 // Step 6: Centralized execution loop - checks all queues for messages
                 var loopIteration = 0;
@@ -808,11 +789,7 @@ namespace ExecutionEngine.Engine
             }
 
             // Find node definition
-            var nodeDef = workflowDefinition.Nodes.FirstOrDefault(n => n.NodeId == nodeId);
-            if (nodeDef == null)
-            {
-                throw new InvalidOperationException($"Node definition not found: {nodeId}");
-            }
+            var nodeDef = workflowDefinition.Nodes.FirstOrDefault(n => n.NodeId == nodeId) ?? throw new InvalidOperationException($"Node definition not found: {nodeId}");
 
             // Create node using factory
             var node = this.nodeFactory.CreateNode(nodeDef);
@@ -829,7 +806,7 @@ namespace ExecutionEngine.Engine
         /// <summary>
         /// Sets up message queues for each node.
         /// </summary>
-        private void SetupMessageQueues(WorkflowDefinition workflowDefinition, WorkflowExecutionContext context)
+        private static void SetupMessageQueues(WorkflowDefinition workflowDefinition, WorkflowExecutionContext context)
         {
             foreach (var nodeDef in workflowDefinition.Nodes)
             {
@@ -842,7 +819,7 @@ namespace ExecutionEngine.Engine
         /// Sets up the message router with workflow connections.
         /// Passes complete NodeConnection objects to support conditional routing.
         /// </summary>
-        private void SetupMessageRouter(WorkflowDefinition workflowDefinition, WorkflowExecutionContext context)
+        private static void SetupMessageRouter(WorkflowDefinition workflowDefinition, WorkflowExecutionContext context)
         {
             var dlq = new DeadLetterQueue();
             var router = new MessageRouter(dlq);
@@ -863,12 +840,12 @@ namespace ExecutionEngine.Engine
         /// <summary>
         /// Finds entry point nodes (nodes with no incoming connections).
         /// </summary>
-        private List<string> FindEntryPointNodes(WorkflowDefinition workflowDefinition)
+        private static List<string> FindEntryPointNodes(WorkflowDefinition workflowDefinition)
         {
             // If explicit entry point is specified, use it
             if (!string.IsNullOrEmpty(workflowDefinition.EntryPointNodeId))
             {
-                return new List<string> { workflowDefinition.EntryPointNodeId };
+                return [workflowDefinition.EntryPointNodeId];
             }
 
             // Otherwise, find nodes with no incoming connections
@@ -878,7 +855,7 @@ namespace ExecutionEngine.Engine
                 .Select(c => c.TargetNodeId)
                 .ToHashSet();
 
-            return allNodeIds.Except(nodesWithIncoming).ToList();
+            return [.. allNodeIds.Except(nodesWithIncoming)];
         }
 
         /// <summary>
@@ -893,12 +870,13 @@ namespace ExecutionEngine.Engine
             {
                 if (connection.IsEnabled)
                 {
-                    if (!upstreamCounts.ContainsKey(connection.TargetNodeId))
+                    if (!upstreamCounts.TryGetValue(connection.TargetNodeId, out var value))
                     {
-                        upstreamCounts[connection.TargetNodeId] = 0;
+                        value = 0;
+                        upstreamCounts[connection.TargetNodeId] = value;
                     }
 
-                    upstreamCounts[connection.TargetNodeId]++;
+                    upstreamCounts[connection.TargetNodeId] = ++value;
                 }
             }
 
@@ -908,7 +886,7 @@ namespace ExecutionEngine.Engine
                 if (nodeDef.JoinType == JoinType.All && upstreamCounts.TryGetValue(nodeDef.NodeId, out var count))
                 {
                     this.expectedUpstreamCount[nodeDef.NodeId] = count;
-                    this.upstreamCompletionTracking[nodeDef.NodeId] = new HashSet<string>();
+                    this.upstreamCompletionTracking[nodeDef.NodeId] = [];
                 }
             }
         }
@@ -925,7 +903,7 @@ namespace ExecutionEngine.Engine
             this.workflowConcurrencyLimiters[workflowInstanceId] = concurrencyLimiter;
 
             // Initialize compensation tracking for this workflow
-            this.completedNodesForCompensation[workflowInstanceId] = new List<(string NodeId, string? CompensationNodeId)>();
+            this.completedNodesForCompensation[workflowInstanceId] = [];
 
             // Register all nodes with the node throttler and circuit breaker if they have policies
             foreach (var nodeDef in workflowDefinition.Nodes)
@@ -1706,7 +1684,7 @@ namespace ExecutionEngine.Engine
         /// Triggers entry point nodes by enqueueing initial messages.
         /// Channel signals automatically wake up subscribed workers.
         /// </summary>
-        private async Task TriggerEntryPointNodesAsync(
+        private static async Task TriggerEntryPointNodesAsync(
             List<string> entryNodes,
             WorkflowExecutionContext context,
             CancellationToken cancellationToken)
@@ -1793,7 +1771,7 @@ namespace ExecutionEngine.Engine
             if (nodesCompleted > 0)
             {
                 var completedNodes = nodeInstances.Where(n => n.Status == NodeExecutionStatus.Completed && n.Duration.HasValue).ToList();
-                if (completedNodes.Any())
+                if (completedNodes.Count != 0)
                 {
                     var averageDuration = TimeSpan.FromTicks((long)completedNodes.Average(n => n.Duration!.Value.Ticks));
                     var remainingNodes = totalNodes - terminalNodes;
@@ -1838,7 +1816,7 @@ namespace ExecutionEngine.Engine
                     .Select(n => $"{n.NodeId}: {n.ErrorMessage ?? "Unknown error"}")
                     .ToList();
 
-                if (failedNodes.Any())
+                if (failedNodes.Count != 0)
                 {
                     context.Variables["__node_errors"] = string.Join("; ", failedNodes);
                 }
@@ -1888,8 +1866,8 @@ namespace ExecutionEngine.Engine
                     StartTime = nodeInstance.StartTime,
                     EndTime = nodeInstance.EndTime,
                     ErrorMessage = nodeInstance.ErrorMessage,
-                    InputData = nodeInstance.ExecutionContext?.InputData ?? new Dictionary<string, object>(),
-                    OutputData = nodeInstance.ExecutionContext?.OutputData ?? new Dictionary<string, object>()
+                    InputData = nodeInstance.ExecutionContext?.InputData ?? [],
+                    OutputData = nodeInstance.ExecutionContext?.OutputData ?? []
                 };
                 nodeStates[kvp.Key] = nodeState;
             }
@@ -1933,7 +1911,7 @@ namespace ExecutionEngine.Engine
                 Variables = new Dictionary<string, object>(context.Variables),
                 NodeStates = nodeStates,
                 MessageQueues = messageQueues,
-                ErrorMessages = new List<string>()
+                ErrorMessages = []
             };
 
             // Collect error messages from context if available

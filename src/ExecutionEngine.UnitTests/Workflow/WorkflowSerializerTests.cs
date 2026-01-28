@@ -14,8 +14,8 @@ using FluentAssertions;
 [TestClass]
 public class WorkflowSerializerTests
 {
-    private readonly WorkflowSerializer serializer = new WorkflowSerializer();
-    private readonly HashSet<string> testDirectories = new HashSet<string>();
+    private readonly WorkflowSerializer serializer = new();
+    private readonly HashSet<string> testDirectories = [];
 
     public TestContext TestContext { get; set; }
 
@@ -31,7 +31,7 @@ public class WorkflowSerializerTests
     [TestCleanup]
     public void Cleanup()
     {
-        foreach(var testDirectory in this.testDirectories)
+        foreach (var testDirectory in this.testDirectories)
         {
             var retryCount = 0;
             while (Directory.Exists(testDirectory) && retryCount < 3)
@@ -62,7 +62,7 @@ public class WorkflowSerializerTests
     public void ToJson_WithValidWorkflow_ShouldSerialize()
     {
         // Arrange
-        var workflow = this.CreateSampleWorkflow();
+        var workflow = CreateSampleWorkflow();
 
         // Act
         var json = this.serializer.ToJson(workflow);
@@ -90,7 +90,7 @@ public class WorkflowSerializerTests
     public void FromJson_WithValidJson_ShouldDeserialize()
     {
         // Arrange
-        var original = this.CreateSampleWorkflow();
+        var original = CreateSampleWorkflow();
         var json = this.serializer.ToJson(original);
 
         // Act
@@ -130,7 +130,7 @@ public class WorkflowSerializerTests
     public void JsonRoundTrip_ShouldPreserveAllProperties()
     {
         // Arrange
-        var original = this.CreateSampleWorkflow();
+        var original = CreateSampleWorkflow();
 
         // Act
         var json = this.serializer.ToJson(original);
@@ -158,7 +158,7 @@ public class WorkflowSerializerTests
     public void ToYaml_WithValidWorkflow_ShouldSerialize()
     {
         // Arrange
-        var workflow = this.CreateSampleWorkflow();
+        var workflow = CreateSampleWorkflow();
 
         // Act
         var yaml = this.serializer.ToYaml(workflow);
@@ -186,7 +186,7 @@ public class WorkflowSerializerTests
     public void FromYaml_WithValidYaml_ShouldDeserialize()
     {
         // Arrange
-        var original = this.CreateSampleWorkflow();
+        var original = CreateSampleWorkflow();
         var yaml = this.serializer.ToYaml(original);
 
         // Act
@@ -226,7 +226,7 @@ public class WorkflowSerializerTests
     public void YamlRoundTrip_ShouldPreserveAllProperties()
     {
         // Arrange
-        var original = this.CreateSampleWorkflow();
+        var original = CreateSampleWorkflow();
 
         // Act
         var yaml = this.serializer.ToYaml(original);
@@ -253,7 +253,7 @@ public class WorkflowSerializerTests
     public void SaveToFile_WithJsonExtension_ShouldCreateJsonFile()
     {
         // Arrange
-        var workflow = this.CreateSampleWorkflow();
+        var workflow = CreateSampleWorkflow();
         var testDirectory = this.TestContext.Properties["TestDirectory"]!.ToString()!;
         var filePath = Path.Combine(testDirectory, "test.json");
 
@@ -270,7 +270,7 @@ public class WorkflowSerializerTests
     public void SaveToFile_WithYamlExtension_ShouldCreateYamlFile()
     {
         // Arrange
-        var workflow = this.CreateSampleWorkflow();
+        var workflow = CreateSampleWorkflow();
         var testDirectory = this.TestContext.Properties["TestDirectory"]!.ToString()!;
         var filePath = Path.Combine(testDirectory, "test.yaml");
 
@@ -287,7 +287,7 @@ public class WorkflowSerializerTests
     public void SaveToFile_WithYmlExtension_ShouldCreateYamlFile()
     {
         // Arrange
-        var workflow = this.CreateSampleWorkflow();
+        var workflow = CreateSampleWorkflow();
         var testDirectory = this.TestContext.Properties["TestDirectory"]!.ToString()!;
         var filePath = Path.Combine(testDirectory, "test.yml");
 
@@ -304,7 +304,7 @@ public class WorkflowSerializerTests
     public void SaveToFile_WithUnsupportedExtension_ShouldThrowException()
     {
         // Arrange
-        var workflow = this.CreateSampleWorkflow();
+        var workflow = CreateSampleWorkflow();
         var testDirectory = this.TestContext.Properties["TestDirectory"]!.ToString()!;
         var filePath = Path.Combine(testDirectory, "test.txt");
 
@@ -335,7 +335,7 @@ public class WorkflowSerializerTests
     public void SaveToFile_WithEmptyFilePath_ShouldThrowException()
     {
         // Arrange
-        var workflow = this.CreateSampleWorkflow();
+        var workflow = CreateSampleWorkflow();
 
         // Act
         var act = () => this.serializer.SaveToFile(workflow, string.Empty);
@@ -349,7 +349,7 @@ public class WorkflowSerializerTests
     public void SaveToFile_WithNonExistentDirectory_ShouldCreateDirectory()
     {
         // Arrange
-        var workflow = this.CreateSampleWorkflow();
+        var workflow = CreateSampleWorkflow();
         var testDirectory = this.TestContext.Properties["TestDirectory"]!.ToString()!;
         var subdirectory = Path.Combine(testDirectory, "subdir1", "subdir2");
         var filePath = Path.Combine(subdirectory, "test.json");
@@ -366,7 +366,7 @@ public class WorkflowSerializerTests
     public void LoadFromFile_WithJsonFile_ShouldLoadWorkflow()
     {
         // Arrange
-        var original = this.CreateSampleWorkflow();
+        var original = CreateSampleWorkflow();
         var testDirectory = this.TestContext.Properties["TestDirectory"]!.ToString()!;
         var filePath = Path.Combine(testDirectory, "test.json");
         this.serializer.SaveToFile(original, filePath);
@@ -384,7 +384,7 @@ public class WorkflowSerializerTests
     public void LoadFromFile_WithYamlFile_ShouldLoadWorkflow()
     {
         // Arrange
-        var original = this.CreateSampleWorkflow();
+        var original = CreateSampleWorkflow();
         var testDirectory = this.TestContext.Properties["TestDirectory"]!.ToString()!;
         var filePath = Path.Combine(testDirectory, "test.yaml");
         this.serializer.SaveToFile(original, filePath);
@@ -1150,7 +1150,7 @@ connections: []
 
     #endregion
 
-    private WorkflowDefinition CreateSampleWorkflow()
+    private static WorkflowDefinition CreateSampleWorkflow()
     {
         return new WorkflowDefinition
         {
@@ -1162,8 +1162,8 @@ connections: []
             MaxConcurrency = 5,
             AllowPause = true,
             TimeoutSeconds = 300,
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "node-1",
@@ -1176,9 +1176,9 @@ connections: []
                     NodeName = "Second Node",
                     ScriptPath = "script2.ps1"
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "node-1",
@@ -1187,7 +1187,7 @@ connections: []
                     IsEnabled = true,
                     Priority = 0
                 }
-            },
+            ],
             Metadata = new Dictionary<string, object>
             {
                 { "author", "Test User" },

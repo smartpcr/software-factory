@@ -20,7 +20,7 @@ using FluentAssertions;
 [TestClass]
 public class ForEachNodeIntegrationTests
 {
-    private readonly List<string> tempFiles = new List<string>();
+    private readonly List<string> tempFiles = [];
 
     [TestMethod]
     public async Task ForEachWithChildNode_ShouldCreateMultipleInstances()
@@ -31,8 +31,8 @@ public class ForEachNodeIntegrationTests
         {
             WorkflowId = "foreach-multi-instance-test",
             WorkflowName = "ForEach Multiple Instance Test",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
@@ -55,9 +55,9 @@ public class ForEachNodeIntegrationTests
                         SetOutput(""processed"", $""Item: {item}, Index: {index}"");
                     ")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "setup",
@@ -70,7 +70,7 @@ public class ForEachNodeIntegrationTests
                     TargetNodeId = "child-node",
                     TriggerMessageType = MessageType.Next
                 }
-            }
+            ]
         };
 
         // Act
@@ -103,8 +103,8 @@ public class ForEachNodeIntegrationTests
         {
             WorkflowId = "foreach-complete-test",
             WorkflowName = "ForEach OnComplete Test",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
@@ -136,9 +136,9 @@ public class ForEachNodeIntegrationTests
                         SetOutput(""summary"", $""Processed {itemsProcessed} items"");
                     ")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "setup",
@@ -157,7 +157,7 @@ public class ForEachNodeIntegrationTests
                     TargetNodeId = "aggregate-results",
                     TriggerMessageType = MessageType.Complete
                 }
-            }
+            ]
         };
 
         // Act
@@ -190,8 +190,8 @@ public class ForEachNodeIntegrationTests
         {
             WorkflowId = "foreach-fail-test",
             WorkflowName = "ForEach OnFail Test",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new ForEachNodeDefinition
                 {
                     NodeId = "foreach-1",
@@ -206,16 +206,16 @@ public class ForEachNodeIntegrationTests
                         SetOutput(""message"", ""Error was handled"");
                     ")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "foreach-1",
                     TargetNodeId = "error-handler",
                     TriggerMessageType = MessageType.Fail
                 }
-            }
+            ]
         };
 
         // Act
@@ -249,8 +249,8 @@ public class ForEachNodeIntegrationTests
         {
             WorkflowId = "foreach-integer-test",
             WorkflowName = "ForEach Integer Array Test",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
@@ -274,9 +274,9 @@ public class ForEachNodeIntegrationTests
                         SetOutput(""index"", index);
                     ")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "setup",
@@ -289,7 +289,7 @@ public class ForEachNodeIntegrationTests
                     TargetNodeId = "processor",
                     TriggerMessageType = MessageType.Next
                 }
-            }
+            ]
         };
 
         // Act
@@ -322,8 +322,8 @@ public class ForEachNodeIntegrationTests
         {
             WorkflowId = "foreach-empty-test",
             WorkflowName = "ForEach Empty Collection Test",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
@@ -352,9 +352,9 @@ public class ForEachNodeIntegrationTests
                         SetOutput(""count"", itemsProcessed);
                     ")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "setup",
@@ -373,7 +373,7 @@ public class ForEachNodeIntegrationTests
                     TargetNodeId = "completion-handler",
                     TriggerMessageType = MessageType.Complete
                 }
-            }
+            ]
         };
 
         // Act

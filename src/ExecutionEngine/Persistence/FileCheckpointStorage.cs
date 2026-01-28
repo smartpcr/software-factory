@@ -43,8 +43,7 @@ public class FileCheckpointStorage : ICheckpointStorage
     /// <inheritdoc/>
     public async Task SaveCheckpointAsync(WorkflowCheckpoint checkpoint, CancellationToken cancellationToken = default)
     {
-        if (checkpoint == null)
-            throw new ArgumentNullException(nameof(checkpoint));
+        ArgumentNullException.ThrowIfNull(checkpoint);
 
         cancellationToken.ThrowIfCancellationRequested();
 

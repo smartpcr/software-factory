@@ -47,22 +47,22 @@ public class GraphPath
     /// <summary>
     /// Gets or sets the nodes in the path (in order).
     /// </summary>
-    public List<HypergraphNode> Nodes { get; set; } = new();
+    public List<HypergraphNode> Nodes { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the edges connecting the nodes.
     /// </summary>
-    public List<Hyperedge> Edges { get; set; } = new();
+    public List<Hyperedge> Edges { get; set; } = [];
 
     /// <summary>
     /// Gets the length of the path (number of edges).
     /// </summary>
-    public int Length => Edges.Count;
+    public int Length => this.Edges.Count;
 
     /// <summary>
     /// Gets whether this path crosses language boundaries.
     /// </summary>
-    public bool IsCrossLanguage => Nodes.Select(n => n.Language).Distinct().Count() > 1;
+    public bool IsCrossLanguage => this.Nodes.Select(n => n.Language).Distinct().Count() > 1;
 }
 
 /// <summary>
@@ -104,22 +104,22 @@ public class ImpactAnalysis
     /// <summary>
     /// Gets or sets directly affected nodes (depth 1).
     /// </summary>
-    public List<NodeWithDepth> DirectlyAffected { get; set; } = new();
+    public List<NodeWithDepth> DirectlyAffected { get; set; } = [];
 
     /// <summary>
     /// Gets or sets indirectly affected nodes (depth > 1).
     /// </summary>
-    public List<NodeWithDepth> IndirectlyAffected { get; set; } = new();
+    public List<NodeWithDepth> IndirectlyAffected { get; set; } = [];
 
     /// <summary>
     /// Gets the total number of affected nodes.
     /// </summary>
-    public int TotalAffected => DirectlyAffected.Count + IndirectlyAffected.Count;
+    public int TotalAffected => this.DirectlyAffected.Count + this.IndirectlyAffected.Count;
 
     /// <summary>
     /// Gets or sets affected files.
     /// </summary>
-    public HashSet<string> AffectedFiles { get; set; } = new();
+    public HashSet<string> AffectedFiles { get; set; } = [];
 
     /// <summary>
     /// Gets or sets whether the change crosses language boundaries.
@@ -129,7 +129,7 @@ public class ImpactAnalysis
     /// <summary>
     /// Gets or sets a breakdown of affected nodes by type.
     /// </summary>
-    public Dictionary<string, int> AffectedByType { get; set; } = new();
+    public Dictionary<string, int> AffectedByType { get; set; } = [];
 }
 
 /// <summary>
@@ -150,17 +150,17 @@ public class GraphStatistics
     /// <summary>
     /// Gets or sets nodes by language.
     /// </summary>
-    public Dictionary<string, long> NodesByLanguage { get; set; } = new();
+    public Dictionary<string, long> NodesByLanguage { get; set; } = [];
 
     /// <summary>
     /// Gets or sets nodes by type.
     /// </summary>
-    public Dictionary<string, long> NodesByType { get; set; } = new();
+    public Dictionary<string, long> NodesByType { get; set; } = [];
 
     /// <summary>
     /// Gets or sets edges by type.
     /// </summary>
-    public Dictionary<string, long> EdgesByType { get; set; } = new();
+    public Dictionary<string, long> EdgesByType { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the number of cross-language edges.

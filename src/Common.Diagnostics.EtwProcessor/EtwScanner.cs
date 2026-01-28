@@ -14,19 +14,13 @@ namespace EtwProcessor
     using Microsoft.Extensions.Logging;
     using Spectre.Console;
 
-    public class EtwScanner
+    public class EtwScanner(ILogger<EtwScanner> logger, ZipHelper zipHelper)
     {
-        private readonly ILogger<EtwScanner> logger;
-        private readonly ZipHelper zipHelper;
+        private readonly ILogger<EtwScanner> logger = logger;
+        private readonly ZipHelper zipHelper = zipHelper;
         private string inputDirectory = string.Empty;
         private string tempDirectory = string.Empty;
         private CancellationToken cancellationToken;
-
-        public EtwScanner(ILogger<EtwScanner> logger, ZipHelper zipHelper)
-        {
-            this.logger = logger;
-            this.zipHelper = zipHelper;
-        }
 
         public string TempDirectory => this.tempDirectory;
 
@@ -256,10 +250,9 @@ namespace EtwProcessor
 
             traceFiles.AddRange(FileHelper.FindTraceFiles(this.inputDirectory));
 
-            return traceFiles
+            return [.. traceFiles
                 .Distinct()
-                .Where(f => new FileInfo(f).Length > 0)
-                .ToList();
+                .Where(f => new FileInfo(f).Length > 0)];
         }
 
         private static ITraceEventParser CreateParser(string filePath)

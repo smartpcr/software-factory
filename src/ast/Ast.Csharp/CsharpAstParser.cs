@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 
 namespace Ast.Csharp;
+
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -44,17 +45,17 @@ public class CsharpAstParser
         {
             var node = member switch
             {
-                NamespaceDeclarationSyntax ns => this.CreateNamespaceNode(ns, filePath),
-                FileScopedNamespaceDeclarationSyntax ns => this.CreateFileScopedNamespaceNode(ns, filePath),
-                ClassDeclarationSyntax cls => this.CreateClassNode(cls, filePath),
-                RecordDeclarationSyntax rec => this.CreateRecordNode(rec, filePath),
-                StructDeclarationSyntax str => this.CreateStructNode(str, filePath),
-                InterfaceDeclarationSyntax iface => this.CreateInterfaceNode(iface, filePath),
-                EnumDeclarationSyntax enm => this.CreateEnumNode(enm, filePath),
-                MethodDeclarationSyntax method => this.CreateMethodNode(method, filePath),
-                PropertyDeclarationSyntax prop => this.CreatePropertyNode(prop, filePath),
-                FieldDeclarationSyntax field => this.CreateFieldNode(field, filePath),
-                ConstructorDeclarationSyntax ctor => this.CreateConstructorNode(ctor, filePath),
+                NamespaceDeclarationSyntax ns => CreateNamespaceNode(ns, filePath),
+                FileScopedNamespaceDeclarationSyntax ns => CreateFileScopedNamespaceNode(ns, filePath),
+                ClassDeclarationSyntax cls => CreateClassNode(cls, filePath),
+                RecordDeclarationSyntax rec => CreateRecordNode(rec, filePath),
+                StructDeclarationSyntax str => CreateStructNode(str, filePath),
+                InterfaceDeclarationSyntax iface => CreateInterfaceNode(iface, filePath),
+                EnumDeclarationSyntax enm => CreateEnumNode(enm, filePath),
+                MethodDeclarationSyntax method => CreateMethodNode(method, filePath),
+                PropertyDeclarationSyntax prop => CreatePropertyNode(prop, filePath),
+                FieldDeclarationSyntax field => CreateFieldNode(field, filePath),
+                ConstructorDeclarationSyntax ctor => CreateConstructorNode(ctor, filePath),
                 _ => null
             };
 
@@ -65,7 +66,7 @@ public class CsharpAstParser
         }
     }
 
-    private AstNode CreateNamespaceNode(NamespaceDeclarationSyntax ns, string filePath)
+    private static AstNode CreateNamespaceNode(NamespaceDeclarationSyntax ns, string filePath)
     {
         var lineSpan = ns.GetLocation().GetLineSpan();
         return new AstNode
@@ -80,7 +81,7 @@ public class CsharpAstParser
         };
     }
 
-    private AstNode CreateFileScopedNamespaceNode(FileScopedNamespaceDeclarationSyntax ns, string filePath)
+    private static AstNode CreateFileScopedNamespaceNode(FileScopedNamespaceDeclarationSyntax ns, string filePath)
     {
         var lineSpan = ns.GetLocation().GetLineSpan();
         return new AstNode
@@ -95,7 +96,7 @@ public class CsharpAstParser
         };
     }
 
-    private AstNode CreateClassNode(ClassDeclarationSyntax cls, string filePath)
+    private static AstNode CreateClassNode(ClassDeclarationSyntax cls, string filePath)
     {
         var lineSpan = cls.GetLocation().GetLineSpan();
         return new AstNode
@@ -108,11 +109,11 @@ public class CsharpAstParser
             Code = cls.ToString(),
             Summary = GetDocumentationSummary(cls),
             Modifiers = cls.Modifiers.ToString(),
-            BaseTypes = cls.BaseList?.Types.Select(t => t.ToString()).ToList() ?? new List<string>()
+            BaseTypes = cls.BaseList?.Types.Select(t => t.ToString()).ToList() ?? []
         };
     }
 
-    private AstNode CreateRecordNode(RecordDeclarationSyntax rec, string filePath)
+    private static AstNode CreateRecordNode(RecordDeclarationSyntax rec, string filePath)
     {
         var lineSpan = rec.GetLocation().GetLineSpan();
         return new AstNode
@@ -125,11 +126,11 @@ public class CsharpAstParser
             Code = rec.ToString(),
             Summary = GetDocumentationSummary(rec),
             Modifiers = rec.Modifiers.ToString(),
-            BaseTypes = rec.BaseList?.Types.Select(t => t.ToString()).ToList() ?? new List<string>()
+            BaseTypes = rec.BaseList?.Types.Select(t => t.ToString()).ToList() ?? []
         };
     }
 
-    private AstNode CreateStructNode(StructDeclarationSyntax str, string filePath)
+    private static AstNode CreateStructNode(StructDeclarationSyntax str, string filePath)
     {
         var lineSpan = str.GetLocation().GetLineSpan();
         return new AstNode
@@ -142,11 +143,11 @@ public class CsharpAstParser
             Code = str.ToString(),
             Summary = GetDocumentationSummary(str),
             Modifiers = str.Modifiers.ToString(),
-            BaseTypes = str.BaseList?.Types.Select(t => t.ToString()).ToList() ?? new List<string>()
+            BaseTypes = str.BaseList?.Types.Select(t => t.ToString()).ToList() ?? []
         };
     }
 
-    private AstNode CreateInterfaceNode(InterfaceDeclarationSyntax iface, string filePath)
+    private static AstNode CreateInterfaceNode(InterfaceDeclarationSyntax iface, string filePath)
     {
         var lineSpan = iface.GetLocation().GetLineSpan();
         return new AstNode
@@ -159,11 +160,11 @@ public class CsharpAstParser
             Code = iface.ToString(),
             Summary = GetDocumentationSummary(iface),
             Modifiers = iface.Modifiers.ToString(),
-            BaseTypes = iface.BaseList?.Types.Select(t => t.ToString()).ToList() ?? new List<string>()
+            BaseTypes = iface.BaseList?.Types.Select(t => t.ToString()).ToList() ?? []
         };
     }
 
-    private AstNode CreateEnumNode(EnumDeclarationSyntax enm, string filePath)
+    private static AstNode CreateEnumNode(EnumDeclarationSyntax enm, string filePath)
     {
         var lineSpan = enm.GetLocation().GetLineSpan();
         return new AstNode
@@ -179,7 +180,7 @@ public class CsharpAstParser
         };
     }
 
-    private AstNode CreateMethodNode(MethodDeclarationSyntax method, string filePath)
+    private static AstNode CreateMethodNode(MethodDeclarationSyntax method, string filePath)
     {
         var lineSpan = method.GetLocation().GetLineSpan();
         return new AstNode
@@ -193,15 +194,15 @@ public class CsharpAstParser
             Summary = GetDocumentationSummary(method),
             Modifiers = method.Modifiers.ToString(),
             ReturnType = method.ReturnType.ToString(),
-            Parameters = method.ParameterList.Parameters.Select(p => new ParameterInfo
+            Parameters = [.. method.ParameterList.Parameters.Select(p => new ParameterInfo
             {
                 Name = p.Identifier.Text,
                 Type = p.Type?.ToString() ?? "unknown"
-            }).ToList()
+            })]
         };
     }
 
-    private AstNode CreatePropertyNode(PropertyDeclarationSyntax prop, string filePath)
+    private static AstNode CreatePropertyNode(PropertyDeclarationSyntax prop, string filePath)
     {
         var lineSpan = prop.GetLocation().GetLineSpan();
         return new AstNode
@@ -218,7 +219,7 @@ public class CsharpAstParser
         };
     }
 
-    private AstNode CreateFieldNode(FieldDeclarationSyntax field, string filePath)
+    private static AstNode CreateFieldNode(FieldDeclarationSyntax field, string filePath)
     {
         var lineSpan = field.GetLocation().GetLineSpan();
         var variableName = field.Declaration.Variables.FirstOrDefault()?.Identifier.Text ?? "unknown";
@@ -236,7 +237,7 @@ public class CsharpAstParser
         };
     }
 
-    private AstNode CreateConstructorNode(ConstructorDeclarationSyntax ctor, string filePath)
+    private static AstNode CreateConstructorNode(ConstructorDeclarationSyntax ctor, string filePath)
     {
         var lineSpan = ctor.GetLocation().GetLineSpan();
         return new AstNode
@@ -249,11 +250,11 @@ public class CsharpAstParser
             Code = ctor.ToString(),
             Summary = GetDocumentationSummary(ctor),
             Modifiers = ctor.Modifiers.ToString(),
-            Parameters = ctor.ParameterList.Parameters.Select(p => new ParameterInfo
+            Parameters = [.. ctor.ParameterList.Parameters.Select(p => new ParameterInfo
             {
                 Name = p.Identifier.Text,
                 Type = p.Type?.ToString() ?? "unknown"
-            }).ToList()
+            })]
         };
     }
 

@@ -41,10 +41,7 @@ namespace ExecutionEngine.Resilience
                 throw new ArgumentNullException(nameof(nodeId));
             }
 
-            if (policy == null)
-            {
-                throw new ArgumentNullException(nameof(policy));
-            }
+            ArgumentNullException.ThrowIfNull(policy);
 
             policy.Validate();
 
@@ -137,7 +134,7 @@ namespace ExecutionEngine.Resilience
                 if (state.State == CircuitState.HalfOpen)
                 {
                     // Any failure in HalfOpen immediately opens circuit
-                    this.OpenCircuit(state);
+                    OpenCircuit(state);
                 }
                 else if (state.State == CircuitState.Closed)
                 {
@@ -148,7 +145,7 @@ namespace ExecutionEngine.Resilience
 
                         if (failureRate >= state.Policy.FailureThreshold)
                         {
-                            this.OpenCircuit(state);
+                            OpenCircuit(state);
                         }
                     }
                 }
@@ -216,7 +213,7 @@ namespace ExecutionEngine.Resilience
         /// Opens the circuit breaker.
         /// </summary>
         /// <param name="state">The circuit breaker state.</param>
-        private void OpenCircuit(CircuitBreakerState state)
+        private static void OpenCircuit(CircuitBreakerState state)
         {
             state.State = CircuitState.Open;
             state.OpenUntil = DateTime.UtcNow.Add(state.Policy.OpenDuration);

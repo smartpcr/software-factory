@@ -19,27 +19,27 @@ using BenchmarkDotNet.Jobs;
 [RankColumn]
 public class ExtractionBenchmarks
 {
-    private static readonly string RepoPath = OperatingSystem.IsWindows()
+    private static readonly string repoPath = OperatingSystem.IsWindows()
         ? @"E:\work\hci\update"
         : "/mnt/e/work/hci/update";
 
-    private List<string> smallFiles = new();
-    private List<string> mediumFiles = new();
-    private List<string> largeFiles = new();
-    private Dictionary<string, string> fileContents = new();
+    private List<string> smallFiles = [];
+    private List<string> mediumFiles = [];
+    private List<string> largeFiles = [];
+    private readonly Dictionary<string, string> fileContents = [];
 
     [GlobalSetup]
     public void Setup()
     {
-        var srcPath = Path.Combine(RepoPath, "src");
+        var srcPath = Path.Combine(repoPath, "src");
         if (!Directory.Exists(srcPath))
         {
-            srcPath = RepoPath;
+            srcPath = repoPath;
         }
 
         if (!Directory.Exists(srcPath))
         {
-            throw new InvalidOperationException($"Repository not found at {RepoPath}");
+            throw new InvalidOperationException($"Repository not found at {repoPath}");
         }
 
         var allFiles = Directory.GetFiles(srcPath, "*.cs", SearchOption.AllDirectories)
@@ -68,9 +68,9 @@ public class ExtractionBenchmarks
         }
 
         // Take limited samples for benchmarking
-        this.smallFiles = this.smallFiles.Take(50).ToList();
-        this.mediumFiles = this.mediumFiles.Take(30).ToList();
-        this.largeFiles = this.largeFiles.Take(10).ToList();
+        this.smallFiles = [.. this.smallFiles.Take(50)];
+        this.mediumFiles = [.. this.mediumFiles.Take(30)];
+        this.largeFiles = [.. this.largeFiles.Take(10)];
     }
 
     [Benchmark(Description = "Extract small files (< 5KB)")]

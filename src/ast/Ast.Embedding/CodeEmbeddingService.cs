@@ -12,24 +12,18 @@ using Microsoft.Extensions.Logging;
 /// <summary>
 /// Service for generating embeddings from code hypergraph data.
 /// </summary>
-public sealed class CodeEmbeddingService : IDisposable
+/// <remarks>
+/// Initializes a new instance of the <see cref="CodeEmbeddingService"/> class.
+/// </remarks>
+/// <param name="generator">The embedding generator to use.</param>
+/// <param name="logger">The logger.</param>
+public sealed class CodeEmbeddingService(
+    IEmbeddingGenerator generator,
+    ILogger<CodeEmbeddingService> logger) : IDisposable
 {
-    private readonly IEmbeddingGenerator generator;
-    private readonly ILogger<CodeEmbeddingService> logger;
+    private readonly IEmbeddingGenerator generator = generator;
+    private readonly ILogger<CodeEmbeddingService> logger = logger;
     private bool disposed;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="CodeEmbeddingService"/> class.
-    /// </summary>
-    /// <param name="generator">The embedding generator to use.</param>
-    /// <param name="logger">The logger.</param>
-    public CodeEmbeddingService(
-        IEmbeddingGenerator generator,
-        ILogger<CodeEmbeddingService> logger)
-    {
-        this.generator = generator;
-        this.logger = logger;
-    }
 
     /// <summary>
     /// Gets the embedding generator being used.
@@ -263,5 +257,5 @@ public class EmbeddingProgress
     /// <summary>
     /// Gets the completion percentage.
     /// </summary>
-    public double PercentComplete => TotalItems == 0 ? 0 : (double)ProcessedItems / TotalItems * 100;
+    public double PercentComplete => this.TotalItems == 0 ? 0 : (double)this.ProcessedItems / this.TotalItems * 100;
 }

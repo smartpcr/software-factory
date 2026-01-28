@@ -6,6 +6,7 @@
 
 namespace Ast.Embedding;
 
+using Ast.Lsp;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -126,5 +127,173 @@ public static class ServiceCollectionExtensions
             options.ModelName = modelName;
             options.Dimensions = dimensions;
         });
+    }
+
+    /// <summary>
+    /// Adds the enriched embedding pipeline with LSP integration.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="configureEmbedding">Action to configure embedding options.</param>
+    /// <param name="configureLsp">Action to configure LSP options.</param>
+    /// <param name="configurePipeline">Action to configure pipeline options.</param>
+    /// <returns>The service collection for chaining.</returns>
+    public static IServiceCollection AddEnrichedEmbeddingPipeline(
+        this IServiceCollection services,
+        Action<EmbeddingGeneratorOptions>? configureEmbedding = null,
+        Action<LspConfiguration>? configureLsp = null,
+        Action<EnrichedEmbeddingOptions>? configurePipeline = null)
+    {
+        // Add embedding services
+        services.AddEmbeddingServices(configureEmbedding);
+
+        // Add LSP services
+        services.AddLspServices(configureLsp);
+
+        // Configure pipeline options
+        var pipelineOptions = new EnrichedEmbeddingOptions();
+        configurePipeline?.Invoke(pipelineOptions);
+
+        services.Configure<EnrichedEmbeddingOptions>(opt =>
+        {
+            opt.EnableLspEnrichment = pipelineOptions.EnableLspEnrichment;
+            opt.BatchSize = pipelineOptions.BatchSize;
+            opt.UseParallelProcessing = pipelineOptions.UseParallelProcessing;
+            opt.MaxDegreeOfParallelism = pipelineOptions.MaxDegreeOfParallelism;
+            opt.ContinueOnEnrichmentErrors = pipelineOptions.ContinueOnEnrichmentErrors;
+            opt.EnableCaching = pipelineOptions.EnableCaching;
+            opt.CacheDirectory = pipelineOptions.CacheDirectory;
+        });
+
+        // Register the pipeline
+        services.TryAddSingleton<EnrichedEmbeddingPipeline>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Adds the enriched embedding pipeline with HTTP embedding and C# LSP.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="embeddingEndpoint">The embedding API endpoint.</param>
+    /// <param name="embeddingModel">The embedding model name.</param>
+    /// <param name="csharpLspServerType">The C# LSP server type.</param>
+    /// <param name="csharpLspServerPath">Optional path to the C# LSP server.</param>
+    /// <returns>The service collection for chaining.</returns>
+    public static IServiceCollection AddCSharpEnrichedEmbedding(
+        this IServiceCollection services,
+        string embeddingEndpoint = "http://localhost:11434",
+        string embeddingModel = "nomic-embed-text",
+        CSharpLspServerType csharpLspServerType = CSharpLspServerType.CSharpLs,
+        string? csharpLspServerPath = null)
+    {
+        return services.AddEnrichedEmbeddingPipeline(
+            embedding =>
+            {
+                embedding.Provider = EmbeddingProvider.Http;
+                embedding.Endpoint = embeddingEndpoint;
+                embedding.ModelName = embeddingModel;
+            },
+            lsp =>
+            {
+                lsp.Enabled = true;
+                lsp.CSharp.Enabled = true;
+                lsp.CSharp.ServerType = csharpLspServerType;
+                if (csharpLspServerPath != null)
+                {
+                    lsp.CSharp.ServerPath = csharpLspServerPath;
+                }
+                lsp.PowerShell.Enabled = false;
+            });
+    }
+
+    /// <summary>
+    /// Adds the enriched embedding pipeline with HTTP embedding and PowerShell LSP.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="embeddingEndpoint">The embedding API endpoint.</param>
+    /// <param name="embeddingModel">The embedding model name.</param>
+    /// <param name="powerShellPath">Optional path to the PowerShell executable.</param>
+    /// <param name="editorServicesPath">Optional path to PowerShellEditorServices.</param>
+    /// <returns>The service collection for chaining.</returns>
+    public static IServiceCollection AddPowerShellEnrichedEmbedding(
+        this IServiceCollection services,
+        string embeddingEndpoint = "http://localhost:11434",
+        string embeddingModel = "nomic-embed-text",
+        string? powerShellPath = null,
+        string? editorServicesPath = null)
+    {
+        return services.AddEnrichedEmbeddingPipeline(
+            embedding =>
+            {
+                embedding.Provider = EmbeddingProvider.Http;
+                embedding.Endpoint = embeddingEndpoint;
+                embedding.ModelName = embeddingModel;
+            },
+            lsp =>
+            {
+                lsp.Enabled = true;
+                lsp.CSharp.Enabled = false;
+                lsp.PowerShell.Enabled = true;
+                if (powerShellPath != null)
+                {
+                    lsp.PowerShell.PowerShellPath = powerShellPath;
+                }
+                if (editorServicesPath != null)
+                {
+                    lsp.PowerShell.EditorServicesPath = editorServicesPath;
+                }
+            });
+    }
+
+    /// <summary>
+    /// Adds the enriched embedding pipeline with HTTP embedding and both C# and PowerShell LSP.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="embeddingEndpoint">The embedding API endpoint.</param>
+    /// <param name="embeddingModel">The embedding model name.</param>
+    /// <returns>The service collection for chaining.</returns>
+    public static IServiceCollection AddFullEnrichedEmbedding(
+        this IServiceCollection services,
+        string embeddingEndpoint = "http://localhost:11434",
+        string embeddingModel = "nomic-embed-text")
+    {
+        return services.AddEnrichedEmbeddingPipeline(
+            embedding =>
+            {
+                embedding.Provider = EmbeddingProvider.Http;
+                embedding.Endpoint = embeddingEndpoint;
+                embedding.ModelName = embeddingModel;
+            },
+            lsp =>
+            {
+                lsp.Enabled = true;
+                lsp.CSharp.Enabled = true;
+                lsp.PowerShell.Enabled = true;
+            });
+    }
+
+    /// <summary>
+    /// Adds embedding services without LSP enrichment (embedding only).
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="configureEmbedding">Action to configure embedding options.</param>
+    /// <returns>The service collection for chaining.</returns>
+    public static IServiceCollection AddEmbeddingOnlyPipeline(
+        this IServiceCollection services,
+        Action<EmbeddingGeneratorOptions>? configureEmbedding = null)
+    {
+        // Add embedding services
+        services.AddEmbeddingServices(configureEmbedding);
+
+        // Configure pipeline with LSP disabled
+        services.Configure<EnrichedEmbeddingOptions>(opt =>
+        {
+            opt.EnableLspEnrichment = false;
+        });
+
+        // Register the pipeline without LSP service
+        services.TryAddSingleton<EnrichedEmbeddingPipeline>();
+
+        return services;
     }
 }

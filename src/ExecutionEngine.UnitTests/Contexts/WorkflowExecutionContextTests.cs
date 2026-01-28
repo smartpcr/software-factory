@@ -119,10 +119,11 @@ public class WorkflowExecutionContextTests
     public void GraphId_CanBeSet()
     {
         // Arrange
-        var context = new WorkflowExecutionContext();
-
-        // Act
-        context.GraphId = "my-workflow-graph";
+        var context = new WorkflowExecutionContext
+        {
+            // Act
+            GraphId = "my-workflow-graph"
+        };
 
         // Assert
         context.GraphId.Should().Be("my-workflow-graph");
@@ -132,10 +133,11 @@ public class WorkflowExecutionContextTests
     public void Status_CanBeUpdated()
     {
         // Arrange
-        var context = new WorkflowExecutionContext();
-
-        // Act
-        context.Status = WorkflowExecutionStatus.Running;
+        var context = new WorkflowExecutionContext
+        {
+            // Act
+            Status = WorkflowExecutionStatus.Running
+        };
 
         // Assert
         context.Status.Should().Be(WorkflowExecutionStatus.Running);
@@ -158,7 +160,7 @@ public class WorkflowExecutionContextTests
             }));
         }
 
-        Task.WaitAll(tasks.ToArray());
+        Task.WaitAll([.. tasks]);
 
         // Assert
         context.Variables.Should().HaveCount(20);

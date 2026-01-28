@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Serilog" />
+    <PackageReference Include="Serilog.Sinks.Console" />
+    <PackageReference Include="Serilog.Sinks.File" />
+    <PackageReference Include="Serilog.Extensions.Logging" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
+    <ProjectReference Include="..\Ast.Csharp\Ast.Csharp.csproj" />
+    <ProjectReference Include="..\Ast.PowerShell\Ast.PowerShell.csproj" />
+    <ProjectReference Include="..\Ast.Lsp\Ast.Lsp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+    <Using Include="FluentAssertions" />
+  </ItemGroup>
+
+</Project>

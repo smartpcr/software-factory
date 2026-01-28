@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Serilog" />
+    <PackageReference Include="Serilog.Sinks.Console" />
+    <PackageReference Include="Serilog.Sinks.File" />
+    <PackageReference Include="Serilog.Extensions.Logging" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ast.Core\Ast.Core.csproj" />
+    <ProjectReference Include="..\Ast.Csharp\Ast.Csharp.csproj" />
+    <ProjectReference Include="..\Ast.PowerShell\Ast.PowerShell.csproj" />
+    <ProjectReference Include="..\Ast.GraphDb\Ast.GraphDb.csproj" />
+    <ProjectReference Include="..\Ast.VectorDb\Ast.VectorDb.csproj" />
+    <ProjectReference Include="..\Ast.Embedding\Ast.Embedding.csproj" />
+    <ProjectReference Include="..\Ast.Query\Ast.Query.csproj" />
+    <ProjectReference Include="..\Ast.Lsp\Ast.Lsp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\docker-compose.yml" Link="docker-compose.yml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+    <Using Include="FluentAssertions" />
+  </ItemGroup>
+
+</Project>

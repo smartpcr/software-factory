@@ -21,7 +21,7 @@ using Microsoft.Extensions.Logging;
 [TestClass]
 public class SubflowNodeIntegrationTests
 {
-    private readonly List<string> tempFiles = new List<string>();
+    private readonly List<string> tempFiles = [];
 
     [TestMethod]
     public async Task SubflowWithDownstreamNode_ShouldExecuteAfterSubflow()
@@ -34,8 +34,8 @@ public class SubflowNodeIntegrationTests
         {
             WorkflowId = "child-workflow",
             EntryPointNodeId = "child-task",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "child-task",
@@ -43,7 +43,7 @@ public class SubflowNodeIntegrationTests
                         SetGlobal(""childResult"", ""completed"");
                     ")
                 }
-            }
+            ]
         };
 
         // Save child workflow to temp file
@@ -54,8 +54,8 @@ public class SubflowNodeIntegrationTests
         {
             WorkflowId = "parent-workflow",
             WorkflowName = "Subflow With Downstream Test",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
@@ -78,12 +78,12 @@ public class SubflowNodeIntegrationTests
                         SetGlobal(""receivedResult"", result);
                     ")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "setup", TargetNodeId = "subflow-1", TriggerMessageType = MessageType.Complete },
                 new NodeConnection { SourceNodeId = "subflow-1", TargetNodeId = "downstream-node", TriggerMessageType = MessageType.Complete }
-            }
+            ]
         };
 
         // Act
@@ -118,8 +118,8 @@ public class SubflowNodeIntegrationTests
         {
             WorkflowId = "processing-child",
             EntryPointNodeId = "process-task",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "process-task",
@@ -129,7 +129,7 @@ public class SubflowNodeIntegrationTests
                         SetGlobal(""childOutput"", result);
                     ")
                 }
-            }
+            ]
         };
 
         var childWorkflowPath = this.CreateTempWorkflowFile(childWorkflow);
@@ -138,8 +138,8 @@ public class SubflowNodeIntegrationTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "parent-with-mapping",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
@@ -162,12 +162,12 @@ public class SubflowNodeIntegrationTests
                         SetGlobal(""verificationResult"", result == 84);
                     ")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "setup", TargetNodeId = "subflow-1", TriggerMessageType = MessageType.Complete },
                 new NodeConnection { SourceNodeId = "subflow-1", TargetNodeId = "verify", TriggerMessageType = MessageType.Complete }
-            }
+            ]
         };
 
         // Act
@@ -192,8 +192,8 @@ public class SubflowNodeIntegrationTests
         {
             WorkflowId = "failing-child",
             EntryPointNodeId = "fail-task",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "fail-task",
@@ -201,7 +201,7 @@ public class SubflowNodeIntegrationTests
                         throw new Exception(""Child workflow intentional failure"");
                     ")
                 }
-            }
+            ]
         };
 
         var childWorkflowPath = this.CreateTempWorkflowFile(childWorkflow);
@@ -210,8 +210,8 @@ public class SubflowNodeIntegrationTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "parent-with-error-handler",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new SubflowNodeDefinition
                 {
                     NodeId = "subflow-1",
@@ -231,12 +231,12 @@ public class SubflowNodeIntegrationTests
                         SetGlobal(""successHandled"", true);
                     ")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "subflow-1", TargetNodeId = "error-handler", TriggerMessageType = MessageType.Fail },
                 new NodeConnection { SourceNodeId = "subflow-1", TargetNodeId = "success-handler", TriggerMessageType = MessageType.Complete }
-            }
+            ]
         };
 
         // Act
@@ -272,14 +272,14 @@ public class SubflowNodeIntegrationTests
         {
             WorkflowId = "level2-workflow",
             EntryPointNodeId = "level2-task",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "level2-task",
                     ScriptContent = "var inputObj = GetGlobal(\"level2Input\"); if (inputObj == null) throw new Exception(\"level2Input is null\"); var input = Convert.ToInt32(inputObj); SetGlobal(\"level2Output\", input + 100);",
                 }
-            }
+            ]
         };
         var level2Path = this.CreateTempWorkflowFile(level2Workflow);
 
@@ -288,14 +288,14 @@ public class SubflowNodeIntegrationTests
         {
             WorkflowId = "level1-workflow",
             EntryPointNodeId = "level1-task",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "level1-task",
                     ScriptContent = "var inputObj = GetGlobal(\"level1Input\"); if (inputObj == null) throw new Exception(\"level1Input is null\"); var input = Convert.ToInt32(inputObj); SetGlobal(\"level1Output\", input + 10);",
                 }
-            }
+            ]
         };
         var level1Path = this.CreateTempWorkflowFile(level1Workflow);
 
@@ -304,8 +304,8 @@ public class SubflowNodeIntegrationTests
         {
             WorkflowId = "parent-workflow",
             EntryPointNodeId = "setup",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
@@ -325,12 +325,12 @@ public class SubflowNodeIntegrationTests
                     InputMappings = new Dictionary<string, string> { { "intermediateValue", "level2Input" } } ,
                     OutputMappings = new Dictionary<string, string> { { "level2Output", "finalResult" } },
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "setup", TargetNodeId = "level1-subflow", TriggerMessageType = MessageType.Complete },
                 new NodeConnection { SourceNodeId = "level1-subflow", TargetNodeId = "level2-subflow", TriggerMessageType = MessageType.Complete }
-            }
+            ]
         };
 
         // Act
@@ -355,8 +355,8 @@ public class SubflowNodeIntegrationTests
         {
             WorkflowId = "child1",
             EntryPointNodeId = "child1-task",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "child1-task",
@@ -365,7 +365,7 @@ public class SubflowNodeIntegrationTests
                         SetGlobal(""result"", input * 2);
                     ")
                 }
-            }
+            ]
         };
         var child1Path = this.CreateTempWorkflowFile(child1Workflow);
 
@@ -374,8 +374,8 @@ public class SubflowNodeIntegrationTests
         {
             WorkflowId = "child2",
             EntryPointNodeId = "child2-task",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "child2-task",
@@ -384,7 +384,7 @@ public class SubflowNodeIntegrationTests
                         SetGlobal(""result"", input + 10);
                     ")
                 }
-            }
+            ]
         };
         var child2Path = this.CreateTempWorkflowFile(child2Workflow);
 
@@ -392,8 +392,8 @@ public class SubflowNodeIntegrationTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "sequential-subflows",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
@@ -423,13 +423,13 @@ public class SubflowNodeIntegrationTests
                         SetGlobal(""verified"", final == 20); // (5 * 2) + 10 = 20
                     ")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "setup", TargetNodeId = "subflow1", TriggerMessageType = MessageType.Complete },
                 new NodeConnection { SourceNodeId = "subflow1", TargetNodeId = "subflow2", TriggerMessageType = MessageType.Complete },
                 new NodeConnection { SourceNodeId = "subflow2", TargetNodeId = "verify", TriggerMessageType = MessageType.Complete }
-            }
+            ]
         };
 
         // Act
@@ -466,8 +466,8 @@ public class SubflowNodeIntegrationTests
         {
             WorkflowId = "isolated-child",
             EntryPointNodeId = "child-task",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "child-task",
@@ -478,7 +478,7 @@ public class SubflowNodeIntegrationTests
                         SetGlobal(""childCompleted"", true);
                     ")
                 }
-            }
+            ]
         };
         var childWorkflowPath = this.CreateTempWorkflowFile(childWorkflow);
 
@@ -486,8 +486,8 @@ public class SubflowNodeIntegrationTests
         var workflow = new WorkflowDefinition
         {
             WorkflowId = "parent-with-secret",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
@@ -501,11 +501,11 @@ public class SubflowNodeIntegrationTests
                     WorkflowFilePath = childWorkflowPath,
                     OutputMappings = new Dictionary<string, string> { { "hasAccessToParent", "childHadAccess" }, { "childCompleted", "childDone" } },
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection { SourceNodeId = "setup", TargetNodeId = "subflow-1", TriggerMessageType = MessageType.Complete }
-            }
+            ]
         };
 
         // Act

@@ -153,7 +153,7 @@ public class RetryPolicyTests
         // Arrange
         var policy = new RetryPolicy
         {
-            DoNotRetryOn = new List<Type> { typeof(ArgumentException) }
+            DoNotRetryOn = [typeof(ArgumentException)]
         };
         var exception = new ArgumentException("Test");
 
@@ -170,7 +170,7 @@ public class RetryPolicyTests
         // Arrange
         var policy = new RetryPolicy
         {
-            RetryOn = new List<Type> { typeof(InvalidOperationException) }
+            RetryOn = [typeof(InvalidOperationException)]
         };
         var exception = new InvalidOperationException("Test");
 
@@ -187,7 +187,7 @@ public class RetryPolicyTests
         // Arrange
         var policy = new RetryPolicy
         {
-            RetryOn = new List<Type> { typeof(InvalidOperationException) }
+            RetryOn = [typeof(InvalidOperationException)]
         };
         var exception = new ArgumentException("Test");
 
@@ -204,8 +204,8 @@ public class RetryPolicyTests
         // Arrange
         var policy = new RetryPolicy
         {
-            RetryOn = new List<Type> { typeof(Exception) },
-            DoNotRetryOn = new List<Type> { typeof(ArgumentException) }
+            RetryOn = [typeof(Exception)],
+            DoNotRetryOn = [typeof(ArgumentException)]
         };
         var exception = new ArgumentException("Test");
 

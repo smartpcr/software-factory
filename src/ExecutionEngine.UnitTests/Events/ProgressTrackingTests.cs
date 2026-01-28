@@ -16,7 +16,7 @@ namespace ExecutionEngine.UnitTests.Events
     [TestClass]
     public class ProgressTrackingTests
     {
-        private readonly List<string> tempFiles = new List<string>();
+        private readonly List<string> tempFiles = [];
 
         [TestCleanup]
         public void Cleanup()
@@ -48,8 +48,8 @@ namespace ExecutionEngine.UnitTests.Events
             {
                 WorkflowId = "test-workflow",
                 WorkflowName = "Test Workflow",
-                Nodes = new List<NodeDefinition>
-                {
+                Nodes =
+                [
                     new CSharpScriptNodeDefinition
                     {
                         NodeId = "node1",
@@ -62,16 +62,16 @@ namespace ExecutionEngine.UnitTests.Events
                         NodeName = "Node 2",
                         ScriptPath = this.CreateTempScript("await Task.Delay(50); SetOutput(\"result\", 43);")
                     }
-                },
-                Connections = new List<NodeConnection>
-                {
+                ],
+                Connections =
+                [
                     new NodeConnection
                     {
                         SourceNodeId = "node1",
                         TargetNodeId = "node2",
                         IsEnabled = true
                     }
-                }
+                ]
             };
 
             var progressUpdates = new List<ProgressUpdate>();
@@ -89,7 +89,7 @@ namespace ExecutionEngine.UnitTests.Events
             progressUpdates.Should().NotBeEmpty("progress updates should be published during workflow execution");
 
             // Check that total nodes matches
-            if (progressUpdates.Any())
+            if (progressUpdates.Count != 0)
             {
                 var firstProgress = progressUpdates.First();
                 firstProgress.TotalNodes.Should().Be(2);
@@ -108,15 +108,15 @@ namespace ExecutionEngine.UnitTests.Events
             {
                 WorkflowId = "test-workflow",
                 WorkflowName = "Test Workflow",
-                Nodes = new List<NodeDefinition>
-                {
+                Nodes =
+                [
                     new CSharpScriptNodeDefinition
                     {
                         NodeId = "node1",
                         NodeName = "Node 1",
                         ScriptPath = this.CreateTempScript("await Task.Delay(100); SetOutput(\"result\", 42);")
                     }
-                }
+                ]
             };
 
             var progressUpdates = new List<ProgressUpdate>();
@@ -136,7 +136,7 @@ namespace ExecutionEngine.UnitTests.Events
 
             // Check that we received progress update after node completion
             var updates = progressUpdates.Where(p => p.NodesCompleted > 0).ToList();
-            if (updates.Any())
+            if (updates.Count != 0)
             {
                 var update = updates.First();
                 update.NodesCompleted.Should().BeGreaterThan(0);
@@ -156,15 +156,15 @@ namespace ExecutionEngine.UnitTests.Events
             {
                 WorkflowId = "test-workflow",
                 WorkflowName = "Test Workflow",
-                Nodes = new List<NodeDefinition>
-                {
+                Nodes =
+                [
                     new CSharpScriptNodeDefinition
                     {
                         NodeId = "node1",
                         NodeName = "Node 1",
                         ScriptPath = this.CreateTempScript("SetOutput(\"result\", 42);")
                     }
-                }
+                ]
             };
 
             var progressUpdates = new List<ProgressUpdate>();
@@ -201,8 +201,8 @@ namespace ExecutionEngine.UnitTests.Events
             {
                 WorkflowId = "test-workflow",
                 WorkflowName = "Test Workflow",
-                Nodes = new List<NodeDefinition>
-                {
+                Nodes =
+                [
                     new CSharpScriptNodeDefinition
                     {
                         NodeId = "node1",
@@ -215,16 +215,16 @@ namespace ExecutionEngine.UnitTests.Events
                         NodeName = "Node 2",
                         ScriptPath = this.CreateTempScript("SetOutput(\"result\", 43);")
                     }
-                },
-                Connections = new List<NodeConnection>
-                {
+                ],
+                Connections =
+                [
                     new NodeConnection
                     {
                         SourceNodeId = "node1",
                         TargetNodeId = "node2",
                         IsEnabled = true
                     }
-                }
+                ]
             };
 
             var progressUpdates = new List<ProgressUpdate>();
@@ -269,15 +269,15 @@ namespace ExecutionEngine.UnitTests.Events
             {
                 WorkflowId = "test-workflow",
                 WorkflowName = "Test Workflow",
-                Nodes = new List<NodeDefinition>
-                {
+                Nodes =
+                [
                     new CSharpScriptNodeDefinition
                     {
                         NodeId = "node1",
                         NodeName = "Failing Node",
                         ScriptPath = this.CreateTempScript("throw new Exception(\"Test failure\");")
                     }
-                }
+                ]
             };
 
             var progressUpdates = new List<ProgressUpdate>();
@@ -314,15 +314,15 @@ namespace ExecutionEngine.UnitTests.Events
             {
                 WorkflowId = "test-workflow",
                 WorkflowName = "Test Workflow",
-                Nodes = new List<NodeDefinition>
-                {
+                Nodes =
+                [
                     new CSharpScriptNodeDefinition
                     {
                         NodeId = "node1",
                         NodeName = "Node 1",
                         ScriptPath = this.CreateTempScript("SetOutput(\"result\", 42);")
                     }
-                }
+                ]
             };
 
             var progressUpdates = new List<ProgressUpdate>();

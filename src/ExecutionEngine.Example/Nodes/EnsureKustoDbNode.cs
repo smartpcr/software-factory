@@ -57,7 +57,8 @@ public class EnsureKustoDbNode : ExecutableNodeBase
     {
         var instance = new NodeInstance
         {
-            NodeInstanceId = Guid.NewGuid(),            WorkflowInstanceId = workflowContext.InstanceId,
+            NodeInstanceId = Guid.NewGuid(),
+            WorkflowInstanceId = workflowContext.InstanceId,
             Status = NodeExecutionStatus.Running,
             StartTime = DateTime.UtcNow,
             ExecutionContext = nodeContext
@@ -66,7 +67,8 @@ public class EnsureKustoDbNode : ExecutableNodeBase
         try
         {
             this.RaiseOnStart(new NodeStartEventArgs
-            {                Timestamp = DateTime.UtcNow
+            {
+                Timestamp = DateTime.UtcNow
             });
 
             if (string.IsNullOrWhiteSpace(this.ConnectionString))
@@ -125,7 +127,8 @@ public class EnsureKustoDbNode : ExecutableNodeBase
             instance.EndTime = DateTime.UtcNow;
 
             this.RaiseOnProgress(new ProgressEventArgs
-            {                Status = $"Database '{this.DatabaseName}' is ready",
+            {
+                Status = $"Database '{this.DatabaseName}' is ready",
                 ProgressPercent = 100
             });
         }

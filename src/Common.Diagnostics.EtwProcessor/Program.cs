@@ -14,7 +14,7 @@ namespace EtwProcessor
 
     public class Program
     {
-        private static readonly CancellationTokenSource Cts = new();
+        private static readonly CancellationTokenSource cts = new();
         private static Action? cleanupAction;
 
         static int Main(string[] args)
@@ -34,7 +34,7 @@ namespace EtwProcessor
             {
                 e.Cancel = true; // Prevent immediate termination
                 Log.Warning("Cancellation requested (Ctrl+C). Cleaning up...");
-                Cts.Cancel();
+                cts.Cancel();
 
                 // Execute cleanup action if set
                 cleanupAction?.Invoke();
@@ -102,7 +102,7 @@ namespace EtwProcessor
             }
 
             var scanner = serviceProvider.GetRequiredService<EtwScanner>();
-            scanner.Configure(opts.InputDirectory, Cts.Token);
+            scanner.Configure(opts.InputDirectory, cts.Token);
 
             // Set cleanup action for Ctrl+C
             cleanupAction = () => scanner.CleanupTempDirectory();
@@ -133,7 +133,7 @@ namespace EtwProcessor
             }
 
             var parser = serviceProvider.GetRequiredService<EtwParser>();
-            parser.Configure(opts.InputDirectory, opts.OutputDirectory, Cts.Token);
+            parser.Configure(opts.InputDirectory, opts.OutputDirectory, cts.Token);
 
             // Set cleanup action for Ctrl+C
             cleanupAction = () => parser.CleanupTempDirectory();

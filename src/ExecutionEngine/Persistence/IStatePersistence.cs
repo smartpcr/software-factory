@@ -139,5 +139,5 @@ public class CheckpointState
     /// <summary>
     /// Gets or sets the node instances and their execution states.
     /// </summary>
-    public List<NodeInstance> NodeInstances { get; set; } = new List<NodeInstance>();
+    public List<NodeInstance> NodeInstances { get; set; } = [];
 }

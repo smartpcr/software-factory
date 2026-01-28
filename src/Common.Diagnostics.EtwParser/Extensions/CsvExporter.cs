@@ -56,14 +56,14 @@ namespace Common.Diagnostics.EtwParser.Extensions
                         continue;
                     }
 
-                    var fileName = GetCsvFileName(eventId);
-                    var filePath = Path.Combine(outputDirectory, fileName);
+                    var fileName = this.GetCsvFileName(eventId);
+                    var filePath = Path.Combine(this.outputDirectory, fileName);
 
-                    await WriteCsvFileAsync(filePath, records, schema);
+                    await this.WriteCsvFileAsync(filePath, records, schema);
                     totalRecords += records.Count;
                 }
 
-                return ExportResult.Successful(totalRecords, outputDirectory);
+                return ExportResult.Successful(totalRecords, this.outputDirectory);
             }
             catch (Exception ex)
             {
@@ -73,7 +73,7 @@ namespace Common.Diagnostics.EtwParser.Extensions
 
         private string GetCsvFileName(EventIdentifier eventId)
         {
-            var safeName = eventId.ToSafeIdentifier(filePrefix);
+            var safeName = eventId.ToSafeIdentifier(this.filePrefix);
             return $"{safeName}.csv";
         }
 
@@ -85,7 +85,7 @@ namespace Common.Diagnostics.EtwParser.Extensions
             using var writer = new StreamWriter(filePath, false, Encoding.UTF8);
 
             // Write header
-            if (includeHeaders)
+            if (this.includeHeaders)
             {
                 var headerLine = string.Join(",", schema.Fields.Select(f => f.Name));
                 await writer.WriteLineAsync(headerLine);

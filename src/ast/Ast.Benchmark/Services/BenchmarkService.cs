@@ -17,14 +17,9 @@ using Spectre.Console;
 /// <summary>
 /// Service for running extraction and ingestion benchmarks with progress tracking.
 /// </summary>
-public class BenchmarkService
+public class BenchmarkService(ILogger<BenchmarkService> logger)
 {
-    private readonly ILogger<BenchmarkService> logger;
-
-    public BenchmarkService(ILogger<BenchmarkService> logger)
-    {
-        this.logger = logger;
-    }
+    private readonly ILogger<BenchmarkService> logger = logger;
 
     /// <summary>
     /// Runs the full extraction and ingestion benchmark with progress tracking.
@@ -39,7 +34,7 @@ public class BenchmarkService
         var totalStopwatch = Stopwatch.StartNew();
 
         // Phase 1: File Discovery
-        var (csFiles, psFiles) = await this.DiscoverFilesAsync(repoPath, language);
+        var (csFiles, psFiles) = await DiscoverFilesAsync(repoPath, language);
         var allFiles = csFiles.Concat(psFiles).ToList();
         result.FilesDiscovered = allFiles.Count;
 
@@ -66,7 +61,7 @@ public class BenchmarkService
 
         // Phase 3: Ingestion with Progress
         var ingestionStopwatch = Stopwatch.StartNew();
-        var (nodesIngested, edgesIngested) = await this.IngestWithProgressAsync(
+        var (nodesIngested, edgesIngested) = await IngestWithProgressAsync(
             hypergraphData, graphStore, cancellationToken);
         ingestionStopwatch.Stop();
 
@@ -80,7 +75,7 @@ public class BenchmarkService
         return result;
     }
 
-    private async Task<(List<string> csFiles, List<string> psFiles)> DiscoverFilesAsync(
+    private static async Task<(List<string> csFiles, List<string> psFiles)> DiscoverFilesAsync(
         string repoPath, string language)
     {
         var csFiles = new List<string>();
@@ -93,16 +88,17 @@ public class BenchmarkService
                 {
                     var srcPath = Path.Combine(repoPath, "src");
                     var searchPath = Directory.Exists(srcPath) ? srcPath : repoPath;
-                    csFiles = Directory.GetFiles(searchPath, "*.cs", SearchOption.AllDirectories)
-                        .Where(f => !f.Contains("obj") && !f.Contains("bin") && !f.Contains(".Designer."))
-                        .ToList();
+                    csFiles = [.. Directory.GetFiles(searchPath, "*.cs", SearchOption.AllDirectories).Where(f => !f.Contains("obj") && !f.Contains("bin") && !f.Contains(".Designer."))];
                 }
 
                 if (language == "powershell" || language == "all")
                 {
-                    psFiles = Directory.GetFiles(repoPath, "*.ps1", SearchOption.AllDirectories)
-                        .Concat(Directory.GetFiles(repoPath, "*.psm1", SearchOption.AllDirectories))
-                        .ToList();
+                    psFiles =
+                    [
+                        .. Directory.GetFiles(repoPath, "*.ps1", SearchOption.AllDirectories)
+,
+                        .. Directory.GetFiles(repoPath, "*.psm1", SearchOption.AllDirectories),
+                    ];
                 }
 
                 return Task.CompletedTask;
@@ -124,14 +120,14 @@ public class BenchmarkService
         var errors = 0;
 
         await AnsiConsole.Progress()
-            .Columns(new ProgressColumn[]
-            {
+            .Columns(
+            [
                 new TaskDescriptionColumn(),
                 new ProgressBarColumn(),
                 new PercentageColumn(),
                 new RemainingTimeColumn(),
                 new SpinnerColumn()
-            })
+            ])
             .StartAsync(async ctx =>
             {
                 var extractionTask = ctx.AddTask("[green]Extracting AST[/]", maxValue: totalFiles);
@@ -226,7 +222,7 @@ public class BenchmarkService
         };
     }
 
-    private async Task<(int nodesIngested, int edgesIngested)> IngestWithProgressAsync(
+    private static async Task<(int nodesIngested, int edgesIngested)> IngestWithProgressAsync(
         HypergraphData data,
         Neo4jGraphStore graphStore,
         CancellationToken cancellationToken)
@@ -237,14 +233,14 @@ public class BenchmarkService
         var totalEdges = data.Hyperedges.Count;
 
         await AnsiConsole.Progress()
-            .Columns(new ProgressColumn[]
-            {
+            .Columns(
+            [
                 new TaskDescriptionColumn(),
                 new ProgressBarColumn(),
                 new PercentageColumn(),
                 new RemainingTimeColumn(),
                 new SpinnerColumn()
-            })
+            ])
             .StartAsync(async ctx =>
             {
                 // Ingest nodes
@@ -254,7 +250,7 @@ public class BenchmarkService
                 var batchSize = 500;
                 var batches = nodeList.Chunk(batchSize).ToList();
 
-                for (int i = 0; i < batches.Count; i++)
+                for (var i = 0; i < batches.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
@@ -276,7 +272,7 @@ public class BenchmarkService
                 var edgeBatchSize = 100;
                 var edgeBatches = edgeList.Chunk(edgeBatchSize).ToList();
 
-                for (int i = 0; i < edgeBatches.Count; i++)
+                for (var i = 0; i < edgeBatches.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
@@ -322,14 +318,14 @@ public class BenchmarkResult
 
     // Computed metrics
     public double FilesPerSecond =>
-        ExtractionDuration.TotalSeconds > 0 ? FilesProcessed / ExtractionDuration.TotalSeconds : 0;
+        this.ExtractionDuration.TotalSeconds > 0 ? this.FilesProcessed / this.ExtractionDuration.TotalSeconds : 0;
 
     public double ExtractionNodesPerSecond =>
-        ExtractionDuration.TotalSeconds > 0 ? NodesExtracted / ExtractionDuration.TotalSeconds : 0;
+        this.ExtractionDuration.TotalSeconds > 0 ? this.NodesExtracted / this.ExtractionDuration.TotalSeconds : 0;
 
     public double IngestionNodesPerSecond =>
-        IngestionDuration.TotalSeconds > 0 ? NodesIngested / IngestionDuration.TotalSeconds : 0;
+        this.IngestionDuration.TotalSeconds > 0 ? this.NodesIngested / this.IngestionDuration.TotalSeconds : 0;
 
     public double EdgesPerSecond =>
-        IngestionDuration.TotalSeconds > 0 ? EdgesIngested / IngestionDuration.TotalSeconds : 0;
+        this.IngestionDuration.TotalSeconds > 0 ? this.EdgesIngested / this.IngestionDuration.TotalSeconds : 0;
 }

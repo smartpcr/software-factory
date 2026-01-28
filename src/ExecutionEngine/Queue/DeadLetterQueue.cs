@@ -58,10 +58,7 @@ public class DeadLetterQueue : IDeadLetterQueue
     /// <returns>True if added successfully.</returns>
     public Task<bool> AddAsync(MessageEnvelope envelope, string reason, Exception? exception = null)
     {
-        if (envelope == null)
-        {
-            throw new ArgumentNullException(nameof(envelope));
-        }
+        ArgumentNullException.ThrowIfNull(envelope);
 
         if (string.IsNullOrWhiteSpace(reason))
         {

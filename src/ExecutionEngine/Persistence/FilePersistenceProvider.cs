@@ -58,15 +58,9 @@ public class FilePersistenceProvider : IStatePersistence
             throw new ArgumentException("Checkpoint ID cannot be null or empty", nameof(checkpointId));
         }
 
-        if (context == null)
-        {
-            throw new ArgumentNullException(nameof(context));
-        }
+        ArgumentNullException.ThrowIfNull(context);
 
-        if (nodeInstances == null)
-        {
-            throw new ArgumentNullException(nameof(nodeInstances));
-        }
+        ArgumentNullException.ThrowIfNull(nodeInstances);
 
         var nodeList = nodeInstances.ToList();
         var completedNodes = nodeList.Count(n => n.Status == Enums.NodeExecutionStatus.Completed);
@@ -124,13 +118,7 @@ public class FilePersistenceProvider : IStatePersistence
         var json = await File.ReadAllTextAsync(filePath, cancellationToken);
 
         // Deserialize
-        var checkpoint = JsonSerializer.Deserialize<CheckpointState>(json, this.jsonOptions);
-
-        if (checkpoint == null)
-        {
-            throw new InvalidOperationException($"Failed to deserialize checkpoint '{checkpointId}'");
-        }
-
+        var checkpoint = JsonSerializer.Deserialize<CheckpointState>(json, this.jsonOptions) ?? throw new InvalidOperationException($"Failed to deserialize checkpoint '{checkpointId}'");
         return checkpoint;
     }
 

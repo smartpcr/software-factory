@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 
 namespace Ast.Core;
+
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -13,10 +14,10 @@ using System.Text.RegularExpressions;
 /// Processes repositories containing both C# and PowerShell code.
 /// Extracts hyperedges from each language and identifies cross-language relationships.
 /// </summary>
-public class RepositoryProcessor
+public partial class RepositoryProcessor(string repoPath, AstConfiguration? config = null)
 {
-    private readonly string repoPath;
-    private readonly AstConfiguration config;
+    private readonly string repoPath = Path.GetFullPath(repoPath);
+    private readonly AstConfiguration config = config ?? new AstConfiguration();
     private readonly Dictionary<string, HypergraphNode> nodes = [];
     private readonly List<Hyperedge> hyperedges = [];
     private readonly Dictionary<string, List<string>> fileToNodes = [];
@@ -33,15 +34,9 @@ public class RepositoryProcessor
     public Func<string, string, (Dictionary<string, HypergraphNode>, List<Hyperedge>)>? CSharpExtractor { get; set; }
     public Func<string, string, (Dictionary<string, HypergraphNode>, List<Hyperedge>)>? PowerShellExtractor { get; set; }
 
-    private static readonly string[] CSharpExtensions = [".cs"];
-    private static readonly string[] PowerShellExtensions = [".ps1", ".psm1", ".psd1"];
-    private static readonly string[] ExcludePatterns = ["bin", "obj", "packages", ".git", "node_modules", "TestResults"];
-
-    public RepositoryProcessor(string repoPath, AstConfiguration? config = null)
-    {
-        this.repoPath = Path.GetFullPath(repoPath);
-        this.config = config ?? new AstConfiguration();
-    }
+    private static readonly string[] csharpExtensions = [".cs"];
+    private static readonly string[] powerShellExtensions = [".ps1", ".psm1", ".psd1"];
+    private static readonly string[] excludePatterns = ["bin", "obj", "packages", ".git", "node_modules", "TestResults"];
 
     public HypergraphData Process(bool verbose = false)
     {
@@ -53,14 +48,14 @@ public class RepositoryProcessor
             var relativePath = Path.GetRelativePath(this.repoPath, file);
 
             // Skip excluded directories
-            if (ExcludePatterns.Any(p => relativePath.Contains(p, StringComparison.OrdinalIgnoreCase)))
+            if (excludePatterns.Any(p => relativePath.Contains(p, StringComparison.OrdinalIgnoreCase)))
                 continue;
 
             var ext = Path.GetExtension(file).ToLowerInvariant();
 
-            if (CSharpExtensions.Contains(ext))
+            if (csharpExtensions.Contains(ext))
                 files.Add((file, "csharp"));
-            else if (PowerShellExtensions.Contains(ext))
+            else if (powerShellExtensions.Contains(ext))
                 files.Add((file, "powershell"));
         }
 
@@ -136,7 +131,7 @@ public class RepositoryProcessor
                 NumCSharpNodes = csNodes,
                 NumPowerShellNodes = psNodes,
                 NumCrossLanguageEdges = crossEdges,
-                Files = this.fileToNodes.Keys.ToList(),
+                Files = [.. this.fileToNodes.Keys],
                 Repository = repoMetadata,
                 Projects = projects
             }
@@ -193,7 +188,7 @@ public class RepositoryProcessor
             {
                 Id = $"uhe_{++this.edgeCounter:D4}",
                 EdgeType = edge.EdgeType,
-                NodeIds = edge.NodeIds.Select(id => $"cs_{id}").ToList(),
+                NodeIds = [.. edge.NodeIds.Select(id => $"cs_{id}")],
                 Roles = edge.Roles.ToDictionary(r => $"cs_{r.Key}", r => r.Value),
                 Languages = ["csharp"],
                 Metadata = edge.Metadata
@@ -252,7 +247,7 @@ public class RepositoryProcessor
             {
                 Id = $"uhe_{++this.edgeCounter:D4}",
                 EdgeType = edge.EdgeType,
-                NodeIds = edge.NodeIds.Select(id => $"ps_{id}").ToList(),
+                NodeIds = [.. edge.NodeIds.Select(id => $"ps_{id}")],
                 Roles = edge.Roles.ToDictionary(r => $"ps_{r.Key}", r => r.Value),
                 Languages = ["powershell"],
                 Metadata = edge.Metadata
@@ -270,7 +265,7 @@ public class RepositoryProcessor
     private void ExtractCrossLanguageReferences(string psSource, string filePath)
     {
         // Find .NET type references: [TypeName]
-        var typePattern = new Regex(@"\[(?<type>[\w.]+)\]", RegexOptions.Compiled);
+        var typePattern = MyRegex();
         foreach (Match match in typePattern.Matches(psSource))
         {
             var typeName = match.Groups["type"].Value;
@@ -332,4 +327,7 @@ public class RepositoryProcessor
         };
         this.hyperedges.Add(crossEdge);
     }
+
+    [GeneratedRegex(@"\[(?<type>[\w.]+)\]", RegexOptions.Compiled)]
+    private static partial Regex MyRegex();
 }

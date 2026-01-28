@@ -13,21 +13,15 @@ namespace Common.Diagnostics.EtwParser.Core
     /// <summary>
     /// Processes multiple trace files in parallel batches
     /// </summary>
-    public class BatchTraceProcessor
+    /// <remarks>
+    /// Initializes a new instance of the <see cref="BatchTraceProcessor"/> class.
+    /// </remarks>
+    /// <param name="maxDegreeOfParallelism">Maximum number of parallel operations (default: CPU count)</param>
+    /// <param name="batchSize">Number of files to process per batch (default: all files in one batch)</param>
+    public class BatchTraceProcessor(int? maxDegreeOfParallelism = null, int batchSize = int.MaxValue)
     {
-        private readonly int maxDegreeOfParallelism;
-        private readonly int batchSize;
-
-        /// <summary>
-        /// Initializes a new instance of the <see cref="BatchTraceProcessor"/> class.
-        /// </summary>
-        /// <param name="maxDegreeOfParallelism">Maximum number of parallel operations (default: CPU count)</param>
-        /// <param name="batchSize">Number of files to process per batch (default: all files in one batch)</param>
-        public BatchTraceProcessor(int? maxDegreeOfParallelism = null, int batchSize = int.MaxValue)
-        {
-            this.maxDegreeOfParallelism = maxDegreeOfParallelism ?? Environment.ProcessorCount;
-            this.batchSize = batchSize;
-        }
+        private readonly int maxDegreeOfParallelism = maxDegreeOfParallelism ?? Environment.ProcessorCount;
+        private readonly int batchSize = batchSize;
 
         /// <summary>
         /// Discovers schemas from multiple trace files in parallel
@@ -45,7 +39,7 @@ namespace Common.Diagnostics.EtwParser.Core
 
             var parallelOptions = new ParallelOptions
             {
-                MaxDegreeOfParallelism = maxDegreeOfParallelism
+                MaxDegreeOfParallelism = this.maxDegreeOfParallelism
             };
 
             Parallel.ForEach(files, parallelOptions, filePath =>
@@ -97,7 +91,7 @@ namespace Common.Diagnostics.EtwParser.Core
 
             var parallelOptions = new ParallelOptions
             {
-                MaxDegreeOfParallelism = maxDegreeOfParallelism
+                MaxDegreeOfParallelism = this.maxDegreeOfParallelism
             };
 
             Parallel.ForEach(files, parallelOptions, filePath =>
@@ -109,7 +103,7 @@ namespace Common.Diagnostics.EtwParser.Core
 
                     foreach (var kvp in events)
                     {
-                        var list = allEvents.GetOrAdd(kvp.Key, _ => new List<TraceEventRecord>());
+                        var list = allEvents.GetOrAdd(kvp.Key, _ => []);
                         lock (list)
                         {
                             foreach (var record in kvp.Value)
@@ -143,14 +137,14 @@ namespace Common.Diagnostics.EtwParser.Core
             Action<int, int>? batchProgressCallback = null)
         {
             var files = filePaths.ToArray();
-            var totalBatches = (int)Math.Ceiling((double)files.Length / batchSize);
+            var totalBatches = (int)Math.Ceiling((double)files.Length / this.batchSize);
 
             for (var batchIndex = 0; batchIndex < totalBatches; batchIndex++)
             {
-                var batchFiles = files.Skip(batchIndex * batchSize).Take(batchSize);
+                var batchFiles = files.Skip(batchIndex * this.batchSize).Take(this.batchSize);
 
                 // Extract events for this batch
-                var batchEvents = ExtractEvents(batchFiles, allSchemas);
+                var batchEvents = this.ExtractEvents(batchFiles, allSchemas);
 
                 // Export the batch
                 await exporter.ExportAsync(batchEvents, allSchemas);

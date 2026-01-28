@@ -19,13 +19,13 @@ namespace Common.Diagnostics.EtwParser.Models
         /// <returns>Safe identifier string</returns>
         public string ToSafeIdentifier(string? prefix = null, string separator = ".")
         {
-            var safeName = $"{ProviderName}{separator}{EventName.Replace("/", "")}";
+            var safeName = $"{this.ProviderName}{separator}{this.EventName.Replace("/", "")}";
             return string.IsNullOrEmpty(prefix) ? safeName : $"{prefix}-{safeName}";
         }
 
         /// <summary>
         /// String representation
         /// </summary>
-        public override string ToString() => $"{ProviderName}/{EventName}";
+        public override string ToString() => $"{this.ProviderName}/{this.EventName}";
     }
 }

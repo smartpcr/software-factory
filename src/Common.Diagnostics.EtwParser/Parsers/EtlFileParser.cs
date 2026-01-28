@@ -47,16 +47,16 @@ namespace Common.Diagnostics.EtwParser.Parsers
 
             try
             {
-                using var source = new ETWTraceEventSource(filePath);
+                using var source = new ETWTraceEventSource(this.filePath);
                 var parser = new DynamicTraceEventParser(source);
 
                 var lastEventTime = DateTime.UtcNow;
-                var timer = new System.Timers.Timer(inactivityTimeoutSeconds * 1000);
+                var timer = new System.Timers.Timer(this.inactivityTimeoutSeconds * 1000);
                 timer.Elapsed += (sender, e) =>
                 {
-                    if ((DateTime.UtcNow - lastEventTime).TotalSeconds >= inactivityTimeoutSeconds)
+                    if ((DateTime.UtcNow - lastEventTime).TotalSeconds >= this.inactivityTimeoutSeconds)
                     {
-                        Console.WriteLine($"No events received in the last {inactivityTimeoutSeconds} seconds. Stopping processing {filePath} (file size: {fileSize} bytes) after {Math.Round(stopwatch.Elapsed.TotalSeconds)} seconds.");
+                        Console.WriteLine($"No events received in the last {this.inactivityTimeoutSeconds} seconds. Stopping processing {this.filePath} (file size: {this.fileSize} bytes) after {Math.Round(stopwatch.Elapsed.TotalSeconds)} seconds.");
                         source.StopProcessing();
                         timer.Stop();
                     }
@@ -98,7 +98,7 @@ namespace Common.Diagnostics.EtwParser.Parsers
                 GC.Collect();
 
                 stopwatch.Stop();
-                return ParseResult.Successful(concurrentSchemas.Count, fileSize, stopwatch.Elapsed);
+                return ParseResult.Successful(concurrentSchemas.Count, this.fileSize, stopwatch.Elapsed);
             }
             catch (Exception ex)
             {
@@ -115,17 +115,17 @@ namespace Common.Diagnostics.EtwParser.Parsers
 
             try
             {
-                using var source = new ETWTraceEventSource(filePath);
+                using var source = new ETWTraceEventSource(this.filePath);
                 var parser = new DynamicTraceEventParser(source);
 
                 var stopwatch = Stopwatch.StartNew();
                 var lastEventTime = DateTime.UtcNow;
-                var timer = new System.Timers.Timer(inactivityTimeoutSeconds * 1000);
+                var timer = new System.Timers.Timer(this.inactivityTimeoutSeconds * 1000);
                 timer.Elapsed += (sender, e) =>
                 {
-                    if ((DateTime.UtcNow - lastEventTime).TotalSeconds >= inactivityTimeoutSeconds)
+                    if ((DateTime.UtcNow - lastEventTime).TotalSeconds >= this.inactivityTimeoutSeconds)
                     {
-                        Console.WriteLine($"No events received in the last {inactivityTimeoutSeconds} seconds. Stopping processing {filePath} (file size: {fileSize} bytes) after {Math.Round(stopwatch.Elapsed.TotalSeconds)} seconds.");
+                        Console.WriteLine($"No events received in the last {this.inactivityTimeoutSeconds} seconds. Stopping processing {this.filePath} (file size: {this.fileSize} bytes) after {Math.Round(stopwatch.Elapsed.TotalSeconds)} seconds.");
                         source.StopProcessing();
                         timer.Stop();
                     }
@@ -141,7 +141,7 @@ namespace Common.Diagnostics.EtwParser.Parsers
                     {
                         var record = CreateRecordFromEvent(eventId, traceEvent, schema);
 
-                        var list = result.GetOrAdd(eventId, _ => new List<TraceEventRecord>());
+                        var list = result.GetOrAdd(eventId, _ => []);
                         lock (list)
                         {
                             list.Add(record);

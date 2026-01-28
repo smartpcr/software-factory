@@ -14,12 +14,16 @@ namespace EtwEventReader.Tools
     /// <summary>
     /// Processes ETL log files and extracts events.
     /// </summary>
-    public class EventProcessor
+    /// <remarks>
+    /// Initializes a new instance of the <see cref="EventProcessor"/> class.
+    /// </remarks>
+    /// <param name="fileHandler">The file handler for path resolution.</param>
+    public class EventProcessor(IEventFileHandler fileHandler)
     {
         /// <summary>
         /// File handler for path resolution and zip extraction.
         /// </summary>
-        private readonly IEventFileHandler fileHandler;
+        private readonly IEventFileHandler fileHandler = fileHandler ?? throw new ArgumentNullException(nameof(fileHandler));
 
         /// <summary>
         /// Initializes a new instance of the <see cref="EventProcessor"/> class.
@@ -27,15 +31,6 @@ namespace EtwEventReader.Tools
         public EventProcessor()
             : this(new EventFileHandler())
         {
-        }
-
-        /// <summary>
-        /// Initializes a new instance of the <see cref="EventProcessor"/> class.
-        /// </summary>
-        /// <param name="fileHandler">The file handler for path resolution.</param>
-        public EventProcessor(IEventFileHandler fileHandler)
-        {
-            this.fileHandler = fileHandler ?? throw new ArgumentNullException(nameof(fileHandler));
         }
 
         /// <summary>
@@ -88,7 +83,7 @@ namespace EtwEventReader.Tools
             string? providerName,
             string? eventName)
         {
-            Action<TraceEvent> action = data =>
+            void action(TraceEvent data)
             {
                 if (data.EventName != EventNames.ManifestEventName)
                 {
@@ -107,7 +102,7 @@ namespace EtwEventReader.Tools
 
                     eventList.Add(wrappedEvent);
                 }
-            };
+            }
 
             using var traceEventSource = new ETWTraceEventSource(file);
             var filterOnProviderName = !string.IsNullOrEmpty(providerName);
@@ -130,7 +125,7 @@ namespace EtwEventReader.Tools
 
                         return EventFilterResponse.AcceptEvent;
                     },
-                    action);
+action);
             }
             else if (filterOnProviderName)
             {
@@ -144,7 +139,7 @@ namespace EtwEventReader.Tools
 
                         return EventFilterResponse.AcceptEvent;
                     },
-                    action);
+action);
             }
             else if (filterOnEventName)
             {
@@ -158,7 +153,7 @@ namespace EtwEventReader.Tools
 
                         return EventFilterResponse.AcceptEvent;
                     },
-                    action);
+action);
             }
             else
             {
@@ -166,7 +161,7 @@ namespace EtwEventReader.Tools
             }
 
             // Register a handler for all unhandled events.
-            traceEventSource.UnhandledEvents += traceEvent => this.ProcessUnhandledEvent(traceEvent, eventList, wrapper, providerName, eventName);
+            traceEventSource.UnhandledEvents += traceEvent => ProcessUnhandledEvent(traceEvent, eventList, wrapper, providerName, eventName);
 
             Console.WriteLine("Reading events...");
             traceEventSource.Process();
@@ -180,7 +175,7 @@ namespace EtwEventReader.Tools
         /// <param name="wrapper">Instance of EtwEventWrapper.</param>
         /// <param name="providerName">Provider name filter.</param>
         /// <param name="eventName">Event name filter.</param>
-        private void ProcessUnhandledEvent(
+        private static void ProcessUnhandledEvent(
             TraceEvent traceEvent,
             List<EtwEventObject> eventList,
             EtwEventWrapper wrapper,

@@ -123,10 +123,11 @@ public class CompensationContextTests
     public void PartialCompensation_CanBeSet()
     {
         // Arrange
-        var context = new CompensationContext("failed", new Exception("Test"));
-
-        // Act
-        context.PartialCompensation = true;
+        var context = new CompensationContext("failed", new Exception("Test"))
+        {
+            // Act
+            PartialCompensation = true
+        };
 
         // Assert
         context.PartialCompensation.Should().BeTrue();
@@ -166,13 +167,13 @@ public class CompensationContextTests
         context.AddNodeToCompensate("lastCompleted");
 
         // Assert - should be in reverse order (LIFO)
-        context.NodesToCompensate.Should().Equal(new[]
-        {
+        context.NodesToCompensate.Should().Equal(
+        [
             "lastCompleted",
             "thirdCompleted",
             "secondCompleted",
             "firstCompleted"
-        });
+        ]);
     }
 
     [TestMethod]

@@ -76,7 +76,7 @@ public class NodeDefinitionTests
             NodeId = "ps-node",
             NodeName = "PowerShell Task Node",
             ScriptPath = "/scripts/task.ps1",
-            RequiredModules = new List<string> { "ActiveDirectory", "SqlServer" },
+            RequiredModules = ["ActiveDirectory", "SqlServer"],
             ModulePaths = new Dictionary<string, string>
             {
                 { "CustomModule", "/modules/CustomModule" }

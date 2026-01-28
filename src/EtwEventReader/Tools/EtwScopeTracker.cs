@@ -19,7 +19,7 @@ namespace EtwEventReader.Tools
         /// <summary>
         /// Keeps a list of all open scopes by event name.
         /// </summary>
-        private Dictionary<string, Stack<T>> openScopesToEventObjects = new Dictionary<string, Stack<T>>();
+        private readonly Dictionary<string, Stack<T>> openScopesToEventObjects = [];
 
         /// <summary>
         /// Indicates that a specific event name has started a scope and pushes that on the stack to await an end event.
@@ -28,14 +28,15 @@ namespace EtwEventReader.Tools
         /// <param name="startEventObject">The wrapped start event.</param>
         public void PushScope(TraceEvent startEvent, T startEventObject)
         {
-            var uniqueEventName = this.GetUniqueEventName(startEvent);
+            var uniqueEventName = EtwScopeTracker<T>.GetUniqueEventName(startEvent);
 
-            if (!this.openScopesToEventObjects.ContainsKey(uniqueEventName))
+            if (!this.openScopesToEventObjects.TryGetValue(uniqueEventName, out var value))
             {
-                this.openScopesToEventObjects[uniqueEventName] = new Stack<T>();
+                value = new Stack<T>();
+                this.openScopesToEventObjects[uniqueEventName] = value;
             }
 
-            this.openScopesToEventObjects[uniqueEventName].Push(startEventObject);
+            value.Push(startEventObject);
         }
 
         /// <summary>
@@ -45,16 +46,16 @@ namespace EtwEventReader.Tools
         /// <returns>The wrapped start event associated with this end event.</returns>
         public T? PopScope(TraceEvent endEvent)
         {
-            var uniqueEventName = this.GetUniqueEventName(endEvent);
+            var uniqueEventName = EtwScopeTracker<T>.GetUniqueEventName(endEvent);
             T? result;
 
-            if (!this.openScopesToEventObjects.ContainsKey(uniqueEventName) || this.openScopesToEventObjects[uniqueEventName].Count == 0)
+            if (!this.openScopesToEventObjects.TryGetValue(uniqueEventName, out var value) || value.Count == 0)
             {
-                result = default(T);
+                result = default;
             }
             else
             {
-                result = this.openScopesToEventObjects[uniqueEventName].Pop();
+                result = value.Pop();
             }
 
             return result;
@@ -65,7 +66,7 @@ namespace EtwEventReader.Tools
         /// </summary>
         /// <param name="traceEvent">An event.</param>
         /// <returns>The unique name for this event.</returns>
-        private string GetUniqueEventName(TraceEvent traceEvent)
+        private static string GetUniqueEventName(TraceEvent traceEvent)
         {
             return traceEvent.ProviderName + "_" + traceEvent.TaskName + "_" + traceEvent.ProcessID + "_" + traceEvent.ActivityID;
         }

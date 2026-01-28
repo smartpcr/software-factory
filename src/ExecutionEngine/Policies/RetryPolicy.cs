@@ -17,7 +17,7 @@ namespace ExecutionEngine.Policies
     /// </summary>
     public class RetryPolicy
     {
-        private static readonly Random Jitter = new Random();
+        private static readonly Random jitter = new();
 
         /// <summary>
         /// Initializes a new instance of the <see cref="RetryPolicy"/> class with default values.
@@ -29,8 +29,8 @@ namespace ExecutionEngine.Policies
             this.InitialDelay = TimeSpan.FromSeconds(1);
             this.MaxDelay = TimeSpan.FromSeconds(60);
             this.Multiplier = 2.0;
-            this.RetryOn = new List<Type>();
-            this.DoNotRetryOn = new List<Type>();
+            this.RetryOn = [];
+            this.DoNotRetryOn = [];
         }
 
         /// <summary>
@@ -107,7 +107,7 @@ namespace ExecutionEngine.Policies
             delayMs = Math.Min(delayMs, this.MaxDelay.TotalMilliseconds);
 
             // Add jitter: ±25% randomization to prevent thundering herd
-            var jitterFactor = 0.75 + (Jitter.NextDouble() * 0.5); // 0.75 to 1.25
+            var jitterFactor = 0.75 + (jitter.NextDouble() * 0.5); // 0.75 to 1.25
             delayMs *= jitterFactor;
 
             return TimeSpan.FromMilliseconds(delayMs);
@@ -133,7 +133,7 @@ namespace ExecutionEngine.Policies
             }
 
             // If RetryOn is specified, only retry those exception types
-            if (this.RetryOn.Any())
+            if (this.RetryOn.Count != 0)
             {
                 return this.RetryOn.Any(type => type.IsAssignableFrom(exception.GetType()));
             }

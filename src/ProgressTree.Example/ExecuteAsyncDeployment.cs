@@ -40,20 +40,20 @@ namespace ProgressTree.Example
                 "Deploy to Nodes",
                 true);
 
-            List<string> nodeNames = new()
-            {
+            List<string> nodeNames =
+            [
                 "Node1",
                 "Node2",
                 "Node3",
                 "Node4"
-            };
+            ];
             foreach (var nodeName in nodeNames)
             {
                 deployment.AddChild(
                     $"deploy_{nodeName}",
                     $"Deploy to {nodeName}",
                     false,
-                    async (node, ct) => await this.DeployToNodeWorkFunc(node, nodeName, ct));
+                    async (node, ct) => await DeployToNodeWorkFunc(node, nodeName, ct));
             }
 
             // Phase 3: Post-deployment validation
@@ -74,7 +74,7 @@ namespace ProgressTree.Example
                     $"service_{serviceName.ToLowerInvariant()}",
                     $"{serviceName} service",
                     false,
-                    async (node, ct) => await this.PerformServiceCheckWorkFunc(node, serviceName, ct));
+                    async (node, ct) => await PerformServiceCheckWorkFunc(node, serviceName, ct));
             }
         }
 
@@ -122,7 +122,7 @@ namespace ProgressTree.Example
             task.Name = "[green]✓ Prerequisites Check[/]: [grey]All checks passed[/]";
         }
 
-        private async Task DeployToNodeWorkFunc(IProgressNode parent, string nodeName, CancellationToken ct)
+        private static async Task DeployToNodeWorkFunc(IProgressNode parent, string nodeName, CancellationToken ct)
         {
             var stages = new[]
             {
@@ -149,7 +149,7 @@ namespace ProgressTree.Example
             parent.Name = $"[green]✓ {nodeName}[/]: [grey]Deployment complete[/]";
         }
 
-        private async Task PerformServiceCheckWorkFunc(IProgressNode serviceTask, string serviceName, CancellationToken ct)
+        private static async Task PerformServiceCheckWorkFunc(IProgressNode serviceTask, string serviceName, CancellationToken ct)
         {
             serviceTask.Name = $"[blue]{serviceName} service[/]: [grey]Testing...[/]";
             await Task.Delay(400, ct);

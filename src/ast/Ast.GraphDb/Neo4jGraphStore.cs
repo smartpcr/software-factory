@@ -337,7 +337,7 @@ public sealed class Neo4jGraphStore : IGraphStore
                 Id = edgeId,
                 EdgeType = edgeType,
                 NodeIds = nodeIds,
-                Roles = new Dictionary<string, string>(),
+                Roles = [],
                 Weight = first["weight"].As<double>()
             };
         });
@@ -382,7 +382,7 @@ public sealed class Neo4jGraphStore : IGraphStore
                     Id = record["edgeId"].As<string>(),
                     EdgeType = edgeType,
                     NodeIds = nodeIds,
-                    Roles = new Dictionary<string, string>(),
+                    Roles = [],
                     Weight = record["weight"].As<double>()
                 });
             }
@@ -434,7 +434,7 @@ public sealed class Neo4jGraphStore : IGraphStore
 
         var query = $@"
             MATCH (caller:CodeNode)-[r:CALLS*1..{depth}]->(target:CodeNode {{id: $nodeId}})
-            RETURN caller, length(r) AS depth, r[-1].edgeType AS relType, r[-1].edgeId AS edgeId";
+            RETURN caller, size(r) AS depth, r[-1].edgeType AS relType, r[-1].edgeId AS edgeId";
 
         var results = new List<NodeWithDepth>();
 
@@ -473,7 +473,7 @@ public sealed class Neo4jGraphStore : IGraphStore
 
         var query = $@"
             MATCH (source:CodeNode {{id: $nodeId}})-[r:CALLS*1..{depth}]->(callee:CodeNode)
-            RETURN callee, length(r) AS depth, r[-1].edgeType AS relType, r[-1].edgeId AS edgeId";
+            RETURN callee, size(r) AS depth, r[-1].edgeType AS relType, r[-1].edgeId AS edgeId";
 
         var results = new List<NodeWithDepth>();
 
@@ -508,19 +508,14 @@ public sealed class Neo4jGraphStore : IGraphStore
     {
         ObjectDisposedException.ThrowIf(this.disposed, this);
 
-        var sourceNode = await this.GetNodeAsync(nodeId, cancellationToken);
-        if (sourceNode == null)
-        {
-            throw new ArgumentException($"Node not found: {nodeId}", nameof(nodeId));
-        }
-
+        var sourceNode = await this.GetNodeAsync(nodeId, cancellationToken) ?? throw new ArgumentException($"Node not found: {nodeId}", nameof(nodeId));
         var callers = await this.GetCallersAsync(nodeId, maxDepth, cancellationToken);
 
         var analysis = new ImpactAnalysis
         {
             SourceNode = sourceNode,
-            DirectlyAffected = callers.Where(c => c.Depth == 1).ToList(),
-            IndirectlyAffected = callers.Where(c => c.Depth > 1).ToList()
+            DirectlyAffected = [.. callers.Where(c => c.Depth == 1)],
+            IndirectlyAffected = [.. callers.Where(c => c.Depth > 1)]
         };
 
         foreach (var affected in callers)
@@ -528,11 +523,12 @@ public sealed class Neo4jGraphStore : IGraphStore
             analysis.AffectedFiles.Add(affected.Node.FilePath);
 
             var nodeType = affected.Node.NodeType;
-            if (!analysis.AffectedByType.ContainsKey(nodeType))
+            if (!analysis.AffectedByType.TryGetValue(nodeType, out var value))
             {
-                analysis.AffectedByType[nodeType] = 0;
+                value = 0;
+                analysis.AffectedByType[nodeType] = value;
             }
-            analysis.AffectedByType[nodeType]++;
+            analysis.AffectedByType[nodeType] = ++value;
         }
 
         analysis.CrossLanguageImpact = callers.Any(c => c.Node.Language != sourceNode.Language);
@@ -756,7 +752,7 @@ public sealed class Neo4jGraphStore : IGraphStore
             Scope = node["scope"].As<string>() ?? string.Empty,
             LineStart = node["lineStart"].As<int>(),
             LineEnd = node["lineEnd"].As<int>(),
-            Modifiers = node["modifiers"].As<List<string>>() ?? new List<string>()
+            Modifiers = node["modifiers"].As<List<string>>() ?? []
         };
     }
 
@@ -778,8 +774,8 @@ public sealed class Neo4jGraphStore : IGraphStore
             {
                 Id = rel["edgeId"]?.As<string>() ?? Guid.NewGuid().ToString(),
                 EdgeType = edgeType,
-                NodeIds = new List<string>(),
-                Roles = new Dictionary<string, string>(),
+                NodeIds = [],
+                Roles = [],
                 Weight = rel["weight"]?.As<double>() ?? 1.0
             });
         }

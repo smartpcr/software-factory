@@ -96,7 +96,7 @@ public class PsAstNodeTests
             NodeType = PsAstNodeType.Class,
             Name = "Employee",
             FilePath = "employee.ps1",
-            BaseTypes = new List<string> { "Person", "IEmployee" }
+            BaseTypes = ["Person", "IEmployee"]
         };
 
         // Act
@@ -115,12 +115,12 @@ public class PsAstNodeTests
             NodeType = PsAstNodeType.Function,
             Name = "New-User",
             FilePath = "user.ps1",
-            Parameters = new List<PsParameterInfo>
-            {
+            Parameters =
+            [
                 new() { Name = "Name", Type = "String", IsMandatory = true },
                 new() { Name = "Age", Type = "Int32", IsMandatory = false },
                 new() { Name = "Email", Type = "String", IsMandatory = true }
-            }
+            ]
         };
 
         // Act
@@ -142,7 +142,7 @@ public class PsAstNodeTests
             NodeType = PsAstNodeType.Class,
             Name = "Calculator",
             FilePath = "calc.ps1",
-            Methods = new List<string> { "Add", "Subtract", "Multiply", "Divide" }
+            Methods = ["Add", "Subtract", "Multiply", "Divide"]
         };
 
         // Act
@@ -161,7 +161,7 @@ public class PsAstNodeTests
             NodeType = PsAstNodeType.Class,
             Name = "Person",
             FilePath = "person.ps1",
-            Properties = new List<string> { "Name", "Age", "Email" }
+            Properties = ["Name", "Age", "Email"]
         };
 
         // Act
@@ -202,9 +202,9 @@ public class PsAstNodeTests
             FilePath = "src/ServiceClient.ps1",
             StartLine = 5,
             Summary = "A client for interacting with the service API.",
-            BaseTypes = new List<string> { "BaseClient" },
-            Methods = new List<string> { "Connect", "Disconnect", "SendRequest" },
-            Properties = new List<string> { "Endpoint", "Timeout", "IsConnected" },
+            BaseTypes = ["BaseClient"],
+            Methods = ["Connect", "Disconnect", "SendRequest"],
+            Properties = ["Endpoint", "Timeout", "IsConnected"],
             Code = "class ServiceClient : BaseClient { }"
         };
 

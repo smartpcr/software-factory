@@ -6,11 +6,11 @@
 
 namespace ExecutionEngine.Example.Nodes;
 
+using EtwEventReader.Tools;
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
 using ExecutionEngine.Nodes;
-using EtwEventReader.Tools;
 using ExecutionEngine.Nodes.Definitions;
 
 /// <summary>
@@ -22,7 +22,7 @@ public class DiscoverEtlFilesNode : ExecutableNodeBase
     /// <summary>
     /// Gets or sets the paths to search for ETL files (supports wildcards, directories, ZIP files).
     /// </summary>
-    public string[] SearchPaths { get; set; } = Array.Empty<string>();
+    public string[] SearchPaths { get; set; } = [];
 
     /// <inheritdoc/>
     public override void Initialize(NodeDefinition definition)
@@ -38,7 +38,7 @@ public class DiscoverEtlFilesNode : ExecutableNodeBase
             }
             else if (pathsValue is string singlePath)
             {
-                this.SearchPaths = new[] { singlePath };
+                this.SearchPaths = [singlePath];
             }
         }
     }
@@ -51,7 +51,8 @@ public class DiscoverEtlFilesNode : ExecutableNodeBase
     {
         var instance = new NodeInstance
         {
-            NodeInstanceId = Guid.NewGuid(),            WorkflowInstanceId = workflowContext.InstanceId,
+            NodeInstanceId = Guid.NewGuid(),
+            WorkflowInstanceId = workflowContext.InstanceId,
             Status = NodeExecutionStatus.Running,
             StartTime = DateTime.UtcNow,
             ExecutionContext = nodeContext
@@ -60,7 +61,8 @@ public class DiscoverEtlFilesNode : ExecutableNodeBase
         try
         {
             this.RaiseOnStart(new NodeStartEventArgs
-            {                Timestamp = DateTime.UtcNow
+            {
+                Timestamp = DateTime.UtcNow
             });
 
             if (this.SearchPaths == null || this.SearchPaths.Length == 0)
@@ -85,7 +87,8 @@ public class DiscoverEtlFilesNode : ExecutableNodeBase
             instance.EndTime = DateTime.UtcNow;
 
             this.RaiseOnProgress(new ProgressEventArgs
-            {                Status = $"Discovered {resolvedFiles.Count} files",
+            {
+                Status = $"Discovered {resolvedFiles.Count} files",
                 ProgressPercent = 100
             });
         }

@@ -100,9 +100,9 @@ public class IfElseNode : ExecutableNodeBase
         return instance;
     }
 
-    public string[] GetAvailablePorts()
+    public static string[] GetAvailablePorts()
     {
-        return new[] { TrueBranchPort, FalseBranchPort };
+        return [TrueBranchPort, FalseBranchPort];
     }
 
     /// <summary>
@@ -118,7 +118,7 @@ public class IfElseNode : ExecutableNodeBase
         CancellationToken cancellationToken)
     {
         // Create execution state for script context
-        var state = this.CreateExecutionState(workflowContext, nodeContext);
+        var state = CreateExecutionState(workflowContext, nodeContext);
 
         // Create script options
         var scriptOptions = ScriptOptions.Default

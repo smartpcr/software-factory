@@ -12,18 +12,13 @@ using Microsoft.Extensions.Options;
 /// <summary>
 /// Factory for creating embedding generators based on configuration.
 /// </summary>
-public class EmbeddingGeneratorFactory
+/// <remarks>
+/// Initializes a new instance of the <see cref="EmbeddingGeneratorFactory"/> class.
+/// </remarks>
+/// <param name="loggerFactory">The logger factory.</param>
+public class EmbeddingGeneratorFactory(ILoggerFactory loggerFactory)
 {
-    private readonly ILoggerFactory loggerFactory;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="EmbeddingGeneratorFactory"/> class.
-    /// </summary>
-    /// <param name="loggerFactory">The logger factory.</param>
-    public EmbeddingGeneratorFactory(ILoggerFactory loggerFactory)
-    {
-        this.loggerFactory = loggerFactory;
-    }
+    private readonly ILoggerFactory loggerFactory = loggerFactory;
 
     /// <summary>
     /// Creates an embedding generator based on the provided options.

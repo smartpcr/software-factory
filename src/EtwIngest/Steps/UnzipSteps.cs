@@ -11,16 +11,10 @@ namespace EtwIngest.Steps
     using Reqnroll;
 
     [Binding]
-    public class UnzipSteps
+    public class UnzipSteps(ScenarioContext context, IReqnrollOutputHelper outputWriter)
     {
-        private readonly ScenarioContext context;
-        private readonly IReqnrollOutputHelper outputWriter;
-
-        public UnzipSteps(ScenarioContext context, IReqnrollOutputHelper outputWriter)
-        {
-            this.context = context;
-            this.outputWriter = outputWriter;
-        }
+        private readonly ScenarioContext context = context;
+        private readonly IReqnrollOutputHelper outputWriter = outputWriter;
 
         [Given("Given one or more zip files in folder \"([^\"]+)\"")]
         public void GivenGivenOneOrMoreZipFilesInFolder(string zipFolder)
@@ -50,7 +44,7 @@ namespace EtwIngest.Steps
         }
 
         [Then("I should see all etl files in folder \"([^\"]+)\"")]
-        public void ThenIShouldSeeAllEtlFilesInFolder(string etlFolder)
+        public static void ThenIShouldSeeAllEtlFilesInFolder(string etlFolder)
         {
             Directory.Exists(etlFolder).Should().BeTrue();
             var etlFiles = Directory.GetFiles(etlFolder, "*.etl", SearchOption.AllDirectories);
@@ -86,7 +80,7 @@ namespace EtwIngest.Steps
         }
 
         [Then(@"I should see the following ""(.+)"" files in folder ""(.+)""")]
-        public void ThenIShouldSeeTheFollowingFilesInFolder(string fileExt, string outputFolder, Table table)
+        public static void ThenIShouldSeeTheFollowingFilesInFolder(string fileExt, string outputFolder, Table table)
         {
             if (outputFolder.Contains("%HOME%", StringComparison.OrdinalIgnoreCase))
             {

@@ -15,7 +15,7 @@ namespace ExecutionEngine.Nodes.Definitions
 
         public string Expression { get; set; } = string.Empty;
 
-        public Dictionary<string, string> Cases { get; set; } = new();
+        public Dictionary<string, string> Cases { get; set; } = [];
 
         public override IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
         {

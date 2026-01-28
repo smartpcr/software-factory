@@ -21,7 +21,7 @@ using FluentAssertions;
 [TestClass]
 public class WhileNodeIntegrationTests
 {
-    private readonly List<string> tempFiles = new List<string>();
+    private readonly List<string> tempFiles = [];
 
     [TestMethod]
     public async Task WhileWithChildNode_ShouldCreateMultipleInstances()
@@ -32,8 +32,8 @@ public class WhileNodeIntegrationTests
         {
             WorkflowId = "while-multi-instance-test",
             WorkflowName = "While Multiple Instance Test",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
@@ -56,9 +56,9 @@ public class WhileNodeIntegrationTests
                         SetOutput(""iteration"", counter);
                     ")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "setup",
@@ -77,7 +77,7 @@ public class WhileNodeIntegrationTests
                     TargetNodeId = "while-1",
                     TriggerMessageType = MessageType.Complete
                 }
-            }
+            ]
         };
 
         // Act
@@ -113,8 +113,8 @@ public class WhileNodeIntegrationTests
         {
             WorkflowId = "while-complete-test",
             WorkflowName = "While OnComplete Test",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
@@ -149,9 +149,9 @@ public class WhileNodeIntegrationTests
                         SetOutput(""summary"", $""Completed {iterationCount} iterations, sum={finalSum}"");
                     ")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "setup",
@@ -177,7 +177,7 @@ public class WhileNodeIntegrationTests
                     TriggerMessageType = MessageType.Complete,
                     SourcePort = WhileNode.LoopBodyPort
                 }
-            }
+            ]
         };
 
         // Act
@@ -210,8 +210,8 @@ public class WhileNodeIntegrationTests
         {
             WorkflowId = "while-fail-test",
             WorkflowName = "While OnFail Test",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new WhileNodeDefinition
                 {
                     NodeId = "while-1",
@@ -226,16 +226,16 @@ public class WhileNodeIntegrationTests
                         SetOutput(""message"", ""Error was handled"");
                     ")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "while-1",
                     TargetNodeId = "error-handler",
                     TriggerMessageType = MessageType.Fail
                 }
-            }
+            ]
         };
 
         // Act
@@ -270,8 +270,8 @@ public class WhileNodeIntegrationTests
             WorkflowId = "while-maxiter-test",
             WorkflowName = "While Max Iterations Test",
             EntryPointNodeId = "while-1",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new WhileNodeDefinition
                 {
                     NodeId = "while-1",
@@ -293,9 +293,9 @@ public class WhileNodeIntegrationTests
                         SetOutput(""maxIterReached"", true);
                     ")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "while-1",
@@ -314,7 +314,7 @@ public class WhileNodeIntegrationTests
                     TargetNodeId = "error-handler",
                     TriggerMessageType = MessageType.Fail
                 }
-            }
+            ]
         };
 
         // Act
@@ -351,8 +351,8 @@ public class WhileNodeIntegrationTests
         {
             WorkflowId = "while-no-exec-test",
             WorkflowName = "While No Execution Test",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
@@ -381,9 +381,9 @@ public class WhileNodeIntegrationTests
                         SetOutput(""count"", iterationCount);
                     ")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "setup",
@@ -402,7 +402,7 @@ public class WhileNodeIntegrationTests
                     TargetNodeId = "completion-handler",
                     TriggerMessageType = MessageType.Complete
                 }
-            }
+            ]
         };
 
         // Act
@@ -440,8 +440,8 @@ public class WhileNodeIntegrationTests
         {
             WorkflowId = "while-dynamic-test",
             WorkflowName = "While Dynamic Condition Test",
-            Nodes = new List<NodeDefinition>
-            {
+            Nodes =
+            [
                 new CSharpScriptNodeDefinition
                 {
                     NodeId = "setup",
@@ -466,9 +466,9 @@ public class WhileNodeIntegrationTests
                         SetOutput(""processed"", item);
                     ")
                 }
-            },
-            Connections = new List<NodeConnection>
-            {
+            ],
+            Connections =
+            [
                 new NodeConnection
                 {
                     SourceNodeId = "setup",
@@ -487,7 +487,7 @@ public class WhileNodeIntegrationTests
                     TargetNodeId = "while-1",
                     TriggerMessageType = MessageType.Complete
                 }
-            }
+            ]
         };
 
         // Act

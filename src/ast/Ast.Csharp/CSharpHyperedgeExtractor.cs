@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 
 namespace Ast.Csharp;
+
 using System.Security.Cryptography;
 using System.Text;
 using Ast.Core;
@@ -21,7 +22,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 ///
 /// Hyperedges preserve this: {f, a, b, c} with roles {callee, arg_0, arg_1, arg_2}
 /// </summary>
-public class CSharpHyperedgeExtractor
+public partial class CSharpHyperedgeExtractor
 {
     private readonly Dictionary<string, HypergraphNode> nodes = [];
     private readonly List<Hyperedge> hyperedges = [];
@@ -34,7 +35,7 @@ public class CSharpHyperedgeExtractor
     private readonly Dictionary<string, List<string>> variableUses = [];
 
     // DI registration method names
-    private static readonly HashSet<string> DiRegistrationMethods = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> diRegistrationMethods = new(StringComparer.OrdinalIgnoreCase)
     {
         "AddSingleton", "AddScoped", "AddTransient",
         "AddHostedService", "AddHttpClient",
@@ -43,20 +44,20 @@ public class CSharpHyperedgeExtractor
     };
 
     // HTTP method attributes for API endpoints
-    private static readonly HashSet<string> HttpMethodAttributes = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> httpMethodAttributes = new(StringComparer.OrdinalIgnoreCase)
     {
         "HttpGet", "HttpPost", "HttpPut", "HttpDelete", "HttpPatch", "HttpHead", "HttpOptions",
         "Route", "ApiController"
     };
 
     // Logging method names
-    private static readonly HashSet<string> LoggingMethods = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> loggingMethods = new(StringComparer.OrdinalIgnoreCase)
     {
         "LogTrace", "LogDebug", "LogInformation", "LogWarning", "LogError", "LogCritical", "Log"
     };
 
     // File system methods
-    private static readonly HashSet<string> FileSystemMethods = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> fileSystemMethods = new(StringComparer.OrdinalIgnoreCase)
     {
         "ReadAllText", "ReadAllLines", "ReadAllBytes", "WriteAllText", "WriteAllLines", "WriteAllBytes",
         "OpenRead", "OpenWrite", "Create", "Delete", "Exists", "Copy", "Move",
@@ -196,7 +197,7 @@ public class CSharpHyperedgeExtractor
         // Captures multi-inheritance (interfaces) in one hyperedge
         if (classDecl.BaseList != null)
         {
-            for (int i = 0; i < classDecl.BaseList.Types.Count; i++)
+            for (var i = 0; i < classDecl.BaseList.Types.Count; i++)
             {
                 var baseType = classDecl.BaseList.Types[i];
                 var baseTypeName = baseType.Type.ToString();
@@ -284,7 +285,7 @@ public class CSharpHyperedgeExtractor
 
         if (interfaceDecl.BaseList != null)
         {
-            for (int i = 0; i < interfaceDecl.BaseList.Types.Count; i++)
+            for (var i = 0; i < interfaceDecl.BaseList.Types.Count; i++)
             {
                 var baseType = interfaceDecl.BaseList.Types[i];
                 var baseNode = this.GetOrCreateNode(baseType.Type.ToString(), "interface", baseType.GetLocation());
@@ -315,7 +316,7 @@ public class CSharpHyperedgeExtractor
 
         if (structDecl.BaseList != null)
         {
-            for (int i = 0; i < structDecl.BaseList.Types.Count; i++)
+            for (var i = 0; i < structDecl.BaseList.Types.Count; i++)
             {
                 var baseType = structDecl.BaseList.Types[i];
                 var baseNode = this.GetOrCreateNode(baseType.Type.ToString(), "interface", baseType.GetLocation());
@@ -347,7 +348,7 @@ public class CSharpHyperedgeExtractor
         // Primary constructor parameters
         if (recordDecl.ParameterList != null)
         {
-            for (int i = 0; i < recordDecl.ParameterList.Parameters.Count; i++)
+            for (var i = 0; i < recordDecl.ParameterList.Parameters.Count; i++)
             {
                 var param = recordDecl.ParameterList.Parameters[i];
                 var paramNode = this.GetOrCreateNode(param.Identifier.Text, "parameter", param.GetLocation());
@@ -437,7 +438,7 @@ public class CSharpHyperedgeExtractor
         roles[returnTypeNode.Id] = "return_type";
 
         // Parameters - ALL together in one hyperedge
-        for (int i = 0; i < method.ParameterList.Parameters.Count; i++)
+        for (var i = 0; i < method.ParameterList.Parameters.Count; i++)
         {
             var param = method.ParameterList.Parameters[i];
             var paramNode = this.GetOrCreateNode(param.Identifier.Text, "parameter", param.GetLocation());
@@ -458,7 +459,7 @@ public class CSharpHyperedgeExtractor
         // Type parameters (generics)
         if (method.TypeParameterList != null)
         {
-            for (int i = 0; i < method.TypeParameterList.Parameters.Count; i++)
+            for (var i = 0; i < method.TypeParameterList.Parameters.Count; i++)
             {
                 var typeParam = method.TypeParameterList.Parameters[i];
                 var typeParamNode = this.GetOrCreateNode(typeParam.Identifier.Text, "type_parameter", typeParam.GetLocation());
@@ -505,7 +506,7 @@ public class CSharpHyperedgeExtractor
         roles[ctorNode.Id] = "constructor";
 
         // Parameters
-        for (int i = 0; i < ctor.ParameterList.Parameters.Count; i++)
+        for (var i = 0; i < ctor.ParameterList.Parameters.Count; i++)
         {
             var param = ctor.ParameterList.Parameters[i];
             var paramNode = this.GetOrCreateNode(param.Identifier.Text, "parameter", param.GetLocation());
@@ -764,7 +765,7 @@ public class CSharpHyperedgeExtractor
         roles[methodNode.Id] = "callee";
 
         // Arguments - ALL together in one hyperedge
-        for (int i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
+        for (var i = 0; i < invocation.ArgumentList.Arguments.Count; i++)
         {
             var arg = invocation.ArgumentList.Arguments[i];
             var argRepr = GetExpressionRepr(arg.Expression);
@@ -788,12 +789,12 @@ public class CSharpHyperedgeExtractor
     private void ExtractArchitecturalPatterns(InvocationExpressionSyntax invocation, string methodName)
     {
         // DI Service Registration
-        if (DiRegistrationMethods.Contains(methodName))
+        if (diRegistrationMethods.Contains(methodName))
         {
             this.ExtractServiceRegistration(invocation, methodName);
         }
         // Logging calls
-        else if (LoggingMethods.Contains(methodName))
+        else if (loggingMethods.Contains(methodName))
         {
             this.ExtractLoggingCall(invocation, methodName);
         }
@@ -803,7 +804,7 @@ public class CSharpHyperedgeExtractor
             this.ExtractHttpClientUsage(invocation);
         }
         // File system access
-        else if (FileSystemMethods.Contains(methodName))
+        else if (fileSystemMethods.Contains(methodName))
         {
             this.ExtractFileSystemAccess(invocation, methodName);
         }
@@ -939,7 +940,7 @@ public class CSharpHyperedgeExtractor
                 roles[templateNode.Id] = "message_template";
 
                 // Extract structured logging placeholders {PropertyName}
-                var matches = System.Text.RegularExpressions.Regex.Matches(messageTemplate, @"\{(\w+)\}");
+                var matches = MyRegex().Matches(messageTemplate);
                 foreach (System.Text.RegularExpressions.Match match in matches)
                 {
                     structuredFields.Add(match.Groups[1].Value);
@@ -1351,7 +1352,7 @@ public class CSharpHyperedgeExtractor
 
         if (objectCreation.ArgumentList != null)
         {
-            for (int i = 0; i < objectCreation.ArgumentList.Arguments.Count; i++)
+            for (var i = 0; i < objectCreation.ArgumentList.Arguments.Count; i++)
             {
                 var arg = objectCreation.ArgumentList.Arguments[i];
                 var argRepr = GetExpressionRepr(arg.Expression);
@@ -1487,7 +1488,7 @@ public class CSharpHyperedgeExtractor
                 roles[paramNode.Id] = "param_0";
                 break;
             case ParenthesizedLambdaExpressionSyntax parens:
-                for (int i = 0; i < parens.ParameterList.Parameters.Count; i++)
+                for (var i = 0; i < parens.ParameterList.Parameters.Count; i++)
                 {
                     var param = parens.ParameterList.Parameters[i];
                     var pNode = this.GetOrCreateNode(param.Identifier.Text, "parameter", param.GetLocation());
@@ -1515,7 +1516,7 @@ public class CSharpHyperedgeExtractor
         roles[sourceNode.Id] = "source";
 
         // Query body clauses
-        int clauseIndex = 0;
+        var clauseIndex = 0;
         foreach (var clause in query.Body.Clauses)
         {
             var clauseNode = this.GetOrCreateNode(clause.ToString().Split(' ')[0], "query_clause", clause.GetLocation());
@@ -1634,7 +1635,7 @@ public class CSharpHyperedgeExtractor
         nodes.Add(tryNode);
         roles[tryNode.Id] = "try_block";
 
-        for (int i = 0; i < tryStmt.Catches.Count; i++)
+        for (var i = 0; i < tryStmt.Catches.Count; i++)
         {
             var catchClause = tryStmt.Catches[i];
             var exceptionType = catchClause.Declaration?.Type.ToString() ?? "Exception";
@@ -1687,14 +1688,14 @@ public class CSharpHyperedgeExtractor
             var nodes = new List<HypergraphNode>();
             var roles = new Dictionary<string, string>();
 
-            for (int i = 0; i < defLocations.Count; i++)
+            for (var i = 0; i < defLocations.Count; i++)
             {
                 var defNode = this.GetOrCreateNode($"{varName}@{defLocations[i]}", "definition", null);
                 nodes.Add(defNode);
                 roles[defNode.Id] = $"def_{i}";
             }
 
-            for (int i = 0; i < useLocations.Count; i++)
+            for (var i = 0; i < useLocations.Count; i++)
             {
                 var useNode = this.GetOrCreateNode($"{varName}@{useLocations[i]}", "use", null);
                 nodes.Add(useNode);
@@ -1752,7 +1753,7 @@ public class CSharpHyperedgeExtractor
         {
             Id = $"he_{++this.edgeCounter:D4}",
             EdgeType = edgeType,
-            NodeIds = nodes.Select(n => n.Id).ToList(),
+            NodeIds = [.. nodes.Select(n => n.Id)],
             Roles = roles,
             Languages = ["csharp"],
             Metadata = metadata.ToDictionary(m => m.Key, m => m.Value)
@@ -1776,7 +1777,7 @@ public class CSharpHyperedgeExtractor
 
     private static List<string> GetModifiers(SyntaxTokenList modifiers)
     {
-        return modifiers.Select(m => m.Text).ToList();
+        return [.. modifiers.Select(m => m.Text)];
     }
 
     private static string GetExpressionRepr(ExpressionSyntax expr)
@@ -1784,4 +1785,7 @@ public class CSharpHyperedgeExtractor
         var text = expr.ToString();
         return text.Length > 50 ? text[..50] + "..." : text;
     }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"\{(\w+)\}")]
+    private static partial System.Text.RegularExpressions.Regex MyRegex();
 }

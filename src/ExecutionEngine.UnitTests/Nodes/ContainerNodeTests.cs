@@ -41,8 +41,8 @@ public class ContainerNodeTests
         var definition = new ContainerNodeDefinition
         {
             NodeId = "container-1",
-            ChildNodes = new List<NodeDefinition>(),
-            ChildConnections = new  List<NodeConnection>()
+            ChildNodes = [],
+            ChildConnections = []
         };
 
         // Act
@@ -61,8 +61,8 @@ public class ContainerNodeTests
         var definition = new ContainerNodeDefinition
         {
             NodeId = "container-1",
-            ChildNodes = new List<NodeDefinition>(),
-            ChildConnections = new List<NodeConnection>()
+            ChildNodes = [],
+            ChildConnections = []
         };
 
         // Act
@@ -80,16 +80,16 @@ public class ContainerNodeTests
         // Arrange: Create a→b→c→a cycle
         var childNodes = new List<NodeDefinition>
         {
-            this.CreateScriptChild("a", "// Node A"),
-            this.CreateScriptChild("b", "// Node B"),
-            this.CreateScriptChild("c", "// Node C")
+            CreateScriptChild("a", "// Node A"),
+            CreateScriptChild("b", "// Node B"),
+            CreateScriptChild("c", "// Node C")
         };
 
         var childConnections = new List<NodeConnection>
         {
-            new NodeConnection { SourceNodeId = "a", TargetNodeId = "b" },
-            new NodeConnection { SourceNodeId = "b", TargetNodeId = "c" },
-            new NodeConnection { SourceNodeId = "c", TargetNodeId = "a" } // Cycle!
+            new() { SourceNodeId = "a", TargetNodeId = "b" },
+            new() { SourceNodeId = "b", TargetNodeId = "c" },
+            new() { SourceNodeId = "c", TargetNodeId = "a" } // Cycle!
         };
 
         var definition = new ContainerNodeDefinition
@@ -114,13 +114,13 @@ public class ContainerNodeTests
         // Arrange
         var childNodes = new List<NodeDefinition>
         {
-            this.CreateScriptChild("a", "// Node A"),
-            this.CreateScriptChild("b", "// Node B")
+            CreateScriptChild("a", "// Node A"),
+            CreateScriptChild("b", "// Node B")
         };
 
         var childConnections = new List<NodeConnection>
         {
-            new NodeConnection { SourceNodeId = "a", TargetNodeId = "z" } // 'z' doesn't exist!
+            new() { SourceNodeId = "a", TargetNodeId = "z" } // 'z' doesn't exist!
         };
 
         var definition = new ContainerNodeDefinition
@@ -177,15 +177,15 @@ public class ContainerNodeTests
         // Arrange: a→b→c sequential chain
         var childNodes = new List<NodeDefinition>
         {
-            this.CreateScriptChild("a", "SetOutput(\"order\", \"1\");"),
-            this.CreateScriptChild("b", "SetOutput(\"order\", \"2\");"),
-            this.CreateScriptChild("c", "SetOutput(\"order\", \"3\");")
+            CreateScriptChild("a", "SetOutput(\"order\", \"1\");"),
+            CreateScriptChild("b", "SetOutput(\"order\", \"2\");"),
+            CreateScriptChild("c", "SetOutput(\"order\", \"3\");")
         };
 
         var childConnections = new List<NodeConnection>
         {
-            new NodeConnection { SourceNodeId = "a", TargetNodeId = "b", TriggerMessageType = MessageType.Complete },
-            new NodeConnection { SourceNodeId = "b", TargetNodeId = "c", TriggerMessageType = MessageType.Complete }
+            new() { SourceNodeId = "a", TargetNodeId = "b", TriggerMessageType = MessageType.Complete },
+            new() { SourceNodeId = "b", TargetNodeId = "c", TriggerMessageType = MessageType.Complete }
         };
 
         var definition = new ContainerNodeDefinition
@@ -244,14 +244,14 @@ public class ContainerNodeTests
         // Arrange
         var childNodes = new List<NodeDefinition>
         {
-            this.CreateScriptChild("child-a", "SetOutput(\"value\", \"A\");"),
-            this.CreateScriptChild("child-b", "SetOutput(\"value\", \"B\");")
+            CreateScriptChild("child-a", "SetOutput(\"value\", \"A\");"),
+            CreateScriptChild("child-b", "SetOutput(\"value\", \"B\");")
         };
 
         var definition = new ContainerNodeDefinition
         {
             NodeId = "container-1",
-            ChildConnections = new List<NodeConnection>(),
+            ChildConnections = [],
             ChildNodes = childNodes
         };
 
@@ -304,19 +304,19 @@ public class ContainerNodeTests
         var childNodes = new List<NodeDefinition>();
         for (var i = 0; i < childCount; i++)
         {
-            childNodes.Add(this.CreateScriptChild($"child-{i}", $"SetOutput(\"index\", {i});"));
+            childNodes.Add(CreateScriptChild($"child-{i}", $"SetOutput(\"index\", {i});"));
         }
 
         return new ContainerNodeDefinition
         {
             NodeId = "container-1",
             ChildNodes = childNodes,
-            ChildConnections = new List<NodeConnection>(),
+            ChildConnections = [],
             ExecutionMode = ExecutionMode.Parallel
         };
     }
 
-    private NodeDefinition CreateScriptChild(string nodeId, string script)
+    private static NodeDefinition CreateScriptChild(string nodeId, string script)
     {
         return new CSharpTaskNodeDefinition
         {
@@ -326,4 +326,3 @@ public class ContainerNodeTests
         };
     }
 }
-

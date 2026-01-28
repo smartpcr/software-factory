@@ -39,7 +39,7 @@ public class HttpEmbeddingGeneratorTests
     }
 
     [TestMethod]
-    public async Task GenerateEmbeddingAsync_EmptyText_ReturnsZeroVector()
+    public async Task GenerateEmbeddingAsync_EmptyText_ReturnsZeroVectorAsync()
     {
         // Arrange
         var options = Options.Create(new EmbeddingGeneratorOptions
@@ -60,7 +60,7 @@ public class HttpEmbeddingGeneratorTests
     }
 
     [TestMethod]
-    public async Task GenerateEmbeddingAsync_WhitespaceText_ReturnsZeroVector()
+    public async Task GenerateEmbeddingAsync_WhitespaceText_ReturnsZeroVectorAsync()
     {
         // Arrange
         var options = Options.Create(new EmbeddingGeneratorOptions
@@ -81,7 +81,7 @@ public class HttpEmbeddingGeneratorTests
     }
 
     [TestMethod]
-    public async Task GenerateEmbeddingAsync_OllamaProvider_SendsCorrectRequest()
+    public async Task GenerateEmbeddingAsync_OllamaProvider_SendsCorrectRequestAsync()
     {
         // Arrange
         var expectedEmbedding = new float[] { 0.1f, 0.2f, 0.3f };
@@ -119,7 +119,7 @@ public class HttpEmbeddingGeneratorTests
     }
 
     [TestMethod]
-    public async Task GenerateEmbeddingAsync_OpenAIProvider_SendsCorrectRequest()
+    public async Task GenerateEmbeddingAsync_OpenAIProvider_SendsCorrectRequestAsync()
     {
         // Arrange
         var expectedEmbedding = new float[] { 0.1f, 0.2f, 0.3f };
@@ -163,7 +163,7 @@ public class HttpEmbeddingGeneratorTests
     }
 
     [TestMethod]
-    public async Task GenerateBatchEmbeddingsAsync_ProcessesInBatches()
+    public async Task GenerateBatchEmbeddingsAsync_ProcessesInBatchesAsync()
     {
         // Arrange
         var embedding1 = new float[] { 0.1f, 0.2f };
@@ -220,7 +220,7 @@ public class HttpEmbeddingGeneratorTests
     }
 
     [TestMethod]
-    public async Task IsAvailableAsync_EndpointReachable_ReturnsTrue()
+    public async Task IsAvailableAsync_EndpointReachable_ReturnsTrueAsync()
     {
         // Arrange
         var mockHandler = CreateMockHandler("{}", HttpStatusCode.OK);
@@ -244,7 +244,7 @@ public class HttpEmbeddingGeneratorTests
     }
 
     [TestMethod]
-    public async Task IsAvailableAsync_EndpointUnreachable_ReturnsFalse()
+    public async Task IsAvailableAsync_EndpointUnreachable_ReturnsFalseAsync()
     {
         // Arrange
         var mockHandler = new Mock<HttpMessageHandler>();
@@ -290,7 +290,7 @@ public class HttpEmbeddingGeneratorTests
     }
 
     [TestMethod]
-    public async Task DisposedGenerator_ThrowsObjectDisposedException()
+    public async Task DisposedGenerator_ThrowsObjectDisposedExceptionAsync()
     {
         // Arrange
         var options = Options.Create(new EmbeddingGeneratorOptions());

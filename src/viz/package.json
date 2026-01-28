@@ -1,0 +1,41 @@
+{
+  "name": "nvl-graph",
+  "version": "1.0.0",
+  "description": "Graph visualization library built with Neo4j NVL",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.esm.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "src"],
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "react", "graph", "visualization", "network",
+    "nvl", "neo4j", "graph", "social-network-analysis"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@neo4j-nvl/base": "^1.0.0",
+    "@neo4j-nvl/react": "^1.0.0",
+    "d3-force": "^3.0.0",
+    "d3-hierarchy": "^3.1.2",
+    "dagre": "^0.8.5",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/d3-force": "^3.0.10",
+    "@types/d3-hierarchy": "^3.1.7",
+    "@types/dagre": "^0.7.52",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.11"
+  }
+}
