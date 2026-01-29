@@ -1,0 +1,102 @@
+# Structural Relationship Detection Rules
+# This file contains rules for detecting structural relationships in C# code.
+
+rules:
+  # ─────────────────────────────────────────────────────────────
+  # INHERITANCE
+  # ─────────────────────────────────────────────────────────────
+  - id: structural-inheritance
+    name: "Class Inheritance"
+    category: structural
+    relationshipType: Inheritance
+    enabled: true
+    priority: 100
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: ClassDeclaration
+            condition: "inheritsFrom('*')"
+            extract:
+              className: "node.Identifier.Text"
+              baseClass: "node.BaseList.Types.First().Type.ToString()"
+              
+    output:
+      sourceNodeType: Class
+      targetNodeType: Class
+      edgeType: InheritsFrom
+      properties:
+        - name: className
+        - name: baseClass
+        
+    confidence:
+      baseScore: 0.95
+      evidenceWeights:
+        astMatch: 0.95
+      minimumThreshold: 0.90
+
+  # ─────────────────────────────────────────────────────────────
+  # INTERFACE IMPLEMENTATION
+  # ─────────────────────────────────────────────────────────────
+  - id: structural-interface-impl
+    name: "Interface Implementation"
+    category: structural
+    relationshipType: InterfaceImplementation
+    enabled: true
+    priority: 95
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: ClassDeclaration
+            condition: "implements('I*')"
+            extract:
+              className: "node.Identifier.Text"
+              interface: "node.BaseList.Types.Where(t => t.StartsWith('I')).First().Type.ToString()"
+              
+    output:
+      sourceNodeType: Class
+      targetNodeType: Interface
+      edgeType: Implements
+      properties:
+        - name: className
+        - name: interface
+        
+    confidence:
+      baseScore: 0.95
+      minimumThreshold: 0.90
+
+  # ─────────────────────────────────────────────────────────────
+  # DEPENDENCY INJECTION
+  # ─────────────────────────────────────────────────────────────
+  - id: structural-di-constructor
+    name: "Constructor Injection"
+    category: structural
+    relationshipType: DependencyInjection
+    enabled: true
+    priority: 90
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: ConstructorDeclaration
+            extract:
+              className: "node.Parent.Identifier.Text"
+              dependencies: "node.ParameterList.Parameters.Select(p => p.Type.ToString())"
+              
+    output:
+      sourceNodeType: Class
+      targetNodeType: Service
+      edgeType: DependsOn
+      properties:
+        - name: className
+        - name: dependencies
+        - name: injectionType
+          value: "Constructor"
+        
+    confidence:
+      baseScore: 0.90
+      minimumThreshold: 0.85
