@@ -1,5 +1,6 @@
 # Structural Relationship Detection Rules
 # This file contains rules for detecting structural relationships in C# code.
+# Phase 1: Structural Relationships
 
 rules:
   # ─────────────────────────────────────────────────────────────
@@ -21,6 +22,7 @@ rules:
             extract:
               className: "node.Identifier.Text"
               baseClass: "node.BaseList.Types.First().Type.ToString()"
+              namespace: "GetNamespace(node)"
               
     output:
       sourceNodeType: Class
@@ -29,12 +31,43 @@ rules:
       properties:
         - name: className
         - name: baseClass
+        - name: namespace
         
     confidence:
       baseScore: 0.95
       evidenceWeights:
         astMatch: 0.95
       minimumThreshold: 0.90
+
+  - id: structural-record-inheritance
+    name: "Record Inheritance"
+    category: structural
+    relationshipType: Inheritance
+    enabled: true
+    priority: 99
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: RecordDeclaration
+            condition: "inheritsFrom('*')"
+            extract:
+              recordName: "node.Identifier.Text"
+              baseRecord: "node.BaseList.Types.First().Type.ToString()"
+              namespace: "GetNamespace(node)"
+              
+    output:
+      sourceNodeType: Record
+      targetNodeType: Record
+      edgeType: InheritsFrom
+      properties:
+        - name: recordName
+        - name: baseRecord
+        - name: namespace
+        
+    confidence:
+      baseScore: 0.95
 
   # ─────────────────────────────────────────────────────────────
   # INTERFACE IMPLEMENTATION
@@ -54,7 +87,8 @@ rules:
             condition: "implements('I*')"
             extract:
               className: "node.Identifier.Text"
-              interface: "node.BaseList.Types.Where(t => t.StartsWith('I')).First().Type.ToString()"
+              interfaces: "GetImplementedInterfaces(node)"
+              namespace: "GetNamespace(node)"
               
     output:
       sourceNodeType: Class
@@ -62,11 +96,107 @@ rules:
       edgeType: Implements
       properties:
         - name: className
-        - name: interface
+        - name: interfaces
+        - name: namespace
         
     confidence:
       baseScore: 0.95
       minimumThreshold: 0.90
+
+  - id: structural-interface-inheritance
+    name: "Interface Inheritance"
+    category: structural
+    relationshipType: InterfaceInheritance
+    enabled: true
+    priority: 94
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: InterfaceDeclaration
+            condition: "inheritsFrom('I*')"
+            extract:
+              interfaceName: "node.Identifier.Text"
+              baseInterfaces: "GetBaseInterfaces(node)"
+              namespace: "GetNamespace(node)"
+              
+    output:
+      sourceNodeType: Interface
+      targetNodeType: Interface
+      edgeType: Extends
+      properties:
+        - name: interfaceName
+        - name: baseInterfaces
+        - name: namespace
+        
+    confidence:
+      baseScore: 0.95
+
+  # ─────────────────────────────────────────────────────────────
+  # COMPOSITION
+  # ─────────────────────────────────────────────────────────────
+  - id: structural-composition-field
+    name: "Field Composition"
+    category: structural
+    relationshipType: Composition
+    enabled: true
+    priority: 85
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: FieldDeclaration
+            condition: "!isStatic && isPrivate"
+            extract:
+              fieldName: "node.Declaration.Variables.First().Identifier.Text"
+              fieldType: "node.Declaration.Type.ToString()"
+              containingClass: "GetContainingType(node)"
+              namespace: "GetNamespace(node)"
+              
+    output:
+      sourceNodeType: Class
+      targetNodeType: Type
+      edgeType: Contains
+      properties:
+        - name: fieldName
+        - name: fieldType
+        - name: containingClass
+        
+    confidence:
+      baseScore: 0.85
+
+  - id: structural-composition-property
+    name: "Property Composition"
+    category: structural
+    relationshipType: Composition
+    enabled: true
+    priority: 84
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: PropertyDeclaration
+            condition: "!isStatic"
+            extract:
+              propertyName: "node.Identifier.Text"
+              propertyType: "node.Type.ToString()"
+              containingClass: "GetContainingType(node)"
+              namespace: "GetNamespace(node)"
+              
+    output:
+      sourceNodeType: Class
+      targetNodeType: Type
+      edgeType: HasProperty
+      properties:
+        - name: propertyName
+        - name: propertyType
+        - name: containingClass
+        
+    confidence:
+      baseScore: 0.85
 
   # ─────────────────────────────────────────────────────────────
   # DEPENDENCY INJECTION
@@ -83,9 +213,11 @@ rules:
         language: csharp
         patterns:
           - nodeType: ConstructorDeclaration
+            condition: "hasParameters"
             extract:
-              className: "node.Parent.Identifier.Text"
-              dependencies: "node.ParameterList.Parameters.Select(p => p.Type.ToString())"
+              className: "GetContainingType(node)"
+              parameters: "GetConstructorParameters(node)"
+              namespace: "GetNamespace(node)"
               
     output:
       sourceNodeType: Class
@@ -93,10 +225,180 @@ rules:
       edgeType: DependsOn
       properties:
         - name: className
-        - name: dependencies
+        - name: parameters
         - name: injectionType
           value: "Constructor"
         
     confidence:
       baseScore: 0.90
       minimumThreshold: 0.85
+
+  - id: structural-di-property
+    name: "Property Injection"
+    category: structural
+    relationshipType: DependencyInjection
+    enabled: true
+    priority: 88
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: PropertyDeclaration
+            condition: "hasAttribute('Inject') || hasAttribute('Autowired') || hasAttribute('FromServices')"
+            extract:
+              propertyName: "node.Identifier.Text"
+              propertyType: "node.Type.ToString()"
+              containingClass: "GetContainingType(node)"
+              
+    output:
+      sourceNodeType: Class
+      targetNodeType: Service
+      edgeType: DependsOn
+      properties:
+        - name: propertyName
+        - name: propertyType
+        - name: containingClass
+        - name: injectionType
+          value: "Property"
+        
+    confidence:
+      baseScore: 0.85
+
+  - id: structural-di-registration
+    name: "Service Registration"
+    category: structural
+    relationshipType: ServiceRegistration
+    enabled: true
+    priority: 92
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: InvocationExpression
+            condition: "methodName matches 'Add(Scoped|Transient|Singleton|Hosted)'"
+            extract:
+              methodName: "GetMethodName(node)"
+              serviceType: "GetGenericTypeArguments(node)"
+              implementationType: "GetImplementationType(node)"
+              lifetime: "GetLifetime(node)"
+              
+    output:
+      sourceNodeType: ServiceCollection
+      targetNodeType: Service
+      edgeType: Registers
+      properties:
+        - name: serviceType
+        - name: implementationType
+        - name: lifetime
+        
+    confidence:
+      baseScore: 0.95
+
+  # ─────────────────────────────────────────────────────────────
+  # NAMESPACE MEMBERSHIP
+  # ─────────────────────────────────────────────────────────────
+  - id: structural-namespace
+    name: "Namespace Membership"
+    category: structural
+    relationshipType: NamespaceMembership
+    enabled: true
+    priority: 100
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: ClassDeclaration
+            extract:
+              typeName: "node.Identifier.Text"
+              namespace: "GetNamespace(node)"
+              typeKind: "Class"
+          - nodeType: InterfaceDeclaration
+            extract:
+              typeName: "node.Identifier.Text"
+              namespace: "GetNamespace(node)"
+              typeKind: "Interface"
+          - nodeType: RecordDeclaration
+            extract:
+              typeName: "node.Identifier.Text"
+              namespace: "GetNamespace(node)"
+              typeKind: "Record"
+          - nodeType: EnumDeclaration
+            extract:
+              typeName: "node.Identifier.Text"
+              namespace: "GetNamespace(node)"
+              typeKind: "Enum"
+          - nodeType: StructDeclaration
+            extract:
+              typeName: "node.Identifier.Text"
+              namespace: "GetNamespace(node)"
+              typeKind: "Struct"
+              
+    output:
+      sourceNodeType: Type
+      targetNodeType: Namespace
+      edgeType: BelongsTo
+      properties:
+        - name: typeName
+        - name: namespace
+        - name: typeKind
+        
+    confidence:
+      baseScore: 1.0
+
+  # ─────────────────────────────────────────────────────────────
+  # PROJECT REFERENCES
+  # ─────────────────────────────────────────────────────────────
+  - id: structural-project-ref
+    name: "Project Reference"
+    category: structural
+    relationshipType: ProjectReference
+    enabled: true
+    priority: 100
+    
+    detection:
+      - strategy: config
+        filePattern: "**/*.csproj"
+        parser: msbuild
+        xpath: "//ProjectReference/@Include"
+        extract:
+          referencePath: "value"
+          
+    output:
+      sourceNodeType: Project
+      targetNodeType: Project
+      edgeType: References
+      properties:
+        - name: referencePath
+        
+    confidence:
+      baseScore: 0.95
+
+  - id: structural-package-ref
+    name: "Package Reference"
+    category: structural
+    relationshipType: PackageReference
+    enabled: true
+    priority: 100
+    
+    detection:
+      - strategy: config
+        filePattern: "**/*.csproj"
+        parser: msbuild
+        xpath: "//PackageReference"
+        extract:
+          packageName: "@Include"
+          version: "@Version"
+          
+    output:
+      sourceNodeType: Project
+      targetNodeType: Package
+      edgeType: DependsOn
+      properties:
+        - name: packageName
+        - name: version
+        
+    confidence:
+      baseScore: 0.95

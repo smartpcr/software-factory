@@ -64,6 +64,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "docs", "docs", "{6A9DBAD1-8
 		docs\lsp-deep-dive.md = docs\lsp-deep-dive.md
 		docs\LSP_MIGRATION_PLAN.md = docs\LSP_MIGRATION_PLAN.md
 		docs\code_intelligence_implementation_plan.md = docs\code_intelligence_implementation_plan.md
+		docs\CODE_INTELLIGENCE_ARCHITECTURE.md = docs\CODE_INTELLIGENCE_ARCHITECTURE.md
+		docs\code_intelligence_requirements.md = docs\code_intelligence_requirements.md
 	EndProjectSection
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ExecutionEngine.UnitTests", "src\ExecutionEngine.UnitTests\ExecutionEngine.UnitTests.csproj", "{AA6DE5A7-B826-425D-882D-EAF9A9E0BD09}"
@@ -119,8 +121,6 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ast.E2E.IntegrationTests", "src\ast\Ast.E2E.IntegrationTests\Ast.E2E.IntegrationTests.csproj", "{4D6EB38C-8C86-4DA7-9A65-EEA81DCC6D43}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ast.Lsp.IntegrationTests", "src\ast\Ast.Lsp.IntegrationTests\Ast.Lsp.IntegrationTests.csproj", "{E93AB600-8C90-44D4-B128-B03480C6F1BB}"
-EndProject
-Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "ast", "ast", "{C033017E-9C7F-7D0F-195C-77EA714944A2}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CodeIntelligence", "src\ast\CodeIntelligence\CodeIntelligence.csproj", "{D35CA0D0-C4F0-4B82-8643-39C1D700FFC8}"
 EndProject
