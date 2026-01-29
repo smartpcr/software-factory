@@ -271,7 +271,7 @@ rules:
     relationshipType: ServiceRegistration
     enabled: true
     priority: 92
-    
+
     detection:
       - strategy: ast
         language: csharp
@@ -283,7 +283,7 @@ rules:
               serviceType: "GetGenericTypeArguments(node)"
               implementationType: "GetImplementationType(node)"
               lifetime: "GetLifetime(node)"
-              
+
     output:
       sourceNodeType: ServiceCollection
       targetNodeType: Service
@@ -292,7 +292,40 @@ rules:
         - name: serviceType
         - name: implementationType
         - name: lifetime
-        
+
+    confidence:
+      baseScore: 0.95
+
+  - id: structural-di-registration-unity
+    name: "Unity Container Registration"
+    category: structural
+    relationshipType: ServiceRegistration
+    enabled: true
+    priority: 91
+
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: InvocationExpression
+            condition: "methodName matches 'Register(Type|Instance|Factory|Singleton)'"
+            extract:
+              methodName: "GetMethodName(node)"
+              serviceType: "GetGenericTypeArguments(node)"
+              implementationType: "GetImplementationType(node)"
+              lifetime: "GetUnityLifetime(node)"
+
+    output:
+      sourceNodeType: UnityContainer
+      targetNodeType: Service
+      edgeType: Registers
+      properties:
+        - name: serviceType
+        - name: implementationType
+        - name: lifetime
+        - name: containerType
+          value: "Unity"
+
     confidence:
       baseScore: 0.95
 

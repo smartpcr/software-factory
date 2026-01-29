@@ -16,21 +16,33 @@ public sealed class DependencyInjectionAnalyzer
 {
     private static readonly HashSet<string> RegistrationMethods = new(StringComparer.Ordinal)
     {
+        // Microsoft.Extensions.DependencyInjection
         "AddScoped",
         "AddTransient",
         "AddSingleton",
         "AddHostedService",
         "AddKeyedScoped",
         "AddKeyedTransient",
-        "AddKeyedSingleton"
+        "AddKeyedSingleton",
+
+        // Unity Container
+        "RegisterType",
+        "RegisterInstance",
+        "RegisterFactory",
+        "RegisterSingleton"
     };
 
     private static readonly HashSet<string> InjectionAttributes = new(StringComparer.OrdinalIgnoreCase)
     {
+        // Common injection attributes
         "Inject",
         "Autowired",
         "FromServices",
-        "FromKeyedServices"
+        "FromKeyedServices",
+
+        // Unity Container
+        "Dependency",
+        "OptionalDependency"
     };
 
     /// <summary>

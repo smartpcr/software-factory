@@ -289,7 +289,7 @@ namespace Test
 namespace Test
 {
     public class ConcreteService { }
-    
+
     public class MyService
     {
         public MyService(ConcreteService service) { }
@@ -304,5 +304,181 @@ namespace Test
         relationships.Should().HaveCount(1);
         var rel = relationships[0];
         rel.IsInterface.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public void Analyze_UnityRegisterType_DetectsRegistration()
+    {
+        // Arrange
+        var code = @"
+namespace Test
+{
+    public interface IService { }
+    public class ServiceImpl : IService { }
+
+    public class UnityConfig
+    {
+        public void Configure(IUnityContainer container)
+        {
+            container.RegisterType<IService, ServiceImpl>();
+        }
+    }
+}";
+        var tree = CSharpSyntaxTree.ParseText(code);
+
+        // Act
+        var relationships = this.analyzer.Analyze(tree, "test.cs");
+
+        // Assert
+        var registration = relationships.FirstOrDefault(r => r.InjectionMethod == InjectionMethod.Registration);
+        registration.Should().NotBeNull();
+        registration!.ServiceType.Should().Be("IService");
+        registration.ImplementationType.Should().Be("ServiceImpl");
+    }
+
+    [TestMethod]
+    public void Analyze_UnityRegisterSingleton_DetectsLifetime()
+    {
+        // Arrange
+        var code = @"
+namespace Test
+{
+    public interface ICache { }
+    public class MemoryCache : ICache { }
+
+    public class UnityConfig
+    {
+        public void Configure(IUnityContainer container)
+        {
+            container.RegisterSingleton<ICache, MemoryCache>();
+        }
+    }
+}";
+        var tree = CSharpSyntaxTree.ParseText(code);
+
+        // Act
+        var relationships = this.analyzer.Analyze(tree, "test.cs");
+
+        // Assert
+        var registration = relationships.FirstOrDefault(r => r.InjectionMethod == InjectionMethod.Registration);
+        registration.Should().NotBeNull();
+        registration!.Lifetime.Should().Be(ServiceLifetime.Singleton);
+    }
+
+    [TestMethod]
+    public void Analyze_UnityRegisterInstance_DetectsRegistration()
+    {
+        // Arrange
+        var code = @"
+namespace Test
+{
+    public interface ILogger { }
+    public class ConsoleLogger : ILogger { }
+
+    public class UnityConfig
+    {
+        public void Configure(IUnityContainer container)
+        {
+            container.RegisterInstance<ILogger>(new ConsoleLogger());
+        }
+    }
+}";
+        var tree = CSharpSyntaxTree.ParseText(code);
+
+        // Act
+        var relationships = this.analyzer.Analyze(tree, "test.cs");
+
+        // Assert
+        var registration = relationships.FirstOrDefault(r => r.InjectionMethod == InjectionMethod.Registration);
+        registration.Should().NotBeNull();
+        registration!.ServiceType.Should().Be("ILogger");
+        registration.Lifetime.Should().Be(ServiceLifetime.Singleton);
+    }
+
+    [TestMethod]
+    public void Analyze_PropertyInjection_WithDependencyAttribute_DetectsRelationship()
+    {
+        // Arrange
+        var code = @"
+namespace Test
+{
+    public interface ILogger { }
+
+    public class DependencyAttribute : System.Attribute { }
+
+    public class MyService
+    {
+        [Dependency]
+        public ILogger Logger { get; set; }
+    }
+}";
+        var tree = CSharpSyntaxTree.ParseText(code);
+
+        // Act
+        var relationships = this.analyzer.Analyze(tree, "test.cs");
+
+        // Assert
+        relationships.Should().HaveCount(1);
+        var rel = relationships[0];
+        rel.InjectionMethod.Should().Be(InjectionMethod.Property);
+        rel.InjectionAttribute.Should().Be("Dependency");
+        rel.DependencyType.Should().Be("ILogger");
+    }
+
+    [TestMethod]
+    public void Analyze_PropertyInjection_WithOptionalDependencyAttribute_DetectsRelationship()
+    {
+        // Arrange
+        var code = @"
+namespace Test
+{
+    public interface ICache { }
+
+    public class OptionalDependencyAttribute : System.Attribute { }
+
+    public class MyService
+    {
+        [OptionalDependency]
+        public ICache Cache { get; set; }
+    }
+}";
+        var tree = CSharpSyntaxTree.ParseText(code);
+
+        // Act
+        var relationships = this.analyzer.Analyze(tree, "test.cs");
+
+        // Assert
+        relationships.Should().HaveCount(1);
+        var rel = relationships[0];
+        rel.InjectionMethod.Should().Be(InjectionMethod.Property);
+        rel.InjectionAttribute.Should().Be("OptionalDependency");
+    }
+
+    [TestMethod]
+    public void Analyze_UnityRegisterFactory_DetectsRegistration()
+    {
+        // Arrange
+        var code = @"
+namespace Test
+{
+    public interface IService { }
+
+    public class UnityConfig
+    {
+        public void Configure(IUnityContainer container)
+        {
+            container.RegisterFactory<IService>(c => new ServiceImpl());
+        }
+    }
+}";
+        var tree = CSharpSyntaxTree.ParseText(code);
+
+        // Act
+        var relationships = this.analyzer.Analyze(tree, "test.cs");
+
+        // Assert
+        var registration = relationships.FirstOrDefault(r => r.InjectionMethod == InjectionMethod.Registration);
+        registration.Should().NotBeNull();
+        registration!.ServiceType.Should().Be("IService");
     }
 }
