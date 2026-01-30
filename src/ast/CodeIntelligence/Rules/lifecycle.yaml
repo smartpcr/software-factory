@@ -1,0 +1,550 @@
+# Lifecycle & Entry Point Detection Rules
+# This file contains rules for detecting execution entry points and lifecycle hooks.
+# Phase 2: Entry Points & Lifecycle
+
+rules:
+  # ─────────────────────────────────────────────────────────────
+  # CONSOLE MAIN ENTRY POINT
+  # ─────────────────────────────────────────────────────────────
+  - id: lifecycle-main
+    name: "Console Main Entry Point"
+    category: lifecycle
+    relationshipType: EntryPoint
+    enabled: true
+    priority: 100
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: MethodDeclaration
+            condition: "isStatic && methodName == 'Main'"
+            extract:
+              className: "GetContainingType(node)"
+              methodName: "node.Identifier.Text"
+              returnType: "node.ReturnType.ToString()"
+              isAsync: "IsAsyncMethod(node)"
+              parameters: "GetMethodParameters(node)"
+              
+    output:
+      nodeType: EntryPoint
+      edgeType: StartsExecution
+      properties:
+        - name: entryPointType
+          value: "ConsoleMain"
+        - name: className
+        - name: isAsync
+        - name: returnType
+        
+    confidence:
+      baseScore: 0.95
+      minimumThreshold: 0.90
+
+  # ─────────────────────────────────────────────────────────────
+  # TOP-LEVEL STATEMENTS
+  # ─────────────────────────────────────────────────────────────
+  - id: lifecycle-top-level
+    name: "Top-Level Statements Entry Point"
+    category: lifecycle
+    relationshipType: EntryPoint
+    enabled: true
+    priority: 100
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: GlobalStatement
+            extract:
+              hasTopLevelStatements: "true"
+              
+    output:
+      nodeType: EntryPoint
+      edgeType: StartsExecution
+      properties:
+        - name: entryPointType
+          value: "TopLevelStatements"
+        
+    confidence:
+      baseScore: 0.95
+
+  # ─────────────────────────────────────────────────────────────
+  # ASP.NET CORE STARTUP
+  # ─────────────────────────────────────────────────────────────
+  - id: lifecycle-aspnet-startup
+    name: "ASP.NET Core Startup"
+    category: lifecycle
+    relationshipType: EntryPoint
+    enabled: true
+    priority: 95
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: InvocationExpression
+            condition: "methodName matches 'CreateBuilder|CreateDefaultBuilder|CreateHostBuilder'"
+            extract:
+              builderType: "GetMethodName(node)"
+              
+    output:
+      nodeType: EntryPoint
+      edgeType: StartsExecution
+      properties:
+        - name: entryPointType
+          value: "AspNetCore"
+        - name: builderType
+        
+    confidence:
+      baseScore: 0.90
+
+  # ─────────────────────────────────────────────────────────────
+  # BACKGROUND SERVICE
+  # ─────────────────────────────────────────────────────────────
+  - id: lifecycle-background-service
+    name: "Background Service"
+    category: lifecycle
+    relationshipType: BackgroundTask
+    enabled: true
+    priority: 90
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: ClassDeclaration
+            condition: "inheritsFrom('BackgroundService')"
+            extract:
+              className: "node.Identifier.Text"
+              namespace: "GetNamespace(node)"
+              baseType: "BackgroundService"
+              
+          - nodeType: ClassDeclaration
+            condition: "implements('IHostedService')"
+            extract:
+              className: "node.Identifier.Text"
+              namespace: "GetNamespace(node)"
+              baseType: "IHostedService"
+              
+    output:
+      nodeType: BackgroundService
+      edgeType: RunsInBackground
+      properties:
+        - name: className
+        - name: namespace
+        - name: baseType
+        
+    confidence:
+      baseScore: 0.90
+
+  # ─────────────────────────────────────────────────────────────
+  # AZURE FUNCTION
+  # ─────────────────────────────────────────────────────────────
+  - id: lifecycle-azure-function
+    name: "Azure Function Entry Point"
+    category: lifecycle
+    relationshipType: EntryPoint
+    enabled: true
+    priority: 95
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: MethodDeclaration
+            condition: "hasAttribute('Function') || hasAttribute('FunctionName')"
+            extract:
+              methodName: "node.Identifier.Text"
+              functionName: "GetAttributeArgument(node, 'Function', 0)"
+              className: "GetContainingType(node)"
+              triggerType: "GetTriggerType(node)"
+              
+    output:
+      nodeType: EntryPoint
+      edgeType: TriggersExecution
+      properties:
+        - name: entryPointType
+          value: "AzureFunction"
+        - name: functionName
+        - name: triggerType
+        - name: methodName
+        
+    confidence:
+      baseScore: 0.95
+
+  # ─────────────────────────────────────────────────────────────
+  # WINDOWS SERVICE
+  # ─────────────────────────────────────────────────────────────
+  - id: lifecycle-windows-service
+    name: "Windows Service Entry Point"
+    category: lifecycle
+    relationshipType: EntryPoint
+    enabled: true
+    priority: 90
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: ClassDeclaration
+            condition: "inheritsFrom('ServiceBase')"
+            extract:
+              className: "node.Identifier.Text"
+              namespace: "GetNamespace(node)"
+              
+          - nodeType: ClassDeclaration
+            condition: "inheritsFrom('WinSvcHost') || inheritsFrom('WinServiceHost')"
+            extract:
+              className: "node.Identifier.Text"
+              namespace: "GetNamespace(node)"
+              
+    output:
+      nodeType: EntryPoint
+      edgeType: StartsExecution
+      properties:
+        - name: entryPointType
+          value: "WindowsService"
+        - name: className
+        
+    confidence:
+      baseScore: 0.90
+
+  # ─────────────────────────────────────────────────────────────
+  # HOSTED SERVICE (Generic IService<T>)
+  # ─────────────────────────────────────────────────────────────
+  - id: lifecycle-hosted-service
+    name: "Hosted Service Entry Point"
+    category: lifecycle
+    relationshipType: EntryPoint
+    enabled: true
+    priority: 95
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: ClassDeclaration
+            condition: "implements('IService') || implementsGeneric('IService')"
+            extract:
+              className: "node.Identifier.Text"
+              namespace: "GetNamespace(node)"
+              interfaces: "GetImplementedInterfaces(node)"
+              
+    output:
+      nodeType: EntryPoint
+      edgeType: StartsExecution
+      properties:
+        - name: entryPointType
+          value: "HostedService"
+        - name: className
+        - name: interfaces
+        
+    confidence:
+      baseScore: 0.85
+
+  # ─────────────────────────────────────────────────────────────
+  # SERVICE FABRIC SERVICE
+  # ─────────────────────────────────────────────────────────────
+  - id: lifecycle-service-fabric
+    name: "Service Fabric Service"
+    category: lifecycle
+    relationshipType: EntryPoint
+    enabled: true
+    priority: 90
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: ClassDeclaration
+            condition: "inheritsFrom('StatelessService') || inheritsFrom('StatefulService')"
+            extract:
+              className: "node.Identifier.Text"
+              namespace: "GetNamespace(node)"
+              serviceType: "GetBaseClass(node)"
+              
+          - nodeType: ClassDeclaration
+            condition: "implements('IStatelessServiceFactory') || implements('IStatefulServiceFactory')"
+            extract:
+              className: "node.Identifier.Text"
+              namespace: "GetNamespace(node)"
+              
+    output:
+      nodeType: EntryPoint
+      edgeType: StartsExecution
+      properties:
+        - name: entryPointType
+          value: "ServiceFabric"
+        - name: className
+        - name: serviceType
+        
+    confidence:
+      baseScore: 0.90
+
+  # ─────────────────────────────────────────────────────────────
+  # MIDDLEWARE
+  # ─────────────────────────────────────────────────────────────
+  - id: lifecycle-middleware
+    name: "ASP.NET Core Middleware"
+    category: lifecycle
+    relationshipType: Middleware
+    enabled: true
+    priority: 85
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          # IMiddleware implementation
+          - nodeType: ClassDeclaration
+            condition: "implements('IMiddleware')"
+            extract:
+              className: "node.Identifier.Text"
+              namespace: "GetNamespace(node)"
+              middlewareType: "IMiddleware"
+              
+          # Convention-based middleware (has Invoke or InvokeAsync)
+          - nodeType: ClassDeclaration
+            condition: "hasMethod('Invoke') || hasMethod('InvokeAsync')"
+            extract:
+              className: "node.Identifier.Text"
+              namespace: "GetNamespace(node)"
+              middlewareType: "Convention"
+              
+    output:
+      nodeType: Middleware
+      edgeType: ProcessesRequest
+      properties:
+        - name: className
+        - name: middlewareType
+        
+    confidence:
+      baseScore: 0.85
+
+  # ─────────────────────────────────────────────────────────────
+  # STARTUP FILTER
+  # ─────────────────────────────────────────────────────────────
+  - id: lifecycle-startup-filter
+    name: "Startup Filter"
+    category: lifecycle
+    relationshipType: StartupHook
+    enabled: true
+    priority: 80
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: ClassDeclaration
+            condition: "implements('IStartupFilter')"
+            extract:
+              className: "node.Identifier.Text"
+              namespace: "GetNamespace(node)"
+              
+    output:
+      nodeType: StartupHook
+      edgeType: ModifiesStartup
+      properties:
+        - name: className
+        - name: hookType
+          value: "StartupFilter"
+        
+    confidence:
+      baseScore: 0.85
+
+  # ─────────────────────────────────────────────────────────────
+  # SHUTDOWN HOOK (IDisposable, IAsyncDisposable)
+  # ─────────────────────────────────────────────────────────────
+  - id: lifecycle-shutdown-hook
+    name: "Shutdown Hook"
+    category: lifecycle
+    relationshipType: ShutdownHook
+    enabled: true
+    priority: 75
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: ClassDeclaration
+            condition: "implements('IAsyncDisposable')"
+            extract:
+              className: "node.Identifier.Text"
+              namespace: "GetNamespace(node)"
+              disposeType: "Async"
+              
+          - nodeType: MethodDeclaration
+            condition: "methodName == 'StopAsync' && isPublic"
+            extract:
+              className: "GetContainingType(node)"
+              methodName: "StopAsync"
+              
+    output:
+      nodeType: ShutdownHook
+      edgeType: HandlesShutdown
+      properties:
+        - name: className
+        - name: hookType
+        
+    confidence:
+      baseScore: 0.80
+
+  # ─────────────────────────────────────────────────────────────
+  # SCHEDULED JOB (Timer-based)
+  # ─────────────────────────────────────────────────────────────
+  - id: lifecycle-scheduled-timer
+    name: "Timer-Based Scheduled Job"
+    category: lifecycle
+    relationshipType: ScheduledTask
+    enabled: true
+    priority: 80
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: ObjectCreationExpression
+            condition: "typeName matches 'Timer|PeriodicTimer'"
+            extract:
+              timerType: "node.Type.ToString()"
+              containingClass: "GetContainingType(node)"
+              
+    output:
+      nodeType: ScheduledTask
+      edgeType: RunsOnSchedule
+      properties:
+        - name: className
+        - name: scheduleType
+          value: "Timer"
+        
+    confidence:
+      baseScore: 0.80
+
+  # ─────────────────────────────────────────────────────────────
+  # HANGFIRE JOB
+  # ─────────────────────────────────────────────────────────────
+  - id: lifecycle-hangfire-job
+    name: "Hangfire Background Job"
+    category: lifecycle
+    relationshipType: ScheduledTask
+    enabled: true
+    priority: 85
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: InvocationExpression
+            condition: "methodName matches 'Enqueue|Schedule|AddOrUpdate|RecurringJob'"
+            extract:
+              jobType: "GetMethodName(node)"
+              containingClass: "GetContainingType(node)"
+              
+    output:
+      nodeType: ScheduledTask
+      edgeType: RunsOnSchedule
+      properties:
+        - name: scheduleType
+          value: "Hangfire"
+        - name: jobType
+        
+    confidence:
+      baseScore: 0.85
+
+  # ─────────────────────────────────────────────────────────────
+  # QUARTZ.NET JOB
+  # ─────────────────────────────────────────────────────────────
+  - id: lifecycle-quartz-job
+    name: "Quartz.NET Scheduled Job"
+    category: lifecycle
+    relationshipType: ScheduledTask
+    enabled: true
+    priority: 85
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: ClassDeclaration
+            condition: "implements('IJob')"
+            extract:
+              className: "node.Identifier.Text"
+              namespace: "GetNamespace(node)"
+              
+    output:
+      nodeType: ScheduledTask
+      edgeType: RunsOnSchedule
+      properties:
+        - name: className
+        - name: scheduleType
+          value: "Quartz"
+        
+    confidence:
+      baseScore: 0.90
+
+  # ─────────────────────────────────────────────────────────────
+  # APPLICATION LIFETIME EVENTS
+  # ─────────────────────────────────────────────────────────────
+  - id: lifecycle-app-lifetime
+    name: "Application Lifetime Events"
+    category: lifecycle
+    relationshipType: LifecycleHook
+    enabled: true
+    priority: 75
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: InvocationExpression
+            condition: "methodName matches 'ApplicationStarted|ApplicationStopping|ApplicationStopped'"
+            extract:
+              eventName: "GetMethodName(node)"
+              containingClass: "GetContainingType(node)"
+              
+    output:
+      nodeType: LifecycleHook
+      edgeType: HandlesEvent
+      properties:
+        - name: eventName
+        - name: hookType
+          value: "ApplicationLifetime"
+        
+    confidence:
+      baseScore: 0.85
+
+  # ─────────────────────────────────────────────────────────────
+  # WORKER SERVICE
+  # ─────────────────────────────────────────────────────────────
+  - id: lifecycle-worker-service
+    name: "Worker Service"
+    category: lifecycle
+    relationshipType: EntryPoint
+    enabled: true
+    priority: 90
+    
+    detection:
+      - strategy: ast
+        language: csharp
+        patterns:
+          - nodeType: InvocationExpression
+            condition: "methodName == 'CreateDefaultBuilder' && hasChainedCall('ConfigureServices')"
+            extract:
+              builderPattern: "Worker"
+              
+      - strategy: config
+        filePattern: "**/*.csproj"
+        parser: msbuild
+        condition: "Sdk == 'Microsoft.NET.Sdk.Worker'"
+        extract:
+          isWorkerProject: "true"
+              
+    output:
+      nodeType: EntryPoint
+      edgeType: StartsExecution
+      properties:
+        - name: entryPointType
+          value: "WorkerService"
+        
+    confidence:
+      baseScore: 0.90

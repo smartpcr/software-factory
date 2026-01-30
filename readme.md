@@ -1,3 +1,38 @@
+## Code Intelligence
+
+### Overview
+
+The Code Intelligence system provides comprehensive repository-level code understanding through multi-strategy analysis. It addresses gaps in traditional LSP-based code intelligence by combining multiple approaches to extract and connect relationships across the codebase.
+
+
+#### System Components
+
+| Component | Description |
+|-----------|-------------|
+| **AST Extraction** | C#/PowerShell parsing and hypergraph construction |
+| **LSP Integration** | Language Server Protocol for semantic enrichment |
+| **Embedding Generation** | Vector embeddings for semantic similarity search |
+| **Graph Database (Neo4j)** | Structural queries and relationship traversal |
+| **Vector Database (Qdrant)** | Semantic search and similarity matching |
+| **CLI Application** | Commands for parse, enrich, embed, index, query, discover |
+
+### Documentation
+
+- **[Requirements](docs/code_intelligence_requirements.md)** - Problem statement, relationship taxonomy, success criteria
+- **[Architecture](docs/CODE_INTELLIGENCE_ARCHITECTURE.md)** - Complete system design and phase details
+- **[Implementation Plan](docs/code_intelligence_implementation_plan.md)** - Phase-by-phase implementation roadmap
+
+### Use Cases
+
+The system answers questions like:
+- "Where does execution start?" (Entry point detection)
+- "How does data flow through this service?" (Data flow analysis)
+- "What external services does this depend on?" (Dependency traversal)
+- "Where is authentication enforced?" (Security analysis)
+- "What happens when this API is called?" (Execution trace)
+
+---
+
 ## Execution Engine
 
 ### Overview

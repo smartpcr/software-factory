@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsTestProject>false</IsTestProject>
+    <StartupObject>Chat.Program</StartupObject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="GitHub.Copilot.SDK" />
+    <PackageReference Include="Spectre.Console" />
+  </ItemGroup>
+
+</Project>
