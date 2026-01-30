@@ -68,7 +68,7 @@ public static class ModelSelector
         }
 
         var choice = AnsiConsole.Prompt(
-            new TextPrompt<string>($"\nEnter choice (1-{models.Count}) [default: 1]: ")
+            new TextPrompt<string>($"\nEnter choice (1-{models.Count}) [[default: 1]]: ")
                 .AllowEmpty());
 
         if (string.IsNullOrEmpty(choice) || !int.TryParse(choice, out int index) || index < 1 || index > models.Count)
