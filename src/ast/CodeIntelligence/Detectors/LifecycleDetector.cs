@@ -5,6 +5,7 @@
 
 namespace CodeIntelligence.Detectors;
 
+using System.Collections.Concurrent;
 using CodeIntelligence.Analyzers;
 using CodeIntelligence.Models;
 using CodeIntelligence.Parsers;
@@ -38,6 +39,145 @@ public sealed class LifecycleDetector
         this.lifetimeAnalyzer = new ApplicationLifetimeAnalyzer();
         this.manifestParser = new ManifestParser();
         this.confidenceCalculator = new ConfidenceCalculator();
+    }
+
+    /// <summary>
+    /// Discovers entry points from a repository root by first identifying executable projects,
+    /// then analyzing each for entry points and lifecycle hooks.
+    /// </summary>
+    /// <param name="repositoryRoot">The root directory of the repository.</param>
+    /// <param name="options">Discovery options.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Repository discovery result with all found entry points organized by project.</returns>
+    public async Task<RepositoryDiscoveryResult> DiscoverFromRepositoryAsync(
+        string repositoryRoot,
+        RepositoryDiscoveryOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        options ??= new RepositoryDiscoveryOptions();
+        var result = new RepositoryDiscoveryResult { RepositoryRoot = repositoryRoot };
+
+        // Step 1: Find all project files
+        var enumerationOptions = new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+        };
+        var projectFiles = Directory.GetFiles(repositoryRoot, "*.csproj", enumerationOptions)
+            .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\"))
+            .ToList();
+
+        result.TotalProjectsScanned = projectFiles.Count;
+
+        // Step 2: Parse each project to identify executable projects
+        var executableProjects = new ConcurrentBag<DiscoveredProject>();
+
+        await Parallel.ForEachAsync(projectFiles, cancellationToken, async (projectPath, ct) =>
+        {
+            try
+            {
+                var sdkInfo = await this.manifestParser.ParseProjectSdkAsync(projectPath);
+                if (sdkInfo == null)
+                {
+                    return;
+                }
+
+                // Skip test projects unless explicitly included
+                var projectName = Path.GetFileNameWithoutExtension(projectPath);
+                var isTestProject = projectName.Contains("Test", StringComparison.OrdinalIgnoreCase) ||
+                                   projectName.Contains("Tests", StringComparison.OrdinalIgnoreCase) ||
+                                   projectName.EndsWith(".UnitTests", StringComparison.OrdinalIgnoreCase) ||
+                                   projectName.EndsWith(".IntegrationTests", StringComparison.OrdinalIgnoreCase);
+
+                if (isTestProject && !options.IncludeTestProjects)
+                {
+                    return;
+                }
+
+                // Check if this is an executable project or has hosting indicators
+                var isEntryPointCandidate = sdkInfo.IsExecutable ||
+                                           sdkInfo.IsWebProject ||
+                                           sdkInfo.IsWorkerProject;
+
+                // For library projects, check if they contain hosting patterns
+                // (IHostedService, BackgroundService, ServiceBase, StatelessService, etc.)
+                var isLibraryWithHostingPatterns = false;
+                if (!isEntryPointCandidate && options.IncludeLibrariesWithHostingPatterns)
+                {
+                    isLibraryWithHostingPatterns = HasHostingPatterns(projectPath, options);
+                }
+
+                if (isEntryPointCandidate || isLibraryWithHostingPatterns || options.IncludeAllProjects)
+                {
+                    executableProjects.Add(new DiscoveredProject
+                    {
+                        ProjectPath = projectPath,
+                        ProjectName = projectName,
+                        SdkInfo = sdkInfo,
+                        IsTestProject = isTestProject,
+                        IsLibraryWithHostingPatterns = isLibraryWithHostingPatterns
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                result.Errors.Add(new AnalysisError
+                {
+                    FilePath = projectPath,
+                    Message = ex.Message,
+                    ErrorType = "ProjectParseError"
+                });
+            }
+        });
+
+        // Step 3: Analyze each executable project for entry points
+        foreach (var project in executableProjects.OrderBy(p => p.ProjectPath))
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+
+            var projectDir = Path.GetDirectoryName(project.ProjectPath)!;
+            var projectResult = new ProjectEntryPointResult
+            {
+                Project = project,
+                RelativePath = Path.GetRelativePath(repositoryRoot, project.ProjectPath)
+            };
+
+            try
+            {
+                // Analyze the project directory for entry points
+                var analysisResult = await this.AnalyzeAsync(projectDir, cancellationToken);
+
+                projectResult.EntryPoints.AddRange(analysisResult.EntryPoints);
+                projectResult.AzureFunctions.AddRange(analysisResult.AzureFunctions);
+                projectResult.AspNetCoreStartups.AddRange(analysisResult.AspNetCoreStartups);
+                projectResult.ScheduledJobs.AddRange(analysisResult.ScheduledJobs);
+                projectResult.ApplicationLifetimeEvents.AddRange(analysisResult.ApplicationLifetimeEvents);
+                projectResult.FilesAnalyzed = analysisResult.FilesAnalyzed;
+
+                // Also check for manifest-based entry points
+                var manifests = await this.manifestParser.GetEntryPointManifestsAsync(project.ProjectPath);
+                foreach (var manifest in manifests)
+                {
+                    projectResult.Manifests.Add(manifest);
+                }
+            }
+            catch (Exception ex)
+            {
+                result.Errors.Add(new AnalysisError
+                {
+                    FilePath = project.ProjectPath,
+                    Message = ex.Message,
+                    ErrorType = "AnalysisError"
+                });
+            }
+
+            result.Projects.Add(projectResult);
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -538,6 +678,69 @@ public sealed class LifecycleDetector
             Properties = properties
         };
     }
+
+    /// <summary>
+    /// Checks if a project directory contains classes that implement lifecycle contracts.
+    /// Uses both quick pattern matching and AST analysis for high confidence detection.
+    /// </summary>
+    /// <param name="projectPath">Path to the .csproj file.</param>
+    /// <param name="options">Discovery options with dependency repository paths.</param>
+    /// <returns>True if lifecycle contracts are found.</returns>
+    private static bool HasHostingPatterns(string projectPath, RepositoryDiscoveryOptions options)
+    {
+        var projectDir = Path.GetDirectoryName(projectPath);
+        if (string.IsNullOrEmpty(projectDir) || !Directory.Exists(projectDir))
+        {
+            return false;
+        }
+
+        try
+        {
+            var enumerationOptions = new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                IgnoreInaccessible = true,
+            };
+
+            var csFiles = Directory.GetFiles(projectDir, "*.cs", enumerationOptions)
+                .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\"));
+
+            // Use the EntryPointAnalyzer for AST-based detection
+            var analyzer = new Analyzers.EntryPointAnalyzer();
+
+            foreach (var csFile in csFiles)
+            {
+                try
+                {
+                    var content = File.ReadAllText(csFile);
+                    var syntaxTree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(content, path: csFile);
+
+                    // Analyze for entry points
+                    var entryPoints = analyzer.Analyze(syntaxTree, csFile);
+
+                    // If any entry points found with hosting patterns, return true
+                    if (entryPoints.Any(ep =>
+                        ep.EntryPointType == Analyzers.EntryPointType.HostedService ||
+                        ep.EntryPointType == Analyzers.EntryPointType.BackgroundService ||
+                        ep.EntryPointType == Analyzers.EntryPointType.WindowsService ||
+                        ep.EntryPointType == Analyzers.EntryPointType.ServiceFabric))
+                    {
+                        return true;
+                    }
+                }
+                catch
+                {
+                    // Skip files that can't be analyzed
+                }
+            }
+        }
+        catch
+        {
+            // Skip directories that can't be enumerated
+        }
+
+        return false;
+    }
 }
 
 /// <summary>
@@ -574,4 +777,126 @@ public class LifecycleAnalysisResult
 
     /// <summary>Gets or sets the number of files analyzed.</summary>
     public int FilesAnalyzed { get; set; }
+}
+
+/// <summary>
+/// Options for repository discovery.
+/// </summary>
+public class RepositoryDiscoveryOptions
+{
+    /// <summary>Gets or sets whether to include test projects in discovery.</summary>
+    public bool IncludeTestProjects { get; set; } = false;
+
+    /// <summary>Gets or sets whether to include all projects (not just executables).</summary>
+    public bool IncludeAllProjects { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets whether to include library projects that contain hosting patterns
+    /// (e.g., IHostedService, BackgroundService, ServiceBase, StatelessService).
+    /// These libraries can be plugged into Windows Service or Service Fabric hosts.
+    /// Default is true.
+    /// </summary>
+    public bool IncludeLibrariesWithHostingPatterns { get; set; } = true;
+
+    /// <summary>Gets or sets the maximum depth to scan for projects.</summary>
+    public int MaxDepth { get; set; } = int.MaxValue;
+
+    /// <summary>
+    /// Gets or sets paths to dependency repositories that contain base types/interfaces.
+    /// When a class implements an interface from a dependency repository, the detector will
+    /// analyze the dependency repo to understand the interface contract and lifecycle methods.
+    /// The resolver follows interface inheritance chains to determine if a class is an entry point.
+    /// </summary>
+    public IReadOnlyList<string> DependencyRepositoryPaths { get; set; } = Array.Empty<string>();
+}
+
+/// <summary>
+/// Result of repository-level entry point discovery.
+/// </summary>
+public class RepositoryDiscoveryResult
+{
+    /// <summary>Gets or sets the repository root path.</summary>
+    public required string RepositoryRoot { get; set; }
+
+    /// <summary>Gets or sets the total number of projects scanned.</summary>
+    public int TotalProjectsScanned { get; set; }
+
+    /// <summary>Gets the discovered projects with their entry points.</summary>
+    public List<ProjectEntryPointResult> Projects { get; } = new();
+
+    /// <summary>Gets all entry points across all projects.</summary>
+    public IEnumerable<EntryPointInfo> AllEntryPoints =>
+        this.Projects.SelectMany(p => p.EntryPoints);
+
+    /// <summary>Gets all Azure Functions across all projects.</summary>
+    public IEnumerable<AzureFunctionInfo> AllAzureFunctions =>
+        this.Projects.SelectMany(p => p.AzureFunctions);
+
+    /// <summary>Gets the analysis errors.</summary>
+    public List<AnalysisError> Errors { get; } = new();
+
+    /// <summary>Gets the total number of files analyzed.</summary>
+    public int TotalFilesAnalyzed => this.Projects.Sum(p => p.FilesAnalyzed);
+}
+
+/// <summary>
+/// Entry point discovery result for a single project.
+/// </summary>
+public class ProjectEntryPointResult
+{
+    /// <summary>Gets or sets the discovered project info.</summary>
+    public required DiscoveredProject Project { get; set; }
+
+    /// <summary>Gets or sets the relative path from repository root.</summary>
+    public required string RelativePath { get; set; }
+
+    /// <summary>Gets the entry points found in this project.</summary>
+    public List<EntryPointInfo> EntryPoints { get; } = new();
+
+    /// <summary>Gets the Azure Functions found in this project.</summary>
+    public List<AzureFunctionInfo> AzureFunctions { get; } = new();
+
+    /// <summary>Gets the ASP.NET Core startup patterns found.</summary>
+    public List<AspNetCoreStartupInfo> AspNetCoreStartups { get; } = new();
+
+    /// <summary>Gets the scheduled jobs found.</summary>
+    public List<ScheduledJobInfo> ScheduledJobs { get; } = new();
+
+    /// <summary>Gets the application lifetime events found.</summary>
+    public List<ApplicationLifetimeInfo> ApplicationLifetimeEvents { get; } = new();
+
+    /// <summary>Gets the manifests associated with this project.</summary>
+    public List<ManifestInfo> Manifests { get; } = new();
+
+    /// <summary>Gets or sets the number of files analyzed.</summary>
+    public int FilesAnalyzed { get; set; }
+
+    /// <summary>Gets whether this project has any entry points.</summary>
+    public bool HasEntryPoints => this.EntryPoints.Count > 0 ||
+                                  this.AzureFunctions.Count > 0 ||
+                                  this.AspNetCoreStartups.Count > 0;
+}
+
+/// <summary>
+/// Information about a discovered project.
+/// </summary>
+public class DiscoveredProject
+{
+    /// <summary>Gets or sets the full path to the project file.</summary>
+    public required string ProjectPath { get; set; }
+
+    /// <summary>Gets or sets the project name.</summary>
+    public required string ProjectName { get; set; }
+
+    /// <summary>Gets or sets the SDK information.</summary>
+    public required ProjectSdkInfo SdkInfo { get; set; }
+
+    /// <summary>Gets or sets whether this is a test project.</summary>
+    public bool IsTestProject { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether this is a library project that contains hosting patterns
+    /// (e.g., IHostedService, BackgroundService, ServiceBase, StatelessService).
+    /// </summary>
+    public bool IsLibraryWithHostingPatterns { get; set; }
 }

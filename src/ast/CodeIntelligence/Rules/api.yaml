@@ -1,0 +1,428 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# API & COMMUNICATION DETECTION RULES
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 3: Detect all API endpoints and inter-service communication
+# ═══════════════════════════════════════════════════════════════════════════
+
+version: "1.0"
+category: api
+
+rules:
+  # ─────────────────────────────────────────────────────────────────────────
+  # HTTP ENDPOINT (ATTRIBUTE-BASED)
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: api-http-get
+    name: "HTTP GET Endpoint"
+    relationshipType: HttpEndpoint
+    enabled: true
+    priority: 100
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: MethodDeclaration
+        hasAttribute: "HttpGet"
+    properties:
+      httpMethod: "GET"
+      confidenceBase: 0.95
+
+  - id: api-http-post
+    name: "HTTP POST Endpoint"
+    relationshipType: HttpEndpoint
+    enabled: true
+    priority: 100
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: MethodDeclaration
+        hasAttribute: "HttpPost"
+    properties:
+      httpMethod: "POST"
+      confidenceBase: 0.95
+
+  - id: api-http-put
+    name: "HTTP PUT Endpoint"
+    relationshipType: HttpEndpoint
+    enabled: true
+    priority: 100
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: MethodDeclaration
+        hasAttribute: "HttpPut"
+    properties:
+      httpMethod: "PUT"
+      confidenceBase: 0.95
+
+  - id: api-http-delete
+    name: "HTTP DELETE Endpoint"
+    relationshipType: HttpEndpoint
+    enabled: true
+    priority: 100
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: MethodDeclaration
+        hasAttribute: "HttpDelete"
+    properties:
+      httpMethod: "DELETE"
+      confidenceBase: 0.95
+
+  - id: api-http-patch
+    name: "HTTP PATCH Endpoint"
+    relationshipType: HttpEndpoint
+    enabled: true
+    priority: 100
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: MethodDeclaration
+        hasAttribute: "HttpPatch"
+    properties:
+      httpMethod: "PATCH"
+      confidenceBase: 0.95
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # HTTP ENDPOINT (MINIMAL API)
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: api-minimal-mapget
+    name: "Minimal API MapGet"
+    relationshipType: HttpEndpoint
+    enabled: true
+    priority: 95
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: InvocationExpression
+        methodName: "MapGet"
+    properties:
+      httpMethod: "GET"
+      handlerType: "MinimalApi"
+      confidenceBase: 0.90
+
+  - id: api-minimal-mappost
+    name: "Minimal API MapPost"
+    relationshipType: HttpEndpoint
+    enabled: true
+    priority: 95
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: InvocationExpression
+        methodName: "MapPost"
+    properties:
+      httpMethod: "POST"
+      handlerType: "MinimalApi"
+      confidenceBase: 0.90
+
+  - id: api-minimal-mapput
+    name: "Minimal API MapPut"
+    relationshipType: HttpEndpoint
+    enabled: true
+    priority: 95
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: InvocationExpression
+        methodName: "MapPut"
+    properties:
+      httpMethod: "PUT"
+      handlerType: "MinimalApi"
+      confidenceBase: 0.90
+
+  - id: api-minimal-mapdelete
+    name: "Minimal API MapDelete"
+    relationshipType: HttpEndpoint
+    enabled: true
+    priority: 95
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: InvocationExpression
+        methodName: "MapDelete"
+    properties:
+      httpMethod: "DELETE"
+      handlerType: "MinimalApi"
+      confidenceBase: 0.90
+
+  - id: api-minimal-mappatch
+    name: "Minimal API MapPatch"
+    relationshipType: HttpEndpoint
+    enabled: true
+    priority: 95
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: InvocationExpression
+        methodName: "MapPatch"
+    properties:
+      httpMethod: "PATCH"
+      handlerType: "MinimalApi"
+      confidenceBase: 0.90
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # HTTP CLIENT CALLS
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: api-httpclient-get
+    name: "HttpClient GET Call"
+    relationshipType: HttpClientCall
+    enabled: true
+    priority: 90
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: InvocationExpression
+        methodName: "GetAsync|GetStringAsync|GetStreamAsync|GetByteArrayAsync"
+    properties:
+      httpMethod: "GET"
+      confidenceBase: 0.90
+
+  - id: api-httpclient-post
+    name: "HttpClient POST Call"
+    relationshipType: HttpClientCall
+    enabled: true
+    priority: 90
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: InvocationExpression
+        methodName: "PostAsync|PostAsJsonAsync"
+    properties:
+      httpMethod: "POST"
+      confidenceBase: 0.90
+
+  - id: api-httpclient-put
+    name: "HttpClient PUT Call"
+    relationshipType: HttpClientCall
+    enabled: true
+    priority: 90
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: InvocationExpression
+        methodName: "PutAsync|PutAsJsonAsync"
+    properties:
+      httpMethod: "PUT"
+      confidenceBase: 0.90
+
+  - id: api-httpclient-delete
+    name: "HttpClient DELETE Call"
+    relationshipType: HttpClientCall
+    enabled: true
+    priority: 90
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: InvocationExpression
+        methodName: "DeleteAsync"
+    properties:
+      httpMethod: "DELETE"
+      confidenceBase: 0.90
+
+  - id: api-httpclient-send
+    name: "HttpClient Send Call"
+    relationshipType: HttpClientCall
+    enabled: true
+    priority: 90
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: InvocationExpression
+        methodName: "SendAsync"
+    properties:
+      httpMethod: "CUSTOM"
+      confidenceBase: 0.85
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # MESSAGE QUEUE PUBLISH
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: api-servicebus-send
+    name: "Azure ServiceBus Send"
+    relationshipType: MessagePublish
+    enabled: true
+    priority: 85
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: InvocationExpression
+        methodName: "SendMessageAsync|SendMessagesAsync"
+    properties:
+      broker: "AzureServiceBus"
+      confidenceBase: 0.85
+
+  - id: api-masstransit-publish
+    name: "MassTransit Publish"
+    relationshipType: MessagePublish
+    enabled: true
+    priority: 85
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: InvocationExpression
+        methodName: "Publish|PublishAsync"
+        receiverType: "IBus|IPublishEndpoint"
+    properties:
+      broker: "MassTransit"
+      confidenceBase: 0.85
+
+  - id: api-mediator-send
+    name: "MediatR Send/Publish"
+    relationshipType: MessagePublish
+    enabled: true
+    priority: 85
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: InvocationExpression
+        methodName: "Send|Publish"
+        receiverType: "IMediator|ISender|IPublisher"
+    properties:
+      broker: "MediatR"
+      confidenceBase: 0.85
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # MESSAGE QUEUE CONSUME
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: api-masstransit-consumer
+    name: "MassTransit Consumer"
+    relationshipType: MessageConsume
+    enabled: true
+    priority: 85
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: ClassDeclaration
+        implements: "IConsumer<>"
+    properties:
+      broker: "MassTransit"
+      confidenceBase: 0.90
+
+  - id: api-servicebus-trigger
+    name: "ServiceBus Trigger Function"
+    relationshipType: MessageConsume
+    enabled: true
+    priority: 85
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: Parameter
+        hasAttribute: "ServiceBusTrigger"
+    properties:
+      broker: "AzureServiceBus"
+      triggerType: "AzureFunction"
+      confidenceBase: 0.95
+
+  - id: api-queue-trigger
+    name: "Queue Trigger Function"
+    relationshipType: MessageConsume
+    enabled: true
+    priority: 85
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: Parameter
+        hasAttribute: "QueueTrigger"
+    properties:
+      broker: "AzureStorage"
+      triggerType: "AzureFunction"
+      confidenceBase: 0.95
+
+  - id: api-mediator-handler
+    name: "MediatR Request Handler"
+    relationshipType: MessageConsume
+    enabled: true
+    priority: 85
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: ClassDeclaration
+        implements: "IRequestHandler<>|INotificationHandler<>"
+    properties:
+      broker: "MediatR"
+      confidenceBase: 0.90
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # gRPC
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: api-grpc-service
+    name: "gRPC Service Implementation"
+    relationshipType: GrpcService
+    enabled: true
+    priority: 90
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: ClassDeclaration
+        inherits: ".*\\..*Base$"
+        hasMethod: true
+    properties:
+      confidenceBase: 0.90
+
+  - id: api-grpc-client
+    name: "gRPC Client Call"
+    relationshipType: GrpcClientCall
+    enabled: true
+    priority: 90
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: InvocationExpression
+        receiverType: ".*Client$"
+        methodName: ".*Async$"
+    properties:
+      confidenceBase: 0.85
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # SIGNALR
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: api-signalr-hub
+    name: "SignalR Hub"
+    relationshipType: SignalRHub
+    enabled: true
+    priority: 90
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: ClassDeclaration
+        inherits: "Hub|Hub<>"
+    properties:
+      confidenceBase: 0.95
+
+  - id: api-signalr-hubmethod
+    name: "SignalR Hub Method"
+    relationshipType: SignalRHubMethod
+    enabled: true
+    priority: 85
+    detection:
+      strategy: ast
+      language: csharp
+      pattern:
+        nodeType: MethodDeclaration
+        parentInherits: "Hub|Hub<>"
+        isPublic: true
+    properties:
+      confidenceBase: 0.90

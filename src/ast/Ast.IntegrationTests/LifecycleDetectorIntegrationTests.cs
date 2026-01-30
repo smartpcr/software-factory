@@ -11,7 +11,6 @@ using System.Text.Json.Serialization;
 using CodeIntelligence.Analyzers;
 using CodeIntelligence.Detectors;
 using CodeIntelligence.Parsers;
-using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.Extensions.Logging;
 
 /// <summary>
@@ -21,19 +20,19 @@ using Microsoft.Extensions.Logging;
 public class LifecycleDetectorIntegrationTests
 {
     // Update service repo path
-    private static readonly string UpdateRepoPath = OperatingSystem.IsWindows()
+    private static readonly string updateRepoPath = OperatingSystem.IsWindows()
         ? @"E:\work\hci\update"
         : "/mnt/e/work/hci/update";
 
     // Common infra repo path
-    private static readonly string CommonInfraRepoPath = OperatingSystem.IsWindows()
+    private static readonly string commonInfraRepoPath = OperatingSystem.IsWindows()
         ? @"E:\work\hub\common\infra"
         : "/mnt/e/work/hub/common/infra";
 
-    private static readonly string OutputDir = Path.Combine(
+    private static readonly string outputDir = Path.Combine(
         AppContext.BaseDirectory, "output", "lifecycle");
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerOptions jsonOptions = new()
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -48,13 +47,13 @@ public class LifecycleDetectorIntegrationTests
         TestLoggerFactory.Initialize(context);
         logger = TestLoggerFactory.CreateLogger<LifecycleDetectorIntegrationTests>();
 
-        if (Directory.Exists(OutputDir))
+        if (Directory.Exists(LifecycleDetectorIntegrationTests.outputDir))
         {
-            Directory.Delete(OutputDir, recursive: true);
+            Directory.Delete(LifecycleDetectorIntegrationTests.outputDir, recursive: true);
         }
 
-        Directory.CreateDirectory(OutputDir);
-        logger.LogInformation("Output directory: {OutputDir}", OutputDir);
+        Directory.CreateDirectory(LifecycleDetectorIntegrationTests.outputDir);
+        logger.LogInformation("Output directory: {OutputDir}", LifecycleDetectorIntegrationTests.outputDir);
     }
 
     /// <summary>
@@ -62,98 +61,86 @@ public class LifecycleDetectorIntegrationTests
     /// Expected: UpdateWinService (Windows Service host) and UpdateService (IWebApiService for Service Fabric).
     /// </summary>
     [TestMethod]
-    public void UpdateServiceRepo_DetectsTwoEntryPoints_WinServiceAndServiceFabric()
+    public async Task UpdateServiceRepo_DetectsTwoEntryPoints_WinServiceAndServiceFabric()
     {
         // Arrange
-        var updateServicePath = Path.Combine(UpdateRepoPath, "src", "UpdateResourceProvider", "UpdateService");
-        if (!Directory.Exists(updateServicePath))
+        if (!Directory.Exists(LifecycleDetectorIntegrationTests.updateRepoPath))
         {
-            Assert.Inconclusive($"Update service repo not found at {updateServicePath}");
+            Assert.Inconclusive($"Update service repo not found at {LifecycleDetectorIntegrationTests.updateRepoPath}");
             return;
         }
 
-        logger.LogInformation("Analyzing Update Service for entry points: {Path}", updateServicePath);
+        logger.LogInformation("Discovering entry points from repository root: {Path}", LifecycleDetectorIntegrationTests.updateRepoPath);
 
-        var entryPointAnalyzer = new EntryPointAnalyzer();
-        var allEntryPoints = new List<EntryPointInfo>();
+        var detector = new LifecycleDetector();
 
-        // Act - Analyze WinService folder
-        var winServicePath = Path.Combine(updateServicePath, "WinService");
-        if (Directory.Exists(winServicePath))
-        {
-            var csFiles = Directory.GetFiles(winServicePath, "*.cs", SearchOption.AllDirectories)
-                .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\"));
-
-            foreach (var file in csFiles)
-            {
-                var content = File.ReadAllText(file);
-                var tree = CSharpSyntaxTree.ParseText(content, path: file);
-                var relativePath = Path.GetRelativePath(UpdateRepoPath, file);
-                var entryPoints = entryPointAnalyzer.Analyze(tree, relativePath);
-                allEntryPoints.AddRange(entryPoints);
-
-                if (entryPoints.Count > 0)
-                {
-                    logger.LogInformation("Found {Count} entry points in {File}", entryPoints.Count, relativePath);
-                    foreach (var ep in entryPoints)
-                    {
-                        logger.LogInformation("  - {Type}: {Class}", ep.EntryPointType, ep.ClassName);
-                    }
-                }
-            }
-        }
-
-        // Analyze Service folder (contains UpdateService<T> : IWebApiService<T>)
-        var servicePath = Path.Combine(updateServicePath, "Service");
-        if (Directory.Exists(servicePath))
-        {
-            var csFiles = Directory.GetFiles(servicePath, "*.cs", SearchOption.AllDirectories)
-                .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\"));
-
-            foreach (var file in csFiles)
-            {
-                var content = File.ReadAllText(file);
-                var tree = CSharpSyntaxTree.ParseText(content, path: file);
-                var relativePath = Path.GetRelativePath(UpdateRepoPath, file);
-                var entryPoints = entryPointAnalyzer.Analyze(tree, relativePath);
-                allEntryPoints.AddRange(entryPoints);
-
-                // Also check for IWebApiService or IService<T> implementation
-                if (content.Contains("IWebApiService<") || content.Contains(": IService<"))
-                {
-                    logger.LogInformation("Found IWebApiService/IService in {File}", relativePath);
-                }
-            }
-        }
+        // Act - Discover entry points from repository root
+        var result = await detector.DiscoverFromRepositoryAsync(LifecycleDetectorIntegrationTests.updateRepoPath);
 
         // Output results
-        var outputPath = Path.Combine(OutputDir, "update_service_entry_points.json");
+        var outputPath = Path.Combine(LifecycleDetectorIntegrationTests.outputDir, "update_service_entry_points.json");
         var output = new
         {
-            RepoPath = updateServicePath,
-            TotalEntryPoints = allEntryPoints.Count,
-            EntryPoints = allEntryPoints.Select(ep => new
-            {
-                Type = ep.EntryPointType.ToString(),
-                ep.ClassName,
-                ep.BaseType,
-                ep.FilePath,
-                ep.LineNumber,
-                ep.LifecycleMethods
-            })
+            RepoPath = LifecycleDetectorIntegrationTests.updateRepoPath,
+            TotalProjectsScanned = result.TotalProjectsScanned,
+            ExecutableProjects = result.Projects.Count,
+            TotalEntryPoints = result.AllEntryPoints.Count(),
+            Projects = result.Projects
+                .Where(p => p.HasEntryPoints)
+                .Select(p => new
+                {
+                    p.Project.ProjectName,
+                    p.RelativePath,
+                    ProjectType = p.Project.SdkInfo.ProjectType.ToString(),
+                    p.Project.SdkInfo.IsExecutable,
+                    p.Project.SdkInfo.IsWebProject,
+                    p.Project.SdkInfo.IsWorkerProject,
+                    EntryPoints = p.EntryPoints.Select(ep => new
+                    {
+                        Type = ep.EntryPointType.ToString(),
+                        ep.ClassName,
+                        ep.BaseType,
+                        ep.FilePath,
+                        ep.LineNumber,
+                        ep.LifecycleMethods
+                    })
+                }),
+            Errors = result.Errors.Take(5).Select(e => new { e.FilePath, e.Message })
         };
-        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, JsonOptions));
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, LifecycleDetectorIntegrationTests.jsonOptions));
 
         // Assert
-        logger.LogInformation("Total entry points detected: {Count}", allEntryPoints.Count);
-        allEntryPoints.Should().NotBeEmpty("Update service should have at least one entry point");
+        logger.LogInformation("Total projects scanned: {Count}", result.TotalProjectsScanned);
+        logger.LogInformation("Executable projects found: {Count}", result.Projects.Count);
+        logger.LogInformation("Total entry points: {Count}", result.AllEntryPoints.Count());
 
-        // Log results for manual verification
-        foreach (var ep in allEntryPoints)
+        result.Projects.Should().NotBeEmpty("Repository should have executable projects");
+        result.AllEntryPoints.Should().NotBeEmpty("Repository should have at least one entry point");
+
+        // Log all discovered entry points
+        foreach (var project in result.Projects.Where(p => p.HasEntryPoints))
         {
-            logger.LogInformation("Entry Point: {Type} - {Class} ({BaseType})",
-                ep.EntryPointType, ep.ClassName, ep.BaseType ?? "N/A");
+            logger.LogInformation("Project: {Name} ({Type})",
+                project.Project.ProjectName,
+                project.Project.SdkInfo.ProjectType);
+
+            foreach (var ep in project.EntryPoints)
+            {
+                logger.LogInformation("  Entry Point: {Type} - {Class} ({BaseType})",
+                    ep.EntryPointType, ep.ClassName, ep.BaseType ?? "N/A");
+            }
         }
+
+        // Verify we found Windows Service and/or IWebApiService entry points
+        var allEntryPoints = result.AllEntryPoints.ToList();
+        var hasWindowsServiceOrHostedService = allEntryPoints.Any(ep =>
+            ep.EntryPointType == EntryPointType.WindowsService ||
+            ep.EntryPointType == EntryPointType.HostedService ||
+            ep.EntryPointType == EntryPointType.BackgroundService ||
+            ep.EntryPointType == EntryPointType.ServiceFabric);
+
+        hasWindowsServiceOrHostedService.Should().BeTrue(
+            "Update service repo should have Windows Service, Hosted Service, or Service Fabric entry points");
     }
 
     /// <summary>
@@ -164,7 +151,7 @@ public class LifecycleDetectorIntegrationTests
     {
         // Arrange - Look for manifest in source, not build output
         var winServicePath = Path.Combine(
-            UpdateRepoPath,
+            LifecycleDetectorIntegrationTests.updateRepoPath,
             "src", "UpdateResourceProvider", "UpdateService", "WinService");
 
         if (!Directory.Exists(winServicePath))
@@ -213,7 +200,7 @@ public class LifecycleDetectorIntegrationTests
             var services = await parser.ParseWinApplicationManifestAsync(manifestPath);
 
             // Output results
-            var outputPath1 = Path.Combine(OutputDir, "manifest_services.json");
+            var outputPath1 = Path.Combine(LifecycleDetectorIntegrationTests.outputDir, "manifest_services.json");
             var output1 = new
             {
                 Source = "DirectFile",
@@ -227,7 +214,7 @@ public class LifecycleDetectorIntegrationTests
                     s.LineNumber
                 })
             };
-            File.WriteAllText(outputPath1, JsonSerializer.Serialize(output1, JsonOptions));
+            File.WriteAllText(outputPath1, JsonSerializer.Serialize(output1, LifecycleDetectorIntegrationTests.jsonOptions));
 
             services.Should().NotBeEmpty("WinApplicationManifest should define at least one service");
             return;
@@ -237,7 +224,7 @@ public class LifecycleDetectorIntegrationTests
         var manifestInfo = await parser.ParseManifestAsync(winAppManifestRef.ManifestPath);
 
         // Output results
-        var outputPath = Path.Combine(OutputDir, "manifest_services.json");
+        var outputPath = Path.Combine(LifecycleDetectorIntegrationTests.outputDir, "manifest_services.json");
         var output = new
         {
             Source = "ProjectReference",
@@ -254,7 +241,7 @@ public class LifecycleDetectorIntegrationTests
                 s.LineNumber
             })
         };
-        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, JsonOptions));
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, LifecycleDetectorIntegrationTests.jsonOptions));
 
         // Assert
         manifestInfo.Should().NotBeNull("Should parse the manifest");
@@ -279,112 +266,141 @@ public class LifecycleDetectorIntegrationTests
 
     /// <summary>
     /// Tests detection of IWebApiService implementations which are hosted services.
+    /// Uses repository discovery to find all hosted service implementations.
     /// </summary>
     [TestMethod]
-    public void UpdateServiceRepo_DetectsIWebApiServiceImplementations()
+    public async Task UpdateServiceRepo_DetectsIWebApiServiceImplementations()
     {
         // Arrange
-        var srcPath = Path.Combine(UpdateRepoPath, "src");
-        if (!Directory.Exists(srcPath))
+        if (!Directory.Exists(LifecycleDetectorIntegrationTests.updateRepoPath))
         {
-            Assert.Inconclusive($"Source path not found at {srcPath}");
+            Assert.Inconclusive($"Update service repo not found at {LifecycleDetectorIntegrationTests.updateRepoPath}");
             return;
         }
 
-        logger.LogInformation("Scanning for IWebApiService implementations: {Path}", srcPath);
+        logger.LogInformation("Discovering IWebApiService implementations from repo: {Path}", LifecycleDetectorIntegrationTests.updateRepoPath);
 
-        var csFiles = Directory.GetFiles(srcPath, "*.cs", SearchOption.AllDirectories)
-            .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\") && !f.Contains("Test"))
-            .ToList();
+        var detector = new LifecycleDetector();
 
-        var iWebApiServiceImplementations = new List<(string File, string ClassName)>();
-
-        // Act
-        foreach (var file in csFiles)
+        // Configure discovery options with common-infra dependency repository
+        var options = new RepositoryDiscoveryOptions
         {
-            var content = File.ReadAllText(file);
-            if (!content.Contains("IWebApiService<") && !content.Contains(": IService<"))
-            {
-                continue;
-            }
+            IncludeLibrariesWithHostingPatterns = true,
+            DependencyRepositoryPaths = new[] { LifecycleDetectorIntegrationTests.commonInfraRepoPath },
+        };
 
-            var tree = CSharpSyntaxTree.ParseText(content);
-            var root = tree.GetRoot();
+        // Act - Discover from repository root with dependency repo support
+        var result = await detector.DiscoverFromRepositoryAsync(LifecycleDetectorIntegrationTests.updateRepoPath, options);
 
-            var classDeclarations = root.DescendantNodes()
-                .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ClassDeclarationSyntax>();
-
-            foreach (var classDecl in classDeclarations)
-            {
-                var baseList = classDecl.BaseList?.ToString() ?? "";
-                if (baseList.Contains("IWebApiService<") || baseList.Contains("IService<"))
-                {
-                    var relativePath = Path.GetRelativePath(UpdateRepoPath, file);
-                    iWebApiServiceImplementations.Add((relativePath, classDecl.Identifier.Text));
-                    logger.LogInformation("Found IWebApiService implementation: {Class} in {File}",
-                        classDecl.Identifier.Text, relativePath);
-                }
-            }
+        // Log discovered projects for debugging
+        logger.LogInformation("Total projects scanned: {Count}", result.TotalProjectsScanned);
+        logger.LogInformation("Projects with entry points: {Count}", result.Projects.Count);
+        foreach (var proj in result.Projects.Take(10))
+        {
+            logger.LogInformation("  Project: {Name}, IsLib: {IsLib}, EntryPoints: {Count}",
+                proj.Project.ProjectName, proj.Project.IsLibraryWithHostingPatterns, proj.EntryPoints.Count);
         }
 
+        // Find all HostedService entry points (IWebApiService implements IHostedService pattern)
+        var hostedServiceEntryPoints = result.AllEntryPoints
+            .Where(ep => ep.EntryPointType == EntryPointType.HostedService ||
+                        ep.BaseType?.Contains("IWebApiService") == true ||
+                        ep.BaseType?.Contains("IService<") == true)
+            .ToList();
+
         // Output results
-        var outputPath = Path.Combine(OutputDir, "webapi_service_implementations.json");
+        var outputPath = Path.Combine(LifecycleDetectorIntegrationTests.outputDir, "webapi_service_implementations.json");
         File.WriteAllText(outputPath, JsonSerializer.Serialize(new
         {
-            TotalImplementations = iWebApiServiceImplementations.Count,
-            Implementations = iWebApiServiceImplementations.Select(i => new { i.ClassName, i.File })
-        }, JsonOptions));
+            TotalProjectsScanned = result.TotalProjectsScanned,
+            TotalHostedServiceImplementations = hostedServiceEntryPoints.Count,
+            Implementations = hostedServiceEntryPoints.Select(ep => new
+            {
+                ep.ClassName,
+                ep.BaseType,
+                ep.FilePath,
+                Type = ep.EntryPointType.ToString()
+            }),
+            ProjectsWithHostedServices = result.Projects
+                .Where(p => p.EntryPoints.Any(ep =>
+                    ep.EntryPointType == EntryPointType.HostedService ||
+                    ep.BaseType?.Contains("IWebApiService") == true))
+                .Select(p => p.Project.ProjectName)
+        }, LifecycleDetectorIntegrationTests.jsonOptions));
 
         // Assert
-        iWebApiServiceImplementations.Should().NotBeEmpty(
-            "Update service repo should have IWebApiService implementations");
+        logger.LogInformation("Found {Count} hosted service implementations", hostedServiceEntryPoints.Count);
+        foreach (var ep in hostedServiceEntryPoints)
+        {
+            logger.LogInformation("  - {Class} : {BaseType} in {File}",
+                ep.ClassName, ep.BaseType, Path.GetFileName(ep.FilePath));
+        }
 
-        iWebApiServiceImplementations.Should().Contain(i =>
-            i.ClassName.Contains("UpdateService") || i.ClassName.Contains("Update"),
-            "Should find UpdateService class implementing IWebApiService");
+        hostedServiceEntryPoints.Should().NotBeEmpty(
+            "Update service repo should have IWebApiService/IHostedService implementations");
     }
 
     /// <summary>
     /// Tests full lifecycle detection across the entire Update service repository.
+    /// Uses repository discovery to analyze all executable projects.
     /// </summary>
     [TestMethod]
     public async Task UpdateServiceRepo_FullLifecycleAnalysis()
     {
         // Arrange
-        var srcPath = Path.Combine(UpdateRepoPath, "src", "UpdateResourceProvider");
-        if (!Directory.Exists(srcPath))
+        if (!Directory.Exists(LifecycleDetectorIntegrationTests.updateRepoPath))
         {
-            Assert.Inconclusive($"Source path not found at {srcPath}");
+            Assert.Inconclusive($"Update service repo not found at {LifecycleDetectorIntegrationTests.updateRepoPath}");
             return;
         }
 
-        logger.LogInformation("Running full lifecycle analysis: {Path}", srcPath);
+        logger.LogInformation("Running full lifecycle analysis from repo root: {Path}", LifecycleDetectorIntegrationTests.updateRepoPath);
 
         var detector = new LifecycleDetector();
 
-        // Act
-        var result = await detector.AnalyzeAsync(srcPath);
+        // Configure discovery options with common-infra dependency repository
+        var options = new RepositoryDiscoveryOptions
+        {
+            IncludeLibrariesWithHostingPatterns = true,
+            DependencyRepositoryPaths = new[] { LifecycleDetectorIntegrationTests.commonInfraRepoPath },
+        };
+
+        // Act - Discover from repository root with dependency repo support
+        var result = await detector.DiscoverFromRepositoryAsync(LifecycleDetectorIntegrationTests.updateRepoPath, options);
 
         // Output results
-        var outputPath = Path.Combine(OutputDir, "full_lifecycle_analysis.json");
+        var outputPath = Path.Combine(LifecycleDetectorIntegrationTests.outputDir, "full_lifecycle_analysis.json");
         var output = new
         {
-            result.FilesAnalyzed,
-            TotalRelationships = result.DetectedRelationships.Count,
-            EntryPointCount = result.EntryPoints.Count,
-            AzureFunctionCount = result.AzureFunctions.Count,
-            MiddlewareCount = result.MiddlewareRegistrations.Count,
-            AspNetCoreStartupCount = result.AspNetCoreStartups.Count,
-            ScheduledJobCount = result.ScheduledJobs.Count,
-            LifetimeEventCount = result.ApplicationLifetimeEvents.Count,
+            RepositoryRoot = result.RepositoryRoot,
+            result.TotalProjectsScanned,
+            ExecutableProjectsFound = result.Projects.Count,
+            TotalFilesAnalyzed = result.TotalFilesAnalyzed,
+            TotalEntryPoints = result.AllEntryPoints.Count(),
+            TotalAzureFunctions = result.AllAzureFunctions.Count(),
             ErrorCount = result.Errors.Count,
-            EntryPoints = result.EntryPoints.Select(ep => new
-            {
-                Type = ep.EntryPointType.ToString(),
-                ep.ClassName,
-                ep.BaseType,
-                ep.FilePath
-            }),
+            Projects = result.Projects
+                .Where(p => p.HasEntryPoints)
+                .Select(p => new
+                {
+                    p.Project.ProjectName,
+                    p.RelativePath,
+                    ProjectType = p.Project.SdkInfo.ProjectType.ToString(),
+                    p.Project.IsLibraryWithHostingPatterns,
+                    p.FilesAnalyzed,
+                    EntryPointCount = p.EntryPoints.Count,
+                    AzureFunctionCount = p.AzureFunctions.Count,
+                    ScheduledJobCount = p.ScheduledJobs.Count,
+                    LifetimeEventCount = p.ApplicationLifetimeEvents.Count,
+                    EntryPoints = p.EntryPoints.Select(ep => new
+                    {
+                        Type = ep.EntryPointType.ToString(),
+                        ep.ClassName,
+                        ep.MethodName,
+                        ep.BaseType,
+                        ep.LifecycleMethods
+                    })
+                }),
             Errors = result.Errors.Take(10).Select(e => new
             {
                 e.FilePath,
@@ -392,156 +408,178 @@ public class LifecycleDetectorIntegrationTests
                 e.ErrorType
             })
         };
-        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, JsonOptions));
+        await File.WriteAllTextAsync(outputPath, JsonSerializer.Serialize(output, LifecycleDetectorIntegrationTests.jsonOptions));
 
         // Assert
-        result.FilesAnalyzed.Should().BeGreaterThan(0);
-        result.EntryPoints.Should().NotBeEmpty("Should detect entry points in Update service");
+        result.TotalFilesAnalyzed.Should().BeGreaterThan(0);
+        result.AllEntryPoints.Should().NotBeEmpty("Should detect entry points in Update service");
+
+        // Assert: UpdateService project should be detected with UpdateService class containing StartAsync
+        const string ExpectedProjectName = "UpdateResourceProvider.UpdateService.Service";
+        var updateServiceProject = result.Projects
+            .FirstOrDefault(p => p.Project.ProjectName.Equals(ExpectedProjectName, StringComparison.OrdinalIgnoreCase));
+
+        updateServiceProject.Should().NotBeNull(
+            $"Should find project '{ExpectedProjectName}'");
+
+        var updateServiceEntryPoint = updateServiceProject!.EntryPoints
+            .FirstOrDefault(ep => ep.ClassName != null && ep.ClassName.Contains("UpdateService"));
+
+        updateServiceEntryPoint.Should().NotBeNull(
+            "UpdateService project should contain an entry point with 'UpdateService' class");
+
+        updateServiceEntryPoint!.LifecycleMethods.Should().Contain("StartAsync",
+            "UpdateService class should have StartAsync lifecycle method");
+
+        logger.LogInformation("Found UpdateService entry point:");
+        logger.LogInformation("  Project: {Project}", updateServiceProject.RelativePath);
+        logger.LogInformation("  Class: {Class}", updateServiceEntryPoint.ClassName);
+        logger.LogInformation("  BaseType: {BaseType}", updateServiceEntryPoint.BaseType);
+        logger.LogInformation("  LifecycleMethods: {Methods}", string.Join(", ", updateServiceEntryPoint.LifecycleMethods));
 
         logger.LogInformation("Analysis complete:");
-        logger.LogInformation("  Files analyzed: {Count}", result.FilesAnalyzed);
-        logger.LogInformation("  Entry points: {Count}", result.EntryPoints.Count);
-        logger.LogInformation("  Scheduled jobs: {Count}", result.ScheduledJobs.Count);
-        logger.LogInformation("  Lifetime events: {Count}", result.ApplicationLifetimeEvents.Count);
+        logger.LogInformation("  Projects scanned: {Count}", result.TotalProjectsScanned);
+        logger.LogInformation("  Executable projects: {Count}", result.Projects.Count);
+        logger.LogInformation("  Files analyzed: {Count}", result.TotalFilesAnalyzed);
+        logger.LogInformation("  Total entry points: {Count}", result.AllEntryPoints.Count());
         logger.LogInformation("  Errors: {Count}", result.Errors.Count);
+
+        foreach (var project in result.Projects.Where(p => p.HasEntryPoints))
+        {
+            logger.LogInformation("  Project: {Name} - {Count} entry points",
+                project.Project.ProjectName, project.EntryPoints.Count);
+        }
     }
 
     /// <summary>
     /// Tests that common-infra repo hosting base classes are detected correctly.
+    /// Uses repository discovery to find hosting-related projects and entry points.
     /// </summary>
     [TestMethod]
-    public void CommonInfraRepo_DetectsHostingBaseClasses()
+    public async Task CommonInfraRepo_DetectsHostingBaseClasses()
     {
         // Arrange
-        var hostModelPath = Path.Combine(CommonInfraRepoPath, "src", "HostModel");
-        if (!Directory.Exists(hostModelPath))
+        if (!Directory.Exists(LifecycleDetectorIntegrationTests.commonInfraRepoPath))
         {
-            Assert.Inconclusive($"Common infra repo not found at {hostModelPath}");
+            Assert.Inconclusive($"Common infra repo not found at {LifecycleDetectorIntegrationTests.commonInfraRepoPath}");
             return;
         }
 
-        logger.LogInformation("Analyzing common-infra HostModel: {Path}", hostModelPath);
+        logger.LogInformation("Discovering hosting base classes from repo: {Path}", LifecycleDetectorIntegrationTests.commonInfraRepoPath);
 
-        var inheritanceAnalyzer = new InheritanceAnalyzer();
-        var allRelationships = new List<InheritanceRelationship>();
+        var detector = new LifecycleDetector();
 
-        var csFiles = Directory.GetFiles(hostModelPath, "*.cs", SearchOption.AllDirectories)
-            .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\") && !f.Contains("Test"))
-            .ToList();
+        // Act - Discover from repository root, include all projects to find base classes
+        var options = new RepositoryDiscoveryOptions { IncludeAllProjects = true };
+        var result = await detector.DiscoverFromRepositoryAsync(LifecycleDetectorIntegrationTests.commonInfraRepoPath, options);
 
-        // Act
-        foreach (var file in csFiles)
-        {
-            try
-            {
-                var content = File.ReadAllText(file);
-                var tree = CSharpSyntaxTree.ParseText(content, path: file);
-                var relativePath = Path.GetRelativePath(CommonInfraRepoPath, file);
-                var relationships = inheritanceAnalyzer.Analyze(tree, relativePath);
-                allRelationships.AddRange(relationships);
-            }
-            catch
-            {
-                // Skip files that can't be parsed
-            }
-        }
-
-        // Find service-related inheritance
-        var serviceRelated = allRelationships
-            .Where(r => r.TargetType.Contains("Service") ||
-                       r.SourceType.Contains("Service") ||
-                       r.TargetType.Contains("Host") ||
-                       r.SourceType.Contains("Host"))
+        // Find projects with hosting-related entry points
+        var hostingProjects = result.Projects
+            .Where(p => p.Project.ProjectName.Contains("Host", StringComparison.OrdinalIgnoreCase) ||
+                       p.EntryPoints.Any(ep =>
+                           ep.EntryPointType == EntryPointType.HostedService ||
+                           ep.EntryPointType == EntryPointType.BackgroundService ||
+                           ep.EntryPointType == EntryPointType.WindowsService))
             .ToList();
 
         // Output results
-        var outputPath = Path.Combine(OutputDir, "common_infra_hosting.json");
+        var outputPath = Path.Combine(LifecycleDetectorIntegrationTests.outputDir, "common_infra_hosting.json");
         var output = new
         {
-            TotalRelationships = allRelationships.Count,
-            ServiceRelated = serviceRelated.Count,
-            HostingClasses = serviceRelated
-                .GroupBy(r => r.SourceType)
-                .Select(g => new
+            TotalProjectsScanned = result.TotalProjectsScanned,
+            HostingRelatedProjects = hostingProjects.Count,
+            Projects = hostingProjects.Select(p => new
+            {
+                p.Project.ProjectName,
+                p.RelativePath,
+                ProjectType = p.Project.SdkInfo.ProjectType.ToString(),
+                EntryPoints = p.EntryPoints.Select(ep => new
                 {
-                    ClassName = g.Key,
-                    BaseTypes = g.Select(r => r.TargetType).Distinct()
+                    Type = ep.EntryPointType.ToString(),
+                    ep.ClassName,
+                    ep.BaseType
                 })
+            }),
+            AllEntryPointTypes = result.AllEntryPoints
+                .GroupBy(ep => ep.EntryPointType)
+                .Select(g => new { Type = g.Key.ToString(), Count = g.Count() })
         };
-        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, JsonOptions));
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, LifecycleDetectorIntegrationTests.jsonOptions));
 
         // Assert
-        allRelationships.Should().NotBeEmpty("Common infra should have inheritance relationships");
+        result.TotalProjectsScanned.Should().BeGreaterThan(0, "Common infra should have projects to scan");
 
-        logger.LogInformation("Found {Count} inheritance relationships in HostModel", allRelationships.Count);
-        logger.LogInformation("Service-related: {Count}", serviceRelated.Count);
+        logger.LogInformation("Found {Count} projects in common-infra repo", result.TotalProjectsScanned);
+        logger.LogInformation("Hosting-related projects: {Count}", hostingProjects.Count);
+
+        foreach (var project in hostingProjects)
+        {
+            logger.LogInformation("  {Name}: {Count} entry points",
+                project.Project.ProjectName, project.EntryPoints.Count);
+        }
     }
 
     /// <summary>
     /// Tests project SDK detection to identify Worker and Web projects.
+    /// Uses repository discovery to identify all project types.
     /// </summary>
     [TestMethod]
     public async Task UpdateServiceRepo_DetectsProjectTypes()
     {
         // Arrange
-        var srcPath = Path.Combine(UpdateRepoPath, "src");
-        if (!Directory.Exists(srcPath))
+        if (!Directory.Exists(LifecycleDetectorIntegrationTests.updateRepoPath))
         {
-            Assert.Inconclusive($"Source path not found at {srcPath}");
+            Assert.Inconclusive($"Update service repo not found at {LifecycleDetectorIntegrationTests.updateRepoPath}");
             return;
         }
 
-        logger.LogInformation("Scanning for project types: {Path}", srcPath);
+        logger.LogInformation("Discovering project types from repo: {Path}", LifecycleDetectorIntegrationTests.updateRepoPath);
 
-        var parser = new ManifestParser();
-        var projectFiles = Directory.GetFiles(srcPath, "*.csproj", SearchOption.AllDirectories)
-            .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\"))
-            .ToList();
+        var detector = new LifecycleDetector();
 
-        var projectInfos = new List<ProjectSdkInfo>();
-
-        // Act
-        foreach (var projectFile in projectFiles)
-        {
-            var info = await parser.ParseProjectSdkAsync(projectFile);
-            if (info != null)
-            {
-                projectInfos.Add(info);
-            }
-        }
+        // Act - Discover from repository root, include all projects
+        var options = new RepositoryDiscoveryOptions { IncludeAllProjects = true };
+        var result = await detector.DiscoverFromRepositoryAsync(LifecycleDetectorIntegrationTests.updateRepoPath, options);
 
         // Output results
-        var outputPath = Path.Combine(OutputDir, "project_types.json");
+        var outputPath = Path.Combine(LifecycleDetectorIntegrationTests.outputDir, "project_types.json");
         var output = new
         {
-            TotalProjects = projectInfos.Count,
-            ByType = projectInfos
-                .GroupBy(p => p.ProjectType.ToString())
+            TotalProjectsScanned = result.TotalProjectsScanned,
+            ExecutableProjects = result.Projects.Count(p => p.Project.SdkInfo.IsExecutable),
+            WebProjects = result.Projects.Count(p => p.Project.SdkInfo.IsWebProject),
+            WorkerProjects = result.Projects.Count(p => p.Project.SdkInfo.IsWorkerProject),
+            ByType = result.Projects
+                .GroupBy(p => p.Project.SdkInfo.ProjectType.ToString())
                 .ToDictionary(g => g.Key, g => g.Count()),
-            Projects = projectInfos.Select(p => new
+            Projects = result.Projects.Select(p => new
             {
-                Name = Path.GetFileName(p.FilePath),
-                Type = p.ProjectType.ToString(),
-                p.Sdk,
-                p.OutputType,
-                p.IsExecutable,
-                p.IsWebProject,
-                p.IsWorkerProject
+                Name = p.Project.ProjectName,
+                p.RelativePath,
+                Type = p.Project.SdkInfo.ProjectType.ToString(),
+                p.Project.SdkInfo.Sdk,
+                p.Project.SdkInfo.OutputType,
+                p.Project.SdkInfo.IsExecutable,
+                p.Project.SdkInfo.IsWebProject,
+                p.Project.SdkInfo.IsWorkerProject,
+                p.Project.IsTestProject,
+                HasEntryPoints = p.HasEntryPoints,
+                EntryPointCount = p.EntryPoints.Count
             })
         };
-        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, JsonOptions));
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(output, LifecycleDetectorIntegrationTests.jsonOptions));
 
         // Assert
-        projectInfos.Should().NotBeEmpty("Should detect project files");
+        result.Projects.Should().NotBeEmpty("Should discover projects in the repository");
 
-        var executableProjects = projectInfos.Where(p => p.IsExecutable).ToList();
+        var executableProjects = result.Projects.Where(p => p.Project.SdkInfo.IsExecutable).ToList();
         logger.LogInformation("Found {Total} projects, {Exe} executables",
-            projectInfos.Count, executableProjects.Count);
+            result.TotalProjectsScanned, executableProjects.Count);
 
         foreach (var proj in executableProjects)
         {
-            logger.LogInformation("  Executable: {Name} ({Type})",
-                Path.GetFileName(proj.FilePath), proj.ProjectType);
+            logger.LogInformation("  Executable: {Name} ({Type}) - {Count} entry points",
+                proj.Project.ProjectName, proj.Project.SdkInfo.ProjectType, proj.EntryPoints.Count);
         }
     }
 }
