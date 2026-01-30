@@ -1,7 +1,7 @@
 # Code Intelligence Implementation Plan
 
-> **Version**: 2.0  
-> **Last Updated**: 2026-01-29  
+> **Version**: 2.1  
+> **Last Updated**: 2026-01-30  
 > **Status**: Phased Implementation Roadmap
 
 This document provides the phased implementation plan for the code intelligence system, covering all 10 relationship categories with extensible detection strategies.
@@ -1112,6 +1112,12 @@ rules:
   - Resolves route templates with parameters and constraints
 - [x] **gRPC Analyzer** - `Analyzers/GrpcServiceAnalyzer.cs`
   - Service implementations and client calls
+- [x] **ARM Route Builder** - `Analyzers/ApiInfrastructureAnalyzer.cs`
+  - `BuildArmRoutePrefix` - Builds ARM route prefix from ResourceRouting attribute
+  - `BuildArmEndpointRoute` - Builds full routes with action templates
+  - `BuildResourceTypeNameMap` - Extracts ResourceTypeName from model classes
+  - `BuildConstantMap` - Resolves constant references
+  - `ResolveRouteConstants` - Replaces constant patterns in routes
 - [ ] **API Catalog Builder** - `Services/ApiCatalogBuilder.cs` (deferred)
   - Builds comprehensive API catalog with OpenAPI-like structure
 
@@ -1222,6 +1228,73 @@ rules:
 
 **Total Phase 3 Tests: 90**  
 **Tests Passing**: 90/90
+
+### 3.5 ARM Resource Provider Route Detection (Enhancement)
+
+**Added**: 2026-01-30  
+**Status**: ✅ Complete
+
+This enhancement adds support for detecting Azure Resource Manager (ARM) style routes used in Azure Stack resource providers. These routes follow a hierarchical pattern with custom route providers.
+
+#### Route Building Pattern
+
+ARM resource routes are built by `ResourceProviderDirectRouteProvider` based on:
+1. `[ResourceRouting]` attribute on controllers - defines namespace and parent hierarchy
+2. `[RoutePrefix]` attribute - defines static route prefixes
+3. Custom route attributes: `[GetRoute]`, `[GetAllRoute]`, `[PutRoute]`, `[DeleteRoute]`, `[OperationRoute]`
+
+Example route structure:
+```
+providers/Microsoft.Update.Admin/updateLocations/{name}
+providers/Microsoft.Update.Admin/updateLocations/{name}/updates
+providers/Microsoft.Update.Admin/updateLocations/{name}/updates/{name}/updateRuns
+```
+
+#### New Methods in ApiInfrastructureAnalyzer
+
+| Method | Purpose |
+|--------|---------|
+| `BuildArmRoutePrefix` | Builds ARM route prefix by traversing `ParentControllerType` chain |
+| `BuildArmEndpointRoute` | Combines ARM prefix with action-specific templates |
+| `BuildResourceTypeNameMap` | Extracts `ResourceTypeName` constants from model classes |
+| `BuildConstantMap` | Scans files for `const string` declarations |
+| `ResolveRouteConstants` | Replaces constant references with resolved values |
+| `ResolveNamespace` | Resolves namespace expressions from constant map |
+
+#### ResourceRoutingInfo Model
+
+```csharp
+public record ResourceRoutingInfo
+{
+    public string? ResourceType { get; set; }
+    public string? ParentResourceType { get; set; }
+    public string? Namespace { get; set; }
+    public string? NamespaceExpression { get; set; }
+    public string? ParentControllerType { get; set; }
+    public string? Scope { get; set; }
+}
+```
+
+#### Integration Test Coverage
+
+- [x] `UpdateServiceRepo_TracesControllerDIRegistrations` - 17 concrete route assertions
+  - [x] ARM routes with parent hierarchy (updateLocations → updates → updateRuns)
+  - [x] Operation routes (checkHealth, apply, prepare, rerun)
+  - [x] Non-ARM routes with resolved constants (caches, updatePrep, discoveryConfig)
+  - [x] Constant resolution (UrpConstants.CacheRouteName → "caches")
+
+#### Detected Route Patterns
+
+| Route Pattern | Controller | Method |
+|---------------|------------|--------|
+| `providers/Microsoft.Update.Admin/updateLocations/{name}` | UpdateLocationResourceController | GetResource |
+| `providers/Microsoft.Update.Admin/updateLocations/{name}/checkHealth` | UpdateLocationResourceController | CheckHealth |
+| `providers/Microsoft.Update.Admin/updateLocations/{name}/updates` | UpdateResourceController | GetAllResourcesByShortCut |
+| `providers/Microsoft.Update.Admin/updateLocations/{name}/updates/{name}` | UpdateResourceController | AddUpdate |
+| `providers/Microsoft.Update.Admin/updateLocations/{name}/updates/{name}/apply` | UpdateResourceController | ApplyUpdate |
+| `providers/Microsoft.Update.Admin/updateLocations/{name}/updates/{name}/updateRuns` | UpdateRunResourceController | GetAllResourcesByShortCut |
+| `caches/{typeName}` | CacheController | GetCachedItem |
+| `updatePrep/{name}` | UpdatePrepareController | GetPrepareWorkflow |
 
 ---
 

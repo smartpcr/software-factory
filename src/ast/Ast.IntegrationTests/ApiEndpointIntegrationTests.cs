@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using CodeIntelligence.Analyzers;
 using CodeIntelligence.Services;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.Extensions.Logging;
@@ -713,38 +714,42 @@ public class ApiEndpointIntegrationTests
     [TestCategory("Integration")]
     public async Task UpdateServiceRepo_AnalyzesAuthenticationHandlers()
     {
-        // Arrange
-        var startupPath = Path.Combine(
-            UpdateRepoPath,
-            "src", "UpdateResourceProvider", "UpdateService", "Service", "Source", "UpdateServiceStartup.cs");
+        // Arrange - discover startup files dynamically
+        var service = new ApiDiscoveryService();
+        var startupFiles = await service.FindStartupFilesAsync(UpdateRepoPath, new[] { CommonInfraRepoPath });
 
-        if (!File.Exists(startupPath))
+        if (startupFiles.Count == 0)
         {
-            Assert.Inconclusive($"Startup file not found: {startupPath}");
+            Assert.Inconclusive("No startup files discovered in repo");
             return;
         }
 
-        var code = await File.ReadAllTextAsync(startupPath);
-        var tree = CSharpSyntaxTree.ParseText(code);
         var analyzer = new ApiInfrastructureAnalyzer();
+        var allAuthHandlers = new List<AuthHandlerInfo>();
 
-        // Act
-        var authHandlers = analyzer.AnalyzeAuthHandlers(tree, startupPath);
+        // Act - analyze all startup files for auth handlers
+        foreach (var startupPath in startupFiles)
+        {
+            var code = await File.ReadAllTextAsync(startupPath);
+            var tree = CSharpSyntaxTree.ParseText(code);
+            var authHandlers = analyzer.AnalyzeAuthHandlers(tree, startupPath);
+            allAuthHandlers.AddRange(authHandlers);
+        }
 
         // Assert
-        Assert.IsTrue(authHandlers.Count > 0, "Should detect auth handlers");
+        Assert.IsTrue(allAuthHandlers.Count > 0, "Should detect auth handlers");
 
         logger.LogInformation("Authentication handlers:\n{Handlers}",
-            string.Join("\n", authHandlers.Select(h =>
+            string.Join("\n", allAuthHandlers.Select(h =>
                 $"  [{h.HandlerType}] {h.Expression} (line {h.LineNumber})")));
 
         // Should detect tracing and auth handlers
-        Assert.IsTrue(authHandlers.Any(h => h.HandlerType == "Tracing"),
+        Assert.IsTrue(allAuthHandlers.Any(h => h.HandlerType == "Tracing"),
             "Should detect TracingHandler");
-        Assert.IsTrue(authHandlers.Any(h => h.HandlerType == "MultiAuth" || h.HandlerType == "CertificateBased"),
+        Assert.IsTrue(allAuthHandlers.Any(h => h.HandlerType == "MultiAuth" || h.HandlerType == "CertificateBased"),
             "Should detect authentication handler");
 
-        await SaveResultsAsync("AuthenticationHandlers.json", authHandlers);
+        await SaveResultsAsync("AuthenticationHandlers.json", allAuthHandlers);
     }
 
     #endregion
@@ -755,47 +760,219 @@ public class ApiEndpointIntegrationTests
     [TestCategory("Integration")]
     public async Task UpdateServiceRepo_DiscoverHttpClientRegistrations()
     {
-        // Arrange
-        var httpClientSingletonPath = Path.Combine(
-            UpdateRepoPath,
-            "src", "UpdateResourceProvider", "UpdateService", "Core", "Source", "Helpers", "HttpClientSingleton.cs");
-
-        if (!File.Exists(httpClientSingletonPath))
+        // Arrange - parse all source files from both update repo and common-infra for complete tracing
+        var updateCsFiles = Directory.GetFiles(UpdateRepoPath, "*.cs", new EnumerationOptions
         {
-            Assert.Inconclusive($"HttpClientSingleton file not found: {httpClientSingletonPath}");
-            return;
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+        }).Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\") &&
+                      !f.Contains("\\out\\") && !f.Contains("Test", StringComparison.OrdinalIgnoreCase))
+          .ToList();
+
+        // Include common-infra source files for complete HTTP client wrapper chain tracing
+        var commonInfraCsFiles = new List<string>();
+        if (Directory.Exists(CommonInfraRepoPath))
+        {
+            commonInfraCsFiles = Directory.GetFiles(CommonInfraRepoPath, "*.cs", new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                IgnoreInaccessible = true,
+            }).Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\") &&
+                          !f.Contains("\\out\\") && !f.Contains("Test", StringComparison.OrdinalIgnoreCase))
+              .ToList();
         }
 
-        var code = await File.ReadAllTextAsync(httpClientSingletonPath);
-        var tree = CSharpSyntaxTree.ParseText(code);
+        var allCsFiles = updateCsFiles.Concat(commonInfraCsFiles).ToList();
+        logger.LogInformation("Scanning {Count} C# files for HTTP client DI registrations ({UpdateCount} update + {InfraCount} common-infra)",
+            allCsFiles.Count, updateCsFiles.Count, commonInfraCsFiles.Count);
+
         var analyzer = new ApiInfrastructureAnalyzer();
+        var allRegistrations = new List<HttpClientRegistration>();
+        var syntaxTrees = new List<SyntaxTree>();
+        var fileToTree = new Dictionary<string, SyntaxTree>();
 
-        // Act
-        var registrations = analyzer.AnalyzeHttpClientRegistrations(tree, httpClientSingletonPath);
+        // First pass: parse all files
+        foreach (var file in allCsFiles)
+        {
+            try
+            {
+                var code = await File.ReadAllTextAsync(file);
+                var tree = CSharpSyntaxTree.ParseText(code);
+                syntaxTrees.Add(tree);
+                fileToTree[file] = tree;
+            }
+            catch
+            {
+                // Skip unreadable files
+            }
+        }
 
-        // Assert
-        Assert.IsTrue(registrations.Count > 0, "Should detect HttpClient registration");
+        // Build HTTP client wrapper chain
+        var httpClientWrappers = analyzer.BuildHttpClientWrapperChain(syntaxTrees);
 
-        logger.LogInformation("HttpClient registrations:\n{Registrations}",
-            string.Join("\n", registrations.Select(r =>
-                $"  [{r.RegistrationType}] {r.ClassName}.{r.FieldName ?? r.MethodName}")));
+        // Second pass: find files with DI registration patterns using AST
+        // Look for RegisterType, RegisterInstance, AddHttpClient, AddSingleton, etc.
+        var diRegistrationMethods = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "RegisterType", "RegisterInstance", "RegisterSingleton",
+            "AddHttpClient", "AddSingleton", "AddScoped", "AddTransient",
+            "Register", "RegisterComponents",
+        };
 
-        // Should detect singleton pattern
-        Assert.IsTrue(registrations.Any(r => r.RegistrationType == "Singleton"),
-            "Should detect singleton pattern");
+        var diConfigFiles = new List<string>();
+        foreach (var (file, tree) in fileToTree)
+        {
+            var root = tree.GetRoot();
+            var invocations = root.DescendantNodes().OfType<InvocationExpressionSyntax>();
 
-        await SaveResultsAsync("HttpClientRegistrations.json", registrations);
+            // Check if this file contains DI registration method calls
+            var hasDiRegistrations = invocations.Any(inv =>
+            {
+                var methodName = inv.Expression switch
+                {
+                    MemberAccessExpressionSyntax ma => ma.Name.Identifier.Text,
+                    IdentifierNameSyntax id => id.Identifier.Text,
+                    _ => null
+                };
+                return methodName != null && diRegistrationMethods.Contains(methodName);
+            });
+
+            if (hasDiRegistrations)
+            {
+                diConfigFiles.Add(file);
+            }
+        }
+
+        logger.LogInformation("Found {Count} files with DI registrations via AST analysis", diConfigFiles.Count);
+
+        // Act - analyze ALL files for HTTP client registrations (using wrapper chain)
+        // The wrapper chain already identified which classes are HTTP clients
+        foreach (var (file, tree) in fileToTree)
+        {
+            var registrations = analyzer.AnalyzeHttpClientRegistrations(tree, file, httpClientWrappers);
+            allRegistrations.AddRange(registrations);
+        }
+
+        // Assert - should detect HTTP client registrations
+        Assert.IsTrue(allRegistrations.Count > 0 || httpClientWrappers.Count > 0,
+            "Should detect HTTP client registrations or wrappers");
+
+        logger.LogInformation("HTTP Client Registrations ({Count} total):", allRegistrations.Count);
+        foreach (var reg in allRegistrations)
+        {
+            logger.LogInformation("  [{Type}] {Class}.{Member} -> {ClientType}",
+                reg.RegistrationType,
+                reg.ClassName ?? "(no class)",
+                reg.FieldName ?? reg.MethodName ?? "(no member)",
+                reg.TypedClientType ?? reg.RawExpression?.Substring(0, Math.Min(50, reg.RawExpression?.Length ?? 0)) ?? "");
+        }
+
+        // Verify expected DI registrations from UnityConfig.cs
+        // These are the clients registered via RegisterInstance
+        var diRegistrations = allRegistrations.Where(r => r.RegistrationType == "DIContainer").ToList();
+        logger.LogInformation("\nDI Container Registrations ({Count}):", diRegistrations.Count);
+        foreach (var reg in diRegistrations)
+        {
+            logger.LogInformation("  {Type} in {Class}.{Method}",
+                reg.TypedClientType, reg.ClassName, reg.MethodName);
+        }
+
+        // Expected clients from UnityConfig.cs analysis:
+        // 1. IEnterpriseCloudEngineClient (BufferedECEClient) - line 289
+        // 2. ICauClient (CauClient) - line 292
+        // 3. IDownloadServiceClientManager - line 311
+        // 4. IDrpClient (DrpClient) - line 331
+        // 5. IFileDownloader (HttpFileDownloader) - line 351
+        var expectedDiClients = new[]
+        {
+            "IEnterpriseCloudEngineClient",
+            "ICauClient",
+            "IDownloadServiceClientManager",
+            "IDrpClient",
+        };
+
+        var foundDiClients = diRegistrations.Select(r => r.TypedClientType).Where(t => t != null).ToHashSet();
+        logger.LogInformation("\nExpected DI Clients:");
+        foreach (var expected in expectedDiClients)
+        {
+            var found = foundDiClients.Any(f => f!.Contains(expected.Replace("I", "")));
+            logger.LogInformation("  {Status} {Client}", found ? "✓" : "✗", expected);
+        }
+
+        // The wrapper chain provides comprehensive HTTP client detection
+        // Key clients should be in the wrapper chain
+        httpClientWrappers.Should().Contain("HttpClientSingleton",
+            "HttpClientSingleton should be in wrapper chain");
+
+        // Verify discovered wrapper types include key clients
+        logger.LogInformation("\nDiscovered HTTP client wrapper types ({Count}):", httpClientWrappers.Count);
+        var keyClients = new[] { "HttpClientSingleton", "DrpClient", "HttpFileDownloader", "BufferedECEClient", "CauClient" };
+        foreach (var client in keyClients)
+        {
+            if (httpClientWrappers.Contains(client))
+            {
+                logger.LogInformation("  ✓ {Client}", client);
+            }
+            else
+            {
+                logger.LogInformation("  ✗ {Client} (not found in wrapper chain)", client);
+            }
+        }
+
+        // Verify key wrapper types are in the wrapper chain
+        httpClientWrappers.Should().Contain("DrpClient",
+            "DrpClient should be in wrapper chain (uses HttpClientSingleton)");
+        httpClientWrappers.Should().Contain("HttpFileDownloader",
+            "HttpFileDownloader should be in wrapper chain (uses HttpClientSingleton)");
+
+        // Verify EnterpriseCloudEngineClient is detected (uses IRequestFactory/IExecuteRequest from common-infra)
+        httpClientWrappers.Should().Contain("EnterpriseCloudEngineClient",
+            "EnterpriseCloudEngineClient should be in wrapper chain (uses IExecuteRequest which wraps HttpClient)");
+
+        // Verify other key clients that use common-infra HTTP abstractions
+        httpClientWrappers.Should().Contain("DownloadServiceClient",
+            "DownloadServiceClient should be in wrapper chain (uses common-infra HTTP)");
+        httpClientWrappers.Should().Contain("LcmUpdateServiceClient",
+            "LcmUpdateServiceClient should be in wrapper chain (uses common-infra HTTP)");
+
+        // Verify DI registrations include expected client interfaces
+        diRegistrations.Should().Contain(r => r.TypedClientType != null &&
+            r.TypedClientType.Contains("EnterpriseCloudEngineClient"),
+            "IEnterpriseCloudEngineClient should be registered in DI container");
+
+        await SaveResultsAsync("HttpClientRegistrations.json", new
+        {
+            TotalRegistrations = allRegistrations.Count,
+            DiContainerRegistrations = diRegistrations.Count,
+            DiConfigFilesFound = diConfigFiles.Count,
+            WrapperTypesDiscovered = httpClientWrappers.Count,
+            KeyClientsInWrapperChain = keyClients.Where(c => httpClientWrappers.Contains(c)).ToList(),
+            ExpectedDiClients = expectedDiClients,
+            FoundDiClients = foundDiClients.ToList(),
+            DiConfigFiles = diConfigFiles.Select(f => Path.GetRelativePath(UpdateRepoPath, f)).ToList(),
+            Registrations = allRegistrations.Select(r => new
+            {
+                r.RegistrationType,
+                r.ClassName,
+                Member = r.FieldName ?? r.MethodName,
+                r.TypedClientType,
+                Expression = r.RawExpression?.Substring(0, Math.Min(100, r.RawExpression?.Length ?? 0)),
+                File = Path.GetRelativePath(UpdateRepoPath, r.FilePath),
+            }),
+        });
     }
 
     [TestMethod]
     [TestCategory("Integration")]
     public async Task UpdateServiceRepo_TracesClientFactoryPatterns()
     {
-        // Arrange - find client factory files
-        var clientFactoryDir = Path.Combine(UpdateRepoPath, "src");
-        var factoryFiles = Directory.GetFiles(clientFactoryDir, "*ClientFactory*.cs", SearchOption.AllDirectories)
-            .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\"))
-            .ToList();
+        // Arrange - find client factory files dynamically
+        var factoryFiles = Directory.GetFiles(UpdateRepoPath, "*ClientFactory*.cs", new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+        }).Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\"))
+          .ToList();
 
         if (factoryFiles.Count == 0)
         {
@@ -829,6 +1006,220 @@ public class ApiEndpointIntegrationTests
         {
             FactoryFiles = factoryFiles.Select(f => Path.GetRelativePath(UpdateRepoPath, f)),
             Registrations = allRegistrations
+        });
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task UpdateServiceRepo_DiscoverHttpClientUsageByType()
+    {
+        // Arrange - scan all C# files for HTTP client usage using AST-based type analysis
+        var updateCsFiles = Directory.GetFiles(UpdateRepoPath, "*.cs", new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+        }).Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\") &&
+                      !f.Contains("\\out\\") && !f.Contains("Test", StringComparison.OrdinalIgnoreCase))
+          .ToList();
+
+        // Include common-infra source files for complete HTTP client wrapper chain tracing
+        var commonInfraCsFiles = new List<string>();
+        if (Directory.Exists(CommonInfraRepoPath))
+        {
+            commonInfraCsFiles = Directory.GetFiles(CommonInfraRepoPath, "*.cs", new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                IgnoreInaccessible = true,
+            }).Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\") &&
+                          !f.Contains("\\out\\") && !f.Contains("Test", StringComparison.OrdinalIgnoreCase))
+              .ToList();
+        }
+
+        var allCsFiles = updateCsFiles.Concat(commonInfraCsFiles).ToList();
+        logger.LogInformation("Scanning {Count} C# files for HTTP client usage ({UpdateCount} update + {InfraCount} common-infra)",
+            allCsFiles.Count, updateCsFiles.Count, commonInfraCsFiles.Count);
+
+        var analyzer = new ApiInfrastructureAnalyzer();
+        var allUsages = new List<HttpClientUsage>();
+
+        // First pass: parse all files and build type inheritance map
+        var syntaxTrees = new List<SyntaxTree>();
+        var fileToTree = new Dictionary<string, SyntaxTree>();
+        foreach (var file in allCsFiles)
+        {
+            try
+            {
+                var code = await File.ReadAllTextAsync(file);
+                var tree = CSharpSyntaxTree.ParseText(code);
+                syntaxTrees.Add(tree);
+                fileToTree[file] = tree;
+            }
+            catch
+            {
+                // Skip unreadable files
+            }
+        }
+
+        // Build type inheritance map from all trees
+        var typeInheritanceMap = analyzer.BuildTypeInheritanceMap(syntaxTrees);
+        logger.LogInformation("Built type inheritance map with {Count} types", typeInheritanceMap.Count);
+
+        // Build HTTP client wrapper chain by tracing constructor dependencies
+        var httpClientWrappers = analyzer.BuildHttpClientWrapperChain(syntaxTrees);
+        logger.LogInformation("Discovered {Count} HTTP client wrapper types via dependency chain", httpClientWrappers.Count);
+
+        // Log some discovered wrappers
+        var discoveredWrappers = httpClientWrappers
+            .Except(new[] { "HttpClient", "WebClient", "IHttpClientFactory", "HttpMessageHandler", "DelegatingHandler" })
+            .Take(20)
+            .ToList();
+        if (discoveredWrappers.Count > 0)
+        {
+            logger.LogInformation("Sample discovered wrappers: {Wrappers}", string.Join(", ", discoveredWrappers));
+        }
+
+        // Act - analyze all files for HTTP client usage by type, using inheritance map and wrapper chain
+        foreach (var (file, tree) in fileToTree)
+        {
+            var usages = analyzer.AnalyzeHttpClientUsageByType(tree, file, typeInheritanceMap, httpClientWrappers);
+            allUsages.AddRange(usages);
+        }
+
+        // Assert
+        Assert.IsTrue(allUsages.Count > 0, "Should detect HTTP client usage");
+
+        // Group by usage type
+        var usagesByType = allUsages.GroupBy(u => u.UsageType).OrderBy(g => g.Key);
+
+        logger.LogInformation("HTTP Client Usage Summary:");
+        foreach (var group in usagesByType)
+        {
+            logger.LogInformation("  {Type}: {Count} usages", group.Key, group.Count());
+        }
+
+        // Log details by category
+        logger.LogInformation("\n=== Singleton Patterns ===");
+        foreach (var usage in allUsages.Where(u => u.UsageType == "Singleton").Take(10))
+        {
+            logger.LogInformation("  {Class}.{Member} ({Type})",
+                usage.ClassName, usage.MemberName, usage.ClientType);
+        }
+
+        logger.LogInformation("\n=== Factory Methods ===");
+        foreach (var usage in allUsages.Where(u => u.UsageType == "FactoryMethod").Take(10))
+        {
+            logger.LogInformation("  {Class}.{Method}() -> {Type}",
+                usage.ClassName, usage.FactoryMethod, usage.ClientType);
+        }
+
+        logger.LogInformation("\n=== Constructor Injection ===");
+        foreach (var usage in allUsages.Where(u => u.UsageType == "ConstructorInjection").Take(10))
+        {
+            logger.LogInformation("  {Class}({Type} {Param})",
+                usage.ClassName, usage.ClientType, usage.MemberName);
+        }
+
+        logger.LogInformation("\n=== Client Wrappers ===");
+        foreach (var usage in allUsages.Where(u => u.UsageType == "Wrapper").Take(10))
+        {
+            logger.LogInformation("  {Class} wraps {Wrapped}",
+                usage.ClassName, usage.WrappedClientType);
+        }
+
+        logger.LogInformation("\n=== HTTP Method Calls ===");
+        foreach (var usage in allUsages.Where(u => u.UsageType == "HttpCalls").Take(10))
+        {
+            logger.LogInformation("  {Class}: {Methods}",
+                usage.ClassName, string.Join(", ", usage.HttpMethodsUsed));
+        }
+
+        // Verify expected HTTP clients from opencode analysis
+        // See docs/examples/http_client_detection.md for full list
+        var classNames = allUsages.Select(u => u.ClassName).ToHashSet();
+
+        // 1. HttpClientSingleton - the core singleton pattern
+        allUsages.Should().Contain(u => u.ClassName == "HttpClientSingleton",
+            "Should detect HttpClientSingleton (core singleton)");
+
+        // 2. Classes that use HttpClientSingleton.Instance (static access)
+        httpClientWrappers.Should().Contain("HttpFileDownloader",
+            "HttpFileDownloader should be detected in wrapper chain (uses HttpClientSingleton)");
+        httpClientWrappers.Should().Contain("DrpClient",
+            "DrpClient should be detected in wrapper chain (uses HttpClientSingleton)");
+        httpClientWrappers.Should().Contain("SimpleHttpDownloader",
+            "SimpleHttpDownloader should be detected in wrapper chain (uses HttpClientSingleton)");
+
+        // 3. Injected HttpClient users
+        allUsages.Should().Contain(u => u.ClassName == "ArcTokenStore",
+            "Should detect ArcTokenStore (injected HttpClient for Azure Arc Identity)");
+
+        // 4. Direct HttpClient instantiation
+        httpClientWrappers.Should().Contain("DiscoveryManifestHelper",
+            "DiscoveryManifestHelper should be detected in wrapper chain (new HttpClient())");
+
+        // 5. WebClient users
+        allUsages.Should().Contain(u => u.ClassName == "WebDownloader",
+            "Should detect WebDownloader (WebClient for HTTP downloads)");
+        httpClientWrappers.Should().Contain("GetAzSUpdateManifestCommand",
+            "GetAzSUpdateManifestCommand should be detected in wrapper chain (uses WebClient)");
+
+        // 6. Wrapper chain detection - verify wrapper relationships
+        allUsages.Should().Contain(u => u.ClassName == "BufferedECEClient" && u.WrappedClientType == "IEnterpriseCloudEngineClient",
+            "BufferedECEClient should wrap IEnterpriseCloudEngineClient");
+        allUsages.Should().Contain(u => u.ClassName == "CauClient" && u.WrappedClientType == "IEnterpriseCloudEngineClient",
+            "CauClient should wrap IEnterpriseCloudEngineClient");
+        allUsages.Should().Contain(u => u.ClassName == "DownloadServiceClient",
+            "DownloadServiceClient should be detected as a wrapper");
+
+        // Note: EnterpriseCloudEngineClient, EnterpriseCloudEngineReliableClient, and LcmUpdateServiceClient
+        // use IExecuteRequest/IServiceTypeExecuteRequest from external common-infra NuGet packages
+        // which aren't in the source tree, so they can't be detected via AST analysis alone.
+        // However, we CAN detect classes that WRAP them (BufferedECEClient, CauClient, etc.)
+
+        // Log discovered vs expected for direct HttpClient/WebClient usage
+        var directHttpClients = new[]
+        {
+            "HttpClientSingleton", "ArcTokenStore", "WebDownloader",
+        };
+        var wrapperChainClients = new[]
+        {
+            "HttpFileDownloader", "DrpClient", "SimpleHttpDownloader",
+            "DiscoveryManifestHelper", "GetAzSUpdateManifestCommand",
+        };
+        var wrapperClients = new[]
+        {
+            "BufferedECEClient", "CauClient", "DownloadServiceClient",
+        };
+
+        logger.LogInformation("\n=== HTTP Client Detection Results ===");
+        logger.LogInformation("Direct HTTP clients detected: {Clients}",
+            string.Join(", ", directHttpClients.Where(c => classNames.Contains(c))));
+        logger.LogInformation("Wrapper chain clients detected: {Clients}",
+            string.Join(", ", wrapperChainClients.Where(c => httpClientWrappers.Contains(c))));
+        logger.LogInformation("Wrapper clients detected: {Clients}",
+            string.Join(", ", wrapperClients.Where(c => classNames.Contains(c))));
+
+        await SaveResultsAsync("HttpClientUsageByType.json", new
+        {
+            TotalUsages = allUsages.Count,
+            ByType = usagesByType.Select(g => new { Type = g.Key, Count = g.Count() }),
+            DiscoveredWrappers = httpClientWrappers.Count,
+            WrapperChainTypes = httpClientWrappers.ToList(),
+            DirectHttpClients = directHttpClients.Where(c => classNames.Contains(c)).ToList(),
+            WrapperChainClients = wrapperChainClients.Where(c => httpClientWrappers.Contains(c)).ToList(),
+            WrapperClients = wrapperClients.Where(c => classNames.Contains(c)).ToList(),
+            Usages = allUsages.Select(u => new
+            {
+                u.UsageType,
+                u.ClientType,
+                u.ClassName,
+                u.MemberName,
+                u.FactoryMethod,
+                u.WrappedClientType,
+                u.HttpMethodsUsed,
+                File = Path.GetRelativePath(UpdateRepoPath, u.FilePath),
+                u.LineNumber,
+            })
         });
     }
 
@@ -956,12 +1347,12 @@ public class ApiEndpointIntegrationTests
         // Mock controllers should be identified separately (like EceMockController)
         // These are used in integration tests, not real API endpoints
 
-        var mockControllerFiles = Directory.GetFiles(
-            Path.Combine(UpdateRepoPath, "src"),
-            "*Mock*Controller*.cs",
-            SearchOption.AllDirectories)
-            .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\"))
-            .ToList();
+        var mockControllerFiles = Directory.GetFiles(UpdateRepoPath, "*Mock*Controller*.cs", new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+        }).Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\"))
+          .ToList();
 
         logger.LogInformation("Found {Count} mock controller files", mockControllerFiles.Count);
 

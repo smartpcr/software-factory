@@ -1105,7 +1105,13 @@ public class ApiInfrastructureAnalyzer
     /// <summary>
     /// Analyzes HTTP client factory registrations.
     /// </summary>
-    public IReadOnlyList<HttpClientRegistration> AnalyzeHttpClientRegistrations(SyntaxTree tree, string filePath)
+    /// <param name="tree">The syntax tree to analyze.</param>
+    /// <param name="filePath">The file path.</param>
+    /// <param name="httpClientWrappers">Optional set of HTTP client wrapper types for filtering DI registrations.</param>
+    public IReadOnlyList<HttpClientRegistration> AnalyzeHttpClientRegistrations(
+        SyntaxTree tree,
+        string filePath,
+        IReadOnlySet<string>? httpClientWrappers = null)
     {
         var root = tree.GetRoot();
         var registrations = new List<HttpClientRegistration>();
@@ -1119,7 +1125,822 @@ public class ApiInfrastructureAnalyzer
         // Find IHttpClientFactory registrations
         this.DetectHttpClientFactoryDI(root, filePath, registrations);
 
+        // Find Unity/DI container registrations for HTTP client types
+        this.DetectDIContainerRegistrations(root, filePath, registrations, httpClientWrappers);
+
         return registrations;
+    }
+
+    /// <summary>
+    /// Detects DI container registrations (Unity RegisterInstance, RegisterType, etc.)
+    /// </summary>
+    private void DetectDIContainerRegistrations(
+        SyntaxNode root,
+        string filePath,
+        List<HttpClientRegistration> registrations,
+        IReadOnlySet<string>? httpClientWrappers)
+    {
+        // Find RegisterInstance and RegisterType calls
+        var invocations = root.DescendantNodes().OfType<InvocationExpressionSyntax>();
+
+        // Build a map of variable names to their declared types in the current method/class
+        var variableTypes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var variableDeclarations = root.DescendantNodes().OfType<VariableDeclarationSyntax>();
+        foreach (var varDecl in variableDeclarations)
+        {
+            var typeName = varDecl.Type.ToString().Split('<')[0].Split('.').Last();
+            foreach (var variable in varDecl.Variables)
+            {
+                variableTypes[variable.Identifier.Text] = typeName;
+            }
+        }
+
+        foreach (var invocation in invocations)
+        {
+            var methodName = invocation.Expression switch
+            {
+                MemberAccessExpressionSyntax ma => ma.Name.Identifier.Text,
+                _ => null
+            };
+
+            if (methodName is not ("RegisterInstance" or "RegisterType" or "RegisterSingleton"))
+            {
+                continue;
+            }
+
+            // Extract the registered type from arguments
+            var args = invocation.ArgumentList.Arguments;
+            if (args.Count == 0)
+            {
+                continue;
+            }
+
+            string? interfaceType = null;
+            string? implementationType = null;
+
+            // Check for typeof(IInterface) pattern
+            var typeofExpr = args.FirstOrDefault()?.Expression as TypeOfExpressionSyntax;
+            if (typeofExpr != null)
+            {
+                interfaceType = typeofExpr.Type.ToString().Split('.').Last();
+            }
+
+            // Check for generic type argument (RegisterInstance<T>)
+            if (invocation.Expression is MemberAccessExpressionSyntax memberAccess &&
+                memberAccess.Name is GenericNameSyntax genericName)
+            {
+                var typeArg = genericName.TypeArgumentList.Arguments.FirstOrDefault();
+                if (typeArg != null)
+                {
+                    interfaceType = typeArg.ToString().Split('.').Last();
+                }
+            }
+
+            // Try to determine the implementation type from the value being registered
+            var valueArg = typeofExpr != null && args.Count > 1 ? args[1].Expression : args.FirstOrDefault()?.Expression;
+            if (valueArg != null)
+            {
+                implementationType = valueArg switch
+                {
+                    IdentifierNameSyntax id => id.Identifier.Text,
+                    ObjectCreationExpressionSyntax oc => oc.Type.ToString().Split('.').Last(),
+                    _ => valueArg.ToString().Split('.').Last()
+                };
+
+                // If implementationType is a variable name, look up its declared type
+                if (implementationType != null && variableTypes.TryGetValue(implementationType, out var declaredType))
+                {
+                    // If we don't have an interface type yet, use the declared type
+                    if (interfaceType == null)
+                    {
+                        interfaceType = declaredType;
+                    }
+
+                    implementationType = declaredType;
+                }
+            }
+
+            // Check if either type is an HTTP client wrapper (using AST-based wrapper chain)
+            var isHttpClientRelated = false;
+            if (httpClientWrappers != null)
+            {
+                isHttpClientRelated = (interfaceType != null && httpClientWrappers.Contains(interfaceType)) ||
+                                      (implementationType != null && httpClientWrappers.Contains(implementationType));
+            }
+
+            if (isHttpClientRelated)
+            {
+                var containingMethod = invocation.Ancestors().OfType<MethodDeclarationSyntax>().FirstOrDefault();
+                var containingClass = invocation.Ancestors().OfType<ClassDeclarationSyntax>().FirstOrDefault();
+
+                registrations.Add(new HttpClientRegistration
+                {
+                    RegistrationType = "DIContainer",
+                    ClassName = containingClass?.Identifier.Text,
+                    MethodName = containingMethod?.Identifier.Text,
+                    TypedClientType = interfaceType,
+                    FilePath = filePath,
+                    RawExpression = $"{methodName}({interfaceType ?? implementationType})",
+                });
+            }
+        }
+    }
+
+    /// <summary>
+    /// Known HTTP client base types for AST-based detection (core .NET types only).
+    /// </summary>
+    private static readonly HashSet<string> HttpClientBaseTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "HttpClient",
+        "WebClient",
+        "IHttpClientFactory",
+        "HttpMessageHandler",
+        "DelegatingHandler",
+    };
+
+    /// <summary>
+    /// Builds a type inheritance map from multiple syntax trees.
+    /// Maps each type name to all its base types (direct and inherited).
+    /// </summary>
+    /// <param name="trees">Collection of syntax trees to analyze.</param>
+    /// <returns>Map of type name to set of all base types in the inheritance chain.</returns>
+    public Dictionary<string, HashSet<string>> BuildTypeInheritanceMap(IEnumerable<SyntaxTree> trees)
+    {
+        var directBaseTypes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var interfaces = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        // First pass: collect direct base types and interfaces
+        foreach (var tree in trees)
+        {
+            var root = tree.GetRoot();
+            var classes = root.DescendantNodes().OfType<ClassDeclarationSyntax>();
+
+            foreach (var classDecl in classes)
+            {
+                var className = classDecl.Identifier.Text;
+                if (classDecl.BaseList == null)
+                {
+                    continue;
+                }
+
+                foreach (var baseTypeSyntax in classDecl.BaseList.Types)
+                {
+                    var baseTypeName = baseTypeSyntax.Type.ToString();
+
+                    // Strip generic parameters for matching
+                    var baseTypeSimple = baseTypeName.Split('<')[0].Split('.').Last();
+
+                    if (baseTypeName.StartsWith("I") && char.IsUpper(baseTypeName[1]))
+                    {
+                        // It's an interface
+                        if (!interfaces.TryGetValue(className, out var intfSet))
+                        {
+                            intfSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            interfaces[className] = intfSet;
+                        }
+
+                        intfSet.Add(baseTypeName);
+                        intfSet.Add(baseTypeSimple);
+                    }
+                    else if (!directBaseTypes.ContainsKey(className))
+                    {
+                        // It's a base class (take the first non-interface)
+                        directBaseTypes[className] = baseTypeSimple;
+                    }
+                }
+            }
+        }
+
+        // Second pass: resolve full inheritance chains
+        var result = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var className in directBaseTypes.Keys.Union(interfaces.Keys))
+        {
+            var allBaseTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // Add direct base class and follow the chain (with cycle detection)
+            var current = className;
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { current };
+            while (directBaseTypes.TryGetValue(current, out var baseType))
+            {
+                if (!visited.Add(baseType))
+                {
+                    // Cycle detected, stop here
+                    break;
+                }
+
+                allBaseTypes.Add(baseType);
+                current = baseType;
+            }
+
+            // Add interfaces
+            if (interfaces.TryGetValue(className, out var classInterfaces))
+            {
+                foreach (var intf in classInterfaces)
+                {
+                    allBaseTypes.Add(intf);
+                }
+            }
+
+            if (allBaseTypes.Count > 0)
+            {
+                result[className] = allBaseTypes;
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Builds a map of HTTP client wrapper types by tracing constructor dependencies.
+    /// A type is considered an HTTP client wrapper if it takes an HTTP client type 
+    /// (or another wrapper) as a constructor parameter, or accesses one via static members.
+    /// </summary>
+    /// <param name="trees">Collection of syntax trees to analyze (include all dependency sources for complete tracing).</param>
+    /// <returns>Set of type names that are HTTP client wrappers.</returns>
+    public HashSet<string> BuildHttpClientWrapperChain(IEnumerable<SyntaxTree> trees)
+    {
+        // Map: className -> set of constructor parameter types
+        var constructorDependencies = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        // Map: className -> set of field/property types
+        var fieldTypes = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        // Map: className -> set of static member accesses (e.g., HttpClientSingleton.Instance)
+        var staticMemberAccess = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        // Map: className -> set of interfaces it implements
+        var classInterfaces = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        // First pass: collect constructor parameters, field types, interfaces, and static accesses for all classes
+        foreach (var tree in trees)
+        {
+            var root = tree.GetRoot();
+            var classes = root.DescendantNodes().OfType<ClassDeclarationSyntax>();
+
+            foreach (var classDecl in classes)
+            {
+                var className = classDecl.Identifier.Text;
+
+                // Collect constructor parameter types
+                foreach (var ctor in classDecl.Members.OfType<ConstructorDeclarationSyntax>())
+                {
+                    foreach (var param in ctor.ParameterList.Parameters)
+                    {
+                        var paramType = param.Type?.ToString();
+                        if (paramType != null)
+                        {
+                            var simpleType = paramType.Split('<')[0].Split('.').Last();
+                            if (!constructorDependencies.TryGetValue(className, out var deps))
+                            {
+                                deps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                constructorDependencies[className] = deps;
+                            }
+
+                            deps.Add(simpleType);
+                        }
+                    }
+                }
+
+                // Collect field types
+                foreach (var field in classDecl.Members.OfType<FieldDeclarationSyntax>())
+                {
+                    var fieldType = field.Declaration.Type.ToString();
+                    var simpleType = fieldType.Split('<')[0].Split('.').Last();
+                    if (!fieldTypes.TryGetValue(className, out var types))
+                    {
+                        types = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        fieldTypes[className] = types;
+                    }
+
+                    types.Add(simpleType);
+                }
+
+                // Collect static member access patterns (e.g., HttpClientSingleton.Instance)
+                var memberAccesses = classDecl.DescendantNodes().OfType<MemberAccessExpressionSyntax>();
+                foreach (var access in memberAccesses)
+                {
+                    // Check for patterns like ClassName.Instance or ClassName.Property
+                    if (access.Expression is IdentifierNameSyntax identifier)
+                    {
+                        var accessedType = identifier.Identifier.Text;
+                        if (!staticMemberAccess.TryGetValue(className, out var accesses))
+                        {
+                            accesses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            staticMemberAccess[className] = accesses;
+                        }
+
+                        accesses.Add(accessedType);
+                    }
+                }
+
+                // Collect interfaces this class implements
+                if (classDecl.BaseList != null)
+                {
+                    foreach (var baseType in classDecl.BaseList.Types)
+                    {
+                        var typeName = baseType.Type.ToString();
+                        var simpleType = typeName.Split('<')[0].Split('.').Last();
+
+                        // Interfaces typically start with 'I' followed by uppercase
+                        if (simpleType.Length > 1 && simpleType.StartsWith("I") && char.IsUpper(simpleType[1]))
+                        {
+                            if (!classInterfaces.TryGetValue(className, out var interfaces))
+                            {
+                                interfaces = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                classInterfaces[className] = interfaces;
+                            }
+
+                            interfaces.Add(simpleType);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Second pass: find all types that directly or transitively depend on HttpClient types
+        var httpClientWrappers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Seed with core HTTP client types
+        foreach (var baseType in HttpClientBaseTypes)
+        {
+            httpClientWrappers.Add(baseType);
+        }
+
+        // Iteratively find wrappers until no more are found
+        // Helper function to add a class and all its interfaces to the wrapper chain
+        void AddToWrapperChain(string className)
+        {
+            httpClientWrappers.Add(className);
+
+            // Also add all interfaces this class implements
+            if (classInterfaces.TryGetValue(className, out var interfaces))
+            {
+                foreach (var iface in interfaces)
+                {
+                    httpClientWrappers.Add(iface);
+                }
+            }
+        }
+
+        bool changed;
+        do
+        {
+            changed = false;
+            foreach (var (className, deps) in constructorDependencies)
+            {
+                if (httpClientWrappers.Contains(className))
+                {
+                    continue;
+                }
+
+                // Check if any constructor dependency is an HTTP client wrapper
+                foreach (var dep in deps)
+                {
+                    if (httpClientWrappers.Contains(dep))
+                    {
+                        AddToWrapperChain(className);
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+
+            // Also check field types
+            foreach (var (className, types) in fieldTypes)
+            {
+                if (httpClientWrappers.Contains(className))
+                {
+                    continue;
+                }
+
+                foreach (var fieldType in types)
+                {
+                    if (httpClientWrappers.Contains(fieldType))
+                    {
+                        AddToWrapperChain(className);
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+
+            // Also check static member accesses (e.g., HttpClientSingleton.Instance)
+            foreach (var (className, accesses) in staticMemberAccess)
+            {
+                if (httpClientWrappers.Contains(className))
+                {
+                    continue;
+                }
+
+                foreach (var accessedType in accesses)
+                {
+                    if (httpClientWrappers.Contains(accessedType))
+                    {
+                        AddToWrapperChain(className);
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+        while (changed);
+
+        return httpClientWrappers;
+    }
+
+    /// <summary>
+    /// Analyzes HTTP client usage in a file using AST-based type analysis.
+    /// No pattern matching on names - uses actual type declarations.
+    /// </summary>
+    /// <param name="tree">The syntax tree to analyze.</param>
+    /// <param name="filePath">The file path for reporting.</param>
+    /// <param name="typeInheritanceMap">Optional type inheritance map for checking base types.</param>
+    /// <param name="httpClientWrappers">Optional set of HTTP client wrapper types discovered via BuildHttpClientWrapperChain.</param>
+    public IReadOnlyList<HttpClientUsage> AnalyzeHttpClientUsageByType(
+        SyntaxTree tree,
+        string filePath,
+        IReadOnlyDictionary<string, HashSet<string>>? typeInheritanceMap = null,
+        IReadOnlySet<string>? httpClientWrappers = null)
+    {
+        var root = tree.GetRoot();
+        var usages = new List<HttpClientUsage>();
+
+        var classes = root.DescendantNodes().OfType<ClassDeclarationSyntax>();
+
+        foreach (var classDecl in classes)
+        {
+            var className = classDecl.Identifier.Text;
+            var baseType = classDecl.BaseList?.Types.FirstOrDefault()?.Type.ToString();
+            var interfaces = classDecl.BaseList?.Types
+                .Select(t => t.Type.ToString())
+                .Where(t => t.StartsWith("I"))
+                .ToList() ?? new List<string>();
+
+            // 1. Detect direct HttpClient/WebClient field declarations
+            foreach (var field in classDecl.Members.OfType<FieldDeclarationSyntax>())
+            {
+                var fieldType = field.Declaration.Type.ToString();
+                if (this.IsHttpClientType(fieldType, typeInheritanceMap, httpClientWrappers))
+                {
+                    var isStatic = field.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
+                    var fieldName = field.Declaration.Variables.FirstOrDefault()?.Identifier.Text;
+
+                    usages.Add(new HttpClientUsage
+                    {
+                        UsageType = isStatic ? "Singleton" : "FieldInjection",
+                        ClientType = fieldType,
+                        ClassName = className,
+                        MemberName = fieldName,
+                        BaseType = baseType,
+                        ImplementedInterfaces = interfaces,
+                        FilePath = filePath,
+                        LineNumber = tree.GetLineSpan(field.Span).StartLinePosition.Line + 1,
+                        HandlerConfiguration = this.FindHandlerConfigForField(classDecl, fieldType),
+                    });
+                }
+            }
+
+            // 2. Detect HttpClient property declarations
+            foreach (var prop in classDecl.Members.OfType<PropertyDeclarationSyntax>())
+            {
+                var propType = prop.Type.ToString();
+                if (this.IsHttpClientType(propType, typeInheritanceMap, httpClientWrappers))
+                {
+                    usages.Add(new HttpClientUsage
+                    {
+                        UsageType = "PropertyInjection",
+                        ClientType = propType,
+                        ClassName = className,
+                        MemberName = prop.Identifier.Text,
+                        BaseType = baseType,
+                        ImplementedInterfaces = interfaces,
+                        FilePath = filePath,
+                        LineNumber = tree.GetLineSpan(prop.Span).StartLinePosition.Line + 1,
+                    });
+                }
+            }
+
+            // 3. Detect constructor injection of HttpClient
+            foreach (var ctor in classDecl.Members.OfType<ConstructorDeclarationSyntax>())
+            {
+                foreach (var param in ctor.ParameterList.Parameters)
+                {
+                    var paramType = param.Type?.ToString();
+                    if (paramType != null && this.IsHttpClientType(paramType, typeInheritanceMap, httpClientWrappers))
+                    {
+                        usages.Add(new HttpClientUsage
+                        {
+                            UsageType = "ConstructorInjection",
+                            ClientType = paramType,
+                            ClassName = className,
+                            MemberName = param.Identifier.Text,
+                            BaseType = baseType,
+                            ImplementedInterfaces = interfaces,
+                            FilePath = filePath,
+                            LineNumber = tree.GetLineSpan(param.Span).StartLinePosition.Line + 1,
+                        });
+                    }
+                }
+            }
+
+            // 4. Detect factory methods that return or create HttpClient
+            foreach (var method in classDecl.Members.OfType<MethodDeclarationSyntax>())
+            {
+                var returnType = method.ReturnType.ToString();
+
+                // Check if method returns an HTTP client type
+                if (this.IsHttpClientType(returnType, typeInheritanceMap, httpClientWrappers))
+                {
+                    usages.Add(new HttpClientUsage
+                    {
+                        UsageType = "FactoryMethod",
+                        ClientType = returnType,
+                        ClassName = className,
+                        FactoryMethod = method.Identifier.Text,
+                        BaseType = baseType,
+                        ImplementedInterfaces = interfaces,
+                        FilePath = filePath,
+                        LineNumber = tree.GetLineSpan(method.Span).StartLinePosition.Line + 1,
+                    });
+                }
+
+                // Check for new HttpClient() inside methods
+                var creations = method.DescendantNodes().OfType<ObjectCreationExpressionSyntax>()
+                    .Where(o => this.IsHttpClientType(o.Type.ToString(), typeInheritanceMap, httpClientWrappers));
+
+                foreach (var creation in creations)
+                {
+                    usages.Add(new HttpClientUsage
+                    {
+                        UsageType = "DirectInstantiation",
+                        ClientType = creation.Type.ToString(),
+                        ClassName = className,
+                        FactoryMethod = method.Identifier.Text,
+                        BaseType = baseType,
+                        ImplementedInterfaces = interfaces,
+                        FilePath = filePath,
+                        LineNumber = tree.GetLineSpan(creation.Span).StartLinePosition.Line + 1,
+                        HandlerConfiguration = this.ExtractHandlerFromCreation(creation),
+                    });
+                }
+            }
+
+            // 5. Detect HTTP method calls (GetAsync, PostAsync, SendAsync, etc.)
+            var httpMethodCalls = this.DetectHttpMethodCalls(classDecl, tree);
+            if (httpMethodCalls.Count > 0)
+            {
+                // Find the client field/property being used
+                var clientMember = this.FindHttpClientMember(classDecl, typeInheritanceMap, httpClientWrappers);
+                if (clientMember != null)
+                {
+                    usages.Add(new HttpClientUsage
+                    {
+                        UsageType = "HttpCalls",
+                        ClientType = clientMember.Value.Type,
+                        ClassName = className,
+                        MemberName = clientMember.Value.Name,
+                        BaseType = baseType,
+                        ImplementedInterfaces = interfaces,
+                        FilePath = filePath,
+                        LineNumber = tree.GetLineSpan(classDecl.Span).StartLinePosition.Line + 1,
+                        HttpMethodsUsed = httpMethodCalls,
+                    });
+                }
+            }
+
+            // 6. Detect wrapper classes that wrap another client
+            var wrappedClient = this.DetectClientWrapper(classDecl, httpClientWrappers);
+            if (wrappedClient != null)
+            {
+                usages.Add(new HttpClientUsage
+                {
+                    UsageType = "Wrapper",
+                    ClientType = "ClientWrapper",
+                    ClassName = className,
+                    BaseType = baseType,
+                    ImplementedInterfaces = interfaces,
+                    FilePath = filePath,
+                    LineNumber = tree.GetLineSpan(classDecl.Span).StartLinePosition.Line + 1,
+                    WrappedClientType = wrappedClient,
+                });
+            }
+
+            // 7. Detect static member access to HTTP client wrappers (e.g., HttpClientSingleton.Instance)
+            if (httpClientWrappers != null)
+            {
+                var staticAccesses = classDecl.DescendantNodes().OfType<MemberAccessExpressionSyntax>()
+                    .Where(m => m.Expression is IdentifierNameSyntax id && httpClientWrappers.Contains(id.Identifier.Text))
+                    .Select(m => ((IdentifierNameSyntax)m.Expression).Identifier.Text)
+                    .Distinct()
+                    .ToList();
+
+                foreach (var accessedType in staticAccesses)
+                {
+                    // Don't add if already detected via other means
+                    if (!usages.Any(u => u.ClassName == className))
+                    {
+                        usages.Add(new HttpClientUsage
+                        {
+                            UsageType = "StaticAccess",
+                            ClientType = accessedType,
+                            ClassName = className,
+                            BaseType = baseType,
+                            ImplementedInterfaces = interfaces,
+                            FilePath = filePath,
+                            LineNumber = tree.GetLineSpan(classDecl.Span).StartLinePosition.Line + 1,
+                        });
+                    }
+                }
+            }
+        }
+
+        return usages;
+    }
+
+    /// <summary>
+    /// Checks if a type name represents an HTTP client type by direct match, inheritance, or wrapper chain.
+    /// </summary>
+    /// <param name="typeName">The type name to check.</param>
+    /// <param name="typeInheritanceMap">Optional type inheritance map for checking base types.</param>
+    /// <param name="httpClientWrappers">Optional set of HTTP client wrapper types discovered via BuildHttpClientWrapperChain.</param>
+    private bool IsHttpClientType(
+        string typeName,
+        IReadOnlyDictionary<string, HashSet<string>>? typeInheritanceMap = null,
+        IReadOnlySet<string>? httpClientWrappers = null)
+    {
+        // Strip generic parameters for matching
+        var simpleTypeName = typeName.Split('<')[0].Split('.').Last();
+
+        // Direct match against known HTTP client types
+        if (HttpClientBaseTypes.Contains(simpleTypeName))
+        {
+            return true;
+        }
+
+        // Full type name match
+        if (HttpClientBaseTypes.Contains(typeName))
+        {
+            return true;
+        }
+
+        // Check against discovered HTTP client wrappers
+        if (httpClientWrappers != null && httpClientWrappers.Contains(simpleTypeName))
+        {
+            return true;
+        }
+
+        // If we have an inheritance map, check if any base type is an HTTP client type
+        if (typeInheritanceMap != null && typeInheritanceMap.TryGetValue(simpleTypeName, out var baseTypes))
+        {
+            foreach (var baseType in baseTypes)
+            {
+                var baseSimple = baseType.Split('<')[0].Split('.').Last();
+                if (HttpClientBaseTypes.Contains(baseSimple))
+                {
+                    return true;
+                }
+
+                // Also check if base type is a discovered wrapper
+                if (httpClientWrappers != null && httpClientWrappers.Contains(baseSimple))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Finds handler configuration for a field type.
+    /// </summary>
+    private string? FindHandlerConfigForField(ClassDeclarationSyntax classDecl, string fieldType)
+    {
+        // Look for HttpClientHandler or DelegatingHandler creation in the class
+        var handlerCreations = classDecl.DescendantNodes().OfType<ObjectCreationExpressionSyntax>()
+            .Where(o => o.Type.ToString().Contains("Handler"))
+            .ToList();
+
+        return handlerCreations.FirstOrDefault()?.ToString();
+    }
+
+    /// <summary>
+    /// Detects HTTP method calls in a class.
+    /// </summary>
+    private List<string> DetectHttpMethodCalls(ClassDeclarationSyntax classDecl, SyntaxTree tree)
+    {
+        var methods = new HashSet<string>();
+        var invocations = classDecl.DescendantNodes().OfType<InvocationExpressionSyntax>();
+
+        foreach (var invocation in invocations)
+        {
+            if (invocation.Expression is MemberAccessExpressionSyntax memberAccess)
+            {
+                var methodName = memberAccess.Name.Identifier.Text;
+
+                // Standard HttpClient methods
+                if (methodName is "GetAsync" or "PostAsync" or "PutAsync" or "DeleteAsync" or
+                    "PatchAsync" or "SendAsync" or "GetStringAsync" or "GetStreamAsync" or
+                    "GetByteArrayAsync")
+                {
+                    var httpMethod = methodName.Replace("Async", "").Replace("Get", "GET")
+                        .Replace("Post", "POST").Replace("Put", "PUT")
+                        .Replace("Delete", "DELETE").Replace("Patch", "PATCH")
+                        .Replace("Send", "SEND").Replace("String", "").Replace("Stream", "")
+                        .Replace("ByteArray", "");
+
+                    if (httpMethod == "GET" || httpMethod == "POST" || httpMethod == "PUT" ||
+                        httpMethod == "DELETE" || httpMethod == "PATCH" || httpMethod == "SEND")
+                    {
+                        methods.Add(httpMethod);
+                    }
+                }
+
+                // WebClient methods
+                if (methodName is "DownloadString" or "DownloadFile" or "DownloadData" or
+                    "UploadString" or "UploadFile" or "UploadData")
+                {
+                    methods.Add(methodName.StartsWith("Download") ? "GET" : "POST");
+                }
+            }
+        }
+
+        return methods.ToList();
+    }
+
+    /// <summary>
+    /// Finds the HTTP client member (field or property) in a class.
+    /// </summary>
+    private (string Name, string Type)? FindHttpClientMember(
+        ClassDeclarationSyntax classDecl,
+        IReadOnlyDictionary<string, HashSet<string>>? typeInheritanceMap = null,
+        IReadOnlySet<string>? httpClientWrappers = null)
+    {
+        // Check fields
+        foreach (var field in classDecl.Members.OfType<FieldDeclarationSyntax>())
+        {
+            var fieldType = field.Declaration.Type.ToString();
+            if (this.IsHttpClientType(fieldType, typeInheritanceMap, httpClientWrappers))
+            {
+                var fieldName = field.Declaration.Variables.FirstOrDefault()?.Identifier.Text;
+                if (fieldName != null)
+                {
+                    return (fieldName, fieldType);
+                }
+            }
+        }
+
+        // Check properties
+        foreach (var prop in classDecl.Members.OfType<PropertyDeclarationSyntax>())
+        {
+            var propType = prop.Type.ToString();
+            if (this.IsHttpClientType(propType, typeInheritanceMap, httpClientWrappers))
+            {
+                return (prop.Identifier.Text, propType);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Detects if a class is a wrapper around another client.
+    /// </summary>
+    private string? DetectClientWrapper(ClassDeclarationSyntax classDecl, IReadOnlySet<string>? httpClientWrappers = null)
+    {
+        // A wrapper class typically:
+        // 1. Has a field/property of another client interface
+        // 2. Constructor takes that client as a parameter
+        // 3. Methods delegate to the wrapped client
+
+        // Check constructor parameters for client interfaces
+        var ctors = classDecl.Members.OfType<ConstructorDeclarationSyntax>();
+        foreach (var ctor in ctors)
+        {
+            foreach (var param in ctor.ParameterList.Parameters)
+            {
+                var paramType = param.Type?.ToString();
+                if (paramType != null)
+                {
+                    var simpleType = paramType.Split('<')[0].Split('.').Last();
+
+                    // Check if it's a discovered HTTP client wrapper
+                    if (httpClientWrappers != null && httpClientWrappers.Contains(simpleType))
+                    {
+                        return paramType;
+                    }
+
+                    // Check if it's a core HTTP client type
+                    if (HttpClientBaseTypes.Contains(simpleType))
+                    {
+                        return paramType;
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -1588,6 +2409,77 @@ public record HttpClientRegistration
     public string? FilePath { get; init; }
     public string? HandlerConfiguration { get; init; }
     public string? RawExpression { get; init; }
+}
+
+/// <summary>
+/// Enhanced HTTP client usage information detected via AST analysis.
+/// </summary>
+public record HttpClientUsage
+{
+    /// <summary>
+    /// How the HTTP client is used: DirectInstantiation, FieldInjection, ConstructorInjection, FactoryMethod, Wrapper, Singleton.
+    /// </summary>
+    public required string UsageType { get; init; }
+
+    /// <summary>
+    /// The underlying HTTP client type: HttpClient, WebClient, IHttpClientFactory, custom wrapper.
+    /// </summary>
+    public required string ClientType { get; init; }
+
+    /// <summary>
+    /// Class that uses or wraps the HTTP client.
+    /// </summary>
+    public required string ClassName { get; init; }
+
+    /// <summary>
+    /// Name of the field, property, or parameter that holds the client.
+    /// </summary>
+    public string? MemberName { get; init; }
+
+    /// <summary>
+    /// If this is a factory, the method that creates clients.
+    /// </summary>
+    public string? FactoryMethod { get; init; }
+
+    /// <summary>
+    /// Base type that this class inherits from (if relevant).
+    /// </summary>
+    public string? BaseType { get; init; }
+
+    /// <summary>
+    /// Interfaces implemented by this class.
+    /// </summary>
+    public List<string> ImplementedInterfaces { get; init; } = new();
+
+    /// <summary>
+    /// External service name or URL if detectable.
+    /// </summary>
+    public string? ExternalService { get; init; }
+
+    /// <summary>
+    /// File path where this usage was detected.
+    /// </summary>
+    public required string FilePath { get; init; }
+
+    /// <summary>
+    /// Line number where the usage was detected.
+    /// </summary>
+    public int LineNumber { get; init; }
+
+    /// <summary>
+    /// HTTP methods used (GET, POST, PUT, DELETE, etc.).
+    /// </summary>
+    public List<string> HttpMethodsUsed { get; init; } = new();
+
+    /// <summary>
+    /// Handler configuration if detected.
+    /// </summary>
+    public string? HandlerConfiguration { get; init; }
+
+    /// <summary>
+    /// If this wraps another client, the wrapped client type.
+    /// </summary>
+    public string? WrappedClientType { get; init; }
 }
 
 public record AuthHandlerInfo

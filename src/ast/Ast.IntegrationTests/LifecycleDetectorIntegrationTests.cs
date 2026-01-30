@@ -149,22 +149,26 @@ public class LifecycleDetectorIntegrationTests
     [TestMethod]
     public async Task UpdateServiceRepo_ParsesWinApplicationManifest()
     {
-        // Arrange - Look for manifest in source, not build output
-        var winServicePath = Path.Combine(
-            LifecycleDetectorIntegrationTests.updateRepoPath,
-            "src", "UpdateResourceProvider", "UpdateService", "WinService");
-
-        if (!Directory.Exists(winServicePath))
+        // Arrange - Discover WinService folders dynamically by finding WinApplicationManifest.xml
+        var manifestFiles = Directory.GetFiles(LifecycleDetectorIntegrationTests.updateRepoPath, "WinApplicationManifest.xml", new EnumerationOptions
         {
-            Assert.Inconclusive($"WinService folder not found at {winServicePath}");
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+        }).Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\") && !f.Contains("\\out\\"))
+          .ToList();
+
+        if (manifestFiles.Count == 0)
+        {
+            Assert.Inconclusive("No WinApplicationManifest.xml files found in repo");
             return;
         }
 
-        logger.LogInformation("Looking for WinApplicationManifest in source: {Path}", winServicePath);
+        var winServicePath = Path.GetDirectoryName(manifestFiles[0])!;
+        logger.LogInformation("Found WinApplicationManifest in: {Path}", winServicePath);
 
         var parser = new ManifestParser();
 
-        // Find the .csproj file
+        // Find the .csproj file in the same directory
         var csprojFile = Directory.GetFiles(winServicePath, "*.csproj").FirstOrDefault();
         if (csprojFile == null)
         {
@@ -189,14 +193,8 @@ public class LifecycleDetectorIntegrationTests
 
         if (winAppManifestRef == null)
         {
-            // Fallback: look for the manifest file directly
-            var manifestPath = Path.Combine(winServicePath, "WinApplicationManifest.xml");
-            if (!File.Exists(manifestPath))
-            {
-                Assert.Inconclusive($"WinApplicationManifest.xml not found at {manifestPath}");
-                return;
-            }
-
+            // Fallback: use the directly discovered manifest file
+            var manifestPath = manifestFiles[0];
             var services = await parser.ParseWinApplicationManifestAsync(manifestPath);
 
             // Output results
