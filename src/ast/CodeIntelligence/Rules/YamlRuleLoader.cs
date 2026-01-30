@@ -14,6 +14,12 @@ using YamlDotNet.Serialization.NamingConventions;
 /// </summary>
 public sealed class YamlRuleLoader
 {
+    private static readonly EnumerationOptions SafeEnumerationOptions = new()
+    {
+        RecurseSubdirectories = true,
+        IgnoreInaccessible = true,
+    };
+
     private readonly IDeserializer deserializer;
 
     /// <summary>
@@ -98,8 +104,13 @@ public sealed class YamlRuleLoader
         CancellationToken cancellationToken = default)
     {
         var searchOption = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-        var files = Directory.GetFiles(directoryPath, "*.yaml", searchOption)
-            .Concat(Directory.GetFiles(directoryPath, "*.yml", searchOption));
+        var enumOptions = new EnumerationOptions
+        {
+            RecurseSubdirectories = recursive,
+            IgnoreInaccessible = true,
+        };
+        var files = Directory.GetFiles(directoryPath, "*.yaml", enumOptions)
+            .Concat(Directory.GetFiles(directoryPath, "*.yml", enumOptions));
 
         return await this.LoadFromFilesAsync(files, cancellationToken);
     }

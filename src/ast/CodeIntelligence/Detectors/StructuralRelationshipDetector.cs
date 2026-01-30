@@ -15,6 +15,12 @@ using Microsoft.CodeAnalysis.CSharp;
 /// </summary>
 public sealed class StructuralRelationshipDetector
 {
+    private static readonly EnumerationOptions SafeEnumerationOptions = new()
+    {
+        RecurseSubdirectories = true,
+        IgnoreInaccessible = true,
+    };
+
     private readonly InheritanceAnalyzer inheritanceAnalyzer;
     private readonly DependencyInjectionAnalyzer diAnalyzer;
     private readonly MsBuildProjectParser projectParser;
@@ -42,11 +48,11 @@ public sealed class StructuralRelationshipDetector
         var result = new StructuralAnalysisResult();
 
         // Find all source files and project files
-        var csFiles = Directory.GetFiles(rootPath, "*.cs", SearchOption.AllDirectories)
+        var csFiles = Directory.GetFiles(rootPath, "*.cs", SafeEnumerationOptions)
             .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\"))
             .ToList();
 
-        var projectFiles = Directory.GetFiles(rootPath, "*.csproj", SearchOption.AllDirectories)
+        var projectFiles = Directory.GetFiles(rootPath, "*.csproj", SafeEnumerationOptions)
             .ToList();
 
         // Analyze C# source files

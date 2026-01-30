@@ -15,6 +15,12 @@ using Microsoft.CodeAnalysis.CSharp;
 /// </summary>
 public sealed class ApiEndpointDetector
 {
+    private static readonly EnumerationOptions SafeEnumerationOptions = new()
+    {
+        RecurseSubdirectories = true,
+        IgnoreInaccessible = true,
+    };
+
     private readonly HttpEndpointAnalyzer httpEndpointAnalyzer = new();
     private readonly HttpClientAnalyzer httpClientAnalyzer = new();
     private readonly MessagePublisherAnalyzer messagePublisherAnalyzer = new();
@@ -31,7 +37,7 @@ public sealed class ApiEndpointDetector
     {
         var result = new ApiAnalysisResult();
 
-        var csFiles = Directory.GetFiles(directory, "*.cs", SearchOption.AllDirectories)
+        var csFiles = Directory.GetFiles(directory, "*.cs", SafeEnumerationOptions)
             .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\") &&
                        !f.Contains("/obj/") && !f.Contains("/bin/"));
 

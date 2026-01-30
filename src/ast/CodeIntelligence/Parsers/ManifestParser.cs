@@ -14,6 +14,12 @@ using System.Xml.XPath;
 /// </summary>
 public sealed class ManifestParser
 {
+    private static readonly EnumerationOptions SafeEnumerationOptions = new()
+    {
+        RecurseSubdirectories = true,
+        IgnoreInaccessible = true,
+    };
+
     /// <summary>
     /// Parses a WinApplicationManifest.xml file for service definitions.
     /// </summary>
@@ -346,7 +352,7 @@ public sealed class ManifestParser
                     continue;
                 }
 
-                var files = Directory.GetFiles(directory, pattern, SearchOption.AllDirectories);
+                var files = Directory.GetFiles(directory, pattern, SafeEnumerationOptions);
                 manifests.AddRange(files);
             }
         }

@@ -15,6 +15,12 @@ using CodeIntelligence.Strategies;
 /// </summary>
 public sealed class RelationshipGraphBuilder : IDisposable
 {
+    private static readonly EnumerationOptions SafeEnumerationOptions = new()
+    {
+        RecurseSubdirectories = true,
+        IgnoreInaccessible = true,
+    };
+
     private readonly RelationshipRegistry registry;
     private readonly DetectionStrategyFactory strategyFactory;
     private bool disposed;
@@ -198,12 +204,12 @@ public sealed class RelationshipGraphBuilder : IDisposable
         // Collect from repository root
         if (Directory.Exists(context.RepositoryRoot))
         {
-            files.AddRange(Directory.GetFiles(context.RepositoryRoot, "*.cs", SearchOption.AllDirectories));
-            files.AddRange(Directory.GetFiles(context.RepositoryRoot, "*.csproj", SearchOption.AllDirectories));
-            files.AddRange(Directory.GetFiles(context.RepositoryRoot, "*.json", SearchOption.AllDirectories));
-            files.AddRange(Directory.GetFiles(context.RepositoryRoot, "*.xml", SearchOption.AllDirectories));
-            files.AddRange(Directory.GetFiles(context.RepositoryRoot, "*.yaml", SearchOption.AllDirectories));
-            files.AddRange(Directory.GetFiles(context.RepositoryRoot, "*.yml", SearchOption.AllDirectories));
+            files.AddRange(Directory.GetFiles(context.RepositoryRoot, "*.cs", SafeEnumerationOptions));
+            files.AddRange(Directory.GetFiles(context.RepositoryRoot, "*.csproj", SafeEnumerationOptions));
+            files.AddRange(Directory.GetFiles(context.RepositoryRoot, "*.json", SafeEnumerationOptions));
+            files.AddRange(Directory.GetFiles(context.RepositoryRoot, "*.xml", SafeEnumerationOptions));
+            files.AddRange(Directory.GetFiles(context.RepositoryRoot, "*.yaml", SafeEnumerationOptions));
+            files.AddRange(Directory.GetFiles(context.RepositoryRoot, "*.yml", SafeEnumerationOptions));
         }
 
         // Filter out test files if not included

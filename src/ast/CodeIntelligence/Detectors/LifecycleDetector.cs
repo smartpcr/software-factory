@@ -17,6 +17,12 @@ using Microsoft.CodeAnalysis.CSharp;
 /// </summary>
 public sealed class LifecycleDetector
 {
+    private static readonly EnumerationOptions SafeEnumerationOptions = new()
+    {
+        RecurseSubdirectories = true,
+        IgnoreInaccessible = true,
+    };
+
     private readonly EntryPointAnalyzer entryPointAnalyzer;
     private readonly AzureFunctionsAnalyzer azureFunctionsAnalyzer;
     private readonly MiddlewareChainBuilder middlewareChainBuilder;
@@ -192,7 +198,7 @@ public sealed class LifecycleDetector
     {
         var result = new LifecycleAnalysisResult();
 
-        var csFiles = Directory.GetFiles(rootPath, "*.cs", SearchOption.AllDirectories)
+        var csFiles = Directory.GetFiles(rootPath, "*.cs", SafeEnumerationOptions)
             .Where(f => !f.Contains("\\obj\\") && !f.Contains("\\bin\\"))
             .ToList();
 
