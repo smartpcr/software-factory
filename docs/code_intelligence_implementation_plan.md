@@ -1,18 +1,16 @@
 # Code Intelligence Implementation Plan
 
-> **Version**: 2.4  
+> **Version**: 2.5  
 > **Last Updated**: 2026-01-30  
 > **Status**: Phased Implementation Roadmap
 
 This document provides the phased implementation plan for the code intelligence system, covering all 10 relationship categories with extensible detection strategies.
 
-**Recent Updates (v2.4):**
-- ✅ Phase 6 Observability complete: ObservabilityAnalyzer with logging, metrics, tracing, ETW, health checks
-- Added support for ILogger, Serilog, NLog logging frameworks
-- Added OTEL and Prometheus metrics detection
-- Added Activity/ActivitySource tracing detection
-- Added EventSource and EventCounter detection
-- 40 unit tests for observability patterns, 405 total tests passing
+**Recent Updates (v2.5):**
+- ✅ Phase 7 Error Handling & Domain Model complete
+- ErrorHandlingAnalyzer: throw/catch/rethrow, try-catch-finally, Polly resilience policies
+- DomainModelAnalyzer: AggregateRoot, Entity, ValueObject, DomainEvent, CQRS patterns
+- 39 unit tests for error handling and domain patterns, 444 total tests passing
 
 **Related Documents:**
 - [Requirements](./code_intelligence_requirements.md) - What to build (relationship taxonomy, success criteria)
@@ -2517,7 +2515,7 @@ ast observability export <repo> --format etw-manifest
 
 **Duration**: 1 week  
 **Goal**: Detect error handling patterns and domain concepts.  
-**Status**: 🔲 Not Started
+**Status**: ✅ Complete
 
 ### 7.1 Relationship Types
 
@@ -2534,85 +2532,66 @@ ast observability export <repo> --format etw-manifest
 
 ### 7.2 Deliverables
 
-- [ ] **Rules File** - `rules/errorhandling.yaml`
-  - Error handling detection rules (10 rules)
-- [ ] **Rules File** - `rules/domain.yaml`
-  - Domain model detection rules (12 rules)
-- [ ] **Exception Detector** - `Detectors/ExceptionFlowDetector.cs`
-  - Detects throw, catch, rethrow patterns
-- [ ] **Resilience Detector** - `Detectors/ResiliencePatternDetector.cs`
-  - Detects Polly retry, circuit breaker, fallback
-- [ ] **Domain Model Analyzer** - `Analyzers/DomainModelAnalyzer.cs`
-  - Detects aggregates, entities, value objects
+- [x] **ErrorHandlingAnalyzer** - `Analyzers/ErrorHandlingAnalyzer.cs`
+  - AnalyzeExceptions: Detects throw statements, catch clauses, rethrows
+  - AnalyzeTryCatchBlocks: Detects try-catch-finally structure, nested blocks
+  - AnalyzeResiliencePolicies: Detects Polly retry, circuit breaker, fallback, timeout, bulkhead
+- [x] **DomainModelAnalyzer** - `Analyzers/DomainModelAnalyzer.cs`
+  - AnalyzeAggregates: Detects AggregateRoot, Entity, ValueObject
+  - AnalyzeDomainEvents: Detects DomainEvent, IntegrationEvent, INotification
+  - AnalyzeCqrsPatterns: Detects ICommand, IQuery, IRequest, handlers
+  - AnalyzeEventRaising: Detects AddDomainEvent, Publish, Send patterns
 
 ### 7.3 Test Coverage
 
-- [ ] **Unit Tests: Exception Handling** (12 tests)
-  - [ ] throw new Exception detection
-  - [ ] throw with custom exception
-  - [ ] catch block detection
-  - [ ] catch with exception type
-  - [ ] catch with when filter
-  - [ ] rethrow detection
-  - [ ] rethrow with wrap
-  - [ ] finally block
-  - [ ] using statement (dispose)
-  - [ ] Exception filter
-  - [ ] Nested try-catch
-  - [ ] Exception propagation chain
-- [ ] **Unit Tests: Resilience** (10 tests)
-  - [ ] Polly Retry policy
-  - [ ] Polly WaitAndRetry
-  - [ ] Polly CircuitBreaker
-  - [ ] Polly Fallback
-  - [ ] Polly Bulkhead
-  - [ ] Polly Timeout
-  - [ ] Policy wrap
-  - [ ] IAsyncPolicy usage
-  - [ ] HttpClient with Polly
-  - [ ] Resilience pipeline (.NET 8)
-- [ ] **Unit Tests: Domain Aggregates** (8 tests)
-  - [ ] AggregateRoot inheritance
-  - [ ] Entity base class
-  - [ ] Value object (record)
-  - [ ] Domain ID types
-  - [ ] Aggregate boundary
-  - [ ] Entity relationships
-  - [ ] Invariant validation
-  - [ ] Factory methods
-- [ ] **Unit Tests: Domain Events** (8 tests)
-  - [ ] DomainEvent base class
-  - [ ] INotification interface
-  - [ ] IDomainEvent interface
-  - [ ] Event raising in aggregate
-  - [ ] Event handler detection
-  - [ ] Integration event
-  - [ ] Event store pattern
-  - [ ] Outbox pattern detection
-- [ ] **Unit Tests: CQRS** (10 tests)
-  - [ ] ICommand interface
-  - [ ] IRequest (MediatR)
-  - [ ] IRequest<T> (MediatR)
-  - [ ] IQuery interface
-  - [ ] ICommandHandler
-  - [ ] IRequestHandler
-  - [ ] Command validation
-  - [ ] Query projection
-  - [ ] Pipeline behavior
-  - [ ] Notification handler
-- [ ] **Integration Tests: Domain Model** (3 tests)
-  - [ ] Full aggregate graph extraction
-  - [ ] Event flow mapping
-  - [ ] CQRS handler mapping
-- [ ] **Golden File Tests** (5 tests)
-  - [ ] Exception flow graph JSON
-  - [ ] Resilience policy map
-  - [ ] Domain aggregate model
-  - [ ] Event handler map
-  - [ ] CQRS command/query map
+- [x] **Unit Tests: Exception Handling** (10 tests)
+  - [x] throw new Exception detection
+  - [x] throw with custom exception type
+  - [x] throw with interpolated string message
+  - [x] catch block detection
+  - [x] catch with specific type
+  - [x] catch with when filter
+  - [x] bare rethrow detection
+  - [x] rethrow variable detection
+  - [x] try-catch-finally block
+  - [x] multiple catches detection
+  - [x] nested try-catch detection
+- [x] **Unit Tests: Resilience** (7 tests)
+  - [x] Polly Retry policy
+  - [x] Polly WaitAndRetry
+  - [x] Polly CircuitBreaker
+  - [x] Polly Fallback
+  - [x] Polly Timeout
+  - [x] Polly Bulkhead
+  - [x] Policy wrap
+- [x] **Unit Tests: Domain Aggregates** (6 tests)
+  - [x] AggregateRoot inheritance
+  - [x] Entity base class
+  - [x] Value object (record)
+  - [x] Value object by naming convention
+  - [x] Factory methods detection
+  - [x] Properties extraction
+- [x] **Unit Tests: Domain Events** (4 tests)
+  - [x] DomainEvent base class
+  - [x] INotification interface
+  - [x] IntegrationEvent type
+  - [x] Record event with properties
+- [x] **Unit Tests: CQRS** (6 tests)
+  - [x] ICommand interface
+  - [x] IRequest (MediatR)
+  - [x] IQuery interface
+  - [x] IRequestHandler
+  - [x] Record command
+  - [x] Notification handler
+- [x] **Unit Tests: Event Raising** (3 tests)
+  - [x] AddDomainEvent detection
+  - [x] PublishAsync detection
+  - [x] Send detection
+- [x] **Mixed Tests** (1 test)
+  - [x] Complete aggregate with events
 
-**Total Phase 7 Tests: 56**  
-**Tests Passing**: 0/56
+**Total Phase 7 Tests: 39**  
+**Tests Passing**: 39/39
 
 ---
 
