@@ -6,20 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **IMPORTANT: At the start of each Claude Code session, you MUST read all referenced documentation files listed below before proceeding with any tasks.**
 
-### Required Context Documents
-
-Read these files to understand the project architecture, design decisions, and implementation plans:
-
-- @docs/AST_STATUS.md - Current status of AST implementation
-- @docs/AST_IMPLEMENTATION_PLAN.md - Detailed AST implementation plan
-- @docs/AST_DECISION_LOG.md - Design decisions and rationale
-- @docs/ARCHITECTURE_CHANGES.md - Architecture changes and updates
-- @docs/LSP_MIGRATION_PLAN.md - Language Server Protocol migration plan
-- @docs/lsp-deep-dive.md - Deep dive into LSP implementation details
-- @docs/graph.md - Graph database architecture and usage
-- @docs/embedding_model_approach.md - Embedding model approach for code understanding
-- @docs/code_understanding_comparison.md - Comparison of code understanding approaches
-
 ## Project Overview
 
 Workflow is a C# .NET 8.0 solution for processing Event Tracing for Windows (ETW) and Windows Event Log (EVTX) files, with automated ingestion into Azure Data Explorer (Kusto). The project also includes ExecutionEngine and ProgressTree libraries for workflow orchestration. All projects use BDD-style testing with Reqnroll (SpecFlow successor) and MSTest.

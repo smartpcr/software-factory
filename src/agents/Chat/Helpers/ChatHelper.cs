@@ -18,11 +18,12 @@ public static class ChatHelper
     /// </summary>
     /// <param name="session">The Copilot session.</param>
     /// <param name="message">The message to send.</param>
-    /// <returns>A task representing the async operation.</returns>
-    public static async Task SendMessageAndStreamResponse(CopilotSession session, string message)
+    /// <returns>The full response text.</returns>
+    public static async Task<string> SendMessageAndStreamResponse(CopilotSession session, string message)
     {
         var done = new TaskCompletionSource();
         var hasStartedResponse = false;
+        var responseBuilder = new System.Text.StringBuilder();
 
         var subscription = session.On(evt =>
         {
@@ -36,6 +37,7 @@ public static class ChatHelper
                     }
 
                     AnsiConsole.Write(delta.Data.DeltaContent);
+                    responseBuilder.Append(delta.Data.DeltaContent);
                     break;
 
                 case AssistantMessageEvent msg:
@@ -44,6 +46,7 @@ public static class ChatHelper
                         // Non-streaming fallback
                         AnsiConsole.Markup("\n[green]🥔 Mr. Potato Head: [/]");
                         AnsiConsole.Write(msg.Data.Content);
+                        responseBuilder.Append(msg.Data.Content);
                     }
 
                     break;
@@ -69,5 +72,7 @@ public static class ChatHelper
         {
             subscription.Dispose();
         }
+
+        return responseBuilder.ToString();
     }
 }

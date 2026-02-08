@@ -24,7 +24,7 @@ public static class ModelSelector
     {
         try
         {
-            using var client = new CopilotClient();
+            await using var client = new CopilotClient();
             await client.StartAsync();
 
             var models = await client.ListModelsAsync();
@@ -37,6 +37,46 @@ public static class ModelSelector
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Prints all available models to the console and returns.
+    /// </summary>
+    /// <returns>A task representing the async operation.</returns>
+    public static async Task PrintModelsAsync()
+    {
+        AnsiConsole.MarkupLine("[grey]Fetching available models from Copilot SDK...[/]\n");
+
+        var models = await GetModelsFromSdkAsync();
+
+        if (models == null || models.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[red]❌ Could not fetch models from Copilot SDK.[/]");
+            return;
+        }
+
+        var table = new Table()
+            .Border(TableBorder.Rounded)
+            .AddColumn("[bold]#[/]")
+            .AddColumn("[bold]ID[/]")
+            .AddColumn("[bold]Name[/]")
+            .AddColumn("[bold]Multiplier[/]");
+
+        for (var i = 0; i < models.Count; i++)
+        {
+            var model = models[i];
+            var multiplier = model.Billing?.Multiplier != null
+                ? $"{model.Billing.Multiplier}x"
+                : "-";
+            table.AddRow(
+                (i + 1).ToString(),
+                Markup.Escape(model.Id),
+                Markup.Escape(model.Name),
+                multiplier);
+        }
+
+        AnsiConsole.Write(table);
+        AnsiConsole.MarkupLine($"\n[grey]{models.Count} model(s) available.[/]");
     }
 
     /// <summary>
@@ -58,7 +98,7 @@ public static class ModelSelector
 
         AnsiConsole.MarkupLine("[yellow]🤖 Select a model:[/]");
 
-        for (int i = 0; i < models.Count; i++)
+        for (var i = 0; i < models.Count; i++)
         {
             var model = models[i];
             var multiplierText = model.Billing?.Multiplier != null
@@ -71,7 +111,7 @@ public static class ModelSelector
             new TextPrompt<string>($"\nEnter choice (1-{models.Count}) [[default: 1]]: ")
                 .AllowEmpty());
 
-        if (string.IsNullOrEmpty(choice) || !int.TryParse(choice, out int index) || index < 1 || index > models.Count)
+        if (string.IsNullOrEmpty(choice) || !int.TryParse(choice, out var index) || index < 1 || index > models.Count)
         {
             index = 1;
         }
