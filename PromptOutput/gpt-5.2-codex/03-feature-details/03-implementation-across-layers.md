@@ -1,0 +1,39 @@
+## Implementation Across Layers
+- **Configuration / Startup**  
+  - `UpdateService.cs` → `UnityConfig.RegisterComponents()`  
+  - `UpdateServiceStartup.cs` (HTTP pipeline)  
+  - `UnityConfig.cs` (caching bootstrap, cache consumers)  
+- **API / Controllers / Endpoints** (`src\UpdateResourceProvider\UpdateService\Controllers\Source\CacheControllerImplementation.cs`)  
+  - `DELETE /cachestypeName → `ClearCachedItems`  
+  - `GET /cachestypeNamelist` → `GetCachedItems` (optional `listCacheKey`)  
+  - `GET /cachestypeName → `GetCachedItem` (by `cacheKey`)  
+  - `GET /caches/stats` → `ReportStats`  
+  - `GET /caches/settings/exporttypeName → `ExportCacheSettings`  
+  - `POST /caches/settings/importtypeName → `ImportCacheSettings`  
+  - `GET /caches/packageVersions` → `GetPackageVersions`  
+  - `PUT /caches/setStampVersionver → `SetStampVersion` + `RaiseRefreshCloudParametersXml`  
+  - `PUT /caches/setSbeVersionver → `SetSbeVersion` + `RaiseRefreshCloudParametersXml`  
+- **Business Logic / Domain**  
+  - Core cache: `IHybridCache<T>`, `IListHybridCache<T>`, `DefaultHybridCache<T>` (`src\Common\Common\Source\Caching\DefaultHybridCache.cs`)  
+  - Resolver pattern: `ResourceResolver<T>` (`src\Common\ResourceCaching\Source\ResourceResolver.cs`) + `IResourceAggregator<T>` implementations (`UpdateResourceAggregator`, `UpdateRunAggregator`, `UpdateLocationAggregator`, `DiscoveryDiagnosticInfoAggregator`)  
+  - Handlers wired to cache settings: `UpdateResourceHandler`, `UpdateRunResourceHandler`, `UpdateLocationResourceHandler`, `DiscoveryDiagnosticInfoHandler`  
+  - ECE caching: `BufferedECEClient` caches `ActionPlanInstance` and `CloudParametersXml` using `IHybridCacheFactory` + `AutoCacheECEResult<T>`  
+- **Persistence / Data Access**  
+  - L1 memory: `MemoryCache` (in-process, size limit, TTL, compaction)  
+  - L2 file: `CsvFileCache` (`src\Common\Common\Source\Caching\CsvFileCache.cs`)  
+  - Optional L2 registry: `WindowsRegistryCache` (`src\Common\Common\Source\Caching\WindowsRegistryCache.cs`)  
+- **Serialization / DTOs**  
+  - Cache key system: `CacheKey`, `CacheKeyMapping`, `DefaultCacheKey`  
+  - Serializer factory: `IHybridCacheSerializerFactory` + `SerializerFactory`  
+  - Serializers: `DefaultBinarySerializer`, `DefaultJsonSerializer`, `HybridJsonSerializer`, `HybridJsonTextSerializer`, `DefaultTextSerializer`, `DefaultDataContractSerializer`, `DefaultXElementSerializer`, `MsgPackSerializer`, `JsonTextSerializer`  
+  - Cached domain types implement `ICachedItem` (`Update`, `UpdateRun`, `UpdateLocation`, `DiscoveryDiagnosticInfo`, `ActionPlanInstance`, `CloudParametersXml`)  
+- **Messaging / Events**  
+  - `CacheInvalidator` raises 12 domain events (`OnUpdateAdded`, `OnRefreshUpdate`, `OnRefreshUpdates`, `OnUpdateRunAdded`, `OnRefreshUpdateRun`, `OnRefreshActionPlanInstance`, `OnRefreshUpdateActionPlanInstances`, `OnMonitorUpdateInstallationActionPlanInstance`, `OnUpdateLocationSystemHealthCheckFinished`, `OnRefreshCloudParametersXml`, `OnRefreshDiscoveryConfig`, `OnFeatureFlagChanged`)  
+  - Subscribers: `BufferedECEClient` (cloud params + action plans), aggregators for invalidation  
+- **Background Processing**  
+  - `DefaultHybridCache.TriggerBackgroundRefresh` + `TriggerListBackgroundRefresh` fire-and-forget refresh based on staleness  
+  - `AutoCacheECEResult.UpdateValueInBackground` (ThreadPool work item)  
+- **Cross-cutting Concerns**  
+  - Logging: `CacheEventLogger` + `CacheEventSource`  
+  - Telemetry: `UpdateServiceTelemetryEmitter` in `ResourceResolver`  
+  - Error handling: `CacheException`, `ValueFactoryTimeoutException`, `EceClientException`

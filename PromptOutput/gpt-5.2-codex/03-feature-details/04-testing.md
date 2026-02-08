@@ -1,0 +1,12 @@
+## Testing
+- **Unit Tests**  
+  - Core cache tests (`src\Common\Common\UnitTest\*`): `HybridCacheTests`, `HybridCacheNullTests`, `HybridCacheFactoryTests`, `CacheKeyTests`, `CacheKeyMappingTests`, `CacheInvalidationTests`, `CacheErrorHandlerTests`, `CacheExpirationTests`, `CacheSynchronizationTests`, `CacheStampedeTests`, `CacheConcurrencyTests`, `BackgroundRefreshTests`, `ValueFactoryTimeoutTests`, `CacheSettingTests`, `CacheStatsReportTests`, `CacheProviderTests`, `CsvFileCacheTests`, `SerializationTests`  
+  - Domain-specific: `src\EceClient\UnitTest\CloudParametersXmlCacheTests.cs`, `ActionPlanInstanceCacheTest.cs`, `BufferedECEClientTests.cs`; UpdateService unit tests in `src\UpdateResourceProvider\UpdateService\Core\UnitTest\*` and controller tests in `src\UpdateResourceProvider\UpdateService\Controllers\UnitTest\CacheControllerTests.cs`  
+  - Frameworks: MSTest, FluentAssertions, Moq, FakeTime/ISystemClock test utilities  
+- **Integration Tests**  
+  - UpdateService integration tests: `src\UpdateResourceProvider\UpdateService\IntegrationTest\Source\CacheControllerIntegrationTests.cs`, `CacheInvalidationTests.cs`, `EceClientCacheTests.cs`, `UpdateResourceIntegrationTests.cs`, `UpdateRunIntegrationTests.cs`, `UpdateLocationIntegrationTests.cs`, `DiscoveryConfigControllerIntegrationTests.cs`  
+- **Test Coverage Gaps**  
+  - `DefaultCacheKey.GetConsistentHash/GetQueryHash` direct tests  
+  - `WindowsRegistryCache` integration/error-path coverage  
+  - `CacheInvalidator` event surface breadth  
+  - XML settings import/export round-trip beyond unit tests

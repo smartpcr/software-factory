@@ -1,0 +1,17 @@
+## Dependency Injection & Registration
+- Entry chain: `src\UpdateResourceProvider\UpdateService\Service\Source\UpdateService.cs` → `UnityConfig.RegisterComponents<TDependency>()` → `RegisterCaching()` → `RegisterServiceComponents()`  
+- `RegisterCaching` (`src\UpdateResourceProvider\UpdateService\Service\Source\UnityConfig.cs`):  
+  - Config load: `ConfigurationHandler.Instance.GetDictionary()` → `CacheSettings.GetCacheSettings(...)` + per-type `CacheSettings.GetCacheSettings<T>(...)` for `DiscoveryDiagnosticInfo`, `Update`, `UpdateRun`, `UpdateLocation`, `ActionPlanInstance`, `CloudParametersXml`  
+  - Microsoft DI registrations: `services.AddSingleton<ISystemClock>`; `services.AddSingleton<IMemoryCache>(MemoryCache)`; `services.AddSingleton<IDistributedCache>(CsvFileCache)`; `services.AddSingleton<IHybridCacheSerializerFactory>(SerializerFactory)`; `services.AddHybridCache(...)`  
+  - Bridge to Unity: `services.BuildServiceProvider()` → resolve `HybridCache` → `container.RegisterInstance<HybridCache>` + register `IMemoryCache`, `IDistributedCache`, `IHybridCacheSerializerFactory`  
+  - Factory/invalidator: `new HybridCacheFactory(hybridCache, memoryCache, fileCache, configDict)` → `container.RegisterInstance<IHybridCacheFactory>`; `new CacheInvalidator(hybridCacheFactory)` → `container.RegisterInstance<ICacheInvalidator>`  
+- `RegisterServiceComponents` (same file): `CacheControllerImplementation` registered with `IHybridCacheFactory`, `ICacheInvalidator`, `Dictionary<string,string>`; handlers/controllers wired via `RegisterDependencyInjectedTypes(...)` using type-specific `CacheSettings`  
+- Factory/builder patterns:  
+  - `HybridCacheFactory.CreateCache<T>/CreateListCache<T>/RegisterHybridCache<T>` (`src\Common\Common\Source\Caching\HybridCacheFactory.cs`)  
+  - `SerializerFactory.RegisterConverter<T>/TryCreateSerializer<T>/CreateSerializer<T>` (`src\Common\Common\Source\Serialization\SerializerFactory.cs`)  
+  - `CacheSettings.GetCacheSettings(...)` / `CacheSettings.GetCacheSettings<T>(...)` (`src\Common\Common\Source\Caching\CacheSettings.cs`)  
+  - `CacheKey.ForItem/ForList` + `DefaultCacheKey.GetConsistentHash/GetQueryHash`  
+  - `DownloadServiceClientFactory` (`src\DownloadServiceClient\Core\Source\DownloadServiceClientFactory.cs`), `AutoCacheECEResult<T>` (`src\EceClient\Source\AutoCacheECEResult.cs`)  
+- Configuration settings classes + registration sources:  
+  - `CacheSettings`, `MemoryCacheSettings`, `FileCacheSettings`, `BackgroundRefreshSettings`, `WindowsRegistryCacheSettings`, `CacheConstants`  
+  - Bound from `ConfigurationHandler` dictionary + `Settings.xml` export/import via `DefaultHybridCache.ExportSettings/ImportSettings` + `CacheSettings.AddToConfig<T>`
