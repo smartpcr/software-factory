@@ -34,7 +34,7 @@ Select from any model available through the Copilot SDK at runtime. The applicat
 -m, --model <ID>       Model ID to use (e.g., gpt-4o). Skips interactive selection.
 -q, --question <N>     Question number from the Questions/ folder. Runs non-interactively and exits.
 -r, --repo <PATH>      Path to a repository for context.
--f, --feature <NAME>   Feature name for questions that use the {feature} placeholder.
+-p, --param key=value  Question parameter. Repeatable. Resolves {key} placeholders in prompts.
 -l, --list-models      Print all available models and exit.
 --help                 Display help screen.
 --version              Display version information.
@@ -49,7 +49,7 @@ Settings are loaded with the following priority (highest wins): **CLI args &rarr
 | Model | `-m`, `--model` | `CHAT_Chat__Model` | `Chat.Model` | Model ID (e.g., `gpt-4o`). Skips interactive selection. |
 | Question | `-q`, `--question` | `CHAT_Chat__Question` | `Chat.Question` | Question number from the `Questions/` folder. Runs non-interactively and exits. |
 | RepoPath | `-r`, `--repo` | `CHAT_Chat__RepoPath` | `Chat.RepoPath` | Path to a repository for context. |
-| Feature | `-f`, `--feature` | `CHAT_Chat__Feature` | `Chat.Feature` | Feature name for `{feature}` placeholder in question prompts. |
+| Params | `-p`, `--param` | `CHAT_Chat__Params__key` | `Chat.Params.key` | Key-value parameters for `{placeholder}` tokens in question prompts. Repeatable. |
 | ListModels | `-l`, `--list-models` | `CHAT_Chat__ListModels` | `Chat.ListModels` | Print all available models and exit. |
 
 ### Questions Folder
@@ -65,7 +65,7 @@ Questions/
 └── 05-architecture.md           # Overall architecture description
 ```
 
-Add new questions by creating a new numbered `.md` file in the folder. Use `{feature}` as a placeholder in any question that needs a feature name — the user will be prompted if `-f` is not provided.
+Add new questions by creating a new numbered `.md` file in the folder. Use `{placeholder}` tokens for dynamic values — they are resolved from `-p key=value` args, or the user is prompted interactively if not provided.
 
 ### Output
 
@@ -96,15 +96,20 @@ dotnet run --project src/agents/Chat/Chat.csproj -- -q 1 -r /path/to/repo -m gpt
 # Run question 2 (feature inventory) non-interactively
 dotnet run --project src/agents/Chat/Chat.csproj -- -q 2 -r /path/to/repo
 
-# Run question 3 (feature deep-dive) for a specific feature
-dotnet run --project src/agents/Chat/Chat.csproj -- -q 3 -f "ETW parsing" -r /path/to/repo -m gpt-4o
+# Run question 3 (feature deep-dive) with a parameter
+dotnet run --project src/agents/Chat/Chat.csproj -- -q 3 -p feature="ETW parsing" -r /path/to/repo -m gpt-4o
+
+# Multiple parameters (for future questions with multiple placeholders)
+dotnet run --project src/agents/Chat/Chat.csproj -- -q 3 -p feature="ETW parsing" -p component=Parser
 
 # Via appsettings.json (edit src/agents/Chat/appsettings.json)
 {
   "Chat": {
     "Model": "gpt-4o",
     "Question": 3,
-    "Feature": "ETW parsing",
+    "Params": {
+      "feature": "ETW parsing"
+    },
     "RepoPath": "/path/to/repo"
   }
 }
@@ -135,7 +140,7 @@ Chat/
     ├── ModelSelector.cs        # Dynamic model listing & selection (+PrintModelsAsync)
     ├── ChatHelper.cs           # Streaming message send/receive (returns response text)
     ├── QuestionLoader.cs       # Load question prompts from Questions/ folder
-    ├── OutputWriter.cs         # Split response by ## headers, save to output/ files
+    ├── OutputWriter.cs         # Split response by ## headers, save to PromptOutput/ files
     └── DemoPrompts.cs          # 6 built-in demo prompts
 ```
 
@@ -148,7 +153,7 @@ Chat/
 | `Microsoft.Extensions.Configuration.Json` | Load settings from appsettings.json |
 | `Microsoft.Extensions.Configuration.EnvironmentVariables` | Load settings from environment variables |
 | `Microsoft.Extensions.Configuration.Binder` | Bind configuration sections to typed objects |
-| `CommandLineParser` | Parse command-line arguments (-m, -q, -r, -f, -l) |
+| `CommandLineParser` | Parse command-line arguments (-m, -q, -r, -p, -l) |
 
 ## Prerequisites
 
@@ -169,6 +174,6 @@ dotnet run --project src/agents/Chat/Chat.csproj -- -m gpt-4o -r /path/to/repo
 # List models
 dotnet run --project src/agents/Chat/Chat.csproj -- -l
 
-# Run a question non-interactively (output saved to output/{model}/{question}/)
+# Run a question non-interactively (output saved to PromptOutput/{model}/{question}/)
 dotnet run --project src/agents/Chat/Chat.csproj -- -q 2 -r /path/to/repo -m claude-opus-4.6
 ```

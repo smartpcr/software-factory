@@ -12,13 +12,13 @@ using Spectre.Console;
 
 /// <summary>
 /// Splits a markdown response into sections and writes each to a separate file
-/// under output/{modelName}/{questionSlug}/.
+/// under PromptOutput/{modelName}/{questionSlug}/.
 /// </summary>
 public static partial class OutputWriter
 {
     /// <summary>
     /// Splits the response by top-level markdown headers (##) and writes each section
-    /// to a numbered .md file under output/{modelName}/{questionSlug}/.
+    /// to a numbered .md file under PromptOutput/{modelName}/{questionSlug}/.
     /// </summary>
     /// <param name="response">The full markdown response text.</param>
     /// <param name="modelName">The model ID used for the response.</param>
@@ -31,7 +31,7 @@ public static partial class OutputWriter
         }
 
         var safeModel = SanitizePathSegment(modelName);
-        var outputDir = Path.Combine(Directory.GetCurrentDirectory(), "output", safeModel, questionSlug);
+        var outputDir = Path.Combine(Directory.GetCurrentDirectory(), "PromptOutput", safeModel, questionSlug);
         Directory.CreateDirectory(outputDir);
 
         var sections = SplitIntoSections(response);

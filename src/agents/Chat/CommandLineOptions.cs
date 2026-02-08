@@ -32,10 +32,11 @@ public class CommandLineOptions
     public string? RepoPath { get; set; }
 
     /// <summary>
-    /// Gets or sets the feature name for question prompts that use the {feature} placeholder.
+    /// Gets or sets additional parameters for question prompt placeholders.
+    /// Each value should be in key=value format (e.g., -p feature="ETW parsing" -p component=Parser).
     /// </summary>
-    [Option('f', "feature", Required = false, HelpText = "Feature name for feature-specific questions (e.g., 'ETW parsing').")]
-    public string? Feature { get; set; }
+    [Option('p', "param", Required = false, Separator = ' ', HelpText = "Question parameters as key=value. Repeatable. Resolves {key} placeholders in prompts.")]
+    public IEnumerable<string>? Params { get; set; }
 
     /// <summary>
     /// Gets or sets a value indicating whether to list available models and exit.

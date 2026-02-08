@@ -139,7 +139,7 @@ public class Program
                     return;
                 }
 
-                var prompt = ResolveFeaturePlaceholder(selected.Prompt, settings.Feature);
+                var prompt = ResolvePlaceholders(selected.Prompt, settings.Params);
                 if (prompt == null)
                 {
                     return;
@@ -247,7 +247,7 @@ public class Program
                         var selected = QuestionLoader.GetByNumber(questions, qNum);
                         if (selected != null)
                         {
-                            var resolved = ResolveFeaturePlaceholder(selected.Prompt, settings.Feature);
+                            var resolved = ResolvePlaceholders(selected.Prompt, settings.Params);
                             if (resolved == null)
                             {
                                 continue;
@@ -314,34 +314,50 @@ public class Program
     }
 
     /// <summary>
-    /// Replaces {feature} placeholders in a prompt. If the prompt contains {feature}
-    /// and no feature name is available, prompts the user interactively.
-    /// Returns null if the user cancels.
+    /// Finds all {placeholder} tokens in a prompt and resolves them from the params dictionary.
+    /// For any placeholder not found in params, prompts the user interactively.
+    /// Returns null if the user cancels any prompt.
     /// </summary>
     /// <param name="prompt">The prompt template.</param>
-    /// <param name="feature">The feature name from settings, or null.</param>
+    /// <param name="parameters">Known parameter values.</param>
     /// <returns>The resolved prompt, or null if cancelled.</returns>
-    private static string? ResolveFeaturePlaceholder(string prompt, string? feature)
+    private static string? ResolvePlaceholders(string prompt, Dictionary<string, string> parameters)
     {
-        if (!prompt.Contains("{feature}", StringComparison.OrdinalIgnoreCase))
-        {
-            return prompt;
-        }
+        var result = prompt;
+        var placeholders = System.Text.RegularExpressions.Regex.Matches(prompt, @"\{(\w+)\}");
 
-        if (string.IsNullOrWhiteSpace(feature))
+        foreach (System.Text.RegularExpressions.Match match in placeholders)
         {
-            feature = AnsiConsole.Prompt(
-                new TextPrompt<string>("[yellow]Enter feature name (or 'cancel'):[/] "));
+            var key = match.Groups[1].Value;
 
-            if (string.IsNullOrWhiteSpace(feature) ||
-                feature.Equals("cancel", StringComparison.OrdinalIgnoreCase))
+            // Skip if already replaced (duplicate placeholder)
+            if (!result.Contains(match.Value, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (parameters.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
+            {
+                result = result.Replace(match.Value, value, StringComparison.OrdinalIgnoreCase);
+                continue;
+            }
+
+            // Prompt interactively
+            var input = AnsiConsole.Prompt(
+                new TextPrompt<string>($"[yellow]Enter value for '{key}' (or 'cancel'):[/] "));
+
+            if (string.IsNullOrWhiteSpace(input) ||
+                input.Equals("cancel", StringComparison.OrdinalIgnoreCase))
             {
                 AnsiConsole.MarkupLine("[grey]Cancelled.[/]\n");
                 return null;
             }
+
+            parameters[key] = input;
+            result = result.Replace(match.Value, input, StringComparison.OrdinalIgnoreCase);
         }
 
-        return prompt.Replace("{feature}", feature, StringComparison.OrdinalIgnoreCase);
+        return result;
     }
 
     /// <summary>
@@ -381,9 +397,21 @@ public class Program
                     settings.RepoPath = opts.RepoPath;
                 }
 
-                if (!string.IsNullOrWhiteSpace(opts.Feature))
+                if (opts.Params != null)
                 {
-                    settings.Feature = opts.Feature;
+                    foreach (var param in opts.Params)
+                    {
+                        var eqIndex = param.IndexOf('=');
+                        if (eqIndex > 0)
+                        {
+                            var key = param[..eqIndex].Trim();
+                            var val = param[(eqIndex + 1)..].Trim();
+                            if (!string.IsNullOrEmpty(key) && !string.IsNullOrEmpty(val))
+                            {
+                                settings.Params[key] = val;
+                            }
+                        }
+                    }
                 }
 
                 if (opts.ListModels)

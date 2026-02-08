@@ -31,9 +31,10 @@ public class ChatSettings
     public string? RepoPath { get; set; }
 
     /// <summary>
-    /// Gets or sets the feature name for question prompts that use the {feature} placeholder.
+    /// Gets or sets additional parameters for question prompt placeholders.
+    /// Keys map to {placeholder} tokens in question files.
     /// </summary>
-    public string? Feature { get; set; }
+    public Dictionary<string, string> Params { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Gets or sets a value indicating whether to list available models and exit.
