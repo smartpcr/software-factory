@@ -1,0 +1,28 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CopilotAgentOrchestrator\CopilotAgentOrchestrator.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+    <Using Include="FluentAssertions" />
+  </ItemGroup>
+
+  <!-- Link Chat/Questions prompt files as test data -->
+  <ItemGroup>
+    <None Include="..\Chat\Questions\*.md" Link="Questions\%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- Exclude Reqnroll.MsTest to avoid auto-generated AssemblyInitialize conflict -->
+  <ItemGroup>
+    <PackageReference Update="Reqnroll.MsTest" ExcludeAssets="All" />
+  </ItemGroup>
+
+</Project>

@@ -113,11 +113,7 @@ public class Program
 
             // Create session with selected model
             AnsiConsole.WriteLine($"📝 Creating session with model: {selectedModel}...");
-            session = await client.CreateSessionAsync(new SessionConfig
-            {
-                Model = selectedModel,
-                Streaming = true
-            });
+            session = await client.CreateSessionAsync(CreateSessionConfig(selectedModel));
             AnsiConsole.MarkupLine($"[green]✅ Session created! (ID: {session.SessionId})[/]\n");
 
             // Load questions from Questions folder
@@ -145,14 +141,14 @@ public class Program
                     return;
                 }
 
-                if (!string.IsNullOrWhiteSpace(settings.RepoPath))
-                {
-                    prompt = $"[Repository: {Path.GetFullPath(settings.RepoPath)}]\n\n{prompt}";
-                }
-
                 AnsiConsole.MarkupLine($"[cyan]Question {selected.Number}:[/] {selected.Title}\n");
-                var response = await ChatHelper.SendMessageAndStreamResponse(session, prompt);
-                OutputWriter.SaveQuestionOutput(response, selectedModel, selected.Slug);
+
+                var chatResponse = await OrchestrationRunner.RunOrchestratedAsync(
+                    client, prompt, selectedModel, settings.RepoPath,
+                    modelName: selectedModel, questionSlug: selected.Slug);
+
+                PrintMetrics(chatResponse);
+                OutputWriter.SaveQuestionOutput(chatResponse.Text, selectedModel, selected.Slug);
                 return;
             }
 
@@ -199,11 +195,7 @@ public class Program
                     selectedModel = newModel;
                     AnsiConsole.WriteLine($"\n🔄 Recreating session with model: {selectedModel}...");
                     await session.DisposeAsync();
-                    session = await client.CreateSessionAsync(new SessionConfig
-                    {
-                        Model = selectedModel,
-                        Streaming = true
-                    });
+                    session = await client.CreateSessionAsync(CreateSessionConfig(selectedModel));
                     AnsiConsole.MarkupLine($"[green]✅ New session created! (ID: {session.SessionId})[/]\n");
                     continue;
                 }
@@ -212,11 +204,7 @@ public class Program
                 {
                     AnsiConsole.WriteLine("\n🔄 Starting new session...");
                     await session.DisposeAsync();
-                    session = await client.CreateSessionAsync(new SessionConfig
-                    {
-                        Model = selectedModel,
-                        Streaming = true
-                    });
+                    session = await client.CreateSessionAsync(CreateSessionConfig(selectedModel));
                     AnsiConsole.MarkupLine($"[green]✅ New session created! (ID: {session.SessionId})[/]\n");
                     continue;
                 }
@@ -255,7 +243,13 @@ public class Program
 
                             AnsiConsole.MarkupLine($"[grey]Running question {selected.Number}: {selected.Title}[/]\n");
                             activeQuestion = selected;
-                            input = resolved;
+
+                            var orchResponse = await OrchestrationRunner.RunOrchestratedAsync(
+                                client, resolved, selectedModel, settings.RepoPath,
+                                modelName: selectedModel, questionSlug: activeQuestion.Slug);
+                            PrintMetrics(orchResponse);
+                            OutputWriter.SaveQuestionOutput(orchResponse.Text, selectedModel, activeQuestion.Slug);
+                            continue;
                         }
                         else
                         {
@@ -274,20 +268,17 @@ public class Program
                     }
                 }
 
-                // Prepend repo context if configured
-                var message = input;
-                if (!string.IsNullOrWhiteSpace(settings.RepoPath))
-                {
-                    message = $"[Repository: {Path.GetFullPath(settings.RepoPath)}]\n\n{input}";
-                }
+                // Send message via multi-agent orchestration
+                var chatResponse = await OrchestrationRunner.RunOrchestratedAsync(
+                    client, input, selectedModel, settings.RepoPath,
+                    modelName: selectedModel);
 
-                // Send message and stream response
-                var responseText = await ChatHelper.SendMessageAndStreamResponse(session, message);
+                PrintMetrics(chatResponse);
 
                 // Save output for question runs
                 if (activeQuestion != null)
                 {
-                    OutputWriter.SaveQuestionOutput(responseText, selectedModel, activeQuestion.Slug);
+                    OutputWriter.SaveQuestionOutput(chatResponse.Text, selectedModel, activeQuestion.Slug);
                 }
             }
         }
@@ -358,6 +349,66 @@ public class Program
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Prints elapsed time and token usage metrics for a chat response.
+    /// </summary>
+    /// <param name="response">The chat response containing metrics.</param>
+    private static void PrintMetrics(ChatResponse response)
+    {
+        var elapsed = $"{response.Elapsed.TotalSeconds:F1}s";
+        var firstToken = response.TimeToFirstToken.HasValue
+            ? $" (first token: {response.TimeToFirstToken.Value.TotalSeconds:F1}s)"
+            : string.Empty;
+        var tokens = $"Tokens: {response.InputTokens:N0} in → {response.OutputTokens:N0} out";
+
+        var cache = string.Empty;
+        if (response.CacheReadTokens > 0 || response.CacheWriteTokens > 0)
+        {
+            var parts = new List<string>();
+            if (response.CacheReadTokens > 0)
+            {
+                parts.Add($"{response.CacheReadTokens:N0} read");
+            }
+
+            if (response.CacheWriteTokens > 0)
+            {
+                parts.Add($"{response.CacheWriteTokens:N0} write");
+            }
+
+            cache = $" (cache: {string.Join(", ", parts)})";
+        }
+
+        AnsiConsole.MarkupLine($"[grey]⏱ {elapsed}{firstToken} | {tokens}{cache}[/]");
+    }
+
+    /// <summary>
+    /// Creates a <see cref="SessionConfig"/> with the anti-narration system prompt
+    /// to ensure models output only the final analysis, not tool-call narration.
+    /// </summary>
+    private static SessionConfig CreateSessionConfig(string model)
+    {
+        return new SessionConfig
+        {
+            Model = model,
+            Streaming = true,
+            SystemMessage = new SystemMessageConfig
+            {
+                Mode = SystemMessageMode.Append,
+                Content = """
+                    CRITICAL OUTPUT RULES:
+                    - Do NOT narrate your actions. Never say "Let me read...", "Now I'll check...",
+                      "Let me look at...", or similar tool-call narration.
+                    - When you use tools to read files, do NOT describe what you are doing.
+                    - Output ONLY your final, comprehensive analysis as a single well-structured document.
+                    - If the prompt asks for exhaustive analysis, be thorough: include actual code snippets
+                      with file paths and line numbers, trace every code path, and document every detail.
+                    - Structure your output with a table of contents, numbered sections, and code blocks.
+                    - Your response should read as a polished technical document, not a stream of consciousness.
+                    """
+            }
+        };
     }
 
     /// <summary>

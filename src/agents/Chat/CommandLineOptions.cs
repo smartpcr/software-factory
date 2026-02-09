@@ -43,4 +43,5 @@ public class CommandLineOptions
     /// </summary>
     [Option('l', "list-models", Required = false, HelpText = "Print all available models and exit.")]
     public bool ListModels { get; set; }
+
 }

@@ -17,13 +17,70 @@ Select from any model available through the Copilot SDK at runtime. The applicat
 - `question <N>` &mdash; run a repo question from the `Questions/` folder
 - `exit` / `quit` &mdash; end session
 
-### 2. Subagent with Tool Permissions on External Repos
+### 2. Multi-Agent Orchestration (Always On)
+
+Every prompt is automatically decomposed into multiple subagents using the `CopilotAgentOrchestrator` library, executed as a DAG with dependency-aware scheduling, and post-processed — replicating the pattern that makes Claude Code's `Task` tool so effective.
+
+#### The Problem (Before)
+
+A single Copilot session burns 70–80% of its context window on tool-call narration ("Let me read…", "Now I'll check…"), leaving only 20–30% for actual synthesis. This is why the same Opus model produces dramatically different quality depending on how it's invoked:
+
+| Capability | Single-Session Chat | Multi-Agent Orchestration |
+|---|---|---|
+| Subagent spawning | ❌ No | ✅ Yes — LLM planner decomposes prompt |
+| Parallel workers | ❌ No | ✅ Yes — DAG scheduler, up to 7 concurrent |
+| Fresh context per worker | ❌ No | ✅ Yes — each subagent gets an isolated session |
+| Post-processing | ❌ No | ✅ Yes — TOC, knowledge graph, context doc |
+| Output quality | Shallow, fragmented | Deep, comprehensive |
+
+#### The Solution (After)
+
+The planner LLM decomposes every prompt into a DAG of subagents. Each subagent runs in a fresh Copilot session with its full context budget dedicated to its specific task.
+
+**Example orchestration plan** (for `feature="hybridcache"` deep-dive):
+
+```
+ Wave  │ Agent ID                │ Type           │ Model            │ Depends On           │ Description
+───────┼─────────────────────────┼────────────────┼──────────────────┼──────────────────────┼──────────────────────────────────────────────────────────────
+ W1 ║║ │ explore-di-registration │ Explore        │ claude-haiku-4.5 │ -                    │ Trace all DI registration: factories, maps, config binding
+ W1 ║║ │ explore-serializers     │ Explore        │ claude-haiku-4.5 │ -                    │ Find custom serializers, converters, type handling
+ W1 ║║ │ explore-storage-caching │ Explore        │ claude-haiku-4.5 │ -                    │ Identify storage and caching layers, keying, eviction
+ W1 ║║ │ explore-entry-points    │ Explore        │ claude-haiku-4.5 │ -                    │ Find all entry points: controllers, jobs, event handlers
+ W1 ║║ │ explore-resilience      │ Explore        │ claude-haiku-4.5 │ -                    │ Find retry policies, circuit breakers, timeout handling
+ W1 ║║ │ explore-concurrency     │ Explore        │ claude-haiku-4.5 │ -                    │ Analyze thread safety, locks, async coordination
+ W1 ║║ │ explore-messaging       │ Explore        │ claude-haiku-4.5 │ -                    │ Find event publishers, subscribers, message contracts
+ W1 ║║ │ explore-observability   │ Explore        │ claude-haiku-4.5 │ -                    │ Find logging, metrics, tracing, health checks
+ W1 ║║ │ explore-tests           │ Explore        │ claude-haiku-4.5 │ -                    │ Find unit tests, integration tests, and test gaps
+ W1 ║║ │ explore-cross-cutting   │ Explore        │ claude-haiku-4.5 │ -                    │ Find validation, authorization, cross-cutting concerns
+       │                         │                │                  │                      │
+  W2   │ explore-call-chains     │ GeneralPurpose │ claude-opus-4.6  │ explore-entry-points │ Trace complete call chains from entry points
+       │                         │                │                  │                      │
+  W3   │ explore-performance     │ GeneralPurpose │ claude-opus-4.6  │ explore-call-chains  │ Analyze hot paths, memory, I/O, bottlenecks
+```
+
+**Wave 1** (parallel, up to 7 concurrent): Ten fast Haiku agents each explore one aspect of the feature — DI registration, serialization, storage, entry points, resilience, concurrency, messaging, observability, testing, and cross-cutting concerns — all running in parallel with no dependencies.
+
+**Wave 2** (sequential): An Opus agent traces complete call chains from the entry points discovered in W1, using `{result:explore-entry-points}` to inject W1 output.
+
+**Wave 3** (sequential): An Opus agent analyzes performance characteristics based on the call chains from W2.
+
+**Post-processing** (automatic): All agent outputs are concatenated with a table of contents, then a distillation agent produces a knowledge graph (Mermaid) and a concise context document (`context.md`) for downstream agents.
+
+> **Note:** The plan is generated dynamically by the LLM planner at runtime, so the exact agents, waves, and dependencies may vary between runs depending on the prompt and model.
+
+#### Plan File Output
+
+Every run writes artifacts to `PromptOutput/{model}/{questionSlug}/`:
+- **`orchestration-plan.md`** — the original prompt, per-agent wave assignment, type, model, dependencies, full prompt text, and after execution: per-agent start/end timestamps, duration, token counts (input/output/cache), success/failure status, and a summary table
+- **`context.md`** — a distilled context document with architecture overview, key components, critical invariants, and a Mermaid knowledge graph, designed for use as system-prompt context by downstream PR or implementation agents
+
+### 3. Subagent with Tool Permissions on External Repos
 
 *(Planned)* Create subagents that operate on external repositories with configurable tool permissions, enabling automated code analysis and modification workflows across multiple codebases.
 
-### 3. Repository Q&A
+### 4. Repository Q&A
 
-*(Planned)* Answer questions about a target repository including:
+Answer questions about a target repository including:
 - Diagram of repository structure
 - Module inventory and dependencies
 - Per-module implementation details
@@ -99,6 +156,9 @@ dotnet run --project src/agents/Chat/Chat.csproj -- -q 2 -r /path/to/repo
 # Run question 3 (feature deep-dive) with a parameter
 dotnet run --project src/agents/Chat/Chat.csproj -- -q 3 -p feature="ETW parsing" -r /path/to/repo -m gpt-4o
 
+# Run question 3 with multi-agent orchestration (always on)
+dotnet run --project src/agents/Chat/Chat.csproj -- -q 3 -p feature="hybridcache" -r /path/to/repo -m claude-opus-4.6
+
 # Multiple parameters (for future questions with multiple placeholders)
 dotnet run --project src/agents/Chat/Chat.csproj -- -q 3 -p feature="ETW parsing" -p component=Parser
 
@@ -141,6 +201,7 @@ Chat/
     ├── ChatHelper.cs           # Streaming message send/receive (returns response text)
     ├── QuestionLoader.cs       # Load question prompts from Questions/ folder
     ├── OutputWriter.cs         # Split response by ## headers, save to PromptOutput/ files
+    ├── OrchestrationRunner.cs  # Multi-agent orchestration: LLM planner + DAG executor + plan file
     └── DemoPrompts.cs          # 6 built-in demo prompts
 ```
 
@@ -149,6 +210,7 @@ Chat/
 | Package | Purpose |
 |---------|---------|
 | `GitHub.Copilot.SDK` | Copilot client, sessions, model listing, streaming events |
+| `CopilotAgentOrchestrator` | Multi-agent DAG orchestration, subagent scheduling, result aggregation |
 | `Spectre.Console` | Rich console output (FigletText banner, markup, prompts) |
 | `Microsoft.Extensions.Configuration.Json` | Load settings from appsettings.json |
 | `Microsoft.Extensions.Configuration.EnvironmentVariables` | Load settings from environment variables |
@@ -176,4 +238,7 @@ dotnet run --project src/agents/Chat/Chat.csproj -- -l
 
 # Run a question non-interactively (output saved to PromptOutput/{model}/{question}/)
 dotnet run --project src/agents/Chat/Chat.csproj -- -q 2 -r /path/to/repo -m claude-opus-4.6
+
+# Run question with multi-agent orchestration (plan + context.md saved alongside output)
+dotnet run --project src/agents/Chat/Chat.csproj -- -q 3 -p feature="hybridcache" -r /path/to/repo -m claude-opus-4.6
 ```

@@ -40,4 +40,5 @@ public class ChatSettings
     /// Gets or sets a value indicating whether to list available models and exit.
     /// </summary>
     public bool ListModels { get; set; }
+
 }
