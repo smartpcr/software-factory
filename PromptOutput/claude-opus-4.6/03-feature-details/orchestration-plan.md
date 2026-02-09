@@ -1,9 +1,9 @@
 # Orchestration Plan
 
-**Generated:** 2026-02-09 03:19:48 UTC
+**Generated:** 2026-02-09 04:23:40 UTC
 **Model:** claude-opus-4.6
-**Total Agents:** 11
-**Waves:** 1
+**Total Agents:** 13
+**Waves:** 3
 
 ## Original Prompt
 
@@ -44,6 +44,14 @@ Many features have custo
 - **10-cross-cutting-concerns** (GeneralPurpose) — depends on: none
 - **11-testing** (GeneralPurpose) — depends on: none
 
+### Wave 2 (sequential)
+
+- **synthesis** (GeneralPurpose) — depends on: 1-registration-wiring, 2-serialization-type-handling, 3-storage-persistence-layers, 4-runtime-behavior-data-flow, 5-resilience-failure-handling, 6-concurrency-thread-safety, 7-messaging-event-driven-behavior, 8-observability, 9-performance, 10-cross-cutting-concerns, 11-testing
+
+### Wave 3 (sequential)
+
+- **distill** (GeneralPurpose) — depends on: synthesis
+
 ## Subagent Details
 
 ### 1. 1-registration-wiring
@@ -59,6 +67,11 @@ Many features have custo
 **Prompt:**
 
 ```
+IMPORTANT: All relevant source files are included below as code blocks.
+Analyze ONLY the provided code to answer the question.
+Do NOT use tools to read, search, or explore files.
+When referencing code, use filename:lineNumber range (e.g., MyService.cs:42-58) instead of pasting code snippets.
+
 You are an expert code archaeologist. Given the feature **hybridcache**, trace every line of code in this repository that is linked to this feature. Do not summarize — be exhaustive. Your goal is to produce a complete map that a developer could use to fully understand and safely modify this feature.
 
 **CRITICAL INSTRUCTION**: For every class, interface, or method you identify, follow ALL references to it. If a factory creates an object, trace what that object does. If a map or dictionary is populated at startup, show what reads from it at runtime. If a custom converter or serializer exists, show exactly where and how it is registered, resolved, and invoked. Do not stop at the surface — trace the full chain until you reach the leaf behavior.
@@ -74,6 +87,29 @@ Trace the complete DI registration chain for this feature from application entry
 - **Decorator / middleware chains** — any wrapping, decoration, or pipeline assembly related to this feature.
 
 
+
+---
+SOURCE FILES (76 files):
+
+### src\Common\Common\UnitTest\HybridCacheFactoryTests.cs
+```csharp
+//-------------------------------------------------------------------------------
+// <copyright file="HybridCacheFactoryTests.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+//-------------------------------------------------------------------------------
+
+namespace Microsoft.AzureStack.Services.Update.Common.UnitTest
+{
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Threading;
+    using System;
+    using System.Threading.Tasks;
+    using Caching;
+    using FluentAssertions;
+    using Microsoft.AzureStack.Services.Update.Common.Serialization
+... (truncated)
 ```
 
 ### 2. 2-serialization-type-handling
@@ -89,6 +125,11 @@ Trace the complete DI registration chain for this feature from application entry
 **Prompt:**
 
 ```
+IMPORTANT: All relevant source files are included below as code blocks.
+Analyze ONLY the provided code to answer the question.
+Do NOT use tools to read, search, or explore files.
+When referencing code, use filename:lineNumber range (e.g., MyService.cs:42-58) instead of pasting code snippets.
+
 You are an expert code archaeologist. Given the feature **hybridcache**, trace every line of code in this repository that is linked to this feature. Do not summarize — be exhaustive. Your goal is to produce a complete map that a developer could use to fully understand and safely modify this feature.
 
 **CRITICAL INSTRUCTION**: For every class, interface, or method you identify, follow ALL references to it. If a factory creates an object, trace what that object does. If a map or dictionary is populated at startup, show what reads from it at runtime. If a custom converter or serializer exists, show exactly where and how it is registered, resolved, and invoked. Do not stop at the surface — trace the full chain until you reach the leaf behavior.
@@ -103,6 +144,36 @@ Many features have custom serialization that is easy to miss. Trace thoroughly:
 - **DI integration for serializers** — how are custom converters/serializers injected into the DI container? Are they added individually, scanned by convention, or registered via a module?
 
 
+
+---
+SOURCE FILES (76 files):
+
+### src\Common\Common\UnitTest\HybridCacheFactoryTests.cs
+```csharp
+//-------------------------------------------------------------------------------
+// <copyright file="HybridCacheFactoryTests.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+//-------------------------------------------------------------------------------
+
+namespace Microsoft.AzureStack.Services.Update.Common.UnitTest
+{
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Threading;
+    using System;
+    using System.Threading.Tasks;
+    using Caching;
+    using FluentAssertions;
+    using Microsoft.AzureStack.Services.Update.Common.Serialization;
+    using Microsoft.Extensions.Caching.Distributed;
+    using Microsoft.Extensions.Caching.Hybrid;
+    using Microsoft.Extensions.Caching.Memory;
+    using Microsoft.Extensions.DependencyInjection;
+    using VisualStudio.TestTools.UnitTesting;
+
+    
+... (truncated)
 ```
 
 ### 3. 3-storage-persistence-layers
@@ -118,6 +189,11 @@ Many features have custom serialization that is easy to miss. Trace thoroughly:
 **Prompt:**
 
 ```
+IMPORTANT: All relevant source files are included below as code blocks.
+Analyze ONLY the provided code to answer the question.
+Do NOT use tools to read, search, or explore files.
+When referencing code, use filename:lineNumber range (e.g., MyService.cs:42-58) instead of pasting code snippets.
+
 You are an expert code archaeologist. Given the feature **hybridcache**, trace every line of code in this repository that is linked to this feature. Do not summarize — be exhaustive. Your goal is to produce a complete map that a developer could use to fully understand and safely modify this feature.
 
 **CRITICAL INSTRUCTION**: For every class, interface, or method you identify, follow ALL references to it. If a factory creates an object, trace what that object does. If a map or dictionary is populated at startup, show what reads from it at runtime. If a custom converter or serializer exists, show exactly where and how it is registered, resolved, and invoked. Do not stop at the surface — trace the full chain until you reach the leaf behavior.
@@ -131,6 +207,34 @@ Trace every layer where data related to this feature is stored or cached:
 - **File / blob / unstructured persistence** — any direct file I/O, blob storage, or unstructured data writes. Show paths, formats, and the code performing reads and writes.
 
 
+
+---
+SOURCE FILES (76 files):
+
+### src\Common\Common\UnitTest\HybridCacheFactoryTests.cs
+```csharp
+//-------------------------------------------------------------------------------
+// <copyright file="HybridCacheFactoryTests.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+//-------------------------------------------------------------------------------
+
+namespace Microsoft.AzureStack.Services.Update.Common.UnitTest
+{
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Threading;
+    using System;
+    using System.Threading.Tasks;
+    using Caching;
+    using FluentAssertions;
+    using Microsoft.AzureStack.Services.Update.Common.Serialization;
+    using Microsoft.Extensions.Caching.Distributed;
+    using Microsoft.Extensions.Caching.Hybrid;
+    using Microsoft.Extensions.Caching.Memory;
+    using Microsoft.Extensions.DependencyInjection;
+
+... (truncated)
 ```
 
 ### 4. 4-runtime-behavior-data-flow
@@ -146,6 +250,11 @@ Trace every layer where data related to this feature is stored or cached:
 **Prompt:**
 
 ```
+IMPORTANT: All relevant source files are included below as code blocks.
+Analyze ONLY the provided code to answer the question.
+Do NOT use tools to read, search, or explore files.
+When referencing code, use filename:lineNumber range (e.g., MyService.cs:42-58) instead of pasting code snippets.
+
 You are an expert code archaeologist. Given the feature **hybridcache**, trace every line of code in this repository that is linked to this feature. Do not summarize — be exhaustive. Your goal is to produce a complete map that a developer could use to fully understand and safely modify this feature.
 
 **CRITICAL INSTRUCTION**: For every class, interface, or method you identify, follow ALL references to it. If a factory creates an object, trace what that object does. If a map or dictionary is populated at startup, show what reads from it at runtime. If a custom converter or serializer exists, show exactly where and how it is registered, resolved, and invoked. Do not stop at the surface — trace the full chain until you reach the leaf behavior.
@@ -160,6 +269,41 @@ Trace the feature's runtime execution paths end-to-end:
 - **Error handling** — try/catch blocks, retry policies, circuit breakers, fallback behavior. What happens when each component fails?
 
 
+
+---
+SOURCE FILES (76 files):
+
+### src\Common\Common\UnitTest\HybridCacheFactoryTests.cs
+```csharp
+//-------------------------------------------------------------------------------
+// <copyright file="HybridCacheFactoryTests.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+//-------------------------------------------------------------------------------
+
+namespace Microsoft.AzureStack.Services.Update.Common.UnitTest
+{
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Threading;
+    using System;
+    using System.Threading.Tasks;
+    using Caching;
+    using FluentAssertions;
+    using Microsoft.AzureStack.Services.Update.Common.Serialization;
+    using Microsoft.Extensions.Caching.Distributed;
+    using Microsoft.Extensions.Caching.Hybrid;
+    using Microsoft.Extensions.Caching.Memory;
+    using Microsoft.Extensions.DependencyInjection;
+    using VisualStudio.TestTools.UnitTesting;
+
+    [TestClass]
+    public class HybridCacheFactoryTests
+    {
+        private FakeTime clock;
+        private IMemoryCache memoryCache;
+        private IDistrib
+... (truncated)
 ```
 
 ### 5. 5-resilience-failure-handling
@@ -175,6 +319,11 @@ Trace the feature's runtime execution paths end-to-end:
 **Prompt:**
 
 ```
+IMPORTANT: All relevant source files are included below as code blocks.
+Analyze ONLY the provided code to answer the question.
+Do NOT use tools to read, search, or explore files.
+When referencing code, use filename:lineNumber range (e.g., MyService.cs:42-58) instead of pasting code snippets.
+
 You are an expert code archaeologist. Given the feature **hybridcache**, trace every line of code in this repository that is linked to this feature. Do not summarize — be exhaustive. Your goal is to produce a complete map that a developer could use to fully understand and safely modify this feature.
 
 **CRITICAL INSTRUCTION**: For every class, interface, or method you identify, follow ALL references to it. If a factory creates an object, trace what that object does. If a map or dictionary is populated at startup, show what reads from it at runtime. If a custom converter or serializer exists, show exactly where and how it is registered, resolved, and invoked. Do not stop at the surface — trace the full chain until you reach the leaf behavior.
@@ -190,6 +339,33 @@ Trace how this feature behaves when things go wrong:
 - **Graceful degradation** — does the feature continue with partial results, stale data, or reduced functionality when a dependency fails? Trace the exact behavior.
 
 
+
+---
+SOURCE FILES (76 files):
+
+### src\Common\Common\UnitTest\HybridCacheFactoryTests.cs
+```csharp
+//-------------------------------------------------------------------------------
+// <copyright file="HybridCacheFactoryTests.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+//-------------------------------------------------------------------------------
+
+namespace Microsoft.AzureStack.Services.Update.Common.UnitTest
+{
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Threading;
+    using System;
+    using System.Threading.Tasks;
+    using Caching;
+    using FluentAssertions;
+    using Microsoft.AzureStack.Services.Update.Common.Serialization;
+    using Microsoft.Extensions.Caching.Distributed;
+    using Microsoft.Extensions.Caching.Hybrid;
+    using Microsoft.Extensions.Caching.Memory;
+    using Microsoft.Extensions.DependencyInjection;
+... (truncated)
 ```
 
 ### 6. 6-concurrency-thread-safety
@@ -205,6 +381,11 @@ Trace how this feature behaves when things go wrong:
 **Prompt:**
 
 ```
+IMPORTANT: All relevant source files are included below as code blocks.
+Analyze ONLY the provided code to answer the question.
+Do NOT use tools to read, search, or explore files.
+When referencing code, use filename:lineNumber range (e.g., MyService.cs:42-58) instead of pasting code snippets.
+
 You are an expert code archaeologist. Given the feature **hybridcache**, trace every line of code in this repository that is linked to this feature. Do not summarize — be exhaustive. Your goal is to produce a complete map that a developer could use to fully understand and safely modify this feature.
 
 **CRITICAL INSTRUCTION**: For every class, interface, or method you identify, follow ALL references to it. If a factory creates an object, trace what that object does. If a map or dictionary is populated at startup, show what reads from it at runtime. If a custom converter or serializer exists, show exactly where and how it is registered, resolved, and invoked. Do not stop at the surface — trace the full chain until you reach the leaf behavior.
@@ -220,6 +401,34 @@ Analyze how this feature behaves under concurrent access:
 - **Deadlock risk** — any nested lock acquisitions or `async` calls inside locks that could deadlock. Flag these explicitly.
 
 
+
+---
+SOURCE FILES (76 files):
+
+### src\Common\Common\UnitTest\HybridCacheFactoryTests.cs
+```csharp
+//-------------------------------------------------------------------------------
+// <copyright file="HybridCacheFactoryTests.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+//-------------------------------------------------------------------------------
+
+namespace Microsoft.AzureStack.Services.Update.Common.UnitTest
+{
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Threading;
+    using System;
+    using System.Threading.Tasks;
+    using Caching;
+    using FluentAssertions;
+    using Microsoft.AzureStack.Services.Update.Common.Serialization;
+    using Microsoft.Extensions.Caching.Distributed;
+    using Microsoft.Extensions.Caching.Hybrid;
+    using Microsoft.Extensions.Caching.Memory;
+    using Microsoft.Extensions.DependencyInjection;
+    using VisualS
+... (truncated)
 ```
 
 ### 7. 7-messaging-event-driven-behavior
@@ -235,6 +444,11 @@ Analyze how this feature behaves under concurrent access:
 **Prompt:**
 
 ```
+IMPORTANT: All relevant source files are included below as code blocks.
+Analyze ONLY the provided code to answer the question.
+Do NOT use tools to read, search, or explore files.
+When referencing code, use filename:lineNumber range (e.g., MyService.cs:42-58) instead of pasting code snippets.
+
 You are an expert code archaeologist. Given the feature **hybridcache**, trace every line of code in this repository that is linked to this feature. Do not summarize — be exhaustive. Your goal is to produce a complete map that a developer could use to fully understand and safely modify this feature.
 
 **CRITICAL INSTRUCTION**: For every class, interface, or method you identify, follow ALL references to it. If a factory creates an object, trace what that object does. If a map or dictionary is populated at startup, show what reads from it at runtime. If a custom converter or serializer exists, show exactly where and how it is registered, resolved, and invoked. Do not stop at the surface — trace the full chain until you reach the leaf behavior.
@@ -250,6 +464,40 @@ If this feature participates in any messaging or event-driven patterns, trace th
 - **If none exist** — explicitly state that no messaging or pub/sub patterns were found for this feature.
 
 
+
+---
+SOURCE FILES (76 files):
+
+### src\Common\Common\UnitTest\HybridCacheFactoryTests.cs
+```csharp
+//-------------------------------------------------------------------------------
+// <copyright file="HybridCacheFactoryTests.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+//-------------------------------------------------------------------------------
+
+namespace Microsoft.AzureStack.Services.Update.Common.UnitTest
+{
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Threading;
+    using System;
+    using System.Threading.Tasks;
+    using Caching;
+    using FluentAssertions;
+    using Microsoft.AzureStack.Services.Update.Common.Serialization;
+    using Microsoft.Extensions.Caching.Distributed;
+    using Microsoft.Extensions.Caching.Hybrid;
+    using Microsoft.Extensions.Caching.Memory;
+    using Microsoft.Extensions.DependencyInjection;
+    using VisualStudio.TestTools.UnitTesting;
+
+    [TestClass]
+    public class HybridCacheFactoryTests
+    {
+        private FakeTime clock;
+        private IMemoryCache m
+... (truncated)
 ```
 
 ### 8. 8-observability
@@ -265,6 +513,11 @@ If this feature participates in any messaging or event-driven patterns, trace th
 **Prompt:**
 
 ```
+IMPORTANT: All relevant source files are included below as code blocks.
+Analyze ONLY the provided code to answer the question.
+Do NOT use tools to read, search, or explore files.
+When referencing code, use filename:lineNumber range (e.g., MyService.cs:42-58) instead of pasting code snippets.
+
 You are an expert code archaeologist. Given the feature **hybridcache**, trace every line of code in this repository that is linked to this feature. Do not summarize — be exhaustive. Your goal is to produce a complete map that a developer could use to fully understand and safely modify this feature.
 
 **CRITICAL INSTRUCTION**: For every class, interface, or method you identify, follow ALL references to it. If a factory creates an object, trace what that object does. If a map or dictionary is populated at startup, show what reads from it at runtime. If a custom converter or serializer exists, show exactly where and how it is registered, resolved, and invoked. Do not stop at the surface — trace the full chain until you reach the leaf behavior.
@@ -278,6 +531,42 @@ You are an expert code archaeologist. Given the feature **hybridcache**, trace e
 - **Gaps** — identify failure paths, slow paths, or key decision points that are NOT observable (no logging, no metrics, no tracing).
 
 
+
+---
+SOURCE FILES (76 files):
+
+### src\Common\Common\UnitTest\HybridCacheFactoryTests.cs
+```csharp
+//-------------------------------------------------------------------------------
+// <copyright file="HybridCacheFactoryTests.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+//-------------------------------------------------------------------------------
+
+namespace Microsoft.AzureStack.Services.Update.Common.UnitTest
+{
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Threading;
+    using System;
+    using System.Threading.Tasks;
+    using Caching;
+    using FluentAssertions;
+    using Microsoft.AzureStack.Services.Update.Common.Serialization;
+    using Microsoft.Extensions.Caching.Distributed;
+    using Microsoft.Extensions.Caching.Hybrid;
+    using Microsoft.Extensions.Caching.Memory;
+    using Microsoft.Extensions.DependencyInjection;
+    using VisualStudio.TestTools.UnitTesting;
+
+    [TestClass]
+    public class HybridCacheFactoryTests
+    {
+        private FakeTime clock;
+        private IMemoryCache memoryCache;
+        private IDistributedCache fileCache;
+ 
+... (truncated)
 ```
 
 ### 9. 9-performance
@@ -293,6 +582,11 @@ You are an expert code archaeologist. Given the feature **hybridcache**, trace e
 **Prompt:**
 
 ```
+IMPORTANT: All relevant source files are included below as code blocks.
+Analyze ONLY the provided code to answer the question.
+Do NOT use tools to read, search, or explore files.
+When referencing code, use filename:lineNumber range (e.g., MyService.cs:42-58) instead of pasting code snippets.
+
 You are an expert code archaeologist. Given the feature **hybridcache**, trace every line of code in this repository that is linked to this feature. Do not summarize — be exhaustive. Your goal is to produce a complete map that a developer could use to fully understand and safely modify this feature.
 
 **CRITICAL INSTRUCTION**: For every class, interface, or method you identify, follow ALL references to it. If a factory creates an object, trace what that object does. If a map or dictionary is populated at startup, show what reads from it at runtime. If a custom converter or serializer exists, show exactly where and how it is registered, resolved, and invoked. Do not stop at the surface — trace the full chain until you reach the leaf behavior.
@@ -308,6 +602,37 @@ Analyze the performance characteristics of this feature:
 - **Lazy vs. eager initialization** — are expensive resources initialized on first use or at startup? What is the cold-start impact?
 
 
+
+---
+SOURCE FILES (76 files):
+
+### src\Common\Common\UnitTest\HybridCacheFactoryTests.cs
+```csharp
+//-------------------------------------------------------------------------------
+// <copyright file="HybridCacheFactoryTests.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+//-------------------------------------------------------------------------------
+
+namespace Microsoft.AzureStack.Services.Update.Common.UnitTest
+{
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Threading;
+    using System;
+    using System.Threading.Tasks;
+    using Caching;
+    using FluentAssertions;
+    using Microsoft.AzureStack.Services.Update.Common.Serialization;
+    using Microsoft.Extensions.Caching.Distributed;
+    using Microsoft.Extensions.Caching.Hybrid;
+    using Microsoft.Extensions.Caching.Memory;
+    using Microsoft.Extensions.DependencyInjection;
+    using VisualStudio.TestTools.UnitTesting;
+
+    [TestClass]
+    public cl
+... (truncated)
 ```
 
 ### 10. 10-cross-cutting-concerns
@@ -323,6 +648,11 @@ Analyze the performance characteristics of this feature:
 **Prompt:**
 
 ```
+IMPORTANT: All relevant source files are included below as code blocks.
+Analyze ONLY the provided code to answer the question.
+Do NOT use tools to read, search, or explore files.
+When referencing code, use filename:lineNumber range (e.g., MyService.cs:42-58) instead of pasting code snippets.
+
 You are an expert code archaeologist. Given the feature **hybridcache**, trace every line of code in this repository that is linked to this feature. Do not summarize — be exhaustive. Your goal is to produce a complete map that a developer could use to fully understand and safely modify this feature.
 
 **CRITICAL INSTRUCTION**: For every class, interface, or method you identify, follow ALL references to it. If a factory creates an object, trace what that object does. If a map or dictionary is populated at startup, show what reads from it at runtime. If a custom converter or serializer exists, show exactly where and how it is registered, resolved, and invoked. Do not stop at the surface — trace the full chain until you reach the leaf behavior.
@@ -333,6 +663,56 @@ You are an expert code archaeologist. Given the feature **hybridcache**, trace e
 - **Authorization** — permission checks, policy enforcement on endpoints or services.
 
 
+
+---
+SOURCE FILES (76 files):
+
+### src\Common\Common\UnitTest\HybridCacheFactoryTests.cs
+```csharp
+//-------------------------------------------------------------------------------
+// <copyright file="HybridCacheFactoryTests.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+//-------------------------------------------------------------------------------
+
+namespace Microsoft.AzureStack.Services.Update.Common.UnitTest
+{
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Threading;
+    using System;
+    using System.Threading.Tasks;
+    using Caching;
+    using FluentAssertions;
+    using Microsoft.AzureStack.Services.Update.Common.Serialization;
+    using Microsoft.Extensions.Caching.Distributed;
+    using Microsoft.Extensions.Caching.Hybrid;
+    using Microsoft.Extensions.Caching.Memory;
+    using Microsoft.Extensions.DependencyInjection;
+    using VisualStudio.TestTools.UnitTesting;
+
+    [TestClass]
+    public class HybridCacheFactoryTests
+    {
+        private FakeTime clock;
+        private IMemoryCache memoryCache;
+        private IDistributedCache fileCache;
+        private HybridCache innerCache;
+
+        public TestContext TestContext { get; set; }
+
+        [TestInitialize]
+        public void Initialize()
+        {
+            var services = new ServiceCollection();
+            this.clock = new FakeTime();
+            var globalSettings = CacheSettings.GetCacheSettings(new Dictionary<string, string>());
+            this.memoryCache = new MemoryCache(
+                new MemoryCacheOptions
+                {
+                    Clock = clock,
+                    SizeLimit = globa
+... (truncated)
 ```
 
 ### 11. 11-testing
@@ -348,6 +728,11 @@ You are an expert code archaeologist. Given the feature **hybridcache**, trace e
 **Prompt:**
 
 ```
+IMPORTANT: All relevant source files are included below as code blocks.
+Analyze ONLY the provided code to answer the question.
+Do NOT use tools to read, search, or explore files.
+When referencing code, use filename:lineNumber range (e.g., MyService.cs:42-58) instead of pasting code snippets.
+
 You are an expert code archaeologist. Given the feature **hybridcache**, trace every line of code in this repository that is linked to this feature. Do not summarize — be exhaustive. Your goal is to produce a complete map that a developer could use to fully understand and safely modify this feature.
 
 **CRITICAL INSTRUCTION**: For every class, interface, or method you identify, follow ALL references to it. If a factory creates an object, trace what that object does. If a map or dictionary is populated at startup, show what reads from it at runtime. If a custom converter or serializer exists, show exactly where and how it is registered, resolved, and invoked. Do not stop at the surface — trace the full chain until you reach the leaf behavior.
@@ -359,28 +744,184 @@ You are an expert code archaeologist. Given the feature **hybridcache**, trace e
 - **Test gaps** — components or code paths identified above that have NO test coverage.
 
 
+
+---
+SOURCE FILES (76 files):
+
+### src\Common\Common\UnitTest\HybridCacheFactoryTests.cs
+```csharp
+//-------------------------------------------------------------------------------
+// <copyright file="HybridCacheFactoryTests.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+//-------------------------------------------------------------------------------
+
+namespace Microsoft.AzureStack.Services.Update.Common.UnitTest
+{
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Threading;
+    using System;
+    using System.Threading.Tasks;
+    using Caching;
+    using FluentAssertions;
+    using Microsoft.AzureStack.Services.Update.Common.Serialization;
+    using Microsoft.Extensions.Caching.Distributed;
+    using Microsoft.Extensions.Caching.Hybrid;
+    using Microsoft.Extensions.Caching.Memory;
+    using Microsoft.Extensions.DependencyInjection;
+    using VisualStudio.TestTools.UnitTesting;
+
+    [TestClass]
+    public class HybridCacheFactoryTests
+    {
+        private FakeTime clock;
+        private IMemoryCache memoryCache;
+        private IDistributedCache fileCache;
+        private HybridCache innerCache;
+
+        public TestContext TestContext { get; set; }
+
+        [TestInitialize]
+        public void Initialize()
+        {
+            var services = new ServiceCollection();
+            this.clock = new FakeTime();
+            var globalSettings = CacheSettings.GetCacheSettings(new Dictionary<st
+... (truncated)
+```
+
+### 12. synthesis
+
+| Property | Value |
+|----------|-------|
+| **Type** | GeneralPurpose |
+| **Model** | claude-opus-4.6 |
+| **Depends On** | 1-registration-wiring, 2-serialization-type-handling, 3-storage-persistence-layers, 4-runtime-behavior-data-flow, 5-resilience-failure-handling, 6-concurrency-thread-safety, 7-messaging-event-driven-behavior, 8-observability, 9-performance, 10-cross-cutting-concerns, 11-testing |
+| **Description** | Combine all section analyses into comprehensive document with TOC |
+| **Status** | ⏳ Pending |
+
+**Prompt:**
+
+```
+You are given the results of detailed code analysis sections. Combine them into a single comprehensive document.
+
+Requirements:
+1. Start with a Table of Contents listing all sections
+2. Include ALL content from each section, preserving ## headers
+3. Ensure cross-references between sections are consistent
+4. Do not add new analysis — only organize and present what was provided
+
+Section results:
+
+--- 1-registration-wiring ---
+{result:1-registration-wiring}
+
+--- 2-serialization-type-handling ---
+{result:2-serialization-type-handling}
+
+--- 3-storage-persistence-layers ---
+{result:3-storage-persistence-layers}
+
+--- 4-runtime-behavior-data-flow ---
+{result:4-runtime-behavior-data-flow}
+
+--- 5-resilience-failure-handling ---
+{result:5-resilience-failure-handling}
+
+--- 6-concurrency-thread-safety ---
+{result:6-concurrency-thread-safety}
+
+--- 7-messaging-event-driven-behavior ---
+{result:7-messaging-event-driven-behavior}
+
+--- 8-observability ---
+{result:8-observability}
+
+--- 9-performance ---
+{result:9-performance}
+
+--- 10-cross-cutting-concerns ---
+{result:10-cross-cutting-concerns}
+
+--- 11-testing ---
+{result:11-testing}
+
+```
+
+### 13. distill
+
+| Property | Value |
+|----------|-------|
+| **Type** | GeneralPurpose |
+| **Model** | claude-opus-4.6 |
+| **Depends On** | synthesis |
+| **Description** | Produce knowledge graph (Mermaid) and context document |
+| **Status** | ⏳ Pending |
+
+**Prompt:**
+
+```
+You are given a comprehensive feature analysis document. Produce exactly two sections
+with the headers shown below. Output ONLY these two sections, no preamble.
+
+## Knowledge Graph
+
+Generate a Mermaid diagram capturing every component discovered in the analysis:
+- Nodes: classes, interfaces, factories, maps/registries, serializers, converters,
+  config classes, endpoints, test classes, external dependencies
+- Edges: implements, creates, resolves-from, populates, reads-from, serializes-with,
+  persists-to, calls, tests, configures, publishes, subscribes, retries, falls-back-to,
+  locks, observes
+- Subgraphs: group nodes by layer (Registration, Serialization, Storage, Runtime,
+  Resilience, Concurrency, Messaging, Observability, Testing)
+
+Follow the diagram with a prose summary of the end-to-end feature lifecycle.
+
+## Context Document
+
+Produce a concise, self-contained reference document (under 4000 words) that a developer
+or AI agent could use as system-prompt context to understand and safely modify this feature.
+Include:
+- Architecture overview and end-to-end lifecycle
+- Key components and relationships (DI registrations, factories, configuration)
+- Non-obvious wiring (factory maps, custom serializer resolution, multi-layer caching)
+- Critical invariants and constraints that must be preserved
+- Where to add new functionality and what registrations must be updated
+- Concurrency and thread-safety requirements
+- Error handling and resilience patterns
+- Test coverage and known gaps
+
+Use specific class names, method names, and file paths. Write it as a reference document,
+not a narrative summary.
+
+---
+ANALYSIS DOCUMENT:
+{result:synthesis}
 ```
 
 ## Execution Results
 
-**Completed:** 2026-02-09 03:26:53 UTC
-**Total Wall Clock:** 461.2s
-**Succeeded:** 11 / 11
+**Completed:** 2026-02-09 04:34:35 UTC
+**Total Wall Clock:** 692.6s
+**Succeeded:** 13 / 13
 
 | Status | Agent | Model | Duration | In Tokens | Out Tokens |
 |--------|-------|-------|----------|-----------|------------|
-| ✅ | 1-registration-wiring | claude-opus-4.6 | 250.3s | 1,260,669 | 13,966 |
-| ✅ | 2-serialization-type-handling | claude-opus-4.6 | 223.6s | 1,003,567 | 12,557 |
-| ✅ | 3-storage-persistence-layers | claude-opus-4.6 | 279.1s | 1,755,844 | 14,458 |
-| ✅ | 4-runtime-behavior-data-flow | claude-opus-4.6 | 275.3s | 865,168 | 18,396 |
-| ✅ | 5-resilience-failure-handling | claude-opus-4.6 | 181.4s | 596,149 | 10,450 |
-| ✅ | 6-concurrency-thread-safety | claude-opus-4.6 | 180.1s | 495,750 | 9,724 |
-| ✅ | 7-messaging-event-driven-behavior | claude-opus-4.6 | 122.0s | 362,034 | 6,395 |
-| ✅ | 8-observability | claude-opus-4.6 | 194.3s | 626,125 | 11,416 |
-| ✅ | 9-performance | claude-opus-4.6 | 184.6s | 621,350 | 9,720 |
-| ✅ | 10-cross-cutting-concerns | claude-opus-4.6 | 216.6s | 1,176,298 | 10,475 |
-| ✅ | 11-testing | claude-opus-4.6 | 201.3s | 1,044,143 | 11,078 |
+| ✅ | 1-registration-wiring | claude-opus-4.6 | 258.7s | 53,017 | 15,368 |
+| ✅ | 2-serialization-type-handling | claude-opus-4.6 | 87.1s | 52,954 | 4,569 |
+| ✅ | 3-storage-persistence-layers | claude-opus-4.6 | 177.5s | 52,966 | 10,228 |
+| ✅ | 4-runtime-behavior-data-flow | claude-opus-4.6 | 170.7s | 52,897 | 9,584 |
+| ✅ | 5-resilience-failure-handling | claude-opus-4.6 | 128.1s | 52,957 | 6,180 |
+| ✅ | 6-concurrency-thread-safety | claude-opus-4.6 | 111.0s | 52,965 | 5,511 |
+| ✅ | 7-messaging-event-driven-behavior | claude-opus-4.6 | 93.2s | 52,921 | 5,246 |
+| ✅ | 8-observability | claude-opus-4.6 | 100.5s | 52,925 | 6,114 |
+| ✅ | 9-performance | claude-opus-4.6 | 90.7s | 52,933 | 4,400 |
+| ✅ | 10-cross-cutting-concerns | claude-opus-4.6 | 85.6s | 52,792 | 4,300 |
+| ✅ | 11-testing | claude-opus-4.6 | 98.4s | 52,826 | 5,340 |
+| ✅ | synthesis | claude-opus-4.6 | 276.9s | 70,676 | 16,000 |
+| ✅ | distill | claude-opus-4.6 | 119.6s | 30,910 | 6,186 |
 
-**Total Tokens:** 9,807,097 in → 128,635 out
+**Total Tokens:** 683,739 in → 99,026 out
 
 

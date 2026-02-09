@@ -1,0 +1,27 @@
+## Table of Contents
+
+1. [Interface Hierarchy](#1-interface-hierarchy)
+2. [Core Implementation: `DefaultHybridCache<T>`](#2-core-implementation-defaulthybridcachet)
+3. [Factory: `HybridCacheFactory`](#3-factory-hybridcachefactory)
+4. [Extension: `HybridCacheOptionExtensions`](#4-extension-hybridcacheoptionextensions)
+5. [DI Registration & Wiring Chain](#5-di-registration--wiring-chain)
+6. [Configuration Model](#6-configuration-model)
+7. [Runtime Data Flow](#7-runtime-data-flow)
+8. [Consumer: `AutoCacheECEResult<T>`](#8-consumer-autocacheeceresultt)
+9. [Consumer: `BufferedECEClient`](#9-consumer-bufferedececlient)
+10. [Mock / Test Implementations](#10-mock--test-implementations)
+11. [Test Coverage Map](#11-test-coverage-map)
+12. [Cross-Cutting Dependencies](#12-cross-cutting-dependencies)
+13. [Complete Dependency Graph](#13-complete-dependency-graph)
+14. [Serialization & Type Handling](#14-serialization--type-handling)
+15. [Storage & Persistence Layers](#15-storage--persistence-layers)
+16. [Runtime Behavior & Data Flow](#16-runtime-behavior--data-flow)
+17. [Resilience & Failure Handling](#17-resilience--failure-handling)
+18. [Concurrency & Thread Safety](#18-concurrency--thread-safety)
+19. [Messaging & Event-Driven Behavior](#19-messaging--event-driven-behavior)
+20. [Observability](#20-observability)
+21. [Performance](#21-performance)
+22. [Cross-Cutting Concerns: Validation & Authorization](#22-cross-cutting-concerns-validation--authorization)
+23. [Testing](#23-testing)
+
+---

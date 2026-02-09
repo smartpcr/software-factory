@@ -232,11 +232,11 @@ public class AgentOrchestratorTests
     // ── Wave parallelism (no semaphore throttle) ────────────
 
     [TestMethod]
-    public async Task WaveExecution_AllAgentsInWaveStartInParallel_NotThrottledByMaxConcurrency()
+    public async Task WaveExecution_MaxConcurrencyThrottlesWithinWave()
     {
-        // Arrange: 10 agents in W1 (no deps), MaxConcurrency = 3 (deliberately small).
-        // If a semaphore were applied within the wave, only 3 would run at once.
-        // After the fix, all 10 should run simultaneously.
+        // Arrange: 10 agents in W1 (no deps), MaxConcurrency = 3.
+        // Peak concurrency should be capped at MaxConcurrency, not wave size.
+        // All 10 agents should still complete — they just run 3 at a time.
         const int waveSize = 10;
         const int maxConcurrency = 3;
 
@@ -263,8 +263,8 @@ public class AgentOrchestratorTests
                 }
             }
 
-            // Simulate work — long enough for all agents to start
-            await System.Threading.Tasks.Task.Delay(200, ct);
+            // Simulate work — long enough for concurrency to be measured
+            await System.Threading.Tasks.Task.Delay(50, ct);
 
             lock (concurrencyLock)
             {
@@ -301,9 +301,9 @@ public class AgentOrchestratorTests
         // Act
         var result = await orchestrator.RunAsync(agents, cancellationToken: CancellationToken.None);
 
-        // Assert: peak concurrency should equal wave size (10), NOT MaxConcurrency (3)
-        peakConcurrency.Should().Be(waveSize,
-            $"all {waveSize} agents in W1 should run in parallel, not throttled to MaxConcurrency={maxConcurrency}");
+        // Assert: peak concurrency should be capped at MaxConcurrency
+        peakConcurrency.Should().BeLessOrEqualTo(maxConcurrency,
+            $"peak concurrency should not exceed MaxConcurrency={maxConcurrency}");
         result.AgentResults.Should().HaveCount(waveSize + 1);
         result.SuccessCount.Should().Be(waveSize + 1);
     }

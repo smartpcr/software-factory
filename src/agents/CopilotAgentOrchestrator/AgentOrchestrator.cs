@@ -250,16 +250,23 @@ public class AgentOrchestrator : IAsyncDisposable
         // Detect cycles via topological sort
         var sortedWaves = TopologicalSort(agents);
 
-        // Execute wave by wave: all agents within a wave run in parallel (no throttle).
-        // The wave structure itself provides the scheduling boundary — agents in later
-        // waves wait for their dependencies, so no semaphore is needed within a wave.
+        // Execute wave by wave with concurrency limiting within each wave.
+        // Agents in later waves wait for their dependencies to complete first.
+        using var semaphore = new SemaphoreSlim(this.config.MaxConcurrency);
         foreach (var wave in sortedWaves)
         {
             var waveTasks = wave.Select(async agent =>
             {
-                // Inject predecessor results into prompt via {result:agent-id} placeholders
-                var resolvedAgent = this.ResolvePromptPlaceholders(agent, completedResults);
-                return await this.ExecuteSingleAgentAsync(resolvedAgent, cancellationToken);
+                await semaphore.WaitAsync(cancellationToken);
+                try
+                {
+                    var resolvedAgent = this.ResolvePromptPlaceholders(agent, completedResults);
+                    return await this.ExecuteSingleAgentAsync(resolvedAgent, cancellationToken);
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
             }).ToList();
 
             AgentResult[] waveResults;
@@ -432,7 +439,8 @@ public class AgentOrchestrator : IAsyncDisposable
         var outputTokens = 0;
         var cacheReadTokens = 0;
         var cacheWriteTokens = 0;
-        var responseBuilder = new System.Text.StringBuilder();
+        var currentBlock = new System.Text.StringBuilder();
+        var messageBlocks = new List<string>();
         var done = new TaskCompletionSource();
 
         try
@@ -455,21 +463,34 @@ public class AgentOrchestrator : IAsyncDisposable
 
             await this.TrackSessionAsync(session);
 
-            // Subscribe to events for token tracking
+            // Subscribe to events for token tracking.
+            // Collect text in blocks separated by AssistantMessageEvent boundaries.
+            // When the model uses tools, it produces multiple text blocks:
+            // narration ("Let me read...") → tool call → analysis text → tool call → ...
+            // We collect all blocks and pick the best one at the end.
             subscription = session.On(evt =>
             {
                 switch (evt)
                 {
                     case AssistantMessageDeltaEvent delta:
-                        responseBuilder.Append(delta.Data.DeltaContent);
+                        currentBlock.Append(delta.Data.DeltaContent);
                         break;
 
                     case AssistantMessageEvent msg:
-                        if (responseBuilder.Length == 0 && !string.IsNullOrEmpty(msg.Data.Content))
+                        // End of a complete message block — save it and start a new one.
+                        // If no deltas were received, use the full message content.
+                        if (currentBlock.Length == 0 && !string.IsNullOrEmpty(msg.Data.Content))
                         {
-                            responseBuilder.Append(msg.Data.Content);
+                            currentBlock.Append(msg.Data.Content);
                         }
 
+                        var blockText = currentBlock.ToString().Trim();
+                        if (!string.IsNullOrEmpty(blockText))
+                        {
+                            messageBlocks.Add(blockText);
+                        }
+
+                        currentBlock.Clear();
                         break;
 
                     case AssistantUsageEvent usage:
@@ -484,6 +505,13 @@ public class AgentOrchestrator : IAsyncDisposable
                         break;
 
                     case SessionIdleEvent:
+                        // Flush any remaining content
+                        var remaining = currentBlock.ToString().Trim();
+                        if (!string.IsNullOrEmpty(remaining))
+                        {
+                            messageBlocks.Add(remaining);
+                        }
+
                         done.TrySetResult();
                         break;
 
@@ -541,7 +569,7 @@ public class AgentOrchestrator : IAsyncDisposable
                 };
             }
 
-            var content = responseBuilder.ToString();
+            var content = ExtractBestResponse(messageBlocks);
 
             progress.Status = "completed";
             return new AgentResult
@@ -680,6 +708,37 @@ public class AgentOrchestrator : IAsyncDisposable
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Extracts the full response from collected message blocks.
+    /// When the model uses tools, it produces multiple text blocks interleaved
+    /// with tool calls. We concatenate ALL blocks to preserve all analysis text.
+    /// Short narration blocks ("Let me read...", "Now I'll check...") are filtered
+    /// out when there are also substantial blocks present.
+    /// </summary>
+    private static string ExtractBestResponse(List<string> blocks)
+    {
+        if (blocks.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        if (blocks.Count == 1)
+        {
+            return blocks[0];
+        }
+
+        // If there are substantial blocks (≥200 chars), filter out short narration.
+        // Otherwise, keep everything.
+        const int narrationThreshold = 200;
+        var hasSubstantial = blocks.Any(b => b.Length >= narrationThreshold);
+
+        var filtered = hasSubstantial
+            ? blocks.Where(b => b.Length >= narrationThreshold).ToList()
+            : blocks;
+
+        return string.Join("\n\n", filtered);
     }
 
     private async Task TrackSessionAsync(CopilotSession session)

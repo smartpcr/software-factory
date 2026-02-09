@@ -1127,8 +1127,10 @@ public static class OrchestrationRunner
 
     /// <summary>
     /// Builds one subagent per ## section in the prompt. Each agent receives the preamble
-    /// (text before first ##) prepended to its section content, plus all discovered files
-    /// as attachments so the LLM can analyze code directly without tool calls.
+    /// (text before first ##) prepended to its section content, plus all discovered file
+    /// contents injected directly into the prompt as code blocks. This bypasses
+    /// FileAttachments (which may not prevent tool use) and guarantees the model
+    /// sees actual code in its context.
     /// </summary>
     private static List<SubAgentConfig> BuildSectionAgents(
         string prompt,
@@ -1161,10 +1163,14 @@ public static class OrchestrationRunner
             }
         }
 
+        // Read file contents and format as code blocks for injection into prompts.
+        // This guarantees the model sees actual code (not file paths) and produces text output.
+        var codeContext = ReadAndFormatFiles(discoveredFiles, repoPath);
+
         var agents = new List<SubAgentConfig>();
         foreach (var section in agentSections)
         {
-            var agentPrompt = string.IsNullOrEmpty(preamble)
+            var sectionPrompt = string.IsNullOrEmpty(preamble)
                 ? section.Content
                 : $"{preamble}\n\n{section.Content}";
 
@@ -1174,8 +1180,25 @@ public static class OrchestrationRunner
                 Description = section.Title,
                 AgentType = AgentType.GeneralPurpose,
                 Model = model,
-                Prompt = agentPrompt,
-                FileAttachments = discoveredFiles,
+                SystemPrompt = """
+                    You are a senior software engineer performing deep code analysis.
+                    All relevant source files are provided in the prompt below.
+                    Do NOT use any tools — everything you need is already in your context.
+                    Reference code by filename:lineNumber range (e.g., MyService.cs:42-58) instead of copying code blocks.
+                    Structure your output with clear ## headers and tables where appropriate.
+                    """,
+                Prompt = $"""
+                    IMPORTANT: All relevant source files are included below as code blocks.
+                    Analyze ONLY the provided code to answer the question.
+                    Do NOT use tools to read, search, or explore files.
+                    When referencing code, use filename:lineNumber range (e.g., MyService.cs:42-58) instead of pasting code snippets.
+
+                    {sectionPrompt}
+
+                    ---
+                    SOURCE FILES ({discoveredFiles.Count} files):
+                    {codeContext}
+                    """,
                 WorkingDirectory = repoPath,
                 DependsOn = null
             });
@@ -1208,6 +1231,7 @@ public static class OrchestrationRunner
             Description = "Combine all section analyses into comprehensive document with TOC",
             AgentType = AgentType.GeneralPurpose,
             Model = model,
+            SystemPrompt = "You are a synthesis agent. Combine the provided analysis sections into a single cohesive document. Do NOT use tools — all input is provided in the prompt.",
             Prompt = synthesisPrompt.ToString(),
             WorkingDirectory = repoPath,
             DependsOn = sectionIds
@@ -1220,6 +1244,7 @@ public static class OrchestrationRunner
             Description = "Produce knowledge graph (Mermaid) and context document",
             AgentType = AgentType.GeneralPurpose,
             Model = model,
+            SystemPrompt = "You are a distillation agent. Produce a knowledge graph and context document from the provided analysis. Do NOT use tools — all input is provided in the prompt.",
             Prompt = """
                 You are given a comprehensive feature analysis document. Produce exactly two sections
                 with the headers shown below. Output ONLY these two sections, no preamble.
@@ -1265,5 +1290,73 @@ public static class OrchestrationRunner
         AnsiConsole.MarkupLine(
             $"[green]📋 Built {sectionIds.Count} section agents + synthesis + distill (3 waves)[/]");
         return agents;
+    }
+
+    /// <summary>
+    /// Reads file contents and formats them as markdown code blocks for injection
+    /// into agent prompts. Caps total output at <paramref name="maxTotalChars"/> to
+    /// avoid context overflow. Files that exceed the remaining budget are truncated.
+    /// </summary>
+    private static string ReadAndFormatFiles(
+        List<string> files,
+        string repoPath,
+        int maxTotalChars = 150_000)
+    {
+        var sb = new StringBuilder();
+        var totalChars = 0;
+
+        foreach (var file in files)
+        {
+            if (totalChars >= maxTotalChars)
+            {
+                sb.AppendLine($"\n... ({files.Count - files.IndexOf(file)} files omitted — context limit reached)");
+                break;
+            }
+
+            string content;
+            try
+            {
+                content = File.ReadAllText(file);
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                continue;
+            }
+
+            var relativePath = Path.GetRelativePath(repoPath, file);
+            var ext = Path.GetExtension(file).TrimStart('.');
+            var lang = ext switch
+            {
+                "cs" => "csharp",
+                "json" => "json",
+                "xml" or "csproj" or "config" => "xml",
+                "yaml" or "yml" => "yaml",
+                _ => ext
+            };
+
+            // Truncate individual file if needed
+            var remaining = maxTotalChars - totalChars;
+            if (content.Length > remaining)
+            {
+                content = content[..remaining] + "\n// ... (file truncated)";
+            }
+
+            sb.AppendLine();
+            sb.AppendLine($"### {relativePath}");
+            sb.AppendLine($"```{lang}");
+            sb.AppendLine(content);
+            sb.AppendLine("```");
+
+            totalChars += content.Length;
+        }
+
+        AnsiConsole.MarkupLine(
+            $"[green]📄 Injected {totalChars:N0} chars of source code into prompts[/]");
+        return sb.ToString();
     }
 }
