@@ -4,6 +4,7 @@
     <OutputType>Exe</OutputType>
     <IsTestProject>false</IsTestProject>
     <StartupObject>Chat.Program</StartupObject>
+    <IsPackable>true</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
