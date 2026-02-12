@@ -79,6 +79,24 @@ jobs:
             --output ./packages \
             -p:ContinuousIntegrationBuild=true
 
+      - name: Pack NuGet package CopilotAgentOrchestrator
+        if: matrix.configuration == 'Release' && matrix.os == 'ubuntu-latest'
+        run: |
+          dotnet pack src/agents/CopilotAgentOrchestrator/CopilotAgentOrchestrator.csproj \
+            --configuration Release \
+            --no-build \
+            --output ./packages \
+            -p:ContinuousIntegrationBuild=true
+
+      - name: Pack NuGet package CopilotChat
+        if: matrix.configuration == 'Release' && matrix.os == 'ubuntu-latest'
+        run: |
+          dotnet pack src/agents/CopilotChat/CopilotChat.csproj \
+            --configuration Release \
+            --no-build \
+            --output ./packages \
+            -p:ContinuousIntegrationBuild=true
+
       - name: List packages
         if: matrix.configuration == 'Release' && matrix.os == 'ubuntu-latest'
         run: find ./packages -maxdepth 1 -name '*.nupkg' -print

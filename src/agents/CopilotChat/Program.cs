@@ -4,9 +4,9 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-namespace Chat;
+namespace CopilotChat;
 
-using Chat.Helpers;
+using CopilotChat.Helpers;
 using CommandLine;
 using GitHub.Copilot.SDK;
 using Microsoft.Extensions.Configuration;

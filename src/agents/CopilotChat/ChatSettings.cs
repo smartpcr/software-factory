@@ -4,7 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-namespace Chat;
+namespace CopilotChat;
 
 /// <summary>
 /// Configuration settings for the Chat application.

@@ -4,7 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-namespace Chat.Helpers;
+namespace CopilotChat.Helpers;
 
 using System.Diagnostics;
 using GitHub.Copilot.SDK;

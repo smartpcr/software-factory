@@ -4,7 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-namespace Chat.Helpers;
+namespace CopilotChat.Helpers;
 
 using System.Text;
 using System.Text.RegularExpressions;

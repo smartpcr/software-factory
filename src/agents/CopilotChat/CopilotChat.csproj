@@ -2,8 +2,8 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <IsTestProject>false</IsTestProject>
-    <StartupObject>Chat.Program</StartupObject>
+    <IsPackable>true</IsPackable>
+    <StartupObject>CopilotChat.Program</StartupObject>
   </PropertyGroup>
 
   <ItemGroup>

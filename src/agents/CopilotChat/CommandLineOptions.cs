@@ -4,7 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-namespace Chat;
+namespace CopilotChat;
 
 using CommandLine;
 
