@@ -44,4 +44,24 @@ public class CommandLineOptions
     [Option('l', "list-models", Required = false, HelpText = "Print all available models and exit.")]
     public bool ListModels { get; set; }
 
+    /// <summary>
+    /// Gets or sets a direct prompt string for non-interactive execution.
+    /// When set, sends the prompt, prints the response, and exits.
+    /// </summary>
+    [Option("prompt", Required = false, HelpText = "Direct prompt string. Runs non-interactively: sends prompt, prints response, exits.")]
+    public string? Prompt { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to suppress banner and UI output.
+    /// Only the final response text is printed to stdout.
+    /// </summary>
+    [Option('s', "silent", Required = false, HelpText = "Suppress banner/UI. Output only the response text (for scripting/piping).")]
+    public bool Silent { get; set; }
+
+    /// <summary>
+    /// Gets or sets the output format for non-interactive mode.
+    /// </summary>
+    [Option("output-format", Required = false, Default = "text", HelpText = "Output format: text (default) or markdown.")]
+    public string OutputFormat { get; set; } = "text";
+
 }
