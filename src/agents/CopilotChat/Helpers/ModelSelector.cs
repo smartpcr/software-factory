@@ -3,7 +3,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-namespace Chat.Helpers;
+namespace CopilotChat.Helpers;
 
 using GitHub.Copilot.SDK;
 using Spectre.Console;

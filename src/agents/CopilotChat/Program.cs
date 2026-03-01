@@ -4,9 +4,9 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-namespace Chat;
+namespace CopilotChat;
 
-using Chat.Helpers;
+using CopilotChat.Helpers;
 using CommandLine;
 using GitHub.Copilot.SDK;
 using Microsoft.Extensions.Configuration;
@@ -29,10 +29,13 @@ public class Program
         // ============================================================
         var settings = LoadSettings(args);
 
-        AnsiConsole.Write(
-            new FigletText("Copilot Chat")
-                .LeftJustified()
-                .Color(Color.Cyan1));
+        if (!settings.Silent)
+        {
+            AnsiConsole.Write(
+                new FigletText("Copilot Chat")
+                    .LeftJustified()
+                    .Color(Color.Cyan1));
+        }
 
         // ============================================================
         // Step 1: Check if Copilot CLI is installed and user is authenticated
@@ -43,8 +46,12 @@ public class Program
 
         if (!CliChecker.IsReady(copilotStatus))
         {
-            AnsiConsole.MarkupLine("[yellow]Press any key to exit...[/]");
-            Console.ReadKey(true);
+            if (!settings.Silent)
+            {
+                AnsiConsole.MarkupLine("[yellow]Press any key to exit...[/]");
+                Console.ReadKey(true);
+            }
+
             return;
         }
 
@@ -150,6 +157,75 @@ public class Program
                 PrintMetrics(chatResponse);
                 OutputWriter.SaveQuestionOutput(chatResponse.Text, selectedModel, selected.Slug);
                 return;
+            }
+
+            // ============================================================
+            // Non-interactive mode: run a direct prompt string
+            // ============================================================
+            if (!string.IsNullOrWhiteSpace(settings.Prompt))
+            {
+                var prompt = ResolvePlaceholders(settings.Prompt, settings.Params);
+                if (prompt == null)
+                {
+                    return;
+                }
+
+                if (!settings.Silent)
+                {
+                    AnsiConsole.MarkupLine($"[cyan]Prompt:[/] {Markup.Escape(prompt.Length > 200 ? prompt[..200] + "..." : prompt)}\n");
+                }
+
+                var chatResponse = await OrchestrationRunner.RunOrchestratedAsync(
+                    client, prompt, selectedModel, settings.RepoPath,
+                    modelName: selectedModel);
+
+                if (settings.Silent)
+                {
+                    // In silent mode, output only the response text to stdout
+                    Console.Write(chatResponse.Text);
+                }
+                else
+                {
+                    PrintMetrics(chatResponse);
+                }
+
+                return;
+            }
+
+            // ============================================================
+            // Non-interactive mode: read prompt from stdin (piped input)
+            // ============================================================
+            if (Console.IsInputRedirected)
+            {
+                var stdinPrompt = await Console.In.ReadToEndAsync();
+                if (!string.IsNullOrWhiteSpace(stdinPrompt))
+                {
+                    var prompt = ResolvePlaceholders(stdinPrompt.Trim(), settings.Params);
+                    if (prompt == null)
+                    {
+                        return;
+                    }
+
+                    if (!settings.Silent)
+                    {
+                        AnsiConsole.MarkupLine($"[cyan]Stdin prompt:[/] {Markup.Escape(prompt.Length > 200 ? prompt[..200] + "..." : prompt)}\n");
+                    }
+
+                    var chatResponse = await OrchestrationRunner.RunOrchestratedAsync(
+                        client, prompt, selectedModel, settings.RepoPath,
+                        modelName: selectedModel);
+
+                    if (settings.Silent)
+                    {
+                        Console.Write(chatResponse.Text);
+                    }
+                    else
+                    {
+                        PrintMetrics(chatResponse);
+                    }
+
+                    return;
+                }
             }
 
             // Show demo prompts and repo questions
@@ -468,6 +544,21 @@ public class Program
                 if (opts.ListModels)
                 {
                     settings.ListModels = true;
+                }
+
+                if (!string.IsNullOrWhiteSpace(opts.Prompt))
+                {
+                    settings.Prompt = opts.Prompt;
+                }
+
+                if (opts.Silent)
+                {
+                    settings.Silent = true;
+                }
+
+                if (!string.IsNullOrWhiteSpace(opts.OutputFormat))
+                {
+                    settings.OutputFormat = opts.OutputFormat;
                 }
             });
 

@@ -92,6 +92,13 @@ Features are in `src/EtwIngest/Features/*.feature` with corresponding:
 
 Tests assume a local Kusto instance (Kustainer) at `http://172.24.102.61:8080` with volume mounts from `c:\kustodata`.
 
+## Error Handling
+
+### File/Path Permission Errors
+When encountering "Access is denied" or permission errors on file paths, **do not stop or fail**. Instead:
+- Log or report the error, then **continue** with the remaining work.
+- Permission errors on paths outside this repository are non-fatal and should be skipped gracefully.
+
 ## Platform Considerations
 
 - **Target Platform**: Windows-only (RuntimeIdentifier: win-x64)

@@ -4,7 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-namespace Chat;
+namespace CopilotChat;
 
 /// <summary>
 /// Configuration settings for the Chat application.
@@ -40,5 +40,23 @@ public class ChatSettings
     /// Gets or sets a value indicating whether to list available models and exit.
     /// </summary>
     public bool ListModels { get; set; }
+
+    /// <summary>
+    /// Gets or sets a direct prompt string for non-interactive execution.
+    /// When set, sends the prompt, prints the response, and exits.
+    /// </summary>
+    public string? Prompt { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to suppress banner and UI output.
+    /// Only the final response text is printed to stdout.
+    /// </summary>
+    public bool Silent { get; set; }
+
+    /// <summary>
+    /// Gets or sets the output format for non-interactive mode.
+    /// Values: "text" (default), "markdown".
+    /// </summary>
+    public string OutputFormat { get; set; } = "text";
 
 }

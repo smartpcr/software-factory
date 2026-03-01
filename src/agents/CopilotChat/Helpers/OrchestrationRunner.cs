@@ -4,7 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-namespace Chat.Helpers;
+namespace CopilotChat.Helpers;
 
 using System.Text;
 using System.Text.Json;
@@ -1213,9 +1213,11 @@ public static class OrchestrationRunner
         synthesisPrompt.AppendLine();
         synthesisPrompt.AppendLine("Requirements:");
         synthesisPrompt.AppendLine("1. Start with a Table of Contents listing all sections");
-        synthesisPrompt.AppendLine("2. Include ALL content from each section, preserving ## headers");
-        synthesisPrompt.AppendLine("3. Ensure cross-references between sections are consistent");
-        synthesisPrompt.AppendLine("4. Do not add new analysis — only organize and present what was provided");
+        synthesisPrompt.AppendLine("2. Merge and deduplicate content across sections — do NOT repeat the same information verbatim from multiple sections");
+        synthesisPrompt.AppendLine("3. Preserve ## headers and key details, but summarize redundant or overlapping content");
+        synthesisPrompt.AppendLine("4. Ensure cross-references between sections are consistent");
+        synthesisPrompt.AppendLine("5. Do not add new analysis — only organize and present what was provided");
+        synthesisPrompt.AppendLine("6. Target output length: aim for a concise document under 20,000 words. Prioritize clarity over completeness");
         synthesisPrompt.AppendLine();
         synthesisPrompt.AppendLine("Section results:");
         foreach (var id in sectionIds)
@@ -1231,8 +1233,9 @@ public static class OrchestrationRunner
             Description = "Combine all section analyses into comprehensive document with TOC",
             AgentType = AgentType.GeneralPurpose,
             Model = model,
-            SystemPrompt = "You are a synthesis agent. Combine the provided analysis sections into a single cohesive document. Do NOT use tools — all input is provided in the prompt.",
+            SystemPrompt = "You are a synthesis agent. Combine the provided analysis sections into a single cohesive document. Do NOT use tools — all input is provided in the prompt. Be concise: merge overlapping content rather than repeating it.",
             Prompt = synthesisPrompt.ToString(),
+            Timeout = TimeSpan.FromMinutes(45),
             WorkingDirectory = repoPath,
             DependsOn = sectionIds
         });
