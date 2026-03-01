@@ -162,6 +162,10 @@ dotnet run --project src/agents/Chat/Chat.csproj -- -q 3 -p feature="hybridcache
 # Multiple parameters (for future questions with multiple placeholders)
 dotnet run --project src/agents/Chat/Chat.csproj -- -q 3 -p feature="ETW parsing" -p component=Parser
 
+dotnet run --project src/agents/Chat/Chat.csproj -- -q 3 -r e:\work\hci\update -m claude-opus-4.6 -p feature="hybridcache"
+
+
+
 # Via appsettings.json (edit src/agents/Chat/appsettings.json)
 {
   "Chat": {
