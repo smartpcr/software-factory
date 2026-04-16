@@ -50,7 +50,7 @@ namespace EtwIngest.Features
         {
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.ClassCleanupAttribute(Microsoft.VisualStudio.TestTools.UnitTesting.ClassCleanupBehavior.EndOfClass)]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.ClassCleanupAttribute()]
         public static async global::System.Threading.Tasks.Task FeatureTearDownAsync()
         {
             await global::Reqnroll.TestRunnerManager.ReleaseFeatureAsync(featureInfo);
@@ -121,7 +121,7 @@ namespace EtwIngest.Features
             return new global::Reqnroll.Formatters.RuntimeSupport.FeatureLevelCucumberMessages("Features/Unzip.feature.ndjson", 4);
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute("Extract zip files")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Extract zip files")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Extract zip files")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Unzip")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("unzip")]
@@ -157,7 +157,7 @@ namespace EtwIngest.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute("Extract hci logs")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Extract hci logs")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Extract hci logs")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Unzip")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("unzip")]

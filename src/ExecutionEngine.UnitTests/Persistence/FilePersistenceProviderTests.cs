@@ -268,19 +268,19 @@ public class FilePersistenceProviderTests
         var context = new WorkflowExecutionContext { WorkflowId = "validation-test" };
 
         // Act & Assert - null checkpoint ID
-        await Assert.ThrowsExceptionAsync<ArgumentException>(async () =>
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
         {
             await this.provider!.SaveCheckpointAsync(string.Empty, context.InstanceId, context, new List<NodeInstance>());
         });
 
         // Act & Assert - null context
-        await Assert.ThrowsExceptionAsync<ArgumentNullException>(async () =>
+        await Assert.ThrowsExactlyAsync<ArgumentNullException>(async () =>
         {
             await this.provider!.SaveCheckpointAsync("test", context.InstanceId, null!, new List<NodeInstance>());
         });
 
         // Act & Assert - null node instances
-        await Assert.ThrowsExceptionAsync<ArgumentNullException>(async () =>
+        await Assert.ThrowsExactlyAsync<ArgumentNullException>(async () =>
         {
             await this.provider!.SaveCheckpointAsync("test", context.InstanceId, context, null!);
         });
@@ -390,7 +390,7 @@ public class FilePersistenceProviderTests
         await File.WriteAllTextAsync(filePath, "{ this is not valid JSON }");
 
         // Act & Assert
-        await Assert.ThrowsExceptionAsync<System.Text.Json.JsonException>(async () =>
+        await Assert.ThrowsExactlyAsync<System.Text.Json.JsonException>(async () =>
         {
             await this.provider!.LoadCheckpointAsync(checkpointId);
         });
@@ -530,7 +530,7 @@ public class FilePersistenceProviderTests
     public async Task LoadNonExistentCheckpoint_ThrowsFileNotFoundException()
     {
         // Act & Assert
-        await Assert.ThrowsExceptionAsync<FileNotFoundException>(async () =>
+        await Assert.ThrowsExactlyAsync<FileNotFoundException>(async () =>
         {
             await this.provider!.LoadCheckpointAsync("does-not-exist");
         });

@@ -55,6 +55,10 @@
     <PackageReference Include="Serilog.Sinks.Console" />
     <!-- Exclude Reqnroll.MsTest to avoid auto-generated AssemblyInitialize conflict -->
     <PackageReference Update="Reqnroll.MsTest" ExcludeAssets="All" />
+    <PackageReference Update="coverlet.collector">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
   </ItemGroup>
 
 </Project>

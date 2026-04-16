@@ -91,7 +91,7 @@ namespace EtwIngest.Steps
             var files = Directory.GetFiles(outputFolder, $"*.{fileExt}", SearchOption.AllDirectories);
             files.Should().NotBeNullOrEmpty();
             var fileNames = files.Select(Path.GetFileName).ToList();
-            fileNames.Count.Should().BeGreaterOrEqualTo(table.Rows.Count);
+            fileNames.Count.Should().BeGreaterThanOrEqualTo(table.Rows.Count);
 
             foreach (var row in table.Rows)
             {

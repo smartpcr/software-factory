@@ -127,7 +127,7 @@ namespace EtwIngest.Steps
         public void ThenIShouldSeeFollowingEtlKustoTables(Table table)
         {
             var etlKustoTableNames = this.context.Get<ConcurrentBag<string>>("etlKustoTableNames");
-            etlKustoTableNames.Count.Should().BeGreaterOrEqualTo(table.Rows.Count);
+            etlKustoTableNames.Count.Should().BeGreaterThanOrEqualTo(table.Rows.Count);
 
             foreach (var row in table.Rows)
             {
@@ -236,7 +236,7 @@ namespace EtwIngest.Steps
             var csvFiles = Directory.GetFiles(csvFolder, "*.csv", SearchOption.TopDirectoryOnly)
                 .Select(Path.GetFileName).ToList();
             csvFiles.Should().NotBeNullOrEmpty();
-            csvFiles.Count.Should().BeGreaterOrEqualTo(table.Rows.Count);
+            csvFiles.Count.Should().BeGreaterThanOrEqualTo(table.Rows.Count);
 
             foreach (var row in table.Rows)
             {
@@ -452,7 +452,7 @@ namespace EtwIngest.Steps
         public void ThenTheFollowingKustoTablesShouldHaveAddedRecordsWithExpectedCounts(Table table)
         {
             var tableRecordCount = this.context.Get<Dictionary<string, long>>("tableRecordCount");
-            tableRecordCount.Count.Should().BeGreaterOrEqualTo(table.Rows.Count);
+            tableRecordCount.Count.Should().BeGreaterThanOrEqualTo(table.Rows.Count);
             foreach (var row in table.Rows)
             {
                 tableRecordCount.Should().ContainKey(row[0]);

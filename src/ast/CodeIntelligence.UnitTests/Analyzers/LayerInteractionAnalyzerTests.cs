@@ -93,7 +93,7 @@ public class OrdersController : ControllerBase
         var results = this.analyzer.AnalyzeInteractions(tree, "OrdersController.cs");
 
         results.Where(i => i.InteractionType == InteractionType.ConstructorInjection)
-            .Should().HaveCountGreaterOrEqualTo(2);
+            .Should().HaveCountGreaterThanOrEqualTo(2);
     }
 
     #endregion

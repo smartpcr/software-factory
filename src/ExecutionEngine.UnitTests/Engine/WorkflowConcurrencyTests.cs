@@ -68,7 +68,7 @@ public class WorkflowConcurrencyTests
 
         // Assert
         context.Status.Should().Be(WorkflowExecutionStatus.Completed);
-        maxConcurrent.Should().BeLessOrEqualTo(2);
+        maxConcurrent.Should().BeLessThanOrEqualTo(2);
     }
 
     [TestMethod]

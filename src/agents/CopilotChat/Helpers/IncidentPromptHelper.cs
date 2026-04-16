@@ -257,7 +257,6 @@ public class IncidentPromptHelper
     /// <summary>
     /// Generates the rca-generator prompt.
     /// </summary>
-    /// <param name="outputFile">Path to write the output file.</param>
     /// <returns>The resolved prompt string.</returns>
     public string GenerateRcaGeneratorPrompt()
     {

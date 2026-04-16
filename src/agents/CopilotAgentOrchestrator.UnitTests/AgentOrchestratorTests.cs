@@ -302,7 +302,7 @@ public class AgentOrchestratorTests
         var result = await orchestrator.RunAsync(agents, cancellationToken: CancellationToken.None);
 
         // Assert: peak concurrency should be capped at MaxConcurrency
-        peakConcurrency.Should().BeLessOrEqualTo(maxConcurrency,
+        peakConcurrency.Should().BeLessThanOrEqualTo(maxConcurrency,
             $"peak concurrency should not exceed MaxConcurrency={maxConcurrency}");
         result.AgentResults.Should().HaveCount(waveSize + 1);
         result.SuccessCount.Should().Be(waveSize + 1);

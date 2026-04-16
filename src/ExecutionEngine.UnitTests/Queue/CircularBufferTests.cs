@@ -556,7 +556,7 @@ public class CircularBufferTests
 
         // Assert
         enqueuedCount.Should().Be(100);
-        dequeuedCount.Should().BeLessOrEqualTo(100);
+        dequeuedCount.Should().BeLessThanOrEqualTo(100);
     }
 
     [TestMethod]

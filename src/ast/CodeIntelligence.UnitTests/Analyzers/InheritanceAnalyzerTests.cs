@@ -294,7 +294,7 @@ namespace Test
 
         // Assert
         // 3 declared types + 2 referenced types without namespace (IBase, BaseClass)
-        hierarchy.Types.Should().HaveCountGreaterOrEqualTo(3);
+        hierarchy.Types.Should().HaveCountGreaterThanOrEqualTo(3);
 
         var derivedNode = hierarchy.Types.First(t => t.Name == "DerivedClass");
         derivedNode.BaseType.Should().NotBeNull();

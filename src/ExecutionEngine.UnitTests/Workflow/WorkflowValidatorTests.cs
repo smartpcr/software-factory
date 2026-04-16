@@ -807,7 +807,7 @@ public class WorkflowValidatorTests
 
         // Assert
         result.IsValid.Should().BeFalse();
-        result.Errors.Should().HaveCountGreaterOrEqualTo(3);
+        result.Errors.Should().HaveCountGreaterThanOrEqualTo(3);
         result.Errors.Should().Contain(e => e.Contains("Either ScriptContent or ExecutorAssemblyPath/ExecutorTypeName must be provided"));
         result.Errors.Should().Contain(e => e.Contains("Script file  or script content not provided."));
         result.Errors.Should().Contain(e => e.Contains("Condition is required."));

@@ -392,7 +392,7 @@ public class E2EIntegrationTests
 
         // Verify results
         results.Should().NotBeEmpty();
-        results.Should().HaveCountLessOrEqualTo(5);
+        results.Should().HaveCountLessThanOrEqualTo(5);
         results.Should().BeInDescendingOrder(r => r.Score);
 
         logger.LogInformation("Semantic search returned {Count} results in {Duration}ms",
