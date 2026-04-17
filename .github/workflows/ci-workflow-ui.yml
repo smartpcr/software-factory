@@ -1,0 +1,253 @@
+name: CI — Workflow UI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ci-workflow-ui-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-dotnet:
+    name: Build (.NET)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: dotnet restore Workflow.sln
+      - run: dotnet build Workflow.sln -c Release -warnaserror --no-restore
+
+  test-dotnet:
+    name: Test (.NET)
+    needs: build-dotnet
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: dotnet restore Workflow.sln
+      - run: dotnet build Workflow.sln -c Release --no-restore
+
+      - name: Run contract tests
+        run: >-
+          dotnet test src/WorkflowUi.ContractTests/WorkflowUi.ContractTests.csproj
+          -c Release --no-build
+          --collect:"XPlat Code Coverage"
+          --results-directory ./TestResults
+          --logger "trx"
+          --blame-hang-timeout 5m
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-test-results
+          path: TestResults/
+
+  parity-enum:
+    name: Parity (EnumParity)
+    needs: build-dotnet
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: dotnet restore Workflow.sln
+      - run: dotnet build Workflow.sln -c Release --no-restore
+      - name: Enum parity gate
+        run: >-
+          dotnet test src/WorkflowUi.ContractTests/WorkflowUi.ContractTests.csproj
+          -c Release --no-build
+          --filter Category=EnumParity
+
+  parity-dto:
+    name: Parity (DtoParity)
+    needs: build-dotnet
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: dotnet restore Workflow.sln
+      - run: dotnet build Workflow.sln -c Release --no-restore
+      - name: DTO parity gate
+        run: >-
+          dotnet test src/WorkflowUi.ContractTests/WorkflowUi.ContractTests.csproj
+          -c Release --no-build
+          --filter Category=DtoParity
+
+  parity-yaml:
+    name: Parity (YamlRoundTrip)
+    needs: build-dotnet
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: dotnet restore Workflow.sln
+      - run: dotnet build Workflow.sln -c Release --no-restore
+      - name: YAML round-trip gate
+        run: >-
+          dotnet test src/WorkflowUi.ContractTests/WorkflowUi.ContractTests.csproj
+          -c Release --no-build
+          --filter Category=YamlRoundTrip
+
+  test-client:
+    name: Test (Client)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+        working-directory: client
+      - run: npm run lint
+        working-directory: client
+      - run: npm run format:check
+        working-directory: client
+      - run: npm run test:coverage
+        working-directory: client
+      - run: npm run build
+        working-directory: client
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-coverage
+          path: client/coverage/
+
+  coverage-gate:
+    name: Coverage gate
+    needs: [test-dotnet, test-client, parity-enum, parity-dto, parity-yaml]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download .NET coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: dotnet-test-results
+          path: TestResults/
+
+      - name: Download client coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: client-coverage
+          path: client/coverage/
+
+      - name: Verify .NET coverage artifact exists
+        run: |
+          if (!(Test-Path "TestResults")) {
+            Write-Error "Missing .NET coverage artifact"
+            exit 1
+          }
+          Write-Host ".NET coverage artifact present"
+
+      - name: Verify client coverage artifact exists
+        run: |
+          if (!(Test-Path "client/coverage/lcov.info")) {
+            Write-Error "Missing client lcov.info"
+            exit 1
+          }
+          Write-Host "Client lcov.info present"
+
+      - name: Verify generated files excluded from client coverage
+        run: |
+          $vitestConfig = Get-Content "client/vitest.config.ts" -Raw
+          if ($vitestConfig -notmatch "engine-contract.generated.ts") {
+            Write-Error "engine-contract.generated.ts must be excluded from coverage config"
+            exit 1
+          }
+          Write-Host "Generated files properly excluded from coverage"
+
+      - name: Enforce client coverage threshold (100% on new code)
+        run: |
+          $totalLines = 0
+          $hitLines = 0
+          $currentFile = ""
+          foreach ($line in (Get-Content "client/coverage/lcov.info")) {
+            if ($line -match "^SF:(.+)$") {
+              $currentFile = $Matches[1]
+            }
+            if ($currentFile -match "engine-contract\.generated\.ts") { continue }
+            if ($currentFile -match "main\.tsx") { continue }
+            if ($line -match "^LF:(\d+)$") { $totalLines += [int]$Matches[1] }
+            if ($line -match "^LH:(\d+)$") { $hitLines += [int]$Matches[1] }
+          }
+          if ($totalLines -eq 0) {
+            Write-Error "No coverable lines found in lcov.info"
+            exit 1
+          }
+          $pct = [math]::Round(($hitLines / $totalLines) * 100, 2)
+          Write-Host "Client coverage: $hitLines / $totalLines lines = $pct%"
+          if ($pct -lt 100) {
+            Write-Error "Client coverage $pct% is below 100% threshold"
+            exit 1
+          }
+          Write-Host "Client coverage gate PASSED"
+
+      - name: Enforce .NET coverage threshold (100% on new code)
+        run: |
+          # Scoped coverage: only enforce on src/WorkflowUi.Server and src/WorkflowUi.ContractTests
+          $requiredScopes = @("WorkflowUi.Server", "WorkflowUi.ContractTests")
+          $coverageFiles = Get-ChildItem -Path "TestResults" -Recurse -Filter "coverage.cobertura.xml" -ErrorAction SilentlyContinue
+          if ($coverageFiles.Count -eq 0) {
+            Write-Error "No Cobertura coverage files found — .NET coverage gate FAILED"
+            exit 1
+          }
+          $totalHits = 0
+          $totalLines = 0
+          $scopeFound = @{}
+          foreach ($file in $coverageFiles) {
+            [xml]$xml = Get-Content $file.FullName
+            foreach ($pkg in $xml.coverage.packages.package) {
+              $pkgName = $pkg.name
+              $matchedScope = $requiredScopes | Where-Object { $pkgName -like "*$_*" }
+              if (-not $matchedScope) { continue }
+              foreach ($scope in $matchedScope) { $scopeFound[$scope] = $true }
+              foreach ($cls in $pkg.classes.class) {
+                $fileName = $cls.filename
+                # Exclude generated files
+                if ($fileName -match "\.generated\.") { continue }
+                foreach ($line in $cls.lines.line) {
+                  $totalLines++
+                  if ([int]$line.hits -gt 0) { $totalHits++ }
+                }
+              }
+            }
+          }
+          # Verify all required scopes were found
+          foreach ($scope in $requiredScopes) {
+            if (-not $scopeFound.ContainsKey($scope)) {
+              Write-Error "Required coverage scope '$scope' not found in Cobertura report"
+              exit 1
+            }
+          }
+          if ($totalLines -eq 0) {
+            Write-Error "No coverable lines found in scoped packages — .NET coverage gate FAILED"
+            exit 1
+          }
+          $pct = [math]::Round(($totalHits / $totalLines) * 100, 2)
+          Write-Host ".NET scoped coverage ($($requiredScopes -join ', ')): $totalHits / $totalLines lines = $pct%"
+          if ($pct -lt 100) {
+            Write-Error ".NET scoped coverage $pct% is below 100% threshold"
+            exit 1
+          }
+          Write-Host ".NET coverage gate PASSED"

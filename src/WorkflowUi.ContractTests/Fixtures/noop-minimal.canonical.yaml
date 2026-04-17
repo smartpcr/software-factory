@@ -1,0 +1,45 @@
+WorkflowId: noop-minimal
+WorkflowName: Noop Minimal
+Description: A minimal 2-node Noop workflow for parity testing
+Version: 1.0
+Nodes:
+- runtimeType: Noop
+  NodeId: start
+  NodeName: Start
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+- runtimeType: Noop
+  NodeId: end
+  NodeName: End
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+Connections:
+- SourceNodeId: start
+  TargetNodeId: end
+  TriggerMessageType: Complete
+  Condition: null
+  IsEnabled: True
+  Metadata: null
+  Priority: 0
+  SourcePort: null
+  TargetPort: null
+Metadata: {}
+EntryPointNodeId: null
+MaxConcurrency: 0
+AllowPause: True
+TimeoutSeconds: 0
+DefaultVariables: null

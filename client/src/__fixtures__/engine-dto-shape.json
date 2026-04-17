@@ -1,0 +1,459 @@
+{
+  "$engineAssemblyVersion": "0.5.0.0",
+  "NodeDefinition": {
+    "properties": [
+      {
+        "name": "CircuitBreakerPolicy",
+        "type": "CircuitBreakerPolicy",
+        "nullable": true
+      },
+      {
+        "name": "CompensationNodeId",
+        "type": "String",
+        "nullable": true
+      },
+      {
+        "name": "Configuration",
+        "type": "Dictionary\u00602",
+        "nullable": true
+      },
+      {
+        "name": "Description",
+        "type": "String",
+        "nullable": true
+      },
+      {
+        "name": "FallbackNodeId",
+        "type": "String",
+        "nullable": true
+      },
+      {
+        "name": "JoinType",
+        "type": "JoinType",
+        "nullable": false
+      },
+      {
+        "name": "MaxConcurrentExecutions",
+        "type": "Int32",
+        "nullable": false
+      },
+      {
+        "name": "NodeId",
+        "type": "String",
+        "nullable": false
+      },
+      {
+        "name": "NodeName",
+        "type": "String",
+        "nullable": false
+      },
+      {
+        "name": "Priority",
+        "type": "NodePriority",
+        "nullable": false
+      },
+      {
+        "name": "RetryPolicy",
+        "type": "RetryPolicy",
+        "nullable": true
+      }
+    ]
+  },
+  "CSharpNodeDefinition": {
+    "baseOf": "NodeDefinition",
+    "properties": [
+      {
+        "name": "AssemblyPath",
+        "type": "String",
+        "nullable": true
+      },
+      {
+        "name": "RuntimeType",
+        "type": "RuntimeType",
+        "nullable": false
+      },
+      {
+        "name": "TypeName",
+        "type": "String",
+        "nullable": true
+      }
+    ]
+  },
+  "CSharpScriptNodeDefinition": {
+    "baseOf": "NodeDefinition",
+    "properties": [
+      {
+        "name": "RuntimeType",
+        "type": "RuntimeType",
+        "nullable": false
+      },
+      {
+        "name": "ScriptContent",
+        "type": "String",
+        "nullable": false
+      },
+      {
+        "name": "ScriptPath",
+        "type": "String",
+        "nullable": false
+      }
+    ]
+  },
+  "CSharpTaskNodeDefinition": {
+    "baseOf": "NodeDefinition",
+    "properties": [
+      {
+        "name": "ExecutorAssemblyPath",
+        "type": "String",
+        "nullable": true
+      },
+      {
+        "name": "ExecutorTypeName",
+        "type": "String",
+        "nullable": true
+      },
+      {
+        "name": "RuntimeType",
+        "type": "RuntimeType",
+        "nullable": false
+      },
+      {
+        "name": "ScriptContent",
+        "type": "String",
+        "nullable": true
+      }
+    ]
+  },
+  "ContainerNodeDefinition": {
+    "baseOf": "NodeDefinition",
+    "properties": [
+      {
+        "name": "ChildConnections",
+        "type": "List\u00601",
+        "nullable": true
+      },
+      {
+        "name": "ChildNodes",
+        "type": "List\u00601",
+        "nullable": true
+      },
+      {
+        "name": "ExecutionMode",
+        "type": "ExecutionMode",
+        "nullable": false
+      },
+      {
+        "name": "RuntimeType",
+        "type": "RuntimeType",
+        "nullable": false
+      }
+    ]
+  },
+  "ForEachNodeDefinition": {
+    "baseOf": "NodeDefinition",
+    "properties": [
+      {
+        "name": "CollectionExpression",
+        "type": "String",
+        "nullable": false
+      },
+      {
+        "name": "ItemVariableName",
+        "type": "String",
+        "nullable": false
+      },
+      {
+        "name": "RuntimeType",
+        "type": "RuntimeType",
+        "nullable": false
+      }
+    ]
+  },
+  "IfElseNodeDefinition": {
+    "baseOf": "NodeDefinition",
+    "properties": [
+      {
+        "name": "Condition",
+        "type": "String",
+        "nullable": false
+      },
+      {
+        "name": "RuntimeType",
+        "type": "RuntimeType",
+        "nullable": false
+      }
+    ]
+  },
+  "NoopNodeDefinition": {
+    "baseOf": "NodeDefinition",
+    "properties": [
+      {
+        "name": "RuntimeType",
+        "type": "RuntimeType",
+        "nullable": false
+      }
+    ]
+  },
+  "PowerShellScriptNodeDefinition": {
+    "baseOf": "NodeDefinition",
+    "properties": [
+      {
+        "name": "ModulePaths",
+        "type": "Dictionary\u00602",
+        "nullable": true
+      },
+      {
+        "name": "RequiredModules",
+        "type": "List\u00601",
+        "nullable": true
+      },
+      {
+        "name": "RuntimeType",
+        "type": "RuntimeType",
+        "nullable": false
+      },
+      {
+        "name": "ScriptPath",
+        "type": "String",
+        "nullable": false
+      }
+    ]
+  },
+  "PowerShellTaskNodeDefinition": {
+    "baseOf": "NodeDefinition",
+    "properties": [
+      {
+        "name": "ModulePaths",
+        "type": "Dictionary\u00602",
+        "nullable": true
+      },
+      {
+        "name": "RequiredModules",
+        "type": "List\u00601",
+        "nullable": true
+      },
+      {
+        "name": "RuntimeType",
+        "type": "RuntimeType",
+        "nullable": false
+      },
+      {
+        "name": "ScriptContent",
+        "type": "String",
+        "nullable": true
+      },
+      {
+        "name": "ScriptPath",
+        "type": "String",
+        "nullable": true
+      }
+    ]
+  },
+  "SubflowNodeDefinition": {
+    "baseOf": "NodeDefinition",
+    "properties": [
+      {
+        "name": "InputMappings",
+        "type": "Dictionary\u00602",
+        "nullable": false
+      },
+      {
+        "name": "OutputMappings",
+        "type": "Dictionary\u00602",
+        "nullable": false
+      },
+      {
+        "name": "RuntimeType",
+        "type": "RuntimeType",
+        "nullable": false
+      },
+      {
+        "name": "SkipValidation",
+        "type": "Boolean",
+        "nullable": false
+      },
+      {
+        "name": "Timeout",
+        "type": "TimeSpan",
+        "nullable": false
+      },
+      {
+        "name": "WorkflowDefinition",
+        "type": "WorkflowDefinition",
+        "nullable": true
+      },
+      {
+        "name": "WorkflowFilePath",
+        "type": "String",
+        "nullable": false
+      }
+    ]
+  },
+  "SwitchNodeDefinition": {
+    "baseOf": "NodeDefinition",
+    "properties": [
+      {
+        "name": "Cases",
+        "type": "Dictionary\u00602",
+        "nullable": false
+      },
+      {
+        "name": "Expression",
+        "type": "String",
+        "nullable": false
+      },
+      {
+        "name": "RuntimeType",
+        "type": "RuntimeType",
+        "nullable": false
+      }
+    ]
+  },
+  "TimerNodeDefinition": {
+    "baseOf": "NodeDefinition",
+    "properties": [
+      {
+        "name": "RuntimeType",
+        "type": "RuntimeType",
+        "nullable": false
+      },
+      {
+        "name": "Schedule",
+        "type": "String",
+        "nullable": false
+      }
+    ]
+  },
+  "WhileNodeDefinition": {
+    "baseOf": "NodeDefinition",
+    "properties": [
+      {
+        "name": "ConditionExpression",
+        "type": "String",
+        "nullable": false
+      },
+      {
+        "name": "MaxIterations",
+        "type": "Int32",
+        "nullable": false
+      },
+      {
+        "name": "RuntimeType",
+        "type": "RuntimeType",
+        "nullable": false
+      }
+    ]
+  },
+  "RetryPolicy": {
+    "properties": [
+      {
+        "name": "DoNotRetryOn",
+        "type": "List\u00601",
+        "nullable": false
+      },
+      {
+        "name": "InitialDelay",
+        "type": "TimeSpan",
+        "nullable": false
+      },
+      {
+        "name": "MaxAttempts",
+        "type": "Int32",
+        "nullable": false
+      },
+      {
+        "name": "MaxDelay",
+        "type": "TimeSpan",
+        "nullable": false
+      },
+      {
+        "name": "Multiplier",
+        "type": "Double",
+        "nullable": false
+      },
+      {
+        "name": "RetryOn",
+        "type": "List\u00601",
+        "nullable": false
+      },
+      {
+        "name": "Strategy",
+        "type": "RetryStrategy",
+        "nullable": false
+      }
+    ]
+  },
+  "CircuitBreakerPolicy": {
+    "properties": [
+      {
+        "name": "FailureThreshold",
+        "type": "Int32",
+        "nullable": false
+      },
+      {
+        "name": "HalfOpenSuccesses",
+        "type": "Int32",
+        "nullable": false
+      },
+      {
+        "name": "MinimumThroughput",
+        "type": "Int32",
+        "nullable": false
+      },
+      {
+        "name": "OpenDuration",
+        "type": "TimeSpan",
+        "nullable": false
+      }
+    ]
+  },
+  "NodeConnection": {
+    "properties": [
+      {
+        "name": "Condition",
+        "type": "String",
+        "nullable": true
+      },
+      {
+        "name": "IsEnabled",
+        "type": "Boolean",
+        "nullable": false
+      },
+      {
+        "name": "Metadata",
+        "type": "Dictionary\u00602",
+        "nullable": true
+      },
+      {
+        "name": "Priority",
+        "type": "Int32",
+        "nullable": false
+      },
+      {
+        "name": "SourceNodeId",
+        "type": "String",
+        "nullable": false
+      },
+      {
+        "name": "SourcePort",
+        "type": "String",
+        "nullable": true
+      },
+      {
+        "name": "TargetNodeId",
+        "type": "String",
+        "nullable": false
+      },
+      {
+        "name": "TargetPort",
+        "type": "String",
+        "nullable": true
+      },
+      {
+        "name": "TriggerMessageType",
+        "type": "MessageType",
+        "nullable": false
+      }
+    ]
+  }
+}
