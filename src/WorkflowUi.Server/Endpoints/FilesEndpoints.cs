@@ -123,9 +123,10 @@ public static class FilesEndpoints
             }
         }).WithName("DeleteFile");
 
-        // POST /api/files/duplicate/{id} — duplicate workflow
-        group.MapPost("/duplicate/{id}", async (
+        // POST /api/files/{id}/duplicate — duplicate workflow (with optional targetId + template placement)
+        group.MapPost("/{id}/duplicate", async (
             string id,
+            [FromBody] DuplicateRequest? request,
             IWorkflowStore store,
             IdGenerator idGen,
             ClaimsPrincipal user,
@@ -139,7 +140,20 @@ public static class FilesEndpoints
                     return Results.NotFound();
                 }
 
-                var newId = await idGen.GenerateUniqueIdAsync(id, user, ct);
+                string newId;
+                if (!string.IsNullOrEmpty(request?.TargetId))
+                {
+                    newId = request.TargetId;
+                }
+                else
+                {
+                    // Template placement: source under "templates/" → place copy at root
+                    var baseId = id.StartsWith("templates/", StringComparison.OrdinalIgnoreCase)
+                        ? id.Split('/')[^1]
+                        : id;
+                    newId = await idGen.GenerateUniqueIdAsync(baseId, user, ct);
+                }
+
                 var yaml = source.Yaml.Replace(id, newId);
                 await store.SaveAsync(newId, yaml, source.SidecarJson, null, user, ct);
                 return Results.Created($"/api/workflows/{newId}", new { id = newId });
@@ -258,3 +272,5 @@ public record CreateWorkflowRequest(string Id);
 public record RenameWorkflowRequest(string NewId);
 
 public record ExportRequest(string[] Ids);
+
+public record DuplicateRequest(string? TargetId);

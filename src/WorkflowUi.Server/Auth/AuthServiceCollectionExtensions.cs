@@ -7,9 +7,11 @@
 namespace WorkflowUi.Server.Auth;
 
 using System;
+using System.Net;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -20,6 +22,9 @@ using Microsoft.IdentityModel.Tokens;
 /// </summary>
 public static class AuthServiceCollectionExtensions
 {
+    /// <summary>Name of the policy scheme that routes between DevBypass and JwtBearer.</summary>
+    internal const string PolicySchemeName = "AutoSelect";
+
     public static IServiceCollection AddWorkflowUiAuth(
         this IServiceCollection services,
         IConfiguration configuration,
@@ -31,16 +36,16 @@ public static class AuthServiceCollectionExtensions
         var authOptions = new AuthOptions();
         authSection.Bind(authOptions);
 
-        // Use DevBypass as default scheme when in Development with AllowDevBypass=true
         var useDevBypass = isDevelopment && authOptions.AllowDevBypass;
 
-        services.AddAuthentication(options =>
+        var authBuilder = services.AddAuthentication(options =>
         {
             if (useDevBypass)
             {
-                options.DefaultScheme = DevBypassAuthenticationHandler.SchemeName;
-                options.DefaultAuthenticateScheme = DevBypassAuthenticationHandler.SchemeName;
-                options.DefaultChallengeScheme = DevBypassAuthenticationHandler.SchemeName;
+                // Policy scheme routes loopback → DevBypass, all else → JwtBearer
+                options.DefaultScheme = PolicySchemeName;
+                options.DefaultAuthenticateScheme = PolicySchemeName;
+                options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
             }
             else
             {
@@ -79,6 +84,23 @@ public static class AuthServiceCollectionExtensions
         })
         .AddScheme<AuthenticationSchemeOptions, DevBypassAuthenticationHandler>(
             DevBypassAuthenticationHandler.SchemeName, _ => { });
+
+        if (useDevBypass)
+        {
+            authBuilder.AddPolicyScheme(PolicySchemeName, PolicySchemeName, options =>
+            {
+                options.ForwardDefaultSelector = context =>
+                {
+                    var remoteIp = context.Connection.RemoteIpAddress;
+                    if (remoteIp != null && IPAddress.IsLoopback(remoteIp))
+                    {
+                        return DevBypassAuthenticationHandler.SchemeName;
+                    }
+
+                    return JwtBearerDefaults.AuthenticationScheme;
+                };
+            });
+        }
 
         services.AddAuthorization(options =>
         {

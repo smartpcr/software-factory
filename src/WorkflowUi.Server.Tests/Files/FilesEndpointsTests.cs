@@ -57,7 +57,59 @@ public class FilesEndpointsTests : IClassFixture<TestWebApplicationFactory>
     [Fact]
     public async Task Duplicate_NonExistent_Returns404()
     {
-        var response = await this.client.PostAsync("/api/files/duplicate/nonexistent-dup-12345", null);
+        var response = await this.client.PostAsJsonAsync(
+            "/api/files/nonexistent-dup-12345/duplicate",
+            new DuplicateRequest(null));
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Duplicate_ExistingWorkflow_Returns201()
+    {
+        var srcId = "dup-src-" + Guid.NewGuid().ToString("N")[..8];
+        await this.client.PostAsJsonAsync("/api/files", new CreateWorkflowRequest(srcId));
+
+        var response = await this.client.PostAsJsonAsync(
+            $"/api/files/{srcId}/duplicate",
+            new DuplicateRequest(null));
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Duplicate_WithExplicitTargetId_Uses_TargetId()
+    {
+        var srcId = "dup-src2-" + Guid.NewGuid().ToString("N")[..8];
+        var targetId = "explicit-target-" + Guid.NewGuid().ToString("N")[..8];
+        await this.client.PostAsJsonAsync("/api/files", new CreateWorkflowRequest(srcId));
+
+        var response = await this.client.PostAsJsonAsync(
+            $"/api/files/{srcId}/duplicate",
+            new DuplicateRequest(targetId));
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        var getResp = await this.client.GetAsync($"/api/workflows/{targetId}");
+        Assert.Equal(HttpStatusCode.OK, getResp.StatusCode);
+    }
+
+    [Fact]
+    public async Task ExportImport_RoundTrip()
+    {
+        var wfId = "exp-" + Guid.NewGuid().ToString("N")[..8];
+        await this.client.PostAsJsonAsync("/api/files", new CreateWorkflowRequest(wfId));
+
+        // Export
+        var exportResp = await this.client.PostAsJsonAsync(
+            "/api/files/export",
+            new ExportRequest(new[] { wfId }));
+        Assert.Equal(HttpStatusCode.OK, exportResp.StatusCode);
+
+        var zipBytes = await exportResp.Content.ReadAsByteArrayAsync();
+        Assert.True(zipBytes.Length > 0);
+
+        // Import
+        var importContent = new ByteArrayContent(zipBytes);
+        importContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+        var importResp = await this.client.PostAsync("/api/files/import", importContent);
+        Assert.Equal(HttpStatusCode.OK, importResp.StatusCode);
     }
 }
