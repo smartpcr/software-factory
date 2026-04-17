@@ -12,7 +12,7 @@ import { whileNodeSchema } from './node-while.schema';
 import { switchNodeSchema } from './node-switch.schema';
 import { timerNodeSchema } from './node-timer.schema';
 import { nodeConnectionSchema } from './node-connection.schema';
-import type { RuntimeType } from '../engine-contract.generated';
+import type { RuntimeType } from '../engine-contract';
 
 // Subflow schema — uses z.lazy to break recursion
 const workflowDefinitionSchema: z.ZodType = z.lazy(() =>

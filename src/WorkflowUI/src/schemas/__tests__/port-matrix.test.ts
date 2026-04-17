@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { outgoingPortMatrix, incomingPortMatrix, classifyOutgoing } from '../port-matrix';
-import type { RuntimeType } from '../../engine-contract.generated';
+import type { RuntimeType } from '../../engine-contract';
 import portMatrixFixture from '../../__fixtures__/port-matrix.json';
 import enumFixture from '../../__fixtures__/engine-enums.json';
 

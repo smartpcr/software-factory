@@ -137,7 +137,7 @@ namespace EtwIngest.Features
             return new global::Reqnroll.Formatters.RuntimeSupport.FeatureLevelCucumberMessages("Features/EtwIngest.feature.ndjson", 8);
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="extract etl file")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 13, DisplayName="extract etl file")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("extract etl file")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "EtwIngest")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("parser")]
@@ -210,7 +210,7 @@ namespace EtwIngest.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="infer kusto schema")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 30, DisplayName="infer kusto schema")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("infer kusto schema")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "EtwIngest")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("schema")]
@@ -307,7 +307,7 @@ namespace EtwIngest.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="ensure kusto table")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 50, DisplayName="ensure kusto table")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("ensure kusto table")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "EtwIngest")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("schema")]
@@ -411,7 +411,7 @@ namespace EtwIngest.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="extract etl file to csv file")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 72, DisplayName="extract etl file to csv file")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("extract etl file to csv file")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "EtwIngest")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("extract")]
@@ -478,7 +478,7 @@ namespace EtwIngest.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="ingest etl files into kusto")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 90, DisplayName="ingest etl files into kusto")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("ingest etl files into kusto")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "EtwIngest")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("ingest")]
@@ -612,7 +612,7 @@ namespace EtwIngest.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="ingest a large etl files into kusto")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 135, DisplayName="ingest a large etl files into kusto")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("ingest a large etl files into kusto")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "EtwIngest")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("ingest")]

@@ -15,13 +15,13 @@ describe('nodeBaseSchema', () => {
   it('parses retry fixture', () => {
     const result = nodeBaseSchema.parse(retryFixture);
     expect(result.retryPolicy).not.toBeNull();
-    expect(result.retryPolicy!.strategy).toBe('Fixed');
+    expect(result.retryPolicy?.strategy).toBe('Fixed');
   });
 
   it('parses circuit breaker fixture', () => {
     const result = nodeBaseSchema.parse(cbFixture);
     expect(result.circuitBreakerPolicy).not.toBeNull();
-    expect(result.circuitBreakerPolicy!.failureThreshold).toBe(50);
+    expect(result.circuitBreakerPolicy?.failureThreshold).toBe(50);
   });
 
   it('parses null policies fixture', () => {

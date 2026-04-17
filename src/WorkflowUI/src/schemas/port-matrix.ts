@@ -1,4 +1,4 @@
-import type { RuntimeType, MessageType } from '../engine-contract.generated';
+import type { RuntimeType, MessageType } from '../engine-contract';
 
 export interface PortEntry {
   messageType: MessageType;

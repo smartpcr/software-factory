@@ -121,7 +121,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             return new global::Reqnroll.Formatters.RuntimeSupport.FeatureLevelCucumberMessages("Features/ErrorHandling.feature.ndjson", 16);
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Node execution failure")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 7, DisplayName="Node execution failure")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Node execution failure")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Error Handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -182,7 +182,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Retry policy execution")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 20, DisplayName="Retry policy execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Retry policy execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Error Handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -240,7 +240,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Retry exhausted triggers failure")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 32, DisplayName="Retry exhausted triggers failure")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Retry exhausted triggers failure")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Error Handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -290,7 +290,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Circuit breaker pattern")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 42, DisplayName="Circuit breaker pattern")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Circuit breaker pattern")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Error Handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -348,7 +348,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Compensation transaction execution")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 54, DisplayName="Compensation transaction execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Compensation transaction execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Error Handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -407,7 +407,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Workflow timeout")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 67, DisplayName="Workflow timeout")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Workflow timeout")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Error Handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -459,7 +459,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Graceful degradation with fallback nodes")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 77, DisplayName="Graceful degradation with fallback nodes")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Graceful degradation with fallback nodes")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Error Handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -509,7 +509,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Dead letter queue threshold alerts")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 87, DisplayName="Dead letter queue threshold alerts")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Dead letter queue threshold alerts")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Error Handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -556,7 +556,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Partial workflow recovery")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 96, DisplayName="Partial workflow recovery")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Partial workflow recovery")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Error Handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -603,7 +603,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Exception details preserved")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 105, DisplayName="Exception details preserved")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Exception details preserved")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Error Handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -650,7 +650,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Cascading failure prevention")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 114, DisplayName="Cascading failure prevention")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Cascading failure prevention")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Error Handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -697,7 +697,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Timeout on individual node")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 123, DisplayName="Timeout on individual node")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Timeout on individual node")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Error Handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -744,7 +744,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Retry with exponential backoff")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 132, DisplayName="Retry with exponential backoff")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Retry with exponential backoff")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Error Handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -796,7 +796,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Selective retry based on exception type")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 142, DisplayName="Selective retry based on exception type")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Selective retry based on exception type")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Error Handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]

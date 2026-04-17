@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { nodeDtoSchema, handleNode } from '../node-union';
+import type { RuntimeType } from '../../engine-contract';
 import fixture from '../../__fixtures__/node-union.all-13-kinds.json';
 import enumFixture from '../../__fixtures__/engine-enums.json';
 
@@ -118,32 +119,36 @@ describe('handleNode', () => {
   });
 
   it('dispatches all 13 kinds correctly', () => {
+    const allKinds: RuntimeType[] = [
+      'Noop','CSharp','CSharpScript','CSharpTask','PowerShell','PowerShellTask',
+      'IfElse','ForEach','While','Switch','Subflow','Timer','Container',
+    ];
     const handlers = Object.fromEntries(
-      ['Noop','CSharp','CSharpScript','CSharpTask','PowerShell','PowerShellTask',
-       'IfElse','ForEach','While','Switch','Subflow','Timer','Container'].map(
-        (k) => [k, () => k],
-      ),
-    ) as Record<string, () => string>;
+      allKinds.map((k) => [k, () => k]),
+    ) as { [K in RuntimeType]: (node: { runtimeType: K }) => string };
 
-    for (const kind of ['Noop','CSharp','CSharpScript','CSharpTask','PowerShell',
-      'PowerShellTask','IfElse','ForEach','While','Switch','Subflow','Timer','Container']) {
-      expect(handleNode({ runtimeType: kind as any }, handlers as any)).toBe(kind);
+    for (const kind of allKinds) {
+      expect(handleNode({ runtimeType: kind }, handlers)).toBe(kind);
     }
   });
 
   it('returns typed result', () => {
+    const allKinds: RuntimeType[] = [
+      'Noop','CSharp','CSharpScript','CSharpTask','PowerShell','PowerShellTask',
+      'IfElse','ForEach','While','Switch','Subflow','Timer','Container',
+    ];
     const handlers = Object.fromEntries(
-      ['Noop','CSharp','CSharpScript','CSharpTask','PowerShell','PowerShellTask',
-       'IfElse','ForEach','While','Switch','Subflow','Timer','Container'].map(
-        (k) => [k, () => 42],
-      ),
-    ) as Record<string, () => number>;
-    expect(handleNode({ runtimeType: 'CSharp' }, handlers as any)).toBe(42);
+      allKinds.map((k) => [k, () => 42]),
+    ) as { [K in RuntimeType]: (node: { runtimeType: K }) => number };
+    expect(handleNode({ runtimeType: 'CSharp' }, handlers)).toBe(42);
   });
 
   it('throws on unhandled runtime type at runtime', () => {
     expect(() =>
-      handleNode({ runtimeType: 'Mystery' as any }, {} as any),
+      handleNode(
+        { runtimeType: 'Mystery' as RuntimeType },
+        {} as { [K in RuntimeType]: (node: { runtimeType: K }) => string },
+      ),
     ).toThrow('Unhandled runtime type');
   });
 });

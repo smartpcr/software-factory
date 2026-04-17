@@ -121,7 +121,7 @@ namespace EtwIngest.Features
             return new global::Reqnroll.Formatters.RuntimeSupport.FeatureLevelCucumberMessages("Features/Unzip.feature.ndjson", 4);
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Extract zip files")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 7, DisplayName="Extract zip files")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Extract zip files")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Unzip")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("unzip")]
@@ -157,7 +157,7 @@ namespace EtwIngest.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Extract hci logs")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 13, DisplayName="Extract hci logs")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Extract hci logs")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Unzip")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("unzip")]

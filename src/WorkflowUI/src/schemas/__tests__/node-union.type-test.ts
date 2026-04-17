@@ -1,4 +1,4 @@
-import type { RuntimeType } from '../../engine-contract.generated';
+import type { RuntimeType } from '../../engine-contract';
 import { handleNode } from '../node-union';
 
 // This file is a compile-time type test.

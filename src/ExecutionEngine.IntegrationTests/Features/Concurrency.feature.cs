@@ -121,7 +121,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             return new global::Reqnroll.Formatters.RuntimeSupport.FeatureLevelCucumberMessages("Features/Concurrency.feature.ndjson", 12);
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Concurrent node execution")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 7, DisplayName="Concurrent node execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Concurrent node execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Concurrency")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -188,7 +188,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Workflow concurrency limit")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 22, DisplayName="Workflow concurrency limit")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Workflow concurrency limit")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Concurrency")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -241,7 +241,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Node throttling")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 33, DisplayName="Node throttling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Node throttling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Concurrency")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -291,7 +291,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Priority based execution")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 43, DisplayName="Priority based execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Priority based execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Concurrency")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -365,7 +365,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Thread-safe state access")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 61, DisplayName="Thread-safe state access")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Thread-safe state access")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Concurrency")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -418,7 +418,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Parallel branches with synchronization point")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 72, DisplayName="Parallel branches with synchronization point")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Parallel branches with synchronization point")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Concurrency")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -474,7 +474,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="High concurrent load stress test")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 84, DisplayName="High concurrent load stress test")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("High concurrent load stress test")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Concurrency")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -529,7 +529,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Concurrent ForEach iterations")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 95, DisplayName="Concurrent ForEach iterations")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Concurrent ForEach iterations")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Concurrency")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -582,7 +582,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Deadlock prevention with circular dependencies")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 106, DisplayName="Deadlock prevention with circular dependencies")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Deadlock prevention with circular dependencies")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Concurrency")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -632,7 +632,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Graceful degradation under resource pressure")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 116, DisplayName="Graceful degradation under resource pressure")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Graceful degradation under resource pressure")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Concurrency")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
