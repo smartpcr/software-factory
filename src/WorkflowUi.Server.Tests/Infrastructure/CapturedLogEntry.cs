@@ -101,10 +101,33 @@ public sealed class CapturingLoggerProvider : ILoggerProvider
                 scopeSnapshot.ToList(),
                 stateItems));
 
-            // Forward to ITestOutputHelper sink if attached
+            // Forward to ITestOutputHelper sink if attached, including structured fields
             try
             {
-                this.provider.outputHelper?.WriteLine($"[{logLevel}] {this.categoryName}: {message}");
+                var helper = this.provider.outputHelper;
+                if (helper is not null)
+                {
+                    var sb = new System.Text.StringBuilder();
+                    sb.Append($"[{logLevel}] {this.categoryName}: {message}");
+
+                    // Append scope fields (e.g. correlationId, method, path)
+                    if (scopeSnapshot.Count > 0)
+                    {
+                        sb.Append(" | scope: {");
+                        sb.Append(string.Join(", ", scopeSnapshot.Select(kv => $"{kv.Key}={kv.Value}")));
+                        sb.Append('}');
+                    }
+
+                    // Append state fields (e.g. StatusCode, ElapsedMs)
+                    if (stateItems.Count > 0)
+                    {
+                        sb.Append(" | state: {");
+                        sb.Append(string.Join(", ", stateItems.Select(kv => $"{kv.Key}={kv.Value}")));
+                        sb.Append('}');
+                    }
+
+                    helper.WriteLine(sb.ToString());
+                }
             }
             catch (InvalidOperationException)
             {
