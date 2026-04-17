@@ -7,6 +7,7 @@ import {
   type Node as RFNode,
   type Edge as RFEdge,
   type EdgeMouseHandler,
+  type Connection,
   ReactFlowProvider,
   BackgroundVariant,
 } from '@xyflow/react';
@@ -19,7 +20,8 @@ import { nodeTypes } from './nodeTypes';
 import { edgeTypes } from './edgeTypes';
 import { useConnectionCreation } from './useConnectionCreation';
 import { EdgePopover } from '../edges/EdgePopover';
-import type { NodeConnectionDto } from '../../engine-contract';
+import type { NodeConnectionDto, NodeDto } from '../../engine-contract';
+import { validateConnection } from '../validation/connectionRules';
 
 export interface WorkflowCanvasProps {
   showMiniMap?: boolean;
@@ -33,6 +35,7 @@ export function WorkflowCanvas({
   const nodes = useGraphStore((s) => s.nodes);
   const connections = useGraphStore((s) => s.connections);
   const sidecarMeta = useGraphStore((s) => s.sidecarMeta);
+  const addConnection = useGraphStore((s) => s.addConnection);
   const removeConnection = useGraphStore((s) => s.removeConnection);
   const updateConnection = useGraphStore((s) => s.updateConnection);
   const { viewport, onViewportChange } = useCanvasViewport();
@@ -89,6 +92,13 @@ export function WorkflowCanvas({
 
   const handleEdgeSave = useCallback(
     (updated: NodeConnectionDto) => {
+      const sourceNode = nodes.find((n: NodeDto) => n.nodeId === updated.sourceNodeId);
+      const targetNode = nodes.find((n: NodeDto) => n.nodeId === updated.targetNodeId);
+      if (!sourceNode || !targetNode) return;
+
+      const validation = validateConnection(sourceNode, targetNode, updated.triggerMessageType);
+      if (!validation.valid) return;
+
       updateConnection(updated.sourceNodeId, updated.targetNodeId, {
         triggerMessageType: updated.triggerMessageType,
         condition: updated.condition,
@@ -97,7 +107,36 @@ export function WorkflowCanvas({
       });
       setEditingEdge(null);
     },
-    [updateConnection],
+    [updateConnection, nodes],
+  );
+
+  const onReconnect = useCallback(
+    (oldEdge: RFEdge, newConnection: Connection) => {
+      if (!newConnection.source || !newConnection.target) return;
+
+      const sourceNode = nodes.find((n: NodeDto) => n.nodeId === newConnection.source);
+      const targetNode = nodes.find((n: NodeDto) => n.nodeId === newConnection.target);
+      if (!sourceNode || !targetNode) return;
+
+      const oldConn = connections.find(
+        (c) => c.sourceNodeId === oldEdge.source && c.targetNodeId === oldEdge.target,
+      );
+      const msgType = oldConn?.triggerMessageType ?? 'Complete';
+
+      const validation = validateConnection(sourceNode, targetNode, msgType);
+      if (!validation.valid) return;
+
+      removeConnection(oldEdge.source, oldEdge.target);
+      addConnection({
+        sourceNodeId: newConnection.source,
+        targetNodeId: newConnection.target,
+        triggerMessageType: msgType,
+        isEnabled: oldConn?.isEnabled ?? true,
+        priority: oldConn?.priority ?? 0,
+        condition: oldConn?.condition,
+      });
+    },
+    [nodes, connections, removeConnection, addConnection],
   );
 
   return (
@@ -117,6 +156,7 @@ export function WorkflowCanvas({
           onConnect={onConnect}
           onEdgeClick={onEdgeClick}
           onEdgesDelete={onEdgesDelete}
+          onReconnect={onReconnect}
           fitView={false}
           data-testid="react-flow-canvas"
         >
