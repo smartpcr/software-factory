@@ -6,6 +6,8 @@
 
 using WorkflowUi.Server.Endpoints;
 using WorkflowUi.Server.Hosting;
+using WorkflowUi.Server.Hubs;
+using WorkflowUi.Server.Telemetry;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -19,6 +21,17 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 // DI: register engine services
 builder.Services.AddExecutionEngine();
+
+// DI: register telemetry services
+builder.Services.AddSingleton<SequenceAllocator>();
+builder.Services.AddSingleton<RunHistoryBuffer>();
+builder.Services.AddSingleton<EdgeActivationDeriver>();
+builder.Services.AddSingleton<SkipDeriver>();
+builder.Services.AddSingleton<EngineEventBridge>();
+builder.Services.AddSingleton<IRunEventSink, TelemetryHubSink>();
+
+// SignalR
+builder.Services.AddSignalR();
 
 // Problem details
 builder.AddProblemDetailsServices();
@@ -35,6 +48,9 @@ app.MapHealthEndpoints();
 app.MapEngineVersionEndpoints();
 app.MapWorkflowValidationEndpoints();
 app.MapMapperRoundTripEndpoints();
+
+// SignalR hub
+app.MapHub<TelemetryHub>("/hubs/telemetry");
 
 var logger= app.Services.GetRequiredService<ILogger<Program>>();
 var versionProvider = app.Services.GetRequiredService<EngineAssemblyVersionProvider>();
