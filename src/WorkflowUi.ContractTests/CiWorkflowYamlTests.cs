@@ -7,6 +7,7 @@
 namespace WorkflowUi.ContractTests;
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.RegularExpressions;
 using Xunit;
@@ -58,11 +59,57 @@ public class CiWorkflowYamlTests
     }
 
     [Fact]
-    public void Jobs_Count_AtLeast4()
+    public void Jobs_Count_AtLeast7()
     {
         var root = ParseWorkflow();
         var jobs = (YamlMappingNode)root["jobs"];
-        Assert.True(jobs.Children.Count >= 4, $"Expected at least 4 jobs, found {jobs.Children.Count}");
+        Assert.True(jobs.Children.Count >= 7, $"Expected at least 7 jobs, found {jobs.Children.Count}");
+    }
+
+    [Fact]
+    public void ParityJobs_AreDistinctCheckRuns()
+    {
+        var root = ParseWorkflow();
+        var jobs = (YamlMappingNode)root["jobs"];
+        var jobIds = new List<string>();
+        foreach (var job in jobs.Children)
+        {
+            jobIds.Add(((YamlScalarNode)job.Key).Value!);
+        }
+
+        Assert.Contains("parity-enum", jobIds);
+        Assert.Contains("parity-dto", jobIds);
+        Assert.Contains("parity-yaml", jobIds);
+    }
+
+    [Fact]
+    public void ParityEnum_HasCorrectJobName()
+    {
+        var root = ParseWorkflow();
+        var jobs = (YamlMappingNode)root["jobs"];
+        var job = (YamlMappingNode)jobs["parity-enum"];
+        var name = ((YamlScalarNode)job["name"]).Value;
+        Assert.Equal("Parity (EnumParity)", name);
+    }
+
+    [Fact]
+    public void ParityDto_HasCorrectJobName()
+    {
+        var root = ParseWorkflow();
+        var jobs = (YamlMappingNode)root["jobs"];
+        var job = (YamlMappingNode)jobs["parity-dto"];
+        var name = ((YamlScalarNode)job["name"]).Value;
+        Assert.Equal("Parity (DtoParity)", name);
+    }
+
+    [Fact]
+    public void ParityYaml_HasCorrectJobName()
+    {
+        var root = ParseWorkflow();
+        var jobs = (YamlMappingNode)root["jobs"];
+        var job = (YamlMappingNode)jobs["parity-yaml"];
+        var name = ((YamlScalarNode)job["name"]).Value;
+        Assert.Equal("Parity (YamlRoundTrip)", name);
     }
 
     [Fact]
@@ -199,5 +246,48 @@ public class CiWorkflowYamlTests
                 Assert.Contains(jobName, text);
             }
         }
+    }
+
+    [Fact]
+    public void CoverageGate_DotNet_FailsHardOnMissingCobertura()
+    {
+        var text = LoadWorkflowYaml();
+        // The .NET coverage gate must NOT contain exit 0 for missing cobertura — it must exit 1
+        var startIndex = text.IndexOf("Enforce .NET coverage threshold", StringComparison.Ordinal);
+        Assert.True(startIndex >= 0, "Missing .NET coverage threshold step");
+        var dotnetThresholdSection = text.Substring(startIndex);
+        Assert.DoesNotContain("exit 0", dotnetThresholdSection);
+        Assert.Contains("exit 1", dotnetThresholdSection);
+    }
+
+    [Fact]
+    public void CoverageGate_NeedsAllParityJobs()
+    {
+        var root = ParseWorkflow();
+        var jobs = (YamlMappingNode)root["jobs"];
+        var coverageGate = (YamlMappingNode)jobs["coverage-gate"];
+        var needs = (YamlSequenceNode)coverageGate["needs"];
+        var needsList = new List<string>();
+        foreach (YamlScalarNode n in needs)
+        {
+            needsList.Add(n.Value!);
+        }
+
+        Assert.Contains("parity-enum", needsList);
+        Assert.Contains("parity-dto", needsList);
+        Assert.Contains("parity-yaml", needsList);
+        Assert.Contains("test-dotnet", needsList);
+        Assert.Contains("test-client", needsList);
+    }
+
+    [Fact]
+    public void BranchProtectionDoc_Lists7RequiredChecks()
+    {
+        var docPath = Path.Combine(RepoRoot, "docs", "workflow-ui", "branch-protection.md");
+        var text = File.ReadAllText(docPath);
+        Assert.Contains("Parity (EnumParity)", text);
+        Assert.Contains("Parity (DtoParity)", text);
+        Assert.Contains("Parity (YamlRoundTrip)", text);
+        Assert.Contains("7 checks", text);
     }
 }

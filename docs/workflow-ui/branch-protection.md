@@ -9,9 +9,12 @@ The following CI jobs must pass before a PR can merge (names match the `name:` f
 in `.github/workflows/ci-workflow-ui.yml`):
 
 1. **Build (.NET)** — .NET solution builds with `-warnaserror`.
-2. **Test (.NET)** — Contract tests including parity gates (EnumParity, DtoParity, YamlRoundTrip).
-3. **Test (Client)** — Client lint + format + test + build.
-4. **Coverage gate** — Downloads coverage artifacts and enforces 100% threshold on new code.
+2. **Test (.NET)** — Contract tests with code coverage collection.
+3. **Parity (EnumParity)** — Enum parity gate verifying C#↔TS enum contract.
+4. **Parity (DtoParity)** — DTO parity gate verifying C#↔TS shape contract.
+5. **Parity (YamlRoundTrip)** — YAML round-trip golden file contract.
+6. **Test (Client)** — Client lint + format + test + build.
+7. **Coverage gate** — Downloads coverage artifacts and enforces 100% threshold on new code (hard failure when missing).
 
 ## Review policy
 
@@ -26,7 +29,7 @@ in `.github/workflows/ci-workflow-ui.yml`):
 3. Check **Require a pull request before merging**.
 4. Check **Require approvals** (at least 1).
 5. Check **Dismiss stale pull request approvals when new commits are pushed**.
-6. Check **Require status checks to pass before merging** and add the 4 checks above.
+6. Check **Require status checks to pass before merging** and add the 7 checks above.
 7. Check **Require linear history**.
 8. Save.
 
