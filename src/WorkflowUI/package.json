@@ -19,9 +19,12 @@
     "prepare": "cd .. && lefthook install"
   },
   "dependencies": {
+    "@xyflow/react": "^12.10.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "zod": "^4.3.6"
+    "zod": "^4.3.6",
+    "zundo": "^2.3.0",
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
     "@playwright/test": "^1.47.0",
