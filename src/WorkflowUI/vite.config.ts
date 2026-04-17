@@ -7,4 +7,15 @@ export default defineConfig({
   build: {
     outDir: 'dist',
   },
+  server: {
+    port: 5173,
+    proxy: {
+      '/api': 'http://localhost:5226',
+      '/swagger': 'http://localhost:5226',
+      '/hubs': {
+        target: 'http://localhost:5226',
+        ws: true,
+      },
+    },
+  },
 });
