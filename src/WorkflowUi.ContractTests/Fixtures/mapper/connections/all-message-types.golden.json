@@ -1,0 +1,48 @@
+{
+  "workflowId": "all-message-types",
+  "workflowName": "All Message Types",
+  "version": "1.0",
+  "nodes": [
+    {
+      "runtimeType": "Noop",
+      "nodeId": "src",
+      "nodeName": "Source",
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0
+    },
+    {
+      "runtimeType": "Noop",
+      "nodeId": "on-complete",
+      "nodeName": "On Complete",
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0
+    },
+    {
+      "runtimeType": "Noop",
+      "nodeId": "on-fail",
+      "nodeName": "On Fail",
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0
+    }
+  ],
+  "connections": [
+    {
+      "sourceNodeId": "src",
+      "targetNodeId": "on-complete",
+      "triggerMessageType": "Complete",
+      "isEnabled": true,
+      "priority": 0
+    },
+    {
+      "sourceNodeId": "src",
+      "targetNodeId": "on-fail",
+      "triggerMessageType": "Fail",
+      "isEnabled": true,
+      "priority": 1,
+      "condition": "retries == 0"
+    }
+  ]
+}

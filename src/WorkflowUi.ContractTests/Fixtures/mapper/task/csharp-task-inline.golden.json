@@ -1,0 +1,17 @@
+{
+  "workflowId": "csharp-task-inline",
+  "workflowName": "CSharp Task Inline",
+  "version": "1.0",
+  "nodes": [
+    {
+      "runtimeType": "CSharpTask",
+      "nodeId": "task-inline-1",
+      "nodeName": "Inline Task",
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "scriptContent": "return 42;"
+    }
+  ],
+  "connections": []
+}

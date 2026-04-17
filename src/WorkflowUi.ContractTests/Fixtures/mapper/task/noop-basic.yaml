@@ -1,0 +1,11 @@
+workflowId: noop-basic
+workflowName: Noop Basic
+version: "1.0"
+nodes:
+- nodeId: noop-1
+  nodeName: Simple Noop
+  runtimeType: Noop
+  joinType: Any
+  priority: Normal
+  maxConcurrentExecutions: 0
+connections: []

@@ -1,0 +1,34 @@
+workflowId: all-message-types
+workflowName: All Message Types
+version: "1.0"
+nodes:
+- nodeId: src
+  nodeName: Source
+  runtimeType: Noop
+  joinType: Any
+  priority: Normal
+  maxConcurrentExecutions: 0
+- nodeId: on-complete
+  nodeName: On Complete
+  runtimeType: Noop
+  joinType: Any
+  priority: Normal
+  maxConcurrentExecutions: 0
+- nodeId: on-fail
+  nodeName: On Fail
+  runtimeType: Noop
+  joinType: Any
+  priority: Normal
+  maxConcurrentExecutions: 0
+connections:
+- sourceNodeId: src
+  targetNodeId: on-complete
+  triggerMessageType: Complete
+  isEnabled: true
+  priority: 0
+- sourceNodeId: src
+  targetNodeId: on-fail
+  triggerMessageType: Fail
+  isEnabled: true
+  priority: 1
+  condition: retries == 0

@@ -1,0 +1,16 @@
+workflowId: subflow-inline
+workflowName: Subflow Inline
+version: "1.0"
+nodes:
+- nodeId: sub-inline-1
+  nodeName: Inline Child
+  runtimeType: Subflow
+  joinType: Any
+  priority: Normal
+  maxConcurrentExecutions: 0
+  workflowFilePath: ""
+  inputMappings: {}
+  outputMappings: {}
+  timeout: "00:05:00"
+  skipValidation: false
+connections: []

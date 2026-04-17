@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ExecutionEngine\ExecutionEngine.csproj" />
+    <ProjectReference Include="..\WorkflowUi.Server\WorkflowUi.Server.csproj" />
     <ProjectReference Include="..\..\tools\GenContract\GenContract.csproj" />
   </ItemGroup>
 

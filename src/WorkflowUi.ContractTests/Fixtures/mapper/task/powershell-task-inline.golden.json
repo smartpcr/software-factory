@@ -1,0 +1,17 @@
+{
+  "workflowId": "powershell-task-inline",
+  "workflowName": "PowerShell Task Inline",
+  "version": "1.0",
+  "nodes": [
+    {
+      "runtimeType": "PowerShellTask",
+      "nodeId": "pst-1",
+      "nodeName": "PS Task",
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "scriptContent": "Write-Host 'Hello'"
+    }
+  ],
+  "connections": []
+}

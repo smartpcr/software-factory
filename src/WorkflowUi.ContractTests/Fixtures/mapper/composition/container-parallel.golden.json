@@ -1,0 +1,44 @@
+{
+  "workflowId": "container-parallel",
+  "workflowName": "Container Parallel",
+  "version": "1.0",
+  "nodes": [
+    {
+      "runtimeType": "Container",
+      "nodeId": "container-1",
+      "nodeName": "Parallel Group",
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "executionMode": "Parallel",
+      "childNodes": [
+        {
+          "runtimeType": "Noop",
+          "nodeId": "child-a",
+          "nodeName": "A",
+          "joinType": "Any",
+          "priority": "Normal",
+          "maxConcurrentExecutions": 0
+        },
+        {
+          "runtimeType": "Noop",
+          "nodeId": "child-b",
+          "nodeName": "B",
+          "joinType": "Any",
+          "priority": "Normal",
+          "maxConcurrentExecutions": 0
+        }
+      ],
+      "childConnections": [
+        {
+          "sourceNodeId": "child-a",
+          "targetNodeId": "child-b",
+          "triggerMessageType": "Complete",
+          "isEnabled": true,
+          "priority": 0
+        }
+      ]
+    }
+  ],
+  "connections": []
+}

@@ -1,0 +1,18 @@
+{
+  "workflowId": "foreach-basic",
+  "workflowName": "ForEach Basic",
+  "version": "1.0",
+  "nodes": [
+    {
+      "runtimeType": "ForEach",
+      "nodeId": "fe-1",
+      "nodeName": "Process Items",
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "collectionExpression": "items",
+      "itemVariableName": "item"
+    }
+  ],
+  "connections": []
+}

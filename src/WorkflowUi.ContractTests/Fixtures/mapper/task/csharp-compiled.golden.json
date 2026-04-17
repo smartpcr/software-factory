@@ -1,0 +1,18 @@
+{
+  "workflowId": "csharp-compiled",
+  "workflowName": "CSharp Compiled",
+  "version": "1.0",
+  "nodes": [
+    {
+      "runtimeType": "CSharp",
+      "nodeId": "csharp-1",
+      "nodeName": "Compiled Node",
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "assemblyPath": "bin/MyApp.dll",
+      "typeName": "MyApp.Nodes.MyNode"
+    }
+  ],
+  "connections": []
+}

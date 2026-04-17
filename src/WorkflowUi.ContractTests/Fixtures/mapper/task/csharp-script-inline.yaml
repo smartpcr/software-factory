@@ -1,0 +1,13 @@
+workflowId: csharp-script-inline
+workflowName: CSharp Script Inline
+version: "1.0"
+nodes:
+- nodeId: script-1
+  nodeName: Script Node
+  runtimeType: CSharpScript
+  joinType: Any
+  priority: Normal
+  maxConcurrentExecutions: 0
+  scriptPath: scripts/hello.csx
+  scriptContent: Console.WriteLine("Hello");
+connections: []

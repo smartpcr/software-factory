@@ -1,0 +1,12 @@
+workflowId: timer-cron
+workflowName: Timer Cron
+version: "1.0"
+nodes:
+- nodeId: timer-1
+  nodeName: Every 5 Minutes
+  runtimeType: Timer
+  joinType: Any
+  priority: Normal
+  maxConcurrentExecutions: 0
+  schedule: 0 */5 * * *
+connections: []

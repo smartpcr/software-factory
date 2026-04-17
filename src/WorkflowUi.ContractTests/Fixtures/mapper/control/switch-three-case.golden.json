@@ -1,0 +1,22 @@
+{
+  "workflowId": "switch-three-case",
+  "workflowName": "Switch Three Case",
+  "version": "1.0",
+  "nodes": [
+    {
+      "runtimeType": "Switch",
+      "nodeId": "sw-1",
+      "nodeName": "Route Status",
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "expression": "status",
+      "cases": {
+        "active": "handle-active",
+        "inactive": "handle-inactive",
+        "default": "handle-default"
+      }
+    }
+  ],
+  "connections": []
+}

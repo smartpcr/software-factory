@@ -1,0 +1,12 @@
+workflowId: ifelse-basic
+workflowName: IfElse Basic
+version: "1.0"
+nodes:
+- nodeId: if-1
+  nodeName: Check Condition
+  runtimeType: IfElse
+  joinType: Any
+  priority: Normal
+  maxConcurrentExecutions: 0
+  condition: x > 5
+connections: []

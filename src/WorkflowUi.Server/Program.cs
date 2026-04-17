@@ -34,6 +34,7 @@ app.UseProblemDetailsExceptionHandler();
 app.MapHealthEndpoints();
 app.MapEngineVersionEndpoints();
 app.MapWorkflowValidationEndpoints();
+app.MapMapperRoundTripEndpoints();
 
 var logger= app.Services.GetRequiredService<ILogger<Program>>();
 var versionProvider = app.Services.GetRequiredService<EngineAssemblyVersionProvider>();
