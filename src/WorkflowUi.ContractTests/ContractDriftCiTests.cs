@@ -68,9 +68,9 @@ public class ContractDriftCiTests
     }
 
     [Fact]
-    public void Diff_UsesComparison()
+    public void Diff_UsesGitNoPager_NoIndex()
     {
-        Assert.Contains("Contract drift detected", this.workflowYaml);
+        Assert.Contains("git --no-pager diff --no-index --exit-code", this.workflowYaml);
     }
 
     [Fact]
@@ -95,6 +95,7 @@ public class ContractDriftCiTests
         w.Line();
         var enumTypes = EnumEmitter.GetEnumTypes();
         EnumEmitter.Emit(w, enumTypes);
+        EnumEmitter.EmitSupportingEnums(w);
         PolicyEmitter.Emit(w);
         DtoEmitter.Emit(w);
         ConnectionEmitter.Emit(w);

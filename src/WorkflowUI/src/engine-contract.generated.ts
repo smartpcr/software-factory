@@ -29,12 +29,6 @@ export type NodePriority =
   | 'Normal'
   | 'High';
 
-export type RetryStrategy =
-  | 'None'
-  | 'Fixed'
-  | 'Exponential'
-  | 'Linear';
-
 export type RuntimeType =
   | 'Noop'
   | 'CSharp'
@@ -57,6 +51,12 @@ export type WorkflowExecutionStatus =
   | 'Failed'
   | 'Cancelled'
   | 'Paused';
+
+export type RetryStrategy =
+  | 'None'
+  | 'Fixed'
+  | 'Exponential'
+  | 'Linear';
 
 export interface RetryPolicyDto {
   doNotRetryOn: string[];

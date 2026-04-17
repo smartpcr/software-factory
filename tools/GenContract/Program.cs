@@ -29,9 +29,12 @@ w.Line("// GENERATED. Do not edit. Run tools/GenContract to regenerate.");
 w.Line($"// Engine assembly version: {engineVersion}");
 w.Line();
 
-// 1. Enums
+// 1. Enums (7 parity enums matching engine-enums.json fixture)
 var enumTypes = EnumEmitter.GetEnumTypes();
 EnumEmitter.Emit(w, enumTypes);
+
+// 1b. Supporting enums (used by policies, not part of the parity fixture)
+EnumEmitter.EmitSupportingEnums(w);
 
 // 2. Policy DTOs
 PolicyEmitter.Emit(w);

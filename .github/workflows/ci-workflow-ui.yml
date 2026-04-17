@@ -267,9 +267,8 @@ jobs:
       - name: Diff against committed file
         shell: pwsh
         run: |
-          $committed = Get-Content "src/WorkflowUI/src/engine-contract.generated.ts" -Raw
-          $generated = Get-Content "_tmp/engine-contract.generated.ts" -Raw
-          if ($committed -ne $generated) {
+          git --no-pager diff --no-index --exit-code _tmp/engine-contract.generated.ts src/WorkflowUI/src/engine-contract.generated.ts
+          if ($LASTEXITCODE -ne 0) {
             Write-Error "Contract drift detected. Re-run 'dotnet run --project tools/GenContract -- --output src/WorkflowUI/src/engine-contract.generated.ts' and commit."
             exit 1
           }

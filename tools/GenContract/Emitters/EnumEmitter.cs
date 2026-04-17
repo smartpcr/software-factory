@@ -25,9 +25,16 @@ public static class EnumEmitter
         "MessageType",
         "NodeExecutionStatus",
         "NodePriority",
-        "RetryStrategy",
         "RuntimeType",
         "WorkflowExecutionStatus",
+    ];
+
+    /// <summary>
+    /// The names of supporting enums used by policy DTOs but not in the parity fixture.
+    /// </summary>
+    public static readonly string[] SupportingEnumNames =
+    [
+        "RetryStrategy",
     ];
 
     /// <summary>
@@ -37,23 +44,46 @@ public static class EnumEmitter
     {
         foreach (var et in enumTypes)
         {
-            TypeMapping.RegisterEnumName(et.Name);
-            var members = Enum.GetValues(et)
-                .Cast<object>()
-                .Select(v => Enum.GetName(et, v)!)
-                .ToList();
-
-            w.Line($"export type {et.Name} =");
-            w.Indent();
-            for (var i = 0; i < members.Count; i++)
-            {
-                var sep = i < members.Count - 1 ? " |" : ";";
-                w.Line($"| '{members[i]}'{(i < members.Count - 1 ? "" : ";")}");
-            }
-
-            w.Dedent();
-            w.Line();
+            EmitSingle(w, et);
         }
+    }
+
+    /// <summary>
+    /// Emits supporting enums (used by policies, not in the parity fixture).
+    /// </summary>
+    public static void EmitSupportingEnums(TsWriter w)
+    {
+        var enumNamespace = "ExecutionEngine.Enums";
+        var supportingSet = new HashSet<string>(SupportingEnumNames, StringComparer.Ordinal);
+        var types = typeof(ExecutionEngine.Enums.RuntimeType).Assembly
+            .GetExportedTypes()
+            .Where(t => t.IsEnum && t.Namespace == enumNamespace && supportingSet.Contains(t.Name))
+            .OrderBy(t => Array.IndexOf(SupportingEnumNames, t.Name))
+            .ToList();
+
+        foreach (var et in types)
+        {
+            EmitSingle(w, et);
+        }
+    }
+
+    private static void EmitSingle(TsWriter w, Type et)
+    {
+        TypeMapping.RegisterEnumName(et.Name);
+        var members = Enum.GetValues(et)
+            .Cast<object>()
+            .Select(v => Enum.GetName(et, v)!)
+            .ToList();
+
+        w.Line($"export type {et.Name} =");
+        w.Indent();
+        for (var i = 0; i < members.Count; i++)
+        {
+            w.Line($"| '{members[i]}'{(i < members.Count - 1 ? "" : ";")}");
+        }
+
+        w.Dedent();
+        w.Line();
     }
 
     /// <summary>

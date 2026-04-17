@@ -34,16 +34,7 @@ app.UseProblemDetailsExceptionHandler();
 app.MapHealthEndpoints();
 app.MapEngineVersionEndpoints();
 
-// Test-only endpoint for problem-details validation (throws to exercise exception handler)
-if (app.Environment.IsDevelopment() || app.Environment.EnvironmentName == "Production")
-{
-    app.MapGet("/boom", () =>
-    {
-        throw new InvalidOperationException("boom");
-    }).ExcludeFromDescription();
-}
-
-var logger = app.Services.GetRequiredService<ILogger<Program>>();
+var logger= app.Services.GetRequiredService<ILogger<Program>>();
 var versionProvider = app.Services.GetRequiredService<EngineAssemblyVersionProvider>();
 logger.LogInformation(
     "WorkflowUi.Server started on {MachineName} in {EnvironmentName} with engine v{EngineAssemblyVersion}",
