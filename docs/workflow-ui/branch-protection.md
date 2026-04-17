@@ -15,6 +15,9 @@ in `.github/workflows/ci-workflow-ui.yml`):
 5. **Parity (YamlRoundTrip)** — YAML round-trip golden file contract.
 6. **Test (Client)** — Client lint + format + test + build.
 7. **Coverage gate** — Downloads coverage artifacts and enforces 100% threshold on new code (hard failure when missing).
+8. **Contract drift** — Runs GenContract and diffs against committed contract file.
+9. **Coverage publish** — Merges .NET and client coverage reports, uploads to Codecov.
+10. **Playwright** — Runs Playwright smoke tests in headless Chromium.
 
 ## Review policy
 
@@ -29,7 +32,7 @@ in `.github/workflows/ci-workflow-ui.yml`):
 3. Check **Require a pull request before merging**.
 4. Check **Require approvals** (at least 1).
 5. Check **Dismiss stale pull request approvals when new commits are pushed**.
-6. Check **Require status checks to pass before merging** and add the 7 checks above.
+6. Check **Require status checks to pass before merging** and add the 10 checks above.
 7. Check **Require linear history**.
 8. Save.
 

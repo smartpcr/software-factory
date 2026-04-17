@@ -250,3 +250,112 @@ jobs:
             exit 1
           }
           Write-Host ".NET coverage gate PASSED"
+
+  contract-drift:
+    name: Contract drift
+    needs: build-dotnet
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: dotnet restore Workflow.sln
+      - run: dotnet build Workflow.sln -c Release --no-restore
+      - name: Run generator into temp
+        run: dotnet run --project tools/GenContract -c Release --no-build -- --output _tmp/engine-contract.generated.ts
+      - name: Diff against committed file
+        shell: pwsh
+        run: |
+          git --no-pager diff --no-index --exit-code _tmp/engine-contract.generated.ts src/WorkflowUI/src/engine-contract.generated.ts
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Contract drift detected. Re-run 'dotnet run --project tools/GenContract -- --output src/WorkflowUI/src/engine-contract.generated.ts' and commit."
+            exit 1
+          }
+          Write-Host "Contract matches — no drift detected."
+
+  coverage-publish:
+    name: Coverage publish
+    needs: [test-dotnet, test-client]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Download .NET coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: dotnet-test-results
+          path: TestResults-dotnet/
+
+      - name: Download client coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: workflowui-coverage
+          path: src/WorkflowUI/coverage/
+
+      - name: Install ReportGenerator
+        run: dotnet tool install -g dotnet-reportgenerator-globaltool
+
+      - name: Merge coverage reports
+        run: >-
+          reportgenerator
+          "-reports:TestResults-dotnet/**/coverage.cobertura.xml;src/WorkflowUI/coverage/lcov.info"
+          "-targetdir:coverage-merged"
+          "-reporttypes:Cobertura;Html;lcov"
+
+      - name: Upload merged coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-merged
+          path: coverage-merged/
+          retention-days: 30
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage-merged/Cobertura.xml,src/WorkflowUI/coverage/lcov.info
+          fail_ci_if_error: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  playwright:
+    name: Playwright
+    needs: [test-dotnet, test-client]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+          cache-dependency-path: src/WorkflowUI/package-lock.json
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('src/WorkflowUI/package-lock.json') }}
+
+      - run: npm ci
+        working-directory: src/WorkflowUI
+      - run: npx playwright install --with-deps chromium
+        working-directory: src/WorkflowUI
+      - run: dotnet restore Workflow.sln
+      - run: dotnet build Workflow.sln -c Release --no-restore
+      - run: npm run build
+        working-directory: src/WorkflowUI
+      - run: npm run test:e2e
+        working-directory: src/WorkflowUI
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: src/WorkflowUI/playwright-report/

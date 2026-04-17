@@ -1,0 +1,19 @@
+coverage:
+  status:
+    project:
+      default:
+        target: 100%
+        threshold: 0%
+        only_pulls: true
+    patch:
+      default:
+        target: 100%
+        only_pulls: true
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+ignore:
+  - "src/WorkflowUI/src/engine-contract.generated.ts"
+  - "tools/GenContract/**"
+  - "**/bin/**"
+  - "**/obj/**"

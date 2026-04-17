@@ -26,23 +26,27 @@ module.exports = {
     },
   },
   rules: {
-    // Stage 1.2.3 will activate this rule to restrict direct engine-contract imports
-    'no-restricted-imports': 'off',
-    // TODO(Stage 1.2.3): activate this rule to enforce facade-only access to engine contracts
+    // Forbid direct imports of the generated contract file — use the facade instead
+    'no-restricted-imports': ['error', {
+      patterns: [{
+        group: ['**/engine-contract.generated', '**/engine-contract.generated.ts'],
+        message: 'Import from "./engine-contract" (the facade) instead.',
+      }],
+    }],
     'import/no-restricted-paths': [
       'off',
-      {
-        zones: [
-          {
-            target: './src',
-            from: './src/engine-contract.generated.ts',
-            message: 'Import engine types through the facade, not the generated contract directly.',
-          },
-        ],
-      },
     ],
     // Allow inference on exported functions (opt-in for strict later)
     '@typescript-eslint/explicit-function-return-type': 'off',
     '@typescript-eslint/explicit-module-boundary-types': 'off',
   },
+  overrides: [
+    {
+      // The facade file itself is allowed to import from the generated file
+      files: ['src/engine-contract.ts'],
+      rules: {
+        'no-restricted-imports': 'off',
+      },
+    },
+  ],
 };
