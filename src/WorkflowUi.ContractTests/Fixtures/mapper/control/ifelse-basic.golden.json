@@ -1,0 +1,21 @@
+{
+  "workflowId": "ifelse-basic",
+  "workflowName": "IfElse Basic",
+  "version": "1.0",
+  "nodes": [
+    {
+      "runtimeType": "IfElse",
+      "nodeId": "if-1",
+      "nodeName": "Check Condition",
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "condition": "x \u003E 5"
+    }
+  ],
+  "connections": [],
+  "metadata": {},
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0
+}

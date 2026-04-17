@@ -1,0 +1,21 @@
+{
+  "workflowId": "timer-cron",
+  "workflowName": "Timer Cron",
+  "version": "1.0",
+  "nodes": [
+    {
+      "runtimeType": "Timer",
+      "nodeId": "timer-1",
+      "nodeName": "Every 5 Minutes",
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "schedule": "0 */5 * * *"
+    }
+  ],
+  "connections": [],
+  "metadata": {},
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0
+}

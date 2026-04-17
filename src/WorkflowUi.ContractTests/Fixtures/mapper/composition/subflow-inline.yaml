@@ -1,0 +1,30 @@
+WorkflowId: subflow-inline
+WorkflowName: Subflow Inline
+Description: null
+Version: 1.0
+Nodes:
+- runtimeType: Subflow
+  WorkflowFilePath: null
+  WorkflowDefinition: null
+  InputMappings: {}
+  OutputMappings: {}
+  Timeout: 00:05:00
+  SkipValidation: False
+  NodeId: sub-inline-1
+  NodeName: Inline Child
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+Connections: []
+Metadata: {}
+EntryPointNodeId: null
+MaxConcurrency: 0
+AllowPause: True
+TimeoutSeconds: 0
+DefaultVariables: null

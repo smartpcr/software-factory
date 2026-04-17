@@ -1,0 +1,66 @@
+WorkflowId: all-message-types
+WorkflowName: All Message Types
+Description: null
+Version: 1.0
+Nodes:
+- runtimeType: Noop
+  NodeId: src
+  NodeName: Source
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+- runtimeType: Noop
+  NodeId: on-complete
+  NodeName: On Complete
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+- runtimeType: Noop
+  NodeId: on-fail
+  NodeName: On Fail
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+Connections:
+- SourceNodeId: src
+  TargetNodeId: on-complete
+  TriggerMessageType: Complete
+  Condition: null
+  IsEnabled: True
+  Metadata: null
+  Priority: 0
+  SourcePort: null
+  TargetPort: null
+- SourceNodeId: src
+  TargetNodeId: on-fail
+  TriggerMessageType: Fail
+  Condition: retries == 0
+  IsEnabled: True
+  Metadata: null
+  Priority: 1
+  SourcePort: null
+  TargetPort: null
+Metadata: {}
+EntryPointNodeId: null
+MaxConcurrency: 0
+AllowPause: True
+TimeoutSeconds: 0
+DefaultVariables: null

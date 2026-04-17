@@ -1,0 +1,25 @@
+WorkflowId: ifelse-basic
+WorkflowName: IfElse Basic
+Description: null
+Version: 1.0
+Nodes:
+- runtimeType: IfElse
+  Condition: x > 5
+  NodeId: if-1
+  NodeName: Check Condition
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+Connections: []
+Metadata: {}
+EntryPointNodeId: null
+MaxConcurrency: 0
+AllowPause: True
+TimeoutSeconds: 0
+DefaultVariables: null

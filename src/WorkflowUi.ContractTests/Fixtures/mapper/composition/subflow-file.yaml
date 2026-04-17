@@ -1,0 +1,32 @@
+WorkflowId: subflow-file
+WorkflowName: Subflow File
+Description: null
+Version: 1.0
+Nodes:
+- runtimeType: Subflow
+  WorkflowFilePath: workflows/child.yaml
+  WorkflowDefinition: null
+  InputMappings:
+    param1: value1
+  OutputMappings:
+    result: output1
+  Timeout: 00:05:00
+  SkipValidation: False
+  NodeId: sub-1
+  NodeName: Run Child
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+Connections: []
+Metadata: {}
+EntryPointNodeId: null
+MaxConcurrency: 0
+AllowPause: True
+TimeoutSeconds: 0
+DefaultVariables: null

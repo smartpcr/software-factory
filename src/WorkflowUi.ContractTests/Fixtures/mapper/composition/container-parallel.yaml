@@ -1,0 +1,60 @@
+WorkflowId: container-parallel
+WorkflowName: Container Parallel
+Description: null
+Version: 1.0
+Nodes:
+- runtimeType: Container
+  ChildNodes:
+  - runtimeType: Noop
+    NodeId: child-a
+    NodeName: A
+    Description: null
+    Configuration: null
+    JoinType: Any
+    Priority: Normal
+    MaxConcurrentExecutions: 0
+    RetryPolicy: null
+    CircuitBreakerPolicy: null
+    CompensationNodeId: null
+    FallbackNodeId: null
+  - runtimeType: Noop
+    NodeId: child-b
+    NodeName: B
+    Description: null
+    Configuration: null
+    JoinType: Any
+    Priority: Normal
+    MaxConcurrentExecutions: 0
+    RetryPolicy: null
+    CircuitBreakerPolicy: null
+    CompensationNodeId: null
+    FallbackNodeId: null
+  ChildConnections:
+  - SourceNodeId: child-a
+    TargetNodeId: child-b
+    TriggerMessageType: Complete
+    Condition: null
+    IsEnabled: True
+    Metadata: null
+    Priority: 0
+    SourcePort: null
+    TargetPort: null
+  ExecutionMode: Parallel
+  NodeId: container-1
+  NodeName: Parallel Group
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+Connections: []
+Metadata: {}
+EntryPointNodeId: null
+MaxConcurrency: 0
+AllowPause: True
+TimeoutSeconds: 0
+DefaultVariables: null

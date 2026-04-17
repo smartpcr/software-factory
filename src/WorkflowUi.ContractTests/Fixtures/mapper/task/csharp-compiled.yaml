@@ -1,0 +1,26 @@
+WorkflowId: csharp-compiled
+WorkflowName: CSharp Compiled
+Description: null
+Version: 1.0
+Nodes:
+- runtimeType: CSharp
+  AssemblyPath: bin/MyApp.dll
+  TypeName: MyApp.Nodes.MyNode
+  NodeId: csharp-1
+  NodeName: Compiled Node
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+Connections: []
+Metadata: {}
+EntryPointNodeId: null
+MaxConcurrency: 0
+AllowPause: True
+TimeoutSeconds: 0
+DefaultVariables: null

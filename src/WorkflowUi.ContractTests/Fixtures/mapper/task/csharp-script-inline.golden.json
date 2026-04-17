@@ -1,0 +1,22 @@
+{
+  "workflowId": "csharp-script-inline",
+  "workflowName": "CSharp Script Inline",
+  "version": "1.0",
+  "nodes": [
+    {
+      "runtimeType": "CSharpScript",
+      "nodeId": "script-1",
+      "nodeName": "Script Node",
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "scriptPath": "scripts/hello.csx",
+      "scriptContent": "Console.WriteLine(\u0022Hello\u0022);"
+    }
+  ],
+  "connections": [],
+  "metadata": {},
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0
+}

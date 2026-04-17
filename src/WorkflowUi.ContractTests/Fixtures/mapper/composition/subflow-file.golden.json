@@ -1,0 +1,29 @@
+{
+  "workflowId": "subflow-file",
+  "workflowName": "Subflow File",
+  "version": "1.0",
+  "nodes": [
+    {
+      "runtimeType": "Subflow",
+      "nodeId": "sub-1",
+      "nodeName": "Run Child",
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "workflowFilePath": "workflows/child.yaml",
+      "inputMappings": {
+        "param1": "value1"
+      },
+      "outputMappings": {
+        "result": "output1"
+      },
+      "timeout": "PT5M",
+      "skipValidation": false
+    }
+  ],
+  "connections": [],
+  "metadata": {},
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0
+}

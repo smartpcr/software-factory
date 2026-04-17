@@ -1,0 +1,28 @@
+WorkflowId: powershell-task-inline
+WorkflowName: PowerShell Task Inline
+Description: null
+Version: 1.0
+Nodes:
+- runtimeType: PowerShellTask
+  ScriptPath: null
+  ScriptContent: Write-Host 'Hello'
+  RequiredModules: null
+  ModulePaths: null
+  NodeId: pst-1
+  NodeName: PS Task
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+Connections: []
+Metadata: {}
+EntryPointNodeId: null
+MaxConcurrency: 0
+AllowPause: True
+TimeoutSeconds: 0
+DefaultVariables: null

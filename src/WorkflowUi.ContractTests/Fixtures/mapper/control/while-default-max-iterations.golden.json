@@ -1,0 +1,22 @@
+{
+  "workflowId": "while-default-max-iterations",
+  "workflowName": "While Default Max",
+  "version": "1.0",
+  "nodes": [
+    {
+      "runtimeType": "While",
+      "nodeId": "wh-1",
+      "nodeName": "Loop Until",
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "conditionExpression": "count \u003C 10",
+      "maxIterations": 1000
+    }
+  ],
+  "connections": [],
+  "metadata": {},
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0
+}
