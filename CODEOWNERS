@@ -1,0 +1,7 @@
+# CODEOWNERS — Workflow Designer UI
+# Review required by @workflow-owners for plan, spec, CI, and contract test changes.
+
+docs/workflow-ui-plan.md     @workflow-owners
+docs/workflow-ui/            @workflow-owners
+.github/workflows/ci-workflow-ui.yml  @workflow-owners
+src/WorkflowUi.ContractTests/ @workflow-owners

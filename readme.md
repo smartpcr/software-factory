@@ -33,6 +33,12 @@ The system answers questions like:
 
 ---
 
+## Workflow Designer UI
+
+The Workflow Designer UI is a browser-based visual editor for building, editing, and monitoring ExecutionEngine workflows. It consists of an ASP.NET Core 8 server host and a React 18 + TypeScript SPA. For the full implementation plan, see [docs/workflow-ui-plan.md](docs/workflow-ui-plan.md). Per-stage implementation specs are in [docs/workflow-ui/](docs/workflow-ui/).
+
+---
+
 ## Execution Engine
 
 ### Overview

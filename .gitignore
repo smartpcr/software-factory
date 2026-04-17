@@ -1,3 +1,7 @@
+# nodejs
+**/Node_modules/
+**/dist/
+
 # VSMSBuild generated files in CoreXT
 *.projhash*
 *.slnhash*
@@ -174,4 +178,7 @@ UpgradeLog*.htm
 
 # allow claude
 !CLAUDE.md
-!.claude/
+!.claude/client/tsconfig.tsbuildinfo
+client/dist/
+client/coverage/
+client/node_modules/
