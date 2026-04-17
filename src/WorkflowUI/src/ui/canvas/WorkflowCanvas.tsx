@@ -8,10 +8,12 @@ import {
   type Edge as RFEdge,
   type EdgeMouseHandler,
   type NodeMouseHandler,
+  type NodeChange,
   type Connection,
   ReactFlowProvider,
   BackgroundVariant,
   useReactFlow,
+  applyNodeChanges,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useGraphStore } from '../state/graphStore';
@@ -212,6 +214,25 @@ function WorkflowCanvasInner({
   showMiniMap: boolean;
 }) {
   const { screenToFlowPosition } = useReactFlow();
+  const updateNodePosition = useGraphStore((s) => s.updateNodePosition);
+  const [localNodes, setLocalNodes] = useState(rfNodes);
+
+  // Sync external rfNodes into local state when they change
+  useMemo(() => {
+    setLocalNodes(rfNodes);
+  }, [rfNodes]);
+
+  const onNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      setLocalNodes((prev) => applyNodeChanges(changes, prev));
+      for (const change of changes) {
+        if (change.type === 'position' && change.position) {
+          updateNodePosition(change.id, change.position.x, change.position.y);
+        }
+      }
+    },
+    [updateNodePosition],
+  );
 
   const onDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -234,7 +255,7 @@ function WorkflowCanvasInner({
 
   return (
     <ReactFlow
-      nodes={rfNodes}
+      nodes={localNodes}
       edges={rfEdges}
       nodeTypes={nodeTypes}
       edgeTypes={edgeTypes}
@@ -244,6 +265,7 @@ function WorkflowCanvasInner({
       minZoom={ZOOM_LIMITS.min}
       maxZoom={ZOOM_LIMITS.max}
       onViewportChange={onViewportChange}
+      onNodesChange={onNodesChange}
       onConnect={onConnect}
       onNodeClick={onNodeClick}
       onPaneClick={onPaneClick}
