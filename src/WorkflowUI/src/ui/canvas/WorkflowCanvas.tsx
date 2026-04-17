@@ -7,6 +7,7 @@ import {
   type Node as RFNode,
   type Edge as RFEdge,
   type EdgeMouseHandler,
+  type NodeMouseHandler,
   type Connection,
   ReactFlowProvider,
   BackgroundVariant,
@@ -38,6 +39,7 @@ export function WorkflowCanvas({
   const addConnection = useGraphStore((s) => s.addConnection);
   const removeConnection = useGraphStore((s) => s.removeConnection);
   const updateConnection = useGraphStore((s) => s.updateConnection);
+  const setSelectedNodeIds = useGraphStore((s) => s.setSelectedNodeIds);
   const { viewport, onViewportChange } = useCanvasViewport();
   const { onConnect } = useConnectionCreation();
 
@@ -89,6 +91,17 @@ export function WorkflowCanvas({
     },
     [removeConnection],
   );
+
+  const onNodeClick: NodeMouseHandler = useCallback(
+    (_event, node) => {
+      setSelectedNodeIds(new Set([node.id]));
+    },
+    [setSelectedNodeIds],
+  );
+
+  const onPaneClick = useCallback(() => {
+    setSelectedNodeIds(new Set());
+  }, [setSelectedNodeIds]);
 
   const handleEdgeSave = useCallback(
     (updated: NodeConnectionDto) => {
@@ -154,6 +167,8 @@ export function WorkflowCanvas({
           maxZoom={ZOOM_LIMITS.max}
           onViewportChange={onViewportChange}
           onConnect={onConnect}
+          onNodeClick={onNodeClick}
+          onPaneClick={onPaneClick}
           onEdgeClick={onEdgeClick}
           onEdgesDelete={onEdgesDelete}
           onReconnect={onReconnect}

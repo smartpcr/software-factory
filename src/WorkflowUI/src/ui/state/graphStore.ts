@@ -39,6 +39,7 @@ export interface GraphState {
   setWorkflow: (def: WorkflowDefinitionDto) => void;
   addNode: (node: NodeDto, meta?: SidecarNodeMeta) => void;
   removeNode: (nodeId: string) => void;
+  updateNode: (nodeId: string, patch: Partial<NodeDto>) => void;
   updateNodePosition: (nodeId: string, x: number, y: number) => void;
   addConnection: (conn: NodeConnectionDto) => void;
   removeConnection: (sourceId: string, targetId: string) => void;
@@ -89,6 +90,15 @@ export const useGraphStore = create<GraphState>()(
           nodes: state.nodes.filter((n) => n.nodeId !== nodeId),
           connections: state.connections.filter(
             (c) => c.sourceNodeId !== nodeId && c.targetNodeId !== nodeId,
+          ),
+        })),
+
+      updateNode: (nodeId, patch) =>
+        set((state) => ({
+          nodes: state.nodes.map((n) =>
+            n.nodeId === nodeId
+              ? ({ ...n, ...patch, runtimeType: n.runtimeType } as NodeDto)
+              : n,
           ),
         })),
 
