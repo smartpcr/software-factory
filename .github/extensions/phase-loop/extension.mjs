@@ -418,6 +418,21 @@ async function runTargetLoop(sessionId, run, target, targetIndex) {
 
             run.lastEvaluation = await requestEvaluation(run, target, targetIndex)
 
+            // Update acceptance-criteria checkboxes in the spec file based on evaluator report
+            if (run.lastEvaluation.acceptanceCriteria && run.lastEvaluation.acceptanceCriteria.length > 0) {
+                const specPath = target.stagePlanPath || target.phasePlanPath
+                const acUpdated = await updateAcceptanceCriteriaCheckboxes(
+                    specPath,
+                    run.lastEvaluation.acceptanceCriteria
+                )
+                if (acUpdated > 0) {
+                    await session.log(
+                        `phase-loop updated ${acUpdated} acceptance-criteria checkbox(es) in ${specPath}.`,
+                        { level: "info" }
+                    )
+                }
+            }
+
             const blockingGaps = run.lastEvaluation.gaps.filter((gap) => BLOCKING_PRIORITIES.has(gap.priority))
             const logLevel = blockingGaps.length > 0 || run.lastEvaluation.score < run.config.targetScore ? "warning" : "info"
             const gapSummary = formatGapSummary(run.lastEvaluation.gaps)
@@ -533,7 +548,7 @@ async function requestEvaluation(run, target, targetIndex) {
                 prompt: [
                     "Your previous response was not valid JSON.",
                     "Return only JSON with this exact shape:",
-                    "{\"score\": number, \"summary\": string, \"gaps\": [{\"priority\": \"critical|high|medium|low\", \"title\": string, \"details\": string, \"recommendation\": string}]}",
+                    "{\"score\": number, \"summary\": string, \"gaps\": [{\"priority\": \"critical|high|medium|low\", \"title\": string, \"details\": string, \"recommendation\": string}], \"acceptanceCriteria\": [{\"text\": string, \"met\": boolean}]}",
                 ].join("\n"),
             },
             SEND_TIMEOUT_MS
@@ -921,6 +936,10 @@ function buildEvaluatorPrompt(target, iteration, runConfig, targetIndex) {
         ].join("\n")
         : ""
 
+    const acceptanceCriteriaInstructions = [
+        "ACCEPTANCE CRITERIA CHECK: The spec file contains acceptance criteria as markdown checkboxes (`- [ ] ...`). You MUST evaluate each acceptance criterion and report its status in an `acceptanceCriteria` array in your JSON response. For each criterion, include the original text (or a recognizable substring) and whether it passed (`true`) or failed (`false`). The checkboxes in the spec file will be automatically updated based on your report.",
+    ].join("\n")
+
     return [
         `Evaluate ${formatScope(target)} against the attached spec file(s).`,
         runConfig.scopeMode === "all-phases"
@@ -934,13 +953,16 @@ function buildEvaluatorPrompt(target, iteration, runConfig, targetIndex) {
         target.step
             ? "Inspect the current implementation critically and thoroughly for THIS STEP ONLY. Do not flag missing implementation for other steps as gaps."
             : "Inspect the current implementation critically and thoroughly. Read code, docs, and relevant tests, and run existing build/test commands if they materially improve confidence.",
+        acceptanceCriteriaInstructions,
         "Return only JSON with this exact shape:",
-        "{\"score\": number, \"summary\": string, \"gaps\": [{\"priority\": \"critical|high|medium|low\", \"title\": string, \"details\": string, \"recommendation\": string}]}",
+        "{\"score\": number, \"summary\": string, \"gaps\": [{\"priority\": \"critical|high|medium|low\", \"title\": string, \"details\": string, \"recommendation\": string}], \"acceptanceCriteria\": [{\"text\": string, \"met\": boolean}]}",
         "Rules:",
         "1. Score is 0-100.",
         "2. Score 90 or above is only allowed when no medium, high, or critical gaps remain.",
         "3. Every real gap must appear in the gaps array with a concrete recommendation.",
-        "4. If there are no remaining gaps, return an empty array.",
+        "4. If there are no remaining gaps, return an empty array for gaps.",
+        "5. Every acceptance criterion from the spec's `### Acceptance criteria` section must appear in `acceptanceCriteria`.",
+        "6. Set `met: true` only when you have verified the criterion is fully satisfied by the current implementation.",
     ].filter(Boolean).join("\n")
 }
 
@@ -1100,10 +1122,19 @@ function normalizeEvaluation(parsed) {
     const rawGaps = Array.isArray(parsed.gaps) ? parsed.gaps : []
     const gaps = rawGaps.map((gap) => normalizeGap(gap))
 
+    const rawAC = Array.isArray(parsed.acceptanceCriteria) ? parsed.acceptanceCriteria : []
+    const acceptanceCriteria = rawAC
+        .filter((ac) => ac && typeof ac === "object" && typeof ac.text === "string")
+        .map((ac) => ({
+            text: String(ac.text).trim(),
+            met: Boolean(ac.met),
+        }))
+
     return {
         score: Math.max(0, Math.min(100, Math.round(score))),
         summary: String(parsed.summary || "").trim(),
         gaps: sortGaps(gaps),
+        acceptanceCriteria,
     }
 }
 
@@ -1476,6 +1507,52 @@ async function updateStepMarkerInFile(filePath, stepNumber, newMarker) {
         return true
     } catch {
         return false
+    }
+}
+
+async function updateAcceptanceCriteriaCheckboxes(filePath, acceptanceCriteria) {
+    if (!filePath || !await fileExists(filePath) || !acceptanceCriteria || acceptanceCriteria.length === 0)
+        return 0
+
+    let content
+    try {
+        content = await readFile(filePath, "utf-8")
+    } catch {
+        return 0
+    }
+
+    let updatedCount = 0
+    let updatedContent = content
+
+    for (const ac of acceptanceCriteria) {
+        if (!ac.text)
+            continue
+
+        // Escape regex special characters in the criterion text
+        const escapedText = ac.text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+        // Match a markdown checkbox line containing this criterion text
+        // Supports: - [ ] text, - [x] text, - [X] text, - [~] text, * [ ] text, etc.
+        const pattern = new RegExp(
+            `^([-*]\\s+\\[)[  xX~>!?-](\\]\\s+${escapedText})`,
+            "m"
+        )
+
+        const newMarker = ac.met ? "x" : " "
+        const replaced = updatedContent.replace(pattern, `$1${newMarker}$2`)
+        if (replaced !== updatedContent) {
+            updatedContent = replaced
+            updatedCount += 1
+        }
+    }
+
+    if (updatedCount === 0)
+        return 0
+
+    try {
+        await writeFile(filePath, updatedContent, "utf-8")
+        return updatedCount
+    } catch {
+        return 0
     }
 }
 
