@@ -64,12 +64,18 @@ public static class TypeMapping
 
         if (clrType.IsEnum)
         {
-            return clrType.Name;
-        }
+            // Parity enums (registered via EnumEmitter) are referenced by name.
+            // Non-parity enums (e.g. RetryStrategy) are inlined as string-literal unions
+            // so the generated file contains exactly the 7 parity export-type unions.
+            if (KnownEnumNames.Contains(clrType.Name))
+            {
+                return clrType.Name;
+            }
 
-        if (KnownEnumNames.Contains(clrType.Name))
-        {
-            return clrType.Name;
+            var members = Enum.GetValues(clrType)
+                .Cast<object>()
+                .Select(v => $"'{Enum.GetName(clrType, v)}'");
+            return string.Join(" | ", members);
         }
 
         // Dictionary<K,V> -> Record<K,V>

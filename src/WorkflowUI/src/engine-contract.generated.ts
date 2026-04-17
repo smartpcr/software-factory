@@ -52,12 +52,6 @@ export type WorkflowExecutionStatus =
   | 'Cancelled'
   | 'Paused';
 
-export type RetryStrategy =
-  | 'None'
-  | 'Fixed'
-  | 'Exponential'
-  | 'Linear';
-
 export interface RetryPolicyDto {
   doNotRetryOn: string[];
   initialDelay: string; // ISO-8601 duration
@@ -65,7 +59,7 @@ export interface RetryPolicyDto {
   maxDelay: string; // ISO-8601 duration
   multiplier: number;
   retryOn: string[];
-  strategy: RetryStrategy;
+  strategy: 'None' | 'Fixed' | 'Exponential' | 'Linear';
 }
 
 export interface CircuitBreakerPolicyDto {

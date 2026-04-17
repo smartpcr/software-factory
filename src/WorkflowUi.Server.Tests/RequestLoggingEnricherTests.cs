@@ -8,17 +8,24 @@ namespace WorkflowUi.Server.Tests;
 
 using WorkflowUi.Server.Tests.Infrastructure;
 using Xunit;
+using Xunit.Abstractions;
 
 /// <summary>
 /// Tests for RequestLoggingEnricher structured logging.
+/// Uses <see cref="ITestOutputHelper"/> sink for log capture visibility per spec.
 /// </summary>
 public class RequestLoggingEnricherTests : IClassFixture<TestWebApplicationFactory>
 {
     private readonly TestWebApplicationFactory factory;
+    private readonly ITestOutputHelper output;
 
-    public RequestLoggingEnricherTests(TestWebApplicationFactory factory)
+    public RequestLoggingEnricherTests(TestWebApplicationFactory factory, ITestOutputHelper output)
     {
         this.factory = factory;
+        this.output = output;
+
+        // Attach ITestOutputHelper sink so captured logs are visible in test output
+        this.factory.LogCapture.SetTestOutputHelper(output);
     }
 
     [Fact]

@@ -12,7 +12,6 @@ export type {
   MessageType,
   NodeExecutionStatus,
   NodePriority,
-  RetryStrategy,
   RuntimeType,
   WorkflowExecutionStatus,
   RetryPolicyDto,

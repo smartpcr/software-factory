@@ -8,6 +8,7 @@ namespace WorkflowUi.Server.Tests.Infrastructure;
 
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
+using Xunit.Abstractions;
 
 /// <summary>
 /// A captured log entry for test assertions.
@@ -21,20 +22,31 @@ public record CapturedLogEntry(
 
 /// <summary>
 /// In-memory logger provider that captures log entries with scope data for test assertions.
+/// Optionally forwards log output to an <see cref="ITestOutputHelper"/> sink.
 /// </summary>
 public sealed class CapturingLoggerProvider : ILoggerProvider
 {
     private readonly ConcurrentBag<CapturedLogEntry> entries = new();
+    private volatile ITestOutputHelper? outputHelper;
 
     /// <summary>
     /// Gets all captured log entries.
     /// </summary>
     public IReadOnlyCollection<CapturedLogEntry> Entries => this.entries;
 
+    /// <summary>
+    /// Attaches an <see cref="ITestOutputHelper"/> sink so captured log entries
+    /// are also written to xunit test output.
+    /// </summary>
+    public void SetTestOutputHelper(ITestOutputHelper output)
+    {
+        this.outputHelper = output;
+    }
+
     /// <inheritdoc/>
     public ILogger CreateLogger(string categoryName)
     {
-        return new CapturingLogger(categoryName, this.entries);
+        return new CapturingLogger(categoryName, this.entries, this);
     }
 
     /// <inheritdoc/>
@@ -46,12 +58,14 @@ public sealed class CapturingLoggerProvider : ILoggerProvider
     {
         private readonly string categoryName;
         private readonly ConcurrentBag<CapturedLogEntry> entries;
+        private readonly CapturingLoggerProvider provider;
         private readonly AsyncLocal<List<KeyValuePair<string, object?>>> currentScope = new();
 
-        public CapturingLogger(string categoryName, ConcurrentBag<CapturedLogEntry> entries)
+        public CapturingLogger(string categoryName, ConcurrentBag<CapturedLogEntry> entries, CapturingLoggerProvider provider)
         {
             this.categoryName = categoryName;
             this.entries = entries;
+            this.provider = provider;
         }
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull
@@ -78,12 +92,24 @@ public sealed class CapturingLoggerProvider : ILoggerProvider
                 stateItems.AddRange(pairs);
             }
 
+            var message = formatter(state, exception);
+
             this.entries.Add(new CapturedLogEntry(
                 this.categoryName,
                 logLevel,
-                formatter(state, exception),
+                message,
                 scopeSnapshot.ToList(),
                 stateItems));
+
+            // Forward to ITestOutputHelper sink if attached
+            try
+            {
+                this.provider.outputHelper?.WriteLine($"[{logLevel}] {this.categoryName}: {message}");
+            }
+            catch (InvalidOperationException)
+            {
+                // ITestOutputHelper throws when test is no longer active
+            }
         }
 
         private sealed class ScopeDisposable : IDisposable
