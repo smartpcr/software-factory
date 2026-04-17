@@ -6,7 +6,6 @@
 
 namespace WorkflowUi.Server.Hosting;
 
-using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
 
@@ -40,6 +39,8 @@ public sealed class CorrelationIdProblemDetailsWriter : IProblemDetailsWriter
         httpContext.Response.ContentType = "application/problem+json";
         return new ValueTask(httpContext.Response.WriteAsJsonAsync(
             context.ProblemDetails,
+            (System.Text.Json.JsonSerializerOptions?)null,
+            "application/problem+json",
             context.HttpContext.RequestAborted));
     }
 
@@ -65,13 +66,25 @@ public static class ProblemDetailsConfiguration
     public static WebApplicationBuilder AddProblemDetailsServices(this WebApplicationBuilder builder)
     {
         builder.Services.AddProblemDetails();
+
+        // Replace the default API writer with our custom writer
+        // so that CorrelationIdProblemDetailsWriter is the authoritative writer.
+        var defaultWriters = builder.Services
+            .Where(d => d.ServiceType == typeof(IProblemDetailsWriter))
+            .ToList();
+        foreach (var d in defaultWriters)
+        {
+            builder.Services.Remove(d);
+        }
+
         builder.Services.AddSingleton<IProblemDetailsWriter, CorrelationIdProblemDetailsWriter>();
 
         return builder;
     }
 
     /// <summary>
-    /// Adds the exception handler middleware that produces problem-details responses.
+    /// Adds the exception handler middleware that produces problem-details responses
+    /// via the registered <see cref="IProblemDetailsService"/> and <see cref="IProblemDetailsWriter"/>.
     /// </summary>
     public static WebApplication UseProblemDetailsExceptionHandler(this WebApplication app)
     {
@@ -98,18 +111,17 @@ public static class ProblemDetailsConfiguration
                     ? exceptionFeature.Error.Message
                     : "An error occurred processing your request.";
 
-                var problemJson = JsonSerializer.Serialize(new
+                var problemDetailsService = context.RequestServices.GetRequiredService<IProblemDetailsService>();
+                await problemDetailsService.WriteAsync(new ProblemDetailsContext
                 {
-                    type = "https://workflow-ui/problems/internal-server-error",
-                    title = "Internal Server Error",
-                    status = 500,
-                    detail,
-                    instance = context.Request.Path.Value,
-                    correlationId,
+                    HttpContext = context,
+                    ProblemDetails = new Microsoft.AspNetCore.Mvc.ProblemDetails
+                    {
+                        Status = 500,
+                        Title = "Internal Server Error",
+                        Detail = detail,
+                    },
                 });
-
-                context.Response.ContentType = "application/problem+json";
-                await context.Response.WriteAsync(problemJson);
             });
         });
 

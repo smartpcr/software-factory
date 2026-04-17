@@ -95,7 +95,6 @@ public class ContractDriftCiTests
         w.Line();
         var enumTypes = EnumEmitter.GetEnumTypes();
         EnumEmitter.Emit(w, enumTypes);
-        EnumEmitter.EmitSupportingEnums(w);
         PolicyEmitter.Emit(w);
         DtoEmitter.Emit(w);
         ConnectionEmitter.Emit(w);

@@ -33,10 +33,7 @@ w.Line();
 var enumTypes = EnumEmitter.GetEnumTypes();
 EnumEmitter.Emit(w, enumTypes);
 
-// 1b. Supporting enums (used by policies, not part of the parity fixture)
-EnumEmitter.EmitSupportingEnums(w);
-
-// 2. Policy DTOs
+// 2. Policy DTOs (includes supporting enum types like RetryStrategy)
 PolicyEmitter.Emit(w);
 
 // 3. Node DTOs (base + kinds + union)

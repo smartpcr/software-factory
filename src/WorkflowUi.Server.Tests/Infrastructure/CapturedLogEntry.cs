@@ -16,7 +16,8 @@ public record CapturedLogEntry(
     string CategoryName,
     LogLevel Level,
     string Message,
-    IReadOnlyList<KeyValuePair<string, object?>> Scope);
+    IReadOnlyList<KeyValuePair<string, object?>> Scope,
+    IReadOnlyList<KeyValuePair<string, object?>> State);
 
 /// <summary>
 /// In-memory logger provider that captures log entries with scope data for test assertions.
@@ -71,11 +72,18 @@ public sealed class CapturingLoggerProvider : ILoggerProvider
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
             var scopeSnapshot = this.currentScope.Value ?? [];
+            var stateItems = new List<KeyValuePair<string, object?>>();
+            if (state is IEnumerable<KeyValuePair<string, object?>> pairs)
+            {
+                stateItems.AddRange(pairs);
+            }
+
             this.entries.Add(new CapturedLogEntry(
                 this.categoryName,
                 logLevel,
                 formatter(state, exception),
-                scopeSnapshot.ToList()));
+                scopeSnapshot.ToList(),
+                stateItems));
         }
 
         private sealed class ScopeDisposable : IDisposable

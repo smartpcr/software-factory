@@ -31,7 +31,6 @@ public class ShapeTests
 
         var enumTypes = EnumEmitter.GetEnumTypes();
         EnumEmitter.Emit(w, enumTypes);
-        EnumEmitter.EmitSupportingEnums(w);
         PolicyEmitter.Emit(w);
         DtoEmitter.Emit(w);
         ConnectionEmitter.Emit(w);
@@ -161,5 +160,27 @@ public class ShapeTests
     public void Output_Has_EngineVersion_In_Header()
     {
         Assert.Contains("// Engine assembly version:", this.generatedTs);
+    }
+
+    [Fact]
+    public void EnumEmitter_Returns_Exactly_7_Parity_Enums_Matching_Fixture()
+    {
+        var enumTypes = EnumEmitter.GetEnumTypes();
+        Assert.Equal(7, enumTypes.Count);
+
+        var dir = AppContext.BaseDirectory;
+        while (dir != null && !File.Exists(Path.Combine(dir, "Workflow.sln")))
+        {
+            dir = Path.GetDirectoryName(dir);
+        }
+
+        Assert.NotNull(dir);
+        var fixturePath = Path.Combine(dir!, "src", "WorkflowUI", "src", "__fixtures__", "engine-enums.json");
+        var fixtureJson = File.ReadAllText(fixturePath);
+        var fixture = System.Text.Json.JsonDocument.Parse(fixtureJson);
+        var fixtureNames = fixture.RootElement.EnumerateObject().Select(p => p.Name).ToList();
+
+        var emittedNames = enumTypes.Select(t => t.Name).ToList();
+        Assert.Equal(fixtureNames, emittedNames);
     }
 }

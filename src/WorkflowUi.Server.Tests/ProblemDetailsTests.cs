@@ -95,7 +95,7 @@ public class ProblemDetailsTests : IClassFixture<ThrowingEndpointFactory>
 
 /// <summary>
 /// Factory that provides a throwing endpoint for problem-details tests.
-/// Wires /boom only in the test host, not in production.
+/// Uses IStartupFilter to inject /boom into the production pipeline without rebuilding it.
 /// </summary>
 public class ThrowingEndpointFactory : TestWebApplicationFactory
 {
@@ -103,54 +103,32 @@ public class ThrowingEndpointFactory : TestWebApplicationFactory
     protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
     {
         base.ConfigureWebHost(builder);
-        builder.Configure(app =>
+        builder.ConfigureServices(services =>
         {
-            app.UseMiddleware<CorrelationIdMiddleware>();
-            app.UseMiddleware<RequestLoggingEnricher>();
-
-            // Inline exception handler matching the production ProblemDetailsConfiguration
-            app.UseExceptionHandler(errorApp =>
-            {
-                errorApp.Run(async context =>
-                {
-                    var exceptionFeature = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>();
-                    var correlationId = context.Items["CorrelationId"]?.ToString() ?? "unknown";
-                    var isDev = context.RequestServices.GetRequiredService<Microsoft.AspNetCore.Hosting.IWebHostEnvironment>().IsDevelopment();
-
-                    context.Response.StatusCode = 500;
-
-                    var detail = isDev && exceptionFeature?.Error is not null
-                        ? exceptionFeature.Error.Message
-                        : "An error occurred processing your request.";
-
-                    var problemJson = System.Text.Json.JsonSerializer.Serialize(new
-                    {
-                        type = "https://workflow-ui/problems/internal-server-error",
-                        title = "Internal Server Error",
-                        status = 500,
-                        detail,
-                        instance = context.Request.Path.Value,
-                        correlationId,
-                    });
-
-                    context.Response.ContentType = "application/problem+json";
-                    await context.Response.WriteAsync(problemJson);
-                });
-            });
-
-            app.UseRouting();
-
-#pragma warning disable ASP0014
-            app.UseEndpoints(endpoints =>
-            {
-                endpoints.MapGet("/boom", () =>
-                {
-                    throw new InvalidOperationException("boom");
-                });
-                endpoints.MapGet("/api/health", () =>
-                    Results.Ok(new { status = "ok", timestamp = DateTimeOffset.UtcNow }));
-            });
-#pragma warning restore ASP0014
+            services.AddTransient<Microsoft.AspNetCore.Hosting.IStartupFilter, BoomEndpointStartupFilter>();
         });
+    }
+
+    private sealed class BoomEndpointStartupFilter : Microsoft.AspNetCore.Hosting.IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next)
+        {
+            return app =>
+            {
+                next(app);
+
+                // Add a middleware after the production pipeline that throws on /boom.
+                // The production ExceptionHandler middleware catches the exception.
+                app.Use(async (context, nextMiddleware) =>
+                {
+                    if (context.Request.Path == "/boom")
+                    {
+                        throw new InvalidOperationException("boom");
+                    }
+
+                    await nextMiddleware(context);
+                });
+            };
+        }
     }
 }

@@ -78,4 +78,40 @@ public class RequestLoggingEnricherTests : IClassFixture<TestWebApplicationFacto
         var hasElapsed = enricherLogs.Any(e => e.Message.Contains("ms"));
         Assert.True(hasElapsed, "Expected elapsed time in log message");
     }
+
+    [Fact]
+    public async Task LogState_IncludesStatusCode()
+    {
+        using var client = this.factory.CreateClient();
+        await client.GetAsync("/api/health");
+
+        var enricherLogs = this.factory.LogCapture.Entries
+            .Where(e => e.CategoryName.Contains("RequestLoggingEnricher"))
+            .ToList();
+
+        Assert.NotEmpty(enricherLogs);
+
+        var hasStatusCode = enricherLogs.Any(e =>
+            e.State.Any(kv => kv.Key == "StatusCode" && Convert.ToInt32(kv.Value) == 200));
+
+        Assert.True(hasStatusCode, "Expected 'StatusCode' as structured field in log state");
+    }
+
+    [Fact]
+    public async Task LogState_IncludesElapsedMs()
+    {
+        using var client = this.factory.CreateClient();
+        await client.GetAsync("/api/health");
+
+        var enricherLogs = this.factory.LogCapture.Entries
+            .Where(e => e.CategoryName.Contains("RequestLoggingEnricher"))
+            .ToList();
+
+        Assert.NotEmpty(enricherLogs);
+
+        var hasElapsedMs = enricherLogs.Any(e =>
+            e.State.Any(kv => kv.Key == "ElapsedMs" && kv.Value is long));
+
+        Assert.True(hasElapsedMs, "Expected 'ElapsedMs' as structured field in log state");
+    }
 }

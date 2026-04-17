@@ -15,10 +15,12 @@ using System.Reflection;
 public static class PolicyEmitter
 {
     /// <summary>
-    /// Emits the policy DTO interfaces.
+    /// Emits supporting enum types used by policies (not part of the parity fixture),
+    /// then emits the policy DTO interfaces.
     /// </summary>
     public static void Emit(TsWriter w)
     {
+        EnumEmitter.EmitSupportingEnums(w);
         EmitInterface(w, typeof(ExecutionEngine.Policies.RetryPolicy), "RetryPolicyDto");
         EmitInterface(w, typeof(ExecutionEngine.Policies.CircuitBreakerPolicy), "CircuitBreakerPolicyDto");
     }
