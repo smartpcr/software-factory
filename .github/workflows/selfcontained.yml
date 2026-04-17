@@ -59,26 +59,27 @@ jobs:
           & signtool verify /pa $exePath
           Remove-Item $certPath -Force
 
-      - name: Sign executable (Linux)
-        if: runner.os == 'Linux' && env.SIGN_CERT_BASE64 != ''
+      - name: Sign executable (Linux — GPG detached signature)
+        if: runner.os == 'Linux' && env.GPG_PRIVATE_KEY != ''
         env:
-          SIGN_CERT_BASE64: ${{ secrets.SIGN_CERT_BASE64 }}
-          SIGN_CERT_PASSWORD: ${{ secrets.SIGN_CERT_PASSWORD }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
-          sudo apt-get update && sudo apt-get install -y osslsigncode
-          CERT_PATH="$RUNNER_TEMP/codesign.pfx"
-          echo "$SIGN_CERT_BASE64" | base64 -d > "$CERT_PATH"
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
           EXE_PATH="artifacts/publish/${{ matrix.runtime }}/WorkflowUi.Server"
-          SIGNED_PATH="${EXE_PATH}.signed"
-          osslsigncode sign \
-            -pkcs12 "$CERT_PATH" \
-            -pass "$SIGN_CERT_PASSWORD" \
-            -h sha256 \
-            -ts http://timestamp.digicert.com \
-            -in "$EXE_PATH" \
-            -out "$SIGNED_PATH"
-          mv "$SIGNED_PATH" "$EXE_PATH"
-          rm -f "$CERT_PATH"
+          gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --detach-sign --armor \
+            --output "${EXE_PATH}.asc" \
+            "$EXE_PATH"
+          gpg --verify "${EXE_PATH}.asc" "$EXE_PATH"
+
+      - name: Generate SHA-256 checksum (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cd artifacts/publish/${{ matrix.runtime }}
+          sha256sum WorkflowUi.Server > WorkflowUi.Server.sha256
+          cat WorkflowUi.Server.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
