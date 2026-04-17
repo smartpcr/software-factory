@@ -1,0 +1,40 @@
+workflowId: roundtrip-all-13-kinds
+workflowName: All 13 Kinds
+nodes:
+  - nodeId: n1
+    runtimeType: Noop
+  - nodeId: n2
+    runtimeType: CSharp
+  - nodeId: n3
+    runtimeType: CSharpScript
+    scriptContent: "x"
+  - nodeId: n4
+    runtimeType: CSharpTask
+  - nodeId: n5
+    runtimeType: PowerShell
+  - nodeId: n6
+    runtimeType: PowerShellTask
+  - nodeId: n7
+    runtimeType: IfElse
+    condition: "true"
+  - nodeId: n8
+    runtimeType: ForEach
+    collectionExpression: items
+  - nodeId: n9
+    runtimeType: While
+    conditionExpression: "x<10"
+  - nodeId: n10
+    runtimeType: Switch
+    expression: status
+  - nodeId: n11
+    runtimeType: Subflow
+    workflowFilePath: child.yaml
+  - nodeId: n12
+    runtimeType: Timer
+    schedule: "*/5 * * * *"
+  - nodeId: n13
+    runtimeType: Container
+connections:
+  - sourceNodeId: n1
+    targetNodeId: n2
+    triggerMessageType: Complete

@@ -1,0 +1,10 @@
+{
+  "runtimeType": "Noop",
+  "nodeId": "n1",
+  "nodeName": "NullPolicies",
+  "joinType": "Any",
+  "priority": "Normal",
+  "maxConcurrentExecutions": 0,
+  "retryPolicy": null,
+  "circuitBreakerPolicy": null
+}

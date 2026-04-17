@@ -1,0 +1,20 @@
+workflowId: container-nested
+workflowName: Container Nested
+nodes:
+  - nodeId: c1
+    nodeName: Outer
+    runtimeType: Container
+    executionMode: Sequential
+    childNodes:
+      - nodeId: c2
+        nodeName: Inner
+        runtimeType: Container
+        executionMode: Parallel
+        childNodes:
+          - nodeId: c2a
+            nodeName: Leaf A
+            runtimeType: Noop
+          - nodeId: c2b
+            nodeName: Leaf B
+            runtimeType: Noop
+connections: []

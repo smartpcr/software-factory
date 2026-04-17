@@ -1,0 +1,33 @@
+workflowId: switch-3-cases
+workflowName: Switch 3 Cases
+nodes:
+  - nodeId: sw1
+    nodeName: Route
+    runtimeType: Switch
+    expression: status
+    cases:
+      ready: Continue
+      waiting: Hold
+      error: Fail
+  - nodeId: n1
+    nodeName: Ready
+    runtimeType: Noop
+  - nodeId: n2
+    nodeName: Waiting
+    runtimeType: Noop
+  - nodeId: n3
+    nodeName: Error
+    runtimeType: Noop
+connections:
+  - sourceNodeId: sw1
+    targetNodeId: n1
+    triggerMessageType: Complete
+    condition: ready
+  - sourceNodeId: sw1
+    targetNodeId: n2
+    triggerMessageType: Complete
+    condition: waiting
+  - sourceNodeId: sw1
+    targetNodeId: n3
+    triggerMessageType: Complete
+    condition: error

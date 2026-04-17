@@ -1,0 +1,8 @@
+workflowId: timer-empty-schedule
+workflowName: Timer Empty Schedule (Negative)
+nodes:
+  - nodeId: t1
+    nodeName: Empty
+    runtimeType: Timer
+    schedule: ""
+connections: []

@@ -1,0 +1,8 @@
+workflowId: timer-duration-iso
+workflowName: Timer Duration ISO
+nodes:
+  - nodeId: t1
+    nodeName: ISO Duration
+    runtimeType: Timer
+    schedule: P1D
+connections: []

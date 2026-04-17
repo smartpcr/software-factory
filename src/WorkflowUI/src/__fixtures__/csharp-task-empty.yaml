@@ -1,0 +1,7 @@
+workflowId: csharp-task-empty
+workflowName: CSharp Task Empty (Draft)
+nodes:
+  - nodeId: cst1
+    nodeName: Empty Draft
+    runtimeType: CSharpTask
+connections: []

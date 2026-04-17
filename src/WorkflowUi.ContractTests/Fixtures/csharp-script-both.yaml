@@ -1,0 +1,9 @@
+workflowId: csharp-script-both
+workflowName: CSharp Script Both (Negative)
+nodes:
+  - nodeId: css1
+    nodeName: Both Set
+    runtimeType: CSharpScript
+    scriptPath: scripts/task.csx
+    scriptContent: 'Console.WriteLine("hello");'
+connections: []

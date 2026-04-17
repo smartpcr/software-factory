@@ -1,0 +1,14 @@
+workflowId: powershell-script-with-modules
+workflowName: PowerShell Script With Modules
+nodes:
+  - nodeId: ps1
+    nodeName: Deploy Script
+    runtimeType: PowerShell
+    scriptPath: "scripts/deploy.ps1"
+    requiredModules:
+      - Az.Accounts
+      - Az.Storage
+    modulePaths:
+      Az.Accounts: "./modules/Az.Accounts"
+      Az.Storage: "./modules/Az.Storage"
+connections: []

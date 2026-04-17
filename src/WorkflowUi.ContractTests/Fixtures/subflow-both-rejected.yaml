@@ -1,0 +1,14 @@
+workflowId: subflow-both-rejected
+workflowName: Subflow Both Rejected (Negative)
+nodes:
+  - nodeId: sf1
+    nodeName: Both Set
+    runtimeType: Subflow
+    workflowFilePath: child.yaml
+    workflowDefinition:
+      workflowId: inline
+      nodes:
+        - nodeId: x
+          runtimeType: Noop
+      connections: []
+connections: []

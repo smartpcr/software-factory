@@ -1,0 +1,8 @@
+workflowId: csharp-script-file
+workflowName: CSharp Script File
+nodes:
+  - nodeId: css1
+    nodeName: File Script
+    runtimeType: CSharpScript
+    scriptPath: scripts/task.csx
+connections: []

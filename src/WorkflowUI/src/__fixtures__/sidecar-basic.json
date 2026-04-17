@@ -1,0 +1,12 @@
+{
+  "version": "1.0",
+  "workflowFile": "test.yaml",
+  "nodePositions": {
+    "n1": { "x": 100, "y": 200 },
+    "n2": { "x": 300, "y": 400 }
+  },
+  "nodeColors": {},
+  "nodeCollapsed": {},
+  "notes": [],
+  "edgeLabelOffsets": {}
+}

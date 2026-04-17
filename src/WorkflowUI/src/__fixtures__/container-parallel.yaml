@@ -1,0 +1,15 @@
+workflowId: container-parallel
+workflowName: Container Parallel
+nodes:
+  - nodeId: c1
+    nodeName: Parallel Container
+    runtimeType: Container
+    executionMode: Parallel
+    childNodes:
+      - nodeId: c1a
+        nodeName: Branch A
+        runtimeType: Noop
+      - nodeId: c1b
+        nodeName: Branch B
+        runtimeType: Noop
+connections: []

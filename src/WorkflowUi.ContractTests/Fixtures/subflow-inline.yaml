@@ -1,0 +1,15 @@
+workflowId: subflow-inline
+workflowName: Subflow Inline
+nodes:
+  - nodeId: sf1
+    nodeName: Inline Subflow
+    runtimeType: Subflow
+    workflowDefinition:
+      workflowId: inline-child
+      workflowName: Inline Child
+      nodes:
+        - nodeId: ic1
+          nodeName: InlineStart
+          runtimeType: Noop
+      connections: []
+connections: []
