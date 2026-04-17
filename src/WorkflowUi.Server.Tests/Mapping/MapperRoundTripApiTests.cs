@@ -11,12 +11,13 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using WorkflowUi.Server.Mapping;
+using WorkflowUi.Server.Tests.Infrastructure;
 using Xunit;
 
 /// <summary>
 /// WebApplicationFactory tests for the mapper round-trip endpoint.
 /// </summary>
-public class MapperRoundTripApiTests : IClassFixture<WebApplicationFactory<Program>>
+public class MapperRoundTripApiTests : IClassFixture<TestWebApplicationFactory>
 {
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -26,7 +27,7 @@ public class MapperRoundTripApiTests : IClassFixture<WebApplicationFactory<Progr
 
     private readonly HttpClient client;
 
-    public MapperRoundTripApiTests(WebApplicationFactory<Program> factory)
+    public MapperRoundTripApiTests(TestWebApplicationFactory factory)
     {
         this.client = factory.CreateClient();
     }
