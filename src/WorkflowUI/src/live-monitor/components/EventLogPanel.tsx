@@ -1,12 +1,28 @@
 /**
  * Event log side panel with filters by kind, nodeId, and messageType.
  */
-import type { RunEvent } from '../../telemetry/types';
+import type { RunEvent, RunEventKind } from '../../telemetry/types';
 import { useTelemetryStore, filterEvents } from '../store/telemetryStore';
 
 export interface EventLogPanelProps {
   onEventSelect?: (event: RunEvent) => void;
 }
+
+const ALL_KINDS: RunEventKind[] = [
+  'WorkflowStarted',
+  'WorkflowCompleted',
+  'WorkflowFailed',
+  'WorkflowCancelled',
+  'NodeStarted',
+  'NodeCompleted',
+  'NodeFailed',
+  'NodeCancelled',
+  'NodeProgress',
+  'EdgeActivated',
+  'NodeSkipped',
+];
+
+const MESSAGE_TYPES = ['Complete', 'Fail', 'Cancel'];
 
 export function EventLogPanel({ onEventSelect }: EventLogPanelProps) {
   const events = useTelemetryStore((s) => s.events);
@@ -14,6 +30,16 @@ export function EventLogPanel({ onEventSelect }: EventLogPanelProps) {
   const setFilters = useTelemetryStore((s) => s.setFilters);
 
   const filteredEvents = filterEvents(events, filters);
+
+  const handleKindToggle = (kind: RunEventKind) => {
+    const next = new Set(filters.kinds);
+    if (next.has(kind)) {
+      next.delete(kind);
+    } else {
+      next.add(kind);
+    }
+    setFilters({ kinds: next });
+  };
 
   return (
     <div className="event-log-panel" role="log" aria-label="Event log">
@@ -27,6 +53,33 @@ export function EventLogPanel({ onEventSelect }: EventLogPanelProps) {
             setFilters({ nodeId: e.target.value || null })
           }
         />
+        <select
+          aria-label="Filter by message type"
+          value={filters.messageType ?? ''}
+          onChange={(e) =>
+            setFilters({ messageType: e.target.value || null })
+          }
+        >
+          <option value="">All message types</option>
+          {MESSAGE_TYPES.map((mt) => (
+            <option key={mt} value={mt}>
+              {mt}
+            </option>
+          ))}
+        </select>
+        <fieldset className="kind-filters" aria-label="Filter by event kind">
+          {ALL_KINDS.map((kind) => (
+            <label key={kind} className="kind-checkbox">
+              <input
+                type="checkbox"
+                checked={filters.kinds.size === 0 || filters.kinds.has(kind)}
+                onChange={() => handleKindToggle(kind)}
+                aria-label={`Filter ${kind}`}
+              />
+              <span>{kind}</span>
+            </label>
+          ))}
+        </fieldset>
       </div>
       <div className="event-log-list" role="list">
         {filteredEvents.map((event) => (
@@ -55,4 +108,4 @@ export function EventLogPanel({ onEventSelect }: EventLogPanelProps) {
       </div>
     </div>
   );
-};
+}
