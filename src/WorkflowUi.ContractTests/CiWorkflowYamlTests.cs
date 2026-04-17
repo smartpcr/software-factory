@@ -311,6 +311,6 @@ public class CiWorkflowYamlTests
         Assert.Contains("Parity (EnumParity)", text);
         Assert.Contains("Parity (DtoParity)", text);
         Assert.Contains("Parity (YamlRoundTrip)", text);
-        Assert.Contains("10 checks", text);
+        Assert.Contains("12 checks", text);
     }
 }

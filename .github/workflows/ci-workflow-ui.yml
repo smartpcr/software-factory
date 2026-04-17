@@ -359,3 +359,49 @@ jobs:
         with:
           name: playwright-report
           path: src/WorkflowUI/playwright-report/
+
+  helm-lint:
+    name: Helm lint & template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.15.4
+
+      - name: Lint chart
+        run: helm lint deploy/helm/workflow-ui
+
+      - name: Template chart
+        run: helm template workflow-ui deploy/helm/workflow-ui > /dev/null
+
+  openapi-export:
+    name: Export OpenAPI spec
+    needs: build-dotnet
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: dotnet restore Workflow.sln
+      - run: dotnet build Workflow.sln -c Release --no-restore
+
+      - name: Install Swashbuckle CLI
+        run: dotnet tool install --global Swashbuckle.AspNetCore.Cli --version 6.9.0
+
+      - name: Generate OpenAPI spec
+        shell: pwsh
+        run: |
+          swagger tofile `
+            --output docs/workflow-ui/api/openapi.json `
+            src/WorkflowUi.Server/bin/Release/net8.0/win-x64/WorkflowUi.Server.dll `
+            v1
+
+      - name: Upload OpenAPI spec
+        uses: actions/upload-artifact@v4
+        with:
+          name: openapi-spec
+          path: docs/workflow-ui/api/openapi.json

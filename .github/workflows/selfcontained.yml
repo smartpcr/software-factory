@@ -1,0 +1,88 @@
+name: Self-Contained Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            runtime: win-x64
+            script: deploy/publish/publish-selfcontained.ps1
+          - os: ubuntu-latest
+            runtime: linux-x64
+            script: deploy/publish/publish-selfcontained.sh
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Publish (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ${{ matrix.script }} -Runtime ${{ matrix.runtime }}
+
+      - name: Publish (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          chmod +x ${{ matrix.script }}
+          bash ${{ matrix.script }} ${{ matrix.runtime }}
+
+      - name: Sign executable (Windows)
+        if: runner.os == 'Windows' && env.SIGN_CERT_BASE64 != ''
+        shell: pwsh
+        env:
+          SIGN_CERT_BASE64: ${{ secrets.SIGN_CERT_BASE64 }}
+          SIGN_CERT_PASSWORD: ${{ secrets.SIGN_CERT_PASSWORD }}
+        run: |
+          $certPath = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:SIGN_CERT_BASE64))
+          $exePath = "artifacts/publish/${{ matrix.runtime }}/WorkflowUi.Server.exe"
+          & signtool sign /f $certPath /p $env:SIGN_CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $exePath
+          & signtool verify /pa $exePath
+          Remove-Item $certPath -Force
+
+      - name: Sign executable (Linux — GPG detached signature)
+        if: runner.os == 'Linux' && env.GPG_PRIVATE_KEY != ''
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          EXE_PATH="artifacts/publish/${{ matrix.runtime }}/WorkflowUi.Server"
+          gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --detach-sign --armor \
+            --output "${EXE_PATH}.asc" \
+            "$EXE_PATH"
+          gpg --verify "${EXE_PATH}.asc" "$EXE_PATH"
+
+      - name: Generate SHA-256 checksum (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cd artifacts/publish/${{ matrix.runtime }}
+          sha256sum WorkflowUi.Server > WorkflowUi.Server.sha256
+          cat WorkflowUi.Server.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-ui-${{ matrix.runtime }}
+          path: artifacts/publish/${{ matrix.runtime }}/

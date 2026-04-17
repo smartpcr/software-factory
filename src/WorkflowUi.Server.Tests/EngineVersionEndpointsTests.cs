@@ -43,7 +43,7 @@ public class EngineVersionEndpointsTests : IClassFixture<TestWebApplicationFacto
         var version = doc.RootElement.GetProperty("engineAssemblyVersion").GetString();
         Assert.NotNull(version);
         Assert.NotEmpty(version);
-        Assert.True(Version.TryParse(version, out _));
+        Assert.True(System.Version.TryParse(version, out _));
     }
 
     [Fact]
