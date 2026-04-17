@@ -1,16 +1,16 @@
 # Stage 2.3 — Control-flow kinds
 
 **Phase:** Phase 2 — Node Kinds, Schemas, Round-Trip
-**Stage status:** [ ]
+**Stage status:** [x]
 **Total effort:** 7.5 d
 **Step count:** 4
 
 ## Steps
 
-- [ ] **Step 1**: `IfElse` kind
-- [ ] **Step 2**: `Switch` kind
-- [ ] **Step 3**: `ForEach` kind
-- [ ] **Step 4**: `While` kind
+- [x] **Step 1**: `IfElse` kind
+- [x] **Step 2**: `Switch` kind
+- [x] **Step 3**: `ForEach` kind
+- [x] **Step 4**: `While` kind
 
 ---
 ## Context
@@ -117,12 +117,12 @@ Implement `IfElseNodeDefinition` per `src/ExecutionEngine/Nodes/Definitions/IfEl
 - Update `node-union.ts` to use `ifElseNodeSchema`.
 
 ### Acceptance criteria
-- [ ] DTO has exactly 1 extra property: `condition`.
-- [ ] Condition is non-empty string; empty fails.
-- [ ] `BranchAsEdgesInvariantTests_NoDtoContains_trueBranch` passes.
-- [ ] Engine round-trip preserves condition text verbatim (including spaces and unusual characters).
-- [ ] `.strict()` rejects `trueBranch` / `falseBranch` if a migration script ever tries to add them — belt-and-braces.
-- [ ] Two-edge fixture round-trips; edge `Condition` values (`"true"`, `"false"`) preserved verbatim.
+- [x] DTO has exactly 1 extra property: `condition`.
+- [x] Condition is non-empty string; empty fails.
+- [x] `BranchAsEdgesInvariantTests_NoDtoContains_trueBranch` passes.
+- [x] Engine round-trip preserves condition text verbatim (including spaces and unusual characters).
+- [x] `.strict()` rejects `trueBranch` / `falseBranch` if a migration script ever tries to add them — belt-and-braces.
+- [x] Two-edge fixture round-trips; edge `Condition` values (`"true"`, `"false"`) preserved verbatim.
 
 ### Unit tests
 1. `IfElseSchema_ValidCondition_Parses`
@@ -229,14 +229,14 @@ Critical semantic: `Cases` keys are CASE VALUES (match targets), `Cases` values 
 - Update `node-union.ts`.
 
 ### Acceptance criteria
-- [ ] DTO has exactly 2 extras (`expression`, `cases`).
-- [ ] `cases` is `Record<string, string>` — both sides strings.
-- [ ] Empty expression fails.
-- [ ] Empty `cases` object parses (draft).
-- [ ] Non-string case value fails (e.g., `{ready: 123}`).
-- [ ] Non-string case key impossible (JSON/YAML keys are always strings).
-- [ ] Round-trip preserves case iteration order (engine uses `Dictionary<string,string>` — .NET dictionaries preserve insertion order since .NET Core 2.0+).
-- [ ] `BranchAsEdgesInvariantTests` still passes (no `defaultCase` field).
+- [x] DTO has exactly 2 extras (`expression`, `cases`).
+- [x] `cases` is `Record<string, string>` — both sides strings.
+- [x] Empty expression fails.
+- [x] Empty `cases` object parses (draft).
+- [x] Non-string case value fails (e.g., `{ready: 123}`).
+- [x] Non-string case key impossible (JSON/YAML keys are always strings).
+- [x] Round-trip preserves case iteration order (engine uses `Dictionary<string,string>` — .NET dictionaries preserve insertion order since .NET Core 2.0+).
+- [x] `BranchAsEdgesInvariantTests` still passes (no `defaultCase` field).
 
 ### Unit tests
 1. `SwitchSchema_3Cases_Parses`
@@ -344,13 +344,13 @@ The body of the loop is a child subgraph reached via an outgoing edge with `Trig
 - Tests pinning the message-type contract for body vs exit edges.
 
 ### Acceptance criteria
-- [ ] DTO has 2 extras matching engine.
-- [ ] `itemVariableName` defaults to `"item"` matching engine default.
-- [ ] Empty collection expression fails.
-- [ ] Empty item-var fails.
-- [ ] Body edge uses `TriggerMessageType: Next`; exit edge uses `Complete`. This is a fixture-level test (Phase 3 port matrix formalises as a lint rule).
-- [ ] Round-trip preserves both fields.
-- [ ] `BranchAsEdgesInvariantTests` unchanged.
+- [x] DTO has 2 extras matching engine.
+- [x] `itemVariableName` defaults to `"item"` matching engine default.
+- [x] Empty collection expression fails.
+- [x] Empty item-var fails.
+- [x] Body edge uses `TriggerMessageType: Next`; exit edge uses `Complete`. This is a fixture-level test (Phase 3 port matrix formalises as a lint rule).
+- [x] Round-trip preserves both fields.
+- [x] `BranchAsEdgesInvariantTests` unchanged.
 
 ### Unit tests
 1. `ForEachSchema_Minimal_Parses`
@@ -450,14 +450,14 @@ Body is an outgoing edge with `TriggerMessageType: Next`; exit is `Complete`. Sa
 - Tests.
 
 ### Acceptance criteria
-- [ ] 2 extras matching engine.
-- [ ] `maxIterations` default `1000`.
-- [ ] `maxIterations: 0` fails.
-- [ ] `maxIterations: 1_000_001` fails (DTO-imposed safety ceiling; engine itself accepts larger but we cap for UI sanity).
-- [ ] `maxIterations: 1` parses.
-- [ ] Empty condition fails.
-- [ ] Round-trip preserves `maxIterations`.
-- [ ] Body edge `Next`, exit edge `Complete` — fixture-level.
+- [x] 2 extras matching engine.
+- [x] `maxIterations` default `1000`.
+- [x] `maxIterations: 0` fails.
+- [x] `maxIterations: 1_000_001` fails (DTO-imposed safety ceiling; engine itself accepts larger but we cap for UI sanity).
+- [x] `maxIterations: 1` parses.
+- [x] Empty condition fails.
+- [x] Round-trip preserves `maxIterations`.
+- [x] Body edge `Next`, exit edge `Complete` — fixture-level.
 
 ### Unit tests
 1. `WhileSchema_Minimal_Parses`

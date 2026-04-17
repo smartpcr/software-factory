@@ -1,14 +1,14 @@
 # Stage 2.1 — Base DTO + discriminator
 
 **Phase:** Phase 2 — Node Kinds, Schemas, Round-Trip
-**Stage status:** [ ]
+**Stage status:** [x]
 **Total effort:** 3 d
 **Step count:** 2
 
 ## Steps
 
-- [ ] **Step 1**: `NodeDtoBase` type + Zod schema
-- [ ] **Step 2**: Discriminated-union plumbing + `assertNever` exhaustiveness
+- [x] **Step 1**: `NodeDtoBase` type + Zod schema
+- [x] **Step 2**: Discriminated-union plumbing + `assertNever` exhaustiveness
 
 ---
 ## Context
@@ -163,17 +163,17 @@ Produce a hand-written (but generator-aligned) TypeScript interface `NodeDtoBase
 - `src/WorkflowUi.ContractTests/NodeBaseRoundTripTests.cs` (new) — null-vs-empty preservation through engine `WorkflowSerializer.ToYaml` and back.
 
 ### Acceptance criteria
-- [ ] `nodeBaseSchema.parse(fixture)` succeeds for all 4 fixtures.
-- [ ] `nodeBaseSchema.parse({})` fails on missing `runtimeType` and `nodeId`.
-- [ ] `retryPolicy: null` stays `null` after parse (not coerced to `{}` or `undefined`).
-- [ ] `retryPolicy: undefined` stays `undefined` / absent.
-- [ ] `retryPolicy: {}` is an error (required fields would be missing after default-apply — a strict object with all defaults applied, so actually `{}` parses to the full defaults object; this behaviour is asserted explicitly so the reviewer understands).
-- [ ] `maxConcurrentExecutions: -1` fails validation (range 0..100 per `NodeDefinition.cs:64`).
-- [ ] `maxAttempts: 11` fails validation (range 1..10 per `RetryPolicy.cs:47`).
-- [ ] `failureThreshold: 150` fails validation (range 0..100 per `CircuitBreakerPolicy.cs:34`).
-- [ ] TS type `NodeDtoBase` has exactly 12 known keys (11 engine + `runtimeType`).
-- [ ] `configuration` accepts arbitrary `Record<string, unknown>` (including nested objects, arrays, booleans).
-- [ ] Round-trip through engine `WorkflowSerializer` preserves `null` vs empty-object for both policies (per `NodeBaseRoundTripTests_NullPolicy_StaysNull_AfterSerialize`).
+- [x] `nodeBaseSchema.parse(fixture)` succeeds for all 4 fixtures.
+- [x] `nodeBaseSchema.parse({})` fails on missing `runtimeType` and `nodeId`.
+- [x] `retryPolicy: null` stays `null` after parse (not coerced to `{}` or `undefined`).
+- [x] `retryPolicy: undefined` stays `undefined` / absent.
+- [x] `retryPolicy: {}` is an error (required fields would be missing after default-apply — a strict object with all defaults applied, so actually `{}` parses to the full defaults object; this behaviour is asserted explicitly so the reviewer understands).
+- [x] `maxConcurrentExecutions: -1` fails validation (range 0..100 per `NodeDefinition.cs:64`).
+- [x] `maxAttempts: 11` fails validation (range 1..10 per `RetryPolicy.cs:47`).
+- [x] `failureThreshold: 150` fails validation (range 0..100 per `CircuitBreakerPolicy.cs:34`).
+- [x] TS type `NodeDtoBase` has exactly 12 known keys (11 engine + `runtimeType`).
+- [x] `configuration` accepts arbitrary `Record<string, unknown>` (including nested objects, arrays, booleans).
+- [x] Round-trip through engine `WorkflowSerializer` preserves `null` vs empty-object for both policies (per `NodeBaseRoundTripTests_NullPolicy_StaysNull_AfterSerialize`).
 
 ### Unit tests
 1. `NodeBaseSchema_MinimalFixture_Parses`
@@ -300,14 +300,14 @@ Define the initial shape of the `NodeDto` discriminated union in `src/WorkflowUI
 - `src/WorkflowUI/src/__fixtures__/node-union.all-13-kinds.json` (new) — array with one node per kind, used by exhaustiveness tests.
 
 ### Acceptance criteria
-- [ ] `nodeDtoSchema` has exactly 13 discriminated members, one per `RuntimeType` value.
-- [ ] `handleNode` forces the caller to provide a handler for every runtime type at compile time.
-- [ ] A deliberate removal of one handler fails `tsc --strict` with a type-level error.
-- [ ] `assertNever` (from 1.2.3) is the default-branch pattern in any switch; a sample usage is documented.
-- [ ] Runtime `parse()` on the union fixture-array succeeds for all 13 placeholder-kind entries.
-- [ ] `parse()` fails with a clear Zod error on `runtimeType: 'Mystery'`.
-- [ ] The union is re-exported only from the facade; direct imports of `./schemas/node-union` from `engine-contract.generated.ts` are not possible (nothing in the generator points at this file — it's pure UI-land).
-- [ ] Type-level test proves `handleNode<string>` return type is `string`.
+- [x] `nodeDtoSchema` has exactly 13 discriminated members, one per `RuntimeType` value.
+- [x] `handleNode` forces the caller to provide a handler for every runtime type at compile time.
+- [x] A deliberate removal of one handler fails `tsc --strict` with a type-level error.
+- [x] `assertNever` (from 1.2.3) is the default-branch pattern in any switch; a sample usage is documented.
+- [x] Runtime `parse()` on the union fixture-array succeeds for all 13 placeholder-kind entries.
+- [x] `parse()` fails with a clear Zod error on `runtimeType: 'Mystery'`.
+- [x] The union is re-exported only from the facade; direct imports of `./schemas/node-union` from `engine-contract.generated.ts` are not possible (nothing in the generator points at this file — it's pure UI-land).
+- [x] Type-level test proves `handleNode<string>` return type is `string`.
 
 ### Unit tests
 1. `NodeUnion_Parse_AllKinds_Valid`

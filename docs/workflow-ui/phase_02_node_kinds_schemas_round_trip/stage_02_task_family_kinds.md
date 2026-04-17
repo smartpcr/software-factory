@@ -1,18 +1,18 @@
 # Stage 2.2 — Task-family kinds
 
 **Phase:** Phase 2 — Node Kinds, Schemas, Round-Trip
-**Stage status:** [ ]
+**Stage status:** [x]
 **Total effort:** 7.5 d
 **Step count:** 6
 
 ## Steps
 
-- [ ] **Step 1**: `Noop` kind
-- [ ] **Step 2**: `CSharp` kind (assembly + type)
-- [ ] **Step 3**: `CSharpScript` kind
-- [ ] **Step 4**: `CSharpTask` kind
-- [ ] **Step 5**: `PowerShell` kind (script-file)
-- [ ] **Step 6**: `PowerShellTask` kind
+- [x] **Step 1**: `Noop` kind
+- [x] **Step 2**: `CSharp` kind (assembly + type)
+- [x] **Step 3**: `CSharpScript` kind
+- [x] **Step 4**: `CSharpTask` kind
+- [x] **Step 5**: `PowerShell` kind (script-file)
+- [x] **Step 6**: `PowerShellTask` kind
 
 ---
 ## Context
@@ -150,12 +150,12 @@ Implement the simplest runtime kind. `NoopNodeDefinition` (per `src/ExecutionEng
 - `src/WorkflowUi.ContractTests/TaskFamilyRoundTripTests.cs` — one row referencing this fixture.
 
 ### Acceptance criteria
-- [ ] `noopNodeSchema.parse(fixtureNode)` succeeds.
-- [ ] Adding ANY extra property fails because of `.strict()` — the schema rejects unknown keys.
-- [ ] Engine round-trip via `WorkflowLoader.Load("noop-minimal.yaml")` yields a single `NoopNodeDefinition` with the matching `NodeId`.
-- [ ] After re-serializing via `WorkflowSerializer.ToYaml`, the YAML text diffs only in whitespace / key order against the fixture (canonicaliser handles the comparison).
-- [ ] `node-union.ts` still has 13 members and exhaustiveness compiles.
-- [ ] `noopNodeSchema.shape` has exactly 12 keys (11 base + discriminator).
+- [x] `noopNodeSchema.parse(fixtureNode)` succeeds.
+- [x] Adding ANY extra property fails because of `.strict()` — the schema rejects unknown keys.
+- [x] Engine round-trip via `WorkflowLoader.Load("noop-minimal.yaml")` yields a single `NoopNodeDefinition` with the matching `NodeId`.
+- [x] After re-serializing via `WorkflowSerializer.ToYaml`, the YAML text diffs only in whitespace / key order against the fixture (canonicaliser handles the comparison).
+- [x] `node-union.ts` still has 13 members and exhaustiveness compiles.
+- [x] `noopNodeSchema.shape` has exactly 12 keys (11 base + discriminator).
 
 ### Unit tests
 1. `NoopNodeSchema_MinimalFixture_Parses`
@@ -258,12 +258,12 @@ Implement `CSharpNodeDefinition` (per `src/ExecutionEngine/Nodes/Definitions/CSh
 - TaskFamilyRoundTripTests row for both fixtures.
 
 ### Acceptance criteria
-- [ ] Schema accepts both null and absent for each property.
-- [ ] Schema rejects `assemblyPath: 42`.
-- [ ] `.strict()` rejects unknown keys.
-- [ ] Round-trip preserves null vs absent distinction exactly (null stays null, undefined drops from YAML emit — document this).
-- [ ] `csharp-absent-type.yaml` loads successfully via engine (matches C# null handling).
-- [ ] 2 extra properties matches reflection output.
+- [x] Schema accepts both null and absent for each property.
+- [x] Schema rejects `assemblyPath: 42`.
+- [x] `.strict()` rejects unknown keys.
+- [x] Round-trip preserves null vs absent distinction exactly (null stays null, undefined drops from YAML emit — document this).
+- [x] `csharp-absent-type.yaml` loads successfully via engine (matches C# null handling).
+- [x] 2 extra properties matches reflection output.
 
 ### Unit tests
 1. `CSharpNodeSchema_Minimal_Parses`
@@ -368,10 +368,10 @@ Engine validates exactly one is populated (lines 42-58). The DTO accepts either-
 - Tests including the `.superRefine` negative path.
 
 ### Acceptance criteria
-- [ ] `scriptPath`/`scriptContent` both default to `""` matching engine.
-- [ ] ONE-of validation catches `{ scriptPath: '', scriptContent: '' }`.
-- [ ] BOTH populated is a warning, not an error, in draft mode; becomes an error in strict publish mode.
-- [ ] Engine's `Validate()` behaviour (both-empty-throws) matches the Zod superRefine assertion.
+- [x] `scriptPath`/`scriptContent` both default to `""` matching engine.
+- [x] ONE-of validation catches `{ scriptPath: '', scriptContent: '' }`.
+- [x] BOTH populated is a warning, not an error, in draft mode; becomes an error in strict publish mode.
+- [x] Engine's `Validate()` behaviour (both-empty-throws) matches the Zod superRefine assertion.
 
 ### Unit tests
 1. `CSharpScriptSchema_InlineOnly_Parses`
@@ -475,10 +475,10 @@ Unlike `CSharpScript`, all three are genuinely nullable. Engine doesn't require 
 - Tests: nullable handling across all 3 props + combinations.
 
 ### Acceptance criteria
-- [ ] All three properties nullable AND optional.
-- [ ] Draft fixture (all absent) parses and round-trips.
-- [ ] Engine reflection shows exactly these 3 extras.
-- [ ] `.strict()` rejects `executor_type_name` (snake_case).
+- [x] All three properties nullable AND optional.
+- [x] Draft fixture (all absent) parses and round-trips.
+- [x] Engine reflection shows exactly these 3 extras.
+- [x] `.strict()` rejects `executor_type_name` (snake_case).
 
 ### Unit tests
 1. `CSharpTaskSchema_ExecutorOnly_Parses`
@@ -576,13 +576,13 @@ Implement `PowerShellScriptNodeDefinition` per `src/ExecutionEngine/Nodes/Defini
 - Fixture `powershell-script-empty-path.yaml` (scriptPath: `""`) — engine loads; runtime binder fails; DTO parses.
 
 ### Acceptance criteria
-- [ ] Discriminator literal is exactly `'PowerShell'` (not `'PowerShellScript'`).
-- [ ] `scriptPath` non-nullable; defaults to `""`.
-- [ ] Both module lists nullable AND optional.
-- [ ] Arrays of strings enforced (no `z.unknown()`).
-- [ ] `.strict()` rejects `script_path`.
-- [ ] Round-trip preserves module list order.
-- [ ] Engine reflection yields exactly 3 extras.
+- [x] Discriminator literal is exactly `'PowerShell'` (not `'PowerShellScript'`).
+- [x] `scriptPath` non-nullable; defaults to `""`.
+- [x] Both module lists nullable AND optional.
+- [x] Arrays of strings enforced (no `z.unknown()`).
+- [x] `.strict()` rejects `script_path`.
+- [x] Round-trip preserves module list order.
+- [x] Engine reflection yields exactly 3 extras.
 
 ### Unit tests
 1. `PowerShellSchema_MinimalScriptPath_Parses`
@@ -684,11 +684,11 @@ Implement `PowerShellTaskNodeDefinition` per `src/ExecutionEngine/Nodes/Definiti
 - Tests pinning the engine quirk.
 
 ### Acceptance criteria
-- [ ] `scriptPath` nullable (both type and runtime states).
-- [ ] Preserves null vs `""` distinction.
-- [ ] Engine emits `""` for a default-constructed node; fixture `powershell-task-engine-quirk.yaml` asserts this as a known quirk.
-- [ ] 4 extras in parity reflection.
-- [ ] `.strict()` rejects extras.
+- [x] `scriptPath` nullable (both type and runtime states).
+- [x] Preserves null vs `""` distinction.
+- [x] Engine emits `""` for a default-constructed node; fixture `powershell-task-engine-quirk.yaml` asserts this as a known quirk.
+- [x] 4 extras in parity reflection.
+- [x] `.strict()` rejects extras.
 
 ### Unit tests
 1. `PowerShellTaskSchema_InlineScriptContent_Parses`

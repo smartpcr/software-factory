@@ -475,6 +475,18 @@ async function runTargetLoop(sessionId, run, target, targetIndex) {
                             )
                         }
                     }
+
+                    // Update stage status marker in stage doc files
+                    if (target.stagePlanPath) {
+                        const stageUpdated = await updateStageStatusMarker(target.stagePlanPath, "x")
+                        if (stageUpdated) {
+                            await session.log(
+                                `phase-loop marked stage status as [x] (complete) in ${target.stagePlanPath}.`,
+                                { level: "info" }
+                            )
+                        }
+                    }
+
                     await session.log(
                         `phase-loop complete for ${formatScope(target)} with score ${run.lastEvaluation.score}% and no medium-or-higher gaps.`,
                         { level: "info" }
@@ -1483,6 +1495,20 @@ async function discoverSteps(filePath) {
 }
 
 async function updateStepMarkerInFile(filePath, stepNumber, newMarker) {
+    // Update in both the primary file and any discovered stage doc files
+    const filesToUpdate = await getAllSpecPaths(filePath)
+    let anyUpdated = false
+
+    for (const targetFile of filesToUpdate) {
+        const updated = await updateStepMarkerInSingleFile(targetFile, stepNumber, newMarker)
+        if (updated)
+            anyUpdated = true
+    }
+
+    return anyUpdated
+}
+
+async function updateStepMarkerInSingleFile(filePath, stepNumber, newMarker) {
     if (!filePath || !await fileExists(filePath))
         return false
 
@@ -1510,8 +1536,49 @@ async function updateStepMarkerInFile(filePath, stepNumber, newMarker) {
     }
 }
 
+async function updateStageStatusMarker(filePath, newMarker) {
+    if (!filePath || !await fileExists(filePath))
+        return false
+
+    let content
+    try {
+        content = await readFile(filePath, "utf-8")
+    } catch {
+        return false
+    }
+
+    // Match "**Stage status:** [ ]" or "[x]" etc.
+    const stageStatusPattern = /^(\*\*Stage status:\*\*\s*)\[[ xX~>!?-]\]/m
+    const updated = content.replace(stageStatusPattern, `$1[${newMarker}]`)
+    if (updated === content)
+        return false
+
+    try {
+        await writeFile(filePath, updated, "utf-8")
+        return true
+    } catch {
+        return false
+    }
+}
+
 async function updateAcceptanceCriteriaCheckboxes(filePath, acceptanceCriteria) {
-    if (!filePath || !await fileExists(filePath) || !acceptanceCriteria || acceptanceCriteria.length === 0)
+    if (!acceptanceCriteria || acceptanceCriteria.length === 0)
+        return 0
+
+    // Collect all spec files to update (primary + any stage doc files)
+    const filesToUpdate = await getAllSpecPaths(filePath)
+    let totalUpdated = 0
+
+    for (const targetFile of filesToUpdate) {
+        const count = await updateAcceptanceCriteriaInSingleFile(targetFile, acceptanceCriteria)
+        totalUpdated += count
+    }
+
+    return totalUpdated
+}
+
+async function updateAcceptanceCriteriaInSingleFile(filePath, acceptanceCriteria) {
+    if (!filePath || !await fileExists(filePath))
         return 0
 
     let content
@@ -1554,6 +1621,27 @@ async function updateAcceptanceCriteriaCheckboxes(filePath, acceptanceCriteria) 
     } catch {
         return 0
     }
+}
+
+async function getAllSpecPaths(primaryPath) {
+    const paths = new Set()
+
+    if (primaryPath && await fileExists(primaryPath))
+        paths.add(primaryPath)
+
+    // If the primary path is a phase plan, discover its stage doc files
+    if (primaryPath) {
+        const stageDir = getStageDirectoryPath(primaryPath)
+        if (await fileExists(stageDir)) {
+            const stageFiles = await discoverStageFiles(primaryPath)
+            for (const sf of stageFiles) {
+                if (sf.path && await fileExists(sf.path))
+                    paths.add(sf.path)
+            }
+        }
+    }
+
+    return [...paths]
 }
 
 async function discoverAllPhases(repoRoot) {

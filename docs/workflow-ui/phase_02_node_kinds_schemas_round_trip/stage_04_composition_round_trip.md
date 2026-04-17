@@ -1,18 +1,18 @@
 # Stage 2.4 — Composition, round-trip, port matrix
 
 **Phase:** Phase 2 — Node Kinds, Schemas, Round-Trip
-**Stage status:** [ ]
+**Stage status:** [x]
 **Total effort:** 11 d
 **Step count:** 6
 
 ## Steps
 
-- [ ] **Step 1**: `Subflow` kind
-- [ ] **Step 2**: `Timer` kind
-- [ ] **Step 3**: `Container` kind + `NodeConnection` DTO
-- [ ] **Step 4**: YAML round-trip server endpoints
-- [ ] **Step 5**: Sidecar (`.workflow-ui.json`) I/O
-- [ ] **Step 6**: Port matrix
+- [x] **Step 1**: `Subflow` kind
+- [x] **Step 2**: `Timer` kind
+- [x] **Step 3**: `Container` kind + `NodeConnection` DTO
+- [x] **Step 4**: YAML round-trip server endpoints
+- [x] **Step 5**: Sidecar (`.workflow-ui.json`) I/O
+- [x] **Step 6**: Port matrix
 
 ---
 ## Context
@@ -164,15 +164,15 @@ Engine `Validate()` enforces exactly one of `WorkflowFilePath` / `WorkflowDefini
 - Update `node-union.ts`.
 
 ### Acceptance criteria
-- [ ] All 6 extras present in schema.
-- [ ] Inline mode: `workflowDefinition` is a valid nested workflow (recursive schema).
-- [ ] External mode: `workflowFilePath` is a non-empty string; `workflowDefinition` is null.
-- [ ] Exactly-one-of validation catches both-set and neither-set.
-- [ ] `timeout` default `"00:05:00"` matches engine `TimeSpan.FromMinutes(5)`.
-- [ ] `skipValidation` default `false`.
-- [ ] `inputMappings` / `outputMappings` preserve insertion order.
-- [ ] Round-trip byte-matches canonicalised YAML for BOTH fixtures.
-- [ ] Parity reflection yields 6 extras.
+- [x] All 6 extras present in schema.
+- [x] Inline mode: `workflowDefinition` is a valid nested workflow (recursive schema).
+- [x] External mode: `workflowFilePath` is a non-empty string; `workflowDefinition` is null.
+- [x] Exactly-one-of validation catches both-set and neither-set.
+- [x] `timeout` default `"00:05:00"` matches engine `TimeSpan.FromMinutes(5)`.
+- [x] `skipValidation` default `false`.
+- [x] `inputMappings` / `outputMappings` preserve insertion order.
+- [x] Round-trip byte-matches canonicalised YAML for BOTH fixtures.
+- [x] Parity reflection yields 6 extras.
 
 ### Unit tests
 1. `SubflowSchema_External_Parses`
@@ -281,12 +281,12 @@ Implement `TimerNodeDefinition` per `src/ExecutionEngine/Nodes/Definitions/Timer
 - Fixtures: `timer-cron-5field.yaml`, `timer-cron-6field.yaml` (with seconds), `timer-duration-iso.yaml`, `timer-duration-hms.yaml`, `timer-empty-schedule.yaml` (negative), `timer-invalid-schedule.yaml` (negative).
 
 ### Acceptance criteria
-- [ ] `schedule` non-empty.
-- [ ] CRON 5- and 6-field formats both parse.
-- [ ] ISO 8601 duration (`PT5M`, `P1D`) parses.
-- [ ] `hh:mm:ss` format parses.
-- [ ] Obviously invalid strings (`not-a-schedule`) fail.
-- [ ] 1 extra matching engine.
+- [x] `schedule` non-empty.
+- [x] CRON 5- and 6-field formats both parse.
+- [x] ISO 8601 duration (`PT5M`, `P1D`) parses.
+- [x] `hh:mm:ss` format parses.
+- [x] Obviously invalid strings (`not-a-schedule`) fail.
+- [x] 1 extra matching engine.
 
 ### Unit tests
 1. `TimerSchema_Cron5Field_Parses`
@@ -416,14 +416,14 @@ This step also formally introduces `NodeConnection` to the Zod schema world, sin
 - Update `node-union.ts` (last placeholder replaced → union is complete).
 
 ### Acceptance criteria
-- [ ] `NodeConnection` DTO has all 9 engine properties.
-- [ ] `Container` DTO has 3 extras matching engine.
-- [ ] Child nodes can recursively include any of the 13 kinds including another Container (recursion via `z.lazy`).
-- [ ] `executionMode` defaults to `Sequential`.
-- [ ] Fixture `container-nested.yaml` parses (depth 2).
-- [ ] `isEnabled` default `true` preserved.
-- [ ] `triggerMessageType` default `Complete` preserved.
-- [ ] After this step, `node-union.ts` has NO placeholders — every member is a real schema.
+- [x] `NodeConnection` DTO has all 9 engine properties.
+- [x] `Container` DTO has 3 extras matching engine.
+- [x] Child nodes can recursively include any of the 13 kinds including another Container (recursion via `z.lazy`).
+- [x] `executionMode` defaults to `Sequential`.
+- [x] Fixture `container-nested.yaml` parses (depth 2).
+- [x] `isEnabled` default `true` preserved.
+- [x] `triggerMessageType` default `Complete` preserved.
+- [x] After this step, `node-union.ts` has NO placeholders — every member is a real schema.
 
 ### Unit tests
 1. `ContainerSchema_Sequential_Parses`
@@ -528,14 +528,14 @@ Wrap engine `WorkflowLoader.Load(filePath, validateOnLoad)` and `WorkflowSeriali
 - `src/WorkflowUI/src/api/workflows.ts` — thin typed fetch wrappers.
 
 ### Acceptance criteria
-- [ ] `POST /api/workflows/parse` with a known-good fixture returns a JSON body that, parsed by `nodeDtoSchema`, yields the expected nodes.
-- [ ] `POST /api/workflows/serialize` round-trips: parse → serialise → parse again ≡ identity.
-- [ ] `GET /api/workflows/{path}` returns 404 for missing files, 400 for traversal attempts, 200 + body for valid files.
-- [ ] `PUT /api/workflows/{path}` rejects writes that fail Zod validation BEFORE touching disk.
-- [ ] `POST /api/workflows/validate` returns engine's validation error messages verbatim.
-- [ ] All endpoints emit structured logs under `WorkflowUi.Server.RoundTrip`.
-- [ ] `WebApplicationFactory` integration tests cover all 5 endpoints.
-- [ ] Canonicaliser from Stage 0.2.3 is used server-side for response emission.
+- [x] `POST /api/workflows/parse` with a known-good fixture returns a JSON body that, parsed by `nodeDtoSchema`, yields the expected nodes.
+- [x] `POST /api/workflows/serialize` round-trips: parse → serialise → parse again ≡ identity.
+- [x] `GET /api/workflows/{path}` returns 404 for missing files, 400 for traversal attempts, 200 + body for valid files.
+- [x] `PUT /api/workflows/{path}` rejects writes that fail Zod validation BEFORE touching disk.
+- [x] `POST /api/workflows/validate` returns engine's validation error messages verbatim.
+- [x] All endpoints emit structured logs under `WorkflowUi.Server.RoundTrip`.
+- [x] `WebApplicationFactory` integration tests cover all 5 endpoints.
+- [x] Canonicaliser from Stage 0.2.3 is used server-side for response emission.
 
 ### Unit tests
 1. `ParseEndpoint_ValidYaml_ReturnsJson`
@@ -661,15 +661,15 @@ Endpoints:
 - `SidecarEndpointTests.cs`.
 
 ### Acceptance criteria
-- [ ] Sidecar absence does NOT break workflow load.
-- [ ] Sidecar load is independent of workflow load (separate endpoint).
-- [ ] Node IDs in sidecar that don't exist in the workflow are preserved (forward-compatibility) but flagged by a server-side warning log.
-- [ ] Coordinate numbers accept fractional values.
-- [ ] Colour strings require `#RRGGBB`.
-- [ ] Writing a sidecar uses atomic rename (temp file + `File.Move` with overwrite) to avoid corruption on crash.
-- [ ] Round-trip: save → load yields equivalent JSON (order-insensitive for record properties, order-sensitive for `notes` array).
-- [ ] Sandbox from Stage 2.4.4 reused for sidecar paths.
-- [ ] Engine never reads `.workflow-ui.json` — verified by grep test.
+- [x] Sidecar absence does NOT break workflow load.
+- [x] Sidecar load is independent of workflow load (separate endpoint).
+- [x] Node IDs in sidecar that don't exist in the workflow are preserved (forward-compatibility) but flagged by a server-side warning log.
+- [x] Coordinate numbers accept fractional values.
+- [x] Colour strings require `#RRGGBB`.
+- [x] Writing a sidecar uses atomic rename (temp file + `File.Move` with overwrite) to avoid corruption on crash.
+- [x] Round-trip: save → load yields equivalent JSON (order-insensitive for record properties, order-sensitive for `notes` array).
+- [x] Sandbox from Stage 2.4.4 reused for sidecar paths.
+- [x] Engine never reads `.workflow-ui.json` — verified by grep test.
 
 ### Unit tests
 1. `SidecarSchema_Basic_Parses`
@@ -783,12 +783,12 @@ The matrix is authored once here as a typed TypeScript table AND a mirror JSON f
 - Update `src/WorkflowUI/src/api/lint.ts` stub (Phase 3 will flesh this out) so it can import the matrices.
 
 ### Acceptance criteria
-- [ ] 13 runtime types × 5 message types = 65 cells per direction; no missing cells.
-- [ ] Every cell has exactly one legality value.
-- [ ] `classifyOutgoing` returns `'idiomatic'` for the documented canonical pairs (e.g., `ForEach` + `Next` + body).
-- [ ] `PortMatrixTests` parity: fixture count matches engine enum counts (13 × 5).
-- [ ] Adding a new `RuntimeType` or `MessageType` upstream makes `PortMatrixTests` fail until the matrix is extended.
-- [ ] UI-only concern — engine untouched.
+- [x] 13 runtime types × 5 message types = 65 cells per direction; no missing cells.
+- [x] Every cell has exactly one legality value.
+- [x] `classifyOutgoing` returns `'idiomatic'` for the documented canonical pairs (e.g., `ForEach` + `Next` + body).
+- [x] `PortMatrixTests` parity: fixture count matches engine enum counts (13 × 5).
+- [x] Adding a new `RuntimeType` or `MessageType` upstream makes `PortMatrixTests` fail until the matrix is extended.
+- [x] UI-only concern — engine untouched.
 
 ### Unit tests
 1. `PortMatrix_OutgoingHasAll65Cells`
