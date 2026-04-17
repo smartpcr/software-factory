@@ -58,8 +58,8 @@ public class FilesEndpointsTests : IClassFixture<TestWebApplicationFactory>
     public async Task Duplicate_NonExistent_Returns404()
     {
         var response = await this.client.PostAsJsonAsync(
-            "/api/files/nonexistent-dup-12345/duplicate",
-            new DuplicateRequest(null));
+            "/api/files/duplicate",
+            new DuplicateRequest("nonexistent-dup-12345", null));
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
@@ -70,8 +70,8 @@ public class FilesEndpointsTests : IClassFixture<TestWebApplicationFactory>
         await this.client.PostAsJsonAsync("/api/files", new CreateWorkflowRequest(srcId));
 
         var response = await this.client.PostAsJsonAsync(
-            $"/api/files/{srcId}/duplicate",
-            new DuplicateRequest(null));
+            "/api/files/duplicate",
+            new DuplicateRequest(srcId, null));
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
     }
 
@@ -83,8 +83,8 @@ public class FilesEndpointsTests : IClassFixture<TestWebApplicationFactory>
         await this.client.PostAsJsonAsync("/api/files", new CreateWorkflowRequest(srcId));
 
         var response = await this.client.PostAsJsonAsync(
-            $"/api/files/{srcId}/duplicate",
-            new DuplicateRequest(targetId));
+            "/api/files/duplicate",
+            new DuplicateRequest(srcId, targetId));
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
         var getResp = await this.client.GetAsync($"/api/workflows/{targetId}");
@@ -111,5 +111,58 @@ public class FilesEndpointsTests : IClassFixture<TestWebApplicationFactory>
         importContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
         var importResp = await this.client.PostAsync("/api/files/import", importContent);
         Assert.Equal(HttpStatusCode.OK, importResp.StatusCode);
+    }
+
+    [Fact]
+    public async Task NestedId_CreateAndDelete_Works()
+    {
+        var nestedId = "folder/sub/wf-" + Guid.NewGuid().ToString("N")[..8];
+        var createResp = await this.client.PostAsJsonAsync("/api/files", new CreateWorkflowRequest(nestedId));
+        Assert.Equal(HttpStatusCode.Created, createResp.StatusCode);
+
+        // Verify via GET on workflow endpoint (also catch-all)
+        var getResp = await this.client.GetAsync($"/api/workflows/{nestedId}");
+        Assert.Equal(HttpStatusCode.OK, getResp.StatusCode);
+
+        // Delete via files endpoint
+        var deleteResp = await this.client.DeleteAsync($"/api/files/{nestedId}");
+        Assert.Equal(HttpStatusCode.NoContent, deleteResp.StatusCode);
+
+        // Confirm deleted
+        var getAfter = await this.client.GetAsync($"/api/workflows/{nestedId}");
+        Assert.Equal(HttpStatusCode.NotFound, getAfter.StatusCode);
+    }
+
+    [Fact]
+    public async Task NestedId_Rename_Works()
+    {
+        var srcId = "folder/rename-src-" + Guid.NewGuid().ToString("N")[..8];
+        await this.client.PostAsJsonAsync("/api/files", new CreateWorkflowRequest(srcId));
+
+        var newId = "folder/rename-tgt-" + Guid.NewGuid().ToString("N")[..8];
+        var renameResp = await this.client.PatchAsJsonAsync(
+            $"/api/files/{srcId}",
+            new RenameWorkflowRequest(newId));
+        Assert.Equal(HttpStatusCode.OK, renameResp.StatusCode);
+
+        // Old id should be gone
+        var oldGet = await this.client.GetAsync($"/api/workflows/{srcId}");
+        Assert.Equal(HttpStatusCode.NotFound, oldGet.StatusCode);
+
+        // New id should exist
+        var newGet = await this.client.GetAsync($"/api/workflows/{newId}");
+        Assert.Equal(HttpStatusCode.OK, newGet.StatusCode);
+    }
+
+    [Fact]
+    public async Task NestedId_Duplicate_Works()
+    {
+        var srcId = "folder/dup-nested-" + Guid.NewGuid().ToString("N")[..8];
+        await this.client.PostAsJsonAsync("/api/files", new CreateWorkflowRequest(srcId));
+
+        var response = await this.client.PostAsJsonAsync(
+            "/api/files/duplicate",
+            new DuplicateRequest(srcId, null));
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
     }
 }

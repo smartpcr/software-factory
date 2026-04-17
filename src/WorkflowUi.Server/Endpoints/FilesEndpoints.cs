@@ -63,8 +63,8 @@ public static class FilesEndpoints
             }
         }).WithName("CreateWorkflow");
 
-        // PATCH /api/files/{id} — rename workflow
-        group.MapPatch("/{id}", async (
+        // PATCH /api/files/{*id} — rename workflow
+        group.MapPatch("/{*id}", async (
             string id,
             [FromBody] RenameWorkflowRequest request,
             IWorkflowStore store,
@@ -97,8 +97,8 @@ public static class FilesEndpoints
             }
         }).WithName("RenameWorkflow");
 
-        // DELETE /api/files/{id} — delete workflow
-        group.MapDelete("/{id}", async (
+        // DELETE /api/files/{*id} — delete workflow
+        group.MapDelete("/{*id}", async (
             string id,
             [FromHeader(Name = "If-Match")] string? ifMatch,
             IWorkflowStore store,
@@ -123,10 +123,10 @@ public static class FilesEndpoints
             }
         }).WithName("DeleteFile");
 
-        // POST /api/files/{id}/duplicate — duplicate workflow (with optional targetId + template placement)
-        group.MapPost("/{id}/duplicate", async (
-            string id,
-            [FromBody] DuplicateRequest? request,
+        // POST /api/files/duplicate — duplicate workflow (with optional targetId + template placement)
+        // Uses body-provided sourceId instead of path parameter to avoid catch-all route conflicts
+        group.MapPost("/duplicate", async (
+            [FromBody] DuplicateRequest request,
             IWorkflowStore store,
             IdGenerator idGen,
             ClaimsPrincipal user,
@@ -134,27 +134,32 @@ public static class FilesEndpoints
         {
             try
             {
-                var source = await store.GetAsync(id, user, ct);
+                if (string.IsNullOrEmpty(request?.SourceId))
+                {
+                    return Results.BadRequest("sourceId is required");
+                }
+
+                var source = await store.GetAsync(request.SourceId, user, ct);
                 if (source == null)
                 {
                     return Results.NotFound();
                 }
 
                 string newId;
-                if (!string.IsNullOrEmpty(request?.TargetId))
+                if (!string.IsNullOrEmpty(request.TargetId))
                 {
                     newId = request.TargetId;
                 }
                 else
                 {
                     // Template placement: source under "templates/" → place copy at root
-                    var baseId = id.StartsWith("templates/", StringComparison.OrdinalIgnoreCase)
-                        ? id.Split('/')[^1]
-                        : id;
+                    var baseId = request.SourceId.StartsWith("templates/", StringComparison.OrdinalIgnoreCase)
+                        ? request.SourceId.Split('/')[^1]
+                        : request.SourceId;
                     newId = await idGen.GenerateUniqueIdAsync(baseId, user, ct);
                 }
 
-                var yaml = source.Yaml.Replace(id, newId);
+                var yaml = source.Yaml.Replace(request.SourceId, newId);
                 await store.SaveAsync(newId, yaml, source.SidecarJson, null, user, ct);
                 return Results.Created($"/api/workflows/{newId}", new { id = newId });
             }
@@ -273,4 +278,4 @@ public record RenameWorkflowRequest(string NewId);
 
 public record ExportRequest(string[] Ids);
 
-public record DuplicateRequest(string? TargetId);
+public record DuplicateRequest(string? SourceId, string? TargetId);

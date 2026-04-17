@@ -1,15 +1,47 @@
+import { useState } from 'react';
 import { WorkflowCanvas } from './ui/canvas/WorkflowCanvas';
 import { Palette } from './ui/palette/Palette';
 import { PropertyGrid } from './ui/property-grid/PropertyGrid';
 import { ValidationPanel } from './ui/validation/ValidationPanel';
 import { useWorkflowValidation } from './ui/validation/useWorkflowValidation';
 import { focusValidationTarget } from './ui/validation/focusValidationTarget';
+import { WorkspaceTree } from './workspace/WorkspaceTree';
+import { ImportExportDialog } from './workspace/ImportExportDialog';
+import { DuplicateDialog } from './workspace/DuplicateDialog';
 
 export function App() {
   const { entries, validate } = useWorkflowValidation();
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
+  const [showImportExport, setShowImportExport] = useState(false);
+  const [duplicateSourceId, setDuplicateSourceId] = useState<string | null>(null);
 
   return (
     <div style={{ display: 'flex', height: '100vh' }} data-testid="app-root">
+      <div style={{ width: 240, borderRight: '1px solid #e5e7eb', overflow: 'auto', display: 'flex', flexDirection: 'column' }} data-testid="workspace-sidebar">
+        <WorkspaceTree onSelect={setSelectedWorkflowId} />
+        <div style={{ padding: 8, borderTop: '1px solid #e5e7eb' }}>
+          <button type="button" onClick={() => setShowImportExport(!showImportExport)} aria-label="Toggle import/export">
+            Import/Export
+          </button>
+          {selectedWorkflowId && (
+            <button type="button" onClick={() => setDuplicateSourceId(selectedWorkflowId)} aria-label="Duplicate selected">
+              Duplicate
+            </button>
+          )}
+        </div>
+        {showImportExport && (
+          <ImportExportDialog
+            workflowIds={selectedWorkflowId ? [selectedWorkflowId] : []}
+            onImported={() => setShowImportExport(false)}
+          />
+        )}
+        {duplicateSourceId && (
+          <DuplicateDialog
+            sourceId={duplicateSourceId}
+            onDuplicated={() => setDuplicateSourceId(null)}
+          />
+        )}
+      </div>
       <Palette />
       <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column' }}>
         <div style={{ position: 'relative', flex: 1 }}>

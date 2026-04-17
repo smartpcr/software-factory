@@ -46,14 +46,14 @@ export async function deleteWorkflow(id: string): Promise<void> {
 }
 
 export async function duplicateWorkflow(
-  id: string,
+  sourceId: string,
   targetId?: string,
 ): Promise<{ id: string }> {
-  const url = `${FILES_BASE}/${encodePath(id)}/duplicate`;
+  const url = `${FILES_BASE}/duplicate`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ targetId: targetId ?? null }),
+    body: JSON.stringify({ sourceId, targetId: targetId ?? null }),
   });
   if (!res.ok) throw new Error(`POST ${url} failed: ${res.status}`);
   return res.json() as Promise<{ id: string }>;

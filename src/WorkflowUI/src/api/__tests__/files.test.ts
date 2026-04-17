@@ -61,15 +61,17 @@ describe('files API client', () => {
     expect(capturedMethod).toBe('DELETE');
   });
 
-  it('duplicateWorkflow calls POST /api/files/{id}/duplicate', async () => {
+  it('duplicateWorkflow calls POST /api/files/duplicate', async () => {
     await duplicateWorkflow('source');
-    expect(capturedUrl).toBe('/api/files/source/duplicate');
+    expect(capturedUrl).toBe('/api/files/duplicate');
     expect(capturedMethod).toBe('POST');
+    expect(capturedBody).toContain('"sourceId":"source"');
   });
 
   it('duplicateWorkflow with targetId includes targetId', async () => {
     await duplicateWorkflow('source', 'my-target');
     expect(capturedBody).toContain('"targetId":"my-target"');
+    expect(capturedBody).toContain('"sourceId":"source"');
   });
 
   it('exportWorkflows calls POST /api/files/export', async () => {

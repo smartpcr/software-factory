@@ -36,7 +36,7 @@ public static class WorkflowEndpoints
             }
         }).WithName("ListWorkflows");
 
-        group.MapGet("/{id}", async (
+        group.MapGet("/{*id}", async (
             string id,
             IWorkflowStore store,
             ClaimsPrincipal user,
@@ -53,7 +53,7 @@ public static class WorkflowEndpoints
             }
         }).WithName("GetWorkflow");
 
-        group.MapPut("/{id}", async (
+        group.MapPut("/{*id}", async (
             string id,
             [FromBody] SaveWorkflowRequest request,
             [FromHeader(Name = "If-Match")] string? ifMatch,
@@ -85,7 +85,7 @@ public static class WorkflowEndpoints
             }
         }).WithName("SaveWorkflow");
 
-        group.MapDelete("/{id}", async (
+        group.MapDelete("/{*id}", async (
             string id,
             [FromHeader(Name = "If-Match")] string? ifMatch,
             IWorkflowStore store,
