@@ -119,12 +119,10 @@ public class CodeownersTests
 
         var requiredChecks = new[]
         {
-            "build-dotnet",
-            "EnumParity",
-            "DtoParity",
-            "YamlRoundTrip",
-            "test-client",
-            "coverage-gate",
+            "Build (.NET)",
+            "Test (.NET)",
+            "Test (Client)",
+            "Coverage gate",
         };
 
         foreach (var check in requiredChecks)

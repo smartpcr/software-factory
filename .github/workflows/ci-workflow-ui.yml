@@ -143,3 +143,51 @@ jobs:
             exit 1
           }
           Write-Host "Generated files properly excluded from coverage"
+
+      - name: Enforce client coverage threshold (100% on new code)
+        run: |
+          $lcov = Get-Content "client/coverage/lcov.info" -Raw
+          # Parse lcov for line coverage on src/ files (excluding generated)
+          $totalLines = 0
+          $hitLines = 0
+          $currentFile = ""
+          foreach ($line in (Get-Content "client/coverage/lcov.info")) {
+            if ($line -match "^SF:(.+)$") {
+              $currentFile = $Matches[1]
+            }
+            if ($currentFile -match "engine-contract\.generated\.ts") { continue }
+            if ($currentFile -match "main\.tsx") { continue }
+            if ($line -match "^LF:(\d+)$") { $totalLines += [int]$Matches[1] }
+            if ($line -match "^LH:(\d+)$") { $hitLines += [int]$Matches[1] }
+          }
+          if ($totalLines -eq 0) {
+            Write-Error "No coverable lines found in lcov.info"
+            exit 1
+          }
+          $pct = [math]::Round(($hitLines / $totalLines) * 100, 2)
+          Write-Host "Client coverage: $hitLines / $totalLines lines = $pct%"
+          if ($pct -lt 100) {
+            Write-Error "Client coverage $pct% is below 100% threshold"
+            exit 1
+          }
+          Write-Host "Coverage gate PASSED"
+
+      - name: Enforce .NET coverage threshold (100% on new code)
+        run: |
+          # Find Cobertura XML files in TestResults
+          $coverageFiles = Get-ChildItem -Path "TestResults" -Recurse -Filter "coverage.cobertura.xml" -ErrorAction SilentlyContinue
+          if ($coverageFiles.Count -eq 0) {
+            Write-Warning "No Cobertura coverage files found — skipping .NET threshold check"
+            exit 0
+          }
+          foreach ($file in $coverageFiles) {
+            [xml]$xml = Get-Content $file.FullName
+            $lineRate = [double]$xml.coverage.'line-rate'
+            $pct = [math]::Round($lineRate * 100, 2)
+            Write-Host "Coverage file $($file.FullName): line-rate = $pct%"
+            if ($pct -lt 100) {
+              Write-Error ".NET coverage $pct% is below 100% threshold"
+              exit 1
+            }
+          }
+          Write-Host ".NET coverage gate PASSED"

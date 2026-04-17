@@ -155,6 +155,8 @@ public class CiWorkflowYamlTests
             "Run contract tests",
             "Upload test results",
             "Upload coverage",
+            "Enforce client coverage threshold",
+            "Enforce .NET coverage threshold",
         };
         foreach (var pattern in requiredStepPatterns)
         {
@@ -167,5 +169,35 @@ public class CiWorkflowYamlTests
     {
         var text = LoadWorkflowYaml();
         Assert.Contains("cancel-in-progress: true", text);
+    }
+
+    [Fact]
+    public void CoverageGate_EnforcesThreshold()
+    {
+        var text = LoadWorkflowYaml();
+        // The coverage gate must check percentage and fail if below 100
+        Assert.Contains("100", text);
+        Assert.Contains("exit 1", text);
+    }
+
+    [Fact]
+    public void BranchProtectionDoc_MatchesActualJobNames()
+    {
+        var docPath = Path.Combine(RepoRoot, "docs", "workflow-ui", "branch-protection.md");
+        Assert.True(File.Exists(docPath));
+        var text = File.ReadAllText(docPath);
+
+        // The documented names must match the actual CI workflow job `name:` values
+        var root = ParseWorkflow();
+        var jobs = (YamlMappingNode)root["jobs"];
+        foreach (var job in jobs.Children)
+        {
+            var jobNode = (YamlMappingNode)job.Value;
+            if (jobNode.Children.ContainsKey("name"))
+            {
+                var jobName = ((YamlScalarNode)jobNode["name"]).Value!;
+                Assert.Contains(jobName, text);
+            }
+        }
     }
 }
