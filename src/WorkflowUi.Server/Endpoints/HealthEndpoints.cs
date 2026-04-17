@@ -23,7 +23,8 @@ public static class HealthEndpoints
                 timestamp = DateTimeOffset.UtcNow,
             }))
             .WithTags("Health")
-            .WithName("GetHealth");
+            .WithName("GetHealth")
+            .AllowAnonymous();
 
         return app;
     }
