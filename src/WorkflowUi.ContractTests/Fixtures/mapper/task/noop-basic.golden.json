@@ -12,5 +12,9 @@
       "maxConcurrentExecutions": 0
     }
   ],
-  "connections": []
+  "connections": [],
+  "metadata": {},
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0
 }

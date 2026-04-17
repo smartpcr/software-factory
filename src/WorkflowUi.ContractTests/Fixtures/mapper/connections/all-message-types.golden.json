@@ -40,9 +40,13 @@
       "sourceNodeId": "src",
       "targetNodeId": "on-fail",
       "triggerMessageType": "Fail",
+      "condition": "retries == 0",
       "isEnabled": true,
-      "priority": 1,
-      "condition": "retries == 0"
+      "priority": 1
     }
-  ]
+  ],
+  "metadata": {},
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0
 }

@@ -30,7 +30,7 @@ public static partial class EngineDtoMapper
             : null;
         dto.InputMappings = source.InputMappings;
         dto.OutputMappings = source.OutputMappings;
-        dto.Timeout = source.Timeout.ToString();
+        dto.Timeout = ToIsoDuration(source.Timeout);
         dto.SkipValidation = source.SkipValidation;
         return dto;
     }
@@ -42,13 +42,13 @@ public static partial class EngineDtoMapper
     {
         var target = new SubflowNodeDefinition
         {
-            WorkflowFilePath = dto.WorkflowFilePath ?? string.Empty,
+            WorkflowFilePath = dto.WorkflowFilePath!,
             WorkflowDefinition = dto.WorkflowDefinition != null
                 ? MapWorkflowFromDto(dto.WorkflowDefinition)
                 : null,
             InputMappings = dto.InputMappings ?? [],
             OutputMappings = dto.OutputMappings ?? [],
-            Timeout = dto.Timeout != null ? TimeSpan.Parse(dto.Timeout) : TimeSpan.FromMinutes(5),
+            Timeout = dto.Timeout != null ? FromIsoDuration(dto.Timeout) : TimeSpan.FromMinutes(5),
             SkipValidation = dto.SkipValidation ?? false,
         };
         MapBaseFromDto(dto, target);

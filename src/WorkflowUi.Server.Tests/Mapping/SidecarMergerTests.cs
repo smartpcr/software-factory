@@ -52,12 +52,26 @@ public class SidecarMergerTests
     }
 
     [Fact]
-    public void ContainsOnlyUiMetadata_validates_correctly()
+    public void ContainsOnlyUiMetadata_dto_validates_correctly()
     {
         var valid = new SidecarDto
         {
             Viewport = new ViewportMeta { X = 0, Y = 0, Zoom = 1.0 },
         };
         Assert.True(SidecarMerger.ContainsOnlyUiMetadata(valid));
+    }
+
+    [Fact]
+    public void ContainsOnlyUiMetadata_json_rejects_engine_fields()
+    {
+        var bad = """{"nodeId": "n1", "nodes": {"n1": {"x":0,"y":0}}}""";
+        Assert.False(SidecarMerger.ContainsOnlyUiMetadata(bad));
+    }
+
+    [Fact]
+    public void ContainsOnlyUiMetadata_json_accepts_valid_sidecar()
+    {
+        var good = """{"nodes": {"n1": {"x":100,"y":200}}, "viewport": {"x":0,"y":0,"zoom":1.0}}""";
+        Assert.True(SidecarMerger.ContainsOnlyUiMetadata(good));
     }
 }

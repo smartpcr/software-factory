@@ -1,13 +1,26 @@
-workflowId: while-default-max-iterations
-workflowName: While Default Max
-version: "1.0"
-nodes:
-- nodeId: wh-1
-  nodeName: Loop Until
-  runtimeType: While
-  joinType: Any
-  priority: Normal
-  maxConcurrentExecutions: 0
-  conditionExpression: count < 10
-  maxIterations: 1000
-connections: []
+WorkflowId: while-default-max-iterations
+WorkflowName: While Default Max
+Description: null
+Version: 1.0
+Nodes:
+- runtimeType: While
+  ConditionExpression: count < 10
+  MaxIterations: 1000
+  NodeId: wh-1
+  NodeName: Loop Until
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+Connections: []
+Metadata: {}
+EntryPointNodeId: null
+MaxConcurrency: 0
+AllowPause: True
+TimeoutSeconds: 0
+DefaultVariables: null

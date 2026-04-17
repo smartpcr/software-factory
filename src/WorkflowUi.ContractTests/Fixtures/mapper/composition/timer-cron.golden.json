@@ -13,5 +13,9 @@
       "schedule": "0 */5 * * *"
     }
   ],
-  "connections": []
+  "connections": [],
+  "metadata": {},
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0
 }

@@ -11,8 +11,12 @@
       "priority": "Normal",
       "maxConcurrentExecutions": 0,
       "scriptPath": "scripts/hello.csx",
-      "scriptContent": "Console.WriteLine(\"Hello\");"
+      "scriptContent": "Console.WriteLine(\u0022Hello\u0022);"
     }
   ],
-  "connections": []
+  "connections": [],
+  "metadata": {},
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0
 }

@@ -1,13 +1,26 @@
-workflowId: foreach-basic
-workflowName: ForEach Basic
-version: "1.0"
-nodes:
-- nodeId: fe-1
-  nodeName: Process Items
-  runtimeType: ForEach
-  joinType: Any
-  priority: Normal
-  maxConcurrentExecutions: 0
-  collectionExpression: items
-  itemVariableName: item
-connections: []
+WorkflowId: foreach-basic
+WorkflowName: ForEach Basic
+Description: null
+Version: 1.0
+Nodes:
+- runtimeType: ForEach
+  CollectionExpression: items
+  ItemVariableName: item
+  NodeId: fe-1
+  NodeName: Process Items
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+Connections: []
+Metadata: {}
+EntryPointNodeId: null
+MaxConcurrency: 0
+AllowPause: True
+TimeoutSeconds: 0
+DefaultVariables: null

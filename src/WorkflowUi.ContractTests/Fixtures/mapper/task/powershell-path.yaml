@@ -1,15 +1,29 @@
-workflowId: powershell-path
-workflowName: PowerShell Path
-version: "1.0"
-nodes:
-- nodeId: ps-1
-  nodeName: PS Script
-  runtimeType: PowerShell
-  joinType: Any
-  priority: Normal
-  maxConcurrentExecutions: 0
-  scriptPath: scripts/deploy.ps1
-  requiredModules:
+WorkflowId: powershell-path
+WorkflowName: PowerShell Path
+Description: null
+Version: 1.0
+Nodes:
+- runtimeType: PowerShell
+  ScriptPath: scripts/deploy.ps1
+  RequiredModules:
   - Az
   - PSDesiredStateConfiguration
-connections: []
+  ModulePaths: null
+  NodeId: ps-1
+  NodeName: PS Script
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+Connections: []
+Metadata: {}
+EntryPointNodeId: null
+MaxConcurrency: 0
+AllowPause: True
+TimeoutSeconds: 0
+DefaultVariables: null

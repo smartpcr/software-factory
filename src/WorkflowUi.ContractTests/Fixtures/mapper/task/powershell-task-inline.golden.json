@@ -10,8 +10,12 @@
       "joinType": "Any",
       "priority": "Normal",
       "maxConcurrentExecutions": 0,
-      "scriptContent": "Write-Host 'Hello'"
+      "scriptContent": "Write-Host \u0027Hello\u0027"
     }
   ],
-  "connections": []
+  "connections": [],
+  "metadata": {},
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0
 }

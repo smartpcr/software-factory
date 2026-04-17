@@ -1,12 +1,27 @@
-workflowId: csharp-task-inline
-workflowName: CSharp Task Inline
-version: "1.0"
-nodes:
-- nodeId: task-inline-1
-  nodeName: Inline Task
-  runtimeType: CSharpTask
-  joinType: Any
-  priority: Normal
-  maxConcurrentExecutions: 0
-  scriptContent: return 42;
-connections: []
+WorkflowId: csharp-task-inline
+WorkflowName: CSharp Task Inline
+Description: null
+Version: 1.0
+Nodes:
+- runtimeType: CSharpTask
+  ScriptContent: return 42;
+  ExecutorTypeName: null
+  ExecutorAssemblyPath: null
+  NodeId: task-inline-1
+  NodeName: Inline Task
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+Connections: []
+Metadata: {}
+EntryPointNodeId: null
+MaxConcurrency: 0
+AllowPause: True
+TimeoutSeconds: 0
+DefaultVariables: null

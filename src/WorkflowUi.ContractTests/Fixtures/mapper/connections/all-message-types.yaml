@@ -1,34 +1,66 @@
-workflowId: all-message-types
-workflowName: All Message Types
-version: "1.0"
-nodes:
-- nodeId: src
-  nodeName: Source
-  runtimeType: Noop
-  joinType: Any
-  priority: Normal
-  maxConcurrentExecutions: 0
-- nodeId: on-complete
-  nodeName: On Complete
-  runtimeType: Noop
-  joinType: Any
-  priority: Normal
-  maxConcurrentExecutions: 0
-- nodeId: on-fail
-  nodeName: On Fail
-  runtimeType: Noop
-  joinType: Any
-  priority: Normal
-  maxConcurrentExecutions: 0
-connections:
-- sourceNodeId: src
-  targetNodeId: on-complete
-  triggerMessageType: Complete
-  isEnabled: true
-  priority: 0
-- sourceNodeId: src
-  targetNodeId: on-fail
-  triggerMessageType: Fail
-  isEnabled: true
-  priority: 1
-  condition: retries == 0
+WorkflowId: all-message-types
+WorkflowName: All Message Types
+Description: null
+Version: 1.0
+Nodes:
+- runtimeType: Noop
+  NodeId: src
+  NodeName: Source
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+- runtimeType: Noop
+  NodeId: on-complete
+  NodeName: On Complete
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+- runtimeType: Noop
+  NodeId: on-fail
+  NodeName: On Fail
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+Connections:
+- SourceNodeId: src
+  TargetNodeId: on-complete
+  TriggerMessageType: Complete
+  Condition: null
+  IsEnabled: True
+  Metadata: null
+  Priority: 0
+  SourcePort: null
+  TargetPort: null
+- SourceNodeId: src
+  TargetNodeId: on-fail
+  TriggerMessageType: Fail
+  Condition: retries == 0
+  IsEnabled: True
+  Metadata: null
+  Priority: 1
+  SourcePort: null
+  TargetPort: null
+Metadata: {}
+EntryPointNodeId: null
+MaxConcurrency: 0
+AllowPause: True
+TimeoutSeconds: 0
+DefaultVariables: null

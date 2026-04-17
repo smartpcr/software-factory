@@ -11,11 +11,19 @@
       "priority": "Normal",
       "maxConcurrentExecutions": 0,
       "workflowFilePath": "workflows/child.yaml",
-      "inputMappings": { "param1": "value1" },
-      "outputMappings": { "result": "output1" },
+      "inputMappings": {
+        "param1": "value1"
+      },
+      "outputMappings": {
+        "result": "output1"
+      },
       "timeout": "00:05:00",
       "skipValidation": false
     }
   ],
-  "connections": []
+  "connections": [],
+  "metadata": {},
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0
 }

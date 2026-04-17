@@ -1,31 +1,60 @@
-workflowId: container-parallel
-workflowName: Container Parallel
-version: "1.0"
-nodes:
-- nodeId: container-1
-  nodeName: Parallel Group
-  runtimeType: Container
-  joinType: Any
-  priority: Normal
-  maxConcurrentExecutions: 0
-  executionMode: Parallel
-  childNodes:
-  - nodeId: child-a
-    nodeName: A
-    runtimeType: Noop
-    joinType: Any
-    priority: Normal
-    maxConcurrentExecutions: 0
-  - nodeId: child-b
-    nodeName: B
-    runtimeType: Noop
-    joinType: Any
-    priority: Normal
-    maxConcurrentExecutions: 0
-  childConnections:
-  - sourceNodeId: child-a
-    targetNodeId: child-b
-    triggerMessageType: Complete
-    isEnabled: true
-    priority: 0
-connections: []
+WorkflowId: container-parallel
+WorkflowName: Container Parallel
+Description: null
+Version: 1.0
+Nodes:
+- runtimeType: Container
+  ChildNodes:
+  - runtimeType: Noop
+    NodeId: child-a
+    NodeName: A
+    Description: null
+    Configuration: null
+    JoinType: Any
+    Priority: Normal
+    MaxConcurrentExecutions: 0
+    RetryPolicy: null
+    CircuitBreakerPolicy: null
+    CompensationNodeId: null
+    FallbackNodeId: null
+  - runtimeType: Noop
+    NodeId: child-b
+    NodeName: B
+    Description: null
+    Configuration: null
+    JoinType: Any
+    Priority: Normal
+    MaxConcurrentExecutions: 0
+    RetryPolicy: null
+    CircuitBreakerPolicy: null
+    CompensationNodeId: null
+    FallbackNodeId: null
+  ChildConnections:
+  - SourceNodeId: child-a
+    TargetNodeId: child-b
+    TriggerMessageType: Complete
+    Condition: null
+    IsEnabled: True
+    Metadata: null
+    Priority: 0
+    SourcePort: null
+    TargetPort: null
+  ExecutionMode: Parallel
+  NodeId: container-1
+  NodeName: Parallel Group
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+Connections: []
+Metadata: {}
+EntryPointNodeId: null
+MaxConcurrency: 0
+AllowPause: True
+TimeoutSeconds: 0
+DefaultVariables: null

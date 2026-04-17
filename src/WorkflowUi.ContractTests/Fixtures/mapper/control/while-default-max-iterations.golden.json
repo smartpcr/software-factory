@@ -10,9 +10,13 @@
       "joinType": "Any",
       "priority": "Normal",
       "maxConcurrentExecutions": 0,
-      "conditionExpression": "count < 10",
+      "conditionExpression": "count \u003C 10",
       "maxIterations": 1000
     }
   ],
-  "connections": []
+  "connections": [],
+  "metadata": {},
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0
 }

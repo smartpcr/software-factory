@@ -10,8 +10,12 @@
       "joinType": "Any",
       "priority": "Normal",
       "maxConcurrentExecutions": 0,
-      "condition": "x > 5"
+      "condition": "x \u003E 5"
     }
   ],
-  "connections": []
+  "connections": [],
+  "metadata": {},
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0
 }

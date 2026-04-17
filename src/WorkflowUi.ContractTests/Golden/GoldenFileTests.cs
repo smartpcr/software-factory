@@ -12,11 +12,16 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using ExecutionEngine.Nodes.Definitions;
+using ExecutionEngine.Workflow;
+using WorkflowUi.ContractTests.Helpers;
 using WorkflowUi.Server.Mapping;
 using Xunit;
 
 /// <summary>
-/// Golden-file tests that verify fixture triplets round-trip through the mapper.
+/// Golden-file tests that verify fixture triplets round-trip through the
+/// real engine serializer and mapper pipeline:
+///   YAML -> WorkflowSerializer.FromYaml -> EngineDtoMapper.MapWorkflowToDto -> golden DTO
+///   engine -> WorkflowSerializer.ToYaml -> canonical YAML
 /// </summary>
 [Trait("Category", "Golden")]
 public class GoldenFileTests
@@ -28,13 +33,13 @@ public class GoldenFileTests
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
 
+    private static readonly WorkflowSerializer Serializer = new();
+
     [Fact]
     public void Golden_harness_enumerates_every_fixture_triplet()
     {
         var fixtures = GoldenFixtureLoader.LoadAll().ToList();
         Assert.NotEmpty(fixtures);
-
-        // Must have at least 11 fixtures across all families
         Assert.True(fixtures.Count >= 11, $"Expected at least 11 fixtures, found {fixtures.Count}");
     }
 
@@ -70,20 +75,6 @@ public class GoldenFileTests
     [Fact]
     public void Sidecars_contain_ui_only_state()
     {
-        var engineFieldNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "nodeId", "nodeName", "runtimeType", "joinType", "priority",
-            "maxConcurrentExecutions", "retryPolicy", "circuitBreakerPolicy",
-            "compensationNodeId", "fallbackNodeId", "configuration",
-            "assemblyPath", "typeName", "scriptPath", "scriptContent",
-            "executorTypeName", "executorAssemblyPath", "condition",
-            "expression", "cases", "collectionExpression", "itemVariableName",
-            "conditionExpression", "maxIterations", "workflowFilePath",
-            "workflowDefinition", "inputMappings", "outputMappings",
-            "timeout", "skipValidation", "schedule", "executionMode",
-            "childNodes", "childConnections", "requiredModules", "modulePaths",
-        };
-
         foreach (var fixture in GoldenFixtureLoader.LoadAll())
         {
             if (fixture.UiJsonContent == null)
@@ -91,37 +82,149 @@ public class GoldenFileTests
                 continue;
             }
 
-            using var doc = JsonDocument.Parse(fixture.UiJsonContent);
-            foreach (var prop in doc.RootElement.EnumerateObject())
+            Assert.True(
+                SidecarMerger.ContainsOnlyUiMetadata(fixture.UiJsonContent),
+                $"Sidecar {fixture.Family}/{fixture.FixtureId} contains engine-owned fields");
+        }
+    }
+
+    /// <summary>
+    /// For each fixture, loads YAML via the real engine WorkflowSerializer,
+    /// maps to DTO via EngineDtoMapper, and compares the DTO against the
+    /// authored .golden.json content. When WORKFLOWUI_WRITE_FIXTURES=1,
+    /// regenerates golden files from the real pipeline instead of comparing.
+    /// </summary>
+    [Fact]
+    public void Golden_DTO_roundtrip_via_real_serializer_and_mapper()
+    {
+        var writeMode = Environment.GetEnvironmentVariable("WORKFLOWUI_WRITE_FIXTURES") == "1";
+
+        foreach (var fixture in GoldenFixtureLoader.LoadAll())
+        {
+            Assert.NotNull(fixture.GoldenJsonContent);
+
+            // Load YAML through the real engine serializer
+            WorkflowDefinition engineWorkflow;
+            try
             {
-                Assert.False(engineFieldNames.Contains(prop.Name),
-                    $"Sidecar {fixture.Family}/{fixture.FixtureId} contains engine field '{prop.Name}'");
+                engineWorkflow = Serializer.FromYaml(fixture.YamlContent);
             }
+            catch (Exception ex)
+            {
+                throw new Exception(
+                    $"Fixture {fixture.Family}/{fixture.FixtureId}: WorkflowSerializer.FromYaml failed: {ex.Message}", ex);
+            }
+
+            // Map engine -> DTO through the real mapper
+            var dto = EngineDtoMapper.MapWorkflowToDto(engineWorkflow);
+            Assert.NotNull(dto);
+            Assert.Equal(fixture.FixtureId, dto.WorkflowId, StringComparer.OrdinalIgnoreCase);
+
+            // Serialize the mapped DTO
+            var mappedJson = NormalizeJson(JsonSerializer.Serialize(dto, JsonOpts));
+
+            if (writeMode && fixture.GoldenJsonPath != null)
+            {
+                File.WriteAllText(fixture.GoldenJsonPath, mappedJson + "\n");
+                continue;
+            }
+
+            var goldenJson = NormalizeJson(fixture.GoldenJsonContent!);
+            Assert.Equal(goldenJson, mappedJson);
+        }
+    }
+
+    /// <summary>
+    /// For each fixture, loads YAML via engine serializer, then serializes
+    /// back to YAML and compares canonicalized output to the authored fixture.
+    /// When WORKFLOWUI_WRITE_FIXTURES=1, regenerates YAML fixtures from canonical output.
+    /// </summary>
+    [Fact]
+    public void Canonical_YAML_roundtrip_via_real_serializer()
+    {
+        var writeMode = Environment.GetEnvironmentVariable("WORKFLOWUI_WRITE_FIXTURES") == "1";
+
+        foreach (var fixture in GoldenFixtureLoader.LoadAll())
+        {
+            // Load YAML through the real engine serializer
+            WorkflowDefinition engineWorkflow;
+            try
+            {
+                engineWorkflow = Serializer.FromYaml(fixture.YamlContent);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(
+                    $"Fixture {fixture.Family}/{fixture.FixtureId}: WorkflowSerializer.FromYaml failed: {ex.Message}", ex);
+            }
+
+            // Serialize back to YAML
+            var reEmittedYaml = Serializer.ToYaml(engineWorkflow);
+
+            if (writeMode)
+            {
+                File.WriteAllText(fixture.YamlPath, reEmittedYaml);
+                continue;
+            }
+
+            // Canonicalize both and compare
+            var authoredCanonical = CanonicalYaml.Canonicalize(fixture.YamlContent);
+            var roundTrippedCanonical = CanonicalYaml.Canonicalize(reEmittedYaml);
+
+            Assert.True(
+                string.Equals(authoredCanonical, roundTrippedCanonical, StringComparison.Ordinal),
+                $"YAML round-trip drift in fixture {fixture.Family}/{fixture.FixtureId}.\n" +
+                $"=== Authored (canonical) ===\n{authoredCanonical}\n" +
+                $"=== Round-tripped (canonical) ===\n{roundTrippedCanonical}");
+        }
+    }
+
+    /// <summary>
+    /// Proves the full pipeline: YAML -> engine -> DTO -> engine -> YAML
+    /// with both WorkflowSerializer and EngineDtoMapper in the path.
+    /// Note: The mapper normalizes null string fields to empty strings
+    /// for non-nullable engine properties, so we compare canonicalized
+    /// YAML after the first engine load (not the raw authored fixture).
+    /// </summary>
+    [Fact]
+    public void Full_pipeline_YAML_engine_DTO_engine_YAML_roundtrip()
+    {
+        foreach (var fixture in GoldenFixtureLoader.LoadAll())
+        {
+            // Step 1: YAML -> engine (first load establishes engine-canonical values)
+            var engine1 = Serializer.FromYaml(fixture.YamlContent);
+
+            // Step 1b: engine -> YAML (this is the engine-canonical form)
+            var canonicalSource = CanonicalYaml.Canonicalize(Serializer.ToYaml(engine1));
+
+            // Step 2: engine -> DTO
+            var dto = EngineDtoMapper.MapWorkflowToDto(engine1);
+
+            // Step 3: DTO -> engine
+            var engine2 = EngineDtoMapper.MapWorkflowFromDto(dto);
+
+            // Step 4: engine -> YAML
+            var roundTripped = CanonicalYaml.Canonicalize(Serializer.ToYaml(engine2));
+
+            // Compare the canonical engine forms (both went through real serializer)
+            Assert.True(
+                string.Equals(canonicalSource, roundTripped, StringComparison.Ordinal),
+                $"Full pipeline drift in fixture {fixture.Family}/{fixture.FixtureId}.\n" +
+                $"=== Engine canonical ===\n{canonicalSource}\n" +
+                $"=== After DTO round-trip ===\n{roundTripped}");
         }
     }
 
     [Fact]
-    public void Golden_DTO_matches_mapper_output_for_task_family()
+    public void Golden_harness_uses_real_engine_serializer()
     {
-        VerifyGoldenDtoForFamily("task");
-    }
-
-    [Fact]
-    public void Golden_DTO_matches_mapper_output_for_control_family()
-    {
-        VerifyGoldenDtoForFamily("control");
-    }
-
-    [Fact]
-    public void Golden_DTO_matches_mapper_output_for_composition_family()
-    {
-        VerifyGoldenDtoForFamily("composition");
-    }
-
-    [Fact]
-    public void Golden_DTO_matches_mapper_output_for_connections_family()
-    {
-        VerifyGoldenDtoForFamily("connections");
+        // Structural proof: the harness creates WorkflowSerializer and calls FromYaml/ToYaml
+        var serializer = new WorkflowSerializer();
+        var fixture = GoldenFixtureLoader.LoadAll().First();
+        var workflow = serializer.FromYaml(fixture.YamlContent);
+        Assert.NotNull(workflow);
+        var yaml = serializer.ToYaml(workflow);
+        Assert.False(string.IsNullOrWhiteSpace(yaml));
     }
 
     [Fact]
@@ -134,49 +237,32 @@ public class GoldenFileTests
         {
             Assert.Equal(run1[i].FixtureId, run2[i].FixtureId);
             Assert.Equal(run1[i].HydratedDtoJson, run2[i].HydratedDtoJson);
-        }
-    }
-
-    private static void VerifyGoldenDtoForFamily(string family)
-    {
-        var fixtures = GoldenFixtureLoader.LoadFamily(family).ToList();
-        if (fixtures.Count == 0)
-        {
-            return; // Family might not have fixtures
-        }
-
-        foreach (var fixture in fixtures)
-        {
-            Assert.NotNull(fixture.GoldenJsonContent);
-
-            // Parse golden JSON and regenerate from mapper
-            var goldenDto = JsonSerializer.Deserialize<WorkflowDefinitionDto>(fixture.GoldenJsonContent!, JsonOpts);
-            Assert.NotNull(goldenDto);
-
-            // Verify the golden has the expected structure
-            Assert.NotNull(goldenDto!.WorkflowId);
-            Assert.Equal(fixture.FixtureId, goldenDto.WorkflowId,
-                StringComparer.OrdinalIgnoreCase);
+            Assert.Equal(run1[i].CanonicalYaml, run2[i].CanonicalYaml);
         }
     }
 
     private static List<GoldenSnapshotModel> GetAllSnapshots()
     {
         return GoldenFixtureLoader.LoadAll()
-            .Select(f => new GoldenSnapshotModel
+            .Select(f =>
             {
-                FixtureId = f.FixtureId,
-                Family = f.Family,
-                CanonicalYaml = NormalizeLineEndings(f.YamlContent),
-                HydratedDtoJson = NormalizeLineEndings(f.GoldenJsonContent ?? "{}"),
+                var engine = Serializer.FromYaml(f.YamlContent);
+                var dto = EngineDtoMapper.MapWorkflowToDto(engine);
+                return new GoldenSnapshotModel
+                {
+                    FixtureId = f.FixtureId,
+                    Family = f.Family,
+                    CanonicalYaml = CanonicalYaml.Canonicalize(Serializer.ToYaml(engine)),
+                    HydratedDtoJson = NormalizeJson(JsonSerializer.Serialize(dto, JsonOpts)),
+                };
             })
             .OrderBy(s => s.Family, StringComparer.Ordinal)
             .ThenBy(s => s.FixtureId, StringComparer.Ordinal)
             .ToList();
     }
 
-    private static string NormalizeLineEndings(string input)
+    private static string NormalizeJson(string json)
     {
-        return input.Replace("\r\n", "\n").TrimEnd();
+        return json.Replace("\r\n", "\n").TrimEnd();
     }
 }

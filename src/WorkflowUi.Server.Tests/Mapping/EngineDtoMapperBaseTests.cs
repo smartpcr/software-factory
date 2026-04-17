@@ -206,4 +206,64 @@ public class EngineDtoMapperBaseTests
         var dto = new NodeDto { RuntimeType = "UnknownKind", NodeId = "bad" };
         Assert.Throws<ArgumentException>(() => EngineDtoMapper.MapFromDto(dto));
     }
+
+    [Fact]
+    public void Duration_uses_consistent_format()
+    {
+        var source = new NoopNodeDefinition
+        {
+            NodeId = "dur-test",
+            NodeName = "Duration Test",
+            RetryPolicy = new RetryPolicy
+            {
+                Strategy = RetryStrategy.Fixed,
+                InitialDelay = TimeSpan.FromSeconds(2),
+                MaxDelay = TimeSpan.FromMinutes(1),
+            },
+            CircuitBreakerPolicy = new CircuitBreakerPolicy
+            {
+                OpenDuration = TimeSpan.FromSeconds(30),
+            },
+        };
+
+        var dto = EngineDtoMapper.MapNoop(source);
+
+        // Verify durations use hh:mm:ss format
+        Assert.Equal("00:00:02", dto.RetryPolicy!.InitialDelay);
+        Assert.Equal("00:01:00", dto.RetryPolicy.MaxDelay);
+        Assert.Equal("00:00:30", dto.CircuitBreakerPolicy!.OpenDuration);
+
+        // Verify round-trip
+        var rt = EngineDtoMapper.MapNoopFromDto(dto);
+        Assert.Equal(TimeSpan.FromSeconds(2), rt.RetryPolicy!.InitialDelay);
+        Assert.Equal(TimeSpan.FromMinutes(1), rt.RetryPolicy.MaxDelay);
+        Assert.Equal(TimeSpan.FromSeconds(30), rt.CircuitBreakerPolicy!.OpenDuration);
+    }
+
+    [Fact]
+    public void Unresolved_retry_type_names_surfaced_in_diagnostics()
+    {
+        var dto = new RetryPolicyDto
+        {
+            Strategy = "Fixed",
+            MaxAttempts = 1,
+            InitialDelay = "00:00:01",
+            MaxDelay = "00:01:00",
+            Multiplier = 1.0,
+            RetryOn = ["System.TimeoutException, System.Runtime", "Bogus.FakeException, Fake.Assembly"],
+            DoNotRetryOn = ["Another.Missing, Bad.Assembly"],
+        };
+
+        var policy = EngineDtoMapper.MapRetryPolicyFromDto(dto, out var unresolved);
+        Assert.NotNull(policy);
+
+        // The resolvable type should be found
+        Assert.Single(policy!.RetryOn);
+        Assert.Equal(typeof(TimeoutException), policy.RetryOn[0]);
+
+        // Unresolvable types should be surfaced in diagnostics
+        Assert.Equal(2, unresolved.Count);
+        Assert.Contains(unresolved, u => u.Contains("Bogus.FakeException"));
+        Assert.Contains(unresolved, u => u.Contains("Another.Missing"));
+    }
 }

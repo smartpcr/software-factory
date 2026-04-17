@@ -57,6 +57,24 @@ public static partial class EngineDtoMapper
     }
 
     /// <summary>
+    /// Converts a TimeSpan to an ISO-8601-style duration string (hh:mm:ss format).
+    /// Uses constant format to avoid culture-dependent drift.
+    /// </summary>
+    public static string ToIsoDuration(TimeSpan ts)
+    {
+        return ts.ToString(@"hh\:mm\:ss");
+    }
+
+    /// <summary>
+    /// Parses an ISO-8601-style duration string back to TimeSpan.
+    /// Supports both hh:mm:ss and d.hh:mm:ss formats.
+    /// </summary>
+    public static TimeSpan FromIsoDuration(string duration)
+    {
+        return TimeSpan.Parse(duration);
+    }
+
+    /// <summary>
     /// Maps engine RetryPolicy to DTO, preserving null semantics.
     /// </summary>
     public static RetryPolicyDto? MapRetryPolicyToDto(RetryPolicy? policy)
@@ -70,8 +88,8 @@ public static partial class EngineDtoMapper
         {
             Strategy = policy.Strategy.ToString(),
             MaxAttempts = policy.MaxAttempts,
-            InitialDelay = policy.InitialDelay.ToString(),
-            MaxDelay = policy.MaxDelay.ToString(),
+            InitialDelay = ToIsoDuration(policy.InitialDelay),
+            MaxDelay = ToIsoDuration(policy.MaxDelay),
             Multiplier = policy.Multiplier,
             RetryOn = policy.RetryOn?.Select(t => t.AssemblyQualifiedName ?? t.FullName ?? t.Name).ToList() ?? [],
             DoNotRetryOn = policy.DoNotRetryOn?.Select(t => t.AssemblyQualifiedName ?? t.FullName ?? t.Name).ToList() ?? [],
@@ -80,23 +98,64 @@ public static partial class EngineDtoMapper
 
     /// <summary>
     /// Maps DTO back to engine RetryPolicy, preserving null semantics.
+    /// Unresolvable type names in RetryOn/DoNotRetryOn are preserved as-is in the
+    /// UnresolvedRetryTypeNames diagnostic list rather than silently dropped.
     /// </summary>
     public static RetryPolicy? MapRetryPolicyFromDto(RetryPolicyDto? dto)
     {
+        return MapRetryPolicyFromDto(dto, out _);
+    }
+
+    /// <summary>
+    /// Maps DTO back to engine RetryPolicy with diagnostics for unresolvable type names.
+    /// </summary>
+    public static RetryPolicy? MapRetryPolicyFromDto(RetryPolicyDto? dto, out List<string> unresolvedTypeNames)
+    {
+        unresolvedTypeNames = [];
+
         if (dto == null)
         {
             return null;
+        }
+
+        var retryOn = new List<Type>();
+        var doNotRetryOn = new List<Type>();
+
+        foreach (var name in dto.RetryOn ?? [])
+        {
+            var resolved = ResolveType(name);
+            if (resolved != null)
+            {
+                retryOn.Add(resolved);
+            }
+            else
+            {
+                unresolvedTypeNames.Add($"RetryOn:{name}");
+            }
+        }
+
+        foreach (var name in dto.DoNotRetryOn ?? [])
+        {
+            var resolved = ResolveType(name);
+            if (resolved != null)
+            {
+                doNotRetryOn.Add(resolved);
+            }
+            else
+            {
+                unresolvedTypeNames.Add($"DoNotRetryOn:{name}");
+            }
         }
 
         return new RetryPolicy
         {
             Strategy = Enum.Parse<RetryStrategy>(dto.Strategy),
             MaxAttempts = dto.MaxAttempts,
-            InitialDelay = TimeSpan.Parse(dto.InitialDelay),
-            MaxDelay = TimeSpan.Parse(dto.MaxDelay),
+            InitialDelay = FromIsoDuration(dto.InitialDelay),
+            MaxDelay = FromIsoDuration(dto.MaxDelay),
             Multiplier = dto.Multiplier,
-            RetryOn = dto.RetryOn?.Select(ResolveType).Where(t => t != null).Select(t => t!).ToList() ?? [],
-            DoNotRetryOn = dto.DoNotRetryOn?.Select(ResolveType).Where(t => t != null).Select(t => t!).ToList() ?? [],
+            RetryOn = retryOn,
+            DoNotRetryOn = doNotRetryOn,
         };
     }
 
@@ -115,7 +174,7 @@ public static partial class EngineDtoMapper
             FailureThreshold = policy.FailureThreshold,
             HalfOpenSuccesses = policy.HalfOpenSuccesses,
             MinimumThroughput = policy.MinimumThroughput,
-            OpenDuration = policy.OpenDuration.ToString(),
+            OpenDuration = ToIsoDuration(policy.OpenDuration),
         };
     }
 
@@ -134,7 +193,7 @@ public static partial class EngineDtoMapper
             FailureThreshold = dto.FailureThreshold,
             HalfOpenSuccesses = dto.HalfOpenSuccesses,
             MinimumThroughput = dto.MinimumThroughput,
-            OpenDuration = TimeSpan.Parse(dto.OpenDuration),
+            OpenDuration = FromIsoDuration(dto.OpenDuration),
         };
     }
 

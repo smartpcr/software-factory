@@ -1,16 +1,29 @@
-workflowId: switch-three-case
-workflowName: Switch Three Case
-version: "1.0"
-nodes:
-- nodeId: sw-1
-  nodeName: Route Status
-  runtimeType: Switch
-  joinType: Any
-  priority: Normal
-  maxConcurrentExecutions: 0
-  expression: status
-  cases:
+WorkflowId: switch-three-case
+WorkflowName: Switch Three Case
+Description: null
+Version: 1.0
+Nodes:
+- runtimeType: Switch
+  Expression: status
+  Cases:
     active: handle-active
     inactive: handle-inactive
     default: handle-default
-connections: []
+  NodeId: sw-1
+  NodeName: Route Status
+  Description: null
+  Configuration: null
+  JoinType: Any
+  Priority: Normal
+  MaxConcurrentExecutions: 0
+  RetryPolicy: null
+  CircuitBreakerPolicy: null
+  CompensationNodeId: null
+  FallbackNodeId: null
+Connections: []
+Metadata: {}
+EntryPointNodeId: null
+MaxConcurrency: 0
+AllowPause: True
+TimeoutSeconds: 0
+DefaultVariables: null

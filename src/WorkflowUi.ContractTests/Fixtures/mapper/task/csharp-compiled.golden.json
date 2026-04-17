@@ -14,5 +14,9 @@
       "typeName": "MyApp.Nodes.MyNode"
     }
   ],
-  "connections": []
+  "connections": [],
+  "metadata": {},
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0
 }
