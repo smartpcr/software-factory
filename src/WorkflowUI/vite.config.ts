@@ -8,7 +8,7 @@ export default defineConfig({
     outDir: 'dist',
   },
   server: {
-    port: 5173,
+    port: 5555,
     proxy: {
       '/api': 'http://localhost:5226',
       '/swagger': 'http://localhost:5226',
