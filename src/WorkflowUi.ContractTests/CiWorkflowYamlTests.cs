@@ -202,7 +202,7 @@ public class CiWorkflowYamlTests
             "Run contract tests",
             "Upload test results",
             "Upload coverage",
-            "Enforce client coverage threshold",
+            "Enforce WorkflowUI coverage threshold",
             "Enforce .NET coverage threshold",
         };
         foreach (var pattern in requiredStepPatterns)

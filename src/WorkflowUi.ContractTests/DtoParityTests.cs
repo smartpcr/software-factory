@@ -216,7 +216,7 @@ public class DtoParityTests
         }
 
         Assert.NotNull(dir);
-        var goldenPath = Path.Combine(dir!, "client", "src", "__fixtures__", "engine-dto-shape.json");
+        var goldenPath = Path.Combine(dir!, "src", "WorkflowUI", "src", "__fixtures__", "engine-dto-shape.json");
         Assert.True(File.Exists(goldenPath), $"Committed fixture not found at {goldenPath}");
 
         var committed = File.ReadAllText(goldenPath).Replace("\r\n", "\n");

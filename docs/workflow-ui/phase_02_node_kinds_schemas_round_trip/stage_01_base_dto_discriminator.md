@@ -48,19 +48,19 @@ This stage unblocks Stage 2.2 (task-family kinds extend `NodeDtoBase`), Stage 2.
 ## Files owned by this stage
 
 Client
-- `client/src/engine-contract.generated.ts` (modified — generator emits `NodeDtoBase`, `RetryPolicyDto`, `CircuitBreakerPolicyDto`).
-- `client/src/engine-contract.ts` (modified — re-exports).
-- `client/src/schemas/node-base.schema.ts` (new, Step 2.1.1) — Zod schema.
-- `client/src/schemas/policy.schema.ts` (new, Step 2.1.1) — Zod for retry + circuit-breaker.
-- `client/src/schemas/node-union.ts` (new, Step 2.1.2) — discriminated union stub + `assertNever`.
-- `client/src/schemas/__tests__/node-base.schema.test.ts` (new, Step 2.1.1).
-- `client/src/schemas/__tests__/node-union.test-d.ts` (new, Step 2.1.2) — `tsd` type-level tests.
+- `src/WorkflowUI/src/engine-contract.generated.ts` (modified — generator emits `NodeDtoBase`, `RetryPolicyDto`, `CircuitBreakerPolicyDto`).
+- `src/WorkflowUI/src/engine-contract.ts` (modified — re-exports).
+- `src/WorkflowUI/src/schemas/node-base.schema.ts` (new, Step 2.1.1) — Zod schema.
+- `src/WorkflowUI/src/schemas/policy.schema.ts` (new, Step 2.1.1) — Zod for retry + circuit-breaker.
+- `src/WorkflowUI/src/schemas/node-union.ts` (new, Step 2.1.2) — discriminated union stub + `assertNever`.
+- `src/WorkflowUI/src/schemas/__tests__/node-base.schema.test.ts` (new, Step 2.1.1).
+- `src/WorkflowUI/src/schemas/__tests__/node-union.test-d.ts` (new, Step 2.1.2) — `tsd` type-level tests.
 
 Fixtures
-- `client/src/__fixtures__/node-base.valid.json` (new) — minimal valid base.
-- `client/src/__fixtures__/node-base.with-retry.json` (new).
-- `client/src/__fixtures__/node-base.with-circuit-breaker.json` (new).
-- `client/src/__fixtures__/node-base.null-policies.json` (new) — both policies `null` explicitly.
+- `src/WorkflowUI/src/__fixtures__/node-base.valid.json` (new) — minimal valid base.
+- `src/WorkflowUI/src/__fixtures__/node-base.with-retry.json` (new).
+- `src/WorkflowUI/src/__fixtures__/node-base.with-circuit-breaker.json` (new).
+- `src/WorkflowUI/src/__fixtures__/node-base.null-policies.json` (new) — both policies `null` explicitly.
 
 Server parity
 - `src/WorkflowUi.ContractTests/NodeBaseRoundTripTests.cs` (new) — asserts that DTO round-trips through the engine preserve `null` policy (vs empty object).
@@ -114,10 +114,10 @@ Produce a hand-written (but generator-aligned) TypeScript interface `NodeDtoBase
 ### Inputs
 - `src/ExecutionEngine/Nodes/Definitions/NodeDefinition.cs` (for property names + types).
 - `src/ExecutionEngine/Policies/RetryPolicy.cs` + `CircuitBreakerPolicy.cs`.
-- `client/src/engine-contract.ts` from Stage 1.2.3.
+- `src/WorkflowUI/src/engine-contract.ts` from Stage 1.2.3.
 
 ### Deliverables
-- `client/src/schemas/policy.schema.ts` (new) —
+- `src/WorkflowUI/src/schemas/policy.schema.ts` (new) —
   ```ts
   export const retryStrategySchema = z.enum(['None','Fixed','Exponential','Linear']);
   export const retryPolicySchema = z.object({
@@ -136,7 +136,7 @@ Produce a hand-written (but generator-aligned) TypeScript interface `NodeDtoBase
     halfOpenSuccesses: z.number().int().min(1).default(3),
   }).strict();
   ```
-- `client/src/schemas/node-base.schema.ts` (new) —
+- `src/WorkflowUI/src/schemas/node-base.schema.ts` (new) —
   ```ts
   export const nodeBaseSchema = z.object({
     runtimeType: runtimeTypeSchema,
@@ -154,12 +154,12 @@ Produce a hand-written (but generator-aligned) TypeScript interface `NodeDtoBase
   });
   export type NodeDtoBase = z.infer<typeof nodeBaseSchema>;
   ```
-- `client/src/engine-contract.ts` (modified) — re-export `nodeBaseSchema`, `retryPolicySchema`, `circuitBreakerPolicySchema`, and the inferred types.
-- `client/src/__fixtures__/node-base.valid.json` (new) — `{ "runtimeType": "Noop", "nodeId": "n1", "nodeName": "Start", "joinType": "Any", "priority": "Normal", "maxConcurrentExecutions": 0 }`.
-- `client/src/__fixtures__/node-base.with-retry.json` (new) — same + non-null retryPolicy.
-- `client/src/__fixtures__/node-base.with-circuit-breaker.json` (new) — same + non-null circuitBreakerPolicy.
-- `client/src/__fixtures__/node-base.null-policies.json` (new) — `retryPolicy: null, circuitBreakerPolicy: null` EXPLICITLY (not omitted).
-- `client/src/schemas/__tests__/node-base.schema.test.ts` (new) — 12+ tests.
+- `src/WorkflowUI/src/engine-contract.ts` (modified) — re-export `nodeBaseSchema`, `retryPolicySchema`, `circuitBreakerPolicySchema`, and the inferred types.
+- `src/WorkflowUI/src/__fixtures__/node-base.valid.json` (new) — `{ "runtimeType": "Noop", "nodeId": "n1", "nodeName": "Start", "joinType": "Any", "priority": "Normal", "maxConcurrentExecutions": 0 }`.
+- `src/WorkflowUI/src/__fixtures__/node-base.with-retry.json` (new) — same + non-null retryPolicy.
+- `src/WorkflowUI/src/__fixtures__/node-base.with-circuit-breaker.json` (new) — same + non-null circuitBreakerPolicy.
+- `src/WorkflowUI/src/__fixtures__/node-base.null-policies.json` (new) — `retryPolicy: null, circuitBreakerPolicy: null` EXPLICITLY (not omitted).
+- `src/WorkflowUI/src/schemas/__tests__/node-base.schema.test.ts` (new) — 12+ tests.
 - `src/WorkflowUi.ContractTests/NodeBaseRoundTripTests.cs` (new) — null-vs-empty preservation through engine `WorkflowSerializer.ToYaml` and back.
 
 ### Acceptance criteria
@@ -212,7 +212,7 @@ A/A/A for the three most important:
 - Cross-language: the C# `NodeBaseRoundTripTests` load a Zod-produced JSON fixture, deserialize via `WorkflowSerializer.FromJson`, re-serialize, and assert the JSON text preserves `retryPolicy: null`.
 
 ### Golden-file / parity tests
-- **Golden:** `client/src/__fixtures__/node-base.with-retry.json` — round-trips through engine `WorkflowSerializer`; after re-serialize-and-canonicalise, byte-matches the original.
+- **Golden:** `src/WorkflowUI/src/__fixtures__/node-base.with-retry.json` — round-trips through engine `WorkflowSerializer`; after re-serialize-and-canonicalise, byte-matches the original.
 - **Diff contract:** key order preserved, LF line endings, `null` preserved as `null` (not dropped to absent).
 - **Parity fixture:** `engine-dto-shape.json` (from Stage 0.2.2) must include `NodeDefinition` with exactly the 11 properties this step implements.
 
@@ -267,17 +267,17 @@ Evaluator score ≥ 90, zero CRITICAL, zero HIGH findings, all acceptance criter
 **Depends on:** 2.1.1
 
 ### Goal
-Define the initial shape of the `NodeDto` discriminated union in `client/src/schemas/node-union.ts` plus helper machinery that will be filled in by Stages 2.2/2.3/2.4. The union is keyed on `runtimeType` with 13 members (one per engine `RuntimeType`); members not yet implemented in Phase 2 stages 2.2/2.3/2.4 are initially typed `NodeDtoBase & { runtimeType: '<Kind>' }` with a TODO marker. Author an `assertNever` exhaustiveness check pattern so removing or renaming a kind produces a compile-time error. Include a `tsd`-style type-level test that asserts a handler switch must cover all 13 kinds.
+Define the initial shape of the `NodeDto` discriminated union in `src/WorkflowUI/src/schemas/node-union.ts` plus helper machinery that will be filled in by Stages 2.2/2.3/2.4. The union is keyed on `runtimeType` with 13 members (one per engine `RuntimeType`); members not yet implemented in Phase 2 stages 2.2/2.3/2.4 are initially typed `NodeDtoBase & { runtimeType: '<Kind>' }` with a TODO marker. Author an `assertNever` exhaustiveness check pattern so removing or renaming a kind produces a compile-time error. Include a `tsd`-style type-level test that asserts a handler switch must cover all 13 kinds.
 
 ### Depends on
 2.1.1.
 
 ### Inputs
-- `client/src/schemas/node-base.schema.ts` from 2.1.1.
-- `client/src/engine-contract.ts` with `RUNTIME_TYPES` and `assertNever`.
+- `src/WorkflowUI/src/schemas/node-base.schema.ts` from 2.1.1.
+- `src/WorkflowUI/src/engine-contract.ts` with `RUNTIME_TYPES` and `assertNever`.
 
 ### Deliverables
-- `client/src/schemas/node-union.ts` (new):
+- `src/WorkflowUI/src/schemas/node-union.ts` (new):
   ```ts
   import { z } from 'zod';
   import { nodeBaseSchema } from './node-base.schema';
@@ -294,10 +294,10 @@ Define the initial shape of the `NodeDto` discriminated union in `client/src/sch
     return (handlers[n.runtimeType] as (n: NodeDto) => T)(n);
   }
   ```
-- `client/src/schemas/__tests__/node-union.test-d.ts` (new) — type-level assertions using `expectType` / `expectError` from `tsd` (or our local mini-variant).
-- `client/src/schemas/__tests__/node-union.test.ts` (new) — runtime assertions.
-- `client/src/engine-contract.ts` (modified) — re-export `nodeDtoSchema`, `NodeDto`, `handleNode`.
-- `client/src/__fixtures__/node-union.all-13-kinds.json` (new) — array with one node per kind, used by exhaustiveness tests.
+- `src/WorkflowUI/src/schemas/__tests__/node-union.test-d.ts` (new) — type-level assertions using `expectType` / `expectError` from `tsd` (or our local mini-variant).
+- `src/WorkflowUI/src/schemas/__tests__/node-union.test.ts` (new) — runtime assertions.
+- `src/WorkflowUI/src/engine-contract.ts` (modified) — re-export `nodeDtoSchema`, `NodeDto`, `handleNode`.
+- `src/WorkflowUI/src/__fixtures__/node-union.all-13-kinds.json` (new) — array with one node per kind, used by exhaustiveness tests.
 
 ### Acceptance criteria
 - [ ] `nodeDtoSchema` has exactly 13 discriminated members, one per `RuntimeType` value.
@@ -359,7 +359,7 @@ None — type-level.
 ### Risks & mitigations
 - `z.discriminatedUnion` vs plain `z.union` — must use discriminated for O(1) parse performance and clean errors.
 - TS `unknown` leakage via `(handlers[n.runtimeType] as ...)` cast — isolated to the helper; callers see full type safety.
-- `tsd` heavy dependency — alternative: a tiny `expectType<T>(value: T)` helper under `client/src/__tests__/type-helpers/`.
+- `tsd` heavy dependency — alternative: a tiny `expectType<T>(value: T)` helper under `src/WorkflowUI/src/__tests__/type-helpers/`.
 
 ### Evaluator gap-analysis prompts
 1. Does `nodeDtoSchema` have exactly 13 discriminated members matching the engine `RuntimeType` list?

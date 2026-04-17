@@ -23,7 +23,7 @@ file_header_template = ---------------------------------------------------------
 end_of_line = lf
 
 # Client SPA (TypeScript, React, JSON, Markdown)
-[client/**/*.{ts,tsx,js,jsx,json,md}]
+[src/WorkflowUI/**/*.{ts,tsx,js,jsx,json,md}]
 indent_size = 2
 end_of_line = lf
 trim_trailing_whitespace = true

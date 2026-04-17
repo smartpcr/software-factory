@@ -179,6 +179,6 @@ UpgradeLog*.htm
 # allow claude
 !CLAUDE.md
 !.claude/client/tsconfig.tsbuildinfo
-client/dist/
-client/coverage/
-client/node_modules/
+src/WorkflowUI/dist/
+src/WorkflowUI/coverage/
+src/WorkflowUI/node_modules/

@@ -368,8 +368,8 @@ Every phase-start table below restates its row and the rolling total so reviewer
 
 ### [ ] Stage 0.1 — Repo scaffolding
 #### [ ] Step 0.1.1 (2 d)
-- **Deliverables:** `src/WorkflowUi.Server/` ASP.NET Core 8 skeleton, `client/` Vite+React+TS skeleton, `src/WorkflowUi.ContractTests/` xUnit project wired to `ExecutionEngine`.
-- **Acceptance:** `dotnet build Workflow.sln` green; `npm run build` in `client/` green.
+- **Deliverables:** `src/WorkflowUi.Server/` ASP.NET Core 8 skeleton, `src/WorkflowUI/` Vite+React+TS skeleton, `src/WorkflowUi.ContractTests/` xUnit project wired to `ExecutionEngine`.
+- **Acceptance:** `dotnet build Workflow.sln` green; `npm run build` in `src/WorkflowUI/` green.
 - **Unit tests:** one placeholder test per new project that asserts assembly loads.
 - **Integration tests:** none.
 - **Depends on:** nothing.
@@ -386,7 +386,7 @@ Every phase-start table below restates its row and the rolling total so reviewer
 - **Rubric:** pass iff `dotnet format --verify-no-changes` returns 0.
 
 #### [ ] Step 0.1.3 (1 d)
-- **Deliverables:** prettier + eslint + vitest for `client/`.
+- **Deliverables:** prettier + eslint + vitest for `src/WorkflowUI/`.
 - **Acceptance:** `npm run lint` and `npm run test` both pass on empty suite.
 - **Unit tests:** one passing placeholder.
 - **Integration tests:** none.
@@ -405,7 +405,7 @@ Every phase-start table below restates its row and the rolling total so reviewer
 - **Rubric:** pass iff `dotnet test --filter Category=EnumParity` green.
 
 #### [ ] Step 0.2.2 (2 d)
-- **Deliverables:** reflection-based DTO parity test covering every `*NodeDefinition.cs`; emits TypeScript stubs into `client/src/engine-contract.generated.ts`.
+- **Deliverables:** reflection-based DTO parity test covering every `*NodeDefinition.cs`; emits TypeScript stubs into `src/WorkflowUI/src/engine-contract.generated.ts`.
 - **Acceptance:** generator + diff check fails if a property is added on the C# side but not reflected in TS.
 - **Unit tests:** one fact per node definition class.
 - **Integration tests:** none.
@@ -491,7 +491,7 @@ Every phase-start table below restates its row and the rolling total so reviewer
 ### [ ] Stage 1.2 — Contract generation
 #### [ ] Step 1.2.1 (1 d)
 - **Deliverables:** `tools/GenContract` console app reflecting engine enums + DTOs → TS.
-- **Acceptance:** `dotnet run --project tools/GenContract` overwrites `client/src/engine-contract.generated.ts`.
+- **Acceptance:** `dotnet run --project tools/GenContract` overwrites `src/WorkflowUI/src/engine-contract.generated.ts`.
 - **Unit tests:** generator unit test produces stable sorted output.
 - **Integration tests:** none.
 - **Depends on:** 0.2.2.
@@ -715,7 +715,7 @@ Every phase-start table below restates its row and the rolling total so reviewer
 - **Rubric:** pass iff Playwright reload test preserves positions.
 
 #### [ ] Step 2.4.6 — Port matrix enforcement (1 d)
-- **Deliverables:** port-matrix table (§2.6) materialised as a const in `client/src/ports.ts`; UI hides/shows ports per node kind.
+- **Deliverables:** port-matrix table (§2.6) materialised as a const in `src/WorkflowUI/src/ports.ts`; UI hides/shows ports per node kind.
 - **Acceptance:** attempting to create a `Next` edge from a `Noop` is blocked.
 - **Unit tests:** matrix snapshot test.
 - **Integration tests:** Playwright tries invalid edge, receives inline error.
@@ -1374,7 +1374,7 @@ Fixture corpus has ~25 YAML + ~25 sidecar files = ~50 files, exceeding the §0.1
 3. Palette registry entry + icon.
 4. Mapper partial added in Stage 5.1 (create a new 5.1.1X sub-step).
 5. Golden fixture pair added under Stage 5.2.
-6. Property-grid schema file in `client/src/schemas/<kind>.json`.
+6. Property-grid schema file in `src/WorkflowUI/src/schemas/<kind>.json`.
 7. User-guide section + screenshot (Step 8.2.1).
 8. Update §0.2.2 table row.
 9. Update phase index totals if step count changes; keep roll-up checkboxes consistent with §0.1.1.

@@ -1,12 +1,12 @@
 pre-commit:
   parallel: true
   commands:
-    client-eslint:
-      glob: 'client/src/**/*.{ts,tsx}'
-      run: npx --prefix client eslint {staged_files}
-    client-prettier:
-      glob: 'client/**/*.{ts,tsx,json,md,css}'
-      run: npx --prefix client prettier --check {staged_files}
+    workflowui-eslint:
+      glob: 'src/WorkflowUI/src/**/*.{ts,tsx}'
+      run: npx --prefix src/WorkflowUI eslint {staged_files}
+    workflowui-prettier:
+      glob: 'src/WorkflowUI/**/*.{ts,tsx,json,md,css}'
+      run: npx --prefix src/WorkflowUI prettier --check {staged_files}
     dotnet-format:
       glob: 'src/**/*.cs'
       run: dotnet format --include {staged_files} --verify-no-changes

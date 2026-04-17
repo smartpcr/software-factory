@@ -114,24 +114,23 @@ jobs:
         with:
           node-version: 18
           cache: npm
-          cache-dependency-path: client/package-lock.json
+          cache-dependency-path: src/WorkflowUI/package-lock.json
       - run: npm ci
-        working-directory: client
+        working-directory: src/WorkflowUI
       - run: npm run lint
-        working-directory: client
+        working-directory: src/WorkflowUI
       - run: npm run format:check
-        working-directory: client
+        working-directory: src/WorkflowUI
       - run: npm run test:coverage
-        working-directory: client
+        working-directory: src/WorkflowUI
       - run: npm run build
-        working-directory: client
-
+        working-directory: src/WorkflowUI
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: client-coverage
-          path: client/coverage/
+          name: workflowui-coverage
+          path: src/WorkflowUI/coverage/
 
   coverage-gate:
     name: Coverage gate
@@ -146,11 +145,11 @@ jobs:
           name: dotnet-test-results
           path: TestResults/
 
-      - name: Download client coverage
+      - name: Download client (WorkflowUI) coverage
         uses: actions/download-artifact@v4
         with:
-          name: client-coverage
-          path: client/coverage/
+          name: workflowui-coverage
+          path: src/WorkflowUI/coverage/
 
       - name: Verify .NET coverage artifact exists
         run: |
@@ -160,29 +159,29 @@ jobs:
           }
           Write-Host ".NET coverage artifact present"
 
-      - name: Verify client coverage artifact exists
+      - name: Verify WorkflowUI coverage artifact exists
         run: |
-          if (!(Test-Path "client/coverage/lcov.info")) {
-            Write-Error "Missing client lcov.info"
+          if (!(Test-Path "src/WorkflowUI/coverage/lcov.info")) {
+            Write-Error "Missing WorkflowUI lcov.info"
             exit 1
           }
-          Write-Host "Client lcov.info present"
+          Write-Host "WorkflowUI lcov.info present"
 
-      - name: Verify generated files excluded from client coverage
+      - name: Verify generated files excluded from WorkflowUI coverage
         run: |
-          $vitestConfig = Get-Content "client/vitest.config.ts" -Raw
+          $vitestConfig = Get-Content "src/WorkflowUI/vitest.config.ts" -Raw
           if ($vitestConfig -notmatch "engine-contract.generated.ts") {
             Write-Error "engine-contract.generated.ts must be excluded from coverage config"
             exit 1
           }
           Write-Host "Generated files properly excluded from coverage"
 
-      - name: Enforce client coverage threshold (100% on new code)
+      - name: Enforce WorkflowUI coverage threshold (100% on new code)
         run: |
           $totalLines = 0
           $hitLines = 0
           $currentFile = ""
-          foreach ($line in (Get-Content "client/coverage/lcov.info")) {
+          foreach ($line in (Get-Content "src/WorkflowUI/coverage/lcov.info")) {
             if ($line -match "^SF:(.+)$") {
               $currentFile = $Matches[1]
             }
@@ -196,7 +195,7 @@ jobs:
             exit 1
           }
           $pct = [math]::Round(($hitLines / $totalLines) * 100, 2)
-          Write-Host "Client coverage: $hitLines / $totalLines lines = $pct%"
+          Write-Host "WorkflowUI coverage: $hitLines / $totalLines lines = $pct%"
           if ($pct -lt 100) {
             Write-Error "Client coverage $pct% is below 100% threshold"
             exit 1

@@ -41,13 +41,13 @@ Coverage:
 - If a deliverables bullet groups multiple files, append the symbol names in that same bullet before implementation begins; evaluators should score unnamed exports as incomplete even when the file path is present.
 
 ## Files owned by this stage
-- `client/src/schemas/node-ifelse.schema.ts` (2.3.1)
-- `client/src/schemas/node-switch.schema.ts` (2.3.2)
-- `client/src/schemas/node-foreach.schema.ts` (2.3.3a)
-- `client/src/schemas/node-while.schema.ts` (2.3.3b)
-- `client/src/schemas/node-union.ts` (modified each step)
-- `client/src/schemas/__tests__/node-<kind>.schema.test.ts` per step.
-- Fixtures in `client/src/__fixtures__/`: `ifelse-*.yaml`, `switch-*.yaml`, `foreach-*.yaml`, `while-*.yaml` (multiple per kind for positive and negative branch-shape coverage).
+- `src/WorkflowUI/src/schemas/node-ifelse.schema.ts` (2.3.1)
+- `src/WorkflowUI/src/schemas/node-switch.schema.ts` (2.3.2)
+- `src/WorkflowUI/src/schemas/node-foreach.schema.ts` (2.3.3a)
+- `src/WorkflowUI/src/schemas/node-while.schema.ts` (2.3.3b)
+- `src/WorkflowUI/src/schemas/node-union.ts` (modified each step)
+- `src/WorkflowUI/src/schemas/__tests__/node-<kind>.schema.test.ts` per step.
+- Fixtures in `src/WorkflowUI/src/__fixtures__/`: `ifelse-*.yaml`, `switch-*.yaml`, `foreach-*.yaml`, `while-*.yaml` (multiple per kind for positive and negative branch-shape coverage).
 - `src/WorkflowUi.ContractTests/ControlFlowRoundTripTests.cs`.
 - `src/WorkflowUi.ContractTests/BranchAsEdgesInvariantTests.cs` (new, owned by this stage) — asserts no control-flow DTO carries `trueBranch`/`defaultCase`/etc.
 
@@ -101,7 +101,7 @@ Implement `IfElseNodeDefinition` per `src/ExecutionEngine/Nodes/Definitions/IfEl
 - `IfElseNodeDefinition.cs`, `NodeConnection.cs`, `MessageType.cs`, Stage 2.1–2.2 schemas.
 
 ### Deliverables
-- `client/src/schemas/node-ifelse.schema.ts`:
+- `src/WorkflowUI/src/schemas/node-ifelse.schema.ts`:
   ```ts
   export const ifElseNodeSchema = nodeBaseSchema.extend({
     runtimeType: z.literal('IfElse'),
@@ -210,10 +210,10 @@ Critical semantic: `Cases` keys are CASE VALUES (match targets), `Cases` values 
 ### Inputs
 - `src/ExecutionEngine/Nodes/Definitions/SwitchNodeDefinition.cs:12-39` — authoritative `Expression` / `Cases` property surface.
 - `src/ExecutionEngine/Workflow/NodeConnection.cs:21-99` — edge-routing fields (`Condition`, `TriggerMessageType`) that remain outside the DTO.
-- `client/src/schemas/node-base.schema.ts` from Step 2.1.1 — shared base fields and discriminator plumbing.
+- `src/WorkflowUI/src/schemas/node-base.schema.ts` from Step 2.1.1 — shared base fields and discriminator plumbing.
 
 ### Deliverables
-- `client/src/schemas/node-switch.schema.ts`:
+- `src/WorkflowUI/src/schemas/node-switch.schema.ts`:
   ```ts
   export const switchNodeSchema = nodeBaseSchema.extend({
     runtimeType: z.literal('Switch'),
@@ -328,7 +328,7 @@ The body of the loop is a child subgraph reached via an outgoing edge with `Trig
 - `src/ExecutionEngine/Enums/MessageType.cs:13-20` — legal `Next` / `Complete` message values for fixture assertions.
 
 ### Deliverables
-- `client/src/schemas/node-foreach.schema.ts`:
+- `src/WorkflowUI/src/schemas/node-foreach.schema.ts`:
   ```ts
   export const forEachNodeSchema = nodeBaseSchema.extend({
     runtimeType: z.literal('ForEach'),
@@ -438,7 +438,7 @@ Body is an outgoing edge with `TriggerMessageType: Next`; exit is `Complete`. Sa
 - `src/ExecutionEngine/Enums/MessageType.cs:13-20` — canonical `Next` / `Complete` message names used in tests.
 
 ### Deliverables
-- `client/src/schemas/node-while.schema.ts`:
+- `src/WorkflowUI/src/schemas/node-while.schema.ts`:
   ```ts
   export const whileNodeSchema = nodeBaseSchema.extend({
     runtimeType: z.literal('While'),

@@ -47,19 +47,19 @@ Coverage:
 ## Files owned by this stage
 
 Client schemas
-- `client/src/schemas/node-subflow.schema.ts` (2.4.1)
-- `client/src/schemas/node-timer.schema.ts` (2.4.2)
-- `client/src/schemas/node-container.schema.ts` (2.4.3)
-- `client/src/schemas/node-connection.schema.ts` (new, 2.4.3 introduces — finalised in 2.4.6)
-- `client/src/schemas/sidecar.schema.ts` (2.4.5)
-- `client/src/schemas/port-matrix.ts` (2.4.6)
-- `client/src/schemas/node-union.ts` (modified; final shape after 2.4.3).
+- `src/WorkflowUI/src/schemas/node-subflow.schema.ts` (2.4.1)
+- `src/WorkflowUI/src/schemas/node-timer.schema.ts` (2.4.2)
+- `src/WorkflowUI/src/schemas/node-container.schema.ts` (2.4.3)
+- `src/WorkflowUI/src/schemas/node-connection.schema.ts` (new, 2.4.3 introduces — finalised in 2.4.6)
+- `src/WorkflowUI/src/schemas/sidecar.schema.ts` (2.4.5)
+- `src/WorkflowUI/src/schemas/port-matrix.ts` (2.4.6)
+- `src/WorkflowUI/src/schemas/node-union.ts` (modified; final shape after 2.4.3).
 
 Server
 - `src/WorkflowUi.Server/Endpoints/WorkflowRoundTripEndpoints.cs` (2.4.4)
 - `src/WorkflowUi.Server/Endpoints/SidecarEndpoints.cs` (2.4.5)
 
-Fixtures (under `client/src/__fixtures__/`)
+Fixtures (under `src/WorkflowUI/src/__fixtures__/`)
 - Subflow: `subflow-external.yaml`, `subflow-inline.yaml`, `subflow-both-rejected.yaml` (negative).
 - Timer: `timer-cron.yaml`, `timer-duration.yaml`, `timer-empty-schedule.yaml` (negative).
 - Container: `container-sequential.yaml`, `container-parallel.yaml`, `container-nested.yaml`.
@@ -132,7 +132,7 @@ Engine `Validate()` enforces exactly one of `WorkflowFilePath` / `WorkflowDefini
 - Zod schemas for nested workflows (this step introduces a mutually-recursive pattern).
 
 ### Deliverables
-- `client/src/schemas/node-subflow.schema.ts`:
+- `src/WorkflowUI/src/schemas/node-subflow.schema.ts`:
   ```ts
   // Forward declaration to break recursion — the full workflow schema references nodeDtoSchema.
   export const subflowNodeSchema: z.ZodType<SubflowNode> = z.lazy(() =>
@@ -263,10 +263,10 @@ Implement `TimerNodeDefinition` per `src/ExecutionEngine/Nodes/Definitions/Timer
 ### Inputs
 - `src/ExecutionEngine/Nodes/Definitions/TimerNodeDefinition.cs:12-24` — authoritative `Schedule` surface for timer nodes.
 - `src/ExecutionEngine/Workflow/WorkflowSerializer.cs:31-212` — canonical YAML emission path used by timer round-trip tests.
-- `client/src/schemas/node-base.schema.ts` from Step 2.1.1 — shared discriminator/base-field rules.
+- `src/WorkflowUI/src/schemas/node-base.schema.ts` from Step 2.1.1 — shared discriminator/base-field rules.
 
 ### Deliverables
-- `client/src/schemas/node-timer.schema.ts`:
+- `src/WorkflowUI/src/schemas/node-timer.schema.ts`:
   ```ts
   const CRON_REGEX = /^(\S+\s+){4,5}\S+$/;           // 5 or 6 fields
   const DURATION_REGEX = /^P(?=[^T])?(\d+Y)?(\d+M)?(\d+D)?(T(\d+H)?(\d+M)?(\d+S)?)?$|^\d{2}:\d{2}:\d{2}$/;
@@ -383,10 +383,10 @@ This step also formally introduces `NodeConnection` to the Zod schema world, sin
 ### Inputs
 - `src/ExecutionEngine/Nodes/Definitions/ContainerNodeDefinition.cs:14-32` — authoritative `ChildNodes`, `ChildConnections`, and `ExecutionMode` fields.
 - `src/ExecutionEngine/Workflow/NodeConnection.cs:21-99` — nine-property connection surface mirrored by the DTO.
-- `client/src/schemas/node-union.ts` from Step 2.1.2 — discriminated-union placeholder infrastructure replaced by this step.
+- `src/WorkflowUI/src/schemas/node-union.ts` from Step 2.1.2 — discriminated-union placeholder infrastructure replaced by this step.
 
 ### Deliverables
-- `client/src/schemas/node-connection.schema.ts` (new):
+- `src/WorkflowUI/src/schemas/node-connection.schema.ts` (new):
   ```ts
   export const nodeConnectionSchema = z.object({
     sourceNodeId: z.string().min(1),
@@ -400,7 +400,7 @@ This step also formally introduces `NodeConnection` to the Zod schema world, sin
     targetPort: z.string().nullable().optional(),
   }).strict();
   ```
-- `client/src/schemas/node-container.schema.ts`:
+- `src/WorkflowUI/src/schemas/node-container.schema.ts`:
   ```ts
   export const containerNodeSchema: z.ZodType<ContainerNode> = z.lazy(() =>
     nodeBaseSchema.extend({
@@ -525,7 +525,7 @@ Wrap engine `WorkflowLoader.Load(filePath, validateOnLoad)` and `WorkflowSeriali
 - `src/WorkflowUi.Server/Endpoints/WorkflowRoundTripEndpoints.cs` — minimal-API endpoints with strongly-typed request/response records.
 - `src/WorkflowUi.Server/Services/WorkflowFileSandbox.cs` — path resolver that canonicalises `{path}` and rejects traversal outside the configured root.
 - `src/WorkflowUi.ContractTests/YamlEndpointTests.cs` — integration tests via `WebApplicationFactory`.
-- `client/src/api/workflows.ts` — thin typed fetch wrappers.
+- `src/WorkflowUI/src/api/workflows.ts` — thin typed fetch wrappers.
 
 ### Acceptance criteria
 - [ ] `POST /api/workflows/parse` with a known-good fixture returns a JSON body that, parsed by `nodeDtoSchema`, yields the expected nodes.
@@ -654,7 +654,7 @@ Endpoints:
 - Step 2.4.4 deliverables (`WorkflowRoundTripEndpoints.cs`, `WorkflowFileSandbox.cs`) — sandbox/path-handling behavior reused for sidecars.
 
 ### Deliverables
-- `client/src/schemas/sidecar.schema.ts`.
+- `src/WorkflowUI/src/schemas/sidecar.schema.ts`.
 - `src/WorkflowUi.Server/Endpoints/SidecarEndpoints.cs`.
 - `src/WorkflowUi.Server/Services/SidecarStore.cs` — JSON read/write with atomic replace.
 - Fixtures: `sidecar-basic.json`, `sidecar-with-notes.json`, `sidecar-missing-node.json` (references a node that doesn't exist in the paired YAML — the server allows this but the UI warns).
@@ -770,7 +770,7 @@ The matrix is authored once here as a typed TypeScript table AND a mirror JSON f
 - Stage 2 fixtures from Steps 2.3.3a, 2.3.3b, and 2.4.3 — canonical examples used to justify idiomatic cells.
 
 ### Deliverables
-- `client/src/schemas/port-matrix.ts`:
+- `src/WorkflowUI/src/schemas/port-matrix.ts`:
   ```ts
   type MessageLegality = 'idiomatic' | 'allowed' | 'rare' | 'forbidden';
   type PerKindRow = Record<MessageType, MessageLegality>;
@@ -778,9 +778,9 @@ The matrix is authored once here as a typed TypeScript table AND a mirror JSON f
   export const incomingPortMatrix: Record<RuntimeType, PerKindRow> = { ... };
   export function classifyOutgoing(source: RuntimeType, m: MessageType): MessageLegality;
   ```
-- `client/src/__fixtures__/port-matrix.json` — mirrored table for server parity.
+- `src/WorkflowUI/src/__fixtures__/port-matrix.json` — mirrored table for server parity.
 - `src/WorkflowUi.ContractTests/PortMatrixTests.cs` — loads the JSON, asserts: (a) every `(runtimeType, messageType)` pair has an entry, (b) no unknown keys, (c) the matrix count = 13 × 5 for each direction = 65 rows.
-- Update `client/src/api/lint.ts` stub (Phase 3 will flesh this out) so it can import the matrices.
+- Update `src/WorkflowUI/src/api/lint.ts` stub (Phase 3 will flesh this out) so it can import the matrices.
 
 ### Acceptance criteria
 - [ ] 13 runtime types × 5 message types = 65 cells per direction; no missing cells.

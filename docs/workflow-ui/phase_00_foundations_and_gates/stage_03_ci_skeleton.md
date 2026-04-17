@@ -37,7 +37,7 @@ GitHub Actions
 
 Local hooks
 - `.lefthook.yml` (new, Step 0.3.2) — lefthook config (Node-launched for Windows compat).
-- `client/package.json` (modified) — add `lefthook` devDependency + `prepare` script.
+- `src/WorkflowUI/package.json` (modified) — add `lefthook` devDependency + `prepare` script.
 
 Branch policy & owners
 - `CODEOWNERS` (new or modified, Step 0.3.3) — add `docs/workflow-ui-plan.md` and `docs/workflow-ui/` ownership entries.
@@ -49,7 +49,7 @@ Meta-test
 
 ## Shared fixtures / fakes
 - The CI yaml itself is a golden file: Step 0.3.1 ships the workflow; Step 1.3 extends it. No external fixtures authored here.
-- Lefthook config cross-references scripts from `client/package.json` — the `format:check` / `lint` / `test` scripts must stay named stably.
+- Lefthook config cross-references scripts from `src/WorkflowUI/package.json` — the `format:check` / `lint` / `test` scripts must stay named stably.
 
 ## Stage-wide observability contract
 - **Serilog structured fields** — `stageId="0.3"`, `phaseId="0"`, `stepId`, `operation`, `durationMs`, `workflowId`, `runtimeType`, `correlationId`, `requestId`, `path`, `validationCode`.
@@ -88,14 +88,14 @@ Meta-test
 **Depends on:** 0.2.1, 0.2.2, 0.2.3
 
 ### Goal
-Create `.github/workflows/ci-workflow-ui.yml` that runs on `push` to `main` and on `pull_request` targeting `main`, with jobs that (1) restore + build the full solution, (2) run `dotnet test` with coverlet producing lcov, (3) run `npm ci` + `npm run lint` + `npm run test:coverage` + `npm run build` in `client/`, (4) run the parity test category filters explicitly (`Category=EnumParity`, `Category=DtoParity`, `Category=YamlRoundTrip`) as separate named steps so the evaluator can see which gate failed, and (5) upload both coverage reports as artefacts. A meta-test parses the YAML and asserts each required step is present so accidental deletion fails the test suite.
+Create `.github/workflows/ci-workflow-ui.yml` that runs on `push` to `main` and on `pull_request` targeting `main`, with jobs that (1) restore + build the full solution, (2) run `dotnet test` with coverlet producing lcov, (3) run `npm ci` + `npm run lint` + `npm run test:coverage` + `npm run build` in `src/WorkflowUI/`, (4) run the parity test category filters explicitly (`Category=EnumParity`, `Category=DtoParity`, `Category=YamlRoundTrip`) as separate named steps so the evaluator can see which gate failed, and (5) upload both coverage reports as artefacts. A meta-test parses the YAML and asserts each required step is present so accidental deletion fails the test suite.
 
 ### Depends on
 0.2.1, 0.2.2, 0.2.3.
 
 ### Inputs
 - `global.json` (for pinned .NET SDK version).
-- `client/package.json` (for script names).
+- `src/WorkflowUI/package.json` (for script names).
 - Test category traits from Stage 0.2.
 
 ### Deliverables
@@ -103,8 +103,8 @@ Create `.github/workflows/ci-workflow-ui.yml` that runs on `push` to `main` and 
   - `build-dotnet` — `actions/checkout@v4`, `actions/setup-dotnet@v4` (reads `global.json`), `dotnet restore Workflow.sln`, `dotnet build Workflow.sln -c Release -warnaserror --no-restore`.
   - `test-dotnet` — `dotnet test src/WorkflowUi.ContractTests -c Release --no-build --collect:"XPlat Code Coverage" --results-directory ./TestResults --logger "trx"`.
     - Subsequent step: `dotnet test --filter Category=EnumParity`, `--filter Category=DtoParity`, `--filter Category=YamlRoundTrip` — each as a named step with explicit `name:`.
-  - `test-client` — `actions/setup-node@v4` with `cache: npm` and `cache-dependency-path: client/package-lock.json`, `npm ci`, `npm run lint`, `npm run format:check`, `npm run test:coverage`, `npm run build`.
-  - `coverage-gate` — merges lcov reports (C# + TS) via `reportgenerator` or `codecov-action`; asserts line coverage ≥ 100% on new projects (`src/WorkflowUi.Server`, `src/WorkflowUi.ContractTests`, `client/src`). Generated files excluded via `--exclude-by-file`.
+  - `test-client` — `actions/setup-node@v4` with `cache: npm` and `cache-dependency-path: src/WorkflowUI/package-lock.json`, `npm ci`, `npm run lint`, `npm run format:check`, `npm run test:coverage`, `npm run build`.
+  - `coverage-gate` — merges lcov reports (C# + TS) via `reportgenerator` or `codecov-action`; asserts line coverage ≥ 100% on new projects (`src/WorkflowUi.Server`, `src/WorkflowUi.ContractTests`, `src/WorkflowUI/src`). Generated files excluded via `--exclude-by-file`.
 - `src/WorkflowUi.ContractTests/CiWorkflowYamlTests.cs` (new) — parses the workflow YAML using `YamlDotNet`, asserts each named step exists and exits with expected conditions.
 - `.github/workflows/ci-workflow-ui.yml` must set `permissions: contents: read, pull-requests: write` (for coverage comment in 1.3.1).
 - `codecov.yml` (new, optional if using codecov action) — coverage thresholds match 100% policy.
@@ -200,13 +200,13 @@ Evaluator score ≥ 90, zero CRITICAL, zero HIGH findings, all acceptance criter
 **Depends on:** 0.1.3
 
 ### Goal
-Wire a lightweight pre-commit hook via `lefthook` (Node-launched, Windows-compatible) that runs ESLint + Prettier on staged client files and `dotnet format --verify-no-changes` scoped to staged `.cs` files. The hook must block commits on failure and be installable via `npm --prefix client run prepare`. It must NOT run the parity or YAML tests (too slow for pre-commit) — those are CI-only.
+Wire a lightweight pre-commit hook via `lefthook` (Node-launched, Windows-compatible) that runs ESLint + Prettier on staged client files and `dotnet format --verify-no-changes` scoped to staged `.cs` files. The hook must block commits on failure and be installable via `npm --prefix src/WorkflowUI run prepare`. It must NOT run the parity or YAML tests (too slow for pre-commit) — those are CI-only.
 
 ### Depends on
 0.1.3.
 
 ### Inputs
-- `client/package.json` scripts from 0.1.3.
+- `src/WorkflowUI/package.json` scripts from 0.1.3.
 - `.editorconfig` from 0.1.2.
 
 ### Deliverables
@@ -216,20 +216,20 @@ Wire a lightweight pre-commit hook via `lefthook` (Node-launched, Windows-compat
     parallel: true
     commands:
       client-eslint:
-        glob: 'client/src/**/*.{ts,tsx}'
-        run: npx --prefix client eslint {staged_files}
+        glob: 'src/WorkflowUI/src/**/*.{ts,tsx}'
+        run: npx --prefix src/WorkflowUI eslint {staged_files}
       client-prettier:
-        glob: 'client/**/*.{ts,tsx,json,md,css}'
-        run: npx --prefix client prettier --check {staged_files}
+        glob: 'src/WorkflowUI/**/*.{ts,tsx,json,md,css}'
+        run: npx --prefix src/WorkflowUI prettier --check {staged_files}
       dotnet-format:
         glob: 'src/**/*.cs'
         run: dotnet format --include {staged_files} --verify-no-changes
   ```
-- `client/package.json` (modified) — add `lefthook` devDependency, `prepare` script (`lefthook install`).
+- `src/WorkflowUI/package.json` (modified) — add `lefthook` devDependency, `prepare` script (`lefthook install`).
 - `docs/workflow-ui/phase-0/hooks.md` (new, short) — local install instructions; noted that CI mirrors but does not depend on hooks.
 
 ### Acceptance criteria
-- [ ] `npm --prefix client run prepare` installs the hook in `.git/hooks/pre-commit`.
+- [ ] `npm --prefix src/WorkflowUI run prepare` installs the hook in `.git/hooks/pre-commit`.
 - [ ] Committing a deliberately unformatted `.ts` file is blocked by the hook.
 - [ ] Committing a deliberately untabbed `.cs` file is blocked by `dotnet format`.
 - [ ] The hook completes in < 10 seconds on a no-op commit (performance sanity).
@@ -244,7 +244,7 @@ Wire a lightweight pre-commit hook via `lefthook` (Node-launched, Windows-compat
 5. `LefthookConfig_AllCommands_UseStagedFilesToken` — asserts `{staged_files}` present (not `{files}`).
 6. `PackageJson_DevDependencies_IncludesLefthook`
 7. `PackageJson_Scripts_Has_Prepare_LefthookInstall`
-8. `HookScript_InstalledByPrepare` (integration) — runs `npm --prefix client run prepare` in a sandbox; asserts `.git/hooks/pre-commit` written.
+8. `HookScript_InstalledByPrepare` (integration) — runs `npm --prefix src/WorkflowUI run prepare` in a sandbox; asserts `.git/hooks/pre-commit` written.
 
 A/A/A for the three most important:
 
@@ -254,7 +254,7 @@ A/A/A for the three most important:
   - Assert: every `run` contains `{staged_files}`.
 - `HookScript_InstalledByPrepare`
   - Arrange: clone repo to temp dir.
-  - Act: `npm --prefix client ci; npm --prefix client run prepare;`
+  - Act: `npm --prefix src/WorkflowUI ci; npm --prefix src/WorkflowUI run prepare;`
   - Assert: `.git/hooks/pre-commit` exists and invokes lefthook.
 - `LefthookConfig_Yaml_Parses`
   - Arrange: `File.ReadAllText(".lefthook.yml")`.
@@ -284,7 +284,7 @@ Not applicable.
 - Developer confusion about `--no-verify` escape hatch — documented in `hooks.md`.
 
 ### Evaluator gap-analysis prompts
-1. Is `lefthook` a devDependency of the CLIENT package (not the repo root) so `npm ci` in `client/` pulls it?
+1. Is `lefthook` a devDependency of the CLIENT package (not the repo root) so `npm ci` in `src/WorkflowUI/` pulls it?
 2. Does the `prepare` script run `lefthook install` so a fresh clone gets hooks automatically?
 3. Are all three hook commands (eslint, prettier, dotnet format) wired with `{staged_files}` — NOT running against the whole tree?
 4. Is the hook documented as CI-mirrored but not CI-required (so `--no-verify` in an emergency doesn't break merges)?

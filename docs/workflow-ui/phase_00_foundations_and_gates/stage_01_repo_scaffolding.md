@@ -14,7 +14,7 @@
 ---
 ## Context
 
-Stage 0.1 creates the three brand-new projects that the entire Workflow Designer UI is built on: an ASP.NET Core 8 server host (`src/WorkflowUi.Server`), a Vite + React 18 + TypeScript SPA (`client/`), and a reflection-based parity test project (`src/WorkflowUi.ContractTests`). Every later stage assumes these three artefacts exist, build green, and have deterministic lint/test infrastructure wired up. Nothing functional is implemented here — the goal is to make subsequent stages runnable on a clean checkout without re-bootstrapping the toolchain.
+Stage 0.1 creates the three brand-new projects that the entire Workflow Designer UI is built on: an ASP.NET Core 8 server host (`src/WorkflowUi.Server`), a Vite + React 18 + TypeScript SPA (`src/WorkflowUI/`), and a reflection-based parity test project (`src/WorkflowUi.ContractTests`). Every later stage assumes these three artefacts exist, build green, and have deterministic lint/test infrastructure wired up. Nothing functional is implemented here — the goal is to make subsequent stages runnable on a clean checkout without re-bootstrapping the toolchain.
 
 The ground truth this stage must acknowledge is the existing `Workflow.sln`, `Directory.Build.props`, and `global.json` at the repo root. All new .NET projects MUST opt into `TargetFramework=net8.0` with `RuntimeIdentifier=win-x64` consistent with the parent repo (per master plan [§1.1](../../workflow-ui-plan.md#11-architecture-at-a-glance)), must reference `src/ExecutionEngine/ExecutionEngine.csproj` through a `ProjectReference` (not a PackageReference), and must preserve the file-header + `this.` qualifier rules from the root `CLAUDE.md`.
 
@@ -38,18 +38,18 @@ Server host
 - `src/WorkflowUi.Server/appsettings.Development.json` (new)
 
 Client SPA
-- `client/package.json` (new)
-- `client/package-lock.json` (new, committed)
-- `client/vite.config.ts` (new)
-- `client/tsconfig.json` (new)
-- `client/tsconfig.node.json` (new)
-- `client/index.html` (new)
-- `client/src/main.tsx` (new)
-- `client/src/App.tsx` (new)
-- `client/.eslintrc.cjs` (new, Step 0.1.3)
-- `client/.prettierrc.json` (new, Step 0.1.3)
-- `client/vitest.config.ts` (new, Step 0.1.3)
-- `client/src/App.test.tsx` (new, Step 0.1.3)
+- `src/WorkflowUI/package.json` (new)
+- `src/WorkflowUI/package-lock.json` (new, committed)
+- `src/WorkflowUI/vite.config.ts` (new)
+- `src/WorkflowUI/tsconfig.json` (new)
+- `src/WorkflowUI/tsconfig.node.json` (new)
+- `src/WorkflowUI/index.html` (new)
+- `src/WorkflowUI/src/main.tsx` (new)
+- `src/WorkflowUI/src/App.tsx` (new)
+- `src/WorkflowUI/.eslintrc.cjs` (new, Step 0.1.3)
+- `src/WorkflowUI/.prettierrc.json` (new, Step 0.1.3)
+- `src/WorkflowUI/vitest.config.ts` (new, Step 0.1.3)
+- `src/WorkflowUI/src/App.test.tsx` (new, Step 0.1.3)
 
 Contract tests
 - `src/WorkflowUi.ContractTests/WorkflowUi.ContractTests.csproj` (new)
@@ -65,8 +65,8 @@ Repo root
 This stage authors **no fixtures**. It only declares empty directories that later stages populate:
 
 - `src/WorkflowUi.ContractTests/Fixtures/` — seeded empty; Stage 0.2 writes `noop-minimal.yaml` here.
-- `client/src/__fixtures__/` — seeded empty; Phase 2 writes DTO parity fixtures here.
-- `client/src/engine-contract.generated.ts` — checked in as a stub (`export {};`) so `tsc` never fails on missing module; Stage 1.2 overwrites.
+- `src/WorkflowUI/src/__fixtures__/` — seeded empty; Phase 2 writes DTO parity fixtures here.
+- `src/WorkflowUI/src/engine-contract.generated.ts` — checked in as a stub (`export {};`) so `tsc` never fails on missing module; Stage 1.2 overwrites.
 
 ## Stage-wide observability contract
 - **Serilog structured fields** — `stageId="0.1"`, `phaseId="0"`, `stepId`, `operation`, `durationMs`, `workflowId`, `runtimeType`, `correlationId`, `requestId`, `path`, `validationCode`.
@@ -105,7 +105,7 @@ This stage authors **no fixtures**. It only declares empty directories that late
 **Depends on:** none
 
 ### Goal
-Create three empty but buildable projects and wire them into the solution. The ASP.NET Core server must boot on `http://localhost:5226` with an empty pipeline, the Vite client must produce a static bundle under `client/dist/`, and the xUnit contract-tests project must reference `ExecutionEngine` and run one smoke fact that asserts the engine assembly loads. This step is deliberately scope-limited so the generator cannot drag downstream work (DI, parity, YAML) into it. After this step, `dotnet build Workflow.sln` and `npm --prefix client run build` both return 0 on a clean checkout.
+Create three empty but buildable projects and wire them into the solution. The ASP.NET Core server must boot on `http://localhost:5226` with an empty pipeline, the Vite client must produce a static bundle under `src/WorkflowUI/dist/`, and the xUnit contract-tests project must reference `ExecutionEngine` and run one smoke fact that asserts the engine assembly loads. This step is deliberately scope-limited so the generator cannot drag downstream work (DI, parity, YAML) into it. After this step, `dotnet build Workflow.sln` and `npm --prefix src/WorkflowUI run build` both return 0 on a clean checkout.
 
 ### Depends on
 (none)
@@ -119,14 +119,14 @@ Create three empty but buildable projects and wire them into the solution. The A
 - `src/WorkflowUi.Server/Program.cs` (new) — exports top-level statements building a minimal `WebApplication` with no endpoints yet; exposes `public partial class Program` sentinel for `WebApplicationFactory`.
 - `src/WorkflowUi.Server/appsettings.json` (new) — `Logging`, `AllowedHosts`, empty `WorkflowUi` section.
 - `src/WorkflowUi.Server/appsettings.Development.json` (new) — verbose logging.
-- `client/package.json` (new) — name `workflow-ui-client`, scripts `dev`, `build`, `preview`, deps React 18, TypeScript 5, Vite 5.
-- `client/vite.config.ts` (new) — React plugin, `base: '/'`, `build.outDir: 'dist'`.
-- `client/tsconfig.json` (new) — strict, `moduleResolution: 'bundler'`, `jsx: 'react-jsx'`, `noUncheckedIndexedAccess: true`.
-- `client/tsconfig.node.json` (new) — compilerOptions for `vite.config.ts`.
-- `client/index.html` (new) — root div + `main.tsx` module import.
-- `client/src/main.tsx` (new) — renders `<App />` into `#root`.
-- `client/src/App.tsx` (new) — emits string literal `Workflow UI` in an `<h1>`; exported named.
-- `client/src/engine-contract.generated.ts` (new) — `export {};` stub.
+- `src/WorkflowUI/package.json` (new) — name `workflow-ui-client`, scripts `dev`, `build`, `preview`, deps React 18, TypeScript 5, Vite 5.
+- `src/WorkflowUI/vite.config.ts` (new) — React plugin, `base: '/'`, `build.outDir: 'dist'`.
+- `src/WorkflowUI/tsconfig.json` (new) — strict, `moduleResolution: 'bundler'`, `jsx: 'react-jsx'`, `noUncheckedIndexedAccess: true`.
+- `src/WorkflowUI/tsconfig.node.json` (new) — compilerOptions for `vite.config.ts`.
+- `src/WorkflowUI/index.html` (new) — root div + `main.tsx` module import.
+- `src/WorkflowUI/src/main.tsx` (new) — renders `<App />` into `#root`.
+- `src/WorkflowUI/src/App.tsx` (new) — emits string literal `Workflow UI` in an `<h1>`; exported named.
+- `src/WorkflowUI/src/engine-contract.generated.ts` (new) — `export {};` stub.
 - `src/WorkflowUi.ContractTests/WorkflowUi.ContractTests.csproj` (new) — xUnit (`xunit`, `xunit.runner.visualstudio`, `Microsoft.NET.Test.Sdk`, `coverlet.collector`), `ProjectReference` to `ExecutionEngine`.
 - `src/WorkflowUi.ContractTests/AssemblyLoadTests.cs` (new) — one public class `AssemblyLoadTests`, one `[Fact] public void EngineAssembly_IsReachable_Loads()`.
 - `Workflow.sln` (modified) — both new projects added under `src/`.
@@ -135,8 +135,8 @@ Create three empty but buildable projects and wire them into the solution. The A
 - [ ] `dotnet sln E:\work\github\crp\workflow\Workflow.sln list` includes `src\WorkflowUi.Server\WorkflowUi.Server.csproj` and `src\WorkflowUi.ContractTests\WorkflowUi.ContractTests.csproj`.
 - [ ] `dotnet build Workflow.sln -warnaserror` exits 0 from a clean `git clean -xdf` checkout.
 - [ ] `dotnet test src/WorkflowUi.ContractTests/WorkflowUi.ContractTests.csproj` passes the single placeholder fact and reports coverage via coverlet.
-- [ ] `npm --prefix client ci` installs without `ERESOLVE` peer warnings promoted to errors.
-- [ ] `npm --prefix client run build` emits `client/dist/index.html` and at least one JS chunk.
+- [ ] `npm --prefix src/WorkflowUI ci` installs without `ERESOLVE` peer warnings promoted to errors.
+- [ ] `npm --prefix src/WorkflowUI run build` emits `src/WorkflowUI/dist/index.html` and at least one JS chunk.
 - [ ] `src/WorkflowUi.Server/Program.cs` declares `public partial class Program { }` at the bottom so `WebApplicationFactory<Program>` works in Stage 1.1.
 - [ ] No project uses `PackageReference` to `ExecutionEngine` — only `ProjectReference`.
 - [ ] Every new `.cs` file has the copyright header required by root `CLAUDE.md`.
@@ -174,7 +174,7 @@ Not applicable at this step; mandatory golden fixtures land in Stage 0.2. The em
 
 ### Edge cases & negative tests
 1. Building with a missing `ExecutionEngine` project reference must fail with MSBuild error `MSB3202` (validated by a deliberate-break local check, not in CI).
-2. `npm --prefix client run build` must fail if `engine-contract.generated.ts` is deleted — the stub import chain surfaces a hard error.
+2. `npm --prefix src/WorkflowUI run build` must fail if `engine-contract.generated.ts` is deleted — the stub import chain surfaces a hard error.
 3. `Program.cs` without the `public partial class Program` sentinel fails Stage 1.1 tests — asserted by a comment-anchored test in 1.1.1; here we only verify the sentinel exists via `grep`-style assertion in review.
 4. Duplicate project GUIDs in `Workflow.sln` must fail `dotnet sln list` — covered by `dotnet sln list` CI call.
 5. `npm ci` (not `npm install`) is used so unpinned versions fail fast if `package-lock.json` is stale or missing.
@@ -194,12 +194,12 @@ Not applicable at this step; mandatory golden fixtures land in Stage 0.2. The em
 ### Evaluator gap-analysis prompts
 1. Does `src/WorkflowUi.Server/Program.cs` declare `public partial class Program { }` so `WebApplicationFactory<Program>` can construct it in Stage 1.1?
 2. Do both new `.csproj` files use `ProjectReference` (never `PackageReference`) to `ExecutionEngine.csproj`?
-3. Is `client/src/engine-contract.generated.ts` present as a stub, so `tsc` in Stage 1.2 never fails on missing module before the generator runs?
+3. Is `src/WorkflowUI/src/engine-contract.generated.ts` present as a stub, so `tsc` in Stage 1.2 never fails on missing module before the generator runs?
 4. Does `Workflow.sln` list both new project paths, and does `dotnet sln list` verify it?
 5. Is the `AssemblyLoadTests_RuntimeTypeEnum_Has13Members` fact present, defending the 13-member count cited in master plan §0.2.1?
 6. Are the copyright headers from `CLAUDE.md` applied to every new `.cs` file?
 7. Is `tsconfig.json` set to `strict: true` with `noUncheckedIndexedAccess: true` so later DTO code cannot regress silently?
-8. Does `client/package.json` commit `package-lock.json` and use `npm ci` in its CI invocation?
+8. Does `src/WorkflowUI/package.json` commit `package-lock.json` and use `npm ci` in its CI invocation?
 
 ### Scoring rubric (step-level, weights sum to 100)
 - Deliverable completeness 25
@@ -221,7 +221,7 @@ Evaluator score ≥ 90, zero CRITICAL, zero HIGH findings, all acceptance criter
 **Depends on:** 0.1.1
 
 ### Goal
-Extend the existing `.editorconfig` coverage to `src/WorkflowUi.Server`, `src/WorkflowUi.ContractTests`, and `client/` so `dotnet format --verify-no-changes` and `prettier --check` both pass on a fresh checkout. Also add a bidirectional link: the repo `readme.md` gains a "Workflow Designer UI" section pointing at `docs/workflow-ui-plan.md`, and the plan's §0.1 references the readme entry. No functional code is added.
+Extend the existing `.editorconfig` coverage to `src/WorkflowUi.Server`, `src/WorkflowUi.ContractTests`, and `src/WorkflowUI/` so `dotnet format --verify-no-changes` and `prettier --check` both pass on a fresh checkout. Also add a bidirectional link: the repo `readme.md` gains a "Workflow Designer UI" section pointing at `docs/workflow-ui-plan.md`, and the plan's §0.1 references the readme entry. No functional code is added.
 
 ### Depends on
 0.1.1.
@@ -232,7 +232,7 @@ Extend the existing `.editorconfig` coverage to `src/WorkflowUi.Server`, `src/Wo
 - `docs/workflow-ui-plan.md`.
 
 ### Deliverables
-- `.editorconfig` (modified) — add `[client/**/*.{ts,tsx,js,jsx,json,md}]` section with `indent_size = 2`, `end_of_line = lf`, `trim_trailing_whitespace = true`, `insert_final_newline = false` (matching root rule).
+- `.editorconfig` (modified) — add `[src/WorkflowUI/**/*.{ts,tsx,js,jsx,json,md}]` section with `indent_size = 2`, `end_of_line = lf`, `trim_trailing_whitespace = true`, `insert_final_newline = false` (matching root rule).
 - `.editorconfig` (modified) — ensure C# rules from the root `CLAUDE.md` (`dotnet_style_qualification_for_*` = `true:warning`) apply to `src/WorkflowUi.Server/**/*.cs` and `src/WorkflowUi.ContractTests/**/*.cs` via glob coverage.
 - `readme.md` (modified) — insert new H2 `## Workflow Designer UI` with a one-paragraph description and a link to `docs/workflow-ui-plan.md`.
 - `docs/workflow-ui/README.md` (referenced, not modified) — link from the repo readme.
@@ -240,21 +240,21 @@ Extend the existing `.editorconfig` coverage to `src/WorkflowUi.Server`, `src/Wo
 
 ### Acceptance criteria
 - [ ] `dotnet format --verify-no-changes Workflow.sln` exits 0.
-- [ ] `npm --prefix client run format:check` (prettier) exits 0 on a fresh checkout.
+- [ ] `npm --prefix src/WorkflowUI run format:check` (prettier) exits 0 on a fresh checkout.
 - [ ] `markdownlint docs/workflow-ui-plan.md docs/workflow-ui/README.md readme.md` exits 0.
 - [ ] `readme.md` contains an anchor to `docs/workflow-ui-plan.md`.
 - [ ] Every new `.cs` file in `src/WorkflowUi.Server` and `src/WorkflowUi.ContractTests` uses `this.` for instance members (per `.editorconfig`).
-- [ ] `.editorconfig` has a glob block that explicitly covers the `client/` tree with 2-space indent (distinct from the C# 4-space block).
+- [ ] `.editorconfig` has a glob block that explicitly covers the `src/WorkflowUI/` tree with 2-space indent (distinct from the C# 4-space block).
 
 ### Unit tests
 1. `EditorConfig_CSharp_QualifiesThis_Warning` — loads `.editorconfig`, asserts `dotnet_style_qualification_for_field = true:warning` under a section matching `src/WorkflowUi.Server/**/*.cs`.
-2. `EditorConfig_Client_IndentSize_IsTwo` — asserts a section matching `client/**/*.ts` declares `indent_size = 2`.
+2. `EditorConfig_Client_IndentSize_IsTwo` — asserts a section matching `src/WorkflowUI/**/*.ts` declares `indent_size = 2`.
 3. `EditorConfig_EndOfLine_CRLF_ForCSharp` — C# section sets `end_of_line = crlf`.
 4. `Readme_LinksToPlan_HasAnchor` — regex-scan `readme.md` for `](docs/workflow-ui-plan.md)`.
 5. `Readme_LinksToPlan_IsReachableFile` — the linked relative path resolves on disk.
 6. `MarkdownLint_Plan_ZeroErrors` — shells out to `markdownlint` against the plan file, parses output, asserts zero.
 7. `DotnetFormat_VerifyNoChanges_ExitsZero` — invokes `dotnet format --verify-no-changes` with a 120-second timeout.
-8. `PrettierCheck_Client_ExitsZero` — invokes `npm --prefix client run format:check`.
+8. `PrettierCheck_Client_ExitsZero` — invokes `npm --prefix src/WorkflowUI run format:check`.
 
 Arrange/Act/Assert sketch for the three most important:
 
@@ -279,7 +279,7 @@ Not applicable.
 
 ### Edge cases & negative tests
 1. A contributor saves a `.cs` file in LF mode — `dotnet format` should re-write to CRLF and CI should red.
-2. A `.ts` file in `client/` saved with 4-space indent — prettier flags.
+2. A `.ts` file in `src/WorkflowUI/` saved with 4-space indent — prettier flags.
 3. Markdown file with a dead relative link — `Readme_LinksToPlan_IsReachableFile` test catches.
 4. `.editorconfig` root flag missing — contributor edits lose precedence; we explicitly assert `root = true` at the top.
 5. Trailing whitespace left in a `.cs` file — `trim_trailing_whitespace` rule + `dotnet format` catches.
@@ -293,7 +293,7 @@ None new — relies on tooling exit codes.
 - Prettier ignores TSX by default — add `"plugins": []` and explicit `--write '**/*.{ts,tsx,json,md}'` in `format` script.
 
 ### Evaluator gap-analysis prompts
-1. Does `.editorconfig` include a distinct glob block for `client/**/*.{ts,tsx,js,jsx,json,md}` with 2-space indent?
+1. Does `.editorconfig` include a distinct glob block for `src/WorkflowUI/**/*.{ts,tsx,js,jsx,json,md}` with 2-space indent?
 2. Does `readme.md` link to `docs/workflow-ui-plan.md` with a working relative path?
 3. Are C# `this.` qualifier rules present at warning level for both new server and test projects?
 4. Does `dotnet format --verify-no-changes Workflow.sln` pass on a fresh clone?
@@ -325,24 +325,24 @@ Wire three distinct frontend tools so every later UI step can rely on `npm run l
 0.1.1.
 
 ### Inputs
-- `client/package.json` from 0.1.1.
-- `client/src/App.tsx`.
+- `src/WorkflowUI/package.json` from 0.1.1.
+- `src/WorkflowUI/src/App.tsx`.
 
 ### Deliverables
-- `client/.eslintrc.cjs` (new) — extends `eslint:recommended`, `plugin:@typescript-eslint/strict`, `plugin:react/recommended`, `plugin:react-hooks/recommended`, `plugin:import/recommended`, `prettier`. Declares an empty `no-restricted-imports` slot + `no-restricted-paths` stub wired to `engine-contract.generated.ts`.
-- `client/.eslintignore` (new) — `dist/`, `node_modules/`, `src/engine-contract.generated.ts` (lint the facade, not the generator output).
-- `client/.prettierrc.json` (new) — `{ "singleQuote": true, "trailingComma": "all", "printWidth": 100, "endOfLine": "lf" }`.
-- `client/.prettierignore` (new) — same as eslintignore plus `*.generated.ts`.
-- `client/vitest.config.ts` (new) — `test.environment = 'jsdom'`, `test.globals = true`, `test.setupFiles = ['./vitest.setup.ts']`, coverage via `@vitest/coverage-v8` with 100% threshold on new code (per master plan [§0.1 constraint 2](../../workflow-ui-plan.md#01-uniform-step-template)).
-- `client/vitest.setup.ts` (new) — imports `@testing-library/jest-dom`.
-- `client/src/App.test.tsx` (new) — one passing test (`App_Renders_HeadingText`).
-- `client/package.json` (modified) — scripts: `lint`, `lint:fix`, `format`, `format:check`, `test`, `test:coverage`; devDeps: `eslint`, `@typescript-eslint/*`, `eslint-plugin-react`, `eslint-plugin-react-hooks`, `eslint-plugin-import`, `eslint-config-prettier`, `prettier`, `vitest`, `@vitest/coverage-v8`, `jsdom`, `@testing-library/react`, `@testing-library/jest-dom`.
+- `src/WorkflowUI/.eslintrc.cjs` (new) — extends `eslint:recommended`, `plugin:@typescript-eslint/strict`, `plugin:react/recommended`, `plugin:react-hooks/recommended`, `plugin:import/recommended`, `prettier`. Declares an empty `no-restricted-imports` slot + `no-restricted-paths` stub wired to `engine-contract.generated.ts`.
+- `src/WorkflowUI/.eslintignore` (new) — `dist/`, `node_modules/`, `src/engine-contract.generated.ts` (lint the facade, not the generator output).
+- `src/WorkflowUI/.prettierrc.json` (new) — `{ "singleQuote": true, "trailingComma": "all", "printWidth": 100, "endOfLine": "lf" }`.
+- `src/WorkflowUI/.prettierignore` (new) — same as eslintignore plus `*.generated.ts`.
+- `src/WorkflowUI/vitest.config.ts` (new) — `test.environment = 'jsdom'`, `test.globals = true`, `test.setupFiles = ['./vitest.setup.ts']`, coverage via `@vitest/coverage-v8` with 100% threshold on new code (per master plan [§0.1 constraint 2](../../workflow-ui-plan.md#01-uniform-step-template)).
+- `src/WorkflowUI/vitest.setup.ts` (new) — imports `@testing-library/jest-dom`.
+- `src/WorkflowUI/src/App.test.tsx` (new) — one passing test (`App_Renders_HeadingText`).
+- `src/WorkflowUI/package.json` (modified) — scripts: `lint`, `lint:fix`, `format`, `format:check`, `test`, `test:coverage`; devDeps: `eslint`, `@typescript-eslint/*`, `eslint-plugin-react`, `eslint-plugin-react-hooks`, `eslint-plugin-import`, `eslint-config-prettier`, `prettier`, `vitest`, `@vitest/coverage-v8`, `jsdom`, `@testing-library/react`, `@testing-library/jest-dom`.
 
 ### Acceptance criteria
-- [ ] `npm --prefix client run lint` exits 0.
-- [ ] `npm --prefix client run format:check` exits 0.
-- [ ] `npm --prefix client run test` exits 0 with exactly 1 passing test and 0 failing.
-- [ ] `npm --prefix client run test:coverage` produces an lcov report under `client/coverage/lcov.info` and fails if coverage falls below 100% on `src/App.tsx`.
+- [ ] `npm --prefix src/WorkflowUI run lint` exits 0.
+- [ ] `npm --prefix src/WorkflowUI run format:check` exits 0.
+- [ ] `npm --prefix src/WorkflowUI run test` exits 0 with exactly 1 passing test and 0 failing.
+- [ ] `npm --prefix src/WorkflowUI run test:coverage` produces an lcov report under `src/WorkflowUI/coverage/lcov.info` and fails if coverage falls below 100% on `src/App.tsx`.
 - [ ] ESLint errors on a deliberately inserted `any` type (strict rules are real, not informational).
 - [ ] ESLint configuration includes a disabled-by-default `no-restricted-imports` entry whose presence is detectable by grep — Stage 1.2.3 will turn it on.
 - [ ] `eslint-config-prettier` is the LAST entry in `extends` so style rules never conflict.

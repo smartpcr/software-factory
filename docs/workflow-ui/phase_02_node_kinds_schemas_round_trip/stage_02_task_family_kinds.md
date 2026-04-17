@@ -53,16 +53,16 @@ Each step follows the same rhythm:
 ## Files owned by this stage
 
 Client
-- `client/src/schemas/node-noop.schema.ts` (new, 2.2.1a)
-- `client/src/schemas/node-csharp.schema.ts` (new, 2.2.1b)
-- `client/src/schemas/node-csharp-script.schema.ts` (new, 2.2.2)
-- `client/src/schemas/node-csharp-task.schema.ts` (new, 2.2.3)
-- `client/src/schemas/node-powershell.schema.ts` (new, 2.2.4a)
-- `client/src/schemas/node-powershell-task.schema.ts` (new, 2.2.4b)
-- `client/src/schemas/node-union.ts` (modified each step — one placeholder replaced)
-- `client/src/schemas/__tests__/node-<kind>.schema.test.ts` per step.
+- `src/WorkflowUI/src/schemas/node-noop.schema.ts` (new, 2.2.1a)
+- `src/WorkflowUI/src/schemas/node-csharp.schema.ts` (new, 2.2.1b)
+- `src/WorkflowUI/src/schemas/node-csharp-script.schema.ts` (new, 2.2.2)
+- `src/WorkflowUI/src/schemas/node-csharp-task.schema.ts` (new, 2.2.3)
+- `src/WorkflowUI/src/schemas/node-powershell.schema.ts` (new, 2.2.4a)
+- `src/WorkflowUI/src/schemas/node-powershell-task.schema.ts` (new, 2.2.4b)
+- `src/WorkflowUI/src/schemas/node-union.ts` (modified each step — one placeholder replaced)
+- `src/WorkflowUI/src/schemas/__tests__/node-<kind>.schema.test.ts` per step.
 
-Fixtures (all under `client/src/__fixtures__/`)
+Fixtures (all under `src/WorkflowUI/src/__fixtures__/`)
 - `noop-minimal.yaml` + `.json`
 - `csharp-minimal.yaml` + `.json`
 - `csharp-script-inline.yaml`, `csharp-script-file.yaml` + `.json` pairs
@@ -121,18 +121,18 @@ Implement the simplest runtime kind. `NoopNodeDefinition` (per `src/ExecutionEng
 
 ### Inputs
 - `src/ExecutionEngine/Nodes/Definitions/NoopNodeDefinition.cs`.
-- `client/src/schemas/node-base.schema.ts`.
+- `src/WorkflowUI/src/schemas/node-base.schema.ts`.
 
 ### Deliverables
-- `client/src/schemas/node-noop.schema.ts`:
+- `src/WorkflowUI/src/schemas/node-noop.schema.ts`:
   ```ts
   export const noopNodeSchema = nodeBaseSchema.extend({
     runtimeType: z.literal('Noop'),
   }).strict();
   export type NoopNode = z.infer<typeof noopNodeSchema>;
   ```
-- `client/src/schemas/node-union.ts` — replace `makePlaceholder('Noop')` with `noopNodeSchema`.
-- `client/src/__fixtures__/noop-minimal.yaml`:
+- `src/WorkflowUI/src/schemas/node-union.ts` — replace `makePlaceholder('Noop')` with `noopNodeSchema`.
+- `src/WorkflowUI/src/__fixtures__/noop-minimal.yaml`:
   ```yaml
   name: noop-minimal
   version: '1.0'
@@ -145,8 +145,8 @@ Implement the simplest runtime kind. `NoopNodeDefinition` (per `src/ExecutionEng
       maxConcurrentExecutions: 0
   connections: []
   ```
-- `client/src/__fixtures__/noop-minimal.json` — JSON-equivalent.
-- `client/src/schemas/__tests__/node-noop.schema.test.ts` (8+ tests).
+- `src/WorkflowUI/src/__fixtures__/noop-minimal.json` — JSON-equivalent.
+- `src/WorkflowUI/src/schemas/__tests__/node-noop.schema.test.ts` (8+ tests).
 - `src/WorkflowUi.ContractTests/TaskFamilyRoundTripTests.cs` — one row referencing this fixture.
 
 ### Acceptance criteria
@@ -244,7 +244,7 @@ Implement `CSharpNodeDefinition` (per `src/ExecutionEngine/Nodes/Definitions/CSh
 `CSharpNodeDefinition.cs`; `node-base.schema.ts`.
 
 ### Deliverables
-- `client/src/schemas/node-csharp.schema.ts`:
+- `src/WorkflowUI/src/schemas/node-csharp.schema.ts`:
   ```ts
   export const csharpNodeSchema = nodeBaseSchema.extend({
     runtimeType: z.literal('CSharp'),
@@ -347,11 +347,11 @@ Engine validates exactly one is populated (lines 42-58). The DTO accepts either-
 
 ### Inputs
 - `src/ExecutionEngine/Nodes/Definitions/CSharpScriptNodeDefinition.cs:12-49` — authoritative `ScriptPath` / `ScriptContent` defaults and validation behavior.
-- `client/src/schemas/node-base.schema.ts` from Step 2.1.1 — base DTO/nullability rules inherited by this kind.
-- `client/src/engine-contract.ts` from Stage 1.2 — `RuntimeType.CSharpScript` discriminator and enum-lock fixtures.
+- `src/WorkflowUI/src/schemas/node-base.schema.ts` from Step 2.1.1 — base DTO/nullability rules inherited by this kind.
+- `src/WorkflowUI/src/engine-contract.ts` from Stage 1.2 — `RuntimeType.CSharpScript` discriminator and enum-lock fixtures.
 
 ### Deliverables
-- `client/src/schemas/node-csharp-script.schema.ts`:
+- `src/WorkflowUI/src/schemas/node-csharp-script.schema.ts`:
   ```ts
   export const csharpScriptNodeSchema = nodeBaseSchema.extend({
     runtimeType: z.literal('CSharpScript'),
@@ -458,11 +458,11 @@ Unlike `CSharpScript`, all three are genuinely nullable. Engine doesn't require 
 
 ### Inputs
 - `src/ExecutionEngine/Nodes/Definitions/CSharpTaskNodeDefinition.cs:13-62` — nullable task/executor fields and engine defaults.
-- `client/src/schemas/node-base.schema.ts` from Step 2.1.1 — shared base-field/null semantics.
-- `client/src/engine-contract.ts` from Stage 1.2 — discriminator + generated parity fixtures for `RuntimeType.CSharpTask`.
+- `src/WorkflowUI/src/schemas/node-base.schema.ts` from Step 2.1.1 — shared base-field/null semantics.
+- `src/WorkflowUI/src/engine-contract.ts` from Stage 1.2 — discriminator + generated parity fixtures for `RuntimeType.CSharpTask`.
 
 ### Deliverables
-- `client/src/schemas/node-csharp-task.schema.ts`:
+- `src/WorkflowUI/src/schemas/node-csharp-task.schema.ts`:
   ```ts
   export const csharpTaskNodeSchema = nodeBaseSchema.extend({
     runtimeType: z.literal('CSharpTask'),
@@ -559,10 +559,10 @@ Implement `PowerShellScriptNodeDefinition` per `src/ExecutionEngine/Nodes/Defini
 ### Inputs
 - `src/ExecutionEngine/Nodes/Definitions/PowerShellScriptNodeDefinition.cs:12-51` — required `ScriptPath`, nullable `RequiredModules`, and nullable `ModulePaths`.
 - `src/ExecutionEngine/Enums/RuntimeType.cs:13-29` — confirms the discriminator is `PowerShell` (not `PowerShellScript`).
-- `client/src/schemas/node-base.schema.ts` from Step 2.1.1 — shared base DTO fields reused by the schema.
+- `src/WorkflowUI/src/schemas/node-base.schema.ts` from Step 2.1.1 — shared base DTO fields reused by the schema.
 
 ### Deliverables
-- `client/src/schemas/node-powershell.schema.ts`:
+- `src/WorkflowUI/src/schemas/node-powershell.schema.ts`:
   ```ts
   export const powerShellNodeSchema = nodeBaseSchema.extend({
     runtimeType: z.literal('PowerShell'),
@@ -667,10 +667,10 @@ Implement `PowerShellTaskNodeDefinition` per `src/ExecutionEngine/Nodes/Definiti
 ### Inputs
 - `src/ExecutionEngine/Nodes/Definitions/PowerShellTaskNodeDefinition.cs:12-57` — file/content/module field surface for the task variant.
 - `src/ExecutionEngine/Enums/RuntimeType.cs:13-29` — authoritative `PowerShellTask` discriminator.
-- `client/src/schemas/node-base.schema.ts` from Step 2.1.1 — base-field inheritance and null/absent handling.
+- `src/WorkflowUI/src/schemas/node-base.schema.ts` from Step 2.1.1 — base-field inheritance and null/absent handling.
 
 ### Deliverables
-- `client/src/schemas/node-powershell-task.schema.ts`:
+- `src/WorkflowUI/src/schemas/node-powershell-task.schema.ts`:
   ```ts
   export const powerShellTaskNodeSchema = nodeBaseSchema.extend({
     runtimeType: z.literal('PowerShellTask'),

@@ -14,7 +14,7 @@
 ---
 ## Context
 
-Stage 1.2 replaces the hand-maintained `engine-contract.generated.ts` stub from Stage 0.1/0.2 with a real reflection-based generator. Master plan [§0.2.2](../../workflow-ui-plan.md#022-dto-parity-tests) and [§1.2 Stage](../../workflow-ui-plan.md#stage-12--contract-generation) require: a console tool `tools/GenContract` that reflects over engine enums, `*NodeDefinition.cs`, `NodeConnection`, `RetryPolicy`, and `CircuitBreakerPolicy`, emits sorted-deterministic TypeScript to `client/src/engine-contract.generated.ts`, and a CI step that re-runs the generator and fails the build on any non-empty diff. Finally, a hand-written facade `engine-contract.ts` re-exports generated types + adds UI-only helpers (e.g., exhaustive `assertNever`), and an ESLint rule forbids direct imports of the generated file outside the facade.
+Stage 1.2 replaces the hand-maintained `engine-contract.generated.ts` stub from Stage 0.1/0.2 with a real reflection-based generator. Master plan [§0.2.2](../../workflow-ui-plan.md#022-dto-parity-tests) and [§1.2 Stage](../../workflow-ui-plan.md#stage-12--contract-generation) require: a console tool `tools/GenContract` that reflects over engine enums, `*NodeDefinition.cs`, `NodeConnection`, `RetryPolicy`, and `CircuitBreakerPolicy`, emits sorted-deterministic TypeScript to `src/WorkflowUI/src/engine-contract.generated.ts`, and a CI step that re-runs the generator and fails the build on any non-empty diff. Finally, a hand-written facade `engine-contract.ts` re-exports generated types + adds UI-only helpers (e.g., exhaustive `assertNever`), and an ESLint rule forbids direct imports of the generated file outside the facade.
 
 Ground-truth property lists this stage emits (engine-sourced, verbatim):
 
@@ -50,11 +50,11 @@ Generator
 - `tools/GenContract.Tests/ShapeTests.cs` (new).
 
 Client facade
-- `client/src/engine-contract.generated.ts` (modified — now produced by generator).
-- `client/src/engine-contract.ts` (new, Step 1.2.3) — hand-written re-export facade.
-- `client/src/contract/assert-never.ts` (new, Step 1.2.3).
-- `client/.eslintrc.cjs` (modified, Step 1.2.3) — activate `no-restricted-imports` rule.
-- `client/src/__tests__/contract-facade.test.ts` (new, Step 1.2.3).
+- `src/WorkflowUI/src/engine-contract.generated.ts` (modified — now produced by generator).
+- `src/WorkflowUI/src/engine-contract.ts` (new, Step 1.2.3) — hand-written re-export facade.
+- `src/WorkflowUI/src/contract/assert-never.ts` (new, Step 1.2.3).
+- `src/WorkflowUI/.eslintrc.cjs` (modified, Step 1.2.3) — activate `no-restricted-imports` rule.
+- `src/WorkflowUI/src/__tests__/contract-facade.test.ts` (new, Step 1.2.3).
 
 CI
 - `.github/workflows/ci-workflow-ui.yml` (modified, Step 1.2.2) — add `contract-drift` job.
@@ -65,7 +65,7 @@ Solution
 
 ## Shared fixtures / fakes
 - `engine-contract.generated.ts` is the sole artefact of this stage, consumed directly by Phase 2 DTO work.
-- `client/src/__fixtures__/engine-enums.json` and `engine-dto-shape.json` (from Stage 0.2) are the parity-fixtures — the generator MUST produce TS that is consistent with these, and `ContractDriftCiTests` verifies.
+- `src/WorkflowUI/src/__fixtures__/engine-enums.json` and `engine-dto-shape.json` (from Stage 0.2) are the parity-fixtures — the generator MUST produce TS that is consistent with these, and `ContractDriftCiTests` verifies.
 
 ## Stage-wide observability contract
 - **Serilog structured fields** — `stageId="1.2"`, `phaseId="1"`, `stepId`, `operation`, `durationMs`, `workflowId`, `runtimeType`, `correlationId`, `requestId`, `path`, `validationCode`.
@@ -104,7 +104,7 @@ Solution
 **Depends on:** 0.2.2
 
 ### Goal
-Author a small .NET console tool that (a) references `ExecutionEngine`, (b) reflects over the 7 public enums, 14 node-definition shapes (1 base + 13 kinds), `RetryPolicy`, `CircuitBreakerPolicy`, and `NodeConnection`, (c) emits a single deterministic TypeScript file with a file header, enum string-literal unions, policy interfaces, per-kind node DTO interfaces, a `NodeDto` discriminated union, and a `NodeConnectionDto` interface, and (d) overwrites `client/src/engine-contract.generated.ts` atomically. Output is byte-stable across runs and across platforms (LF line endings, `\n`-only). Properties are sorted alphabetically within each interface; interfaces are emitted in a stable order (base first, then kinds alphabetically, then policy DTOs, then connection).
+Author a small .NET console tool that (a) references `ExecutionEngine`, (b) reflects over the 7 public enums, 14 node-definition shapes (1 base + 13 kinds), `RetryPolicy`, `CircuitBreakerPolicy`, and `NodeConnection`, (c) emits a single deterministic TypeScript file with a file header, enum string-literal unions, policy interfaces, per-kind node DTO interfaces, a `NodeDto` discriminated union, and a `NodeConnectionDto` interface, and (d) overwrites `src/WorkflowUI/src/engine-contract.generated.ts` atomically. Output is byte-stable across runs and across platforms (LF line endings, `\n`-only). Properties are sorted alphabetically within each interface; interfaces are emitted in a stable order (base first, then kinds alphabetically, then policy DTOs, then connection).
 
 ### Depends on
 0.2.2.
@@ -128,7 +128,7 @@ Author a small .NET console tool that (a) references `ExecutionEngine`, (b) refl
 - `Workflow.sln` (modified) — add both projects.
 
 ### Acceptance criteria
-- [ ] `dotnet run --project tools/GenContract -- --output client/src/engine-contract.generated.ts` exits 0 and overwrites the file.
+- [ ] `dotnet run --project tools/GenContract -- --output src/WorkflowUI/src/engine-contract.generated.ts` exits 0 and overwrites the file.
 - [ ] Running the generator twice produces byte-identical output.
 - [ ] Emitted enum unions match `engine-enums.json` from Stage 0.2.1 exactly (member names, order, count).
 - [ ] Emitted `NodeDtoBase` has 11 properties plus the discriminator `runtimeType: RuntimeType`.
@@ -231,7 +231,7 @@ Evaluator score ≥ 90, zero CRITICAL, zero HIGH findings, all acceptance criter
 **Depends on:** 1.2.1
 
 ### Goal
-Extend the Stage 0.3.1 CI workflow with a `contract-drift` job that runs the generator into a temp path and diffs the result against the committed `client/src/engine-contract.generated.ts`. Any non-empty diff fails the build with a clear stderr message. Add an intentional-drift PR harness that deliberately modifies the committed file so the evaluator can verify the gate is active (test runs only on a feature branch named `test/contract-drift-*`).
+Extend the Stage 0.3.1 CI workflow with a `contract-drift` job that runs the generator into a temp path and diffs the result against the committed `src/WorkflowUI/src/engine-contract.generated.ts`. Any non-empty diff fails the build with a clear stderr message. Add an intentional-drift PR harness that deliberately modifies the committed file so the evaluator can verify the gate is active (test runs only on a feature branch named `test/contract-drift-*`).
 
 ### Depends on
 1.2.1.
@@ -256,9 +256,9 @@ Extend the Stage 0.3.1 CI workflow with a `contract-drift` job that runs the gen
       - name: Diff against committed file
         shell: pwsh
         run: |
-          $diff = git --no-pager diff --no-index --exit-code _tmp/engine-contract.generated.ts client/src/engine-contract.generated.ts
+          $diff = git --no-pager diff --no-index --exit-code _tmp/engine-contract.generated.ts src/WorkflowUI/src/engine-contract.generated.ts
           if ($LASTEXITCODE -ne 0) {
-            Write-Error "Contract drift detected. Re-run 'dotnet run --project tools/GenContract -- --output client/src/engine-contract.generated.ts' and commit."
+            Write-Error "Contract drift detected. Re-run 'dotnet run --project tools/GenContract -- --output src/WorkflowUI/src/engine-contract.generated.ts' and commit."
             exit 1
           }
   ```
@@ -348,17 +348,17 @@ Evaluator score ≥ 90, zero CRITICAL, zero HIGH findings, all acceptance criter
 **Depends on:** 1.2.1
 
 ### Goal
-Hand-author `client/src/engine-contract.ts` as the only allowed import source for UI code. It re-exports every enum and DTO from `engine-contract.generated.ts` and adds UI-only helpers: an `assertNever(x: never): never` function for exhaustive discriminator checks, a `RUNTIME_TYPES` readonly array suitable for palette listing, and a set of narrowing type guards (e.g., `isContainerNode`, `isSwitchNode`). Activate the ESLint `no-restricted-imports` rule (stub seeded in 0.1.3) at error level, forbidding all imports of `engine-contract.generated` outside the facade file itself. An eslint meta-test proves the ban works by linting a fixture that imports the generated file directly.
+Hand-author `src/WorkflowUI/src/engine-contract.ts` as the only allowed import source for UI code. It re-exports every enum and DTO from `engine-contract.generated.ts` and adds UI-only helpers: an `assertNever(x: never): never` function for exhaustive discriminator checks, a `RUNTIME_TYPES` readonly array suitable for palette listing, and a set of narrowing type guards (e.g., `isContainerNode`, `isSwitchNode`). Activate the ESLint `no-restricted-imports` rule (stub seeded in 0.1.3) at error level, forbidding all imports of `engine-contract.generated` outside the facade file itself. An eslint meta-test proves the ban works by linting a fixture that imports the generated file directly.
 
 ### Depends on
 1.2.1.
 
 ### Inputs
-- `client/src/engine-contract.generated.ts` from 1.2.1.
+- `src/WorkflowUI/src/engine-contract.generated.ts` from 1.2.1.
 - ESLint config stub from 0.1.3.
 
 ### Deliverables
-- `client/src/engine-contract.ts` (new) — re-exports + helpers:
+- `src/WorkflowUI/src/engine-contract.ts` (new) — re-exports + helpers:
   ```ts
   export * from './engine-contract.generated';
   export { assertNever } from './contract/assert-never';
@@ -367,8 +367,8 @@ Hand-author `client/src/engine-contract.ts` as the only allowed import source fo
   export function isSwitchNode(n: NodeDto): n is SwitchNode { return n.runtimeType === 'Switch'; }
   // ... one guard per control-flow kind
   ```
-- `client/src/contract/assert-never.ts` (new) — `export function assertNever(x: never): never { throw new Error('Unhandled runtime type: ' + JSON.stringify(x)); }`
-- `client/.eslintrc.cjs` (modified) — activate the rule:
+- `src/WorkflowUI/src/contract/assert-never.ts` (new) — `export function assertNever(x: never): never { throw new Error('Unhandled runtime type: ' + JSON.stringify(x)); }`
+- `src/WorkflowUI/.eslintrc.cjs` (modified) — activate the rule:
   ```js
   'no-restricted-imports': ['error', {
     paths: [{
@@ -378,12 +378,12 @@ Hand-author `client/src/engine-contract.ts` as the only allowed import source fo
     patterns: ['**/engine-contract.generated']
   }]
   ```
-  The rule has an override block that permits `client/src/engine-contract.ts` itself to import the generated file.
-- `client/src/__tests__/contract-facade.test.ts` (new) — vitest asserting helpers behave.
-- `client/src/__tests__/eslint-no-direct-generated-import.test.ts` (new) — programmatic ESLint run on a synthetic source that imports the generated file, asserts `no-restricted-imports` violation emitted.
+  The rule has an override block that permits `src/WorkflowUI/src/engine-contract.ts` itself to import the generated file.
+- `src/WorkflowUI/src/__tests__/contract-facade.test.ts` (new) — vitest asserting helpers behave.
+- `src/WorkflowUI/src/__tests__/eslint-no-direct-generated-import.test.ts` (new) — programmatic ESLint run on a synthetic source that imports the generated file, asserts `no-restricted-imports` violation emitted.
 
 ### Acceptance criteria
-- [ ] `client/src/engine-contract.ts` is the only file that imports `./engine-contract.generated`.
+- [ ] `src/WorkflowUI/src/engine-contract.ts` is the only file that imports `./engine-contract.generated`.
 - [ ] ESLint rule `no-restricted-imports` is `error` level.
 - [ ] A fixture source `import { RuntimeType } from './engine-contract.generated';` produces a lint error with message "Import from './engine-contract' (the facade) instead.".
 - [ ] The facade exports `assertNever`, `RUNTIME_TYPES` (13-element readonly tuple), and type guards for each control-flow kind + container.
@@ -407,7 +407,7 @@ A/A/A for the three most important:
 
 - `EslintNoDirectGeneratedImport_ForbiddenPath_ProducesError`
   - Arrange: load ESLint programmatically with the repo config.
-  - Act: `await eslint.lintText("import {RuntimeType} from './engine-contract.generated';", { filePath: 'client/src/foo.ts' });`
+  - Act: `await eslint.lintText("import {RuntimeType} from './engine-contract.generated';", { filePath: 'src/WorkflowUI/src/foo.ts' });`
   - Assert: `result[0].messages[0].ruleId === 'no-restricted-imports'` with severity 2.
 - `ContractFacade_RUNTIME_TYPES_Matches_EngineEnumsJson_Fixture`
   - Arrange: `import fixture from '../__fixtures__/engine-enums.json';`

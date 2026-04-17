@@ -2,10 +2,10 @@
 
 ## Install
 
-After cloning and running `npm ci` in `client/`, install the pre-commit hook:
+After cloning and running `npm ci` in `src/WorkflowUI/`, install the pre-commit hook:
 
 ```bash
-npm --prefix client run prepare
+npm --prefix src/WorkflowUI run prepare
 ```
 
 This wires up **lefthook** hooks that mirror CI gates locally:

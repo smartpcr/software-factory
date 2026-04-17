@@ -37,16 +37,16 @@ Coverage
 - `src/WorkflowUi.ContractTests/CoverageCiTests.cs` (new, Step 1.3.1) — meta-test.
 
 Playwright
-- `client/playwright.config.ts` (new, Step 1.3.2).
-- `client/tests/e2e/smoke.spec.ts` (new, Step 1.3.2).
-- `client/package.json` (modified, Step 1.3.2) — add `@playwright/test`, `test:e2e` script.
+- `src/WorkflowUI/playwright.config.ts` (new, Step 1.3.2).
+- `src/WorkflowUI/tests/e2e/smoke.spec.ts` (new, Step 1.3.2).
+- `src/WorkflowUI/package.json` (modified, Step 1.3.2) — add `@playwright/test`, `test:e2e` script.
 - `.github/workflows/ci-workflow-ui.yml` (modified, Step 1.3.2) — add `playwright` job.
 
 Readme
 - `readme.md` (modified, Step 1.3.3) — add status badges for CI, coverage, contract-drift, Playwright.
 
 ## Shared fixtures / fakes
-- `client/tests/e2e/smoke.spec.ts` is the first E2E fixture; Phase 3 adds canvas tests under `client/tests/e2e/`.
+- `src/WorkflowUI/tests/e2e/smoke.spec.ts` is the first E2E fixture; Phase 3 adds canvas tests under `src/WorkflowUI/tests/e2e/`.
 - `codecov.yml` lists the coverage policies consumed by both 1.3.1 and all later coverage-touching work.
 
 ## Stage-wide observability contract
@@ -96,13 +96,13 @@ Extend the Stage 0.3.1 CI workflow so the `test-dotnet` and `test-client` jobs e
 - Existing coverlet integration in `src/WorkflowUi.ContractTests.csproj` and `vitest.config.ts` from Stage 0.1.3.
 
 ### Deliverables
-- `.github/workflows/ci-workflow-ui.yml` (modified) — under `test-dotnet` add `--collect:"XPlat Code Coverage" --results-directory ./TestResults-dotnet`; under `test-client` ensure vitest emits lcov to `client/coverage/lcov.info`.
+- `.github/workflows/ci-workflow-ui.yml` (modified) — under `test-dotnet` add `--collect:"XPlat Code Coverage" --results-directory ./TestResults-dotnet`; under `test-client` ensure vitest emits lcov to `src/WorkflowUI/coverage/lcov.info`.
 - `.github/workflows/ci-workflow-ui.yml` (modified) — new job `coverage-publish` that depends on `test-dotnet` + `test-client`:
   - `actions/setup-dotnet@v4`.
   - Install `reportgenerator`: `dotnet tool install -g dotnet-reportgenerator-globaltool`.
-  - Merge: `reportgenerator -reports:"TestResults-dotnet/**/coverage.cobertura.xml;client/coverage/lcov.info" -targetdir:coverage-merged -reporttypes:"Cobertura;Html;lcov"`.
+  - Merge: `reportgenerator -reports:"TestResults-dotnet/**/coverage.cobertura.xml;src/WorkflowUI/coverage/lcov.info" -targetdir:coverage-merged -reporttypes:"Cobertura;Html;lcov"`.
   - Upload artefact `coverage-merged`.
-  - `codecov/codecov-action@v4` with `files: coverage-merged/Cobertura.xml,client/coverage/lcov.info`, `fail_ci_if_error: true`.
+  - `codecov/codecov-action@v4` with `files: coverage-merged/Cobertura.xml,src/WorkflowUI/coverage/lcov.info`, `fail_ci_if_error: true`.
 - `codecov.yml` (new) —
   ```yaml
   coverage:
@@ -120,7 +120,7 @@ Extend the Stage 0.3.1 CI workflow so the `test-dotnet` and `test-client` jobs e
     layout: "reach, diff, flags, files"
     behavior: default
   ignore:
-    - "client/src/engine-contract.generated.ts"
+    - "src/WorkflowUI/src/engine-contract.generated.ts"
     - "tools/GenContract/**"
     - "**/bin/**"
     - "**/obj/**"
@@ -154,7 +154,7 @@ A/A/A for the three most important:
 - `CoverageCiTests_CodecovYaml_IgnoresGeneratedContract`
   - Arrange: parse `codecov.yml`.
   - Act: read `ignore` list.
-  - Assert: includes `"client/src/engine-contract.generated.ts"`.
+  - Assert: includes `"src/WorkflowUI/src/engine-contract.generated.ts"`.
 - `CoverageCiTests_Workflow_CoveragePublish_Needs_TestDotnetAndTestClient`
   - Arrange: parse workflow yaml.
   - Act: read `jobs['coverage-publish'].needs`.
@@ -175,7 +175,7 @@ A/A/A for the three most important:
 1. Missing `CODECOV_TOKEN` secret — `codecov-action` with `fail_ci_if_error: true` reports clearly and red.
 2. Test run produced no coverage (0-byte file) — `reportgenerator` fails; job red.
 3. Multiple coverage reports collide on output — `reportgenerator` merges; no false inflation.
-4. Contributor moves a file between `src/WorkflowUi.Server` and `client/src` without updating ignore list — codecov counts both; asserted by a secondary `CoverageCiTests_CodecovYaml_NewProjectsIncludedByDefault` test.
+4. Contributor moves a file between `src/WorkflowUi.Server` and `src/WorkflowUI/src` without updating ignore list — codecov counts both; asserted by a secondary `CoverageCiTests_CodecovYaml_NewProjectsIncludedByDefault` test.
 5. Codecov service outage — `fail_ci_if_error: true` means CI red; acceptable tradeoff.
 6. Non-deterministic lcov output due to temp paths — `reportgenerator` canonicalises.
 
@@ -188,7 +188,7 @@ A/A/A for the three most important:
 - Codecov token scope — repo-scope secret, not org-wide.
 
 ### Evaluator gap-analysis prompts
-1. Does `codecov.yml` ignore `client/src/engine-contract.generated.ts` and `tools/GenContract/**`?
+1. Does `codecov.yml` ignore `src/WorkflowUI/src/engine-contract.generated.ts` and `tools/GenContract/**`?
 2. Is the codecov action pinned to `@v4`?
 3. Does `coverage-publish` job `need` both `test-dotnet` and `test-client`?
 4. Are patch and project targets both 100%?
@@ -214,17 +214,17 @@ Evaluator score ≥ 90, zero CRITICAL, zero HIGH findings, all acceptance criter
 **Depends on:** 1.1.1
 
 ### Goal
-Add a `@playwright/test` project under `client/tests/e2e/` and wire CI to run it headless in Chromium. The single smoke test (a) spawns the Stage 1.1 dotnet host via `webServer` in `playwright.config.ts`, (b) also spawns `npm run preview` for the Vite build, (c) navigates to the SPA root, (d) asserts the "Workflow UI" heading is visible, and (e) performs a single HTTP check against `/api/health`. Browser downloads are cached across CI runs using `actions/cache` keyed on the Playwright version. The scaffold must be extensible — Phase 3 will add canvas/drag/drop tests under the same folder.
+Add a `@playwright/test` project under `src/WorkflowUI/tests/e2e/` and wire CI to run it headless in Chromium. The single smoke test (a) spawns the Stage 1.1 dotnet host via `webServer` in `playwright.config.ts`, (b) also spawns `npm run preview` for the Vite build, (c) navigates to the SPA root, (d) asserts the "Workflow UI" heading is visible, and (e) performs a single HTTP check against `/api/health`. Browser downloads are cached across CI runs using `actions/cache` keyed on the Playwright version. The scaffold must be extensible — Phase 3 will add canvas/drag/drop tests under the same folder.
 
 ### Depends on
 1.1.1.
 
 ### Inputs
-- `client/package.json` from Stage 0.1/1.2.
+- `src/WorkflowUI/package.json` from Stage 0.1/1.2.
 - `src/WorkflowUi.Server/Program.cs` with the `/api/health` endpoint.
 
 ### Deliverables
-- `client/playwright.config.ts` (new) —
+- `src/WorkflowUI/playwright.config.ts` (new) —
   ```ts
   import { defineConfig, devices } from '@playwright/test';
   export default defineConfig({
@@ -241,17 +241,17 @@ Add a `@playwright/test` project under `client/tests/e2e/` and wire CI to run it
     projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }]
   });
   ```
-- `client/tests/e2e/smoke.spec.ts` (new) — smoke assertions.
-- `client/package.json` (modified) — devDep `@playwright/test` pinned to `^1.47`, scripts `test:e2e`, `test:e2e:install`.
+- `src/WorkflowUI/tests/e2e/smoke.spec.ts` (new) — smoke assertions.
+- `src/WorkflowUI/package.json` (modified) — devDep `@playwright/test` pinned to `^1.47`, scripts `test:e2e`, `test:e2e:install`.
 - `.github/workflows/ci-workflow-ui.yml` (modified) — new `playwright` job:
   - `needs: [test-dotnet, test-client]`.
-  - `actions/cache@v4` on `~/.cache/ms-playwright` keyed on `hashFiles('client/package-lock.json')` + Playwright version.
-  - `npx --prefix client playwright install --with-deps chromium`.
-  - `npm --prefix client run test:e2e`.
+  - `actions/cache@v4` on `~/.cache/ms-playwright` keyed on `hashFiles('src/WorkflowUI/package-lock.json')` + Playwright version.
+  - `npx --prefix src/WorkflowUI playwright install --with-deps chromium`.
+  - `npm --prefix src/WorkflowUI run test:e2e`.
   - Upload `playwright-report/` artefact on failure.
 
 ### Acceptance criteria
-- [ ] `npm --prefix client run test:e2e` runs headless in CI.
+- [ ] `npm --prefix src/WorkflowUI run test:e2e` runs headless in CI.
 - [ ] The smoke test asserts the heading "Workflow UI" renders.
 - [ ] The smoke test issues a `GET /api/health` and asserts 200 with `status=ok`.
 - [ ] Browser download cache hit-rate is visible in CI logs (cache hit message on 2nd run).
@@ -307,7 +307,7 @@ Not applicable — no DTO or YAML surface touched.
 7. Contract-facade import failing at runtime — smoke test's heading visibility assertion proves App.tsx loaded without throw.
 
 ### Observability hooks
-- Playwright HTML reporter under `client/playwright-report/` — uploaded as artefact on failure.
+- Playwright HTML reporter under `src/WorkflowUI/playwright-report/` — uploaded as artefact on failure.
 - `trace: retain-on-failure` + `screenshot: only-on-failure` attach debugging context.
 
 ### Risks & mitigations
