@@ -1,5 +1,10 @@
 # API Reference
 
+> **Generated from OpenAPI** — The canonical API specification is served at
+> `/swagger/v1/swagger.json` by the running server.  The documentation below
+> is derived from that spec.  In development mode the interactive Swagger UI
+> is available at `/swagger`.
+
 The Workflow UI Server exposes the following REST API endpoints.
 
 ## Health

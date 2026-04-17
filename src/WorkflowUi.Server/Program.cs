@@ -23,6 +23,18 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
 });
 
+// OpenAPI / Swagger
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
+    {
+        Title = "Workflow UI API",
+        Version = "v1",
+        Description = "REST API for the Workflow UI Server.",
+    });
+});
+
 // DI: register engine services
 builder.Services.AddExecutionEngine();
 
@@ -63,6 +75,13 @@ app.UseMiddleware<VersionHeaderMiddleware>();
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseMiddleware<RequestLoggingEnricher>();
 app.UseProblemDetailsExceptionHandler();
+
+// OpenAPI / Swagger (available in all environments for tooling; UI only in dev)
+app.UseSwagger();
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwaggerUI();
+}
 
 app.UseAuthentication();
 app.UseAuthorization();

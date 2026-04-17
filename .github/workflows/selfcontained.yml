@@ -45,6 +45,41 @@ jobs:
           chmod +x ${{ matrix.script }}
           bash ${{ matrix.script }} ${{ matrix.runtime }}
 
+      - name: Sign executable (Windows)
+        if: runner.os == 'Windows' && env.SIGN_CERT_BASE64 != ''
+        shell: pwsh
+        env:
+          SIGN_CERT_BASE64: ${{ secrets.SIGN_CERT_BASE64 }}
+          SIGN_CERT_PASSWORD: ${{ secrets.SIGN_CERT_PASSWORD }}
+        run: |
+          $certPath = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:SIGN_CERT_BASE64))
+          $exePath = "artifacts/publish/${{ matrix.runtime }}/WorkflowUi.Server.exe"
+          & signtool sign /f $certPath /p $env:SIGN_CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $exePath
+          & signtool verify /pa $exePath
+          Remove-Item $certPath -Force
+
+      - name: Sign executable (Linux)
+        if: runner.os == 'Linux' && env.SIGN_CERT_BASE64 != ''
+        env:
+          SIGN_CERT_BASE64: ${{ secrets.SIGN_CERT_BASE64 }}
+          SIGN_CERT_PASSWORD: ${{ secrets.SIGN_CERT_PASSWORD }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y osslsigncode
+          CERT_PATH="$RUNNER_TEMP/codesign.pfx"
+          echo "$SIGN_CERT_BASE64" | base64 -d > "$CERT_PATH"
+          EXE_PATH="artifacts/publish/${{ matrix.runtime }}/WorkflowUi.Server"
+          SIGNED_PATH="${EXE_PATH}.signed"
+          osslsigncode sign \
+            -pkcs12 "$CERT_PATH" \
+            -pass "$SIGN_CERT_PASSWORD" \
+            -h sha256 \
+            -ts http://timestamp.digicert.com \
+            -in "$EXE_PATH" \
+            -out "$SIGNED_PATH"
+          mv "$SIGNED_PATH" "$EXE_PATH"
+          rm -f "$CERT_PATH"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

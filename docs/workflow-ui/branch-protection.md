@@ -18,6 +18,8 @@ in `.github/workflows/ci-workflow-ui.yml`):
 8. **Contract drift** — Runs GenContract and diffs against committed contract file.
 9. **Coverage publish** — Merges .NET and client coverage reports, uploads to Codecov.
 10. **Playwright** — Runs Playwright smoke tests in headless Chromium.
+11. **Helm lint & template** — Validates the Helm chart with `helm lint` and `helm template`.
+12. **Export OpenAPI spec** — Generates the OpenAPI JSON spec from the server assembly.
 
 ## Review policy
 
@@ -32,7 +34,7 @@ in `.github/workflows/ci-workflow-ui.yml`):
 3. Check **Require a pull request before merging**.
 4. Check **Require approvals** (at least 1).
 5. Check **Dismiss stale pull request approvals when new commits are pushed**.
-6. Check **Require status checks to pass before merging** and add the 10 checks above.
+6. Check **Require status checks to pass before merging** and add the 12 checks above.
 7. Check **Require linear history**.
 8. Save.
 
