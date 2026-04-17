@@ -1,0 +1,79 @@
+suite: deployment
+templates:
+  - deployment.yaml
+tests:
+  - it: has expected container
+    asserts:
+      - isKind:
+          of: Deployment
+      - equal:
+          path: spec.template.spec.containers[0].name
+          value: workflow-ui
+
+  - it: replicaCount matches values
+    set:
+      replicaCount: 3
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 3
+
+  - it: env includes auth authority
+    set:
+      auth:
+        authority: "https://login.example.com"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: WorkflowUi__Auth__Authority
+            value: "https://login.example.com"
+
+  - it: service port 80 maps to container 8080
+    template: service.yaml
+    asserts:
+      - equal:
+          path: spec.ports[0].port
+          value: 80
+      - equal:
+          path: spec.ports[0].targetPort
+          value: 8080
+
+  - it: ingress disabled by default
+    template: ingress.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: ingress enabled renders host
+    template: ingress.yaml
+    set:
+      ingress:
+        enabled: true
+        hosts:
+          - host: workflow.example.com
+            paths:
+              - path: /
+                pathType: Prefix
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: spec.rules[0].host
+          value: "workflow.example.com"
+
+  - it: configmap contains WorkflowsRoot
+    template: configmap.yaml
+    asserts:
+      - equal:
+          path: data.WorkflowsRoot
+          value: "/data/workflows"
+
+  - it: pod security context non-root
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 1000

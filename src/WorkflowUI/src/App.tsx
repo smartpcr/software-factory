@@ -8,6 +8,7 @@ import { focusValidationTarget } from './ui/validation/focusValidationTarget';
 import { WorkspaceTree } from './workspace/WorkspaceTree';
 import { ImportExportDialog } from './workspace/ImportExportDialog';
 import { DuplicateDialog } from './workspace/DuplicateDialog';
+import { AppFooter } from './workspace/AppFooter';
 
 export function App() {
   const { entries, validate } = useWorkflowValidation();
@@ -16,8 +17,9 @@ export function App() {
   const [duplicateSourceId, setDuplicateSourceId] = useState<string | null>(null);
 
   return (
-    <div style={{ display: 'flex', height: '100vh' }} data-testid="app-root">
-      <div style={{ width: 240, borderRight: '1px solid #e5e7eb', overflow: 'auto', display: 'flex', flexDirection: 'column' }} data-testid="workspace-sidebar">
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }} data-testid="app-root">
+      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+        <div style={{ width: 240, borderRight: '1px solid #e5e7eb', overflow: 'auto', display: 'flex', flexDirection: 'column' }} data-testid="workspace-sidebar">
         <WorkspaceTree onSelect={setSelectedWorkflowId} />
         <div style={{ padding: 8, borderTop: '1px solid #e5e7eb' }}>
           <button type="button" onClick={() => setShowImportExport(!showImportExport)} aria-label="Toggle import/export">
@@ -60,6 +62,8 @@ export function App() {
       <div style={{ width: 320, borderLeft: '1px solid #e5e7eb', overflow: 'auto' }} data-testid="property-grid-sidebar">
         <PropertyGrid />
       </div>
+      </div>
+      <AppFooter />
     </div>
   );
 }

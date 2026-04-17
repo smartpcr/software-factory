@@ -11,6 +11,7 @@ using WorkflowUi.Server.Hosting;
 using WorkflowUi.Server.Hubs;
 using WorkflowUi.Server.Persistence;
 using WorkflowUi.Server.Telemetry;
+using WorkflowUi.Server.Version;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -57,7 +58,8 @@ var app = builder.Build();
 // Log dev bypass warning
 app.Services.LogDevBypassWarning(builder.Configuration);
 
-// Middleware order: CorrelationId → RequestLogging → ExceptionHandler → Auth → Audit → endpoints
+// Middleware order: VersionHeader → CorrelationId → RequestLogging → ExceptionHandler → Auth → Audit → endpoints
+app.UseMiddleware<VersionHeaderMiddleware>();
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseMiddleware<RequestLoggingEnricher>();
 app.UseProblemDetailsExceptionHandler();
@@ -73,6 +75,7 @@ app.MapWorkflowValidationEndpoints();
 app.MapMapperRoundTripEndpoints();
 app.MapWorkflowEndpoints();
 app.MapFilesEndpoints();
+app.MapVersionEndpoints();
 
 // SignalR hub
 app.MapHub<TelemetryHub>("/hubs/telemetry");

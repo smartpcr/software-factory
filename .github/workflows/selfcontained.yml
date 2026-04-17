@@ -1,0 +1,52 @@
+name: Self-Contained Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            runtime: win-x64
+            script: deploy/publish/publish-selfcontained.ps1
+          - os: ubuntu-latest
+            runtime: linux-x64
+            script: deploy/publish/publish-selfcontained.sh
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Publish (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ${{ matrix.script }} -Runtime ${{ matrix.runtime }}
+
+      - name: Publish (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          chmod +x ${{ matrix.script }}
+          bash ${{ matrix.script }} ${{ matrix.runtime }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-ui-${{ matrix.runtime }}
+          path: artifacts/publish/${{ matrix.runtime }}/

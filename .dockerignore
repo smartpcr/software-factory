@@ -1,0 +1,16 @@
+**/bin/
+**/obj/
+**/node_modules/
+**/TestResults/
+**/PromptOutput/
+**/__pycache__/
+.git/
+.github/
+docs/
+tools/
+deploy/
+*.md
+*.sln.DotSettings.user
+test_*.csx
+build-output.txt
+codecov.yml
