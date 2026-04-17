@@ -37,6 +37,15 @@ The system answers questions like:
 
 The Workflow Designer UI is a browser-based visual editor for building, editing, and monitoring ExecutionEngine workflows. It consists of an ASP.NET Core 8 server host and a React 18 + TypeScript SPA. For the full implementation plan, see [docs/workflow-ui-plan.md](docs/workflow-ui-plan.md). Per-stage implementation specs are in [docs/workflow-ui/](docs/workflow-ui/).
 
+### Workflow Designer UI — status
+
+[![CI](https://github.com/smartpcr/workflow/actions/workflows/ci-workflow-ui.yml/badge.svg?branch=main)](https://github.com/smartpcr/workflow/actions/workflows/ci-workflow-ui.yml)
+[![Coverage](https://codecov.io/gh/smartpcr/workflow/branch/main/graph/badge.svg)](https://codecov.io/gh/smartpcr/workflow)
+[![Contract drift](https://github.com/smartpcr/workflow/actions/workflows/ci-workflow-ui.yml/badge.svg?branch=main&event=push&job=contract-drift)](https://github.com/smartpcr/workflow/actions/workflows/ci-workflow-ui.yml)
+[![Playwright](https://github.com/smartpcr/workflow/actions/workflows/ci-workflow-ui.yml/badge.svg?branch=main&event=push&job=playwright)](https://github.com/smartpcr/workflow/actions/workflows/ci-workflow-ui.yml)
+
+See [`docs/workflow-ui-plan.md`](docs/workflow-ui-plan.md) and [`docs/workflow-ui/`](docs/workflow-ui/).
+
 ---
 
 ## Execution Engine

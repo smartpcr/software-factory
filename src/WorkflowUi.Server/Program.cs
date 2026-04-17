@@ -4,20 +4,52 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using WorkflowUi.Server.Endpoints;
+using WorkflowUi.Server.Hosting;
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.UseUrls("http://localhost:5226");
 
+// JSON serialization: camelCase + ISO-8601 timestamps
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
+});
+
+// DI: register engine services
+builder.Services.AddExecutionEngine();
+
+// Problem details
+builder.AddProblemDetailsServices();
+
 var app = builder.Build();
 
+// Middleware order: CorrelationId → RequestLogging → ExceptionHandler → endpoints
+app.UseMiddleware<CorrelationIdMiddleware>();
+app.UseMiddleware<RequestLoggingEnricher>();
+app.UseProblemDetailsExceptionHandler();
+
+// Endpoints
+app.MapHealthEndpoints();
+app.MapEngineVersionEndpoints();
+
+// Test-only endpoint for problem-details validation (throws to exercise exception handler)
+if (app.Environment.IsDevelopment() || app.Environment.EnvironmentName == "Production")
+{
+    app.MapGet("/boom", () =>
+    {
+        throw new InvalidOperationException("boom");
+    }).ExcludeFromDescription();
+}
+
 var logger = app.Services.GetRequiredService<ILogger<Program>>();
-var engineAssemblyVersion = typeof(ExecutionEngine.Workflow.WorkflowDefinition).Assembly
-    .GetName().Version?.ToString() ?? "unknown";
+var versionProvider = app.Services.GetRequiredService<EngineAssemblyVersionProvider>();
 logger.LogInformation(
     "WorkflowUi.Server started on {MachineName} in {EnvironmentName} with engine v{EngineAssemblyVersion}",
     Environment.MachineName,
     app.Environment.EnvironmentName,
-    engineAssemblyVersion);
+    versionProvider.GetVersion().EngineAssemblyVersion);
 
 app.Run();
 
