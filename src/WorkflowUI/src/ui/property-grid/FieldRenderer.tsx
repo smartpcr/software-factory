@@ -1,16 +1,22 @@
 import type { UseFormReturn } from 'react-hook-form';
 import type { FieldDescriptor } from './fieldDescriptors';
+import type { FieldError } from './validation/mapZodIssues';
 import { FieldErrorBadge } from './validation/FieldErrorBadge';
 
 export interface FieldRendererProps {
   descriptor: FieldDescriptor;
   form: UseFormReturn<Record<string, unknown>>;
+  mappedErrors?: FieldError[];
 }
 
-export function FieldRenderer({ descriptor, form }: FieldRendererProps) {
+export function FieldRenderer({ descriptor, form, mappedErrors }: FieldRendererProps) {
   const { register, formState: { errors } } = form;
-  const error = errors[descriptor.name];
-  const errorMessage = typeof error?.message === 'string' ? error.message : undefined;
+  const formError = errors[descriptor.name];
+  const formErrorMessage = typeof formError?.message === 'string' ? formError.message : undefined;
+
+  // Prefer mapped zod error if available, fall back to form error
+  const mappedError = mappedErrors?.find((e) => e.path === descriptor.name);
+  const errorMessage = mappedError?.message ?? formErrorMessage;
 
   const commonProps = {
     ...register(descriptor.name),

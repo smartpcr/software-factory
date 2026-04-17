@@ -15,7 +15,7 @@ export function PropertyGrid() {
       ? (nodes.find((n) => n.nodeId === firstSelectedId) ?? null)
       : null;
 
-  const { form, onSubmit, fieldDescriptors } = useNodeForm(selectedNode);
+  const { form, onSubmit, fieldDescriptors, mappedErrors } = useNodeForm(selectedNode);
 
   if (!selectedNode) {
     return (
@@ -41,7 +41,7 @@ export function PropertyGrid() {
         <fieldset data-testid="general-section">
           <legend>General</legend>
           {generalFields.map((desc) => (
-            <FieldRenderer key={desc.name} descriptor={desc} form={form} />
+            <FieldRenderer key={desc.name} descriptor={desc} form={form} mappedErrors={mappedErrors} />
           ))}
         </fieldset>
 
@@ -49,7 +49,7 @@ export function PropertyGrid() {
           <fieldset data-testid="kind-specific-section">
             <legend>Type-Specific</legend>
             {kindFields.map((desc) => (
-              <FieldRenderer key={desc.name} descriptor={desc} form={form} />
+              <FieldRenderer key={desc.name} descriptor={desc} form={form} mappedErrors={mappedErrors} />
             ))}
           </fieldset>
         )}

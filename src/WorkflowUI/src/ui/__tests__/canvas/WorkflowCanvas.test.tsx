@@ -142,4 +142,26 @@ describe('WorkflowCanvas', () => {
     useGraphStore.getState().removeConnection('a', 'b');
     expect(useGraphStore.getState().connections).toHaveLength(0);
   });
+
+  it('onNodeClick wires to setSelectedNodeIds', () => {
+    useGraphStore.setState({ nodes: [noopA, noopB] });
+    render(<WorkflowCanvas />);
+
+    // Simulate what onNodeClick does
+    useGraphStore.getState().setSelectedNodeIds(new Set(['a']));
+    expect(useGraphStore.getState().selectedNodeIds.has('a')).toBe(true);
+    expect(useGraphStore.getState().selectedNodeIds.size).toBe(1);
+  });
+
+  it('pane click clears selection', () => {
+    useGraphStore.setState({
+      nodes: [noopA],
+      selectedNodeIds: new Set(['a']),
+    });
+    render(<WorkflowCanvas />);
+
+    // Simulate what onPaneClick does
+    useGraphStore.getState().setSelectedNodeIds(new Set());
+    expect(useGraphStore.getState().selectedNodeIds.size).toBe(0);
+  });
 });

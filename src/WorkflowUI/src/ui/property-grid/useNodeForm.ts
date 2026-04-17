@@ -5,6 +5,7 @@ import type { NodeDto } from '../../engine-contract';
 import { useGraphStore } from '../state/graphStore';
 import { getSchemaForRuntimeType, getFieldDescriptorsForRuntimeType, getVisibilityRulesForRuntimeType } from './schemaRegistry';
 import { evaluateVisibilityRules } from './rules/visibilityRules';
+import { mapZodIssues, type FieldError } from './validation/mapZodIssues';
 import type { FieldDescriptor } from './fieldDescriptors';
 
 type FormValues = Record<string, unknown>;
@@ -13,6 +14,7 @@ export interface UseNodeFormResult {
   form: UseFormReturn<FormValues>;
   onSubmit: (values: FormValues) => void;
   fieldDescriptors: FieldDescriptor[];
+  mappedErrors: FieldError[];
 }
 
 export function useNodeForm(node: NodeDto | null): UseNodeFormResult {
@@ -45,6 +47,19 @@ export function useNodeForm(node: NodeDto | null): UseNodeFormResult {
   // Watch form values to drive visibility rules
   const watchedValues = form.watch();
 
+  // Map form errors through mapZodIssues for consistent error representation
+  const mappedErrors = useMemo(() => {
+    const formErrors = form.formState.errors;
+    const zodIssues = Object.entries(formErrors)
+      .filter(([, err]) => err?.message)
+      .map(([key, err]) => ({
+        path: [key],
+        message: typeof err?.message === 'string' ? err.message : 'Validation error',
+        code: 'custom' as const,
+      }));
+    return mapZodIssues(zodIssues);
+  }, [form.formState.errors]);
+
   // Apply visibility rules to filter descriptors
   const fieldDescriptors = useMemo(() => {
     if (visibilityRules.length === 0) return allDescriptors;
@@ -73,5 +88,5 @@ export function useNodeForm(node: NodeDto | null): UseNodeFormResult {
     [nodeId],
   );
 
-  return { form, onSubmit, fieldDescriptors };
+  return { form, onSubmit, fieldDescriptors, mappedErrors };
 }
