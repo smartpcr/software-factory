@@ -3,7 +3,8 @@ import { useForm, type UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import type { NodeDto } from '../../engine-contract';
 import { useGraphStore } from '../state/graphStore';
-import { getSchemaForRuntimeType, getFieldDescriptorsForRuntimeType } from './schemaRegistry';
+import { getSchemaForRuntimeType, getFieldDescriptorsForRuntimeType, getVisibilityRulesForRuntimeType } from './schemaRegistry';
+import { evaluateVisibilityRules } from './rules/visibilityRules';
 import type { FieldDescriptor } from './fieldDescriptors';
 
 type FormValues = Record<string, unknown>;
@@ -23,8 +24,13 @@ export function useNodeForm(node: NodeDto | null): UseNodeFormResult {
     [nodeRuntimeType],
   );
 
-  const fieldDescriptors = useMemo(
+  const allDescriptors = useMemo(
     () => (nodeRuntimeType ? getFieldDescriptorsForRuntimeType(nodeRuntimeType) : []),
+    [nodeRuntimeType],
+  );
+
+  const visibilityRules = useMemo(
+    () => (nodeRuntimeType ? getVisibilityRulesForRuntimeType(nodeRuntimeType) : []),
     [nodeRuntimeType],
   );
 
@@ -35,6 +41,22 @@ export function useNodeForm(node: NodeDto | null): UseNodeFormResult {
     defaultValues: (node ?? {}) as FormValues,
     mode: 'onBlur',
   });
+
+  // Watch form values to drive visibility rules
+  const watchedValues = form.watch();
+
+  // Apply visibility rules to filter descriptors
+  const fieldDescriptors = useMemo(() => {
+    if (visibilityRules.length === 0) return allDescriptors;
+
+    const ruleFieldNames = new Set(visibilityRules.map((r) => r.field));
+    const visibleRuleFields = evaluateVisibilityRules(visibilityRules, watchedValues as Record<string, unknown>);
+
+    return allDescriptors.filter((desc) => {
+      if (!ruleFieldNames.has(desc.name)) return true;
+      return visibleRuleFields.has(desc.name);
+    });
+  }, [allDescriptors, visibilityRules, watchedValues]);
 
   // Reset form when selected node changes
   useEffect(() => {

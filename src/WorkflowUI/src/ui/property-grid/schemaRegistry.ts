@@ -18,6 +18,9 @@ import {
   kindFieldDescriptors,
   type FieldDescriptor,
 } from './fieldDescriptors';
+import type { VisibilityRule } from './rules/visibilityRules';
+import { csharpTaskRules } from './rules/csharpTaskRules';
+import { subflowRules } from './rules/subflowRules';
 
 const schemaMap: Record<RuntimeType, z.ZodType> = {
   Noop: noopNodeSchema,
@@ -35,12 +38,21 @@ const schemaMap: Record<RuntimeType, z.ZodType> = {
   Container: containerNodeSchema,
 };
 
+const visibilityRulesMap: Partial<Record<RuntimeType, VisibilityRule[]>> = {
+  CSharpTask: csharpTaskRules,
+  Subflow: subflowRules,
+};
+
 export function getSchemaForRuntimeType(rt: RuntimeType): z.ZodType {
   return schemaMap[rt];
 }
 
 export function getFieldDescriptorsForRuntimeType(rt: RuntimeType): FieldDescriptor[] {
   return [...baseFieldDescriptors(), ...kindFieldDescriptors(rt)];
+}
+
+export function getVisibilityRulesForRuntimeType(rt: RuntimeType): VisibilityRule[] {
+  return visibilityRulesMap[rt] ?? [];
 }
 
 /** Verify that every runtime type has a schema entry at import time. */

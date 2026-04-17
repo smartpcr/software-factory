@@ -7,7 +7,7 @@ import { RUNTIME_TYPES } from '../../engine-contract';
 
 export interface UseWorkflowValidationResult {
   entries: ValidationEntry[];
-  validate: () => void;
+  validate: () => Promise<void>;
   isValidating: boolean;
 }
 
@@ -15,15 +15,54 @@ function isValidRuntimeType(rt: unknown): rt is RuntimeType {
   return typeof rt === 'string' && (RUNTIME_TYPES as readonly string[]).includes(rt);
 }
 
+/** Host validation response shape matching the server /api/workflows/validate endpoint */
+export interface HostValidationResult {
+  nodeId: string;
+  field?: string;
+  message: string;
+  severity: 'error' | 'warning';
+}
+
+/**
+ * Attempts host-backed workflow validation via /api/workflows/validate.
+ * Falls back to client-only if the host is unavailable.
+ */
+async function validateViaHost(workflowId: string): Promise<HostValidationResult[] | null> {
+  try {
+    const response = await fetch('/api/workflows/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workflowId }),
+    });
+    if (!response.ok) return null;
+    const data: unknown = await response.json();
+    if (Array.isArray(data)) {
+      return data as HostValidationResult[];
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function useWorkflowValidation(): UseWorkflowValidationResult {
   const [entries, setEntries] = useState<ValidationEntry[]>([]);
   const [isValidating, setIsValidating] = useState(false);
 
-  const validate = useCallback(() => {
+  const validate = useCallback(async () => {
     setIsValidating(true);
-    const nodes = useGraphStore.getState().nodes;
-    const results: ValidationEntry[] = [];
+    const { nodes, workflowId } = useGraphStore.getState();
 
+    // Try host-backed validation first
+    const hostResults = await validateViaHost(workflowId);
+    if (hostResults !== null) {
+      setEntries(hostResults);
+      setIsValidating(false);
+      return;
+    }
+
+    // Fallback: client-side schema validation
+    const results: ValidationEntry[] = [];
     for (const node of nodes) {
       if (!isValidRuntimeType(node.runtimeType)) {
         results.push({

@@ -102,4 +102,68 @@ describe('PropertyGrid', () => {
     // The form should not contain executionStatus as a field
     expect(screen.queryByTestId('field-executionStatus')).toBeNull();
   });
+
+  it('CSharpTask in script mode hides executor fields', () => {
+    // csharpTaskFixture has scriptContent set, executor fields empty
+    const fixture = allKindFixtures.find((f) => f.runtimeType === 'CSharpTask');
+    if (!fixture) throw new Error('Missing CSharpTask fixture');
+
+    useGraphStore.setState({
+      nodes: [fixture],
+      selectedNodeIds: new Set([fixture.nodeId]),
+    });
+
+    render(<PropertyGrid />);
+    // scriptContent should be visible
+    expect(screen.getByTestId('field-scriptContent')).toBeDefined();
+    // executor fields should be hidden
+    expect(screen.queryByTestId('field-executorTypeName')).toBeNull();
+    expect(screen.queryByTestId('field-executorAssemblyPath')).toBeNull();
+  });
+
+  it('Subflow with workflowFilePath hides workflowDefinition', () => {
+    const fixture = allKindFixtures.find((f) => f.runtimeType === 'Subflow');
+    if (!fixture) throw new Error('Missing Subflow fixture');
+
+    useGraphStore.setState({
+      nodes: [fixture],
+      selectedNodeIds: new Set([fixture.nodeId]),
+    });
+
+    render(<PropertyGrid />);
+    // workflowFilePath should be visible
+    expect(screen.getByTestId('field-workflowFilePath')).toBeDefined();
+    // workflowDefinition should be hidden
+    expect(screen.queryByTestId('field-workflowDefinition')).toBeNull();
+  });
+
+  it('renders policies panel with 5 top-level controls', () => {
+    const fixture = allKindFixtures[0];
+    useGraphStore.setState({
+      nodes: [fixture],
+      selectedNodeIds: new Set([fixture.nodeId]),
+    });
+
+    render(<PropertyGrid />);
+    expect(screen.getByTestId('policies-panel')).toBeDefined();
+    expect(screen.getByTestId('field-joinType')).toBeDefined();
+    expect(screen.getByTestId('field-priority')).toBeDefined();
+    expect(screen.getByTestId('field-maxConcurrentExecutions')).toBeDefined();
+    expect(screen.getByTestId('field-retryPolicy')).toBeDefined();
+    expect(screen.getByTestId('field-circuitBreakerPolicy')).toBeDefined();
+  });
+
+  it('renders references panel with 3 fields', () => {
+    const fixture = allKindFixtures[0];
+    useGraphStore.setState({
+      nodes: [fixture],
+      selectedNodeIds: new Set([fixture.nodeId]),
+    });
+
+    render(<PropertyGrid />);
+    expect(screen.getByTestId('references-panel')).toBeDefined();
+    expect(screen.getByTestId('field-compensationNodeId')).toBeDefined();
+    expect(screen.getByTestId('field-fallbackNodeId')).toBeDefined();
+    expect(screen.getByTestId('field-configuration')).toBeDefined();
+  });
 });

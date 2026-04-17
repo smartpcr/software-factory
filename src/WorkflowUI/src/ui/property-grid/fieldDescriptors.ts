@@ -130,6 +130,7 @@ export function kindFieldDescriptors(runtimeType: RuntimeType): FieldDescriptor[
     case 'Subflow':
       return [
         { name: 'workflowFilePath', label: 'Workflow File Path', kind: 'text', group: 'kind-specific' },
+        { name: 'workflowDefinition', label: 'Inline Workflow', kind: 'textarea', group: 'kind-specific' },
         { name: 'inputMappings', label: 'Input Mappings', kind: 'keyvalue', group: 'kind-specific' },
         { name: 'outputMappings', label: 'Output Mappings', kind: 'keyvalue', group: 'kind-specific' },
         { name: 'timeout', label: 'Timeout', kind: 'text', group: 'kind-specific' },
