@@ -22,7 +22,8 @@ public static class AuthServiceCollectionExtensions
 {
     public static IServiceCollection AddWorkflowUiAuth(
         this IServiceCollection services,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        bool isDevelopment = false)
     {
         var authSection = configuration.GetSection(AuthOptions.SectionName);
         services.Configure<AuthOptions>(authSection);
@@ -30,10 +31,22 @@ public static class AuthServiceCollectionExtensions
         var authOptions = new AuthOptions();
         authSection.Bind(authOptions);
 
+        // Use DevBypass as default scheme when in Development with AllowDevBypass=true
+        var useDevBypass = isDevelopment && authOptions.AllowDevBypass;
+
         services.AddAuthentication(options =>
         {
-            options.DefaultScheme = JwtBearerDefaults.AuthenticationScheme;
-            options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+            if (useDevBypass)
+            {
+                options.DefaultScheme = DevBypassAuthenticationHandler.SchemeName;
+                options.DefaultAuthenticateScheme = DevBypassAuthenticationHandler.SchemeName;
+                options.DefaultChallengeScheme = DevBypassAuthenticationHandler.SchemeName;
+            }
+            else
+            {
+                options.DefaultScheme = JwtBearerDefaults.AuthenticationScheme;
+                options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+            }
         })
         .AddJwtBearer(options =>
         {

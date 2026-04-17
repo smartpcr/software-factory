@@ -26,7 +26,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 builder.Services.AddExecutionEngine();
 
 // DI: register auth services
-builder.Services.AddWorkflowUiAuth(builder.Configuration);
+builder.Services.AddWorkflowUiAuth(builder.Configuration, builder.Environment.IsDevelopment());
 
 // DI: register persistence services
 builder.Services.Configure<PersistenceOptions>(
@@ -71,6 +71,8 @@ app.MapHealthEndpoints();
 app.MapEngineVersionEndpoints();
 app.MapWorkflowValidationEndpoints();
 app.MapMapperRoundTripEndpoints();
+app.MapWorkflowEndpoints();
+app.MapFilesEndpoints();
 
 // SignalR hub
 app.MapHub<TelemetryHub>("/hubs/telemetry");
