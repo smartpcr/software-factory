@@ -11,6 +11,7 @@ import {
   type Connection,
   ReactFlowProvider,
   BackgroundVariant,
+  useReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useGraphStore } from '../state/graphStore';
@@ -23,6 +24,8 @@ import { useConnectionCreation } from './useConnectionCreation';
 import { EdgePopover } from '../edges/EdgePopover';
 import type { NodeConnectionDto, NodeDto } from '../../engine-contract';
 import { validateConnection } from '../validation/connectionRules';
+import { DRAG_TYPE, decodeDragPayload } from '../palette/dragPayload';
+import { executeCreateNode } from '../state/creationCommands';
 
 export interface WorkflowCanvasProps {
   showMiniMap?: boolean;
@@ -155,16 +158,10 @@ export function WorkflowCanvas({
   return (
     <CanvasSurface>
       <ReactFlowProvider>
-        <ReactFlow
-          nodes={rfNodes}
-          edges={rfEdges}
-          nodeTypes={nodeTypes}
-          edgeTypes={edgeTypes}
-          defaultViewport={viewport ?? DEFAULT_VIEWPORT}
-          snapToGrid
-          snapGrid={CANVAS_SNAP_GRID}
-          minZoom={ZOOM_LIMITS.min}
-          maxZoom={ZOOM_LIMITS.max}
+        <WorkflowCanvasInner
+          rfNodes={rfNodes}
+          rfEdges={rfEdges}
+          viewport={viewport}
           onViewportChange={onViewportChange}
           onConnect={onConnect}
           onNodeClick={onNodeClick}
@@ -172,13 +169,9 @@ export function WorkflowCanvas({
           onEdgeClick={onEdgeClick}
           onEdgesDelete={onEdgesDelete}
           onReconnect={onReconnect}
-          fitView={false}
-          data-testid="react-flow-canvas"
-        >
-          <Background variant={BackgroundVariant.Dots} gap={CANVAS_SNAP_GRID[0]} />
-          {showControls && <Controls />}
-          {showMiniMap && <MiniMap />}
-        </ReactFlow>
+          showControls={showControls}
+          showMiniMap={showMiniMap}
+        />
         {editingEdge && (
           <EdgePopover
             connection={editingEdge}
@@ -188,5 +181,83 @@ export function WorkflowCanvas({
         )}
       </ReactFlowProvider>
     </CanvasSurface>
+  );
+}
+
+function WorkflowCanvasInner({
+  rfNodes,
+  rfEdges,
+  viewport,
+  onViewportChange,
+  onConnect,
+  onNodeClick,
+  onPaneClick,
+  onEdgeClick,
+  onEdgesDelete,
+  onReconnect,
+  showControls,
+  showMiniMap,
+}: {
+  rfNodes: RFNode[];
+  rfEdges: RFEdge[];
+  viewport: ReturnType<typeof useCanvasViewport>['viewport'];
+  onViewportChange: ReturnType<typeof useCanvasViewport>['onViewportChange'];
+  onConnect: ReturnType<typeof useConnectionCreation>['onConnect'];
+  onNodeClick: NodeMouseHandler;
+  onPaneClick: () => void;
+  onEdgeClick: EdgeMouseHandler;
+  onEdgesDelete: (edges: RFEdge[]) => void;
+  onReconnect: (oldEdge: RFEdge, newConnection: Connection) => void;
+  showControls: boolean;
+  showMiniMap: boolean;
+}) {
+  const { screenToFlowPosition } = useReactFlow();
+
+  const onDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  }, []);
+
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      const raw = e.dataTransfer.getData(DRAG_TYPE);
+      if (!raw) return;
+      const payload = decodeDragPayload(raw);
+      if (!payload) return;
+
+      const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      executeCreateNode(payload.runtimeType, position);
+    },
+    [screenToFlowPosition],
+  );
+
+  return (
+    <ReactFlow
+      nodes={rfNodes}
+      edges={rfEdges}
+      nodeTypes={nodeTypes}
+      edgeTypes={edgeTypes}
+      defaultViewport={viewport ?? DEFAULT_VIEWPORT}
+      snapToGrid
+      snapGrid={CANVAS_SNAP_GRID}
+      minZoom={ZOOM_LIMITS.min}
+      maxZoom={ZOOM_LIMITS.max}
+      onViewportChange={onViewportChange}
+      onConnect={onConnect}
+      onNodeClick={onNodeClick}
+      onPaneClick={onPaneClick}
+      onEdgeClick={onEdgeClick}
+      onEdgesDelete={onEdgesDelete}
+      onReconnect={onReconnect}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      fitView={false}
+      data-testid="react-flow-canvas"
+    >
+      <Background variant={BackgroundVariant.Dots} gap={CANVAS_SNAP_GRID[0]} />
+      {showControls && <Controls />}
+      {showMiniMap && <MiniMap />}
+    </ReactFlow>
   );
 }
