@@ -1,0 +1,8 @@
+workflowId: timer-cron-5field
+workflowName: Timer Cron 5-Field
+nodes:
+  - nodeId: t1
+    nodeName: Five Field Cron
+    runtimeType: Timer
+    schedule: "0 9 * * 1-5"
+connections: []

@@ -1,0 +1,8 @@
+workflowId: powershell-task-filepath
+workflowName: PowerShell Task FilePath
+nodes:
+  - nodeId: pst1
+    nodeName: File PS Task
+    runtimeType: PowerShellTask
+    scriptPath: scripts/task.ps1
+connections: []

@@ -121,7 +121,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             return new global::Reqnroll.Formatters.RuntimeSupport.FeatureLevelCucumberMessages("Features/ControlFlow.feature.ndjson", 22);
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="If-Else conditional execution")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 7, DisplayName="If-Else conditional execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("If-Else conditional execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Control Flow")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -185,7 +185,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="If-Else with complex condition accessing multiple contexts")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 23, DisplayName="If-Else with complex condition accessing multiple contexts")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("If-Else with complex condition accessing multiple contexts")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Control Flow")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -239,7 +239,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="ForEach collection iteration")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 37, DisplayName="ForEach collection iteration")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("ForEach collection iteration")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Control Flow")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -293,7 +293,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="ForEach with LINQ expression")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 48, DisplayName="ForEach with LINQ expression")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("ForEach with LINQ expression")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Control Flow")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -336,7 +336,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="While loop with condition re-evaluation")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 56, DisplayName="While loop with condition re-evaluation")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("While loop with condition re-evaluation")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Control Flow")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -393,7 +393,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="While loop max iterations protection")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 68, DisplayName="While loop max iterations protection")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("While loop max iterations protection")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Control Flow")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -435,7 +435,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Switch multi-way branching")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 76, DisplayName="Switch multi-way branching")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Switch multi-way branching")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Control Flow")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -517,7 +517,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Switch with expression evaluation")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 99, DisplayName="Switch with expression evaluation")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Switch with expression evaluation")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Control Flow")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -570,7 +570,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Nested loop iteration")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 113, DisplayName="Nested loop iteration")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Nested loop iteration")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Control Flow")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -614,7 +614,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="While loop with external variable modification")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 121, DisplayName="While loop with external variable modification")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("While loop with external variable modification")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Control Flow")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -656,7 +656,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="ForEach with empty collection")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 129, DisplayName="ForEach with empty collection")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("ForEach with empty collection")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Control Flow")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -698,7 +698,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Branch convergence after If-Else")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 137, DisplayName="Branch convergence after If-Else")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Branch convergence after If-Else")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Control Flow")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]

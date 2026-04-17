@@ -1,0 +1,9 @@
+workflowId: switch-empty-cases
+workflowName: Switch Empty Cases
+nodes:
+  - nodeId: sw1
+    nodeName: Route
+    runtimeType: Switch
+    expression: status
+    cases: {}
+connections: []

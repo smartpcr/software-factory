@@ -1,0 +1,19 @@
+workflowId: container-sequential
+workflowName: Container Sequential
+nodes:
+  - nodeId: c1
+    nodeName: Sequential Container
+    runtimeType: Container
+    executionMode: Sequential
+    childNodes:
+      - nodeId: c1a
+        nodeName: Step A
+        runtimeType: Noop
+      - nodeId: c1b
+        nodeName: Step B
+        runtimeType: Noop
+    childConnections:
+      - sourceNodeId: c1a
+        targetNodeId: c1b
+        triggerMessageType: Complete
+connections: []

@@ -1,0 +1,9 @@
+workflowId: while-zero-iter
+workflowName: While Zero Iter (Negative)
+nodes:
+  - nodeId: wh1
+    nodeName: Loop
+    runtimeType: While
+    conditionExpression: x
+    maxIterations: 0
+connections: []

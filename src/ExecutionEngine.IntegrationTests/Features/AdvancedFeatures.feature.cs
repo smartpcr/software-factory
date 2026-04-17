@@ -121,7 +121,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             return new global::Reqnroll.Formatters.RuntimeSupport.FeatureLevelCucumberMessages("Features/AdvancedFeatures.feature.ndjson", 23);
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Container node execution")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 7, DisplayName="Container node execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Container node execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -178,7 +178,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Container completes when all children complete")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 19, DisplayName="Container completes when all children complete")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Container completes when all children complete")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -223,7 +223,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Container fails if any child fails")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 28, DisplayName="Container fails if any child fails")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Container fails if any child fails")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -273,7 +273,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Subflow workflow execution")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 38, DisplayName="Subflow workflow execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Subflow workflow execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -345,7 +345,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Nested subflow execution")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 56, DisplayName="Nested subflow execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Nested subflow execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -396,7 +396,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Subflow execution with failure handling")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 67, DisplayName="Subflow execution with failure handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Subflow execution with failure handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -444,7 +444,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Timer scheduled trigger")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 77, DisplayName="Timer scheduled trigger")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Timer scheduled trigger")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -492,7 +492,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Timer with condition-based routing")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 87, DisplayName="Timer with condition-based routing")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Timer with condition-based routing")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -554,7 +554,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Nested container execution")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 103, DisplayName="Nested container execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Nested container execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -611,7 +611,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Multi-level nested containers")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 116, DisplayName="Multi-level nested containers")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Multi-level nested containers")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -676,7 +676,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Dynamic workflow modification - add node at runtime")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 130, DisplayName="Dynamic workflow modification - add node at runtime")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Dynamic workflow modification - add node at runtime")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -724,7 +724,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Dynamic workflow modification - disable connection")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 140, DisplayName="Dynamic workflow modification - disable connection")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Dynamic workflow modification - disable connection")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -775,7 +775,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Dynamic workflow modification - enable disabled connection")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 151, DisplayName="Dynamic workflow modification - enable disabled connection")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Dynamic workflow modification - enable disabled connection")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -823,7 +823,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Checkpoint workflow state")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 161, DisplayName="Checkpoint workflow state")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Checkpoint workflow state")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -874,7 +874,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Resume workflow from checkpoint")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 172, DisplayName="Resume workflow from checkpoint")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Resume workflow from checkpoint")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -922,7 +922,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Checkpoint and resume with modified workflow")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 182, DisplayName="Checkpoint and resume with modified workflow")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Checkpoint and resume with modified workflow")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -970,7 +970,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Resume failed workflow with error correction")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 192, DisplayName="Resume failed workflow with error correction")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Resume failed workflow with error correction")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -1023,7 +1023,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Automatic checkpointing at intervals")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 203, DisplayName="Automatic checkpointing at intervals")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Automatic checkpointing at intervals")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -1071,7 +1071,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Subflow with container children")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 213, DisplayName="Subflow with container children")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Subflow with container children")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -1122,7 +1122,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Complex workflow with all advanced features")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 224, DisplayName="Complex workflow with all advanced features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Complex workflow with all advanced features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]

@@ -1,0 +1,15 @@
+[
+  { "runtimeType": "Noop", "nodeId": "n1" },
+  { "runtimeType": "CSharp", "nodeId": "n2" },
+  { "runtimeType": "CSharpScript", "nodeId": "n3", "scriptContent": "x" },
+  { "runtimeType": "CSharpTask", "nodeId": "n4" },
+  { "runtimeType": "PowerShell", "nodeId": "n5" },
+  { "runtimeType": "PowerShellTask", "nodeId": "n6" },
+  { "runtimeType": "IfElse", "nodeId": "n7", "condition": "true" },
+  { "runtimeType": "ForEach", "nodeId": "n8", "collectionExpression": "items" },
+  { "runtimeType": "While", "nodeId": "n9", "conditionExpression": "x<10" },
+  { "runtimeType": "Switch", "nodeId": "n10", "expression": "status" },
+  { "runtimeType": "Subflow", "nodeId": "n11", "workflowFilePath": "child.yaml" },
+  { "runtimeType": "Timer", "nodeId": "n12", "schedule": "*/5 * * * *" },
+  { "runtimeType": "Container", "nodeId": "n13" }
+]

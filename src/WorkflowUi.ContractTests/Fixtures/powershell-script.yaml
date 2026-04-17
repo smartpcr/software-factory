@@ -1,0 +1,8 @@
+workflowId: powershell-script
+workflowName: PowerShell Script
+nodes:
+  - nodeId: ps1
+    nodeName: Script
+    runtimeType: PowerShell
+    scriptPath: "scripts/run.ps1"
+connections: []

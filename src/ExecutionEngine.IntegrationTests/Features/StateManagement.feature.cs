@@ -121,7 +121,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             return new global::Reqnroll.Formatters.RuntimeSupport.FeatureLevelCucumberMessages("Features/StateManagement.feature.ndjson", 16);
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Workflow variable sharing across nodes")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 7, DisplayName="Workflow variable sharing across nodes")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Workflow variable sharing across nodes")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "State Management")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -171,7 +171,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Node output to input data flow")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 17, DisplayName="Node output to input data flow")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Node output to input data flow")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "State Management")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -221,7 +221,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Data transformation pipeline")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 27, DisplayName="Data transformation pipeline")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Data transformation pipeline")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "State Management")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -278,7 +278,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Node scoped local variables")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 40, DisplayName="Node scoped local variables")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Node scoped local variables")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "State Management")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -323,7 +323,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Execution context propagation")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 49, DisplayName="Execution context propagation")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Execution context propagation")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "State Management")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -371,7 +371,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Thread-safe concurrent variable access")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 59, DisplayName="Thread-safe concurrent variable access")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Thread-safe concurrent variable access")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "State Management")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -418,7 +418,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="ForEach iteration metadata in context")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 68, DisplayName="ForEach iteration metadata in context")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("ForEach iteration metadata in context")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "State Management")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -463,7 +463,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="While loop iteration context")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 77, DisplayName="While loop iteration context")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("While loop iteration context")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "State Management")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -502,7 +502,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Workflow variables persist across node executions")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 84, DisplayName="Workflow variables persist across node executions")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Workflow variables persist across node executions")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "State Management")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -547,7 +547,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Output data preserved in NodeCompleteMessage")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 93, DisplayName="Output data preserved in NodeCompleteMessage")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Output data preserved in NodeCompleteMessage")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "State Management")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -592,7 +592,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Multiple outputs to multiple inputs")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 102, DisplayName="Multiple outputs to multiple inputs")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Multiple outputs to multiple inputs")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "State Management")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -634,7 +634,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Context isolation between workflow instances")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 110, DisplayName="Context isolation between workflow instances")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Context isolation between workflow instances")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "State Management")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -685,7 +685,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Node instance tracking for debugging")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 121, DisplayName="Node instance tracking for debugging")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Node instance tracking for debugging")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "State Management")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
@@ -730,7 +730,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="Null and empty value handling")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 130, DisplayName="Null and empty value handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Null and empty value handling")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "State Management")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]

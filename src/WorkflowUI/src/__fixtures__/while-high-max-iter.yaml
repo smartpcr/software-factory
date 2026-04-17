@@ -1,0 +1,9 @@
+workflowId: while-high-max-iter
+workflowName: While High Max Iter
+nodes:
+  - nodeId: wh1
+    nodeName: Loop
+    runtimeType: While
+    conditionExpression: "count < 500000"
+    maxIterations: 999999
+connections: []

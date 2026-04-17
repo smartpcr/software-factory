@@ -1,0 +1,7 @@
+workflowId: container-empty
+workflowName: Container Empty
+nodes:
+  - nodeId: c1
+    nodeName: Empty Container
+    runtimeType: Container
+connections: []

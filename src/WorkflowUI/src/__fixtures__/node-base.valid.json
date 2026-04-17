@@ -1,0 +1,8 @@
+{
+  "runtimeType": "Noop",
+  "nodeId": "n1",
+  "nodeName": "Start",
+  "joinType": "Any",
+  "priority": "Normal",
+  "maxConcurrentExecutions": 0
+}

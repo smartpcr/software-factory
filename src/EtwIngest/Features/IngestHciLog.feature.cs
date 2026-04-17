@@ -135,7 +135,7 @@ namespace EtwIngest.Features
             return new global::Reqnroll.Formatters.RuntimeSupport.FeatureLevelCucumberMessages("Features/IngestHciLog.feature.ndjson", 3);
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="end to end ingestion of HCI logs")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 7, DisplayName="end to end ingestion of HCI logs")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("end to end ingestion of HCI logs")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "ingest HCI etw and evtx events")]
         public async global::System.Threading.Tasks.Task EndToEndIngestionOfHCILogs()

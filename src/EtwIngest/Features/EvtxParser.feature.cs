@@ -136,7 +136,7 @@ namespace EtwIngest.Features
             return new global::Reqnroll.Formatters.RuntimeSupport.FeatureLevelCucumberMessages("Features/EvtxParser.feature.ndjson", 5);
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="parse evtx file")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 12, DisplayName="parse evtx file")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("parse evtx file")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "EvtxParser")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("evtx")]
@@ -188,7 +188,7 @@ this.ScenarioInitialize(scenarioInfo, ruleInfo);
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="parse multiple evtx files")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 20, DisplayName="parse multiple evtx files")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("parse multiple evtx files")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "EvtxParser")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("evtx")]
@@ -287,7 +287,7 @@ this.ScenarioInitialize(scenarioInfo, ruleInfo);
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(DisplayName="parse evtx file into csv files")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 48, DisplayName="parse evtx file into csv files")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("parse evtx file into csv files")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "EvtxParser")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("evtx")]

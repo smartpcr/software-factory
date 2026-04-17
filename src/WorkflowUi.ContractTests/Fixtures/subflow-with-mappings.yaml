@@ -1,0 +1,13 @@
+workflowId: subflow-with-mappings
+workflowName: Subflow With Mappings
+nodes:
+  - nodeId: sf1
+    nodeName: Mapped Subflow
+    runtimeType: Subflow
+    workflowFilePath: child.yaml
+    inputMappings:
+      param1: value1
+      param2: value2
+    outputMappings:
+      result: output
+connections: []

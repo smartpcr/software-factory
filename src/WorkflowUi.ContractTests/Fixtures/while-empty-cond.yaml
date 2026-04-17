@@ -1,0 +1,8 @@
+workflowId: while-empty-cond
+workflowName: While Empty Cond (Negative)
+nodes:
+  - nodeId: wh1
+    nodeName: Loop
+    runtimeType: While
+    conditionExpression: ""
+connections: []

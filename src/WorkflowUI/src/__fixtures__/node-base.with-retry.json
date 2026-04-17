@@ -1,0 +1,17 @@
+{
+  "runtimeType": "Noop",
+  "nodeId": "n1",
+  "nodeName": "Retrying",
+  "joinType": "Any",
+  "priority": "Normal",
+  "maxConcurrentExecutions": 0,
+  "retryPolicy": {
+    "strategy": "Fixed",
+    "maxAttempts": 3,
+    "initialDelay": "00:00:05",
+    "maxDelay": "00:01:00",
+    "multiplier": 2.0,
+    "retryOn": ["System.TimeoutException"],
+    "doNotRetryOn": []
+  }
+}

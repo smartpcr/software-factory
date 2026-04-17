@@ -1,0 +1,8 @@
+workflowId: powershell-task-engine-quirk
+workflowName: PowerShell Task Engine Quirk
+nodes:
+  - nodeId: pst1
+    nodeName: Quirk
+    runtimeType: PowerShellTask
+    scriptPath: ""
+connections: []

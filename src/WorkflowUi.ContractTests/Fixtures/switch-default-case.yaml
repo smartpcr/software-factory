@@ -1,0 +1,24 @@
+workflowId: switch-default-case
+workflowName: Switch Default Case
+nodes:
+  - nodeId: sw1
+    nodeName: Route
+    runtimeType: Switch
+    expression: status
+    cases:
+      ready: Continue
+  - nodeId: n1
+    nodeName: Ready
+    runtimeType: Noop
+  - nodeId: n2
+    nodeName: Default
+    runtimeType: Noop
+connections:
+  - sourceNodeId: sw1
+    targetNodeId: n1
+    triggerMessageType: Complete
+    condition: ready
+  - sourceNodeId: sw1
+    targetNodeId: n2
+    triggerMessageType: Complete
+    condition: "*"
