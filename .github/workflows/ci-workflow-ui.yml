@@ -106,5 +106,40 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify coverage artifacts exist
-        run: echo "Coverage gate passed — artifacts uploaded by test jobs."
+
+      - name: Download .NET coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: dotnet-test-results
+          path: TestResults/
+
+      - name: Download client coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: client-coverage
+          path: client/coverage/
+
+      - name: Verify .NET coverage artifact exists
+        run: |
+          if (!(Test-Path "TestResults")) {
+            Write-Error "Missing .NET coverage artifact"
+            exit 1
+          }
+          Write-Host ".NET coverage artifact present"
+
+      - name: Verify client coverage artifact exists
+        run: |
+          if (!(Test-Path "client/coverage/lcov.info")) {
+            Write-Error "Missing client lcov.info"
+            exit 1
+          }
+          Write-Host "Client lcov.info present"
+
+      - name: Verify generated files excluded from client coverage
+        run: |
+          $vitestConfig = Get-Content "client/vitest.config.ts" -Raw
+          if ($vitestConfig -notmatch "engine-contract.generated.ts") {
+            Write-Error "engine-contract.generated.ts must be excluded from coverage config"
+            exit 1
+          }
+          Write-Host "Generated files properly excluded from coverage"

@@ -121,4 +121,51 @@ public class CiWorkflowYamlTests
         var text = LoadWorkflowYaml();
         Assert.Contains("windows-latest", text);
     }
+
+    [Fact]
+    public void CoverageGate_ExcludesGeneratedFiles()
+    {
+        var text = LoadWorkflowYaml();
+        Assert.Contains("engine-contract.generated.ts", text);
+    }
+
+    [Fact]
+    public void CoverageGate_DownloadsArtifacts()
+    {
+        var text = LoadWorkflowYaml();
+        Assert.Contains("download-artifact", text);
+    }
+
+    [Fact]
+    public void CoverageGate_VerifiesClientLcov()
+    {
+        var text = LoadWorkflowYaml();
+        Assert.Contains("lcov.info", text);
+    }
+
+    [Fact]
+    public void Parses_And_ContainsAllRequiredSteps()
+    {
+        var text = LoadWorkflowYaml();
+        var requiredStepPatterns = new[]
+        {
+            "Enum parity gate",
+            "DTO parity gate",
+            "YAML round-trip gate",
+            "Run contract tests",
+            "Upload test results",
+            "Upload coverage",
+        };
+        foreach (var pattern in requiredStepPatterns)
+        {
+            Assert.Contains(pattern, text);
+        }
+    }
+
+    [Fact]
+    public void ConcurrencyGroup_CancelInProgress()
+    {
+        var text = LoadWorkflowYaml();
+        Assert.Contains("cancel-in-progress: true", text);
+    }
 }

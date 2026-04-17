@@ -207,28 +207,28 @@ public class DtoParityTests
     }
 
     [Fact]
-    public void WriteFixtureFiles_ToClientFixtures()
+    public void FixtureFile_MatchesCommittedGolden()
     {
-        // Find the repo root by walking up from the test assembly location
         var dir = AppContext.BaseDirectory;
         while (dir != null && !File.Exists(Path.Combine(dir, "Workflow.sln")))
         {
             dir = Path.GetDirectoryName(dir);
         }
 
-        if (dir == null)
+        Assert.NotNull(dir);
+        var goldenPath = Path.Combine(dir!, "client", "src", "__fixtures__", "engine-dto-shape.json");
+        Assert.True(File.Exists(goldenPath), $"Committed fixture not found at {goldenPath}");
+
+        var committed = File.ReadAllText(goldenPath).Replace("\r\n", "\n");
+        var emitted = EmitDtoFixtureJson();
+
+        if (Environment.GetEnvironmentVariable("WORKFLOWUI_WRITE_FIXTURES") == "1")
         {
-            return; // Can't find repo root, skip silently
+            File.WriteAllText(goldenPath, emitted);
+            return;
         }
 
-        var enumFixturePath = Path.Combine(dir, "client", "src", "__fixtures__", "engine-enums.json");
-        var dtoFixturePath = Path.Combine(dir, "client", "src", "__fixtures__", "engine-dto-shape.json");
-
-        File.WriteAllText(enumFixturePath, EnumParityTests.EmitEnumFixtureJson());
-        File.WriteAllText(dtoFixturePath, EmitDtoFixtureJson());
-
-        Assert.True(File.Exists(enumFixturePath));
-        Assert.True(File.Exists(dtoFixturePath));
+        Assert.Equal(committed, emitted);
     }
 
     /// <summary>

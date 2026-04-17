@@ -59,7 +59,7 @@ public class YamlRoundTripTests
         Assert.True(File.Exists(fixturePath), $"Fixture not found at {fixturePath}");
 
         var loader = new WorkflowLoader();
-        var wf = loader.Load(fixturePath, validateOnLoad: false);
+        var wf = loader.Load(fixturePath, validateOnLoad: true);
         Assert.NotNull(wf);
         Assert.Equal("noop-minimal", wf.WorkflowId);
     }
@@ -69,7 +69,7 @@ public class YamlRoundTripTests
     {
         var fixturePath = Path.Combine(FixturesDir, "noop-minimal.yaml");
         var loader = new WorkflowLoader();
-        var wf = loader.Load(fixturePath, validateOnLoad: false);
+        var wf = loader.Load(fixturePath, validateOnLoad: true);
         var serializer = new WorkflowSerializer();
         var yaml = serializer.ToYaml(wf);
         Assert.False(string.IsNullOrWhiteSpace(yaml));
@@ -83,7 +83,7 @@ public class YamlRoundTripTests
         Assert.True(File.Exists(goldenPath), $"Expected golden at {goldenPath}");
 
         var loader = new WorkflowLoader();
-        var wf = loader.Load(fixturePath, validateOnLoad: false);
+        var wf = loader.Load(fixturePath, validateOnLoad: true);
         var serializer = new WorkflowSerializer();
         var actual = CanonicalYaml.Canonicalize(serializer.ToYaml(wf));
         var expected = CanonicalYaml.Canonicalize(File.ReadAllText(goldenPath));
@@ -97,7 +97,7 @@ public class YamlRoundTripTests
         var loader = new WorkflowLoader();
         var serializer = new WorkflowSerializer();
 
-        var wf1 = loader.Load(fixturePath, validateOnLoad: false);
+        var wf1 = loader.Load(fixturePath, validateOnLoad: true);
         var s1 = serializer.ToYaml(wf1);
 
         var wf2 = serializer.FromYaml(s1);
@@ -144,27 +144,64 @@ public class YamlRoundTripTests
     }
 
     [Fact]
-    public void GenerateGoldenFixture()
+    public void Loader_ValidationFailure_ThrowsInvalidOperationException()
     {
-        // Create the noop-minimal.yaml and its canonical form
+        // Create a corrupt fixture in a temp location
+        var tempDir = Path.Combine(Path.GetTempPath(), $"wf-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var corruptPath = Path.Combine(tempDir, "corrupt.yaml");
+            // A workflow with a connection referencing a non-existent node triggers validation failure
+            File.WriteAllText(corruptPath, @"
+workflowId: corrupt-test
+workflowName: Corrupt
+version: '1.0'
+nodes:
+- nodeId: start
+  nodeName: Start
+  runtimeType: Noop
+connections:
+- sourceNodeId: start
+  targetNodeId: nonexistent
+  triggerMessageType: Complete
+");
+            var loader = new WorkflowLoader();
+            Assert.Throws<InvalidOperationException>(() => loader.Load(corruptPath, validateOnLoad: true));
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Fact]
+    public void GoldenFixture_MatchesCommittedOrRegenerates()
+    {
         var fixturePath = Path.Combine(FixturesDir, "noop-minimal.yaml");
+        var goldenPath = Path.Combine(FixturesDir, "noop-minimal.canonical.yaml");
+
         if (!File.Exists(fixturePath))
         {
-            // Write the fixture
             var wf = CreateNoopMinimalWorkflow();
             var serializer = new WorkflowSerializer();
             serializer.SaveToFile(wf, fixturePath);
         }
 
-        // Generate canonical golden
         var loader = new WorkflowLoader();
-        var loaded = loader.Load(fixturePath, validateOnLoad: false);
+        var loaded = loader.LoadWithoutValidation(fixturePath);
         var ser = new WorkflowSerializer();
         var canonical = CanonicalYaml.Canonicalize(ser.ToYaml(loaded));
 
-        var goldenPath = Path.Combine(FixturesDir, "noop-minimal.canonical.yaml");
-        File.WriteAllText(goldenPath, canonical);
-        Assert.True(File.Exists(goldenPath));
+        if (Environment.GetEnvironmentVariable("WORKFLOWUI_WRITE_GOLDEN") == "1")
+        {
+            File.WriteAllText(goldenPath, canonical);
+            return;
+        }
+
+        Assert.True(File.Exists(goldenPath), $"Missing golden at {goldenPath}. Set WORKFLOWUI_WRITE_GOLDEN=1 to generate.");
+        var committed = CanonicalYaml.Canonicalize(File.ReadAllText(goldenPath));
+        Assert.Equal(committed, canonical);
     }
 
     private static WorkflowDefinition CreateNoopMinimalWorkflow()

@@ -116,6 +116,31 @@ public class EnumParityTests
         Assert.Equal(run1, run2);
     }
 
+    [Fact]
+    public void FixtureFile_MatchesCommittedGolden()
+    {
+        var dir = AppContext.BaseDirectory;
+        while (dir != null && !File.Exists(Path.Combine(dir, "Workflow.sln")))
+        {
+            dir = Path.GetDirectoryName(dir);
+        }
+
+        Assert.NotNull(dir);
+        var goldenPath = Path.Combine(dir!, "client", "src", "__fixtures__", "engine-enums.json");
+        Assert.True(File.Exists(goldenPath), $"Committed fixture not found at {goldenPath}");
+
+        var committed = File.ReadAllText(goldenPath).Replace("\r\n", "\n");
+        var emitted = EmitEnumFixtureJson();
+
+        if (Environment.GetEnvironmentVariable("WORKFLOWUI_WRITE_FIXTURES") == "1")
+        {
+            File.WriteAllText(goldenPath, emitted);
+            return;
+        }
+
+        Assert.Equal(committed, emitted);
+    }
+
     /// <summary>
     /// Generates the engine-enums.json fixture content as a stable string.
     /// </summary>
