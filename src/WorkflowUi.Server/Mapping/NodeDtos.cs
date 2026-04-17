@@ -108,9 +108,9 @@ public class RetryPolicyDto
 
     public int MaxAttempts { get; set; } = 3;
 
-    public string InitialDelay { get; set; } = "00:00:01";
+    public string InitialDelay { get; set; } = "PT1S";
 
-    public string MaxDelay { get; set; } = "00:01:00";
+    public string MaxDelay { get; set; } = "PT1M";
 
     public double Multiplier { get; set; } = 2.0;
 
@@ -130,7 +130,7 @@ public class CircuitBreakerPolicyDto
 
     public int MinimumThroughput { get; set; } = 10;
 
-    public string OpenDuration { get; set; } = "00:00:30";
+    public string OpenDuration { get; set; } = "PT30S";
 }
 
 /// <summary>
@@ -217,4 +217,29 @@ public class ViewportMeta
     public double Y { get; set; }
 
     public double Zoom { get; set; } = 1.0;
+}
+
+/// <summary>
+/// Result of merging a workflow DTO with sidecar UI metadata.
+/// Carries both the engine workflow and positional data without
+/// leaking UI state into engine-owned fields.
+/// </summary>
+public class MergedWorkflow
+{
+    public WorkflowDefinitionDto Workflow { get; set; } = new();
+
+    public Dictionary<string, NodeSidecarMeta> NodePositions { get; set; } = [];
+
+    public ViewportMeta? Viewport { get; set; }
+}
+
+/// <summary>
+/// Response from the mapper round-trip endpoint.
+/// Includes the round-tripped workflow and any diagnostics.
+/// </summary>
+public class MapperRoundTripResponse
+{
+    public WorkflowDefinitionDto Workflow { get; set; } = new();
+
+    public List<string>? UnresolvedTypeNames { get; set; }
 }

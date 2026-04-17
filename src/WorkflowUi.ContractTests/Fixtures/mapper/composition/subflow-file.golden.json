@@ -17,7 +17,7 @@
       "outputMappings": {
         "result": "output1"
       },
-      "timeout": "00:05:00",
+      "timeout": "PT5M",
       "skipValidation": false
     }
   ],

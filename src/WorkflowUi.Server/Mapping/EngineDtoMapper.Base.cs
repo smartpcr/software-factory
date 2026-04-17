@@ -9,6 +9,7 @@ namespace WorkflowUi.Server.Mapping;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Xml;
 using ExecutionEngine.Enums;
 using ExecutionEngine.Nodes.Definitions;
 using ExecutionEngine.Policies;
@@ -19,6 +20,13 @@ using ExecutionEngine.Policies;
 /// </summary>
 public static partial class EngineDtoMapper
 {
+    /// <summary>
+    /// Thread-static collector for diagnostics during workflow mapping.
+    /// Activated by <see cref="MapWorkflowFromDto(WorkflowDefinitionDto, out List{string})"/>.
+    /// </summary>
+    [ThreadStatic]
+    private static List<string>? diagnosticCollector;
+
     /// <summary>
     /// Maps shared base fields from engine NodeDefinition to DTO.
     /// </summary>
@@ -40,6 +48,8 @@ public static partial class EngineDtoMapper
 
     /// <summary>
     /// Maps shared base fields from DTO back to engine NodeDefinition.
+    /// Collects unresolved retry type names into the active diagnostic collector
+    /// when <see cref="MapWorkflowFromDto(WorkflowDefinitionDto, out List{string})"/> is in use.
     /// </summary>
     public static void MapBaseFromDto(NodeDto source, NodeDefinition target)
     {
@@ -52,26 +62,33 @@ public static partial class EngineDtoMapper
         target.CompensationNodeId = source.CompensationNodeId;
         target.FallbackNodeId = source.FallbackNodeId;
         target.Configuration = source.Configuration;
-        target.RetryPolicy = MapRetryPolicyFromDto(source.RetryPolicy);
+
+        var retryPolicy = MapRetryPolicyFromDto(source.RetryPolicy, out var unresolvedRetryTypes);
+        if (unresolvedRetryTypes.Count > 0)
+        {
+            diagnosticCollector?.AddRange(unresolvedRetryTypes);
+        }
+
+        target.RetryPolicy = retryPolicy;
         target.CircuitBreakerPolicy = MapCircuitBreakerPolicyFromDto(source.CircuitBreakerPolicy);
     }
 
     /// <summary>
-    /// Converts a TimeSpan to an ISO-8601-style duration string (hh:mm:ss format).
-    /// Uses constant format to avoid culture-dependent drift.
+    /// Converts a TimeSpan to an ISO-8601 duration string using XmlConvert.
+    /// Produces standard ISO-8601 durations like PT2S, PT5M, PT1H30M, PT24H.
     /// </summary>
     public static string ToIsoDuration(TimeSpan ts)
     {
-        return ts.ToString(@"hh\:mm\:ss");
+        return XmlConvert.ToString(ts);
     }
 
     /// <summary>
-    /// Parses an ISO-8601-style duration string back to TimeSpan.
-    /// Supports both hh:mm:ss and d.hh:mm:ss formats.
+    /// Parses an ISO-8601 duration string back to TimeSpan using XmlConvert.
+    /// Accepts standard ISO-8601 durations like PT2S, PT5M, P1D, etc.
     /// </summary>
     public static TimeSpan FromIsoDuration(string duration)
     {
-        return TimeSpan.Parse(duration);
+        return XmlConvert.ToTimeSpan(duration);
     }
 
     /// <summary>

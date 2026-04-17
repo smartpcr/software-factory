@@ -40,9 +40,16 @@ public static class MapperRoundTripEndpoints
                 return Results.BadRequest(new { error = $"Unrecognized runtime types: {string.Join(", ", unrecognized)}" });
             }
 
-            // Map DTO -> engine -> DTO (round-trip)
-            var engineWorkflow = EngineDtoMapper.MapWorkflowFromDto(request);
+            // Map DTO -> engine -> DTO (round-trip), collecting diagnostics
+            var engineWorkflow = EngineDtoMapper.MapWorkflowFromDto(request, out var unresolvedTypeNames);
             var roundTripped = EngineDtoMapper.MapWorkflowToDto(engineWorkflow);
+
+            if (unresolvedTypeNames.Count > 0)
+            {
+                logger.LogWarning(
+                    "Unresolved retry type names during round-trip: {TypeNames}",
+                    string.Join(", ", unresolvedTypeNames));
+            }
 
             var summary = MapperDiagnostics.Summarize(roundTripped);
             logger.LogInformation(
@@ -50,7 +57,13 @@ public static class MapperRoundTripEndpoints
                 summary.NodeCount,
                 summary.ConnectionCount);
 
-            return Results.Ok(roundTripped);
+            var response = new MapperRoundTripResponse
+            {
+                Workflow = roundTripped,
+                UnresolvedTypeNames = unresolvedTypeNames.Count > 0 ? unresolvedTypeNames : null,
+            };
+
+            return Results.Ok(response);
         })
         .WithTags("Mapper")
         .WithName("MapperRoundTrip");

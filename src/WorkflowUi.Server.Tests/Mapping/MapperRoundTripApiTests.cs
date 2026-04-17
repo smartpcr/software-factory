@@ -56,11 +56,12 @@ public class MapperRoundTripApiTests : IClassFixture<WebApplicationFactory<Progr
         var response = await this.client.PostAsJsonAsync("/api/mapper/roundtrip", request, JsonOpts);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var result = await response.Content.ReadFromJsonAsync<WorkflowDefinitionDto>(JsonOpts);
+        var result = await response.Content.ReadFromJsonAsync<MapperRoundTripResponse>(JsonOpts);
         Assert.NotNull(result);
-        Assert.Equal("rt-noop", result!.WorkflowId);
-        Assert.Single(result.Nodes!);
-        Assert.Equal("Noop", result.Nodes![0].RuntimeType);
+        Assert.Equal("rt-noop", result!.Workflow.WorkflowId);
+        Assert.Single(result.Workflow.Nodes!);
+        Assert.Equal("Noop", result.Workflow.Nodes![0].RuntimeType);
+        Assert.Null(result.UnresolvedTypeNames);
     }
 
     [Fact]
@@ -95,8 +96,8 @@ public class MapperRoundTripApiTests : IClassFixture<WebApplicationFactory<Progr
                     {
                         Strategy = "Exponential",
                         MaxAttempts = 5,
-                        InitialDelay = "00:00:02",
-                        MaxDelay = "00:02:00",
+                        InitialDelay = "PT2S",
+                        MaxDelay = "PT2M",
                         Multiplier = 3.0,
                     },
                 },
@@ -104,8 +105,8 @@ public class MapperRoundTripApiTests : IClassFixture<WebApplicationFactory<Progr
         };
 
         var response1 = await this.client.PostAsJsonAsync("/api/mapper/roundtrip", withPolicy, JsonOpts);
-        var result1 = await response1.Content.ReadFromJsonAsync<WorkflowDefinitionDto>(JsonOpts);
-        Assert.NotNull(result1!.Nodes![0].RetryPolicy);
+        var result1 = await response1.Content.ReadFromJsonAsync<MapperRoundTripResponse>(JsonOpts);
+        Assert.NotNull(result1!.Workflow.Nodes![0].RetryPolicy);
 
         var withoutPolicy = new WorkflowDefinitionDto
         {
@@ -124,8 +125,8 @@ public class MapperRoundTripApiTests : IClassFixture<WebApplicationFactory<Progr
         };
 
         var response2 = await this.client.PostAsJsonAsync("/api/mapper/roundtrip", withoutPolicy, JsonOpts);
-        var result2 = await response2.Content.ReadFromJsonAsync<WorkflowDefinitionDto>(JsonOpts);
-        Assert.Null(result2!.Nodes![0].RetryPolicy);
+        var result2 = await response2.Content.ReadFromJsonAsync<MapperRoundTripResponse>(JsonOpts);
+        Assert.Null(result2!.Workflow.Nodes![0].RetryPolicy);
     }
 
     [Fact]
@@ -143,7 +144,7 @@ public class MapperRoundTripApiTests : IClassFixture<WebApplicationFactory<Progr
             new() { RuntimeType = "ForEach", NodeId = "n8", NodeName = "N8", JoinType = "Any", Priority = "Normal", CollectionExpression = "c", ItemVariableName = "i" },
             new() { RuntimeType = "While", NodeId = "n9", NodeName = "N9", JoinType = "Any", Priority = "Normal", ConditionExpression = "e", MaxIterations = 100 },
             new() { RuntimeType = "Switch", NodeId = "n10", NodeName = "N10", JoinType = "Any", Priority = "Normal", Expression = "s", Cases = new() { ["a"] = "b" } },
-            new() { RuntimeType = "Subflow", NodeId = "n11", NodeName = "N11", JoinType = "Any", Priority = "Normal", WorkflowFilePath = "f.yaml", Timeout = "00:05:00" },
+            new() { RuntimeType = "Subflow", NodeId = "n11", NodeName = "N11", JoinType = "Any", Priority = "Normal", WorkflowFilePath = "f.yaml", Timeout = "PT5M" },
             new() { RuntimeType = "Timer", NodeId = "n12", NodeName = "N12", JoinType = "Any", Priority = "Normal", Schedule = "* * * * *" },
             new() { RuntimeType = "Container", NodeId = "n13", NodeName = "N13", JoinType = "Any", Priority = "Normal", ExecutionMode = "Parallel" },
         };
@@ -157,11 +158,48 @@ public class MapperRoundTripApiTests : IClassFixture<WebApplicationFactory<Progr
         var response = await this.client.PostAsJsonAsync("/api/mapper/roundtrip", request, JsonOpts);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var result = await response.Content.ReadFromJsonAsync<WorkflowDefinitionDto>(JsonOpts);
-        Assert.Equal(13, result!.Nodes!.Count);
+        var result = await response.Content.ReadFromJsonAsync<MapperRoundTripResponse>(JsonOpts);
+        Assert.Equal(13, result!.Workflow.Nodes!.Count);
 
-        var rtTypes = result.Nodes!.Select(n => n.RuntimeType).OrderBy(r => r, StringComparer.Ordinal).ToList();
+        var rtTypes = result.Workflow.Nodes!.Select(n => n.RuntimeType).OrderBy(r => r, StringComparer.Ordinal).ToList();
         var expected = EngineDtoMapper.SupportedRuntimeTypes.OrderBy(r => r, StringComparer.Ordinal).ToList();
         Assert.Equal(expected, rtTypes);
+    }
+
+    [Fact]
+    public async Task Roundtrip_surfaces_unresolved_type_names()
+    {
+        var request = new WorkflowDefinitionDto
+        {
+            WorkflowId = "unresolved-wf",
+            Nodes =
+            [
+                new NodeDto
+                {
+                    RuntimeType = "Noop",
+                    NodeId = "n1",
+                    NodeName = "N1",
+                    JoinType = "Any",
+                    Priority = "Normal",
+                    RetryPolicy = new RetryPolicyDto
+                    {
+                        Strategy = "Fixed",
+                        InitialDelay = "PT1S",
+                        MaxDelay = "PT1M",
+                        RetryOn = ["System.TimeoutException, System.Runtime", "Bogus.Missing, Bad.Asm"],
+                        DoNotRetryOn = ["Another.Missing, Bad.Asm"],
+                    },
+                },
+            ],
+        };
+
+        var response = await this.client.PostAsJsonAsync("/api/mapper/roundtrip", request, JsonOpts);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var result = await response.Content.ReadFromJsonAsync<MapperRoundTripResponse>(JsonOpts);
+        Assert.NotNull(result!.UnresolvedTypeNames);
+        Assert.Equal(2, result.UnresolvedTypeNames!.Count);
+        Assert.Contains(result.UnresolvedTypeNames, u => u.Contains("Bogus.Missing"));
+        Assert.Contains(result.UnresolvedTypeNames, u => u.Contains("Another.Missing"));
     }
 }

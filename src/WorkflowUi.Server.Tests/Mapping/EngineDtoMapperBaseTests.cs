@@ -208,7 +208,7 @@ public class EngineDtoMapperBaseTests
     }
 
     [Fact]
-    public void Duration_uses_consistent_format()
+    public void Duration_uses_iso8601_format()
     {
         var source = new NoopNodeDefinition
         {
@@ -228,10 +228,10 @@ public class EngineDtoMapperBaseTests
 
         var dto = EngineDtoMapper.MapNoop(source);
 
-        // Verify durations use hh:mm:ss format
-        Assert.Equal("00:00:02", dto.RetryPolicy!.InitialDelay);
-        Assert.Equal("00:01:00", dto.RetryPolicy.MaxDelay);
-        Assert.Equal("00:00:30", dto.CircuitBreakerPolicy!.OpenDuration);
+        // Verify durations use ISO-8601 format (PT*S, PT*M, etc.)
+        Assert.Equal("PT2S", dto.RetryPolicy!.InitialDelay);
+        Assert.Equal("PT1M", dto.RetryPolicy.MaxDelay);
+        Assert.Equal("PT30S", dto.CircuitBreakerPolicy!.OpenDuration);
 
         // Verify round-trip
         var rt = EngineDtoMapper.MapNoopFromDto(dto);
@@ -241,14 +241,47 @@ public class EngineDtoMapperBaseTests
     }
 
     [Fact]
+    public void Duration_preserves_values_greater_than_24_hours()
+    {
+        var source = new NoopNodeDefinition
+        {
+            NodeId = "long-dur",
+            NodeName = "Long Duration",
+            RetryPolicy = new RetryPolicy
+            {
+                Strategy = RetryStrategy.Fixed,
+                InitialDelay = TimeSpan.FromHours(25),
+                MaxDelay = TimeSpan.FromDays(2),
+            },
+            CircuitBreakerPolicy = new CircuitBreakerPolicy
+            {
+                OpenDuration = TimeSpan.FromHours(36),
+            },
+        };
+
+        var dto = EngineDtoMapper.MapNoop(source);
+
+        // ISO-8601 durations preserve >24h using day components
+        Assert.Equal("P1DT1H", dto.RetryPolicy!.InitialDelay);
+        Assert.Equal("P2D", dto.RetryPolicy.MaxDelay);
+        Assert.Equal("P1DT12H", dto.CircuitBreakerPolicy!.OpenDuration);
+
+        // Verify round-trip
+        var rt = EngineDtoMapper.MapNoopFromDto(dto);
+        Assert.Equal(TimeSpan.FromHours(25), rt.RetryPolicy!.InitialDelay);
+        Assert.Equal(TimeSpan.FromDays(2), rt.RetryPolicy.MaxDelay);
+        Assert.Equal(TimeSpan.FromHours(36), rt.CircuitBreakerPolicy!.OpenDuration);
+    }
+
+    [Fact]
     public void Unresolved_retry_type_names_surfaced_in_diagnostics()
     {
         var dto = new RetryPolicyDto
         {
             Strategy = "Fixed",
             MaxAttempts = 1,
-            InitialDelay = "00:00:01",
-            MaxDelay = "00:01:00",
+            InitialDelay = "PT1S",
+            MaxDelay = "PT1M",
             Multiplier = 1.0,
             RetryOn = ["System.TimeoutException, System.Runtime", "Bogus.FakeException, Fake.Assembly"],
             DoNotRetryOn = ["Another.Missing, Bad.Assembly"],
@@ -265,5 +298,37 @@ public class EngineDtoMapperBaseTests
         Assert.Equal(2, unresolved.Count);
         Assert.Contains(unresolved, u => u.Contains("Bogus.FakeException"));
         Assert.Contains(unresolved, u => u.Contains("Another.Missing"));
+    }
+
+    [Fact]
+    public void Unresolved_types_collected_through_workflow_mapping()
+    {
+        var dto = new WorkflowDefinitionDto
+        {
+            WorkflowId = "diag-wf",
+            Nodes =
+            [
+                new NodeDto
+                {
+                    RuntimeType = "Noop",
+                    NodeId = "n1",
+                    NodeName = "N1",
+                    JoinType = "Any",
+                    Priority = "Normal",
+                    RetryPolicy = new RetryPolicyDto
+                    {
+                        Strategy = "Fixed",
+                        InitialDelay = "PT1S",
+                        MaxDelay = "PT1M",
+                        RetryOn = ["Bogus.Type, Fake.Asm"],
+                    },
+                },
+            ],
+        };
+
+        var engine = EngineDtoMapper.MapWorkflowFromDto(dto, out var unresolvedTypeNames);
+        Assert.NotNull(engine);
+        Assert.Single(unresolvedTypeNames);
+        Assert.Contains("Bogus.Type", unresolvedTypeNames[0]);
     }
 }

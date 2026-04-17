@@ -96,25 +96,45 @@ public static partial class EngineDtoMapper
     /// </summary>
     public static WorkflowDefinition MapWorkflowFromDto(WorkflowDefinitionDto dto)
     {
-        return new WorkflowDefinition
+        return MapWorkflowFromDto(dto, out _);
+    }
+
+    /// <summary>
+    /// Maps a DTO back to an engine WorkflowDefinition with diagnostics
+    /// for unresolvable retry type names.
+    /// </summary>
+    public static WorkflowDefinition MapWorkflowFromDto(WorkflowDefinitionDto dto, out List<string> unresolvedTypeNames)
+    {
+        diagnosticCollector = [];
+        try
         {
-            WorkflowId = dto.WorkflowId ?? string.Empty,
-            WorkflowName = dto.WorkflowName ?? string.Empty,
-            Description = dto.Description,
-            Version = dto.Version ?? "1.0",
-            Nodes = dto.Nodes?.Select(MapFromDto).ToList() ?? [],
-            Connections = dto.Connections?.Select(ConnectionMapper.MapFromDto).ToList() ?? [],
-            Metadata = dto.Metadata?.ToDictionary(
-                kvp => kvp.Key,
-                kvp => (object)kvp.Value) ?? [],
-            EntryPointNodeId = dto.EntryPointNodeId,
-            MaxConcurrency = dto.MaxConcurrency ?? 0,
-            AllowPause = dto.AllowPause ?? true,
-            TimeoutSeconds = dto.TimeoutSeconds ?? 0,
-            DefaultVariables = dto.DefaultVariables?.ToDictionary(
-                kvp => kvp.Key,
-                kvp => (object)kvp.Value),
-        };
+            var result = new WorkflowDefinition
+            {
+                WorkflowId = dto.WorkflowId ?? string.Empty,
+                WorkflowName = dto.WorkflowName ?? string.Empty,
+                Description = dto.Description,
+                Version = dto.Version ?? "1.0",
+                Nodes = dto.Nodes?.Select(MapFromDto).ToList() ?? [],
+                Connections = dto.Connections?.Select(ConnectionMapper.MapFromDto).ToList() ?? [],
+                Metadata = dto.Metadata?.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => (object)kvp.Value) ?? [],
+                EntryPointNodeId = dto.EntryPointNodeId,
+                MaxConcurrency = dto.MaxConcurrency ?? 0,
+                AllowPause = dto.AllowPause ?? true,
+                TimeoutSeconds = dto.TimeoutSeconds ?? 0,
+                DefaultVariables = dto.DefaultVariables?.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => (object)kvp.Value),
+            };
+
+            unresolvedTypeNames = diagnosticCollector;
+            return result;
+        }
+        finally
+        {
+            diagnosticCollector = null;
+        }
     }
 
     /// <summary>

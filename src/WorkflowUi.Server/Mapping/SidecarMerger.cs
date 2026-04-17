@@ -26,20 +26,32 @@ public static class SidecarMerger
     };
 
     /// <summary>
-    /// Merges sidecar metadata into a workflow DTO, enriching it with position info.
-    /// Sidecar metadata is additive — it does not modify engine-owned fields.
+    /// Merges sidecar metadata into a workflow DTO, producing a
+    /// <see cref="MergedWorkflow"/> that carries both engine data and
+    /// UI-only positional metadata without leaking into engine fields.
     /// </summary>
-    public static WorkflowDefinitionDto MergeInto(WorkflowDefinitionDto workflow, SidecarDto? sidecar)
+    public static MergedWorkflow MergeInto(WorkflowDefinitionDto workflow, SidecarDto? sidecar)
     {
-        if (sidecar?.Nodes == null)
+        var result = new MergedWorkflow
         {
-            return workflow;
-        }
+            Workflow = workflow,
+            NodePositions = sidecar?.Nodes ?? [],
+            Viewport = sidecar?.Viewport,
+        };
 
-        // Sidecar positions are kept as a separate concern: we do not embed
-        // them into the DTO nodes (that would leak UI state into engine YAML).
-        // Instead, the caller can query sidecar.Nodes[nodeId] for positioning.
-        return workflow;
+        return result;
+    }
+
+    /// <summary>
+    /// Extracts sidecar metadata from a <see cref="MergedWorkflow"/>.
+    /// </summary>
+    public static SidecarDto ExtractFrom(MergedWorkflow merged)
+    {
+        return new SidecarDto
+        {
+            Nodes = merged.NodePositions,
+            Viewport = merged.Viewport ?? new ViewportMeta { X = 0, Y = 0, Zoom = 1.0 },
+        };
     }
 
     /// <summary>
