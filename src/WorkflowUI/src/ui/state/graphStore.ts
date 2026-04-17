@@ -42,6 +42,7 @@ export interface GraphState {
   updateNodePosition: (nodeId: string, x: number, y: number) => void;
   addConnection: (conn: NodeConnectionDto) => void;
   removeConnection: (sourceId: string, targetId: string) => void;
+  updateConnection: (sourceId: string, targetId: string, patch: Partial<NodeConnectionDto>) => void;
   setViewport: (vp: ViewportState) => void;
   setSelectedNodeIds: (ids: Set<string>) => void;
   setExecutionStatus: (nodeId: string, status: NodeExecutionStatus) => void;
@@ -109,7 +110,16 @@ export const useGraphStore = create<GraphState>()(
           ),
         })),
 
-      setViewport: (vp) => set({ viewport: vp }),
+      updateConnection: (sourceId, targetId, patch) =>
+        set((state) => ({
+          connections: state.connections.map((c) =>
+            c.sourceNodeId === sourceId && c.targetNodeId === targetId
+              ? { ...c, ...patch }
+              : c,
+          ),
+        })),
+
+      setViewport:(vp) => set({ viewport: vp }),
       setSelectedNodeIds: (ids) => set({ selectedNodeIds: ids }),
       setExecutionStatus: (nodeId, status) =>
         set((state) => {

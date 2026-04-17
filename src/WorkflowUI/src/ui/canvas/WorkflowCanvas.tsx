@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -6,6 +6,7 @@ import {
   MiniMap,
   type Node as RFNode,
   type Edge as RFEdge,
+  type EdgeMouseHandler,
   ReactFlowProvider,
   BackgroundVariant,
 } from '@xyflow/react';
@@ -16,6 +17,9 @@ import { CANVAS_SNAP_GRID, DEFAULT_VIEWPORT, ZOOM_LIMITS } from './canvasConstan
 import { useCanvasViewport } from './useCanvasViewport';
 import { nodeTypes } from './nodeTypes';
 import { edgeTypes } from './edgeTypes';
+import { useConnectionCreation } from './useConnectionCreation';
+import { EdgePopover } from '../edges/EdgePopover';
+import type { NodeConnectionDto } from '../../engine-contract';
 
 export interface WorkflowCanvasProps {
   showMiniMap?: boolean;
@@ -29,7 +33,12 @@ export function WorkflowCanvas({
   const nodes = useGraphStore((s) => s.nodes);
   const connections = useGraphStore((s) => s.connections);
   const sidecarMeta = useGraphStore((s) => s.sidecarMeta);
+  const removeConnection = useGraphStore((s) => s.removeConnection);
+  const updateConnection = useGraphStore((s) => s.updateConnection);
   const { viewport, onViewportChange } = useCanvasViewport();
+  const { onConnect } = useConnectionCreation();
+
+  const [editingEdge, setEditingEdge] = useState<NodeConnectionDto | null>(null);
 
   const rfNodes: RFNode[] = useMemo(
     () =>
@@ -57,6 +66,40 @@ export function WorkflowCanvas({
     [connections],
   );
 
+  const onEdgeClick: EdgeMouseHandler = useCallback(
+    (_event, edge) => {
+      const conn = connections.find(
+        (c) => c.sourceNodeId === edge.source && c.targetNodeId === edge.target,
+      );
+      if (conn) {
+        setEditingEdge(conn);
+      }
+    },
+    [connections],
+  );
+
+  const onEdgesDelete = useCallback(
+    (edges: RFEdge[]) => {
+      for (const edge of edges) {
+        removeConnection(edge.source, edge.target);
+      }
+    },
+    [removeConnection],
+  );
+
+  const handleEdgeSave = useCallback(
+    (updated: NodeConnectionDto) => {
+      updateConnection(updated.sourceNodeId, updated.targetNodeId, {
+        triggerMessageType: updated.triggerMessageType,
+        condition: updated.condition,
+        isEnabled: updated.isEnabled,
+        priority: updated.priority,
+      });
+      setEditingEdge(null);
+    },
+    [updateConnection],
+  );
+
   return (
     <CanvasSurface>
       <ReactFlowProvider>
@@ -71,6 +114,9 @@ export function WorkflowCanvas({
           minZoom={ZOOM_LIMITS.min}
           maxZoom={ZOOM_LIMITS.max}
           onViewportChange={onViewportChange}
+          onConnect={onConnect}
+          onEdgeClick={onEdgeClick}
+          onEdgesDelete={onEdgesDelete}
           fitView={false}
           data-testid="react-flow-canvas"
         >
@@ -78,6 +124,13 @@ export function WorkflowCanvas({
           {showControls && <Controls />}
           {showMiniMap && <MiniMap />}
         </ReactFlow>
+        {editingEdge && (
+          <EdgePopover
+            connection={editingEdge}
+            onSave={handleEdgeSave}
+            onClose={() => setEditingEdge(null)}
+          />
+        )}
       </ReactFlowProvider>
     </CanvasSurface>
   );
