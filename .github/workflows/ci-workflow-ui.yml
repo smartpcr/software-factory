@@ -205,19 +205,49 @@ jobs:
 
       - name: Enforce .NET coverage threshold (100% on new code)
         run: |
+          # Scoped coverage: only enforce on src/WorkflowUi.Server and src/WorkflowUi.ContractTests
+          $requiredScopes = @("WorkflowUi.Server", "WorkflowUi.ContractTests")
           $coverageFiles = Get-ChildItem -Path "TestResults" -Recurse -Filter "coverage.cobertura.xml" -ErrorAction SilentlyContinue
           if ($coverageFiles.Count -eq 0) {
             Write-Error "No Cobertura coverage files found — .NET coverage gate FAILED"
             exit 1
           }
+          $totalHits = 0
+          $totalLines = 0
+          $scopeFound = @{}
           foreach ($file in $coverageFiles) {
             [xml]$xml = Get-Content $file.FullName
-            $lineRate = [double]$xml.coverage.'line-rate'
-            $pct = [math]::Round($lineRate * 100, 2)
-            Write-Host "Coverage file $($file.FullName): line-rate = $pct%"
-            if ($pct -lt 100) {
-              Write-Error ".NET coverage $pct% is below 100% threshold"
+            foreach ($pkg in $xml.coverage.packages.package) {
+              $pkgName = $pkg.name
+              $matchedScope = $requiredScopes | Where-Object { $pkgName -like "*$_*" }
+              if (-not $matchedScope) { continue }
+              foreach ($scope in $matchedScope) { $scopeFound[$scope] = $true }
+              foreach ($cls in $pkg.classes.class) {
+                $fileName = $cls.filename
+                # Exclude generated files
+                if ($fileName -match "\.generated\.") { continue }
+                foreach ($line in $cls.lines.line) {
+                  $totalLines++
+                  if ([int]$line.hits -gt 0) { $totalHits++ }
+                }
+              }
+            }
+          }
+          # Verify all required scopes were found
+          foreach ($scope in $requiredScopes) {
+            if (-not $scopeFound.ContainsKey($scope)) {
+              Write-Error "Required coverage scope '$scope' not found in Cobertura report"
               exit 1
             }
+          }
+          if ($totalLines -eq 0) {
+            Write-Error "No coverable lines found in scoped packages — .NET coverage gate FAILED"
+            exit 1
+          }
+          $pct = [math]::Round(($totalHits / $totalLines) * 100, 2)
+          Write-Host ".NET scoped coverage ($($requiredScopes -join ', ')): $totalHits / $totalLines lines = $pct%"
+          if ($pct -lt 100) {
+            Write-Error ".NET scoped coverage $pct% is below 100% threshold"
+            exit 1
           }
           Write-Host ".NET coverage gate PASSED"

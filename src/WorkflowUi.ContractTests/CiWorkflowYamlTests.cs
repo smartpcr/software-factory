@@ -261,6 +261,29 @@ public class CiWorkflowYamlTests
     }
 
     [Fact]
+    public void CoverageGate_DotNet_ScopedToRequiredProjects()
+    {
+        var text = LoadWorkflowYaml();
+        var startIndex = text.IndexOf("Enforce .NET coverage threshold", StringComparison.Ordinal);
+        Assert.True(startIndex >= 0);
+        var dotnetSection = text.Substring(startIndex);
+        Assert.Contains("WorkflowUi.Server", dotnetSection);
+        Assert.Contains("WorkflowUi.ContractTests", dotnetSection);
+    }
+
+    [Fact]
+    public void CoverageGate_DotNet_ExcludesGeneratedFiles()
+    {
+        var text = LoadWorkflowYaml();
+        var startIndex = text.IndexOf("Enforce .NET coverage threshold", StringComparison.Ordinal);
+        Assert.True(startIndex >= 0);
+        var dotnetSection = text.Substring(startIndex);
+        // The workflow uses regex pattern \.generated\. to exclude generated files
+        Assert.Contains("generated", dotnetSection);
+        Assert.Contains("Exclude generated files", dotnetSection);
+    }
+
+    [Fact]
     public void CoverageGate_NeedsAllParityJobs()
     {
         var root = ParseWorkflow();
