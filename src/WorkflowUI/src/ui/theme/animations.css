@@ -1,0 +1,53 @@
+/* =============================================================
+   ANIMATIONS — keyframe definitions used across the UI
+   ============================================================= */
+
+/* Execution indicator pulse */
+@keyframes pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.3);
+    opacity: 0.6;
+  }
+}
+
+/* Node running-state glow ring */
+@keyframes runningPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px var(--run), 0 0 16px -4px var(--run);
+  }
+  50% {
+    box-shadow: 0 0 0 3px var(--run), 0 0 30px -2px var(--run);
+  }
+}
+
+/* Active edge flow dash */
+@keyframes flowDash {
+  to {
+    stroke-dashoffset: -28;
+  }
+}
+
+/* Edge drag preview dash movement */
+@keyframes dashMove {
+  to {
+    stroke-dashoffset: -16;
+  }
+}
+
+/* Toast slide-in */
+@keyframes toastIn {
+  from {
+    transform: translateX(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}

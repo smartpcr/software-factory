@@ -8,7 +8,7 @@ import { focusValidationTarget } from './ui/validation/focusValidationTarget';
 import { WorkspaceTree } from './workspace/WorkspaceTree';
 import { ImportExportDialog } from './workspace/ImportExportDialog';
 import { DuplicateDialog } from './workspace/DuplicateDialog';
-import { AppFooter } from './workspace/AppFooter';
+import { AppShell } from './ui/layout/AppShell';
 
 export function App() {
   const { entries, validate } = useWorkflowValidation();
@@ -16,54 +16,60 @@ export function App() {
   const [showImportExport, setShowImportExport] = useState(false);
   const [duplicateSourceId, setDuplicateSourceId] = useState<string | null>(null);
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }} data-testid="app-root">
-      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        <div style={{ width: 240, borderRight: '1px solid #e5e7eb', overflow: 'auto', display: 'flex', flexDirection: 'column' }} data-testid="workspace-sidebar">
-        <WorkspaceTree onSelect={setSelectedWorkflowId} />
-        <div style={{ padding: 8, borderTop: '1px solid #e5e7eb' }}>
-          <button type="button" onClick={() => setShowImportExport(!showImportExport)} aria-label="Toggle import/export">
-            Import/Export
+  const paletteContent = (
+    <>
+      <WorkspaceTree onSelect={setSelectedWorkflowId} />
+      <div style={{ padding: 8, borderTop: '1px solid var(--stroke-1)' }}>
+        <button type="button" onClick={() => setShowImportExport(!showImportExport)} aria-label="Toggle import/export">
+          Import/Export
+        </button>
+        {selectedWorkflowId && (
+          <button type="button" onClick={() => setDuplicateSourceId(selectedWorkflowId)} aria-label="Duplicate selected">
+            Duplicate
           </button>
-          {selectedWorkflowId && (
-            <button type="button" onClick={() => setDuplicateSourceId(selectedWorkflowId)} aria-label="Duplicate selected">
-              Duplicate
-            </button>
-          )}
-        </div>
-        {showImportExport && (
-          <ImportExportDialog
-            workflowIds={selectedWorkflowId ? [selectedWorkflowId] : []}
-            onImported={() => setShowImportExport(false)}
-          />
-        )}
-        {duplicateSourceId && (
-          <DuplicateDialog
-            sourceId={duplicateSourceId}
-            onDuplicated={() => setDuplicateSourceId(null)}
-          />
         )}
       </div>
+      {showImportExport && (
+        <ImportExportDialog
+          workflowIds={selectedWorkflowId ? [selectedWorkflowId] : []}
+          onImported={() => setShowImportExport(false)}
+        />
+      )}
+      {duplicateSourceId && (
+        <DuplicateDialog
+          sourceId={duplicateSourceId}
+          onDuplicated={() => setDuplicateSourceId(null)}
+        />
+      )}
       <Palette />
-      <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ position: 'relative', flex: 1 }}>
-          <h1 style={{ position: 'absolute', top: 8, left: 16, zIndex: 5, margin: 0, fontSize: 18 }}>
-            Workflow UI
-          </h1>
-          <WorkflowCanvas showMiniMap showControls />
-        </div>
-        <div data-testid="validation-bar" style={{ borderTop: '1px solid #e5e7eb', maxHeight: 200, overflow: 'auto' }}>
-          <button type="button" onClick={validate} data-testid="validate-workflow-btn" style={{ margin: 4 }}>
-            Validate
-          </button>
-          <ValidationPanel entries={entries} onJumpToNode={focusValidationTarget} />
-        </div>
-      </div>
-      <div style={{ width: 320, borderLeft: '1px solid #e5e7eb', overflow: 'auto' }} data-testid="property-grid-sidebar">
-        <PropertyGrid />
-      </div>
-      </div>
-      <AppFooter />
+    </>
+  );
+
+  const canvasContent = (
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <WorkflowCanvas showMiniMap showControls />
     </div>
+  );
+
+  const inspectorContent = (
+    <>
+      <PropertyGrid />
+      <div data-testid="validation-bar" style={{ borderTop: '1px solid var(--stroke-1)', maxHeight: 200, overflow: 'auto' }}>
+        <button type="button" onClick={validate} data-testid="validate-workflow-btn" style={{ margin: 4 }}>
+          Validate
+        </button>
+        <ValidationPanel entries={entries} onJumpToNode={focusValidationTarget} />
+      </div>
+    </>
+  );
+
+  return (
+    <AppShell
+      topbar={<div style={{ display: 'flex', alignItems: 'center', padding: '0 14px', color: 'var(--text-0)', fontSize: 14, fontWeight: 600 }}>Workflow UI</div>}
+      palette={paletteContent}
+      canvas={canvasContent}
+      inspector={inspectorContent}
+      logs={<div style={{ padding: 8, color: 'var(--text-3)', fontSize: 11 }}>Execution log — coming soon</div>}
+    />
   );
 }

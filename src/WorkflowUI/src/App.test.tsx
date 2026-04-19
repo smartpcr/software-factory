@@ -14,16 +14,15 @@ beforeEach(() => {
 });
 
 describe('App', () => {
-  it('renders heading text', () => {
+  it('renders the app shell', () => {
     render(<App />);
-    const heading = screen.getByRole('heading', { level: 1 });
-    expect(heading).toHaveTextContent('Workflow UI');
+    expect(screen.getByTestId('app-shell')).toBeDefined();
   });
 
-  it('renders workspace sidebar with tree', async () => {
+  it('renders palette with workspace tree', async () => {
     render(<App />);
     await waitFor(() => {
-      expect(screen.getByTestId('workspace-sidebar')).toBeDefined();
+      expect(screen.getByTestId('app-palette')).toBeDefined();
       expect(screen.getByLabelText('Workspace tree')).toBeDefined();
     });
   });
