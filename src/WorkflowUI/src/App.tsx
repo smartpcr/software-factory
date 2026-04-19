@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { WorkflowCanvas } from './ui/canvas/WorkflowCanvas';
 import { Palette } from './ui/palette/Palette';
-import { PropertyGrid } from './ui/property-grid/PropertyGrid';
 import { ValidationPanel } from './ui/validation/ValidationPanel';
 import { useWorkflowValidation } from './ui/validation/useWorkflowValidation';
 import { focusValidationTarget } from './ui/validation/focusValidationTarget';
@@ -10,6 +9,7 @@ import { ImportExportDialog } from './workspace/ImportExportDialog';
 import { DuplicateDialog } from './workspace/DuplicateDialog';
 import { AppShell } from './ui/layout/AppShell';
 import { Topbar } from './ui/topbar/Topbar';
+import { Inspector } from './ui/inspector/Inspector';
 import { useGraphStore } from './ui/state/graphStore';
 
 export function App() {
@@ -64,7 +64,7 @@ export function App() {
 
   const inspectorContent = (
     <>
-      <PropertyGrid />
+      <Inspector />
       <div data-testid="validation-bar" style={{ borderTop: '1px solid var(--stroke-1)', maxHeight: 200, overflow: 'auto' }}>
         <button type="button" onClick={validate} data-testid="validate-workflow-btn" style={{ margin: 4 }}>
           Validate

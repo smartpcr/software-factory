@@ -377,22 +377,22 @@ Dragging a top-level node over a branch slot or container body highlights the sl
 
 ---
 
-### [ ] Phase E — Inspector & Property Grid Reskin
+### [x] Phase E — Inspector & Property Grid Reskin
 
-#### [ ] E.1 Inspector Panel
+#### [x] E.1 Inspector Panel
 
 Restyle `<PropertyGrid>` as `<Inspector>` matching flow-studio's right panel design.
 
 **Files to create:**
-- [ ] `src/ui/inspector/Inspector.tsx` — wrapper with sticky header, icon+title, subtitle
-- [ ] `src/ui/inspector/Inspector.css` — `.inspector`, `.ins-header`, `.ins-section`, `.ins-field`, `.ins-field-label`, `.ins-field-hint`, `.ins-empty`
-- [ ] `src/ui/inspector/EdgeInspector.tsx` — edge detail view with source/target info and delete button
-- [ ] `src/ui/inspector/SwitchCaseEditor.tsx` — add/remove/rename cases
-- [ ] `src/ui/inspector/BranchEditor.tsx` — add/remove/rename parallel branches
+- [x] `src/ui/inspector/Inspector.tsx` — wrapper with sticky header, icon+title, subtitle
+- [x] `src/ui/inspector/Inspector.css` — `.inspector`, `.ins-header`, `.ins-section`, `.ins-field`, `.ins-field-label`, `.ins-field-hint`, `.ins-empty`
+- [x] `src/ui/inspector/EdgeInspector.tsx` — edge detail view with source/target info and delete button
+- [x] `src/ui/inspector/SwitchCaseEditor.tsx` — add/remove/rename cases
+- [x] `src/ui/inspector/BranchEditor.tsx` — add/remove/rename parallel branches
 
 **Files to update:**
-- [ ] `src/ui/property-grid/PropertyGrid.tsx` — refactor into Inspector component; restyle form fields
-- [ ] `src/ui/property-grid/FieldRenderer.tsx` — apply `.ins-field` styling
+- [x] `src/ui/property-grid/PropertyGrid.tsx` — refactor into Inspector component; restyle form fields
+- [x] `src/ui/property-grid/FieldRenderer.tsx` — apply `.ins-field` styling
 
 **Mapping to flow-studio:** Lines 888–976 (CSS inspector), 2206–2575 (Inspector JS).
 
