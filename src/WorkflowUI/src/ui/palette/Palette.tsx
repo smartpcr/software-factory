@@ -13,9 +13,15 @@ export function Palette() {
     (entry: PaletteEntry, e: React.DragEvent) => {
       e.dataTransfer.setData(DRAG_TYPE, encodeDragPayload({ runtimeType: entry.runtimeType }));
       e.dataTransfer.effectAllowed = 'move';
+      document.body.classList.add('dragging-palette');
     },
     [],
   );
+
+  const handleDragEnd = useCallback(() => {
+    document.body.classList.remove('dragging-palette');
+    document.querySelectorAll('.drop-active').forEach((el) => el.classList.remove('drop-active'));
+  }, []);
 
   return (
     <div className="palette" data-testid="palette" aria-label="Node palette">
@@ -43,6 +49,7 @@ export function Palette() {
                   className="palette-item"
                   draggable
                   onDragStart={(e) => handleDragStart(entry, e)}
+                  onDragEnd={handleDragEnd}
                   data-testid={`palette-item-${entry.runtimeType}`}
                   role="button"
                   tabIndex={0}

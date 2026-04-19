@@ -235,7 +235,7 @@ Replace React Flow's default handles with custom circular ports matching flow-st
 
 ---
 
-### [ ] Phase D — Containers, Branches & Advanced Drag-Drop
+### [x] Phase D — Containers, Branches & Advanced Drag-Drop
 
 This is the most complex phase — it introduces nested node rendering, sequential child chains inside slots, and the edge-splice insertion model that don't exist in the current UI. Two critical interaction patterns must be supported:
 
@@ -243,11 +243,11 @@ This is the most complex phase — it introduces nested node rendering, sequenti
 
 2. **Drop on edge → auto-wire splice:** Dropping a palette item on the drop zone above or below an existing top-level node **splices the new node into the existing edge chain**. If Node A → Node B exists and you drop a new node below A, the result is A → New → B with edges automatically re-routed. This lets users build linear chains quickly without manual wiring.
 
-#### [ ] D.1 Container Node Rendering
+#### [x] D.1 Container Node Rendering
 
 **Files to create:**
-- [ ] `src/ui/nodes/ContainerNode.tsx` — collapsible container with `container-body` that renders children inline; collapse button; child count badge when collapsed
-- [ ] `src/ui/nodes/ContainerNode.css` — `.node.container`, `.container-body`, `.container-hint`, `.collapse-btn`, `.node.nested`, `.container-children`, `.container-child-count`
+- [x] `src/ui/nodes/ContainerNode.tsx` — collapsible container with `container-body` that renders children inline; collapse button; child count badge when collapsed
+- [x] `src/ui/nodes/ContainerNode.css` — `.node.container`, `.container-body`, `.container-hint`, `.collapse-btn`, `.node.nested`, `.container-children`, `.container-child-count`
 
 **Behavior:**
 - Container has a single slot (`_body`) that holds an ordered list of child node IDs.
@@ -264,19 +264,19 @@ This is the most complex phase — it introduces nested node rendering, sequenti
 
 **Mapping to flow-studio:** Lines 794–837 (CSS), 1689–1722 (renderChildrenInto), 1769–1827 (createElement with container body).
 
-#### [ ] D.2 Branch Node Rendering (If/Switch/Loop/Parallel)
+#### [x] D.2 Branch Node Rendering (If/Switch/Loop/Parallel)
 
 Branch nodes (IfElse, Switch, ForEach, While in engine terms) render labeled slot columns. Each slot is itself an ordered-sequence container.
 
 **Files to create:**
-- [ ] `src/ui/nodes/BranchNode.tsx` — node type that renders:
+- [x] `src/ui/nodes/BranchNode.tsx` — node type that renders:
   - Standard node header (icon + title + type badge)
   - Node body with config preview (condition, expression, etc.)
   - Error port on the body's right edge
   - A `.branch-ports` footer with one `.branch-port` column per branch
   - Each branch column contains: label, `.branch-port-children` (vertical child sequence), and a bottom output port
-- [ ] `src/ui/nodes/BranchNode.css` — `.branch-ports`, `.branch-port`, `.branch-port-label`, `.branch-port-children`, `.branch-port-empty`, `.sibling-connector`
-- [ ] `src/ui/nodes/SiblingConnector.tsx` — SVG down-arrow rendered between consecutive children in any slot
+- [x] `src/ui/nodes/BranchNode.css` — `.branch-ports`, `.branch-port`, `.branch-port-label`, `.branch-port-children`, `.branch-port-empty`, `.sibling-connector`
+- [x] `src/ui/nodes/SiblingConnector.tsx` — SVG down-arrow rendered between consecutive children in any slot
 
 **Sequential children in branch slots:**
 - Each branch slot (e.g., "true" / "false" on an If/Else) holds an ordered array of child IDs.
@@ -291,7 +291,7 @@ Branch nodes (IfElse, Switch, ForEach, While in engine terms) render labeled slo
 
 **Mapping to flow-studio:** Lines 579–656 (CSS), 1865–1877 (branchHtml), 1700–1722 (renderChildrenInto with gaps & connectors).
 
-#### [ ] D.3 Edge-Splice Insertion (Drop on Node Edge Zones)
+#### [x] D.3 Edge-Splice Insertion (Drop on Node Edge Zones)
 
 When a palette item is dropped on the **above** or **below** drop zone of an existing top-level node, the new node is automatically spliced into the edge chain. This is distinct from plain canvas drops — it creates automatic wiring.
 
@@ -322,21 +322,21 @@ AFTER:   A ──edge──► NEW ──new-edge──► B
 - When the reference node is nested (has `parentId`), insertion doesn't splice edges. Instead, it inserts the new node into the parent's children array at the correct index (before or after the reference child). The sequence order *is* the wiring.
 
 **Files to create:**
-- [ ] `src/ui/nodes/DropZone.tsx` — above/below/error-right drop zones rendered on each node; hidden by default, visible only when `body.dragging-palette` is active; each zone carries `data-node-id` and `data-position` ("before" | "after" | "after-error")
-- [ ] `src/ui/nodes/GapDropSlot.tsx` — inline "Drop here" slots between sibling children in branch/container slots; carries `data-parent-id`, `data-slot`, `data-index`; visible only during palette drag
-- [ ] `src/ui/nodes/DropZone.css` — `.drop-zone`, `.gap-drop-slot`, `body.dragging-palette` conditional activation; nested node drop zones are hidden (`.node.nested > .drop-zone { display: none }`) because gap-slots handle insertion
-- [ ] `src/ui/hooks/useReparentDrag.ts` — pointer-based drag handler for top-level node repositioning that also detects slot hover for re-parenting; uses `elementFromPoint` with `.dragging` class (pointer-events: none on dragged node) to see through to the slot underneath
+- [x] `src/ui/nodes/DropZone.tsx` — above/below/error-right drop zones rendered on each node; hidden by default, visible only when `body.dragging-palette` is active; each zone carries `data-node-id` and `data-position` ("before" | "after" | "after-error")
+- [x] `src/ui/nodes/GapDropSlot.tsx` — inline "Drop here" slots between sibling children in branch/container slots; carries `data-parent-id`, `data-slot`, `data-index`; visible only during palette drag
+- [x] `src/ui/nodes/DropZone.css` — `.drop-zone`, `.gap-drop-slot`, `body.dragging-palette` conditional activation; nested node drop zones are hidden (`.node.nested > .drop-zone { display: none }`) because gap-slots handle insertion
+- [x] `src/ui/hooks/useReparentDrag.ts` — pointer-based drag handler for top-level node repositioning that also detects slot hover for re-parenting; uses `elementFromPoint` with `.dragging` class (pointer-events: none on dragged node) to see through to the slot underneath
 
 **Files to update:**
-- [ ] `src/ui/palette/Palette.tsx` — add `document.body.classList.add('dragging-palette')` on `dragstart`, remove on `dragend`
-- [ ] `src/ui/state/graphStore.ts` — add these actions:
+- [x] `src/ui/palette/Palette.tsx` — add `document.body.classList.add('dragging-palette')` on `dragstart`, remove on `dragend`
+- [x] `src/ui/state/graphStore.ts` — add these actions:
   - `reparentNode(nodeId, newParentId, newSlot, index?)` — detach from old parent/canvas, attach to new parent's slot at index; also clean up redundant edges
   - `insertNodeRelative(type, refNodeId, position)` — create node and auto-splice into edge chain (for top-level) or insert at correct index (for nested)
   - `createChildNode(type, parentId, slot, index?)` — create node as child of parent at slot[index]
   - Add `parentId` / `parentSlot` fields to sidecar node metadata
   - `isDescendantOf(maybeDescendantId, ancestorId)` — walk children tree to prevent cycles during re-parenting
 
-#### [ ] D.4 Re-Parenting via Canvas Drag
+#### [x] D.4 Re-Parenting via Canvas Drag
 
 Dragging a top-level node over a branch slot or container body highlights the slot (`.reparent-target` class) and, on pointer-up, moves the node from the canvas into that slot as a nested child.
 
@@ -351,7 +351,7 @@ Dragging a top-level node over a branch slot or container body highlights the sl
 
 **Mapping to flow-studio:** Lines 1879–1950 (drag handlers with findSlotAt/reparent), 2684–2718 (reparentNode logic).
 
-#### [ ] D.5 Complete Drag-Drop Behavior Matrix
+#### [x] D.5 Complete Drag-Drop Behavior Matrix
 
 | Drag Source | Drop Target | Result |
 |---|---|---|
