@@ -14,12 +14,12 @@ export function LogPanel() {
   };
 
   return (
-    <div className="log-panel" data-testid="log-panel">
+    <div className="log-panel" data-testid="log-panel" role="log" aria-label="Execution log">
       <div className="log-header">
         <span className="log-title">Execution Log</span>
         <span className="log-count mono" data-testid="log-count">{entries.length}</span>
         <div style={{ flex: 1 }} />
-        <button className="log-clear" onClick={clear} data-testid="log-clear">
+        <button className="log-clear" onClick={clear} data-testid="log-clear" aria-label="Clear execution log">
           Clear
         </button>
       </div>

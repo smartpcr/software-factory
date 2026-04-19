@@ -62,30 +62,30 @@ export function Topbar({
 
       {/* File operations */}
       <div className="tb-group" data-testid="file-toolbar">
-        <button className="tb-btn" onClick={onNew} title="New workflow" data-testid="btn-new">
+        <button className="tb-btn" onClick={onNew} title="New workflow" aria-label="New workflow" data-testid="btn-new">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
           New
         </button>
-        <button className="tb-btn" onClick={onSave} title="Save (Ctrl+S)" data-testid="btn-save">
+        <button className="tb-btn" onClick={onSave} title="Save (Ctrl+S)" aria-label="Save workflow" data-testid="btn-save">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
             <path d="M17 21v-8H7v8M7 3v5h8" />
           </svg>
           Save
         </button>
-        <button className="tb-btn" onClick={onImport} title="Import" data-testid="btn-import">
+        <button className="tb-btn" onClick={onImport} title="Import" aria-label="Import workflow" data-testid="btn-import">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
           </svg>
           Import
         </button>
-        <button className="tb-btn" onClick={onExport} title="Export" data-testid="btn-export">
+        <button className="tb-btn" onClick={onExport} title="Export" aria-label="Export workflow" data-testid="btn-export">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
           </svg>
           Export
         </button>
-        <button className="tb-btn danger" onClick={onDelete} title="Delete this workflow" data-testid="btn-delete">
+        <button className="tb-btn danger" onClick={onDelete} title="Delete this workflow" aria-label="Delete workflow" data-testid="btn-delete">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
           </svg>

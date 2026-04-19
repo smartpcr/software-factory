@@ -15,12 +15,13 @@ export function RunControls({ state, onRun, onPause, onResume, onRerun, onCancel
   const isFinished = state === 'success' || state === 'failed' || state === 'cancelled';
 
   return (
-    <div className="tb-group" data-testid="run-controls">
+    <div className="tb-group" data-testid="run-controls" role="toolbar" aria-label="Execution controls">
       <button
         className="tb-btn"
         onClick={onRun}
         disabled={isRunning || isPaused}
         title="Run (start fresh)"
+        aria-label="Run workflow"
         data-testid="btn-run"
       >
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
@@ -31,6 +32,7 @@ export function RunControls({ state, onRun, onPause, onResume, onRerun, onCancel
         onClick={onPause}
         disabled={!isRunning}
         title="Pause"
+        aria-label="Pause execution"
         data-testid="btn-pause"
       >
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zM14 4h4v16h-4z" /></svg>
@@ -41,6 +43,7 @@ export function RunControls({ state, onRun, onPause, onResume, onRerun, onCancel
         onClick={onResume}
         disabled={!(isPaused || state === 'failed' || state === 'cancelled')}
         title="Resume"
+        aria-label="Resume execution"
         data-testid="btn-resume"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -53,6 +56,7 @@ export function RunControls({ state, onRun, onPause, onResume, onRerun, onCancel
         onClick={onRerun}
         disabled={!isFinished}
         title="Rerun from beginning"
+        aria-label="Rerun workflow"
         data-testid="btn-rerun"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -65,6 +69,7 @@ export function RunControls({ state, onRun, onPause, onResume, onRerun, onCancel
         onClick={onCancel}
         disabled={!(isRunning || isPaused)}
         title="Cancel"
+        aria-label="Cancel execution"
         data-testid="btn-cancel"
       >
         <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" /></svg>

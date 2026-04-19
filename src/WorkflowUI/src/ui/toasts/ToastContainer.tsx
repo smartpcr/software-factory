@@ -7,7 +7,7 @@ export function ToastContainer() {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="toasts" data-testid="toast-container">
+    <div className="toasts" data-testid="toast-container" role="status" aria-live="polite" aria-label="Notifications">
       {toasts.map((t) => (
         <div key={t.id} className={`toast ${t.kind}`} data-testid={`toast-${t.id}`}>
           <span>{t.message}</span>

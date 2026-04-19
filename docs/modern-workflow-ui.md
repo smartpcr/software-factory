@@ -2,7 +2,7 @@
 
 **Goal:** Migrate `src/WorkflowUI` from its current plain, unstyled appearance to the modern design language and interaction model demonstrated in `docs/examples/flow-studio.html`, while preserving the existing React + `@xyflow/react` + Zustand architecture and engine-contract parity.
 
-**Status:** Draft  
+**Status:** Complete (all 8 phases implemented)  
 **Reference Design:** `docs/examples/flow-studio.html` (single-file prototype, ~3 400 lines)  
 **Current UI:** `src/WorkflowUI` (React/TypeScript SPA, Vite, React Flow v12)
 
@@ -472,22 +472,22 @@ Optionally replace React Flow's `<MiniMap>` with a custom SVG minimap matching f
 
 ---
 
-### [ ] Phase H — Accessibility & Polish
+### [x] Phase H — Accessibility & Polish
 
-#### [ ] H.1 Focus Management
+#### [x] H.1 Focus Management
 
-- [ ] All interactive elements get `focus-visible` ring styling (from `tokens.css`)
-- [ ] `prefers-reduced-motion` disables animations
-- [ ] `aria-label` on all buttons and interactive regions
+- [x] All interactive elements get `focus-visible` ring styling (from `tokens.css`)
+- [x] `prefers-reduced-motion` disables animations
+- [x] `aria-label` on all buttons and interactive regions
 
-#### [ ] H.2 Light Theme Verification
+#### [x] H.2 Light Theme Verification
 
-- [ ] Audit every component in light mode for contrast issues
-- [ ] Status badges use `color: #ffffff !important` in light mode (flow-studio pattern)
+- [x] Audit every component in light mode for contrast issues
+- [x] Status badges use `color: #ffffff !important` in light mode (flow-studio pattern)
 
-#### [ ] H.3 Responsive Scrollbars
+#### [x] H.3 Responsive Scrollbars
 
-- [ ] Custom scrollbar styling via `::-webkit-scrollbar` (already in `global.css`)
+- [x] Custom scrollbar styling via `::-webkit-scrollbar` (already in `global.css`)
 
 ---
 

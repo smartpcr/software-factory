@@ -156,7 +156,8 @@
 :root[data-theme="light"] .node-chrome[data-status="Running"] .node-status-badge,
 :root[data-theme="light"] .node-chrome[data-status="Completed"] .node-status-badge,
 :root[data-theme="light"] .node-chrome[data-status="Failed"] .node-status-badge,
-:root[data-theme="light"] .node-chrome[data-status="Cancelled"] .node-status-badge {
+:root[data-theme="light"] .node-chrome[data-status="Cancelled"] .node-status-badge,
+:root[data-theme="light"] .node-chrome[data-status="Skipped"] .node-status-badge {
   color: #ffffff !important;
 }
 
