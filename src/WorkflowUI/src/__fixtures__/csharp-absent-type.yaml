@@ -1,7 +1,0 @@
-workflowId: csharp-absent-type
-workflowName: CSharp Absent Type
-nodes:
-  - nodeId: cs1
-    nodeName: Draft CSharp
-    runtimeType: CSharp
-connections: []

@@ -1,8 +1,0 @@
-workflowId: timer-invalid-schedule
-workflowName: Timer Invalid Schedule (Negative)
-nodes:
-  - nodeId: t1
-    nodeName: Bad
-    runtimeType: Timer
-    schedule: not-a-schedule
-connections: []

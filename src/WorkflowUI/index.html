@@ -1,26 +1,172 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en" data-theme="dark">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Workflow UI</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-    <script>
-      // Apply saved theme before first paint to avoid flash
-      (function () {
-        try {
-          var saved = localStorage.getItem('flow-studio:theme');
-          var theme = (saved === 'dark' || saved === 'light') ? saved
-            : (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-          document.documentElement.setAttribute('data-theme', theme);
-        } catch (_) {}
-      })();
-    </script>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+<head>
+<meta charset="UTF-8">
+<title>Flow Studio — Workflow Designer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script>
+  (function () {
+    try {
+      var saved = localStorage.getItem('flow-studio:theme');
+      var theme = (saved === 'dark' || saved === 'light') ? saved
+        : (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      document.documentElement.setAttribute('data-theme', theme);
+    } catch (_) {}
+  })();
+</script>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ============ TOPBAR ============ -->
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <div class="brand-name">Flow Studio</div>
+        <div class="brand-meta mono">workflow designer</div>
+      </div>
+    </div>
+
+    <div class="wf-title">
+      <input id="wfTitleInput" placeholder="Untitled workflow" />
+      <span class="wf-status-dot" id="wfStatusDot"></span>
+    </div>
+
+    <div class="tb-group">
+      <button class="tb-btn" data-action="new-workflow" title="New workflow">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        New
+      </button>
+      <button class="tb-btn" data-action="save-workflow" title="Save (Ctrl+S)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
+        Save
+      </button>
+      <button class="tb-btn" data-action="import-workflow" title="Import JSON">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        Import
+      </button>
+      <button class="tb-btn" data-action="export-workflow" title="Export JSON">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+        Export
+      </button>
+      <button class="tb-btn danger" data-action="delete-workflow" title="Delete this workflow">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+        Delete
+      </button>
+    </div>
+
+    <div class="spacer"></div>
+
+    <button class="tb-btn" id="themeToggle" data-action="toggle-theme" aria-label="Toggle light / dark theme" title="Toggle light / dark theme" style="padding: 6px 10px; border: 1px solid var(--stroke-1); border-radius: 8px; background: var(--bg-1);">
+      <svg class="theme-icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="14" height="14"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      <svg class="theme-icon-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="14" height="14" style="display:none"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+    </button>
+
+    <div class="exec-indicator" id="execIndicator">
+      <span class="pulse"></span>
+      <span id="execStatus">IDLE</span>
+    </div>
+
+    <div class="tb-group">
+      <button class="tb-btn" id="btnRun" data-action="exec-run" title="Run (start fresh)">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        Run
+      </button>
+      <button class="tb-btn" id="btnPause" data-action="exec-pause" title="Pause" disabled>
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>
+        Pause
+      </button>
+      <button class="tb-btn" id="btnResume" data-action="exec-resume" title="Resume" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 4v6h6M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+        Resume
+      </button>
+      <button class="tb-btn" id="btnRerun" data-action="exec-rerun" title="Rerun" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        Rerun
+      </button>
+      <button class="tb-btn danger" id="btnCancel" data-action="exec-cancel" title="Cancel" disabled>
+        <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12"/></svg>
+        Cancel
+      </button>
+    </div>
+  </div>
+
+  <!-- ============ PALETTE ============ -->
+  <div class="palette" id="palette">
+    <div class="palette-search">
+      <input placeholder="Search components…" id="paletteSearchInput" />
+    </div>
+    <div class="palette-workflows">
+      <div class="palette-workflows-title">
+        <span>Workflows</span>
+        <button data-action="new-workflow" style="color:var(--text-3); font-size:14px; line-height:1;">+</button>
+      </div>
+      <div id="wfList"></div>
+    </div>
+    <div id="paletteSections"></div>
+  </div>
+
+  <!-- ============ CANVAS ============ -->
+  <div class="canvas-area">
+    <div class="canvas" id="canvas">
+      <div class="canvas-inner" id="canvasInner">
+        <div class="canvas-grid"></div>
+        <svg class="edges" id="edgesSvg"></svg>
+        <div id="nodesLayer"></div>
+      </div>
+    </div>
+    <div class="minimap" id="minimap">
+      <svg id="minimapSvg" viewBox="0 0 180 120"></svg>
+    </div>
+    <div class="canvas-hud">
+      <div class="zoom-level mono" id="zoomLevel">100%</div>
+      <div class="zoom-ctrls">
+        <button data-action="zoom-in" title="Zoom in">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <button data-action="zoom-out" title="Zoom out">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>
+        </button>
+        <button data-action="fit-view" title="Fit to view">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 7V3h4M21 7V3h-4M3 17v4h4M21 17v4h-4"/></svg>
+        </button>
+        <button data-action="reset-view" title="Reset view">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ LOGS ============ -->
+  <div class="logs">
+    <div class="logs-header">
+      <span class="logs-title">Execution Log</span>
+      <span class="logs-count mono" id="logCount">0</span>
+      <div class="spacer" style="flex:1"></div>
+      <button class="logs-clear" data-action="clear-logs">Clear</button>
+    </div>
+    <div class="logs-body" id="logsBody">
+      <div class="log-empty">No execution logs yet. Hit Run to start.</div>
+    </div>
+  </div>
+
+  <!-- ============ INSPECTOR ============ -->
+  <div class="inspector" id="inspector">
+    <div class="ins-empty">
+      <svg class="ins-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l2 2"/></svg>
+      <div>Select a node or edge<br>to configure its properties</div>
+    </div>
+  </div>
+
+</div>
+
+<input type="file" id="fileInput" accept="application/json" style="display:none" />
+<div class="toasts" id="toasts"></div>
+
+<script type="module" src="/src/main.ts"></script>
+</body>
 </html>

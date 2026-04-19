@@ -1,8 +1,0 @@
-workflowId: subflow-external
-workflowName: Subflow External
-nodes:
-  - nodeId: sf1
-    nodeName: External Subflow
-    runtimeType: Subflow
-    workflowFilePath: subflow-child.yaml
-connections: []

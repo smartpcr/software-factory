@@ -1,7 +1,0 @@
-workflowId: subflow-child
-workflowName: Subflow Child
-nodes:
-  - nodeId: c1
-    nodeName: Child Start
-    runtimeType: Noop
-connections: []

@@ -1,8 +1,0 @@
-workflowId: timer-cron-6field
-workflowName: Timer Cron 6-Field
-nodes:
-  - nodeId: t1
-    nodeName: Six Field Cron
-    runtimeType: Timer
-    schedule: "30 0 9 * * 1-5"
-connections: []

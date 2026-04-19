@@ -1,8 +1,0 @@
-workflowId: powershell-script-empty-path
-workflowName: PowerShell Script Empty Path
-nodes:
-  - nodeId: ps1
-    nodeName: Empty Path Script
-    runtimeType: PowerShell
-    scriptPath: ""
-connections: []

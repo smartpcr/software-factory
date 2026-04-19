@@ -1,8 +1,0 @@
-workflowId: csharp-task-inline
-workflowName: CSharp Task Inline
-nodes:
-  - nodeId: cst1
-    nodeName: Inline Task
-    runtimeType: CSharpTask
-    scriptContent: 'Console.WriteLine("task");'
-connections: []

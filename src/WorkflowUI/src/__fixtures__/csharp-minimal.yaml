@@ -1,9 +1,0 @@
-workflowId: csharp-minimal
-workflowName: CSharp Minimal
-nodes:
-  - nodeId: cs1
-    nodeName: My CSharp Node
-    runtimeType: CSharp
-    assemblyPath: MyApp.dll
-    typeName: MyApp.Tasks.MyTask
-connections: []

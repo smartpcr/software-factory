@@ -1,8 +1,0 @@
-workflowId: timer-duration
-workflowName: Timer Duration
-nodes:
-  - nodeId: t1
-    nodeName: Five Min Timer
-    runtimeType: Timer
-    schedule: PT5M
-connections: []

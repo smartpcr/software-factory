@@ -1,0 +1,136 @@
+// -----------------------------------------------------------------------
+// TypeScript type definitions for Flow Studio
+// -----------------------------------------------------------------------
+
+export interface NodeTypePorts {
+  in: boolean;
+  out: boolean;
+  error: boolean;
+}
+
+export interface NodeTypeConfig {
+  [key: string]: string | number | boolean;
+}
+
+export interface NodeTypeDefinition {
+  label: string;
+  category: string;
+  color: string;
+  icon: string;
+  desc: string;
+  ports: NodeTypePorts;
+  branches?: string[];
+  config: NodeTypeConfig;
+}
+
+export interface FlowNode {
+  id: string;
+  type: string;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height?: number;
+  config: NodeTypeConfig;
+  status: string;
+  parentId: string | null;
+  parentSlot: string | null;
+  branches?: string[];
+  children?: Record<string, string[]>;
+  collapsed?: boolean;
+  _cachedHeight?: number;
+  _iterCount?: number;
+  _forceFail?: boolean;
+}
+
+export interface FlowEdge {
+  id: string;
+  source: string;
+  sourcePort: string;
+  sourcePortName?: string;
+  target: string;
+  targetPort: string;
+  _active?: boolean;
+}
+
+export interface Selection {
+  kind: 'node' | 'edge' | null;
+  id: string | null;
+}
+
+export interface CanvasState {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+export interface LogEntry {
+  t: string;
+  level: string;
+  nodeId: string | null;
+  msg: string;
+}
+
+export interface WorkflowData {
+  id: string;
+  name: string;
+  nodes: FlowNode[];
+  edges: FlowEdge[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PaletteSection {
+  category: string;
+  types: string[];
+}
+
+export type ExecState = 'idle' | 'running' | 'paused' | 'success' | 'failed' | 'cancelled';
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export interface CreateNodeOptions {
+  parentId?: string;
+  parentSlot?: string;
+  index?: number;
+}
+
+export interface CreateEdgeParams {
+  source: string;
+  sourcePort: string;
+  sourcePortName?: string;
+  target: string;
+  targetPort: string;
+}
+
+export interface ModalOptions {
+  title: string;
+  body: string;
+  confirmLabel?: string;
+  danger?: boolean;
+  onConfirm: () => void;
+}
+
+/** Callbacks that renderer modules use to trigger app-level actions */
+export interface AppCallbacks {
+  select(kind: 'node' | 'edge' | null, id?: string): void;
+  createNode(type: string, x: number, y: number, opts?: CreateNodeOptions): string;
+  createChildNode(type: string, parentId: string, slot: string, index?: number): string | null;
+  insertNodeRelative(type: string, refNodeId: string, position: string): string | null;
+  reparentNode(nodeId: string, newParentId: string, newSlot: string, index?: number): void;
+  updateNode(id: string, patch: Partial<FlowNode>): void;
+  updateNodeConfig(id: string, key: string, value: unknown): void;
+  deleteNode(id: string): void;
+  deleteEdge(id: string): void;
+  toggleCollapse(id: string): void;
+  addBranch(nodeId: string): void;
+  removeBranch(nodeId: string, index: number): void;
+  renameBranch(nodeId: string, index: number, newName: string): void;
+  markDirty(): void;
+  isDescendantOf(maybeDescendantId: string, ancestorId: string): boolean;
+  createEdge(params: CreateEdgeParams): void;
+  renderAll(): void;
+}
