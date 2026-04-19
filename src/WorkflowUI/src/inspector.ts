@@ -176,6 +176,59 @@ export const Inspector = {
         callbacks.updateNodeConfig(nodeId, key, select.value);
       });
     });
+    // Trigger param: add
+    el.querySelectorAll('[data-action="add-trigger-param"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const nodeId = (btn as HTMLElement).dataset.nodeId!;
+        const node = State.nodes.get(nodeId);
+        if (!node) return;
+        let params: { name: string; value: string }[] = [];
+        try { params = JSON.parse(String(node.config.params || '[]')); } catch { /* ignore */ }
+        params.push({ name: '', value: '' });
+        callbacks.updateNodeConfig(nodeId, 'params', JSON.stringify(params));
+        this.render();
+      });
+    });
+    // Trigger param: remove
+    el.querySelectorAll('[data-action="remove-trigger-param"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const b = btn as HTMLElement;
+        const nodeId = b.dataset.nodeId!;
+        const idx = parseInt(b.dataset.paramIndex || '0');
+        const node = State.nodes.get(nodeId);
+        if (!node) return;
+        let params: { name: string; value: string }[] = [];
+        try { params = JSON.parse(String(node.config.params || '[]')); } catch { /* ignore */ }
+        params.splice(idx, 1);
+        callbacks.updateNodeConfig(nodeId, 'params', JSON.stringify(params));
+        this.render();
+      });
+    });
+    // Trigger param: edit name/value
+    el.querySelectorAll<HTMLInputElement>('[data-param-name]').forEach(input => {
+      input.addEventListener('input', () => {
+        const nodeId = input.dataset.nodeId!;
+        const idx = parseInt(input.dataset.paramIndex || '0');
+        const node = State.nodes.get(nodeId);
+        if (!node) return;
+        let params: { name: string; value: string }[] = [];
+        try { params = JSON.parse(String(node.config.params || '[]')); } catch { /* ignore */ }
+        if (params[idx]) params[idx].name = input.value;
+        callbacks.updateNodeConfig(nodeId, 'params', JSON.stringify(params));
+      });
+    });
+    el.querySelectorAll<HTMLInputElement>('[data-param-value]').forEach(input => {
+      input.addEventListener('input', () => {
+        const nodeId = input.dataset.nodeId!;
+        const idx = parseInt(input.dataset.paramIndex || '0');
+        const node = State.nodes.get(nodeId);
+        if (!node) return;
+        let params: { name: string; value: string }[] = [];
+        try { params = JSON.parse(String(node.config.params || '[]')); } catch { /* ignore */ }
+        if (params[idx]) params[idx].value = input.value;
+        callbacks.updateNodeConfig(nodeId, 'params', JSON.stringify(params));
+      });
+    });
   },
 
   configFieldsHtml(node: FlowNode): string {
@@ -199,6 +252,45 @@ export const Inspector = {
           <label class="ins-field-label">Cron expression</label>
           <input class="mono" value="${escapeHtml(String(c.schedule || ''))}" data-config-key="schedule" data-node-id="${id}" />
         </div>` : ''}
+      `;
+    } else if (node.type === 'trigger') {
+      title = 'Webhook';
+      // Parse params JSON safely
+      let params: { name: string; value: string }[] = [];
+      try { params = JSON.parse(String(c.params || '[]')); } catch { /* ignore */ }
+      fields = `
+        <div class="ins-field" style="display:flex; gap:8px;">
+          <div style="width: 90px">
+            <label class="ins-field-label">Method</label>
+            <select data-config-key="method" data-node-id="${id}">
+              <option ${c.method === 'GET' ? 'selected' : ''}>GET</option>
+              <option ${c.method === 'POST' ? 'selected' : ''}>POST</option>
+              <option ${c.method === 'PUT' ? 'selected' : ''}>PUT</option>
+              <option ${c.method === 'PATCH' ? 'selected' : ''}>PATCH</option>
+              <option ${c.method === 'DELETE' ? 'selected' : ''}>DELETE</option>
+            </select>
+          </div>
+          <div style="flex:1">
+            <label class="ins-field-label">Route URI</label>
+            <input class="mono" value="${escapeHtml(String(c.route || ''))}" placeholder="/webhook/my-hook" data-config-key="route" data-node-id="${id}" />
+          </div>
+        </div>
+        <div class="ins-field">
+          <label class="ins-field-label">Parameters</label>
+          <div class="switch-cases-list" id="triggerParams_${id}">
+            ${params.map((p, i) => `
+              <div class="switch-case" style="display:flex; gap:4px; align-items:center;">
+                <input value="${escapeHtml(p.name)}" placeholder="name" class="mono" style="flex:1" data-param-name data-node-id="${id}" data-param-index="${i}" />
+                <input value="${escapeHtml(p.value)}" placeholder="value" class="mono" style="flex:1" data-param-value data-node-id="${id}" data-param-index="${i}" />
+                <button class="switch-case-del" data-action="remove-trigger-param" data-node-id="${id}" data-param-index="${i}">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                </button>
+              </div>
+            `).join('')}
+          </div>
+          <button class="add-case-btn" data-action="add-trigger-param" data-node-id="${id}">+ Add parameter</button>
+          <div class="ins-field-hint">Query or body parameters passed to the webhook.</div>
+        </div>
       `;
     } else if (node.type === 'if') {
       title = 'Condition';
@@ -261,8 +353,8 @@ export const Inspector = {
           <button class="add-case-btn" data-action="add-branch" data-node-id="${id}">+ Add branch</button>
         </div>
       `;
-    } else if (node.type === 'loop') {
-      title = 'Loop';
+    } else if (node.type === 'foreach') {
+      title = 'ForEach';
       fields = `
         <div class="ins-field">
           <label class="ins-field-label">Mode</label>
@@ -279,7 +371,7 @@ export const Inspector = {
         <div class="ins-field">
           <label class="ins-field-label">Max iterations (safety)</label>
           <input type="number" value="${c.maxIterations || 100}" data-config-key="maxIterations" data-node-id="${id}" />
-          <div class="ins-field-hint">Connect <code>iterate</code> to loop body, <code>complete</code> to next step.</div>
+          <div class="ins-field-hint">Connect <code>iterate</code> to loop body. The <code>out</code> port fires after all iterations.</div>
         </div>
       `;
     } else if (node.type === 'subflow') {

@@ -19,7 +19,7 @@ export const NodeTypes: Record<string, NodeTypeDefinition> = {
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>',
     desc: 'HTTP webhook entry',
     ports: { in: false, out: true, error: false },
-    config: { method: 'POST', path: '/hook' }
+    config: { method: 'POST', route: '/webhook', params: '[]' }
   },
   action: {
     label: 'Action', category: 'Actions',
@@ -80,13 +80,19 @@ export const NodeTypes: Record<string, NodeTypeDefinition> = {
     branches: ['branch_1', 'branch_2'],
     config: { joinMode: 'all', timeout: 30000 }
   },
-  loop: {
-    label: 'Loop', category: 'Flow Control',
+  foreach: {
+    label: 'ForEach', category: 'Flow Control',
     color: 'var(--n-loop)',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 1l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 23l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3"/></svg>',
     desc: 'Iterate over items',
-    ports: { in: true, out: false, error: true },
-    branches: ['iterate', 'complete'],
+    ports: { in: true, out: true, error: true },
+    branches: ['iterate'],
+    portLabels: {
+      in: 'input',
+      out: 'output (onComplete)',
+      error: 'onError',
+      branches: { iterate: 'iterate (onNext)' },
+    },
     config: { source: 'input.items', maxIterations: 100, mode: 'foreach' }
   },
   container: {
@@ -144,7 +150,7 @@ export const NodeTypes: Record<string, NodeTypeDefinition> = {
 export const PaletteOrder: PaletteSection[] = [
   { category: 'Trigger', types: ['start', 'trigger'] },
   { category: 'Actions', types: ['action', 'http', 'transform', 'delay', 'log'] },
-  { category: 'Flow Control', types: ['if', 'switch', 'parallel', 'loop', 'end'] },
+  { category: 'Flow Control', types: ['if', 'switch', 'parallel', 'foreach', 'end'] },
   { category: 'AI', types: ['ai'] },
   { category: 'Containers', types: ['container', 'subflow'] },
 ];

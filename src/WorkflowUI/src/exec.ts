@@ -7,14 +7,13 @@ import { NodeTypes } from './registry';
 import { State } from './state';
 import { Nodes } from './nodes';
 import { Edges } from './edges';
-import { runWorkflowApi, cancelWorkflowApi, checkServerHealth } from './api';
+import { runWorkflowApi, cancelWorkflowApi } from './api';
 
 type LogFn = (level: string, nodeId: string | null, msg: string) => void;
 type ClearLogsFn = () => void;
 
 let logFn: LogFn;
 let clearLogsFn: ClearLogsFn;
-let serverAvailable = false;
 
 export const Exec = {
   state: 'idle' as ExecState,
@@ -29,8 +28,6 @@ export const Exec = {
   init(log: LogFn, clearLogs: ClearLogsFn) {
     logFn = log;
     clearLogsFn = clearLogs;
-    // Check server availability in background
-    checkServerHealth().then(ok => { serverAvailable = ok; });
   },
 
   setStatus(status: ExecState) {
@@ -75,18 +72,7 @@ export const Exec = {
     clearLogsFn();
     logFn('info', null, '▶ Workflow execution started');
 
-    // If server available, try API execution
-    if (serverAvailable && State.currentWfId) {
-      try {
-        const result = await runWorkflowApi(State.currentWfId);
-        logFn('info', null, `Server execution started (runId: ${result.runId})`);
-        this.setStatus('running');
-        // TODO: listen on SignalR for real-time status updates
-        return;
-      } catch {
-        logFn('warn', null, 'Server execution unavailable, using simulation');
-      }
-    }
+    // Always use simulated execution (server execution via future SignalR integration)
 
     // Fallback: simulated execution
     const starts = [...State.nodes.values()].filter(n => n.type === 'start' || n.type === 'trigger');
@@ -99,14 +85,8 @@ export const Exec = {
     starts.forEach(n => this.executeNode(n.id));
   },
 
-  async cancel() {
+  cancel() {
     logFn('warn', null, '■ Workflow cancelled');
-
-    if (serverAvailable && State.currentWfId) {
-      try {
-        await cancelWorkflowApi(State.currentWfId);
-      } catch { /* fall through to local cancel */ }
-    }
 
     this.clearTimers();
     this.executing.forEach(id => {
@@ -170,7 +150,7 @@ export const Exec = {
     const node = State.nodes.get(nodeId);
     if (!node) return;
     if (this.paused) { this.executing.add(nodeId); return; }
-    if (this.completed.has(nodeId) && node.type !== 'loop') return;
+    if (this.completed.has(nodeId) && node.type !== 'foreach') return;
     if (this.executing.has(nodeId)) return;
 
     this.executing.add(nodeId);
@@ -204,7 +184,7 @@ export const Exec = {
     }
     if (node.type === 'ai') return 800 + Math.random() * 1200;
     if (node.type === 'http') return 500 + Math.random() * 700;
-    if (node.type === 'loop') return 500;
+    if (node.type === 'foreach') return 500;
     return 400 + Math.random() * 400;
   },
 
@@ -232,7 +212,7 @@ export const Exec = {
           edges.push(...Edges.getSuccessors(node.id, 'branch', b));
         });
         logFn('info', node.id, `Fan-out: ${node.branches.length} branches`);
-      } else if (node.type === 'loop') {
+      } else if (node.type === 'foreach') {
         const iterCount = (node._iterCount || 0) + 1;
         node._iterCount = iterCount;
         if (iterCount <= 3) {
@@ -245,9 +225,9 @@ export const Exec = {
           });
           Nodes.render();
         } else {
-          edges = Edges.getSuccessors(node.id, 'branch', 'complete');
+          edges = Edges.getSuccessors(node.id, 'out');
           node._iterCount = 0;
-          logFn('info', node.id, 'Loop complete');
+          logFn('info', node.id, 'ForEach complete');
         }
       }
     } else {

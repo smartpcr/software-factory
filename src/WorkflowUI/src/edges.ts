@@ -37,13 +37,14 @@ export const Edges = {
       const marker = isErr ? 'url(#arrow-err)' : active ? 'url(#arrow-active)' : 'url(#arrow)';
       html += `<path class="${cls}" d="${path}" data-edge-id="${id}" marker-end="${marker}"/>`;
 
-      if (edge.sourcePort === 'branch' && edge.sourcePortName) {
+      // Label: user-defined label takes priority, then branch port name
+      const lbl = edge.label || (edge.sourcePort === 'branch' ? edge.sourcePortName : undefined);
+      if (lbl) {
         const midX = (sp.x + tp.x) / 2;
         const midY = (sp.y + tp.y) / 2;
-        const lbl = edge.sourcePortName;
         const w = lbl.length * 6 + 10;
-        html += `<rect class="edge-label-bg" x="${midX - w / 2}" y="${midY - 8}" width="${w}" height="16" rx="8"/>`;
-        html += `<text class="edge-label" x="${midX}" y="${midY}" text-anchor="middle" dominant-baseline="middle">${lbl}</text>`;
+        html += `<rect class="edge-label-bg" x="${midX - w / 2}" y="${midY - 8}" width="${w}" height="16" rx="8" data-edge-id="${id}"/>`;
+        html += `<text class="edge-label" x="${midX}" y="${midY}" text-anchor="middle" dominant-baseline="middle" data-edge-id="${id}">${lbl}</text>`;
       }
 
       if (active) {
@@ -53,6 +54,7 @@ export const Edges = {
 
     svg.innerHTML = html;
 
+    // Click to select
     svg.querySelectorAll('.edge-path').forEach(p => {
       p.addEventListener('click', (e: Event) => {
         e.stopPropagation();
@@ -60,6 +62,60 @@ export const Edges = {
         callbacks.select('edge', pathEl.dataset.edgeId || '');
       });
     });
+
+    // Double-click to add/edit label
+    svg.querySelectorAll('.edge-path').forEach(p => {
+      p.addEventListener('dblclick', (e: Event) => {
+        e.stopPropagation();
+        const edgeId = (p as SVGPathElement).dataset.edgeId || '';
+        this.showLabelEditor(edgeId, e as MouseEvent);
+      });
+    });
+    // Also allow dblclick on existing label text/bg
+    svg.querySelectorAll('.edge-label, .edge-label-bg').forEach(el => {
+      el.addEventListener('dblclick', (e: Event) => {
+        e.stopPropagation();
+        const edgeId = (el as SVGElement).dataset.edgeId || '';
+        this.showLabelEditor(edgeId, e as MouseEvent);
+      });
+    });
+  },
+
+  showLabelEditor(edgeId: string, evt: MouseEvent) {
+    const edge = State.edges.get(edgeId);
+    if (!edge) return;
+
+    // Remove any existing editor
+    document.querySelector('.edge-label-editor')?.remove();
+
+    const editor = document.createElement('div');
+    editor.className = 'edge-label-editor';
+    editor.style.left = evt.clientX + 'px';
+    editor.style.top = evt.clientY + 'px';
+
+    const input = document.createElement('input');
+    input.className = 'edge-label-input';
+    input.value = edge.label || '';
+    input.placeholder = 'Label…';
+    editor.appendChild(input);
+    document.body.appendChild(editor);
+
+    input.focus();
+    input.select();
+
+    const commit = () => {
+      const val = input.value.trim();
+      edge.label = val || undefined;
+      editor.remove();
+      callbacks.markDirty();
+      this.render();
+    };
+
+    input.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      if (e.key === 'Escape') { editor.remove(); }
+    });
+    input.addEventListener('blur', commit);
   },
 
   buildPath(s: { x: number; y: number }, t: { x: number; y: number }): string {

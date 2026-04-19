@@ -12,8 +12,16 @@ import { Canvas } from './canvas';
 import type { FlowNode } from './types';
 
 function seedDemo() {
-  State.nodes.clear();
-  State.edges.clear();
+  // Create a dedicated demo workflow — don't mutate whatever newWorkflow() made
+  const wfId = uid('wf');
+  const wf = {
+    id: wfId,
+    name: 'Demo: User Onboarding',
+    nodes: [] as FlowNode[],
+    edges: [] as { id: string; source: string; sourcePort: string; sourcePortName?: string; target: string; targetPort: string }[],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
 
   const addNode = (type: string, x: number, y: number, overrides: Partial<FlowNode> = {}): FlowNode => {
     const t = NodeTypes[type];
@@ -25,7 +33,7 @@ function seedDemo() {
       ...overrides
     };
     if (t.branches) n.branches = [...t.branches];
-    State.nodes.set(n.id, n);
+    wf.nodes.push(n);
     return n;
   };
 
@@ -52,7 +60,7 @@ function seedDemo() {
     name: 'Log free-tier',
     config: { level: 'info', message: 'Free-tier user visited' }
   });
-  const loop = addNode('loop', -40, 920, {
+  const forEach = addNode('foreach', -40, 920, {
     name: 'For each message',
     config: { source: 'input.notifications', mode: 'foreach', maxIterations: 50 }
   });
@@ -64,34 +72,33 @@ function seedDemo() {
 
   const addEdge = (source: string, sourcePort: string, target: string, sourcePortName?: string) => {
     const id = uid('e');
-    State.edges.set(id, { id, source, sourcePort, sourcePortName, target, targetPort: 'in' });
+    wf.edges.push({ id, source, sourcePort, sourcePortName, target, targetPort: 'in' });
   };
 
   addEdge(start.id, 'out', http.id);
   addEdge(http.id, 'out', ifNode.id);
   addEdge(ifNode.id, 'branch', ai.id, 'true');
   addEdge(ifNode.id, 'branch', log.id, 'false');
-  addEdge(ai.id, 'out', loop.id);
-  addEdge(loop.id, 'branch', send.id, 'iterate');
-  addEdge(loop.id, 'branch', end.id, 'complete');
+  addEdge(ai.id, 'out', forEach.id);
+  addEdge(forEach.id, 'branch', send.id, 'iterate');
+  addEdge(forEach.id, 'out', end.id);
   addEdge(log.id, 'out', end.id);
-  addEdge(send.id, 'out', loop.id);
+  addEdge(send.id, 'out', forEach.id);
 
-  State.isDirty = false;
-  const wf = State.workflows[State.currentWfId || ''];
-  if (wf) wf.name = 'Demo: User Onboarding';
-  const titleInput = document.getElementById('wfTitleInput') as HTMLInputElement | null;
-  if (titleInput) titleInput.value = 'Demo: User Onboarding';
-  App.renderAll();
-  setTimeout(() => Canvas.fitToView(), 100);
+  // Register and load the demo workflow
+  State.workflows[wfId] = wf;
+  App.loadWorkflow(wfId);
+  App.saveToStorage();
   App.log('info', null, 'Demo workflow loaded');
 }
 
 document.addEventListener('DOMContentLoaded', () => {
   App.init();
   Exec.setStatus('idle');
-  // Seed a demo workflow if nothing was loaded
-  setTimeout(() => {
-    if (State.nodes.size <= 1) seedDemo();
-  }, 200);
+  // First-ever use: seed a demo. Otherwise ensure a workflow is active.
+  if (Object.keys(State.workflows).length === 0) {
+    seedDemo();
+  } else if (!State.currentWfId) {
+    App.newWorkflow(true);
+  }
 });

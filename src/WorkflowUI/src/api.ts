@@ -108,7 +108,7 @@ export async function cancelWorkflowApi(id: string): Promise<void> {
   if (!res.ok) throw new Error(`POST cancel failed: ${res.status}`);
 }
 
-/** Check if server is available */
+/** Check if server is available (suppresses console noise) */
 export async function checkServerHealth(): Promise<boolean> {
   try {
     const res = await fetch('/api/health', { signal: AbortSignal.timeout(2000) });

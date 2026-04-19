@@ -6,6 +6,14 @@ import type { FlowNode, CreateNodeOptions, CreateEdgeParams, ModalOptions, AppCa
 import { NodeTypes } from './registry';
 import { State } from './state';
 import { uid, now, clone, ensureChildren, getSlots, toast, escapeHtml } from './utils';
+import type { FlowEdge } from './types';
+
+let renderTimer: ReturnType<typeof setTimeout> | null = null;
+
+function debouncedRender(fn: () => void, ms = 1000) {
+  if (renderTimer) clearTimeout(renderTimer);
+  renderTimer = setTimeout(fn, ms);
+}
 import { Canvas } from './canvas';
 import { Minimap } from './minimap';
 import { Nodes } from './nodes';
@@ -13,9 +21,9 @@ import { Edges } from './edges';
 import { Palette } from './palette';
 import { Inspector } from './inspector';
 import { Exec } from './exec';
-import { saveWorkflow as saveWorkflowApi, deleteWorkflowApi, checkServerHealth } from './api';
+import { saveWorkflow as saveWorkflowApi, deleteWorkflowApi } from './api';
 
-let serverAvailable = false;
+let serverAvailable: boolean | null = null;
 
 function buildCallbacks(): AppCallbacks {
   return {
@@ -43,6 +51,7 @@ export const App = {
   init() {
     const cb = buildCallbacks();
     Canvas.init(cb);
+    Canvas.onApply(() => Minimap.render());
     Nodes.init(cb);
     Edges.init(cb);
     Inspector.init(cb);
@@ -52,19 +61,12 @@ export const App = {
     );
     Palette.render();
     this.loadWorkflowsFromStorage();
-    if (!State.currentWfId) this.newWorkflow(true);
     this.bindShortcuts();
     this.bindTitleInput();
     this.bindFileInput();
     this.bindTopbarActions();
     this.syncThemeIcon();
     this.renderAll();
-
-    // Check server availability
-    checkServerHealth().then(ok => {
-      serverAvailable = ok;
-      if (ok) this.log('info', null, 'Connected to workflow server');
-    });
   },
 
   syncThemeIcon() {
@@ -102,6 +104,42 @@ export const App = {
     document.documentElement.setAttribute('data-theme', next);
     try { localStorage.setItem('flow-studio:theme', next); } catch { /* ignore */ }
     this.syncThemeIcon();
+  },
+
+  toggleMinimap() {
+    const el = document.getElementById('minimap');
+    if (!el) return;
+    const hidden = el.style.display === 'none';
+    el.style.display = hidden ? '' : 'none';
+    const btn = document.getElementById('btnMinimap');
+    if (btn) btn.classList.toggle('active', hidden);
+    if (hidden) Minimap.render();
+  },
+
+  togglePanel(panel: 'palette' | 'inspector' | 'logs') {
+    const app = document.querySelector('.app');
+    if (!app) return;
+    const cls = `${panel}-collapsed`;
+    app.classList.toggle(cls);
+    const collapsed = app.classList.contains(cls);
+
+    // Flip the chevron direction on the toggle button
+    if (panel === 'palette') {
+      const btn = document.querySelector('.panel-toggle-left') as HTMLElement | null;
+      if (btn) btn.innerHTML = collapsed
+        ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 18l-6-6 6-6"/></svg>';
+    } else if (panel === 'inspector') {
+      const btn = document.querySelector('.panel-toggle-right') as HTMLElement | null;
+      if (btn) btn.innerHTML = collapsed
+        ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 18l-6-6 6-6"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>';
+    } else if (panel === 'logs') {
+      const btn = document.querySelector('.panel-toggle-bottom') as HTMLElement | null;
+      if (btn) btn.innerHTML = collapsed
+        ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 15l6-6 6 6"/></svg>';
+    }
   },
 
   select(kind: 'node' | 'edge' | null, id?: string) {
@@ -234,7 +272,8 @@ export const App = {
     Object.assign(node, patch);
     this.markDirty();
     Nodes.render();
-    Inspector.render();
+    // Debounce inspector re-render so typing in property fields isn't interrupted
+    debouncedRender(() => Inspector.render());
   },
 
   updateNodeConfig(id: string, key: string, value: unknown) {
@@ -243,6 +282,7 @@ export const App = {
     node.config = { ...(node.config || {}), [key]: value as string | number | boolean };
     this.markDirty();
     Nodes.render();
+    // Don't re-render inspector immediately — the user is typing in it
   },
 
   deleteNode(id: string) {
@@ -338,10 +378,20 @@ export const App = {
   },
 
   // ---------- WORKFLOW OPS ----------
+  nextUntitledName(): string {
+    const existing = new Set(Object.values(State.workflows).map(w => w.name));
+    if (!existing.has('Untitled')) return 'Untitled';
+    for (let i = 2; ; i++) {
+      const candidate = `Untitled ${i}`;
+      if (!existing.has(candidate)) return candidate;
+    }
+  },
+
   newWorkflow(silent = false) {
     const id = uid('wf');
+    const name = this.nextUntitledName();
     const wf: WorkflowData = {
-      id, name: 'Untitled workflow',
+      id, name,
       nodes: [], edges: [],
       createdAt: now(), updatedAt: now()
     };
@@ -351,11 +401,12 @@ export const App = {
     State.edges.clear();
     State.isDirty = false;
     State.logs = [];
+    // Set the title input BEFORE createNode/saveToStorage so the name isn't overwritten
+    const titleInput = document.getElementById('wfTitleInput') as HTMLInputElement | null;
+    if (titleInput) titleInput.value = wf.name;
     this.createNode('start', 240, 180);
     State.isDirty = false;
     this.saveToStorage();
-    const titleInput = document.getElementById('wfTitleInput') as HTMLInputElement | null;
-    if (titleInput) titleInput.value = wf.name;
     this.renderAll();
     if (!silent) toast('New workflow created', 'success');
   },
@@ -364,7 +415,7 @@ export const App = {
     const wf = State.workflows[State.currentWfId || ''];
     if (!wf) return;
     const titleInput = document.getElementById('wfTitleInput') as HTMLInputElement | null;
-    wf.name = titleInput?.value || 'Untitled workflow';
+    wf.name = titleInput?.value || wf.name || 'Untitled';
     wf.nodes = [...State.nodes.values()];
     wf.edges = [...State.edges.values()];
     wf.updatedAt = now();
@@ -372,13 +423,15 @@ export const App = {
     State.lastSaved = now();
     this.saveToStorage();
 
-    // Try server save
-    if (serverAvailable) {
+    // Try server save (skip if previously failed)
+    if (serverAvailable !== false) {
       try {
         await saveWorkflowApi(wf.id, wf);
+        serverAvailable = true;
         toast('Saved to server', 'success');
       } catch {
-        toast('Saved locally (server unavailable)', 'success');
+        serverAvailable = false;
+        toast('Workflow saved', 'success');
       }
     } else {
       toast('Workflow saved', 'success');
@@ -415,7 +468,7 @@ export const App = {
       confirmLabel: 'Delete',
       danger: true,
       onConfirm: async () => {
-        if (serverAvailable) {
+        if (serverAvailable === true) {
           try { await deleteWorkflowApi(wf.id); } catch { /* ignore */ }
         }
         delete State.workflows[State.currentWfId || ''];
@@ -436,7 +489,7 @@ export const App = {
     const wf = State.workflows[State.currentWfId || ''];
     if (!wf) return;
     const titleInput = document.getElementById('wfTitleInput') as HTMLInputElement | null;
-    wf.name = titleInput?.value || 'Untitled workflow';
+    wf.name = titleInput?.value || wf.name || 'Untitled';
     wf.nodes = [...State.nodes.values()];
     wf.edges = [...State.edges.values()];
     const data = JSON.stringify(wf, null, 2);
@@ -525,6 +578,15 @@ export const App = {
   },
 
   // ---------- STORAGE ----------
+  clearStorage() {
+    State.workflows = {};
+    State.currentWfId = null;
+    try {
+      localStorage.removeItem('flow-studio:workflows');
+      localStorage.removeItem('flow-studio:currentId');
+    } catch { /* ignore */ }
+  },
+
   saveToStorage() {
     if (State.currentWfId) {
       const wf = State.workflows[State.currentWfId];
@@ -546,7 +608,19 @@ export const App = {
   loadWorkflowsFromStorage() {
     try {
       const raw = localStorage.getItem('flow-studio:workflows');
-      if (raw) State.workflows = JSON.parse(raw);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        // Deduplicate by name — drop extra copies of the same name (migration fix)
+        const seen = new Set<string>();
+        const clean: Record<string, WorkflowData> = {};
+        for (const wf of Object.values(parsed) as WorkflowData[]) {
+          if (!seen.has(wf.name)) {
+            seen.add(wf.name);
+            clean[wf.id] = wf;
+          }
+        }
+        State.workflows = clean;
+      }
       const currentId = localStorage.getItem('flow-studio:currentId');
       if (currentId && State.workflows[currentId]) {
         this.loadWorkflow(currentId);
@@ -595,12 +669,100 @@ export const App = {
     }).join('');
   },
 
+  // ---------- CLIPBOARD ----------
+  _clipboard: null as { nodes: FlowNode[]; edges: FlowEdge[] } | null,
+
+  copySelected() {
+    if (State.selection.kind !== 'node' || !State.selection.id) return;
+    const rootId = State.selection.id;
+
+    // Collect the selected node and all its descendants
+    const collectIds = (nid: string, acc: Set<string>): Set<string> => {
+      acc.add(nid);
+      const n = State.nodes.get(nid);
+      if (n?.children) {
+        Object.values(n.children).forEach(arr => arr.forEach(cid => collectIds(cid, acc)));
+      }
+      return acc;
+    };
+    const ids = collectIds(rootId, new Set<string>());
+
+    // Deep-clone nodes
+    const nodes = [...ids].map(id => clone(State.nodes.get(id)!));
+
+    // Collect edges that are fully within the copied set
+    const edges: FlowEdge[] = [];
+    State.edges.forEach(e => {
+      if (ids.has(e.source) && ids.has(e.target)) {
+        edges.push(clone(e));
+      }
+    });
+
+    this._clipboard = { nodes, edges };
+    toast(`Copied ${nodes.length} node${nodes.length > 1 ? 's' : ''}`, 'info');
+  },
+
+  pasteClipboard() {
+    if (!this._clipboard) return;
+    const { nodes, edges } = this._clipboard;
+
+    // Build old→new ID mapping
+    const idMap = new Map<string, string>();
+    nodes.forEach(n => idMap.set(n.id, uid('n')));
+    edges.forEach(e => idMap.set(e.id, uid('e')));
+
+    // Paste offset so pasted nodes don't overlap originals
+    const offset = 40;
+
+    // Create new nodes with remapped IDs
+    nodes.forEach(n => {
+      const newNode: FlowNode = {
+        ...clone(n),
+        id: idMap.get(n.id)!,
+        x: n.x + offset,
+        y: n.y + offset,
+        status: '',
+        parentId: n.parentId ? (idMap.get(n.parentId) || null) : null,
+        parentSlot: n.parentSlot,
+      };
+      // Remap children IDs
+      if (newNode.children) {
+        const newChildren: Record<string, string[]> = {};
+        for (const [slot, arr] of Object.entries(newNode.children)) {
+          newChildren[slot] = arr.map(cid => idMap.get(cid) || cid);
+        }
+        newNode.children = newChildren;
+      }
+      State.nodes.set(newNode.id, newNode);
+    });
+
+    // Create new edges with remapped IDs
+    edges.forEach(e => {
+      const newEdge: FlowEdge = {
+        ...clone(e),
+        id: idMap.get(e.id)!,
+        source: idMap.get(e.source) || e.source,
+        target: idMap.get(e.target) || e.target,
+      };
+      State.edges.set(newEdge.id, newEdge);
+    });
+
+    this.markDirty();
+    // Select the root pasted node
+    const newRootId = idMap.get(nodes[0].id);
+    if (newRootId) this.select('node', newRootId);
+    this.renderAll();
+    toast(`Pasted ${nodes.length} node${nodes.length > 1 ? 's' : ''}`, 'success');
+  },
+
   // ---------- SHORTCUTS ----------
   bindShortcuts() {
     window.addEventListener('keydown', (e) => {
       if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') return;
       if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); this.saveWorkflow(); }
       if ((e.ctrlKey || e.metaKey) && e.key === 'n') { e.preventDefault(); this.newWorkflow(); }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') { this.copySelected(); }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v') { this.pasteClipboard(); }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (State.selection.kind === 'node') this.deleteNode(State.selection.id!);
         if (State.selection.kind === 'edge') this.deleteEdge(State.selection.id!);
@@ -647,6 +809,10 @@ export const App = {
         case 'zoom-out': Canvas.zoom(0.87); break;
         case 'fit-view': Canvas.fitToView(); break;
         case 'reset-view': Canvas.reset(); break;
+        case 'toggle-minimap': this.toggleMinimap(); break;
+        case 'toggle-palette': this.togglePanel('palette'); break;
+        case 'toggle-inspector': this.togglePanel('inspector'); break;
+        case 'toggle-logs': this.togglePanel('logs'); break;
         case 'clear-logs': this.clearLogs(); break;
       }
     });

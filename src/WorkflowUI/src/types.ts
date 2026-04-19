@@ -20,6 +20,13 @@ export interface NodeTypeDefinition {
   desc: string;
   ports: NodeTypePorts;
   branches?: string[];
+  /** Optional custom tooltip labels for ports */
+  portLabels?: {
+    in?: string;
+    out?: string;
+    error?: string;
+    branches?: Record<string, string>;
+  };
   config: NodeTypeConfig;
 }
 
@@ -50,6 +57,7 @@ export interface FlowEdge {
   sourcePortName?: string;
   target: string;
   targetPort: string;
+  label?: string;
   _active?: boolean;
 }
 

@@ -24,7 +24,7 @@ export function escapeHtml(s: string): string {
   return div.innerHTML;
 }
 
-/** Slot names for a node (branch names for if/switch/parallel/loop, '_body' for container). */
+/** Slot names for a node (branch names for if/switch/parallel/foreach, '_body' for container). */
 export function getSlots(node: FlowNode | undefined): string[] {
   if (!node) return [];
   const t = NodeTypes[node.type];

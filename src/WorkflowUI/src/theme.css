@@ -148,8 +148,8 @@
   /* ============ LAYOUT ============ */
   .app {
     display: grid;
-    grid-template-columns: 248px 1fr 320px;
-    grid-template-rows: 48px 1fr 180px;
+    grid-template-columns: var(--palette-w, 248px) 1fr var(--inspector-w, 320px);
+    grid-template-rows: 48px 1fr var(--logs-h, 180px);
     grid-template-areas:
       "topbar topbar topbar"
       "palette canvas inspector"
@@ -160,7 +160,11 @@
       radial-gradient(ellipse at 20% 0%, rgba(212,166,87,0.04), transparent 50%),
       radial-gradient(ellipse at 80% 100%, rgba(148,180,247,0.03), transparent 50%),
       var(--bg-0);
+    transition: grid-template-columns 0.25s ease, grid-template-rows 0.25s ease;
   }
+  .app.palette-collapsed { --palette-w: 0px; }
+  .app.inspector-collapsed { --inspector-w: 0px; }
+  .app.logs-collapsed { --logs-h: 0px; }
 
   /* ============ TOPBAR ============ */
   .topbar {
@@ -276,6 +280,36 @@
     border-right: 1px solid var(--stroke-1);
     overflow-y: auto;
     display: flex; flex-direction: column;
+    transition: opacity 0.2s ease;
+  }
+  .app.palette-collapsed .palette {
+    opacity: 0; pointer-events: none; overflow: hidden;
+  }
+
+  .panel-toggle {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px; height: 40px;
+    background: var(--bg-1);
+    border: 1px solid var(--stroke-1);
+    display: grid; place-items: center;
+    cursor: pointer;
+    z-index: 20;
+    color: var(--text-3);
+    transition: color 0.12s, background 0.12s;
+  }
+  .panel-toggle:hover { background: var(--bg-3); color: var(--text-0); }
+  .panel-toggle svg { width: 10px; height: 10px; }
+  .panel-toggle-left {
+    left: 0;
+    border-radius: 0 6px 6px 0;
+    border-left: none;
+  }
+  .panel-toggle-right {
+    right: 0;
+    border-radius: 6px 0 0 6px;
+    border-right: none;
   }
   .palette-search {
     padding: 12px;
@@ -421,6 +455,7 @@
   }
   .zoom-ctrls button:last-child { border-bottom: 0; }
   .zoom-ctrls button:hover { background: var(--bg-3); color: var(--text-0); }
+  .zoom-ctrls button.active { background: var(--bg-3); color: var(--accent); }
   .zoom-level {
     background: var(--bg-1);
     border: 1px solid var(--stroke-1);
@@ -859,10 +894,34 @@
     font-size: 10px;
     font-family: 'JetBrains Mono', monospace;
     font-weight: 500;
+    cursor: text;
   }
   .edge-label-bg {
     fill: var(--bg-1);
     stroke: var(--stroke-1);
+    cursor: text;
+  }
+  .edge-label-editor {
+    position: fixed;
+    z-index: 200;
+    transform: translate(-50%, -50%);
+  }
+  .edge-label-input {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-0);
+    background: var(--bg-1);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 4px 8px;
+    width: 120px;
+    text-align: center;
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(229,179,106,0.2), 0 4px 12px rgba(0,0,0,0.4);
+  }
+  .edge-label-input::placeholder {
+    color: var(--text-3);
   }
 
   /* ============ INSPECTOR ============ */
@@ -872,6 +931,10 @@
     border-left: 1px solid var(--stroke-1);
     overflow-y: auto;
     display: flex; flex-direction: column;
+    transition: opacity 0.2s ease;
+  }
+  .app.inspector-collapsed .inspector {
+    opacity: 0; pointer-events: none; overflow: hidden;
   }
   .ins-header {
     padding: 12px 14px;
@@ -962,7 +1025,31 @@
     border-top: 1px solid var(--stroke-1);
     display: flex; flex-direction: column;
     overflow: hidden;
+    position: relative;
+    transition: opacity 0.2s ease;
   }
+  .app.logs-collapsed .logs {
+    opacity: 0; pointer-events: none; overflow: hidden;
+  }
+
+  .panel-toggle-bottom {
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 40px; height: 16px;
+    background: var(--bg-1);
+    border: 1px solid var(--stroke-1);
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+    display: grid; place-items: center;
+    cursor: pointer;
+    z-index: 20;
+    color: var(--text-3);
+    transition: color 0.12s, background 0.12s;
+  }
+  .panel-toggle-bottom:hover { background: var(--bg-3); color: var(--text-0); }
+  .panel-toggle-bottom svg { width: 10px; height: 10px; }
   .logs-header {
     display: flex; align-items: center; padding: 8px 14px; gap: 10px;
     border-bottom: 1px solid var(--stroke-1);
@@ -1089,5 +1176,85 @@
     border-radius: 8px;
     overflow: hidden;
     z-index: 5;
+    cursor: grab;
   }
-  .minimap svg { width: 100%; height: 100%; }
+  .minimap:active { cursor: grabbing; }
+  .minimap svg { width: 100%; height: 100%; pointer-events: none; }
+
+  /* ============ PORT TOOLTIPS ============ */
+  .port[data-tooltip] {
+    position: absolute; /* already set, but reinforced for ::after stacking context */
+  }
+  .port[data-tooltip]::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    white-space: nowrap;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.03em;
+    line-height: 1;
+    color: var(--text-1);
+    background: var(--bg-2);
+    border: 1px solid var(--stroke-2);
+    border-radius: 5px;
+    padding: 4px 7px;
+    pointer-events: none;
+    opacity: 0;
+    transform: scale(0.92);
+    transition: opacity 0.12s ease, transform 0.12s ease;
+    z-index: 100;
+    box-shadow:
+      0 2px 8px rgba(0,0,0,0.35),
+      0 0 0 1px rgba(255,255,255,0.04) inset;
+  }
+  .port[data-tooltip]:hover::after {
+    opacity: 1;
+    transform: scale(1);
+    transition-delay: 0.25s;
+  }
+  /* in port — tooltip above */
+  .port.in[data-tooltip]::after {
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%) scale(0.92);
+  }
+  .port.in[data-tooltip]:hover::after {
+    transform: translateX(-50%) scale(1);
+  }
+  /* out port — tooltip below */
+  .port.out[data-tooltip]::after {
+    top: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%) scale(0.92);
+  }
+  .port.out[data-tooltip]:hover::after {
+    transform: translateX(-50%) scale(1);
+  }
+  /* error port — tooltip to the right */
+  .port.error[data-tooltip]::after {
+    left: calc(100% + 8px);
+    top: 50%;
+    transform: translateY(-50%) scale(0.92);
+  }
+  .port.error[data-tooltip]:hover::after {
+    transform: translateY(-50%) scale(1);
+  }
+  /* branch port — tooltip below */
+  .branch-port .port[data-tooltip]::after {
+    top: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%) scale(0.92);
+  }
+  .branch-port .port[data-tooltip]:hover::after {
+    transform: translateX(-50%) scale(1);
+  }
+
+  /* Light-mode adjustments */
+  :root[data-theme="light"] .port[data-tooltip]::after {
+    background: var(--bg-1);
+    border-color: var(--stroke-2);
+    box-shadow:
+      0 2px 8px rgba(0,0,0,0.12),
+      0 0 0 1px rgba(15,20,30,0.06) inset;
+  }

@@ -69,6 +69,15 @@ export const Canvas = {
     innerEl.style.transform = `translate(${State.canvas.x}px, ${State.canvas.y}px) scale(${State.canvas.zoom})`;
     const zoomEl = document.getElementById('zoomLevel');
     if (zoomEl) zoomEl.textContent = Math.round(State.canvas.zoom * 100) + '%';
+    // Notify minimap of viewport change (lazy import avoids circular dep)
+    if (this._onApply) this._onApply();
+  },
+
+  _onApply: null as (() => void) | null,
+
+  /** Register a callback that fires after every apply (used by minimap) */
+  onApply(fn: () => void) {
+    this._onApply = fn;
   },
 
   zoom(factor: number) {

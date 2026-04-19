@@ -144,11 +144,19 @@ export const Nodes = {
     const type = NodeTypes[node.type];
     if (!type) return '';
     const ports = type.ports;
+    const labels = type.portLabels;
     let portsHtml = '';
-    if (ports.in) portsHtml += `<div class="port in" data-port-kind="in" data-node-id="${node.id}"></div>`;
-    if (ports.out && !type.branches) portsHtml += `<div class="port out" data-port-kind="out" data-node-id="${node.id}"></div>`;
-    const errorPortHtml = (ports.error && !type.branches)
-      ? `<div class="port error" data-port-kind="error" data-node-id="${node.id}" title="onError"></div>`
+    if (ports.in) {
+      const tip = escapeHtml(labels?.in || 'in');
+      portsHtml += `<div class="port in" data-port-kind="in" data-node-id="${node.id}" data-tooltip="${tip}"></div>`;
+    }
+    if (ports.out) {
+      const tip = escapeHtml(labels?.out || 'out');
+      portsHtml += `<div class="port out" data-port-kind="out" data-node-id="${node.id}" data-tooltip="${tip}"></div>`;
+    }
+    const errorTip = escapeHtml(labels?.error || 'onError');
+    const errorPortHtml = ports.error
+      ? `<div class="port error" data-port-kind="error" data-node-id="${node.id}" data-tooltip="${errorTip}"></div>`
       : '';
 
     const branchesHtml = type.branches ? this.branchHtml(node) : '';
@@ -158,7 +166,7 @@ export const Nodes = {
     const typeLabel = `<span class="node-type-label mono">${node.type}</span>`;
     const dropAbove = ports.in ? `<div class="drop-zone above" data-node-id="${node.id}" data-position="before"></div>` : '';
     const dropBelow = (ports.out || type.branches) ? `<div class="drop-zone below" data-node-id="${node.id}" data-position="after"></div>` : '';
-    const dropError = (ports.error && !type.branches) ? `<div class="drop-zone error-right" data-node-id="${node.id}" data-position="after-error"></div>` : '';
+    const dropError = ports.error ? `<div class="drop-zone error-right" data-node-id="${node.id}" data-position="after-error"></div>` : '';
     const safeName = escapeHtml(node.name || type.label);
 
     const bodyContent = node.type === 'container'
@@ -186,7 +194,7 @@ export const Nodes = {
     const c = node.config || {};
     if (node.type === 'if') return `<div class="node-body-row"><span class="lab">if</span><span class="val">${escapeHtml(String(c.condition || '—'))}</span></div>`;
     if (node.type === 'switch') return `<div class="node-body-row"><span class="lab">switch</span><span class="val">${escapeHtml(String(c.expression || '—'))}</span></div>`;
-    if (node.type === 'loop') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.mode))}</span><span class="val">${escapeHtml(String(c.source || '—'))}</span></div>`;
+    if (node.type === 'foreach') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.mode))}</span><span class="val">${escapeHtml(String(c.source || '—'))}</span></div>`;
     if (node.type === 'ai') {
       const binding = c.mode === 'skill' ? String(c.skillId || '—') : String(c.subagentId || '—');
       return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.mode))}</span><span class="val">${escapeHtml(binding)}</span></div><div class="node-body-row"><span class="lab">model</span><span class="val">${escapeHtml(String(c.model))}</span></div>`;
@@ -195,6 +203,7 @@ export const Nodes = {
     if (node.type === 'delay') return `<div class="node-body-row"><span class="lab">wait</span><span class="val">${escapeHtml(String(c.duration))}${escapeHtml(String(c.unit))}</span></div>`;
     if (node.type === 'subflow') return `<div class="node-body-row"><span class="lab">flow</span><span class="val">${escapeHtml(c.workflowId ? (State.workflows[String(c.workflowId)]?.name || String(c.workflowId)) : '—')}</span></div>`;
     if (node.type === 'start') return `<div class="node-body-row"><span class="lab">trigger</span><span class="val">${escapeHtml(String(c.triggerType))}</span></div>`;
+    if (node.type === 'trigger') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.method))}</span><span class="val">${escapeHtml(String(c.route || '—'))}</span></div>`;
     if (node.type === 'transform') return `<div class="node-body-row"><span class="lab">expr</span><span class="val">${escapeHtml(String(c.expression || '—'))}</span></div>`;
     if (node.type === 'log') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.level))}</span><span class="val">${escapeHtml(String(c.message || '—'))}</span></div>`;
     if (node.type === 'parallel') return `<div class="node-body-row"><span class="lab">join</span><span class="val">${escapeHtml(String(c.joinMode))}</span></div>`;
@@ -205,14 +214,18 @@ export const Nodes = {
   branchHtml(node: FlowNode): string {
     const type = NodeTypes[node.type];
     const branches = node.branches || type?.branches || [];
+    const branchLabels = type?.portLabels?.branches;
     return `<div class="branch-ports">${
-      branches.map(b => `
+      branches.map(b => {
+        const tip = escapeHtml(branchLabels?.[b] || b);
+        return `
         <div class="branch-port" data-branch="${escapeHtml(b)}" data-parent-id="${node.id}">
           <div class="branch-port-label">${escapeHtml(b)}</div>
           <div class="branch-port-children"></div>
-          <div class="port" data-port-kind="branch" data-port-name="${escapeHtml(b)}" data-node-id="${node.id}"></div>
+          <div class="port" data-port-kind="branch" data-port-name="${escapeHtml(b)}" data-node-id="${node.id}" data-tooltip="${tip}"></div>
         </div>
-      `).join('')
+      `;
+      }).join('')
     }</div>`;
   },
 
