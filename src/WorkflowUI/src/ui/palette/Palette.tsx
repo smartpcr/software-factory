@@ -3,6 +3,7 @@ import { buildPaletteCatalog } from './paletteCatalog';
 import { filterPaletteEntries } from './filterPaletteEntries';
 import { DRAG_TYPE, encodeDragPayload } from './dragPayload';
 import type { PaletteEntry } from '../nodes/nodeKindRegistry';
+import './Palette.css';
 
 export function Palette() {
   const [query, setQuery] = useState('');
@@ -17,50 +18,50 @@ export function Palette() {
   );
 
   return (
-    <aside data-testid="palette" aria-label="Node palette" style={{ padding: 8, width: 220 }}>
-      <input
-        type="search"
-        placeholder="Search nodes..."
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        data-testid="palette-search"
-        aria-label="Filter palette"
-        style={{ width: '100%', marginBottom: 8, padding: '4px 8px' }}
-      />
+    <div className="palette" data-testid="palette" aria-label="Node palette">
+      <div className="palette-search">
+        <input
+          type="search"
+          placeholder="Search components…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          data-testid="palette-search"
+          aria-label="Filter palette"
+        />
+      </div>
       {catalog.map((group) => {
         const filtered = filterPaletteEntries(group.entries, query);
         if (filtered.length === 0) return null;
         return (
-          <div key={group.group} data-testid={`palette-group-${group.group}`}>
-            <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4, color: '#6b7280' }}>
-              {group.label}
-            </div>
-            {filtered.map((entry) => (
-              <div
-                key={entry.runtimeType}
-                draggable
-                onDragStart={(e) => handleDragStart(entry, e)}
-                data-testid={`palette-item-${entry.runtimeType}`}
-                role="button"
-                tabIndex={0}
-                aria-label={`Drag ${entry.icon.label} node`}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  padding: '4px 6px',
-                  cursor: 'grab',
-                  borderRadius: 4,
-                  fontSize: 13,
-                }}
-              >
-                <span aria-hidden="true">{entry.icon.emoji}</span>
-                <span>{entry.icon.label}</span>
-              </div>
-            ))}
+          <div key={group.group} className="palette-section" data-testid={`palette-group-${group.group}`}>
+            <div className="palette-section-title">{group.label}</div>
+            {filtered.map((entry) => {
+              const IconComp = entry.icon.Icon;
+              return (
+                <div
+                  key={entry.runtimeType}
+                  className="palette-item"
+                  draggable
+                  onDragStart={(e) => handleDragStart(entry, e)}
+                  data-testid={`palette-item-${entry.runtimeType}`}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Drag ${entry.icon.label} node`}
+                  style={{ color: entry.icon.cssColor }}
+                >
+                  <div className="palette-item-icon">
+                    <IconComp size={14} />
+                  </div>
+                  <div className="palette-item-text">
+                    <div className="palette-item-name">{entry.icon.label}</div>
+                    <div className="palette-item-desc">{entry.description}</div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         );
       })}
-    </aside>
+    </div>
   );
 }

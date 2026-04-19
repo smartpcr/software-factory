@@ -160,30 +160,30 @@ Replace emoji-based `nodeIcons.ts` with SVG icon components.
 
 ---
 
-### [ ] Phase B — Topbar & Palette Reskin
+### [x] Phase B — Topbar & Palette Reskin
 
-#### [ ] B.1 Topbar Component
+#### [x] B.1 Topbar Component
 
 **Files to create:**
-- [ ] `src/ui/topbar/Topbar.tsx` — brand, title input, toolbar groups, theme toggle, exec indicator, run controls
-- [ ] `src/ui/topbar/Topbar.css` — `.topbar`, `.brand`, `.tb-group`, `.tb-btn`, `.exec-indicator` styles
-- [ ] `src/ui/topbar/WorkflowTitleInput.tsx` — editable title with dirty-dot indicator
-- [ ] `src/ui/topbar/ExecutionIndicator.tsx` — status pulse dot + label
-- [ ] `src/ui/topbar/RunControls.tsx` — Run/Pause/Resume/Rerun/Cancel button group
+- [x] `src/ui/topbar/Topbar.tsx` — brand, title input, toolbar groups, theme toggle, exec indicator, run controls
+- [x] `src/ui/topbar/Topbar.css` — `.topbar`, `.brand`, `.tb-group`, `.tb-btn`, `.exec-indicator` styles
+- [x] `src/ui/topbar/WorkflowTitleInput.tsx` — editable title with dirty-dot indicator
+- [x] `src/ui/topbar/ExecutionIndicator.tsx` — status pulse dot + label
+- [x] `src/ui/topbar/RunControls.tsx` — Run/Pause/Resume/Rerun/Cancel button group
 
 **Mapping to flow-studio:** Lines 186–291 (CSS), 1120–1192 (HTML), 2577–2629 (App.init/shortcuts).
 
-#### [ ] B.2 Palette Reskin
+#### [x] B.2 Palette Reskin
 
 Restyle the existing `<Palette>` component to match flow-studio's design.
 
 **Files to create:**
-- [ ] `src/ui/palette/Palette.css` — `.palette`, `.palette-search`, `.palette-section`, `.palette-item` styles
-- [ ] `src/ui/palette/WorkflowList.tsx` — workflow list sub-component (`.wf-item` with active state, inline delete)
+- [x] `src/ui/palette/Palette.css` — `.palette`, `.palette-search`, `.palette-section`, `.palette-item` styles
+- [x] `src/ui/palette/WorkflowList.tsx` — workflow list sub-component (`.wf-item` with active state, inline delete)
 
 **Files to update:**
-- [ ] `src/ui/palette/Palette.tsx` — replace inline styles; add category grouping with SVG icons + descriptions; integrate `<WorkflowList>`
-- [ ] `src/ui/palette/paletteCatalog.ts` — add `description` field per entry
+- [x] `src/ui/palette/Palette.tsx` — replace inline styles; add category grouping with SVG icons + descriptions; integrate `<WorkflowList>`
+- [x] `src/ui/palette/paletteCatalog.ts` — add `description` field per entry
 
 **Mapping to flow-studio:** Lines 292–382 (CSS palette), 1194–1209 (HTML), 2168–2203 (Palette JS).
 

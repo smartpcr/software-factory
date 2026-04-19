@@ -5,6 +5,7 @@ type Theme = 'dark' | 'light';
 
 function getSystemTheme(): Theme {
   if (typeof window === 'undefined') return 'dark';
+  if (typeof window.matchMedia !== 'function') return 'dark';
   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
 
@@ -28,15 +29,19 @@ function subscribe(onStoreChange: () => void): () => void {
   };
   window.addEventListener('storage', handler);
 
-  const mq = window.matchMedia('(prefers-color-scheme: light)');
-  const mqHandler = () => {
-    if (!localStorage.getItem(STORAGE_KEY)) onStoreChange();
-  };
-  mq.addEventListener('change', mqHandler);
+  let mqCleanup: (() => void) | undefined;
+  if (typeof window.matchMedia === 'function') {
+    const mq = window.matchMedia('(prefers-color-scheme: light)');
+    const mqHandler = () => {
+      if (!localStorage.getItem(STORAGE_KEY)) onStoreChange();
+    };
+    mq.addEventListener('change', mqHandler);
+    mqCleanup = () => mq.removeEventListener('change', mqHandler);
+  }
 
   return () => {
     window.removeEventListener('storage', handler);
-    mq.removeEventListener('change', mqHandler);
+    mqCleanup?.();
   };
 }
 

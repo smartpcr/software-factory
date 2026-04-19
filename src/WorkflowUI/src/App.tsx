@@ -9,12 +9,23 @@ import { WorkspaceTree } from './workspace/WorkspaceTree';
 import { ImportExportDialog } from './workspace/ImportExportDialog';
 import { DuplicateDialog } from './workspace/DuplicateDialog';
 import { AppShell } from './ui/layout/AppShell';
+import { Topbar } from './ui/topbar/Topbar';
+import { useGraphStore } from './ui/state/graphStore';
 
 export function App() {
   const { entries, validate } = useWorkflowValidation();
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
   const [showImportExport, setShowImportExport] = useState(false);
   const [duplicateSourceId, setDuplicateSourceId] = useState<string | null>(null);
+  const workflowName = useGraphStore((s) => s.workflowName);
+
+  const topbarContent = (
+    <Topbar
+      workflowName={workflowName}
+      onWorkflowNameChange={() => {}}
+      onImport={() => setShowImportExport(true)}
+    />
+  );
 
   const paletteContent = (
     <>
@@ -65,7 +76,7 @@ export function App() {
 
   return (
     <AppShell
-      topbar={<div style={{ display: 'flex', alignItems: 'center', padding: '0 14px', color: 'var(--text-0)', fontSize: 14, fontWeight: 600 }}>Workflow UI</div>}
+      topbar={topbarContent}
       palette={paletteContent}
       canvas={canvasContent}
       inspector={inspectorContent}
