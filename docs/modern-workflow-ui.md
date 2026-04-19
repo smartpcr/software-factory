@@ -425,48 +425,48 @@ Restyle `<PropertyGrid>` as `<Inspector>` matching flow-studio's right panel des
 
 ---
 
-### [ ] Phase G — Canvas HUD, Minimap, Toasts, Modals, Keyboard
+### [x] Phase G — Canvas HUD, Minimap, Toasts, Modals, Keyboard
 
-#### [ ] G.1 Custom Canvas HUD
+#### [x] G.1 Custom Canvas HUD
 
 Replace React Flow's `<Controls>` with a custom zoom control panel.
 
 **Files to create:**
-- [ ] `src/ui/canvas/CanvasHUD.tsx` — zoom in/out/fit/reset buttons + zoom percentage display
-- [ ] `src/ui/canvas/CanvasHUD.css` — `.canvas-hud`, `.zoom-ctrls`, `.zoom-level`
+- [x] `src/ui/canvas/CanvasHUD.tsx` — zoom in/out/fit/reset buttons + zoom percentage display
+- [x] `src/ui/canvas/CanvasHUD.css` — `.canvas-hud`, `.zoom-ctrls`, `.zoom-level`
 
 **Files to update:**
-- [ ] `src/ui/canvas/WorkflowCanvas.tsx` — replace `<Controls>` with `<CanvasHUD>`
+- [x] `src/ui/canvas/WorkflowCanvas.tsx` — replace `<Controls>` with `<CanvasHUD>`
 
 **Mapping to flow-studio:** Lines 424–453 (CSS), 1225–1241 (HTML).
 
-#### [ ] G.2 Custom Minimap
+#### [x] G.2 Custom Minimap
 
 Optionally replace React Flow's `<MiniMap>` with a custom SVG minimap matching flow-studio's node-colored rectangles + viewport indicator.
 
 **Mapping to flow-studio:** Lines 1103–1113 (CSS), 1632–1666 (Minimap JS).
 
-#### [ ] G.3 Toast System
+#### [x] G.3 Toast System
 
 **Files to create:**
-- [ ] `src/ui/toasts/ToastContainer.tsx` — positioned container
-- [ ] `src/ui/toasts/toastStore.ts` — Zustand store for toast queue
-- [ ] `src/ui/toasts/Toasts.css` — `.toasts`, `.toast`, `.toast.success`, `.toast.error`, `.toast.info`
+- [x] `src/ui/toasts/ToastContainer.tsx` — positioned container
+- [x] `src/ui/toasts/toastStore.ts` — Zustand store for toast queue
+- [x] `src/ui/toasts/Toasts.css` — `.toasts`, `.toast`, `.toast.success`, `.toast.error`, `.toast.info`
 
 **Mapping to flow-studio:** Lines 1067–1095 (CSS), 1459–1466 (toast function).
 
-#### [ ] G.4 Modal System
+#### [x] G.4 Modal System
 
 **Files to create:**
-- [ ] `src/ui/modals/ConfirmModal.tsx` — backdrop + modal card with cancel/confirm
-- [ ] `src/ui/modals/ConfirmModal.css` — `.modal-backdrop`, `.modal`, `.modal-actions`
+- [x] `src/ui/modals/ConfirmModal.tsx` — backdrop + modal card with cancel/confirm
+- [x] `src/ui/modals/ConfirmModal.css` — `.modal-backdrop`, `.modal`, `.modal-actions`
 
 **Mapping to flow-studio:** Lines 1033–1065 (CSS), 3155–3172 (showModal).
 
-#### [ ] G.5 Keyboard Shortcuts
+#### [x] G.5 Keyboard Shortcuts
 
 **Files to create:**
-- [ ] `src/ui/hooks/useKeyboardShortcuts.ts` — global keydown handler for Ctrl+S, Ctrl+N, Del, Esc, +/−/0/F
+- [x] `src/ui/hooks/useKeyboardShortcuts.ts` — global keydown handler for Ctrl+S, Ctrl+N, Del, Esc, +/−/0/F
 
 **Mapping to flow-studio:** Lines 3127–3141 (bindShortcuts).
 

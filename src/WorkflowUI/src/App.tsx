@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { WorkflowCanvas } from './ui/canvas/WorkflowCanvas';
 import { Palette } from './ui/palette/Palette';
 import { ValidationPanel } from './ui/validation/ValidationPanel';
@@ -11,7 +11,9 @@ import { AppShell } from './ui/layout/AppShell';
 import { Topbar } from './ui/topbar/Topbar';
 import { Inspector } from './ui/inspector/Inspector';
 import { LogPanel } from './ui/logs/LogPanel';
+import { ToastContainer } from './ui/toasts/ToastContainer';
 import { useExecutionControls } from './ui/execution/useExecutionControls';
+import { useKeyboardShortcuts } from './ui/hooks/useKeyboardShortcuts';
 import { useGraphStore } from './ui/state/graphStore';
 
 export function App() {
@@ -20,7 +22,17 @@ export function App() {
   const [showImportExport, setShowImportExport] = useState(false);
   const [duplicateSourceId, setDuplicateSourceId] = useState<string | null>(null);
   const workflowName = useGraphStore((s) => s.workflowName);
+  const setSelectedNodeIds = useGraphStore((s) => s.setSelectedNodeIds);
   const exec = useExecutionControls();
+
+  const shortcutHandlers = useMemo(() => ({
+    onEscape: () => setSelectedNodeIds(new Set()),
+    onDelete: () => {
+      const ids = useGraphStore.getState().selectedNodeIds;
+      ids.forEach((id) => useGraphStore.getState().removeNode(id));
+    },
+  }), [setSelectedNodeIds]);
+  useKeyboardShortcuts(shortcutHandlers);
 
   const topbarContent = (
     <Topbar
@@ -84,12 +96,15 @@ export function App() {
   );
 
   return (
-    <AppShell
-      topbar={topbarContent}
-      palette={paletteContent}
-      canvas={canvasContent}
-      inspector={inspectorContent}
-      logs={<LogPanel />}
-    />
+    <>
+      <AppShell
+        topbar={topbarContent}
+        palette={paletteContent}
+        canvas={canvasContent}
+        inspector={inspectorContent}
+        logs={<LogPanel />}
+      />
+      <ToastContainer />
+    </>
   );
 }

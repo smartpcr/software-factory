@@ -2,7 +2,6 @@ import { useCallback, useMemo, useState } from 'react';
 import {
   ReactFlow,
   Background,
-  Controls,
   MiniMap,
   type Node as RFNode,
   type Edge as RFEdge,
@@ -17,6 +16,7 @@ import { useGraphStore } from '../state/graphStore';
 import { CanvasSurface } from './CanvasSurface';
 import { CANVAS_SNAP_GRID, DEFAULT_VIEWPORT, ZOOM_LIMITS } from './canvasConstants';
 import { useCanvasViewport } from './useCanvasViewport';
+import { CanvasHUD } from './CanvasHUD';
 import { nodeTypes } from './nodeTypes';
 import { edgeTypes } from './edgeTypes';
 import { useConnectionCreation } from './useConnectionCreation';
@@ -176,7 +176,7 @@ export function WorkflowCanvas({
           data-testid="react-flow-canvas"
         >
           <Background variant={BackgroundVariant.Dots} gap={CANVAS_SNAP_GRID[0]} />
-          {showControls && <Controls />}
+          {showControls && <CanvasHUD />}
           {showMiniMap && <MiniMap />}
         </ReactFlow>
         {editingEdge && (

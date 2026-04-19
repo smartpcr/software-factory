@@ -1,0 +1,48 @@
+/* ============ CANVAS HUD ============ */
+.canvas-hud {
+  position: absolute;
+  bottom: 14px;
+  right: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 5;
+}
+
+.zoom-ctrls {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  border: 1px solid var(--stroke-1);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.zoom-ctrls button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  color: var(--text-1);
+  border-bottom: 1px solid var(--stroke-1);
+}
+
+.zoom-ctrls button:last-child {
+  border-bottom: 0;
+}
+
+.zoom-ctrls button:hover {
+  background: var(--bg-3);
+  color: var(--text-0);
+}
+
+.zoom-level {
+  background: var(--bg-1);
+  border: 1px solid var(--stroke-1);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-2);
+  text-align: center;
+}
