@@ -1,0 +1,1 @@
+{"id":"wf_1ke3wtd","name":"Untitled","nodes":[{"id":"n_2rlzv0f","type":"start","name":"Start","x":240,"y":180,"width":220,"config":{"triggerType":"manual","schedule":"0 0 * * *"},"status":"","parentId":null,"parentSlot":null}],"edges":[]}

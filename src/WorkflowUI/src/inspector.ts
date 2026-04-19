@@ -15,16 +15,98 @@ export const Inspector = {
   render() {
     const el = document.getElementById('inspector');
     if (!el) return;
+    // Preserve the panel-toggle button if present
+    const toggle = el.querySelector('.panel-toggle-right');
+
     const { kind, id } = State.selection;
     if (!kind || !id) {
-      el.innerHTML = `<div class="ins-empty">
-        <svg class="ins-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l2 2"/></svg>
-        <div>Select a node or edge<br>to configure its properties</div>
-      </div>`;
+      this.renderWorkflowProperties(el);
       return;
     }
     if (kind === 'edge') { this.renderEdge(id); return; }
     if (kind === 'node') { this.renderNode(id); return; }
+  },
+
+  renderWorkflowProperties(el: HTMLElement) {
+    const wf = State.workflows[State.currentWfId || ''];
+    if (!wf) {
+      el.innerHTML = `<div class="ins-empty">
+        <svg class="ins-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l2 2"/></svg>
+        <div>No workflow loaded</div>
+      </div>`;
+      return;
+    }
+
+    const fmtDate = (ts: number) => ts ? new Date(ts).toLocaleString() : '—';
+    const nodeCount = State.nodes.size;
+    const edgeCount = State.edges.size;
+
+    el.innerHTML = `
+      <div class="ins-header">
+        <div class="ins-title">
+          <div class="node-icon" style="color: var(--accent); width: 24px; height: 24px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M13 2v7h7"/></svg>
+          </div>
+          <div>
+            <div class="ins-title-text">Workflow</div>
+            <div class="ins-subtitle mono">${nodeCount} nodes · ${edgeCount} edges</div>
+          </div>
+        </div>
+      </div>
+      <div class="ins-section">
+        <div class="ins-section-title">Properties</div>
+        <div class="ins-field">
+          <label class="ins-field-label">Name</label>
+          <input value="${escapeHtml(wf.name || '')}" data-bind="wf-name" />
+        </div>
+        <div class="ins-field">
+          <label class="ins-field-label">Author</label>
+          <input value="${escapeHtml(wf.author || '')}" placeholder="e.g. your name" data-bind="wf-author" />
+        </div>
+        <div class="ins-field">
+          <label class="ins-field-label">Version</label>
+          <input value="${escapeHtml(wf.version || '')}" placeholder="e.g. 1.0.0" data-bind="wf-version" />
+        </div>
+        <div class="ins-field">
+          <label class="ins-field-label">Purpose</label>
+          <textarea placeholder="Describe what this workflow does…" data-bind="wf-purpose">${escapeHtml(wf.purpose || '')}</textarea>
+        </div>
+      </div>
+      <div class="ins-section">
+        <div class="ins-section-title">Metadata</div>
+        <div class="ins-field">
+          <label class="ins-field-label">Created</label>
+          <input readonly value="${fmtDate(wf.createdAt)}" class="mono" />
+        </div>
+        <div class="ins-field">
+          <label class="ins-field-label">Last modified</label>
+          <input readonly value="${fmtDate(wf.updatedAt)}" class="mono" />
+        </div>
+        <div class="ins-field">
+          <label class="ins-field-label">Workflow ID</label>
+          <input readonly value="${escapeHtml(wf.id)}" class="mono" />
+        </div>
+      </div>
+    `;
+
+    // Bind editable fields
+    el.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('[data-bind]').forEach(input => {
+      input.addEventListener('input', () => {
+        const field = input.dataset.bind;
+        if (!wf) return;
+        switch (field) {
+          case 'wf-name':
+            wf.name = input.value;
+            const titleInput = document.getElementById('wfTitleInput') as HTMLInputElement | null;
+            if (titleInput) titleInput.value = input.value;
+            callbacks.markDirty();
+            break;
+          case 'wf-author': wf.author = input.value; callbacks.markDirty(); break;
+          case 'wf-version': wf.version = input.value; callbacks.markDirty(); break;
+          case 'wf-purpose': wf.purpose = input.value; callbacks.markDirty(); break;
+        }
+      });
+    });
   },
 
   renderEdge(id: string) {

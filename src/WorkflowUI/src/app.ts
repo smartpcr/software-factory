@@ -21,9 +21,7 @@ import { Edges } from './edges';
 import { Palette } from './palette';
 import { Inspector } from './inspector';
 import { Exec } from './exec';
-import { saveWorkflow as saveWorkflowApi, deleteWorkflowApi } from './api';
-
-let serverAvailable: boolean | null = null;
+import { saveWorkflow as saveWorkflowApi, deleteWorkflowApi, listWorkflows, getWorkflow } from './api';
 
 function buildCallbacks(): AppCallbacks {
   return {
@@ -423,18 +421,12 @@ export const App = {
     State.lastSaved = now();
     this.saveToStorage();
 
-    // Try server save (skip if previously failed)
-    if (serverAvailable !== false) {
-      try {
-        await saveWorkflowApi(wf.id, wf);
-        serverAvailable = true;
-        toast('Saved to server', 'success');
-      } catch {
-        serverAvailable = false;
-        toast('Workflow saved', 'success');
-      }
-    } else {
-      toast('Workflow saved', 'success');
+    // Always try server save
+    try {
+      await saveWorkflowApi(wf.name, wf);
+      toast('Saved to server', 'success');
+    } catch {
+      toast('Saved locally', 'success');
     }
 
     this.renderAll();
@@ -468,9 +460,7 @@ export const App = {
       confirmLabel: 'Delete',
       danger: true,
       onConfirm: async () => {
-        if (serverAvailable === true) {
-          try { await deleteWorkflowApi(wf.id); } catch { /* ignore */ }
-        }
+        try { await deleteWorkflowApi(wf.name); } catch { /* server unavailable */ }
         delete State.workflows[State.currentWfId || ''];
         State.currentWfId = null;
         const remaining = Object.values(State.workflows);
@@ -526,6 +516,109 @@ export const App = {
       }
     };
     reader.readAsText(file);
+  },
+
+  async openFromServer() {
+    // Fetch workflow list from server
+    let workflows: { id: string; name?: string; updatedAt?: string }[];
+    try {
+      const raw = await listWorkflows() as { id: string; name?: string; updatedAt?: string }[];
+      workflows = raw;
+    } catch (err) {
+      this.showModal({
+        title: 'Cannot connect',
+        body: 'Failed to reach the workflow server. Make sure it is running.',
+        confirmLabel: 'OK',
+        onConfirm: () => {},
+      });
+      return;
+    }
+
+    // Build modal dialog — show even if empty (with a message)
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    const modal = document.createElement('div');
+    modal.className = 'modal open-dialog';
+
+    const listHtml = workflows.length
+      ? workflows.map(w => `
+          <div class="open-dialog-item" data-wf-id="${escapeHtml(w.id)}">
+            <div class="open-dialog-item-name">${escapeHtml(w.name || w.id)}</div>
+            <div class="open-dialog-item-meta mono">${escapeHtml(w.id)}</div>
+          </div>
+        `).join('')
+      : `<div style="padding: 24px; text-align: center; color: var(--text-3);">
+           <div style="font-size: 13px; margin-bottom: 4px;">No workflows on server</div>
+           <div style="font-size: 11px;">Save a workflow first, then open it here.</div>
+         </div>`;
+
+    modal.innerHTML = `
+      <h3>Open Workflow</h3>
+      ${workflows.length ? `<div class="open-dialog-search">
+        <input placeholder="Filter…" class="open-dialog-filter" />
+      </div>` : ''}
+      <div class="open-dialog-list">
+        ${listHtml}
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn-secondary">Cancel</button>
+      </div>
+    `;
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+
+    // Filter input
+    const filterInput = modal.querySelector('.open-dialog-filter') as HTMLInputElement;
+    filterInput.addEventListener('input', () => {
+      const q = filterInput.value.toLowerCase();
+      modal.querySelectorAll('.open-dialog-item').forEach(item => {
+        const el = item as HTMLElement;
+        const name = el.querySelector('.open-dialog-item-name')?.textContent?.toLowerCase() || '';
+        const id = el.querySelector('.open-dialog-item-meta')?.textContent?.toLowerCase() || '';
+        el.style.display = (!q || name.includes(q) || id.includes(q)) ? '' : 'none';
+      });
+    });
+    filterInput.focus();
+
+    // Click to open a workflow
+    modal.querySelectorAll('.open-dialog-item').forEach(item => {
+      item.addEventListener('click', async () => {
+        const wfId = (item as HTMLElement).dataset.wfId!;
+        backdrop.remove();
+        try {
+          const record = await getWorkflow(wfId) as { yaml?: string; sidecarJson?: string };
+          if (!record?.yaml) { toast('Empty workflow', 'error'); return; }
+          const data = JSON.parse(record.yaml);
+          // Merge sidecar metadata
+          if (record.sidecarJson) {
+            try {
+              const sidecar = JSON.parse(record.sidecarJson);
+              if (sidecar.createdAt) data.createdAt = sidecar.createdAt;
+              if (sidecar.updatedAt) data.updatedAt = sidecar.updatedAt;
+            } catch { /* ignore */ }
+          }
+          if (!data.id) data.id = uid('wf');
+          if (!data.name) data.name = wfId;
+          if (!data.nodes) data.nodes = [];
+          if (!data.edges) data.edges = [];
+          data.updatedAt = data.updatedAt || now();
+          data.createdAt = data.createdAt || now();
+          // Use a local UID for state tracking, preserve server name
+          const localId = uid('wf');
+          data.id = localId;
+          State.workflows[localId] = data;
+          this.saveToStorage();
+          this.loadWorkflow(localId);
+          toast(`Opened: ${data.name}`, 'success');
+        } catch (err) {
+          toast('Failed to open: ' + (err as Error).message, 'error');
+        }
+      });
+    });
+
+    // Cancel
+    modal.querySelector('.modal-btn-secondary')!.addEventListener('click', () => backdrop.remove());
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) backdrop.remove(); });
   },
 
   renderWorkflowList() {
@@ -795,6 +888,7 @@ export const App = {
       const action = btn.dataset.action;
       switch (action) {
         case 'new-workflow': this.newWorkflow(); break;
+        case 'open-workflow': this.openFromServer(); break;
         case 'save-workflow': this.saveWorkflow(); break;
         case 'import-workflow': this.importWorkflow(); break;
         case 'export-workflow': this.exportWorkflow(); break;

@@ -86,6 +86,9 @@ export interface WorkflowData {
   edges: FlowEdge[];
   createdAt: number;
   updatedAt: number;
+  author?: string;
+  purpose?: string;
+  version?: string;
 }
 
 export interface PaletteSection {

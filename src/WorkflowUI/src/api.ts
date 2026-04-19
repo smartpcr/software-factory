@@ -28,12 +28,14 @@ export async function getWorkflow(id: string): Promise<unknown> {
 
 export async function saveWorkflow(id: string, data: WorkflowData): Promise<void> {
   const url = `${API_BASE}/${encodePath(id)}`;
-  // Store as YAML-compatible JSON with sidecar for layout
   const yaml = JSON.stringify({
     id: data.id,
     name: data.name,
     nodes: data.nodes,
     edges: data.edges,
+    author: data.author,
+    purpose: data.purpose,
+    version: data.version,
   });
   const sidecarJson = JSON.stringify({
     createdAt: data.createdAt,
