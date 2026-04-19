@@ -2,7 +2,6 @@ import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import type { NodeDto, NodeExecutionStatus } from '../../engine-contract';
 import { NodeChrome } from './NodeChrome';
-import { NodeStatusBadge } from './NodeStatusBadge';
 import { useGraphStore } from '../state/graphStore';
 
 export interface WorkflowNodeData {
@@ -23,9 +22,8 @@ function WorkflowNodeInner({ data, selected, id }: NodeProps) {
         nodeId={dto.nodeId}
         nodeName={dto.nodeName}
         selected={selected}
-      >
-        {status && <NodeStatusBadge status={status} />}
-      </NodeChrome>
+        status={status}
+      />
       <Handle type="source" position={Position.Bottom} />
     </>
   );

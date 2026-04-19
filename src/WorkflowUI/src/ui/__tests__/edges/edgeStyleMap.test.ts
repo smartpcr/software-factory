@@ -10,10 +10,11 @@ describe('edgeStyleMap', () => {
     }
   });
 
-  it('each style has color, strokeWidth, and label', () => {
+  it('each style has color, cssColor, strokeWidth, and label', () => {
     for (const mt of ALL_MESSAGE_TYPES) {
       const style = getEdgeStyle(mt);
       expect(style.color).toBeTruthy();
+      expect(style.cssColor).toBeTruthy();
       expect(style.strokeWidth).toBeGreaterThan(0);
       expect(style.label).toBeTruthy();
     }
@@ -27,5 +28,10 @@ describe('edgeStyleMap', () => {
   it('Complete uses solid style', () => {
     const style = getEdgeStyle('Complete');
     expect(style.dashArray).toBeUndefined();
+  });
+
+  it('Fail has error-edge CSS class', () => {
+    const style = getEdgeStyle('Fail');
+    expect(style.cssClass).toBe('error-edge');
   });
 });

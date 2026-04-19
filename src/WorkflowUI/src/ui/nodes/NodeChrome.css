@@ -1,0 +1,182 @@
+/* ============ NODE CHROME ============ */
+.node-chrome {
+  min-width: 220px;
+  background: linear-gradient(180deg, var(--bg-3) 0%, var(--bg-2) 100%);
+  border: 1px solid var(--stroke-1);
+  border-radius: 10px;
+  box-shadow: var(--node-shadow);
+  transition: border-color 0.14s, box-shadow 0.14s;
+  font-size: 12px;
+  position: relative;
+}
+
+.node-chrome:hover {
+  border-color: var(--stroke-2);
+}
+
+.node-chrome.selected {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 0 28px -8px var(--accent),
+    var(--node-shadow);
+  z-index: 2;
+}
+
+/* Header */
+.node-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--stroke-1);
+  position: relative;
+}
+
+.node-head-accent {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 10px 0 0 10px;
+  background: currentColor;
+}
+
+.node-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  display: grid;
+  place-items: center;
+  background: var(--bg-3);
+  position: relative;
+  flex-shrink: 0;
+}
+
+.node-icon::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 5px;
+  background: currentColor;
+  opacity: 0.16;
+}
+
+.node-icon svg {
+  width: 12px;
+  height: 12px;
+  color: currentColor;
+  position: relative;
+  z-index: 1;
+}
+
+.node-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+  color: var(--text-0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+}
+
+.node-type-label {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  font-weight: 600;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: var(--bg-1);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Body */
+.node-body {
+  padding: 8px 10px;
+  color: var(--text-2);
+  font-size: 11.5px;
+  min-height: 18px;
+  position: relative;
+}
+
+.node-body-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+}
+
+.node-body-row .lab {
+  color: var(--text-3);
+}
+
+.node-body-row .val {
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Status badge */
+.node-status-badge {
+  position: absolute;
+  top: -8px;
+  right: 10px;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', monospace;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.2s, transform 0.2s;
+  z-index: 3;
+}
+
+.node-chrome[data-status]:not([data-status=""]) .node-status-badge {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.node-chrome[data-status="Running"] .node-status-badge { background: var(--run); color: #3a2a00; }
+.node-chrome[data-status="Completed"] .node-status-badge { background: var(--ok); color: #003a20; }
+.node-chrome[data-status="Failed"] .node-status-badge { background: var(--err); color: #400; }
+.node-chrome[data-status="Cancelled"] .node-status-badge { background: var(--cancel); color: #222; }
+.node-chrome[data-status="Skipped"] .node-status-badge { background: var(--text-3); color: var(--bg-0); }
+.node-chrome[data-status="Pending"] .node-status-badge { background: var(--bg-4); color: var(--text-1); }
+
+:root[data-theme="light"] .node-chrome[data-status="Running"] .node-status-badge,
+:root[data-theme="light"] .node-chrome[data-status="Completed"] .node-status-badge,
+:root[data-theme="light"] .node-chrome[data-status="Failed"] .node-status-badge,
+:root[data-theme="light"] .node-chrome[data-status="Cancelled"] .node-status-badge {
+  color: #ffffff !important;
+}
+
+/* Status glow ring */
+.node-chrome::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 12px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.node-chrome[data-status="Running"]::after {
+  opacity: 1;
+  box-shadow: 0 0 0 2px var(--run), 0 0 24px -4px var(--run);
+  animation: runningPulse 1.8s ease-in-out infinite;
+}
+
+.node-chrome[data-status="Completed"]::after { opacity: 1; box-shadow: 0 0 0 1px var(--ok); }
+.node-chrome[data-status="Failed"]::after { opacity: 1; box-shadow: 0 0 0 2px var(--err), 0 0 18px -4px var(--err); }
+.node-chrome[data-status="Cancelled"]::after { opacity: 1; box-shadow: 0 0 0 1px var(--cancel); }

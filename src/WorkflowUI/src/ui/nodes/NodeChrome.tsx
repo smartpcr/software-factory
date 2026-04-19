@@ -1,12 +1,14 @@
-import React from 'react';
-import type { RuntimeType } from '../../engine-contract';
+import type { RuntimeType, NodeExecutionStatus } from '../../engine-contract';
 import { getNodeIcon } from '../theme/nodeIcons';
+import { NodeBodyPreview } from './NodeBodyPreview';
+import './NodeChrome.css';
 
 export interface NodeChromeProps {
   runtimeType: RuntimeType;
   nodeId: string;
   nodeName: string;
   selected?: boolean;
+  status?: NodeExecutionStatus;
   children?: React.ReactNode;
 }
 
@@ -15,38 +17,40 @@ export function NodeChrome({
   nodeId,
   nodeName,
   selected,
+  status,
   children,
 }: NodeChromeProps) {
   const icon = getNodeIcon(runtimeType);
+  const IconComp = icon.Icon;
 
   return (
     <div
+      className={`node-chrome${selected ? ' selected' : ''}`}
       data-testid={`node-chrome-${nodeId}`}
+      data-status={status ?? ''}
       aria-label={`${icon.label} node: ${nodeName || nodeId}`}
-      style={{
-        border: `2px solid ${selected ? '#3b82f6' : icon.color}`,
-        borderRadius: 8,
-        backgroundColor: '#fff',
-        padding: 8,
-        minWidth: 160,
-        boxShadow: selected ? '0 0 0 2px #3b82f6' : '0 1px 3px rgba(0,0,0,0.1)',
-      }}
+      style={{ color: icon.cssColor }}
     >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          marginBottom: 4,
-          fontWeight: 600,
-          fontSize: 13,
-          color: icon.color,
-        }}
-      >
-        <span aria-hidden="true">{icon.emoji}</span>
-        <span>{icon.label}</span>
+      {/* Status badge */}
+      {status && (
+        <span className="node-status-badge" data-testid="node-status-badge" aria-label={`Status: ${status}`}>
+          {status}
+        </span>
+      )}
+
+      {/* Header */}
+      <div className="node-head">
+        <div className="node-head-accent" />
+        <div className="node-icon">
+          <IconComp size={12} />
+        </div>
+        <div className="node-title">{nodeName || nodeId}</div>
+        <span className="node-type-label">{icon.label}</span>
       </div>
-      <div style={{ fontSize: 12, color: '#374151' }}>{nodeName || nodeId}</div>
+
+      {/* Body preview */}
+      <NodeBodyPreview runtimeType={runtimeType} />
+
       {children}
     </div>
   );

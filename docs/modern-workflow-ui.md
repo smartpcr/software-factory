@@ -189,47 +189,47 @@ Restyle the existing `<Palette>` component to match flow-studio's design.
 
 ---
 
-### [ ] Phase C — Node & Edge Visuals
+### [x] Phase C — Node & Edge Visuals
 
-#### [ ] C.1 Node Chrome Redesign
+#### [x] C.1 Node Chrome Redesign
 
 The biggest visual change. Replace the white-card-with-emoji look with flow-studio's gradient card with accent bar, SVG icon, type badge, and config preview body.
 
 **Files to create:**
-- [ ] `src/ui/nodes/NodeChrome.css` — `.node`, `.node-head`, `.node-head-accent`, `.node-icon`, `.node-title`, `.node-type-label`, `.node-body`, `.node-body-row`, `.node-status-badge`, status ring pseudo-element
-- [ ] `src/ui/nodes/NodeBodyPreview.tsx` — monospace config summary per runtime type (condition, expression, method/URL, etc.)
+- [x] `src/ui/nodes/NodeChrome.css` — `.node`, `.node-head`, `.node-head-accent`, `.node-icon`, `.node-title`, `.node-type-label`, `.node-body`, `.node-body-row`, `.node-status-badge`, status ring pseudo-element
+- [x] `src/ui/nodes/NodeBodyPreview.tsx` — monospace config summary per runtime type (condition, expression, method/URL, etc.)
 
 **Files to update:**
-- [ ] `src/ui/nodes/NodeChrome.tsx` — complete rewrite: accent bar, SVG icon, title, type label, body preview; add `data-status` attribute for CSS status rings
-- [ ] `src/ui/nodes/WorkflowNode.tsx` — pass status to NodeChrome; forward `data-status` to outer wrapper
-- [ ] `src/ui/nodes/NodeStatusBadge.tsx` — restyle with position, colors, transform animation
-- [ ] `src/ui/nodes/statusBadgeTokens.ts` — map `NodeExecutionStatus` → CSS classes and label text
+- [x] `src/ui/nodes/NodeChrome.tsx` — complete rewrite: accent bar, SVG icon, title, type label, body preview; add `data-status` attribute for CSS status rings
+- [x] `src/ui/nodes/WorkflowNode.tsx` — pass status to NodeChrome; forward `data-status` to outer wrapper
+- [x] `src/ui/nodes/NodeStatusBadge.tsx` — restyle with position, colors, transform animation
+- [x] `src/ui/nodes/statusBadgeTokens.ts` — map `NodeExecutionStatus` → CSS classes and label text
 
 **Mapping to flow-studio:** Lines 455–837 (CSS nodes/containers), 1668–1877 (Nodes.render/html/bodyHtml).
 
-#### [ ] C.2 Port System
+#### [x] C.2 Port System
 
 Replace React Flow's default handles with custom circular ports matching flow-studio's in/out/error/branch design.
 
 **Files to create:**
-- [ ] `src/ui/ports/CustomPort.tsx` — circular port with hover scale, crosshair cursor, position variants (in/out/error)
-- [ ] `src/ui/ports/CustomPort.css` — `.port`, `.port.in`, `.port.out`, `.port.error`, `.port:hover`, `.port.connecting`
+- [x] `src/ui/ports/CustomPort.tsx` — circular port with hover scale, crosshair cursor, position variants (in/out/error)
+- [x] `src/ui/ports/CustomPort.css` — `.port`, `.port.in`, `.port.out`, `.port.error`, `.port:hover`, `.port.connecting`
 
 **Files to update:**
-- [ ] `src/ui/nodes/WorkflowNode.tsx` — replace `<Handle>` with `<CustomPort>`
-- [ ] `src/ui/ports/portMatrix.ts` — add error port support per node kind
+- [x] `src/ui/nodes/WorkflowNode.tsx` — replace `<Handle>` with `<CustomPort>`
+- [x] `src/ui/ports/portMatrix.ts` — add error port support per node kind
 
 **Mapping to flow-studio:** Lines 543–577 (CSS ports).
 
-#### [ ] C.3 Edge Restyling
+#### [x] C.3 Edge Restyling
 
 **Files to create:**
-- [ ] `src/ui/edges/WorkflowEdge.css` — `.edge-path`, `.edge-path.error-edge`, `.edge-path.selected`, `.edge-path.active`, `.edge-flow`, `.edge-label`, `.drag-edge-preview`
+- [x] `src/ui/edges/WorkflowEdge.css` — `.edge-path`, `.edge-path.error-edge`, `.edge-path.selected`, `.edge-path.active`, `.edge-flow`, `.edge-label`, `.drag-edge-preview`
 
 **Files to update:**
-- [ ] `src/ui/edges/WorkflowEdge.tsx` — custom SVG path with cubic-bezier; arrow markers (normal/error/active); flow animation for active edges; edge labels for branch names
-- [ ] `src/ui/edges/edgeStyleMap.ts` — update to use CSS variables instead of inline colors
-- [ ] `src/ui/canvas/edgeTypes.ts` — register updated edge type
+- [x] `src/ui/edges/WorkflowEdge.tsx` — custom SVG path with cubic-bezier; arrow markers (normal/error/active); flow animation for active edges; edge labels for branch names
+- [x] `src/ui/edges/edgeStyleMap.ts` — update to use CSS variables instead of inline colors
+- [x] `src/ui/canvas/edgeTypes.ts` — register updated edge type
 
 **Mapping to flow-studio:** Lines 839–886 (CSS edges), 2038–2166 (Edges JS).
 

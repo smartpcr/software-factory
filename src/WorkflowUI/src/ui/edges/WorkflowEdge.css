@@ -1,0 +1,67 @@
+/* ============ WORKFLOW EDGES ============ */
+.workflow-edge-path {
+  stroke: var(--stroke-3);
+  stroke-width: 1.6;
+  fill: none;
+  transition: stroke 0.12s, stroke-width 0.12s;
+}
+
+.workflow-edge-path:hover {
+  stroke: var(--text-1);
+  stroke-width: 2.2;
+}
+
+.workflow-edge-path.selected {
+  stroke: var(--accent);
+  stroke-width: 2.4;
+}
+
+.workflow-edge-path.error-edge {
+  stroke: var(--err);
+  stroke-dasharray: 4 3;
+  opacity: 0.7;
+}
+
+.workflow-edge-path.error-edge:hover {
+  opacity: 1;
+}
+
+.workflow-edge-path.active {
+  stroke: var(--run);
+  stroke-width: 2.4;
+  filter: drop-shadow(0 0 6px var(--run));
+}
+
+/* Flow animation overlay for active edges */
+.edge-flow {
+  stroke: var(--run);
+  stroke-width: 2.4;
+  fill: none;
+  stroke-dasharray: 8 6;
+  animation: flowDash 1.2s linear infinite;
+  filter: drop-shadow(0 0 4px var(--run));
+  pointer-events: none;
+}
+
+/* Edge label */
+.edge-label-text {
+  fill: var(--text-2);
+  font-size: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
+}
+
+.edge-label-bg {
+  fill: var(--bg-1);
+  stroke: var(--stroke-1);
+}
+
+/* Drag preview */
+.drag-edge-preview {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 4 4;
+  fill: none;
+  pointer-events: none;
+  animation: dashMove 0.6s linear infinite;
+}
