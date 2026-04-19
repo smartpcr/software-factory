@@ -398,28 +398,28 @@ Restyle `<PropertyGrid>` as `<Inspector>` matching flow-studio's right panel des
 
 ---
 
-### [ ] Phase F — Execution UI & Logs
+### [x] Phase F — Execution UI & Logs
 
-#### [ ] F.1 Execution State & Controls
+#### [x] F.1 Execution State & Controls
 
 **Files to create:**
-- [ ] `src/ui/execution/ExecutionManager.ts` — run/pause/resume/rerun/cancel state machine; integrates with `graphStore.setExecutionStatus`
-- [ ] `src/ui/execution/useExecutionControls.ts` — hook exposing run/pause/resume/rerun/cancel actions + current state
-- [ ] `src/ui/topbar/RunControls.tsx` (if not already created in B.1) — button group wired to `useExecutionControls`
+- [x] `src/ui/execution/ExecutionManager.ts` — run/pause/resume/rerun/cancel state machine; integrates with `graphStore.setExecutionStatus`
+- [x] `src/ui/execution/useExecutionControls.ts` — hook exposing run/pause/resume/rerun/cancel actions + current state
+- [x] `src/ui/topbar/RunControls.tsx` (if not already created in B.1) — button group wired to `useExecutionControls`
 
 **Files to update:**
-- [ ] `src/ui/state/graphStore.ts` — ensure `executionStatuses` map drives node `data-status` rendering
-- [ ] `src/ui/nodes/NodeChrome.tsx` — render status badge + pass `data-status` to CSS for glow ring
-- [ ] `src/ui/edges/WorkflowEdge.tsx` — render `.edge-flow` overlay path when edge is active
+- [x] `src/ui/state/graphStore.ts` — ensure `executionStatuses` map drives node `data-status` rendering
+- [x] `src/ui/nodes/NodeChrome.tsx` — render status badge + pass `data-status` to CSS for glow ring
+- [x] `src/ui/edges/WorkflowEdge.tsx` — render `.edge-flow` overlay path when edge is active
 
 **Mapping to flow-studio:** Lines 3175–3400+ (Exec object).
 
-#### [ ] F.2 Log Panel
+#### [x] F.2 Log Panel
 
 **Files to create:**
-- [ ] `src/ui/logs/LogPanel.tsx` — scrollable log area with header, count badge, clear button
-- [ ] `src/ui/logs/LogPanel.css` — `.logs`, `.log-line`, `.log-time`, `.log-level`, `.log-node`, `.log-msg`
-- [ ] `src/ui/logs/logStore.ts` — Zustand slice or standalone store for log entries
+- [x] `src/ui/logs/LogPanel.tsx` — scrollable log area with header, count badge, clear button
+- [x] `src/ui/logs/LogPanel.css` — `.logs`, `.log-line`, `.log-time`, `.log-level`, `.log-node`, `.log-msg`
+- [x] `src/ui/logs/logStore.ts` — Zustand slice or standalone store for log entries
 
 **Mapping to flow-studio:** Lines 978–1031 (CSS), 3091–3124 (log rendering).
 

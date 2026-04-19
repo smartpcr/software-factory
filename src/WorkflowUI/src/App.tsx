@@ -10,6 +10,8 @@ import { DuplicateDialog } from './workspace/DuplicateDialog';
 import { AppShell } from './ui/layout/AppShell';
 import { Topbar } from './ui/topbar/Topbar';
 import { Inspector } from './ui/inspector/Inspector';
+import { LogPanel } from './ui/logs/LogPanel';
+import { useExecutionControls } from './ui/execution/useExecutionControls';
 import { useGraphStore } from './ui/state/graphStore';
 
 export function App() {
@@ -18,12 +20,19 @@ export function App() {
   const [showImportExport, setShowImportExport] = useState(false);
   const [duplicateSourceId, setDuplicateSourceId] = useState<string | null>(null);
   const workflowName = useGraphStore((s) => s.workflowName);
+  const exec = useExecutionControls();
 
   const topbarContent = (
     <Topbar
       workflowName={workflowName}
       onWorkflowNameChange={() => {}}
       onImport={() => setShowImportExport(true)}
+      executionState={exec.state}
+      onRun={exec.run}
+      onPause={exec.pause}
+      onResume={exec.resume}
+      onRerun={exec.rerun}
+      onCancel={exec.cancel}
     />
   );
 
@@ -80,7 +89,7 @@ export function App() {
       palette={paletteContent}
       canvas={canvasContent}
       inspector={inspectorContent}
-      logs={<div style={{ padding: 8, color: 'var(--text-3)', fontSize: 11 }}>Execution log — coming soon</div>}
+      logs={<LogPanel />}
     />
   );
 }
