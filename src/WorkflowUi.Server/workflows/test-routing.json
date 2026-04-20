@@ -1,0 +1,66 @@
+{
+  "maxConcurrency": 0,
+  "connections": [
+    {
+      "priority": 0,
+      "triggerMessageType": "Complete",
+      "sourceNodeId": "n_start",
+      "targetPort": "in",
+      "isEnabled": true,
+      "targetNodeId": "n_log1",
+      "sourcePort": "out"
+    },
+    {
+      "priority": 0,
+      "triggerMessageType": "Complete",
+      "sourceNodeId": "n_log1",
+      "targetPort": "in",
+      "isEnabled": true,
+      "targetNodeId": "n_log2",
+      "sourcePort": "out"
+    }
+  ],
+  "workflowId": "wf_test1",
+  "version": "1.0",
+  "nodes": [
+    {
+      "nodeId": "n_start",
+      "runtimeType": "Start",
+      "joinType": "Any",
+      "nodeName": "Start",
+      "priority": "Normal",
+      "configuration": {
+        "triggerType": "Manual"
+      }
+    },
+    {
+      "nodeId": "n_log1",
+      "runtimeType": "Log",
+      "joinType": "Any",
+      "nodeName": "Log Hello",
+      "priority": "Normal",
+      "configuration": {
+        "messageTemplate": "Hello from routing fix!",
+        "level": "Info"
+      }
+    },
+    {
+      "nodeId": "n_log2",
+      "runtimeType": "Log",
+      "joinType": "Any",
+      "nodeName": "Log Done",
+      "priority": "Normal",
+      "configuration": {
+        "messageTemplate": "All done!",
+        "level": "Info"
+      }
+    }
+  ],
+  "defaultVariables": {},
+  "description": "Test routing fix",
+  "timeoutSeconds": 30,
+  "entryPointNodeId": "n_start",
+  "metadata": {},
+  "workflowName": "test-routing",
+  "allowPause": true
+}

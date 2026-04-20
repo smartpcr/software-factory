@@ -1,5 +1,5 @@
 {
-  "workflowId": "wf_njnovzx",
+  "workflowId": "wf_t50yy9m",
   "workflowName": "saved",
   "description": "",
   "version": "1.0",
@@ -16,7 +16,7 @@
   "nodes": [
     {
       "nodeId": "n_a7yb2vh",
-      "runtimeType": "start",
+      "runtimeType": "Start",
       "nodeName": "Start",
       "description": "",
       "configuration": {
@@ -122,7 +122,7 @@
       "targetNodeId": "n_lls3knp",
       "sourcePort": "error",
       "targetPort": "in",
-      "triggerMessageType": "Complete",
+      "triggerMessageType": "Fail",
       "condition": null,
       "isEnabled": true,
       "priority": 0,

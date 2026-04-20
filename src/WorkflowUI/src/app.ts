@@ -27,7 +27,7 @@ import { Edges } from './edges';
 import { Palette } from './palette';
 import { Inspector } from './inspector';
 import { Exec } from './exec';
-import { saveWorkflow as saveWorkflowApi, deleteWorkflowApi, listWorkflows, getWorkflow, fetchNodeTypes, validateWorkflow, validateNodesBatch } from './api';
+import { saveWorkflow as saveWorkflowApi, deleteWorkflowApi, listWorkflows, getWorkflow, fetchNodeTypes, validateWorkflow, validateNodesBatch, listRuns } from './api';
 import { loadServerNodeTypes, loadFallbackNodeTypes, normalizeWorkflowNodeTypes, resolveNodeType } from './registry';
 
 function buildCallbacks(): AppCallbacks {
@@ -1049,6 +1049,89 @@ export const App = {
     }).join('');
   },
 
+  // ---------- BOTTOM PANEL TABS ----------
+  _bottomTab: 'log' as 'log' | 'history',
+
+  switchBottomTab(tab: 'log' | 'history') {
+    this._bottomTab = tab;
+    const logBody = document.getElementById('logsBody');
+    const histBody = document.getElementById('historyBody');
+    const clearBtn = document.querySelector('[data-action="clear-logs"]') as HTMLElement | null;
+    const refreshBtn = document.getElementById('btnRefreshHistory');
+    const countEl = document.getElementById('logCount');
+    document.querySelectorAll('.bottom-tab').forEach(t => {
+      t.classList.toggle('active', (t as HTMLElement).dataset.bottomTab === tab);
+    });
+    if (logBody) logBody.style.display = tab === 'log' ? '' : 'none';
+    if (histBody) histBody.style.display = tab === 'history' ? '' : 'none';
+    if (clearBtn) clearBtn.style.display = tab === 'log' ? '' : 'none';
+    if (refreshBtn) refreshBtn.style.display = tab === 'history' ? '' : 'none';
+    if (countEl) countEl.style.display = tab === 'log' ? '' : 'none';
+    if (tab === 'history') this.loadRunHistory();
+  },
+
+  async loadRunHistory() {
+    const body = document.getElementById('historyBody');
+    if (!body) return;
+    try {
+      const runs = await listRuns();
+      if (!runs.length) {
+        body.innerHTML = '<div class="log-empty">No runs yet. Execute a workflow to see history.</div>';
+        return;
+      }
+      // Sort newest first
+      runs.sort((a, b) => new Date(b.startTimeUtc).getTime() - new Date(a.startTimeUtc).getTime());
+      body.innerHTML = `<table class="history-table">
+        <thead><tr>
+          <th>Status</th><th>Workflow</th><th>Started</th><th>Duration</th><th>Run ID</th><th></th>
+        </tr></thead>
+        <tbody>${runs.map(r => this.renderRunRow(r)).join('')}</tbody>
+      </table>`;
+    } catch {
+      body.innerHTML = '<div class="log-empty">Could not load run history from server.</div>';
+    }
+  },
+
+  renderRunRow(r: { runId: string; workflowId?: string; workflowName?: string; status: string; startTimeUtc: string; endTimeUtc?: string }) {
+    const status = r.status.toLowerCase();
+    const started = new Date(r.startTimeUtc);
+    const startStr = started.toLocaleTimeString('en-US', { hour12: false }) + ' ' + started.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    let duration = '—';
+    if (r.endTimeUtc) {
+      const ms = new Date(r.endTimeUtc).getTime() - started.getTime();
+      if (ms < 1000) duration = `${ms}ms`;
+      else if (ms < 60000) duration = `${(ms / 1000).toFixed(1)}s`;
+      else duration = `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`;
+    } else if (status === 'running') {
+      duration = '⏳';
+    }
+    const shortId = r.runId.substring(0, 8);
+    const name = escapeHtml(r.workflowName || r.workflowId || '—');
+    return `<tr data-run-id="${escapeHtml(r.runId)}" data-action="replay-run">
+      <td><span class="run-status ${status}"><span class="dot"></span>${status}</span></td>
+      <td>${name}</td>
+      <td>${startStr}</td>
+      <td class="run-duration">${duration}</td>
+      <td class="run-id" title="${escapeHtml(r.runId)}">${shortId}…</td>
+      <td><button class="run-replay-btn" data-action="replay-run" data-run-id="${escapeHtml(r.runId)}">Replay</button></td>
+    </tr>`;
+  },
+
+  async replayRun(runId: string) {
+    // Connect to SignalR and replay all events for this run
+    this.switchBottomTab('log');
+    this.clearLogs();
+    Exec.reset();
+    this.log('info', null, `Replaying run ${runId.substring(0, 8)}…`);
+    try {
+      const { replayRunEvents } = await import('./exec');
+      await replayRunEvents(runId, (level, nodeId, msg) => this.log(level, nodeId, msg));
+      this.log('success', null, 'Replay complete');
+    } catch (err) {
+      this.log('error', null, `Replay failed: ${(err as Error).message}`);
+    }
+  },
+
   // ---------- CLIPBOARD ----------
   _clipboard: null as { nodes: FlowNode[]; edges: FlowEdge[] } | null,
 
@@ -1195,7 +1278,21 @@ export const App = {
         case 'toggle-inspector': this.togglePanel('inspector'); break;
         case 'toggle-logs': this.togglePanel('logs'); break;
         case 'clear-logs': this.clearLogs(); break;
+        case 'refresh-history': this.loadRunHistory(); break;
+        case 'replay-run': {
+          const runId = btn.dataset.runId || btn.closest('[data-run-id]')?.getAttribute('data-run-id');
+          if (runId) this.replayRun(runId);
+          break;
+        }
       }
+    });
+
+    // Bottom panel tab switching
+    document.addEventListener('click', (e) => {
+      const tab = (e.target as HTMLElement).closest('.bottom-tab') as HTMLElement | null;
+      if (!tab) return;
+      const tabName = tab.dataset.bottomTab as 'log' | 'history';
+      if (tabName) this.switchBottomTab(tabName);
     });
 
     // Palette search

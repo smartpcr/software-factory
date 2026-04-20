@@ -243,7 +243,8 @@ public class WhileNodeIntegrationTests
 
         // Assert
         result.Should().NotBeNull();
-        result.Status.Should().Be(WorkflowExecutionStatus.Failed);
+        // Expected: Completed because the error handler completed successfully
+        result.Status.Should().Be(WorkflowExecutionStatus.Completed);
 
         var allInstances = engine.GetNodeInstances(result.InstanceId);
 
@@ -322,7 +323,8 @@ public class WhileNodeIntegrationTests
 
         // Assert
         result.Should().NotBeNull();
-        result.Status.Should().Be(WorkflowExecutionStatus.Failed);
+        // Expected: Completed because the error handler completed successfully
+        result.Status.Should().Be(WorkflowExecutionStatus.Completed);
 
         var allInstances = engine.GetNodeInstances(result.InstanceId);
 

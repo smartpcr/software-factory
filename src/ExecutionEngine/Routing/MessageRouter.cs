@@ -219,8 +219,22 @@ public class MessageRouter(IDeadLetterQueue deadLetterQueue, ILogger<MessageRout
                 // Filter by source port (if specified on connection)
                 if (!string.IsNullOrEmpty(connection.SourcePort))
                 {
-                    var messageSourcePort = (message as NodeCompleteMessage)?.SourcePort ?? string.Empty;
-                    if (!connection.SourcePort.Equals(messageSourcePort, StringComparison.OrdinalIgnoreCase))
+                    // Extract source port from the message (supports both Complete and Fail messages)
+                    var messageSourcePort = message switch
+                    {
+                        NodeCompleteMessage cm => cm.SourcePort ?? string.Empty,
+                        NodeFailMessage => "error", // Fail messages always originate from the error port
+                        _ => string.Empty,
+                    };
+
+                    // "out" is the default output port name used by the UI.
+                    // Generic nodes (Start, Log, etc.) don't set SourcePort explicitly,
+                    // so an empty message port should match a connection with port "out".
+                    var isDefaultPortMatch = string.IsNullOrEmpty(messageSourcePort) &&
+                        connection.SourcePort.Equals("out", StringComparison.OrdinalIgnoreCase);
+
+                    if (!isDefaultPortMatch &&
+                        !connection.SourcePort.Equals(messageSourcePort, StringComparison.OrdinalIgnoreCase))
                     {
                         continue;
                     }

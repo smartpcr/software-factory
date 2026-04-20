@@ -1,1 +1,257 @@
-{"id":"wf_tvvihj6","name":"Demo: User Onboarding","nodes":[{"id":"n_t8i7cuo","type":"start","name":"Manual Trigger","x":200,"y":100,"width":220,"config":{"triggerType":"manual","schedule":"0 0 * * *"},"status":"","parentId":null,"parentSlot":null},{"id":"n_5rgivz9","type":"http","name":"Fetch User Data","x":200,"y":280,"width":220,"config":{"method":"GET","url":"https://api.example.com/user/42","headers":"{}"},"status":"","parentId":null,"parentSlot":null},{"id":"n_oth18dq","type":"if","name":"Is premium?","x":200,"y":480,"width":220,"config":{"condition":"input.user.tier === \"premium\""},"status":"","parentId":null,"parentSlot":null,"branches":["true","false"],"children":{"true":[],"false":[]}},{"id":"n_yyqg7qj","type":"ai","name":"Generate Welcome","x":-40,"y":720,"width":220,"config":{"mode":"skill","skillId":"generate_welcome","model":"claude-opus-4-7","systemPrompt":"You are a concise welcome message generator.","inputMapping":"input.user","outputKey":"message","temperature":0.7,"maxTokens":500},"status":"","parentId":null,"parentSlot":null},{"id":"n_ls1q6ch","type":"log","name":"Log free-tier","x":440,"y":720,"width":220,"config":{"level":"info","message":"Free-tier user visited"},"status":"","parentId":null,"parentSlot":null},{"id":"n_strlkbz","type":"foreach","name":"For each message","x":-40,"y":920,"width":220,"config":{"source":"input.notifications","mode":"foreach","maxIterations":50},"status":"","parentId":null,"parentSlot":null,"branches":["iterate"],"children":{"iterate":[]}},{"id":"n_6o916k1","type":"action","name":"Send Notification","x":-260,"y":1120,"width":220,"config":{"actionType":"function","handler":"send_notif"},"status":"","parentId":null,"parentSlot":null},{"id":"n_savgdxx","type":"end","name":"Done","x":200,"y":1320,"width":220,"config":{"status":"success"},"status":"","parentId":null,"parentSlot":null}],"edges":[{"id":"e_tkrzebd","source":"n_t8i7cuo","sourcePort":"out","target":"n_5rgivz9","targetPort":"in"},{"id":"e_q81l9xu","source":"n_5rgivz9","sourcePort":"out","target":"n_oth18dq","targetPort":"in"},{"id":"e_lu59opn","source":"n_oth18dq","sourcePort":"branch","sourcePortName":"true","target":"n_yyqg7qj","targetPort":"in"},{"id":"e_lwqlgz5","source":"n_oth18dq","sourcePort":"branch","sourcePortName":"false","target":"n_ls1q6ch","targetPort":"in"},{"id":"e_srqbxxb","source":"n_yyqg7qj","sourcePort":"out","target":"n_strlkbz","targetPort":"in"},{"id":"e_s8pgnme","source":"n_strlkbz","sourcePort":"branch","sourcePortName":"iterate","target":"n_6o916k1","targetPort":"in"},{"id":"e_cfa2j2e","source":"n_strlkbz","sourcePort":"out","target":"n_savgdxx","targetPort":"in"},{"id":"e_qye4aar","source":"n_ls1q6ch","sourcePort":"out","target":"n_savgdxx","targetPort":"in"},{"id":"e_w8vvef3","source":"n_6o916k1","sourcePort":"out","target":"n_strlkbz","targetPort":"in"}]}
+{
+  "workflowId": "wf_tvvihj6",
+  "workflowName": "Demo: User Onboarding",
+  "description": "",
+  "version": "1.0",
+  "entryPointNodeId": null,
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0,
+  "defaultVariables": {},
+  "metadata": {},
+  "nodes": [
+    {
+      "nodeId": "n_t8i7cuo",
+      "runtimeType": "Start",
+      "nodeName": "Manual Trigger",
+      "description": "",
+      "configuration": {
+        "triggerType": "manual",
+        "schedule": "0 0 * * *"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_5rgivz9",
+      "runtimeType": "HttpRequest",
+      "nodeName": "Fetch User Data",
+      "description": "",
+      "configuration": {
+        "method": "GET",
+        "url": "https://api.example.com/user/42",
+        "headers": "{}"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_oth18dq",
+      "runtimeType": "IfElse",
+      "nodeName": "Is premium?",
+      "description": "",
+      "configuration": {
+        "condition": "input.user.tier === \"premium\""
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_yyqg7qj",
+      "runtimeType": "AI",
+      "nodeName": "Generate Welcome",
+      "description": "",
+      "configuration": {
+        "mode": "skill",
+        "skillId": "generate_welcome",
+        "model": "claude-opus-4-7",
+        "systemPrompt": "You are a concise welcome message generator.",
+        "inputMapping": "input.user",
+        "outputKey": "message",
+        "temperature": 0.7,
+        "maxTokens": 500
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_ls1q6ch",
+      "runtimeType": "Log",
+      "nodeName": "Log free-tier",
+      "description": "",
+      "configuration": {
+        "level": "info",
+        "message": "Free-tier user visited"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_strlkbz",
+      "runtimeType": "ForEach",
+      "nodeName": "For each message",
+      "description": "",
+      "configuration": {
+        "source": "input.notifications",
+        "mode": "foreach",
+        "maxIterations": 50
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_6o916k1",
+      "runtimeType": "Action",
+      "nodeName": "Send Notification",
+      "description": "",
+      "configuration": {
+        "actionType": "function",
+        "handler": "send_notif"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_savgdxx",
+      "runtimeType": "End",
+      "nodeName": "Done",
+      "description": "",
+      "configuration": {
+        "status": "success"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    }
+  ],
+  "connections": [
+    {
+      "sourceNodeId": "n_t8i7cuo",
+      "targetNodeId": "n_5rgivz9",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_5rgivz9",
+      "targetNodeId": "n_oth18dq",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_oth18dq",
+      "targetNodeId": "n_yyqg7qj",
+      "sourcePort": "branch",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_oth18dq",
+      "targetNodeId": "n_ls1q6ch",
+      "sourcePort": "branch",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_yyqg7qj",
+      "targetNodeId": "n_strlkbz",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_strlkbz",
+      "targetNodeId": "n_6o916k1",
+      "sourcePort": "branch",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_strlkbz",
+      "targetNodeId": "n_savgdxx",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_ls1q6ch",
+      "targetNodeId": "n_savgdxx",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_6o916k1",
+      "targetNodeId": "n_strlkbz",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    }
+  ]
+}

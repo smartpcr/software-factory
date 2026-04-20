@@ -1654,6 +1654,102 @@
   .log-msg { color: var(--text-2); }
   .log-empty { color: var(--text-3); padding: 20px; text-align: center; font-style: italic; }
 
+  /* Bottom panel tabs */
+  .bottom-tabs {
+    display: flex; gap: 0; margin-right: 6px;
+  }
+  .bottom-tab {
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    font-weight: 600;
+    padding: 4px 12px;
+    border: 1px solid transparent;
+    border-radius: 4px 4px 0 0;
+    cursor: pointer;
+    background: transparent;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .bottom-tab:hover { color: var(--text-1); }
+  .bottom-tab.active {
+    color: var(--text-0);
+    border-color: var(--stroke-1);
+    border-bottom-color: var(--bg-1);
+    background: var(--bg-1);
+  }
+
+  /* Run history */
+  .history-body {
+    flex: 1; overflow-y: auto; padding: 0;
+  }
+  .history-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .history-table th {
+    text-align: left;
+    padding: 6px 12px;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    font-weight: 600;
+    border-bottom: 1px solid var(--stroke-1);
+    position: sticky; top: 0;
+    background: var(--bg-1);
+    z-index: 1;
+  }
+  .history-table td {
+    padding: 6px 12px;
+    color: var(--text-2);
+    border-bottom: 1px solid var(--stroke-0);
+    white-space: nowrap;
+  }
+  .history-table tbody tr {
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .history-table tbody tr:hover { background: var(--bg-3); }
+  .history-table tbody tr.active-run { background: color-mix(in srgb, var(--ok) 10%, transparent); }
+
+  .run-status {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-weight: 600; font-size: 10px;
+    letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  .run-status .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+  }
+  .run-status.completed .dot { background: var(--ok); }
+  .run-status.completed { color: var(--ok); }
+  .run-status.failed .dot { background: var(--err); }
+  .run-status.failed { color: var(--err); }
+  .run-status.running .dot { background: var(--paused); animation: pulse-dot 1s infinite; }
+  .run-status.running { color: var(--paused); }
+  .run-status.cancelled .dot { background: var(--accent); }
+  .run-status.cancelled { color: var(--accent); }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  .run-duration { color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .run-id {
+    color: var(--text-3); font-size: 10px;
+    max-width: 100px; overflow: hidden; text-overflow: ellipsis;
+  }
+  .run-replay-btn {
+    font-size: 10px; padding: 2px 8px;
+    border-radius: 3px; color: var(--text-2);
+    border: 1px solid var(--stroke-1);
+    cursor: pointer; background: transparent;
+    transition: all 0.15s;
+  }
+  .run-replay-btn:hover { background: var(--bg-3); color: var(--text-0); border-color: var(--text-3); }
+
   /* ============ MODAL ============ */
   .modal-backdrop {
     position: fixed; inset: 0;

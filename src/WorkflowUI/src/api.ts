@@ -55,12 +55,12 @@ export async function saveWorkflow(id: string, data: WorkflowData): Promise<void
       fallbackNodeId: n.fallbackNodeId || null,
     })),
     connections: (data.edges || []).map(e => {
-      // Derive triggerMessageType from sourcePort if not explicitly set
-      let msgType = e.triggerMessageType;
-      if (!msgType) {
-        if (e.sourcePort === 'error') msgType = 'Fail';
-        else if (e.sourcePortName) msgType = 'Complete'; // branch ports use Complete with sourcePort routing
-        else msgType = 'Complete';
+      // Always derive triggerMessageType from sourcePort to ensure correctness
+      let msgType: string;
+      if (e.sourcePort === 'error') {
+        msgType = 'Fail';
+      } else {
+        msgType = e.triggerMessageType || 'Complete';
       }
       return {
         sourceNodeId: e.sourceNodeId,
@@ -142,19 +142,43 @@ export async function importWorkflowsApi(zipBlob: Blob): Promise<{ imported: str
 
 // ---- Execution ----
 
-export async function runWorkflowApi(id: string): Promise<{ runId: string }> {
-  const res = await fetch(`${API_BASE}/${encodePath(id)}/run`, {
+export async function startRun(workflowId: string): Promise<{ runId: string }> {
+  const res = await fetch('/api/runs', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workflowId }),
   });
-  if (!res.ok) throw new Error(`POST run failed: ${res.status}`);
+  if (!res.ok) throw new Error(`POST /api/runs failed: ${res.status}`);
   return res.json() as Promise<{ runId: string }>;
 }
 
-export async function cancelWorkflowApi(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/${encodePath(id)}/cancel`, {
+export async function cancelRun(runId: string): Promise<void> {
+  const res = await fetch(`/api/runs/${runId}/cancel`, {
     method: 'POST',
   });
   if (!res.ok) throw new Error(`POST cancel failed: ${res.status}`);
+}
+
+export interface RunStatus {
+  runId: string;
+  workflowId: string;
+  workflowName: string;
+  status: string;
+  startTimeUtc: string;
+  endTimeUtc?: string;
+  error?: string;
+}
+
+export async function getRunStatus(runId: string): Promise<RunStatus> {
+  const res = await fetch(`/api/runs/${runId}`);
+  if (!res.ok) throw new Error(`GET run status failed: ${res.status}`);
+  return res.json() as Promise<RunStatus>;
+}
+
+export async function listRuns(): Promise<RunStatus[]> {
+  const res = await fetch('/api/runs');
+  if (!res.ok) throw new Error(`GET runs failed: ${res.status}`);
+  return res.json() as Promise<RunStatus[]>;
 }
 
 /** Check if server is available (suppresses console noise) */

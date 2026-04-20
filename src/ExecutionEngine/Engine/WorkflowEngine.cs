@@ -702,7 +702,7 @@ namespace ExecutionEngine.Engine
                 await this.WaitForCompletionAsync(context, cancellationToken);
 
                 // Step 8: Set final status
-                context.Status = this.DetermineWorkflowStatus(context);
+                context.Status = this.DetermineWorkflowStatus(context, workflowDefinition);
                 context.EndTime = DateTime.UtcNow;
 
                 // Publish workflow completion event based on final status
@@ -1823,34 +1823,79 @@ namespace ExecutionEngine.Engine
         /// <summary>
         /// Determines the final workflow status based on node statuses.
         /// </summary>
-        private WorkflowExecutionStatus DetermineWorkflowStatus(WorkflowExecutionContext context)
+        private WorkflowExecutionStatus DetermineWorkflowStatus(
+            WorkflowExecutionContext context,
+            WorkflowDefinition? workflowDefinition = null)
         {
             var statuses = this.nodeExecutionTracking.Values.Select(n => n.Status).ToList();
-            var anyFailed = statuses.Any(s => s == NodeExecutionStatus.Failed);
-            var anyCancelled = statuses.Any(s => s == NodeExecutionStatus.Cancelled);
-            var allCompletedOrCancelled = statuses.All(s =>
-                s == NodeExecutionStatus.Completed || s == NodeExecutionStatus.Cancelled);
 
-            if (anyFailed)
+            // A failed node is "handled" if it has an outgoing Fail connection
+            // whose target node completed successfully. Handled failures don't
+            // cause the workflow to fail.
+            var failedNodes = this.nodeExecutionTracking.Values
+                .Where(n => n.Status == NodeExecutionStatus.Failed)
+                .ToList();
+
+            // Try to get the workflow definition from the parameter or the dictionary
+            var wfDef = workflowDefinition ?? this.workflowDefinitions.Values.FirstOrDefault();
+
+            var unhandledFailures = new List<NodeInstance>();
+            if (failedNodes.Count > 0 && wfDef != null)
             {
-                // Collect error messages from failed nodes for debugging
-                var failedNodes = this.nodeExecutionTracking.Values
-                    .Where(n => n.Status == NodeExecutionStatus.Failed)
+                foreach (var failed in failedNodes)
+                {
+                    var failConns = wfDef.Connections.Where(c =>
+                        c.SourceNodeId == failed.NodeId &&
+                        c.TriggerMessageType == MessageType.Fail &&
+                        c.IsEnabled).ToList();
+
+                    if (failConns.Count > 0)
+                    {
+                        // Check if the error handler completed
+                        var handlerTargets = failConns.Select(c => c.TargetNodeId).ToList();
+
+                        var allHandlersCompleted = handlerTargets.All(targetId =>
+                            this.nodeExecutionTracking.TryGetValue(targetId, out var handler) &&
+                            handler.Status == NodeExecutionStatus.Completed);
+
+                        if (!allHandlersCompleted)
+                        {
+                            unhandledFailures.Add(failed);
+                        }
+                    }
+                    else
+                    {
+                        unhandledFailures.Add(failed);
+                    }
+                }
+            }
+            else
+            {
+                unhandledFailures.AddRange(failedNodes);
+            }
+
+            if (unhandledFailures.Count > 0)
+            {
+                // Collect error messages from unhandled failed nodes for debugging
+                var errorMessages = unhandledFailures
                     .Select(n => $"{n.NodeId}: {n.ErrorMessage ?? "Unknown error"}")
                     .ToList();
 
-                if (failedNodes.Count != 0)
+                if (errorMessages.Count != 0)
                 {
-                    context.Variables["__node_errors"] = string.Join("; ", failedNodes);
+                    context.Variables["__node_errors"] = string.Join("; ", errorMessages);
                 }
 
                 return WorkflowExecutionStatus.Failed;
             }
 
-            if (allCompletedOrCancelled)
+            var allCompletedOrCancelledOrHandled = statuses.All(s =>
+                s == NodeExecutionStatus.Completed ||
+                s == NodeExecutionStatus.Cancelled ||
+                s == NodeExecutionStatus.Failed); // Failed but handled
+
+            if (allCompletedOrCancelledOrHandled)
             {
-                // If some were cancelled but none failed, still consider it completed
-                // Cancelled nodes are those that weren't triggered (e.g., disabled connections)
                 return WorkflowExecutionStatus.Completed;
             }
 

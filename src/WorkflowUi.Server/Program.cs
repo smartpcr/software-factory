@@ -59,6 +59,9 @@ builder.Services.AddSingleton<SkipDeriver>();
 builder.Services.AddSingleton<EngineEventBridge>();
 builder.Services.AddSingleton<IRunEventSink, TelemetryHubSink>();
 
+// DI: register run manager
+builder.Services.AddSingleton<RunManager>();
+
 // SignalR
 builder.Services.AddSignalR();
 
@@ -97,6 +100,7 @@ app.MapWorkflowEndpoints();
 app.MapFilesEndpoints();
 app.MapNodeTypesEndpoints();
 app.MapVersionEndpoints();
+app.MapRunEndpoints();
 
 // SignalR hub
 app.MapHub<TelemetryHub>("/hubs/telemetry");

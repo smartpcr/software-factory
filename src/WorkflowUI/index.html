@@ -158,16 +158,23 @@
     </button>
   </div>
 
-  <!-- ============ LOGS ============ -->
+  <!-- ============ LOGS / HISTORY ============ -->
   <div class="logs">
     <div class="logs-header">
-      <span class="logs-title">Execution Log</span>
+      <div class="bottom-tabs">
+        <button class="bottom-tab active" data-bottom-tab="log">Execution Log</button>
+        <button class="bottom-tab" data-bottom-tab="history">Run History</button>
+      </div>
       <span class="logs-count mono" id="logCount">0</span>
       <div class="spacer" style="flex:1"></div>
-      <button class="logs-clear" data-action="clear-logs">Clear</button>
+      <button class="logs-clear" data-action="clear-logs" title="Clear log">Clear</button>
+      <button class="logs-clear" data-action="refresh-history" title="Refresh history" style="display:none" id="btnRefreshHistory">Refresh</button>
     </div>
     <div class="logs-body" id="logsBody">
       <div class="log-empty">No execution logs yet. Hit Run to start.</div>
+    </div>
+    <div class="history-body" id="historyBody" style="display:none">
+      <div class="log-empty">Loading run history…</div>
     </div>
   </div>
 
