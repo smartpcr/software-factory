@@ -304,6 +304,7 @@ export const Nodes = {
         if (t.classList.contains('drop-zone')) return;
         e.stopPropagation();
         callbacks.select('node', node.nodeId);
+        if (State.isLocked) return; // Lock prevents dragging
         dragging = true;
         startPos = { x: e.clientX, y: e.clientY };
         nodeStart = { x: node.x, y: node.y };
@@ -364,12 +365,14 @@ export const Nodes = {
   attachOwnPortHandlers(el: HTMLElement) {
     el.querySelectorAll(':scope > .port').forEach(port => {
       port.addEventListener('pointerdown', (e: Event) => {
+        if (State.isLocked) return;
         e.stopPropagation();
         Edges.startDrag(port as HTMLElement);
       });
     });
     el.querySelectorAll(':scope > .branch-ports > .branch-port > .port').forEach(port => {
       port.addEventListener('pointerdown', (e: Event) => {
+        if (State.isLocked) return;
         e.stopPropagation();
         Edges.startDrag(port as HTMLElement);
       });

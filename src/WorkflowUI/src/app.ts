@@ -153,6 +153,21 @@ export const App = {
     if (hidden) Minimap.render();
   },
 
+  toggleLock() {
+    State.isLocked = !State.isLocked;
+    const btn = document.getElementById('btnLock');
+    if (btn) {
+      btn.classList.toggle('active', State.isLocked);
+      const unlocked = btn.querySelector('.icon-unlocked') as HTMLElement;
+      const locked = btn.querySelector('.icon-locked') as HTMLElement;
+      if (unlocked) unlocked.style.display = State.isLocked ? 'none' : '';
+      if (locked) locked.style.display = State.isLocked ? '' : 'none';
+    }
+    const app = document.querySelector('.app');
+    if (app) app.classList.toggle('canvas-locked', State.isLocked);
+    toast(State.isLocked ? 'Canvas locked' : 'Canvas unlocked', 'info');
+  },
+
   togglePanel(panel: 'palette' | 'inspector' | 'logs') {
     const app = document.querySelector('.app');
     if (!app) return;
@@ -188,6 +203,7 @@ export const App = {
 
   // ---------- NODE OPS ----------
   createNode(type: string, x: number, y: number, opts: CreateNodeOptions = {}): string {
+    if (State.isLocked) { toast('Canvas is locked', 'warn'); return ''; }
     // Resolve to canonical type (handles case mismatches)
     const resolved = NodeTypes[type] ? type : Object.keys(NodeTypes).find(k => k.toLowerCase() === type.toLowerCase()) || type;
     const tpl = NodeTypes[resolved];
@@ -371,6 +387,7 @@ export const App = {
   },
 
   deleteNode(id: string) {
+    if (State.isLocked) { toast('Canvas is locked', 'warn'); return; }
     const node = State.nodes.get(id);
     if (!node) return;
     if (node.parentId) {
@@ -441,6 +458,7 @@ export const App = {
 
   // ---------- EDGE OPS ----------
   createEdge({ sourceNodeId, sourcePort, sourcePortName, targetNodeId, targetPort }: CreateEdgeParams) {
+    if (State.isLocked) return;
     for (const e of State.edges.values()) {
       if (e.sourceNodeId === sourceNodeId && e.sourcePort === sourcePort &&
           e.sourcePortName === sourcePortName && e.targetNodeId === targetNodeId) return;
@@ -534,6 +552,8 @@ export const App = {
     if (!State.openTabs.includes(id)) State.openTabs.push(id);
     // Normalize node types to canonical casing
     normalizeWorkflowNodeTypes(wf.nodes || []);
+    // Rebuild parent-child relationships from parentId/parentSlot
+    this.rebuildChildren(wf.nodes || []);
     State.nodes = new Map((wf.nodes || []).map(n => [n.nodeId, n]));
     State.edges = new Map((wf.edges || []).map(e => [e.id, e]));
     State.isDirty = false;
@@ -773,6 +793,8 @@ export const App = {
               if (n.parentId === undefined) n.parentId = null;
               if (n.parentSlot === undefined) n.parentSlot = null;
             }
+            // Rebuild children arrays from parentId/parentSlot
+            this.rebuildChildren(data.nodes);
           }
           if (!data.workflowId) data.workflowId = uid('wf');
           if (!data.workflowName) data.workflowName = wfId;
@@ -976,6 +998,51 @@ export const App = {
   },
 
   /** Migrate a workflow object from old schema to new engine-aligned schema */
+  /** Rebuild children arrays on parent nodes from parentId/parentSlot on child nodes */
+  rebuildChildren(nodes: FlowNode[]) {
+    // Legacy slot name aliases (old sidecar data may use these)
+    const slotAliases: Record<string, string> = {
+      'iterate': 'LoopBody',
+      'loopbody': 'LoopBody',
+      'loop_body': 'LoopBody',
+    };
+
+    // Build a lookup
+    const byId = new Map<string, FlowNode>();
+    for (const n of nodes) byId.set(n.nodeId, n);
+
+    // Normalize slot names on all child nodes
+    for (const n of nodes) {
+      if (n.parentSlot) {
+        const canonical = slotAliases[n.parentSlot.toLowerCase()];
+        if (canonical) n.parentSlot = canonical;
+      }
+    }
+
+    // Clear existing children on all container-type nodes
+    for (const n of nodes) {
+      if (n.children) {
+        for (const slot of Object.keys(n.children)) {
+          n.children[slot] = [];
+        }
+      }
+    }
+    // Rebuild from parentId/parentSlot
+    for (const n of nodes) {
+      if (n.parentId && n.parentSlot) {
+        const parent = byId.get(n.parentId);
+        if (parent) {
+          ensureChildren(parent);
+          if (!parent.children) parent.children = {};
+          if (!parent.children[n.parentSlot]) parent.children[n.parentSlot] = [];
+          if (!parent.children[n.parentSlot].includes(n.nodeId)) {
+            parent.children[n.parentSlot].push(n.nodeId);
+          }
+        }
+      }
+    }
+  },
+
   migrateWorkflow(wf: Record<string, unknown>) {
     // Workflow-level renames
     if ('id' in wf && !('workflowId' in wf)) { wf.workflowId = wf.id; delete wf.id; }
@@ -1225,8 +1292,9 @@ export const App = {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); this.saveWorkflow(); }
       if ((e.ctrlKey || e.metaKey) && e.key === 'n') { e.preventDefault(); this.newWorkflow(); }
       if ((e.ctrlKey || e.metaKey) && e.key === 'c') { this.copySelected(); }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'v') { this.pasteClipboard(); }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v') { if (!State.isLocked) this.pasteClipboard(); }
       if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (State.isLocked) return;
         if (State.selection.kind === 'node') this.deleteNode(State.selection.id!);
         if (State.selection.kind === 'edge') this.deleteEdge(State.selection.id!);
       }
@@ -1274,6 +1342,7 @@ export const App = {
         case 'fit-view': Canvas.fitToView(); break;
         case 'reset-view': Canvas.reset(); break;
         case 'toggle-minimap': this.toggleMinimap(); break;
+        case 'toggle-lock': this.toggleLock(); break;
         case 'toggle-palette': this.togglePanel('palette'); break;
         case 'toggle-inspector': this.togglePanel('inspector'); break;
         case 'toggle-logs': this.togglePanel('logs'); break;

@@ -598,6 +598,13 @@
   .zoom-ctrls button:last-child { border-bottom: 0; }
   .zoom-ctrls button:hover { background: var(--bg-3); color: var(--text-0); }
   .zoom-ctrls button.active { background: var(--bg-3); color: var(--accent); }
+
+  /* Locked canvas */
+  .app.canvas-locked .node { cursor: default; }
+  .app.canvas-locked .port { cursor: default; pointer-events: none; opacity: 0.4; }
+  .app.canvas-locked .drop-zone { pointer-events: none; }
+  .app.canvas-locked .palette-item { pointer-events: none; opacity: 0.5; }
+  .app.canvas-locked #btnLock { color: var(--accent); }
   .zoom-level {
     background: var(--bg-1);
     border: 1px solid var(--stroke-1);

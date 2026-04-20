@@ -13,6 +13,7 @@ export const State = {
   selection: { kind: null, id: null } as Selection,
   canvas: { x: 200, y: 120, zoom: 1 } as CanvasState,
   isDirty: false,
+  isLocked: false,
   lastSaved: null as number | null,
   logs: [] as LogEntry[],
 };
