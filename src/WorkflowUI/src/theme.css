@@ -1606,7 +1606,8 @@
     transition: color 0.12s, background 0.12s;
   }
   .panel-toggle-bottom:hover { background: var(--bg-3); color: var(--text-0); }
-  .panel-toggle-bottom svg { width: 10px; height: 10px; }
+  .panel-toggle-bottom svg { width: 10px; height: 10px; transition: transform 0.2s; }
+  .app.logs-collapsed .panel-toggle-bottom svg { transform: rotate(180deg); }
   .logs-header {
     display: flex; align-items: center; padding: 8px 14px; gap: 10px;
     border-bottom: 1px solid var(--stroke-1);
