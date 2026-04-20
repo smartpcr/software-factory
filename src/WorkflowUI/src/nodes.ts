@@ -138,6 +138,21 @@ export const Nodes = {
     if (headTitle) headTitle.textContent = node.name || type.label;
     const bodyEl = el.querySelector(':scope > .node-body');
     if (bodyEl) bodyEl.innerHTML = this.bodyHtml(node);
+    // Validation badge
+    const hasErrors = node.validationErrors && node.validationErrors.length > 0;
+    el.classList.toggle('has-validation-error', !!hasErrors);
+    let badge = el.querySelector(':scope > .validation-badge') as HTMLElement | null;
+    if (hasErrors) {
+      if (!badge) {
+        badge = document.createElement('div');
+        badge.className = 'validation-badge';
+        el.appendChild(badge);
+      }
+      badge.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="var(--err)" stroke="var(--bg-1)" stroke-width="2"><path d="M12 2L2 22h20L12 2z"/><path d="M12 9v4M12 17h.01" stroke="var(--bg-1)" fill="none" stroke-width="2" stroke-linecap="round"/></svg>`;
+      badge.setAttribute('data-tooltip', node.validationErrors!.join('\n'));
+    } else if (badge) {
+      badge.remove();
+    }
   },
 
   html(node: FlowNode): string {
@@ -202,7 +217,13 @@ export const Nodes = {
     if (node.type === 'http') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.method))}</span><span class="val">${escapeHtml(String(c.url || '—'))}</span></div>`;
     if (node.type === 'delay') return `<div class="node-body-row"><span class="lab">wait</span><span class="val">${escapeHtml(String(c.duration))}${escapeHtml(String(c.unit))}</span></div>`;
     if (node.type === 'subflow') return `<div class="node-body-row"><span class="lab">flow</span><span class="val">${escapeHtml(c.workflowId ? (State.workflows[String(c.workflowId)]?.name || String(c.workflowId)) : '—')}</span></div>`;
-    if (node.type === 'start') return `<div class="node-body-row"><span class="lab">trigger</span><span class="val">${escapeHtml(String(c.triggerType))}</span></div>`;
+    if (node.type === 'start') {
+      const trigLabel = String(c.triggerType || 'Manual');
+      let detail = trigLabel;
+      if (trigLabel === 'Schedule' && c.schedule) detail = String(c.schedule);
+      if (trigLabel === 'Event' && c.eventName) detail = String(c.eventName);
+      return `<div class="node-body-row"><span class="lab">trigger</span><span class="val">${escapeHtml(detail)}</span></div>`;
+    }
     if (node.type === 'trigger') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.method))}</span><span class="val">${escapeHtml(String(c.route || '—'))}</span></div>`;
     if (node.type === 'transform') return `<div class="node-body-row"><span class="lab">expr</span><span class="val">${escapeHtml(String(c.expression || '—'))}</span></div>`;
     if (node.type === 'log') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.level))}</span><span class="val">${escapeHtml(String(c.message || '—'))}</span></div>`;

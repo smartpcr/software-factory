@@ -383,6 +383,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
             "Subflow" => typeof(SubflowNodeDefinition),
             "Timer" => typeof(TimerNodeDefinition),
             "Container" => typeof(ContainerNodeDefinition),
+            "Start" => typeof(StartNodeDefinition),
             _ => null
         };
     }

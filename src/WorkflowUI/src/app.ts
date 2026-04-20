@@ -9,10 +9,16 @@ import { uid, now, clone, ensureChildren, getSlots, toast, escapeHtml } from './
 import type { FlowEdge } from './types';
 
 let renderTimer: ReturnType<typeof setTimeout> | null = null;
+let validationTimer: ReturnType<typeof setTimeout> | null = null;
 
 function debouncedRender(fn: () => void, ms = 1000) {
   if (renderTimer) clearTimeout(renderTimer);
   renderTimer = setTimeout(fn, ms);
+}
+
+function debouncedValidation(fn: () => void, ms = 5000) {
+  if (validationTimer) clearTimeout(validationTimer);
+  validationTimer = setTimeout(fn, ms);
 }
 import { Canvas } from './canvas';
 import { Minimap } from './minimap';
@@ -21,7 +27,7 @@ import { Edges } from './edges';
 import { Palette } from './palette';
 import { Inspector } from './inspector';
 import { Exec } from './exec';
-import { saveWorkflow as saveWorkflowApi, deleteWorkflowApi, listWorkflows, getWorkflow, fetchNodeTypes } from './api';
+import { saveWorkflow as saveWorkflowApi, deleteWorkflowApi, listWorkflows, getWorkflow, fetchNodeTypes, validateWorkflow } from './api';
 import { mergeServerNodeTypes } from './registry';
 
 function buildCallbacks(): AppCallbacks {
@@ -280,8 +286,8 @@ export const App = {
     Object.assign(node, patch);
     this.markDirty();
     Nodes.render();
-    // Debounce inspector re-render so typing in property fields isn't interrupted
     debouncedRender(() => Inspector.render());
+    this.triggerValidation();
   },
 
   updateNodeConfig(id: string, key: string, value: unknown) {
@@ -290,7 +296,30 @@ export const App = {
     node.config = { ...(node.config || {}), [key]: value as string | number | boolean };
     this.markDirty();
     Nodes.render();
-    // Don't re-render inspector immediately — the user is typing in it
+    this.triggerValidation();
+  },
+
+  /** Trigger server-side validation with 5s debounce */
+  triggerValidation() {
+    debouncedValidation(async () => {
+      if (!State.currentWfId) return;
+      const wf = State.workflows[State.currentWfId];
+      if (!wf) return;
+      try {
+        // Save first so server has latest state
+        await saveWorkflowApi(wf.name, wf);
+        const entries = await validateWorkflow(wf.name);
+        if (entries.length === 0) {
+          this.log('success', null, '✓ Validation passed');
+        } else {
+          entries.forEach(e => {
+            this.log(e.severity === 'error' ? 'error' : 'warn', e.nodeId || null, `Validation: ${e.message}`);
+          });
+        }
+      } catch {
+        // Server unavailable — skip validation
+      }
+    });
   },
 
   deleteNode(id: string) {

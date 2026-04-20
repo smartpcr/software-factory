@@ -48,6 +48,8 @@ export interface FlowNode {
   _cachedHeight?: number;
   _iterCount?: number;
   _forceFail?: boolean;
+  /** Validation errors from server or local checks */
+  validationErrors?: string[];
 }
 
 export interface FlowEdge {

@@ -11,7 +11,7 @@ export const NodeTypes: Record<string, NodeTypeDefinition> = {
     icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>',
     desc: 'Workflow entry point',
     ports: { in: false, out: true, error: false },
-    config: { triggerType: 'manual', schedule: '0 0 * * *' }
+    config: { triggerType: 'Manual', schedule: '', eventName: '' }
   },
   trigger: {
     label: 'Webhook Trigger', category: 'Trigger',

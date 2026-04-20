@@ -35,6 +35,26 @@ public static class NodeTypesEndpoints
         [
             new NodeTypeDescriptor
             {
+                RuntimeType = nameof(RuntimeType.Start),
+                Label = "Start",
+                Category = "Trigger",
+                Description = "Workflow entry point — manual, scheduled, or event-triggered.",
+                Color = "var(--n-start)",
+                Ports = new PortDescriptor { In = false, Out = true, Error = false },
+                Properties =
+                [
+                    new PropertyDescriptor
+                    {
+                        Name = "triggerType", Label = "Trigger Type", Type = "enum", Required = true,
+                        Options = [nameof(TriggerType.Manual), nameof(TriggerType.Schedule), nameof(TriggerType.Event)],
+                        Default = nameof(TriggerType.Manual),
+                    },
+                    new PropertyDescriptor { Name = "schedule", Label = "Cron Schedule", Type = "string", Placeholder = "0 */5 * * *" },
+                    new PropertyDescriptor { Name = "eventName", Label = "Event Name", Type = "string", Placeholder = "order.created" },
+                ],
+            },
+            new NodeTypeDescriptor
+            {
                 RuntimeType = nameof(RuntimeType.Noop),
                 Label = "Noop",
                 Category = "Utility",

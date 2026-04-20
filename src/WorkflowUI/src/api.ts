@@ -120,6 +120,24 @@ export async function checkServerHealth(): Promise<boolean> {
   }
 }
 
+// ---- Validation ----
+
+export interface ValidationEntry {
+  nodeId: string;
+  message: string;
+  severity: 'error' | 'warning' | 'info';
+}
+
+export async function validateWorkflow(workflowId: string): Promise<ValidationEntry[]> {
+  const res = await fetch('/api/workflows/validate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workflowId }),
+  });
+  if (!res.ok) throw new Error(`POST validate failed: ${res.status}`);
+  return res.json() as Promise<ValidationEntry[]>;
+}
+
 // ---- Node Types Catalog ----
 
 export interface ServerNodeType {

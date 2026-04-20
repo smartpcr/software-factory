@@ -75,5 +75,10 @@ public enum RuntimeType
     /// Container node for grouping related nodes into logical units with encapsulated execution flow.
     /// Similar to Subflow but with inline definition instead of external file.
     /// </summary>
-    Container
+    Container,
+
+    /// <summary>
+    /// Start node — workflow entry point with manual, schedule, or event trigger.
+    /// </summary>
+    Start
 }

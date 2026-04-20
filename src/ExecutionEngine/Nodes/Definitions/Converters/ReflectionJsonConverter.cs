@@ -293,6 +293,7 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
             "Subflow" => typeof(SubflowNodeDefinition),
             "Timer" => typeof(TimerNodeDefinition),
             "Container" => typeof(ContainerNodeDefinition),
+            "Start" => typeof(StartNodeDefinition),
             _ => null
         };
     }

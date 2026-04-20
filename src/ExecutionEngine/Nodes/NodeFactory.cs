@@ -115,6 +115,9 @@ public class NodeFactory
                 case Enums.RuntimeType.Container:
                     node = CreateContainerNode(definition);
                     break;
+                case Enums.RuntimeType.Start:
+                    node = CreateStartNode(definition);
+                    break;
                 default:
                     this.logger.LogError("Runtime type '{RuntimeType}' is not supported for NodeId {NodeId}", definition.RuntimeType, definition.NodeId);
                     throw new NotSupportedException($"Runtime type '{definition.RuntimeType}' is not supported.");
@@ -328,6 +331,11 @@ public class NodeFactory
     private static ExecutableNodeBase CreateContainerNode(NodeDefinition definition)
     {
         return new ContainerNode();
+    }
+
+    private static ExecutableNodeBase CreateStartNode(NodeDefinition definition)
+    {
+        return new StartNode();
     }
 
     /// <summary>

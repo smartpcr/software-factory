@@ -6,8 +6,14 @@ import type { FlowNode, AppCallbacks, NodeTypeDefinition } from './types';
 import { NodeTypes } from './registry';
 import { State } from './state';
 import { escapeHtml } from './utils';
+import { Nodes } from './nodes';
 
 let callbacks: AppCallbacks;
+let nodeRenderTimer: ReturnType<typeof setTimeout> | null = null;
+function debouncedNodeRender() {
+  if (nodeRenderTimer) clearTimeout(nodeRenderTimer);
+  nodeRenderTimer = setTimeout(() => Nodes.render(), 300);
+}
 
 export const Inspector = {
   init(cb: AppCallbacks) { callbacks = cb; },
@@ -311,6 +317,77 @@ export const Inspector = {
         callbacks.updateNodeConfig(nodeId, 'params', JSON.stringify(params));
       });
     });
+    // Cron preset buttons
+    el.querySelectorAll<HTMLButtonElement>('.ins-cron-preset').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const nodeId = btn.dataset.nodeId!;
+        const preset = btn.dataset.preset!;
+        callbacks.updateNodeConfig(nodeId, 'schedule', preset);
+        this.render();
+      });
+    });
+    // Local validation on triggerType change — re-render inspector to show/hide fields
+    el.querySelectorAll<HTMLSelectElement>('[data-config-key="triggerType"]').forEach(select => {
+      select.addEventListener('change', () => {
+        const nodeId = select.dataset.nodeId!;
+        const node = State.nodes.get(nodeId);
+        if (node && node.type === 'start') {
+          this.validateStartNode(node);
+        }
+        // Re-render to show/hide conditional fields (triggerType change is a dropdown, no focus to lose)
+        setTimeout(() => this.render(), 50);
+      });
+    });
+    // Local validation on schedule input — update badge + friendly text in-place, no re-render
+    el.querySelectorAll<HTMLInputElement>('[data-config-key="schedule"]').forEach(input => {
+      input.addEventListener('input', () => {
+        const nodeId = input.dataset.nodeId!;
+        const node = State.nodes.get(nodeId);
+        if (node && node.type === 'start') {
+          this.validateStartNode(node);
+          this.updateCronDisplayInPlace(el, String(node.config.schedule || ''));
+          debouncedNodeRender();
+        }
+      });
+    });
+  },
+
+  /** Update the cron friendly text and validation indicator without full re-render */
+  updateCronDisplayInPlace(inspectorEl: HTMLElement, schedule: string) {
+    // Update friendly text
+    const friendlyEl = inspectorEl.querySelector('.ins-cron-friendly') as HTMLElement | null;
+    const desc = this.describeCron(schedule);
+    if (friendlyEl) {
+      friendlyEl.textContent = desc;
+      friendlyEl.style.display = desc ? '' : 'none';
+    }
+    // Update validation indicator in label
+    const errSpan = inspectorEl.querySelector('.ins-validation-err') as HTMLElement | null;
+    const okSpan = inspectorEl.querySelector('.ins-validation-ok') as HTMLElement | null;
+    const cronErr = this.validateCron(schedule);
+    if (cronErr) {
+      if (errSpan) { errSpan.style.display = ''; errSpan.setAttribute('data-tooltip', cronErr); }
+      if (okSpan) okSpan.style.display = 'none';
+    } else {
+      if (errSpan) errSpan.style.display = 'none';
+      if (okSpan) okSpan.style.display = '';
+    }
+  },
+
+  /** Run local validation on a Start node and update its validationErrors */
+  validateStartNode(node: FlowNode) {
+    const errors: string[] = [];
+    const c = node.config || {};
+    if (String(c.triggerType) === 'Schedule') {
+      const cronErr = this.validateCron(String(c.schedule || ''));
+      if (cronErr) errors.push(cronErr);
+    }
+    if (String(c.triggerType) === 'Event') {
+      if (!c.eventName || !String(c.eventName).trim()) {
+        errors.push('Event name is required when trigger type is Event');
+      }
+    }
+    node.validationErrors = errors.length > 0 ? errors : undefined;
   },
 
   configFieldsHtml(node: FlowNode): string {
@@ -320,19 +397,42 @@ export const Inspector = {
     let title = 'Configuration';
 
     if (node.type === 'start') {
+      title = 'Start Trigger';
+      const trigType = String(c.triggerType || 'Manual');
+      const cronDesc = trigType === 'Schedule' && c.schedule ? this.describeCron(String(c.schedule)) : '';
+      const cronValid = trigType === 'Schedule' ? this.validateCron(String(c.schedule || '')) : null;
+
       fields = `
         <div class="ins-field">
           <label class="ins-field-label">Trigger type</label>
           <select data-config-key="triggerType" data-node-id="${id}">
-            <option ${c.triggerType === 'manual' ? 'selected' : ''}>manual</option>
-            <option ${c.triggerType === 'schedule' ? 'selected' : ''}>schedule</option>
-            <option ${c.triggerType === 'event' ? 'selected' : ''}>event</option>
+            <option value="Manual" ${trigType === 'Manual' ? 'selected' : ''}>Manual</option>
+            <option value="Schedule" ${trigType === 'Schedule' ? 'selected' : ''}>Schedule</option>
+            <option value="Event" ${trigType === 'Event' ? 'selected' : ''}>Event</option>
           </select>
         </div>
-        ${c.triggerType === 'schedule' ? `
+        ${trigType === 'Schedule' ? `
         <div class="ins-field">
-          <label class="ins-field-label">Cron expression</label>
-          <input class="mono" value="${escapeHtml(String(c.schedule || ''))}" data-config-key="schedule" data-node-id="${id}" />
+          <label class="ins-field-label">Cron schedule ${cronValid ? '<span class="ins-validation-err" data-tooltip="' + escapeHtml(cronValid) + '">⚠</span>' : '<span class="ins-validation-ok">✓</span>'}</label>
+          <input class="mono" value="${escapeHtml(String(c.schedule || ''))}" placeholder="0 */5 * * *" data-config-key="schedule" data-node-id="${id}" />
+          ${cronDesc ? `<div class="ins-cron-friendly">${escapeHtml(cronDesc)}</div>` : ''}
+          <div class="ins-field-hint">
+            Format: minute hour day month weekday<br>
+            <code>*</code> = any &nbsp; <code>*/5</code> = every 5 &nbsp; <code>1,15</code> = 1st and 15th
+          </div>
+          <div class="ins-cron-presets">
+            <button class="ins-cron-preset" data-preset="* * * * *" data-node-id="${id}">Every min</button>
+            <button class="ins-cron-preset" data-preset="*/5 * * * *" data-node-id="${id}">Every 5m</button>
+            <button class="ins-cron-preset" data-preset="0 * * * *" data-node-id="${id}">Hourly</button>
+            <button class="ins-cron-preset" data-preset="0 0 * * *" data-node-id="${id}">Daily</button>
+            <button class="ins-cron-preset" data-preset="0 0 * * 1" data-node-id="${id}">Weekly</button>
+          </div>
+        </div>` : ''}
+        ${trigType === 'Event' ? `
+        <div class="ins-field">
+          <label class="ins-field-label">Event name</label>
+          <input class="mono" value="${escapeHtml(String(c.eventName || ''))}" placeholder="order.created" data-config-key="eventName" data-node-id="${id}" />
+          <div class="ins-field-hint">Name of the external event to listen for.</div>
         </div>` : ''}
       `;
     } else if (node.type === 'trigger') {
@@ -676,5 +776,104 @@ export const Inspector = {
       <div class="ins-section-title">${title}</div>
       ${fields}
     </div>`;
+  },
+
+  /** Human-readable description of a cron expression */
+  describeCron(cron: string): string {
+    if (!cron.trim()) return '';
+    const parts = cron.trim().split(/\s+/);
+    if (parts.length < 5) return 'Invalid format';
+    const [min, hour, dom, mon, dow] = parts;
+    const segments: string[] = [];
+
+    // Helper: detect step patterns like */5, 0/5, etc.
+    const isStep = (f: string) => f.includes('/');
+    const stepVal = (f: string) => {
+      const s = f.split('/')[1];
+      return s ? parseInt(s) : 1;
+    };
+
+    // Time part
+    if (min === '*' && hour === '*') {
+      segments.push('Every minute');
+    } else if (isStep(min) && hour === '*') {
+      const n = stepVal(min);
+      segments.push(n === 1 ? 'Every minute' : `Every ${n} minutes`);
+    } else if ((min === '0' || min === '*') && isStep(hour)) {
+      const n = stepVal(hour);
+      segments.push(n === 1 ? 'Every hour' : `Every ${n} hours`);
+    } else if (isStep(min) && isStep(hour)) {
+      segments.push(`Every ${stepVal(hour)} hours, every ${stepVal(min)} minutes`);
+    } else if (min === '0' && hour === '*') {
+      segments.push('Every hour');
+    } else if (min !== '*' && hour === '*') {
+      segments.push(`At minute ${min} of every hour`);
+    } else if (min !== '*' && hour !== '*' && !isStep(hour)) {
+      if (hour.includes(',')) {
+        segments.push(`At :${min.padStart(2, '0')} on hours ${hour}`);
+      } else {
+        segments.push(`At ${hour}:${min.padStart(2, '0')}`);
+      }
+    } else {
+      segments.push(`${min} ${hour}`);
+    }
+
+    // Date part
+    if (dom !== '*') {
+      if (isStep(dom)) segments.push(`every ${stepVal(dom)} days`);
+      else segments.push(`on day ${dom} of month`);
+    }
+    if (mon !== '*') {
+      const months: Record<string, string> = { '1': 'Jan', '2': 'Feb', '3': 'Mar', '4': 'Apr', '5': 'May', '6': 'Jun', '7': 'Jul', '8': 'Aug', '9': 'Sep', '10': 'Oct', '11': 'Nov', '12': 'Dec' };
+      const m = mon.split(',').map(m => months[m] || m).join(', ');
+      segments.push(`in ${m}`);
+    }
+    if (dow !== '*') {
+      const days: Record<string, string> = { '0': 'Sun', '1': 'Mon', '2': 'Tue', '3': 'Wed', '4': 'Thu', '5': 'Fri', '6': 'Sat', '7': 'Sun' };
+      const d = dow.split(',').map(d => days[d] || d).join(', ');
+      segments.push(`on ${d}`);
+    }
+
+    return segments.join(', ') || cron;
+  },
+
+  /** Validate cron expression locally, returns error string or null */
+  validateCron(cron: string): string | null {
+    if (!cron.trim()) return 'Schedule is required when trigger type is Schedule';
+    const parts = cron.trim().split(/\s+/);
+    if (parts.length < 5 || parts.length > 6) return `Expected 5 fields (minute hour day month weekday), got ${parts.length}`;
+    const ranges = [
+      { name: 'minute', min: 0, max: 59 },
+      { name: 'hour', min: 0, max: 23 },
+      { name: 'day', min: 1, max: 31 },
+      { name: 'month', min: 1, max: 12 },
+      { name: 'weekday', min: 0, max: 7 },
+    ];
+    for (let i = 0; i < 5; i++) {
+      const field = parts[i];
+      const { name, min, max } = ranges[i];
+      if (field === '*') continue;
+      // Step patterns: */5 or 0/5
+      if (/^\d*\*?\/\d+$/.test(field)) {
+        const stepParts = field.split('/');
+        const step = parseInt(stepParts[1]);
+        if (step < 1 || step > max) return `${name}: step ${step} out of range (1-${max})`;
+        const base = stepParts[0];
+        if (base && base !== '*') {
+          const b = parseInt(base);
+          if (isNaN(b) || b < min || b > max) return `${name}: start value "${base}" out of range (${min}-${max})`;
+        }
+        continue;
+      }
+      // Check comma-separated values
+      for (const v of field.split(',')) {
+        const dash = v.split('-');
+        for (const d of dash) {
+          const n = parseInt(d);
+          if (isNaN(n) || n < min || n > max) return `${name}: value "${d}" out of range (${min}-${max})`;
+        }
+      }
+    }
+    return null;
   }
 };
