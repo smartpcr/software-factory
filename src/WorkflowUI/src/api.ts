@@ -119,3 +119,35 @@ export async function checkServerHealth(): Promise<boolean> {
     return false;
   }
 }
+
+// ---- Node Types Catalog ----
+
+export interface ServerNodeType {
+  runtimeType: string;
+  label: string;
+  category: string;
+  description: string;
+  color: string;
+  ports: { in: boolean; out: boolean; error: boolean };
+  outputPorts: string[];
+  dynamicPorts: boolean;
+  portLabels: Record<string, string> | null;
+  events: string[];
+  properties: ServerNodeProperty[];
+}
+
+export interface ServerNodeProperty {
+  name: string;
+  label: string;
+  type: string;
+  required: boolean;
+  default: string | null;
+  placeholder: string | null;
+  options: string[] | null;
+}
+
+export async function fetchNodeTypes(): Promise<ServerNodeType[]> {
+  const res = await fetch('/api/node-types');
+  if (!res.ok) throw new Error(`GET /api/node-types failed: ${res.status}`);
+  return res.json() as Promise<ServerNodeType[]>;
+}

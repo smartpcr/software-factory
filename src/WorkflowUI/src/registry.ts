@@ -154,3 +154,106 @@ export const PaletteOrder: PaletteSection[] = [
   { category: 'AI', types: ['ai'] },
   { category: 'Containers', types: ['container', 'subflow'] },
 ];
+
+// Icons for engine RuntimeTypes (used when server types are merged in)
+const engineIcons: Record<string, string> = {
+  Noop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/></svg>',
+  CSharp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M16 18l2-2-2-2M8 18l-2-2 2-2M14 4l-4 16"/></svg>',
+  CSharpScript: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M16 18l2-2-2-2M8 18l-2-2 2-2M14 4l-4 16"/></svg>',
+  CSharpTask: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M10 8l4 4-4 4"/></svg>',
+  PowerShell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 7l7 5-7 5M13 17h6"/></svg>',
+  PowerShellTask: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 7l7 5-7 5M13 17h6"/></svg>',
+  IfElse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 4v6a4 4 0 0 0 4 4h6M7 4H3M17 14l3-3-3-3M17 14v6h-4M17 14h4"/></svg>',
+  ForEach: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 1l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 23l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3"/></svg>',
+  While: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>',
+  Switch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v18M3 12h18M6 6l12 12M18 6 6 18"/></svg>',
+  Subflow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.27 6.96 12 12.01l8.73-5.05M12 22.08V12"/></svg>',
+  Timer: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>',
+  Container: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="3 2"/></svg>',
+};
+
+import type { ServerNodeType } from './api';
+
+/**
+ * Merge engine node types from the server into the registry.
+ * Server types that don't already exist in the local registry are added.
+ * Existing local types are NOT overwritten (they have richer UI config).
+ * A new "Engine" palette section is added for the server-only types.
+ */
+export function mergeServerNodeTypes(serverTypes: ServerNodeType[]): void {
+  const newTypes: string[] = [];
+
+  for (const st of serverTypes) {
+    const key = st.runtimeType;
+    // Skip if we already have a local registration for this type
+    if (NodeTypes[key] || NodeTypes[key.toLowerCase()]) continue;
+
+    const config: Record<string, string | number | boolean> = {};
+    for (const prop of st.properties) {
+      if (prop.default != null) {
+        config[prop.name] = prop.default;
+      } else if (prop.type === 'boolean') {
+        config[prop.name] = false;
+      } else if (prop.type === 'number') {
+        config[prop.name] = 0;
+      } else {
+        config[prop.name] = '';
+      }
+    }
+
+    const def: NodeTypeDefinition = {
+      label: st.label,
+      category: st.category,
+      color: st.color,
+      icon: engineIcons[key] || engineIcons.Noop,
+      desc: st.description,
+      ports: { in: st.ports.in, out: st.ports.out, error: st.ports.error },
+      config,
+    };
+
+    if (st.outputPorts.length > 0) {
+      def.branches = [...st.outputPorts];
+    }
+
+    if (st.portLabels) {
+      def.portLabels = {
+        in: st.portLabels['in'],
+        out: st.portLabels['out'],
+        error: st.portLabels['error'] || 'onError',
+        branches: {},
+      };
+      for (const port of st.outputPorts) {
+        if (st.portLabels[port]) {
+          def.portLabels.branches![port] = st.portLabels[port];
+        }
+      }
+    }
+
+    // Store server property metadata for dynamic inspector rendering
+    (def as NodeTypeDefinition & { serverProperties?: ServerNodeType['properties'] }).serverProperties = st.properties;
+
+    NodeTypes[key] = def;
+    newTypes.push(key);
+  }
+
+  // Add new types to palette under their categories
+  if (newTypes.length > 0) {
+    const byCategory = new Map<string, string[]>();
+    for (const key of newTypes) {
+      const cat = NodeTypes[key].category;
+      if (!byCategory.has(cat)) byCategory.set(cat, []);
+      byCategory.get(cat)!.push(key);
+    }
+    for (const [cat, types] of byCategory) {
+      const existing = PaletteOrder.find(s => s.category === cat);
+      if (existing) {
+        // Add to existing category, avoiding duplicates
+        for (const t of types) {
+          if (!existing.types.includes(t)) existing.types.push(t);
+        }
+      } else {
+        PaletteOrder.push({ category: cat, types });
+      }
+    }
+  }
+}

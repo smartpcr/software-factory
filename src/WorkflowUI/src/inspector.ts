@@ -2,7 +2,7 @@
 // Inspector panel rendering
 // -----------------------------------------------------------------------
 
-import type { FlowNode, AppCallbacks } from './types';
+import type { FlowNode, AppCallbacks, NodeTypeDefinition } from './types';
 import { NodeTypes } from './registry';
 import { State } from './state';
 import { escapeHtml } from './utils';
@@ -622,7 +622,54 @@ export const Inspector = {
         </div>
       `;
     } else {
-      fields = `<div class="ins-field-hint">No additional configuration.</div>`;
+      // Try rendering from server-provided property descriptors
+      const typeDef = NodeTypes[node.type] as NodeTypeDefinition & { serverProperties?: { name: string; label: string; type: string; required: boolean; default: string | null; placeholder: string | null; options: string[] | null }[] };
+      if (typeDef?.serverProperties?.length) {
+        fields = typeDef.serverProperties.map(prop => {
+          const val = escapeHtml(String(c[prop.name] ?? prop.default ?? ''));
+          if (prop.type === 'enum' && prop.options) {
+            const opts = prop.options.map(o => `<option ${String(c[prop.name]) === o ? 'selected' : ''} value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+            return `<div class="ins-field">
+              <label class="ins-field-label">${escapeHtml(prop.label)}</label>
+              <select data-config-key="${escapeHtml(prop.name)}" data-node-id="${id}">${opts}</select>
+            </div>`;
+          }
+          if (prop.type === 'boolean') {
+            return `<div class="ins-field">
+              <label style="display:flex; align-items:center; gap:6px; font-size:12px;">
+                <input type="checkbox" ${c[prop.name] ? 'checked' : ''} data-config-key="${escapeHtml(prop.name)}" data-node-id="${id}" style="width:auto" />
+                ${escapeHtml(prop.label)}
+              </label>
+            </div>`;
+          }
+          if (prop.type === 'number') {
+            return `<div class="ins-field">
+              <label class="ins-field-label">${escapeHtml(prop.label)}</label>
+              <input type="number" value="${val}" data-config-key="${escapeHtml(prop.name)}" data-node-id="${id}" placeholder="${escapeHtml(prop.placeholder || '')}" />
+            </div>`;
+          }
+          if (prop.type === 'code' || prop.type === 'expression') {
+            return `<div class="ins-field">
+              <label class="ins-field-label">${escapeHtml(prop.label)}</label>
+              <textarea class="mono" data-config-key="${escapeHtml(prop.name)}" data-node-id="${id}" placeholder="${escapeHtml(prop.placeholder || '')}">${val}</textarea>
+            </div>`;
+          }
+          if (prop.type === 'map') {
+            return `<div class="ins-field">
+              <label class="ins-field-label">${escapeHtml(prop.label)}</label>
+              <textarea class="mono" data-config-key="${escapeHtml(prop.name)}" data-node-id="${id}" placeholder="${escapeHtml(prop.placeholder || '{}')}">${val}</textarea>
+              <div class="ins-field-hint">JSON key-value mapping</div>
+            </div>`;
+          }
+          // Default: string input
+          return `<div class="ins-field">
+            <label class="ins-field-label">${escapeHtml(prop.label)}${prop.required ? ' *' : ''}</label>
+            <input value="${val}" data-config-key="${escapeHtml(prop.name)}" data-node-id="${id}" placeholder="${escapeHtml(prop.placeholder || '')}" class="${prop.type === 'duration' ? 'mono' : ''}" />
+          </div>`;
+        }).join('');
+      } else {
+        fields = `<div class="ins-field-hint">No additional configuration.</div>`;
+      }
     }
 
     return `<div class="ins-section">

@@ -21,7 +21,8 @@ import { Edges } from './edges';
 import { Palette } from './palette';
 import { Inspector } from './inspector';
 import { Exec } from './exec';
-import { saveWorkflow as saveWorkflowApi, deleteWorkflowApi, listWorkflows, getWorkflow } from './api';
+import { saveWorkflow as saveWorkflowApi, deleteWorkflowApi, listWorkflows, getWorkflow, fetchNodeTypes } from './api';
+import { mergeServerNodeTypes } from './registry';
 
 function buildCallbacks(): AppCallbacks {
   return {
@@ -65,6 +66,15 @@ export const App = {
     this.bindTopbarActions();
     this.syncThemeIcon();
     this.renderAll();
+
+    // Load engine node types from server (non-blocking)
+    fetchNodeTypes().then(types => {
+      mergeServerNodeTypes(types);
+      Palette.render();
+      this.log('info', null, `Loaded ${types.length} engine node types from server`);
+    }).catch(() => {
+      // Server unavailable — use built-in palette only
+    });
   },
 
   syncThemeIcon() {

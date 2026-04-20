@@ -94,6 +94,7 @@ app.MapWorkflowValidationEndpoints();
 app.MapMapperRoundTripEndpoints();
 app.MapWorkflowEndpoints();
 app.MapFilesEndpoints();
+app.MapNodeTypesEndpoints();
 app.MapVersionEndpoints();
 
 // SignalR hub
