@@ -144,8 +144,9 @@ export const Nodes = {
     }
     const headTitle = el.querySelector(':scope > .node-head > .node-title');
     if (headTitle) headTitle.textContent = node.nodeName || type.label;
-    const bodyEl = el.querySelector(':scope > .node-body');
-    if (bodyEl) bodyEl.innerHTML = this.bodyHtml(node);
+    // Only update body content, not the error port/drop zones
+    const bodyContentEl = el.querySelector(':scope > .node-body > .node-body-content');
+    if (bodyContentEl) bodyContentEl.innerHTML = this.bodyHtml(node);
     // Validation badge
     const hasErrors = node.validationErrors && node.validationErrors.length > 0;
     el.classList.toggle('has-validation-error', !!hasErrors);
@@ -192,9 +193,9 @@ export const Nodes = {
     const dropError = ports.error ? `<div class="drop-zone error-right" data-node-id="${node.nodeId}" data-position="after-error"></div>` : '';
     const safeName = escapeHtml(node.nodeName || type.label);
 
-    const bodyContent = node.runtimeType === 'container'
-      ? `<div class="container-body"><div class="container-children"></div>${errorPortHtml}${dropError}</div>`
-      : `<div class="node-body">${this.bodyHtml(node)}${errorPortHtml}${dropError}</div>`;
+    const bodyContent = node.runtimeType.toLowerCase() === 'container'
+      ? `<div class="container-body"><div class="container-children"></div></div>`
+      : `<div class="node-body"><div class="node-body-content">${this.bodyHtml(node)}</div></div>`;
 
     return `
       ${dropAbove}
@@ -207,6 +208,8 @@ export const Nodes = {
       </div>
       ${bodyContent}
       ${portsHtml}
+      ${errorPortHtml}
+      ${dropError}
       ${branchesHtml}
       ${dropBelow}
     `;

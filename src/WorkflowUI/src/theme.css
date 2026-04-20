@@ -621,6 +621,7 @@
     transition: border-color 0.14s, box-shadow 0.14s, transform 0.08s;
     cursor: grab;
     font-size: 12px;
+    overflow: visible;
   }
   .node:hover { border-color: var(--stroke-2); }
   .node.selected {
@@ -687,6 +688,7 @@
     font-size: 11.5px;
     min-height: 18px;
     position: relative;
+    overflow: visible;
   }
   .node-body-row {
     display: flex; align-items: center; gap: 6px;
@@ -715,13 +717,21 @@
   .port.out { bottom: -7px; left: 50%; transform: translateX(-50%); }
   .port.out:hover { transform: translateX(-50%) scale(1.4); }
   .port.error {
-    /* Lives inside .node-body, so it stays anchored to the body row regardless of
-       how the branches/children below grow. */
-    top: 50%; right: -7px;
+    /* Direct child of .node — right edge, vertically centered */
+    left: auto !important;
+    right: -7px;
+    top: 50%;
     transform: translateY(-50%);
-    background: var(--bg-4); border-color: var(--err);
+    background: var(--bg-1);
+    border: 2px solid var(--err);
+    box-shadow: 0 0 0 2px var(--bg-1), 0 0 6px rgba(255,136,136,0.3);
+    z-index: 5;
   }
-  .port.error:hover { transform: translateY(-50%) scale(1.4); background: var(--err); }
+  .port.error:hover {
+    transform: translateY(-50%) scale(1.4);
+    background: var(--err);
+    box-shadow: 0 0 8px rgba(255,136,136,0.6);
+  }
   .port-label {
     position: absolute;
     font-size: 9px;
@@ -816,7 +826,7 @@
     position: relative !important;
     left: auto !important;
     top: auto !important;
-    width: auto !important;
+    width: 100% !important;
     min-width: 0;
     box-shadow:
       0 1px 0 rgba(255,255,255,0.06) inset,
@@ -831,7 +841,7 @@
     /* Keep visible so nested edges/insertion stays clear */
     width: 8px; height: 8px;
   }
-  .node.nested .port.error { right: -5px; }
+  .node.nested .port.error { right: -5px; left: auto !important; }
 
   /* Insertion drop zones above/below each node — only present while a palette drag is active */
   .drop-zone {
@@ -946,6 +956,10 @@
   .node[data-status="paused"] .node-status-badge { background: var(--paused); color: #001a3a; }
   /* Light-theme status/accent text must contrast with the saturated (darker) status colors */
   :root[data-theme="light"] .node-status-badge { color: #ffffff !important; }
+  :root[data-theme="light"] .port.error {
+    background: var(--bg-1);
+    box-shadow: 0 0 0 2px var(--bg-1), 0 0 4px rgba(181,45,45,0.3);
+  }
 
   /* Validation badge on node */
   .validation-badge {

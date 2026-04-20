@@ -1,9 +1,9 @@
 {
-  "workflowId": "wf_zoxosal",
+  "workflowId": "wf_oix85yo",
   "workflowName": "saved",
   "description": "",
   "version": "1.0",
-  "entryPointNodeId": null,
+  "entryPointNodeId": "n_a7yb2vh",
   "maxConcurrency": 0,
   "allowPause": true,
   "timeoutSeconds": 0,
@@ -49,6 +49,23 @@
       "circuitBreakerPolicy": null,
       "compensationNodeId": null,
       "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_lls3knp",
+      "runtimeType": "Log",
+      "nodeName": "Log",
+      "description": "",
+      "configuration": {
+        "level": "info",
+        "message": ""
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
     }
   ],
   "connections": [
@@ -56,6 +73,17 @@
       "sourceNodeId": "n_a7yb2vh",
       "targetNodeId": "n_ehhw9jr",
       "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_ehhw9jr",
+      "targetNodeId": "n_lls3knp",
+      "sourcePort": "error",
       "targetPort": "in",
       "triggerMessageType": "Complete",
       "condition": null,

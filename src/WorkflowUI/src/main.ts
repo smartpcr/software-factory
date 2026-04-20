@@ -11,6 +11,11 @@ import { uid, clone } from './utils';
 import { Canvas } from './canvas';
 import type { FlowNode } from './types';
 
+// Expose for testing/debugging
+(window as unknown as Record<string, unknown>).__App = App;
+(window as unknown as Record<string, unknown>).__NodeTypes = NodeTypes;
+(window as unknown as Record<string, unknown>).__State = State;
+
 function seedDemo() {
   // Create a dedicated demo workflow — don't mutate whatever newWorkflow() made
   const wfId = uid('wf');
@@ -95,10 +100,9 @@ function seedDemo() {
 document.addEventListener('DOMContentLoaded', () => {
   App.init();
   Exec.setStatus('idle');
-  // First-ever use: seed a demo. Otherwise ensure a workflow is active.
-  if (Object.keys(State.workflows).length === 0) {
-    seedDemo();
-  } else if (!State.currentWfId) {
+  // Demo seeding is deferred — App.init() loads server types asynchronously,
+  // and seeds the demo after types are available (see app.ts fetchNodeTypes callback).
+  if (Object.keys(State.workflows).length > 0 && !State.currentWfId) {
     App.newWorkflow(true);
   }
 });

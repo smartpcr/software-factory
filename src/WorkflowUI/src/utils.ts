@@ -74,7 +74,7 @@ export function getPortPos(node: FlowNode, portKind: string, portName?: string):
 
   if (portKind === 'in') return { x: node.x + width / 2, y: node.y };
   if (portKind === 'out') return { x: node.x + width / 2, y: node.y + height };
-  if (portKind === 'error') return { x: node.x + width, y: node.y + headH + bodyH / 2 };
+  if (portKind === 'error') return { x: node.x + width, y: node.y + height / 2 };
   if (portKind === 'branch') {
     const branches = type?.branches || [];
     const idx = branches.indexOf(portName || '');

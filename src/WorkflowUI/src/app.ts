@@ -86,15 +86,22 @@ export const App = {
         const resolved = resolveNodeType(n.runtimeType);
         if (resolved !== n.runtimeType) n.runtimeType = resolved;
       });
-      // Persist the corrected types
       this.saveToStorage();
       Palette.render();
       this.renderAll();
+      // Seed demo on first-ever use (now that all types are available)
+      if (Object.keys(State.workflows).length === 0) {
+        this.newWorkflow(true);
+      }
       this.log('info', null, `Loaded ${types.length} node types from server`);
     }).catch(() => {
       // Server unavailable — use minimal fallback
       loadFallbackNodeTypes();
       Palette.render();
+      // Create a basic workflow with fallback types
+      if (Object.keys(State.workflows).length === 0) {
+        this.newWorkflow(true);
+      }
     });
   },
 
