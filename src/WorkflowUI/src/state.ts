@@ -7,6 +7,7 @@ import type { FlowNode, FlowEdge, Selection, CanvasState, LogEntry, WorkflowData
 export const State = {
   workflows: {} as Record<string, WorkflowData>,
   currentWfId: null as string | null,
+  openTabs: [] as string[],
   nodes: new Map<string, FlowNode>(),
   edges: new Map<string, FlowEdge>(),
   selection: { kind: null, id: null } as Selection,

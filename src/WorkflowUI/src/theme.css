@@ -149,11 +149,12 @@
   .app {
     display: grid;
     grid-template-columns: var(--palette-w, 248px) 1fr var(--inspector-w, 320px);
-    grid-template-rows: 48px 1fr var(--logs-h, 180px);
+    grid-template-rows: 48px 34px 1fr var(--logs-h, 180px);
     grid-template-areas:
-      "topbar topbar topbar"
-      "palette canvas inspector"
-      "palette logs   inspector";
+      "topbar  topbar  topbar"
+      "palette tabs    inspector"
+      "palette canvas  inspector"
+      "palette logs    inspector";
     height: 100vh;
     width: 100vw;
     background:
@@ -165,6 +166,146 @@
   .app.palette-collapsed { --palette-w: 0px; }
   .app.inspector-collapsed { --inspector-w: 0px; }
   .app.logs-collapsed { --logs-h: 0px; }
+
+  /* ============ TAB BAR ============ */
+  .tab-bar {
+    grid-area: tabs;
+    display: flex;
+    align-items: flex-end;
+    background: var(--bg-0);
+    padding: 0 6px;
+    overflow: hidden;
+    position: relative;
+  }
+  .tab-bar::after {
+    content: "";
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 1px;
+    background: var(--stroke-1);
+    z-index: 0;
+  }
+
+  .tab-bar-scroll {
+    display: flex;
+    align-items: flex-end;
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex: 1;
+    gap: 2px;
+    scrollbar-width: none;
+  }
+  .tab-bar-scroll::-webkit-scrollbar { display: none; }
+
+  .tab-bar-new {
+    display: grid;
+    place-items: center;
+    width: 28px; height: 26px;
+    flex-shrink: 0;
+    color: var(--text-3);
+    border-radius: 6px;
+    margin: 0 2px 3px;
+    transition: color 0.15s, background 0.15s;
+    align-self: center;
+    position: relative;
+    z-index: 1;
+  }
+  .tab-bar-new:hover {
+    color: var(--text-0);
+    background: var(--bg-3);
+  }
+
+  .tab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 12px;
+    height: 28px;
+    font-size: 11.5px;
+    font-weight: 450;
+    letter-spacing: 0.01em;
+    color: var(--text-3);
+    white-space: nowrap;
+    cursor: pointer;
+    position: relative;
+    z-index: 0;
+    border-radius: 8px 8px 0 0;
+    min-width: 0;
+    max-width: 200px;
+    user-select: none;
+    transition: color 0.15s, background 0.15s;
+    background: transparent;
+    flex-shrink: 0;
+  }
+  .tab:hover {
+    color: var(--text-1);
+    background: var(--bg-2);
+  }
+
+  .tab.active {
+    color: var(--text-0);
+    background: var(--canvas-bg);
+    font-weight: 500;
+    z-index: 2;
+  }
+  /* Accent line at top of active tab */
+  .tab.active::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--accent);
+    border-radius: 8px 8px 0 0;
+  }
+  /* Active tab covers the bottom border so it merges with canvas */
+  .tab.active::after {
+    content: "";
+    position: absolute;
+    bottom: -1px;
+    left: 0; right: 0;
+    height: 2px;
+    background: var(--canvas-bg);
+    z-index: 3;
+  }
+
+  .tab-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 140px;
+  }
+
+  .tab-dirty {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+  .tab.dirty .tab-dirty { opacity: 1; }
+  .tab.dirty .tab-close { display: none; }
+  .tab.dirty:hover .tab-dirty { opacity: 0; }
+  .tab.dirty:hover .tab-close { display: flex; opacity: 1; }
+
+  .tab-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px; height: 18px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    color: var(--text-3);
+    opacity: 0;
+    transition: opacity 0.12s, color 0.12s, background 0.12s;
+  }
+  .tab:hover .tab-close { opacity: 0.7; }
+  .tab:hover .tab-close:hover {
+    opacity: 1;
+    color: var(--text-0);
+    background: var(--bg-4);
+  }
+  .tab-close svg { width: 10px; height: 10px; }
 
   /* ============ TOPBAR ============ */
   .topbar {
@@ -325,35 +466,6 @@
     background-repeat: no-repeat;
     background-position: 8px center;
   }
-
-  .palette-workflows {
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--stroke-1);
-  }
-  .palette-workflows-title {
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--text-3);
-    font-weight: 600;
-    margin-bottom: 8px;
-    display: flex; justify-content: space-between; align-items: center;
-  }
-  .wf-item {
-    padding: 7px 9px;
-    border-radius: 5px;
-    display: flex; align-items: center; gap: 8px;
-    font-size: 12px;
-    color: var(--text-1);
-    cursor: pointer;
-    margin-bottom: 2px;
-  }
-  .wf-item:hover { background: var(--bg-3); color: var(--text-0); }
-  .wf-item.active { background: var(--bg-3); color: var(--text-0); box-shadow: inset 2px 0 0 var(--accent); }
-  .wf-item-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .wf-item-del { opacity: 0; color: var(--text-3); padding: 2px; }
-  .wf-item:hover .wf-item-del { opacity: 1; }
-  .wf-item-del:hover { color: var(--err); }
 
   .palette-section {
     padding: 10px 12px 4px;

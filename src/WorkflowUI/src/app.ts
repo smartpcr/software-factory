@@ -90,7 +90,7 @@ export const App = {
     Nodes.render();
     Edges.render();
     Inspector.render();
-    this.renderWorkflowList();
+    this.renderTabs();
     this.renderLogs();
     this.renderStatus();
     Minimap.render();
@@ -405,6 +405,7 @@ export const App = {
     };
     State.workflows[id] = wf;
     State.currentWfId = id;
+    if (!State.openTabs.includes(id)) State.openTabs.push(id);
     State.nodes.clear();
     State.edges.clear();
     State.isDirty = false;
@@ -445,10 +446,12 @@ export const App = {
   loadWorkflow(id: string) {
     const wf = State.workflows[id];
     if (!wf) return;
-    if (State.isDirty) {
-      if (!confirm('Discard unsaved changes?')) return;
+    // If switching tabs, save current state first
+    if (State.currentWfId && State.currentWfId !== id) {
+      this.snapshotCurrentWorkflow();
     }
     State.currentWfId = id;
+    if (!State.openTabs.includes(id)) State.openTabs.push(id);
     State.nodes = new Map((wf.nodes || []).map(n => [n.id, n]));
     State.edges = new Map((wf.edges || []).map(e => [e.id, e]));
     State.isDirty = false;
@@ -458,7 +461,17 @@ export const App = {
     if (titleInput) titleInput.value = wf.name;
     this.renderAll();
     Canvas.fitToView();
-    toast(`Loaded: ${wf.name}`, 'info');
+  },
+
+  /** Save current nodes/edges back into the workflow object without persisting */
+  snapshotCurrentWorkflow() {
+    if (!State.currentWfId) return;
+    const wf = State.workflows[State.currentWfId];
+    if (!wf) return;
+    const titleInput = document.getElementById('wfTitleInput') as HTMLInputElement | null;
+    wf.name = titleInput?.value || wf.name;
+    wf.nodes = [...State.nodes.values()];
+    wf.edges = [...State.edges.values()];
   },
 
   deleteWorkflow() {
@@ -471,11 +484,12 @@ export const App = {
       danger: true,
       onConfirm: async () => {
         try { await deleteWorkflowApi(wf.name); } catch { /* server unavailable */ }
-        delete State.workflows[State.currentWfId || ''];
+        const delId = State.currentWfId || '';
+        delete State.workflows[delId];
+        State.openTabs = State.openTabs.filter(t => t !== delId);
         State.currentWfId = null;
-        const remaining = Object.values(State.workflows);
-        if (remaining.length) {
-          this.loadWorkflow(remaining[0].id);
+        if (State.openTabs.length) {
+          this.loadWorkflow(State.openTabs[0]);
         } else {
           this.newWorkflow(true);
         }
@@ -631,38 +645,65 @@ export const App = {
     backdrop.addEventListener('click', (e) => { if (e.target === backdrop) backdrop.remove(); });
   },
 
-  renderWorkflowList() {
-    const wfs = Object.values(State.workflows).sort((a, b) => b.updatedAt - a.updatedAt);
-    const el = document.getElementById('wfList');
+  renderTabs() {
+    const el = document.getElementById('tabBarScroll');
     if (!el) return;
-    if (!wfs.length) {
-      el.innerHTML = `<div style="color:var(--text-3); font-size:11px; padding: 6px 4px;">No saved workflows</div>`;
-      return;
+    // Clean up stale tabs
+    State.openTabs = State.openTabs.filter(id => State.workflows[id]);
+    if (State.currentWfId && !State.openTabs.includes(State.currentWfId)) {
+      State.openTabs.push(State.currentWfId);
     }
-    el.innerHTML = wfs.map(w => `
-      <div class="wf-item ${w.id === State.currentWfId ? 'active' : ''}" data-action="load-workflow" data-wf-id="${w.id}">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M13 2v7h7"/></svg>
-        <div class="wf-item-name">${escapeHtml(w.name)}</div>
-        <button class="wf-item-del" data-action="delete-workflow-by-id" data-wf-id="${w.id}" title="Delete">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-        </button>
-      </div>
-    `).join('');
 
-    // Bind workflow list actions
-    el.querySelectorAll('[data-action="load-workflow"]').forEach(item => {
-      item.addEventListener('click', (e) => {
-        const target = e.target as HTMLElement;
-        if (target.closest('[data-action="delete-workflow-by-id"]')) return;
-        this.loadWorkflow((item as HTMLElement).dataset.wfId!);
+    el.innerHTML = State.openTabs.map(id => {
+      const wf = State.workflows[id];
+      if (!wf) return '';
+      const active = id === State.currentWfId;
+      const dirty = active && State.isDirty;
+      return `
+        <div class="tab ${active ? 'active' : ''} ${dirty ? 'dirty' : ''}" data-tab-id="${id}">
+          <span class="tab-name">${escapeHtml(wf.name)}</span>
+          <span class="tab-dirty"></span>
+          <button class="tab-close" data-action="close-tab" data-tab-id="${id}" title="Close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>`;
+    }).join('');
+
+    // Click to switch tab
+    el.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', (e) => {
+        if ((e.target as HTMLElement).closest('.tab-close')) return;
+        this.loadWorkflow((tab as HTMLElement).dataset.tabId!);
       });
     });
-    el.querySelectorAll('[data-action="delete-workflow-by-id"]').forEach(btn => {
+    // Close tab
+    el.querySelectorAll('[data-action="close-tab"]').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        this.deleteWorkflowById((btn as HTMLElement).dataset.wfId!);
+        this.closeTab((btn as HTMLElement).dataset.tabId!);
       });
     });
+  },
+
+  closeTab(id: string) {
+    const idx = State.openTabs.indexOf(id);
+    if (idx < 0) return;
+    // Snapshot current before closing
+    if (State.currentWfId === id) {
+      this.snapshotCurrentWorkflow();
+    }
+    State.openTabs.splice(idx, 1);
+    // If closing the active tab, switch to an adjacent tab or create new
+    if (State.currentWfId === id) {
+      if (State.openTabs.length > 0) {
+        const nextIdx = Math.min(idx, State.openTabs.length - 1);
+        this.loadWorkflow(State.openTabs[nextIdx]);
+      } else {
+        this.newWorkflow(true);
+      }
+    } else {
+      this.renderTabs();
+    }
   },
 
   deleteWorkflowById(id: string) {
@@ -670,13 +711,13 @@ export const App = {
     if (!wf) return;
     if (!confirm(`Delete "${wf.name}"?`)) return;
     delete State.workflows[id];
+    State.openTabs = State.openTabs.filter(t => t !== id);
     if (State.currentWfId === id) {
-      const remaining = Object.values(State.workflows);
-      if (remaining.length) this.loadWorkflow(remaining[0].id);
+      if (State.openTabs.length) this.loadWorkflow(State.openTabs[0]);
       else this.newWorkflow(true);
     }
     this.saveToStorage();
-    this.renderWorkflowList();
+    this.renderTabs();
     toast('Workflow deleted', 'info');
   },
 
@@ -703,6 +744,7 @@ export const App = {
     try {
       localStorage.setItem('flow-studio:workflows', JSON.stringify(State.workflows));
       localStorage.setItem('flow-studio:currentId', State.currentWfId || '');
+      localStorage.setItem('flow-studio:openTabs', JSON.stringify(State.openTabs));
     } catch {
       // Storage unavailable
     }
@@ -725,6 +767,13 @@ export const App = {
         State.workflows = clean;
       }
       const currentId = localStorage.getItem('flow-studio:currentId');
+      // Restore open tabs
+      try {
+        const tabsRaw = localStorage.getItem('flow-studio:openTabs');
+        if (tabsRaw) {
+          State.openTabs = JSON.parse(tabsRaw).filter((id: string) => State.workflows[id]);
+        }
+      } catch { /* ignore */ }
       if (currentId && State.workflows[currentId]) {
         this.loadWorkflow(currentId);
       } else {

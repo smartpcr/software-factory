@@ -104,14 +104,15 @@
     <div class="palette-search">
       <input placeholder="Search components…" id="paletteSearchInput" />
     </div>
-    <div class="palette-workflows">
-      <div class="palette-workflows-title">
-        <span>Workflows</span>
-        <button data-action="new-workflow" style="color:var(--text-3); font-size:14px; line-height:1;">+</button>
-      </div>
-      <div id="wfList"></div>
-    </div>
     <div id="paletteSections"></div>
+  </div>
+
+  <!-- ============ TAB BAR ============ -->
+  <div class="tab-bar" id="tabBar">
+    <div class="tab-bar-scroll" id="tabBarScroll"></div>
+    <button class="tab-bar-new" data-action="new-workflow" title="New workflow">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
   </div>
 
   <!-- ============ CANVAS ============ -->
