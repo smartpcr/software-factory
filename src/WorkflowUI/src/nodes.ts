@@ -29,7 +29,15 @@ export const Nodes = {
         el = this.createElement(node, false);
         layer.appendChild(el);
       } else {
-        this.refreshElement(el, node, false);
+        // If the node was rendered with an unknown type (empty), rebuild it fully
+        const hasContent = el.querySelector(':scope > .node-head');
+        if (!hasContent) {
+          const newEl = this.createElement(node, false);
+          layer.replaceChild(newEl, el);
+          el = newEl;
+        } else {
+          this.refreshElement(el, node, false);
+        }
       }
       this.renderChildrenInto(el, node);
     });

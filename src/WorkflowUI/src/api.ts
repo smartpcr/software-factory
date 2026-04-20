@@ -145,7 +145,6 @@ export interface ServerNodeType {
   label: string;
   category: string;
   description: string;
-  color: string;
   ports: { in: boolean; out: boolean; error: boolean };
   outputPorts: string[];
   dynamicPorts: boolean;

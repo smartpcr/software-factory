@@ -294,6 +294,15 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
             "Timer" => typeof(TimerNodeDefinition),
             "Container" => typeof(ContainerNodeDefinition),
             "Start" => typeof(StartNodeDefinition),
+            "Trigger" => typeof(TriggerNodeDefinition),
+            "Action" => typeof(ActionNodeDefinition),
+            "HttpRequest" => typeof(HttpRequestNodeDefinition),
+            "Transform" => typeof(TransformNodeDefinition),
+            "Delay" => typeof(DelayNodeDefinition),
+            "Log" => typeof(LogNodeDefinition),
+            "AI" => typeof(AINodeDefinition),
+            "End" => typeof(EndNodeDefinition),
+            "Parallel" => typeof(ParallelNodeDefinition),
             _ => null
         };
     }

@@ -118,6 +118,33 @@ public class NodeFactory
                 case Enums.RuntimeType.Start:
                     node = CreateStartNode(definition);
                     break;
+                case Enums.RuntimeType.Trigger:
+                    node = CreateTriggerNode(definition);
+                    break;
+                case Enums.RuntimeType.Action:
+                    node = CreateActionNode(definition);
+                    break;
+                case Enums.RuntimeType.HttpRequest:
+                    node = CreateHttpRequestNode(definition);
+                    break;
+                case Enums.RuntimeType.Transform:
+                    node = CreateTransformNode(definition);
+                    break;
+                case Enums.RuntimeType.Delay:
+                    node = CreateDelayNode(definition);
+                    break;
+                case Enums.RuntimeType.Log:
+                    node = CreateLogNode(definition);
+                    break;
+                case Enums.RuntimeType.AI:
+                    node = CreateAINode(definition);
+                    break;
+                case Enums.RuntimeType.End:
+                    node = CreateEndNode(definition);
+                    break;
+                case Enums.RuntimeType.Parallel:
+                    node = CreateParallelNode(definition);
+                    break;
                 default:
                     this.logger.LogError("Runtime type '{RuntimeType}' is not supported for NodeId {NodeId}", definition.RuntimeType, definition.NodeId);
                     throw new NotSupportedException($"Runtime type '{definition.RuntimeType}' is not supported.");
@@ -336,6 +363,51 @@ public class NodeFactory
     private static ExecutableNodeBase CreateStartNode(NodeDefinition definition)
     {
         return new StartNode();
+    }
+
+    private static ExecutableNodeBase CreateTriggerNode(NodeDefinition definition)
+    {
+        return new TriggerNode();
+    }
+
+    private static ExecutableNodeBase CreateActionNode(NodeDefinition definition)
+    {
+        return new ActionNode();
+    }
+
+    private static ExecutableNodeBase CreateHttpRequestNode(NodeDefinition definition)
+    {
+        return new HttpRequestNode();
+    }
+
+    private static ExecutableNodeBase CreateTransformNode(NodeDefinition definition)
+    {
+        return new TransformNode();
+    }
+
+    private static ExecutableNodeBase CreateDelayNode(NodeDefinition definition)
+    {
+        return new DelayNode();
+    }
+
+    private static ExecutableNodeBase CreateLogNode(NodeDefinition definition)
+    {
+        return new LogNode();
+    }
+
+    private static ExecutableNodeBase CreateAINode(NodeDefinition definition)
+    {
+        return new AINode();
+    }
+
+    private static ExecutableNodeBase CreateEndNode(NodeDefinition definition)
+    {
+        return new EndNode();
+    }
+
+    private static ExecutableNodeBase CreateParallelNode(NodeDefinition definition)
+    {
+        return new ParallelNode();
     }
 
     /// <summary>

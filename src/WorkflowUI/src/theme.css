@@ -477,7 +477,37 @@
     color: var(--text-3);
     font-weight: 600;
     margin-bottom: 6px;
-    padding: 0 2px;
+    padding: 4px 2px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: color 0.1s, background 0.1s;
+    user-select: none;
+  }
+  .palette-section-title:hover { color: var(--text-1); background: var(--bg-3); }
+  .palette-chevron {
+    transition: transform 0.2s ease;
+    flex-shrink: 0;
+  }
+  .palette-section.collapsed .palette-chevron { transform: rotate(-90deg); }
+  .palette-section-count {
+    margin-left: auto;
+    font-size: 9px;
+    color: var(--text-3);
+    opacity: 0.6;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .palette-section-items {
+    overflow: hidden;
+    transition: max-height 0.25s ease, opacity 0.2s ease;
+    max-height: 2000px;
+    opacity: 1;
+  }
+  .palette-section.collapsed .palette-section-items {
+    max-height: 0;
+    opacity: 0;
   }
   .palette-item {
     display: flex; align-items: center; gap: 10px;
@@ -1185,6 +1215,35 @@
   .ins-cron-preset:hover {
     background: var(--bg-4);
     color: var(--text-0);
+  }
+
+  /* AI model selector */
+  .ai-model-select {
+    font-size: 11.5px;
+  }
+  .ins-model-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 500;
+  }
+  .ins-model-tier {
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: currentColor;
+    color: var(--bg-1);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    /* Use filter trick to show currentColor as bg, text as panel bg */
+    -webkit-text-fill-color: var(--bg-1);
+  }
+  .ins-model-cost {
+    opacity: 0.7;
   }
 
   /* Validation indicators in inspector labels */

@@ -28,7 +28,7 @@ import { Palette } from './palette';
 import { Inspector } from './inspector';
 import { Exec } from './exec';
 import { saveWorkflow as saveWorkflowApi, deleteWorkflowApi, listWorkflows, getWorkflow, fetchNodeTypes, validateWorkflow } from './api';
-import { mergeServerNodeTypes } from './registry';
+import { loadServerNodeTypes, loadFallbackNodeTypes, normalizeWorkflowNodeTypes, resolveNodeType } from './registry';
 
 function buildCallbacks(): AppCallbacks {
   return {
@@ -64,6 +64,7 @@ export const App = {
       (level, nodeId, msg) => this.log(level, nodeId, msg),
       () => this.clearLogs(),
     );
+    loadFallbackNodeTypes(); // Minimal palette until server responds
     Palette.render();
     this.loadWorkflowsFromStorage();
     this.bindShortcuts();
@@ -73,13 +74,27 @@ export const App = {
     this.syncThemeIcon();
     this.renderAll();
 
-    // Load engine node types from server (non-blocking)
+    // Load node types from server (single source of truth)
     fetchNodeTypes().then(types => {
-      mergeServerNodeTypes(types);
+      loadServerNodeTypes(types);
+      // Normalize all stored workflows
+      for (const wf of Object.values(State.workflows)) {
+        normalizeWorkflowNodeTypes(wf.nodes || []);
+      }
+      // Fix current in-memory nodes
+      State.nodes.forEach(n => {
+        const resolved = resolveNodeType(n.type);
+        if (resolved !== n.type) n.type = resolved;
+      });
+      // Persist the corrected types
+      this.saveToStorage();
       Palette.render();
-      this.log('info', null, `Loaded ${types.length} engine node types from server`);
+      this.renderAll();
+      this.log('info', null, `Loaded ${types.length} node types from server`);
     }).catch(() => {
-      // Server unavailable — use built-in palette only
+      // Server unavailable — use minimal fallback
+      loadFallbackNodeTypes();
+      Palette.render();
     });
   },
 
@@ -165,11 +180,13 @@ export const App = {
 
   // ---------- NODE OPS ----------
   createNode(type: string, x: number, y: number, opts: CreateNodeOptions = {}): string {
-    const tpl = NodeTypes[type];
+    // Resolve to canonical type (handles case mismatches)
+    const resolved = NodeTypes[type] ? type : Object.keys(NodeTypes).find(k => k.toLowerCase() === type.toLowerCase()) || type;
+    const tpl = NodeTypes[resolved];
     if (!tpl) return '';
     const node: FlowNode = {
       id: uid('n'),
-      type,
+      type: resolved,
       name: tpl.label,
       x, y,
       width: 220,
@@ -179,7 +196,7 @@ export const App = {
       parentSlot: opts.parentSlot || null,
     };
     if (tpl.branches) node.branches = [...tpl.branches];
-    if (type === 'container') { node.width = 280; node.height = 180; node.collapsed = false; }
+    if (resolved.toLowerCase() === 'container') { node.width = 280; node.height = 180; node.collapsed = false; }
     ensureChildren(node);
     State.nodes.set(node.id, node);
     if (node.parentId) {
@@ -481,6 +498,8 @@ export const App = {
     }
     State.currentWfId = id;
     if (!State.openTabs.includes(id)) State.openTabs.push(id);
+    // Normalize node types to canonical casing
+    normalizeWorkflowNodeTypes(wf.nodes || []);
     State.nodes = new Map((wf.nodes || []).map(n => [n.id, n]));
     State.edges = new Map((wf.edges || []).map(e => [e.id, e]));
     State.isDirty = false;

@@ -80,5 +80,50 @@ public enum RuntimeType
     /// <summary>
     /// Start node — workflow entry point with manual, schedule, or event trigger.
     /// </summary>
-    Start
+    Start,
+
+    /// <summary>
+    /// HTTP webhook trigger node.
+    /// </summary>
+    Trigger,
+
+    /// <summary>
+    /// Generic action/task node.
+    /// </summary>
+    Action,
+
+    /// <summary>
+    /// HTTP API call node.
+    /// </summary>
+    HttpRequest,
+
+    /// <summary>
+    /// Data transformation node.
+    /// </summary>
+    Transform,
+
+    /// <summary>
+    /// Wait/pause node.
+    /// </summary>
+    Delay,
+
+    /// <summary>
+    /// Log message output node.
+    /// </summary>
+    Log,
+
+    /// <summary>
+    /// AI skill/subagent node.
+    /// </summary>
+    AI,
+
+    /// <summary>
+    /// Workflow terminator node.
+    /// </summary>
+    End,
+
+    /// <summary>
+    /// Fan-out parallel branches node.
+    /// </summary>
+    Parallel
 }

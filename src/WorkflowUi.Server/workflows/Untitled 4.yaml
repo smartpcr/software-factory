@@ -1,0 +1,1 @@
+{"id":"wf_bmuk8lm","name":"Untitled 4","nodes":[{"id":"n_a7yb2vh","type":"start","name":"Start","x":240,"y":180,"width":220,"config":{"triggerType":"Schedule","schedule":"0 * * * *","eventName":""},"status":"","parentId":null,"parentSlot":null,"validationErrors":["Schedule is required when trigger type is Schedule"]}],"edges":[]}

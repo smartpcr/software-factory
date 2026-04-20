@@ -7,6 +7,7 @@ import { NodeTypes } from './registry';
 import { State } from './state';
 import { escapeHtml } from './utils';
 import { Nodes } from './nodes';
+import { aiModels, tierColor } from './config';
 
 let callbacks: AppCallbacks;
 let nodeRenderTimer: ReturnType<typeof setTimeout> | null = null;
@@ -323,6 +324,11 @@ export const Inspector = {
         const nodeId = btn.dataset.nodeId!;
         const preset = btn.dataset.preset!;
         callbacks.updateNodeConfig(nodeId, 'schedule', preset);
+        const node = State.nodes.get(nodeId);
+        if (node) {
+          this.validateStartNode(node);
+          Nodes.render();
+        }
         this.render();
       });
     });
@@ -331,10 +337,10 @@ export const Inspector = {
       select.addEventListener('change', () => {
         const nodeId = select.dataset.nodeId!;
         const node = State.nodes.get(nodeId);
-        if (node && node.type === 'start') {
+        if (node && node.type.toLowerCase() === 'start') {
           this.validateStartNode(node);
+          Nodes.render();
         }
-        // Re-render to show/hide conditional fields (triggerType change is a dropdown, no focus to lose)
         setTimeout(() => this.render(), 50);
       });
     });
@@ -343,7 +349,7 @@ export const Inspector = {
       input.addEventListener('input', () => {
         const nodeId = input.dataset.nodeId!;
         const node = State.nodes.get(nodeId);
-        if (node && node.type === 'start') {
+        if (node && node.type.toLowerCase() === 'start') {
           this.validateStartNode(node);
           this.updateCronDisplayInPlace(el, String(node.config.schedule || ''));
           debouncedNodeRender();
@@ -605,11 +611,17 @@ export const Inspector = {
         ` : ''}
         <div class="ins-field">
           <label class="ins-field-label">Model</label>
-          <select data-config-key="model" data-node-id="${id}">
-            <option ${c.model === 'claude-opus-4-7' ? 'selected' : ''}>claude-opus-4-7</option>
-            <option ${c.model === 'claude-sonnet-4-6' ? 'selected' : ''}>claude-sonnet-4-6</option>
-            <option ${c.model === 'claude-haiku-4-5' ? 'selected' : ''}>claude-haiku-4-5</option>
+          <select data-config-key="model" data-node-id="${id}" class="ai-model-select">
+            ${aiModels.map(m => `<option value="${escapeHtml(m.id)}" ${String(c.model) === m.id ? 'selected' : ''}>${escapeHtml(m.label)}</option>`).join('')}
           </select>
+          ${(() => {
+            const sel = aiModels.find(m => m.id === String(c.model));
+            if (!sel) return '';
+            return `<div class="ins-model-badge" style="color: ${tierColor(sel.tier)}">
+              <span class="ins-model-tier">${sel.tier}</span>
+              <span class="ins-model-cost">${sel.costMultiplier}x</span>
+            </div>`;
+          })()}
         </div>
         <div class="ins-field">
           <label class="ins-field-label">System prompt</label>
