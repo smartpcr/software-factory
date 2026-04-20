@@ -1,0 +1,67 @@
+{
+  "workflowId": "wf_zoxosal",
+  "workflowName": "saved",
+  "description": "",
+  "version": "1.0",
+  "entryPointNodeId": null,
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0,
+  "defaultVariables": {
+    "newVar": "abc",
+    "newVar2": 123,
+    "newVar3": true
+  },
+  "metadata": {},
+  "nodes": [
+    {
+      "nodeId": "n_a7yb2vh",
+      "runtimeType": "start",
+      "nodeName": "Start",
+      "description": "",
+      "configuration": {
+        "triggerType": "Schedule",
+        "schedule": "0 */5 * * *",
+        "eventName": ""
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_ehhw9jr",
+      "runtimeType": "PowerShell",
+      "nodeName": "PowerShell Script",
+      "description": "",
+      "configuration": {
+        "scriptPath": "",
+        "requiredModules": "",
+        "modulePaths": ""
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    }
+  ],
+  "connections": [
+    {
+      "sourceNodeId": "n_a7yb2vh",
+      "targetNodeId": "n_ehhw9jr",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    }
+  ]
+}

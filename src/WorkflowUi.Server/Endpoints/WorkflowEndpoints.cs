@@ -65,7 +65,7 @@ public static class WorkflowEndpoints
             {
                 var result = await store.SaveAsync(
                     id,
-                    request.Yaml,
+                    request.Definition,
                     request.SidecarJson ?? "{}",
                     ifMatch,
                     user,
@@ -115,4 +115,4 @@ public static class WorkflowEndpoints
 /// <summary>
 /// Request body for saving a workflow.
 /// </summary>
-public record SaveWorkflowRequest(string Yaml, string? SidecarJson);
+public record SaveWorkflowRequest(string Definition, string? SidecarJson);

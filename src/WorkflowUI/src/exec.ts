@@ -75,14 +75,14 @@ export const Exec = {
     // Always use simulated execution (server execution via future SignalR integration)
 
     // Fallback: simulated execution
-    const starts = [...State.nodes.values()].filter(n => n.type === 'start' || n.type === 'trigger');
+    const starts = [...State.nodes.values()].filter(n => n.runtimeType === 'start' || n.runtimeType === 'trigger');
     if (!starts.length) {
       logFn('error', null, 'No start node found. Add a Start or Trigger node.');
       this.setStatus('failed');
       return;
     }
     this.setStatus('running');
-    starts.forEach(n => this.executeNode(n.id));
+    starts.forEach(n => this.executeNode(n.nodeId));
   },
 
   cancel() {
@@ -99,7 +99,7 @@ export const Exec = {
     });
     Nodes.render();
     this.setStatus('cancelled');
-    this.lastFailed = [...State.nodes.values()].filter(n => n.status === 'cancelled').map(n => n.id);
+    this.lastFailed = [...State.nodes.values()].filter(n => n.status === 'cancelled').map(n => n.nodeId);
   },
 
   pause() {
@@ -150,20 +150,20 @@ export const Exec = {
     const node = State.nodes.get(nodeId);
     if (!node) return;
     if (this.paused) { this.executing.add(nodeId); return; }
-    if (this.completed.has(nodeId) && node.type !== 'foreach') return;
+    if (this.completed.has(nodeId) && node.runtimeType !== 'foreach') return;
     if (this.executing.has(nodeId)) return;
 
     this.executing.add(nodeId);
     node.status = 'running';
     Nodes.render();
-    logFn('info', nodeId, `Executing ${NodeTypes[node.type]?.label || node.type}`);
+    logFn('info', nodeId, `Executing ${NodeTypes[node.runtimeType]?.label || node.runtimeType}`);
 
     const duration = this.simulatedDuration(node);
     const timer = setTimeout(() => {
       if (this.paused) return;
       if (this.state === 'cancelled') return;
 
-      const shouldFail = node._forceFail || (Math.random() < 0.02 && node.type !== 'start' && node.type !== 'end');
+      const shouldFail = node._forceFail || (Math.random() < 0.02 && node.runtimeType !== 'start' && node.runtimeType !== 'end');
       if (shouldFail) {
         this.onNodeFail(node);
       } else {
@@ -174,64 +174,64 @@ export const Exec = {
   },
 
   simulatedDuration(node: FlowNode): number {
-    if (node.type === 'start' || node.type === 'trigger') return 200;
-    if (node.type === 'delay') {
+    if (node.runtimeType === 'start' || node.runtimeType === 'trigger') return 200;
+    if (node.runtimeType === 'delay') {
       const c = node.config || {};
       let ms = parseInt(String(c.duration)) || 1000;
       if (c.unit === 's') ms *= 1000;
       if (c.unit === 'm') ms *= 60000;
       return Math.min(ms, 2000);
     }
-    if (node.type === 'ai') return 800 + Math.random() * 1200;
-    if (node.type === 'http') return 500 + Math.random() * 700;
-    if (node.type === 'foreach') return 500;
+    if (node.runtimeType === 'ai') return 800 + Math.random() * 1200;
+    if (node.runtimeType === 'http') return 500 + Math.random() * 700;
+    if (node.runtimeType === 'foreach') return 500;
     return 400 + Math.random() * 400;
   },
 
   onNodeSuccess(node: FlowNode) {
     node.status = 'success';
-    this.executing.delete(node.id);
-    this.completed.add(node.id);
-    logFn('success', node.id, '✓ Completed');
+    this.executing.delete(node.nodeId);
+    this.completed.add(node.nodeId);
+    logFn('success', node.nodeId, '✓ Completed');
     Nodes.render();
 
-    const type = NodeTypes[node.type];
+    const type = NodeTypes[node.runtimeType];
     let edges: typeof State.edges extends Map<string, infer V> ? V[] : never[] = [];
 
     if (type?.branches && node.branches) {
-      if (node.type === 'if') {
+      if (node.runtimeType === 'if') {
         const branch = Math.random() > 0.5 ? 'true' : 'false';
-        edges = Edges.getSuccessors(node.id, 'branch', branch);
-        logFn('info', node.id, `Condition evaluated: ${branch}`);
-      } else if (node.type === 'switch') {
+        edges = Edges.getSuccessors(node.nodeId, 'branch', branch);
+        logFn('info', node.nodeId, `Condition evaluated: ${branch}`);
+      } else if (node.runtimeType === 'switch') {
         const branch = node.branches[Math.floor(Math.random() * node.branches.length)];
-        edges = Edges.getSuccessors(node.id, 'branch', branch);
-        logFn('info', node.id, `Matched case: ${branch}`);
-      } else if (node.type === 'parallel') {
+        edges = Edges.getSuccessors(node.nodeId, 'branch', branch);
+        logFn('info', node.nodeId, `Matched case: ${branch}`);
+      } else if (node.runtimeType === 'parallel') {
         node.branches.forEach(b => {
-          edges.push(...Edges.getSuccessors(node.id, 'branch', b));
+          edges.push(...Edges.getSuccessors(node.nodeId, 'branch', b));
         });
-        logFn('info', node.id, `Fan-out: ${node.branches.length} branches`);
-      } else if (node.type === 'foreach') {
+        logFn('info', node.nodeId, `Fan-out: ${node.branches.length} branches`);
+      } else if (node.runtimeType === 'foreach') {
         const iterCount = (node._iterCount || 0) + 1;
         node._iterCount = iterCount;
         if (iterCount <= 3) {
-          edges = Edges.getSuccessors(node.id, 'branch', 'iterate');
-          logFn('info', node.id, `Iteration ${iterCount}`);
+          edges = Edges.getSuccessors(node.nodeId, 'branch', 'iterate');
+          logFn('info', node.nodeId, `Iteration ${iterCount}`);
           edges.forEach(e => {
-            this.completed.delete(e.target);
-            const targetNode = State.nodes.get(e.target);
+            this.completed.delete(e.targetNodeId);
+            const targetNode = State.nodes.get(e.targetNodeId);
             if (targetNode) targetNode.status = '';
           });
           Nodes.render();
         } else {
-          edges = Edges.getSuccessors(node.id, 'out');
+          edges = Edges.getSuccessors(node.nodeId, 'out');
           node._iterCount = 0;
-          logFn('info', node.id, 'ForEach complete');
+          logFn('info', node.nodeId, 'ForEach complete');
         }
       }
     } else {
-      edges = Edges.getSuccessors(node.id, 'out');
+      edges = Edges.getSuccessors(node.nodeId, 'out');
     }
 
     edges.forEach(e => { e._active = true; });
@@ -240,31 +240,31 @@ export const Exec = {
     setTimeout(() => {
       edges.forEach(e => { e._active = false; });
       Edges.render();
-      edges.forEach(e => this.executeNode(e.target));
+      edges.forEach(e => this.executeNode(e.targetNodeId));
       this.checkCompletion();
     }, 400);
   },
 
   onNodeFail(node: FlowNode) {
     node.status = 'failed';
-    this.executing.delete(node.id);
-    this.failed.add(node.id);
-    logFn('error', node.id, '✗ Failed — ' + this.randomError());
+    this.executing.delete(node.nodeId);
+    this.failed.add(node.nodeId);
+    logFn('error', node.nodeId, '✗ Failed — ' + this.randomError());
     Nodes.render();
 
-    const errEdges = Edges.getSuccessors(node.id, 'error');
+    const errEdges = Edges.getSuccessors(node.nodeId, 'error');
     if (errEdges.length) {
-      logFn('info', node.id, `Routing to error handler (${errEdges.length} edge${errEdges.length > 1 ? 's' : ''})`);
+      logFn('info', node.nodeId, `Routing to error handler (${errEdges.length} edge${errEdges.length > 1 ? 's' : ''})`);
       errEdges.forEach(e => { e._active = true; });
       Edges.render();
       setTimeout(() => {
         errEdges.forEach(e => { e._active = false; });
         Edges.render();
-        errEdges.forEach(e => this.executeNode(e.target));
+        errEdges.forEach(e => this.executeNode(e.targetNodeId));
         this.checkCompletion();
       }, 400);
     } else {
-      this.lastFailed = [node.id];
+      this.lastFailed = [node.nodeId];
       this.setStatus('failed');
       logFn('error', null, '✗ Workflow failed');
     }

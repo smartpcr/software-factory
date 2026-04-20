@@ -18,13 +18,13 @@ export const Nodes = {
     const layer = document.getElementById('nodesLayer');
     if (!layer) return;
     const topLevel = [...State.nodes.values()].filter(n => !n.parentId);
-    const presentIds = new Set(topLevel.map(n => n.id));
+    const presentIds = new Set(topLevel.map(n => n.nodeId));
     layer.querySelectorAll(':scope > .node').forEach(el => {
       const e = el as HTMLElement;
       if (!presentIds.has(e.dataset.id || '')) el.remove();
     });
     topLevel.forEach(node => {
-      let el = layer.querySelector(`:scope > .node[data-id="${node.id}"]`) as HTMLElement | null;
+      let el = layer.querySelector(`:scope > .node[data-id="${node.nodeId}"]`) as HTMLElement | null;
       if (!el) {
         el = this.createElement(node, false);
         layer.appendChild(el);
@@ -54,11 +54,11 @@ export const Nodes = {
       slotEl.innerHTML = '';
       if (!childIds.length) {
         const empty = document.createElement('div');
-        empty.className = parentNode.type === 'container' ? 'container-hint' : 'branch-port-empty';
+        empty.className = parentNode.runtimeType === 'container' ? 'container-hint' : 'branch-port-empty';
         empty.textContent = 'Drop component';
         slotEl.appendChild(empty);
       } else {
-        slotEl.appendChild(this.makeGapSlot(parentNode.id, slot, 0));
+        slotEl.appendChild(this.makeGapSlot(parentNode.nodeId, slot, 0));
         childIds.forEach((cid, i) => {
           const child = State.nodes.get(cid);
           if (!child) return;
@@ -68,7 +68,7 @@ export const Nodes = {
           if (i < childIds.length - 1) {
             slotEl.appendChild(this.makeSiblingConnector());
           }
-          slotEl.appendChild(this.makeGapSlot(parentNode.id, slot, i + 1));
+          slotEl.appendChild(this.makeGapSlot(parentNode.nodeId, slot, i + 1));
         });
       }
     });
@@ -110,7 +110,7 @@ export const Nodes = {
   },
 
   findSlotEl(parentEl: HTMLElement, parentNode: FlowNode, slot: string): HTMLElement | null {
-    if (parentNode.type === 'container' && slot === '_body') {
+    if (parentNode.runtimeType === 'container' && slot === '_body') {
       return parentEl.querySelector(':scope > .container-body > .container-children');
     }
     return parentEl.querySelector(
@@ -121,7 +121,7 @@ export const Nodes = {
   createElement(node: FlowNode, isNested: boolean): HTMLElement {
     const el = document.createElement('div');
     el.className = 'node' + (isNested ? ' nested' : '');
-    el.dataset.id = node.id;
+    el.dataset.id = node.nodeId;
     el.innerHTML = this.html(node);
     this.refreshElement(el, node, isNested);
     this.attachHandlers(el, node, isNested);
@@ -129,7 +129,7 @@ export const Nodes = {
   },
 
   refreshElement(el: HTMLElement, node: FlowNode, isNested: boolean) {
-    const type = NodeTypes[node.type];
+    const type = NodeTypes[node.runtimeType];
     if (!type) return;
     if (!isNested) {
       el.style.left = node.x + 'px';
@@ -137,13 +137,13 @@ export const Nodes = {
     }
     el.style.color = type.color;
     el.dataset.status = node.status || '';
-    el.classList.toggle('selected', State.selection.kind === 'node' && State.selection.id === node.id);
-    if (node.type === 'container') {
+    el.classList.toggle('selected', State.selection.kind === 'node' && State.selection.id === node.nodeId);
+    if (node.runtimeType === 'container') {
       el.classList.add('container');
       el.classList.toggle('collapsed', !!node.collapsed);
     }
     const headTitle = el.querySelector(':scope > .node-head > .node-title');
-    if (headTitle) headTitle.textContent = node.name || type.label;
+    if (headTitle) headTitle.textContent = node.nodeName || type.label;
     const bodyEl = el.querySelector(':scope > .node-body');
     if (bodyEl) bodyEl.innerHTML = this.bodyHtml(node);
     // Validation badge
@@ -164,35 +164,35 @@ export const Nodes = {
   },
 
   html(node: FlowNode): string {
-    const type = NodeTypes[node.type];
+    const type = NodeTypes[node.runtimeType];
     if (!type) return '';
     const ports = type.ports;
     const labels = type.portLabels;
     let portsHtml = '';
     if (ports.in) {
       const tip = escapeHtml(labels?.in || 'in');
-      portsHtml += `<div class="port in" data-port-kind="in" data-node-id="${node.id}" data-tooltip="${tip}"></div>`;
+      portsHtml += `<div class="port in" data-port-kind="in" data-node-id="${node.nodeId}" data-tooltip="${tip}"></div>`;
     }
     if (ports.out) {
       const tip = escapeHtml(labels?.out || 'out');
-      portsHtml += `<div class="port out" data-port-kind="out" data-node-id="${node.id}" data-tooltip="${tip}"></div>`;
+      portsHtml += `<div class="port out" data-port-kind="out" data-node-id="${node.nodeId}" data-tooltip="${tip}"></div>`;
     }
     const errorTip = escapeHtml(labels?.error || 'onError');
     const errorPortHtml = ports.error
-      ? `<div class="port error" data-port-kind="error" data-node-id="${node.id}" data-tooltip="${errorTip}"></div>`
+      ? `<div class="port error" data-port-kind="error" data-node-id="${node.nodeId}" data-tooltip="${errorTip}"></div>`
       : '';
 
     const branchesHtml = type.branches ? this.branchHtml(node) : '';
-    const collapseBtn = node.type === 'container'
-      ? `<button class="collapse-btn" data-action="toggle-collapse" data-node-id="${node.id}"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>`
+    const collapseBtn = node.runtimeType === 'container'
+      ? `<button class="collapse-btn" data-action="toggle-collapse" data-node-id="${node.nodeId}"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>`
       : '';
-    const typeLabel = `<span class="node-type-label mono">${node.type}</span>`;
-    const dropAbove = ports.in ? `<div class="drop-zone above" data-node-id="${node.id}" data-position="before"></div>` : '';
-    const dropBelow = (ports.out || type.branches) ? `<div class="drop-zone below" data-node-id="${node.id}" data-position="after"></div>` : '';
-    const dropError = ports.error ? `<div class="drop-zone error-right" data-node-id="${node.id}" data-position="after-error"></div>` : '';
-    const safeName = escapeHtml(node.name || type.label);
+    const typeLabel = `<span class="node-type-label mono">${node.runtimeType}</span>`;
+    const dropAbove = ports.in ? `<div class="drop-zone above" data-node-id="${node.nodeId}" data-position="before"></div>` : '';
+    const dropBelow = (ports.out || type.branches) ? `<div class="drop-zone below" data-node-id="${node.nodeId}" data-position="after"></div>` : '';
+    const dropError = ports.error ? `<div class="drop-zone error-right" data-node-id="${node.nodeId}" data-position="after-error"></div>` : '';
+    const safeName = escapeHtml(node.nodeName || type.label);
 
-    const bodyContent = node.type === 'container'
+    const bodyContent = node.runtimeType === 'container'
       ? `<div class="container-body"><div class="container-children"></div>${errorPortHtml}${dropError}</div>`
       : `<div class="node-body">${this.bodyHtml(node)}${errorPortHtml}${dropError}</div>`;
 
@@ -213,45 +213,45 @@ export const Nodes = {
   },
 
   bodyHtml(node: FlowNode): string {
-    const type = NodeTypes[node.type];
+    const type = NodeTypes[node.runtimeType];
     const c = node.config || {};
-    if (node.type === 'if') return `<div class="node-body-row"><span class="lab">if</span><span class="val">${escapeHtml(String(c.condition || '—'))}</span></div>`;
-    if (node.type === 'switch') return `<div class="node-body-row"><span class="lab">switch</span><span class="val">${escapeHtml(String(c.expression || '—'))}</span></div>`;
-    if (node.type === 'foreach') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.mode))}</span><span class="val">${escapeHtml(String(c.source || '—'))}</span></div>`;
-    if (node.type === 'ai') {
+    if (node.runtimeType === 'if') return `<div class="node-body-row"><span class="lab">if</span><span class="val">${escapeHtml(String(c.condition || '—'))}</span></div>`;
+    if (node.runtimeType === 'switch') return `<div class="node-body-row"><span class="lab">switch</span><span class="val">${escapeHtml(String(c.expression || '—'))}</span></div>`;
+    if (node.runtimeType === 'foreach') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.mode))}</span><span class="val">${escapeHtml(String(c.source || '—'))}</span></div>`;
+    if (node.runtimeType === 'ai') {
       const binding = c.mode === 'skill' ? String(c.skillId || '—') : String(c.subagentId || '—');
       return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.mode))}</span><span class="val">${escapeHtml(binding)}</span></div><div class="node-body-row"><span class="lab">model</span><span class="val">${escapeHtml(String(c.model))}</span></div>`;
     }
-    if (node.type === 'http') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.method))}</span><span class="val">${escapeHtml(String(c.url || '—'))}</span></div>`;
-    if (node.type === 'delay') return `<div class="node-body-row"><span class="lab">wait</span><span class="val">${escapeHtml(String(c.duration))}${escapeHtml(String(c.unit))}</span></div>`;
-    if (node.type === 'subflow') return `<div class="node-body-row"><span class="lab">flow</span><span class="val">${escapeHtml(c.workflowId ? (State.workflows[String(c.workflowId)]?.name || String(c.workflowId)) : '—')}</span></div>`;
-    if (node.type === 'start') {
+    if (node.runtimeType === 'http') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.method))}</span><span class="val">${escapeHtml(String(c.url || '—'))}</span></div>`;
+    if (node.runtimeType === 'delay') return `<div class="node-body-row"><span class="lab">wait</span><span class="val">${escapeHtml(String(c.duration))}${escapeHtml(String(c.unit))}</span></div>`;
+    if (node.runtimeType === 'subflow') return `<div class="node-body-row"><span class="lab">flow</span><span class="val">${escapeHtml(c.workflowId ? (State.workflows[String(c.workflowId)]?.workflowName || String(c.workflowId)) : '—')}</span></div>`;
+    if (node.runtimeType === 'start') {
       const trigLabel = String(c.triggerType || 'Manual');
       let detail = trigLabel;
       if (trigLabel === 'Schedule' && c.schedule) detail = String(c.schedule);
       if (trigLabel === 'Event' && c.eventName) detail = String(c.eventName);
       return `<div class="node-body-row"><span class="lab">trigger</span><span class="val">${escapeHtml(detail)}</span></div>`;
     }
-    if (node.type === 'trigger') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.method))}</span><span class="val">${escapeHtml(String(c.route || '—'))}</span></div>`;
-    if (node.type === 'transform') return `<div class="node-body-row"><span class="lab">expr</span><span class="val">${escapeHtml(String(c.expression || '—'))}</span></div>`;
-    if (node.type === 'log') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.level))}</span><span class="val">${escapeHtml(String(c.message || '—'))}</span></div>`;
-    if (node.type === 'parallel') return `<div class="node-body-row"><span class="lab">join</span><span class="val">${escapeHtml(String(c.joinMode))}</span></div>`;
-    if (node.type === 'end') return `<div class="node-body-row"><span class="lab">status</span><span class="val">${escapeHtml(String(c.status))}</span></div>`;
-    return `<div class="node-body-row"><span class="lab">type</span><span class="val">${type?.label || node.type}</span></div>`;
+    if (node.runtimeType === 'trigger') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.method))}</span><span class="val">${escapeHtml(String(c.route || '—'))}</span></div>`;
+    if (node.runtimeType === 'transform') return `<div class="node-body-row"><span class="lab">expr</span><span class="val">${escapeHtml(String(c.expression || '—'))}</span></div>`;
+    if (node.runtimeType === 'log') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.level))}</span><span class="val">${escapeHtml(String(c.message || '—'))}</span></div>`;
+    if (node.runtimeType === 'parallel') return `<div class="node-body-row"><span class="lab">join</span><span class="val">${escapeHtml(String(c.joinMode))}</span></div>`;
+    if (node.runtimeType === 'end') return `<div class="node-body-row"><span class="lab">status</span><span class="val">${escapeHtml(String(c.status))}</span></div>`;
+    return `<div class="node-body-row"><span class="lab">type</span><span class="val">${type?.label || node.runtimeType}</span></div>`;
   },
 
   branchHtml(node: FlowNode): string {
-    const type = NodeTypes[node.type];
+    const type = NodeTypes[node.runtimeType];
     const branches = node.branches || type?.branches || [];
     const branchLabels = type?.portLabels?.branches;
     return `<div class="branch-ports">${
       branches.map(b => {
         const tip = escapeHtml(branchLabels?.[b] || b);
         return `
-        <div class="branch-port" data-branch="${escapeHtml(b)}" data-parent-id="${node.id}">
+        <div class="branch-port" data-branch="${escapeHtml(b)}" data-parent-id="${node.nodeId}">
           <div class="branch-port-label">${escapeHtml(b)}</div>
           <div class="branch-port-children"></div>
-          <div class="port" data-port-kind="branch" data-port-name="${escapeHtml(b)}" data-node-id="${node.id}" data-tooltip="${tip}"></div>
+          <div class="port" data-port-kind="branch" data-port-name="${escapeHtml(b)}" data-node-id="${node.nodeId}" data-tooltip="${tip}"></div>
         </div>
       `;
       }).join('')
@@ -275,7 +275,7 @@ export const Nodes = {
         if (branchEl) {
           const parentEl = branchEl.closest('.node') as HTMLElement | null;
           const parentId = parentEl?.dataset.id;
-          if (parentId && parentId !== node.id && !callbacks.isDescendantOf(parentId, node.id)) {
+          if (parentId && parentId !== node.nodeId && !callbacks.isDescendantOf(parentId, node.nodeId)) {
             return { el: branchEl, parentId, slot: branchEl.dataset.branch || '' };
           }
         }
@@ -283,7 +283,7 @@ export const Nodes = {
         if (bodyEl) {
           const parentEl = bodyEl.closest('.node.container') as HTMLElement | null;
           const parentId = parentEl?.dataset.id;
-          if (parentId && parentId !== node.id && !callbacks.isDescendantOf(parentId, node.id)) {
+          if (parentId && parentId !== node.nodeId && !callbacks.isDescendantOf(parentId, node.nodeId)) {
             return { el: bodyEl, parentId, slot: '_body' };
           }
         }
@@ -296,7 +296,7 @@ export const Nodes = {
         if (t.closest('.collapse-btn')) return;
         if (t.classList.contains('drop-zone')) return;
         e.stopPropagation();
-        callbacks.select('node', node.id);
+        callbacks.select('node', node.nodeId);
         dragging = true;
         startPos = { x: e.clientX, y: e.clientY };
         nodeStart = { x: node.x, y: node.y };
@@ -326,7 +326,7 @@ export const Nodes = {
         el.releasePointerCapture(e.pointerId);
         clearHover();
         if (hit) {
-          callbacks.reparentNode(node.id, hit.parentId, hit.slot);
+          callbacks.reparentNode(node.nodeId, hit.parentId, hit.slot);
         } else {
           callbacks.markDirty();
         }
@@ -337,7 +337,7 @@ export const Nodes = {
         if (t.classList.contains('port')) return;
         if (t.classList.contains('drop-zone')) return;
         e.stopPropagation();
-        callbacks.select('node', node.id);
+        callbacks.select('node', node.nodeId);
       });
     }
 
@@ -345,7 +345,7 @@ export const Nodes = {
     el.querySelectorAll('[data-action="toggle-collapse"]').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        callbacks.toggleCollapse(node.id);
+        callbacks.toggleCollapse(node.nodeId);
       });
     });
 
@@ -372,7 +372,7 @@ export const Nodes = {
   attachOwnSlotHandlers(el: HTMLElement, node: FlowNode) {
     const slots = getSlots(node);
     slots.forEach(slot => {
-      const dropEl = node.type === 'container' && slot === '_body'
+      const dropEl = node.runtimeType === 'container' && slot === '_body'
         ? el.querySelector(':scope > .container-body') as HTMLElement | null
         : el.querySelector(`:scope > .branch-ports > .branch-port[data-branch="${CSS.escape(slot)}"]`) as HTMLElement | null;
       if (!dropEl) return;
@@ -392,7 +392,7 @@ export const Nodes = {
         dropEl.classList.remove('drop-active');
         const type = e.dataTransfer?.getData('text/flow-node');
         if (!type) return;
-        callbacks.createChildNode(type, node.id, slot);
+        callbacks.createChildNode(type, node.nodeId, slot);
       });
     });
   },
@@ -415,7 +415,7 @@ export const Nodes = {
         const type = e.dataTransfer?.getData('text/flow-node');
         if (!type) return;
         const position = dropZone.dataset.position || 'after';
-        callbacks.insertNodeRelative(type, node.id, position);
+        callbacks.insertNodeRelative(type, node.nodeId, position);
       });
     });
   }

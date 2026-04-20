@@ -1167,6 +1167,34 @@
     color: var(--text-3);
     font-weight: 600;
     margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    user-select: none;
+    padding: 2px 0;
+    border-radius: 3px;
+    transition: color 0.1s;
+  }
+  .ins-section-title:hover { color: var(--text-1); }
+  .ins-section-title .ins-chevron {
+    width: 10px; height: 10px;
+    flex-shrink: 0;
+    transition: transform 0.2s ease;
+  }
+  .ins-section.collapsed .ins-section-title .ins-chevron {
+    transform: rotate(-90deg);
+  }
+  .ins-section-body {
+    overflow: hidden;
+    transition: max-height 0.25s ease, opacity 0.15s ease;
+    max-height: 2000px;
+    opacity: 1;
+  }
+  .ins-section.collapsed .ins-section-body {
+    max-height: 0;
+    opacity: 0;
+    margin: 0;
   }
   .ins-field { margin-bottom: 10px; }
   .ins-field:last-child { margin-bottom: 0; }
@@ -1309,6 +1337,120 @@
     margin-top: 6px;
   }
   .add-case-btn:hover { border-color: var(--stroke-3); color: var(--text-0); }
+
+  /* ============ VARIABLE EDITOR ============ */
+  .var-editor {
+    border: 1px solid var(--stroke-1);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--bg-0);
+  }
+  .var-editor-header {
+    display: grid;
+    grid-template-columns: 1fr 68px 1fr 24px;
+    gap: 1px;
+    padding: 4px 6px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--stroke-1);
+  }
+  .var-editor-col {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .var-editor-rows {
+    max-height: 240px;
+    overflow-y: auto;
+  }
+  .var-editor-empty {
+    padding: 14px;
+    text-align: center;
+    color: var(--text-3);
+    font-size: 11px;
+    font-style: italic;
+  }
+  .var-editor-row {
+    display: grid;
+    grid-template-columns: 1fr 68px 1fr 24px;
+    gap: 1px;
+    padding: 3px 4px;
+    align-items: center;
+    border-bottom: 1px solid var(--stroke-0);
+    transition: background 0.1s;
+  }
+  .var-editor-row:last-child { border-bottom: none; }
+  .var-editor-row:hover { background: var(--bg-2); }
+
+  .var-input {
+    font-size: 11px !important;
+    padding: 3px 6px !important;
+    border-radius: 3px !important;
+    border: 1px solid transparent !important;
+    background: transparent !important;
+    color: var(--text-0) !important;
+    min-width: 0;
+  }
+  .var-input:hover { border-color: var(--stroke-1) !important; }
+  .var-input:focus {
+    border-color: var(--accent) !important;
+    background: var(--bg-1) !important;
+  }
+  .var-select {
+    font-size: 10px !important;
+    padding: 2px 4px !important;
+    border-radius: 3px !important;
+    background: var(--bg-2) !important;
+    border: 1px solid var(--stroke-1) !important;
+    color: var(--text-2) !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    cursor: pointer;
+  }
+  .var-select:hover { border-color: var(--stroke-2) !important; }
+  .var-select:focus { border-color: var(--accent) !important; }
+
+  .var-bool-wrap {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-2);
+    padding: 0 4px;
+    cursor: pointer;
+  }
+  .var-bool-wrap input[type="checkbox"] {
+    width: auto !important;
+    accent-color: var(--accent);
+  }
+
+  .var-row-del {
+    width: 20px; height: 20px;
+    display: grid; place-items: center;
+    border-radius: 3px;
+    color: var(--text-3);
+    opacity: 0;
+    transition: opacity 0.1s, color 0.1s, background 0.1s;
+  }
+  .var-editor-row:hover .var-row-del { opacity: 1; }
+  .var-row-del:hover { color: var(--err); background: rgba(255,136,136,0.08); }
+
+  .var-editor-add {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    width: 100%;
+    padding: 6px;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-3);
+    border-top: 1px solid var(--stroke-0);
+    transition: color 0.1s, background 0.1s;
+  }
+  .var-editor-add:hover { color: var(--accent); background: var(--bg-2); }
 
   /* ============ LOGS ============ */
   .logs {

@@ -28,23 +28,61 @@ export async function getWorkflow(id: string): Promise<unknown> {
 
 export async function saveWorkflow(id: string, data: WorkflowData): Promise<void> {
   const url = `${API_BASE}/${encodePath(id)}`;
-  const yaml = JSON.stringify({
-    id: data.id,
-    name: data.name,
-    nodes: data.nodes,
-    edges: data.edges,
-    author: data.author,
-    purpose: data.purpose,
-    version: data.version,
-  });
+  // Map to engine WorkflowDefinition schema
+  const workflowDef = {
+    workflowId: data.workflowId,
+    workflowName: data.workflowName,
+    description: data.description || '',
+    version: data.version || '1.0',
+    entryPointNodeId: data.entryPointNodeId || null,
+    maxConcurrency: data.maxConcurrency || 0,
+    allowPause: data.allowPause !== false,
+    timeoutSeconds: data.timeoutSeconds || 0,
+    defaultVariables: data.defaultVariables || {},
+    metadata: data.metadata || {},
+    nodes: (data.nodes || []).map(n => ({
+      nodeId: n.nodeId,
+      runtimeType: n.runtimeType,
+      nodeName: n.nodeName,
+      description: n.description || '',
+      configuration: n.config || {},
+      joinType: n.joinType || 'Any',
+      priority: n.priority || 'Normal',
+      maxConcurrentExecutions: n.maxConcurrentExecutions || 0,
+      retryPolicy: n.retryPolicy || null,
+      circuitBreakerPolicy: n.circuitBreakerPolicy || null,
+      compensationNodeId: n.compensationNodeId || null,
+      fallbackNodeId: n.fallbackNodeId || null,
+    })),
+    connections: (data.edges || []).map(e => ({
+      sourceNodeId: e.sourceNodeId,
+      targetNodeId: e.targetNodeId,
+      sourcePort: e.sourcePort || null,
+      targetPort: e.targetPort || null,
+      triggerMessageType: e.triggerMessageType || 'Complete',
+      condition: e.condition || null,
+      isEnabled: e.isEnabled !== false,
+      priority: e.priority || 0,
+      metadata: e.metadata || null,
+    })),
+  };
+  const definition = JSON.stringify(workflowDef, null, 2);
   const sidecarJson = JSON.stringify({
     createdAt: data.createdAt,
     updatedAt: data.updatedAt,
+    author: data.author,
+    // UI layout data
+    nodePositions: Object.fromEntries(
+      (data.nodes || []).map(n => [n.nodeId, { x: n.x, y: n.y, width: n.width, height: n.height, parentId: n.parentId, parentSlot: n.parentSlot, collapsed: n.collapsed, branches: n.branches, children: n.children }])
+    ),
+    edgeLabels: Object.fromEntries(
+      (data.edges || []).filter(e => e.label).map(e => [e.id, e.label])
+    ),
   });
   const res = await fetch(url, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ yaml, sidecarJson }),
+    body: JSON.stringify({ definition, sidecarJson }),
   });
   if (!res.ok) throw new Error(`PUT ${url} failed: ${res.status}`);
 }

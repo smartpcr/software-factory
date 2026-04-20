@@ -83,8 +83,8 @@ export const App = {
       }
       // Fix current in-memory nodes
       State.nodes.forEach(n => {
-        const resolved = resolveNodeType(n.type);
-        if (resolved !== n.type) n.type = resolved;
+        const resolved = resolveNodeType(n.runtimeType);
+        if (resolved !== n.runtimeType) n.runtimeType = resolved;
       });
       // Persist the corrected types
       this.saveToStorage();
@@ -125,6 +125,7 @@ export const App = {
   markDirty() {
     State.isDirty = true;
     this.renderStatus();
+    this.renderTabs();
   },
 
   toggleTheme() {
@@ -185,9 +186,9 @@ export const App = {
     const tpl = NodeTypes[resolved];
     if (!tpl) return '';
     const node: FlowNode = {
-      id: uid('n'),
-      type: resolved,
-      name: tpl.label,
+      nodeId: uid('n'),
+      runtimeType: resolved,
+      nodeName: tpl.label,
       x, y,
       width: 220,
       config: clone(tpl.config || {}),
@@ -198,21 +199,21 @@ export const App = {
     if (tpl.branches) node.branches = [...tpl.branches];
     if (resolved.toLowerCase() === 'container') { node.width = 280; node.height = 180; node.collapsed = false; }
     ensureChildren(node);
-    State.nodes.set(node.id, node);
+    State.nodes.set(node.nodeId, node);
     if (node.parentId) {
       const parent = State.nodes.get(node.parentId);
       if (parent) {
         ensureChildren(parent);
         const arr = parent.children![node.parentSlot!]!;
         const idx = (typeof opts.index === 'number') ? Math.max(0, Math.min(opts.index, arr.length)) : arr.length;
-        arr.splice(idx, 0, node.id);
+        arr.splice(idx, 0, node.nodeId);
       }
     }
     this.markDirty();
     this.renderAll();
-    this.select('node', node.id);
-    this.log('info', null, `Created node "${node.name}"`);
-    return node.id;
+    this.select('node', node.nodeId);
+    this.log('info', null, `Created node "${node.nodeName}"`);
+    return node.nodeId;
   },
 
   isDescendantOf(maybeDescendantId: string, ancestorId: string): boolean {
@@ -249,15 +250,15 @@ export const App = {
     node.parentId = newParentId;
     node.parentSlot = newSlot;
     [...State.edges.entries()].forEach(([eid, e]) => {
-      if (e.source === newParentId && e.sourcePort === 'branch' &&
-          e.sourcePortName === newSlot && e.target === nodeId) {
+      if (e.sourceNodeId === newParentId && e.sourcePort === 'branch' &&
+          e.sourcePortName === newSlot && e.targetNodeId === nodeId) {
         State.edges.delete(eid);
       }
     });
     this.markDirty();
     this.renderAll();
     this.select('node', nodeId);
-    this.log('info', null, `Moved "${node.name}" into ${newParent.name || newParent.type}/${newSlot}`);
+    this.log('info', null, `Moved "${node.nodeName}" into ${newParent.nodeName || newParent.runtimeType}/${newSlot}`);
   },
 
   createChildNode(type: string, parentId: string, slot: string, index?: number): string | null {
@@ -280,18 +281,18 @@ export const App = {
     }
     const newId = this.createNode(type, ref.x, ref.y + (position === 'before' ? -180 : 180));
     if (position === 'before') {
-      const incoming = [...State.edges.values()].find(e => e.target === refNodeId && e.targetPort === 'in');
+      const incoming = [...State.edges.values()].find(e => e.targetNodeId === refNodeId && e.targetPort === 'in');
       if (incoming) {
-        incoming.target = newId;
-        this.createEdge({ source: newId, sourcePort: 'out', target: refNodeId, targetPort: 'in' });
+        incoming.targetNodeId = newId;
+        this.createEdge({ sourceNodeId: newId, sourcePort: 'out', targetNodeId: refNodeId, targetPort: 'in' });
       }
     } else {
       const sourcePort = position === 'after-error' ? 'error' : 'out';
-      const outgoing = [...State.edges.values()].find(e => e.source === refNodeId && e.sourcePort === sourcePort);
+      const outgoing = [...State.edges.values()].find(e => e.sourceNodeId === refNodeId && e.sourcePort === sourcePort);
       if (outgoing) {
-        const oldTarget = outgoing.target;
-        outgoing.target = newId;
-        this.createEdge({ source: newId, sourcePort: 'out', target: oldTarget, targetPort: 'in' });
+        const oldTarget = outgoing.targetNodeId;
+        outgoing.targetNodeId = newId;
+        this.createEdge({ sourceNodeId: newId, sourcePort: 'out', targetNodeId: oldTarget, targetPort: 'in' });
       }
     }
     return newId;
@@ -324,8 +325,8 @@ export const App = {
       if (!wf) return;
       try {
         // Save first so server has latest state
-        await saveWorkflowApi(wf.name, wf);
-        const entries = await validateWorkflow(wf.name);
+        await saveWorkflowApi(wf.workflowName, wf);
+        const entries = await validateWorkflow(wf.workflowName);
         if (entries.length === 0) {
           this.log('success', null, '✓ Validation passed');
         } else {
@@ -360,7 +361,7 @@ export const App = {
     const toDelete = new Set(collect(id));
     toDelete.forEach(nid => State.nodes.delete(nid));
     [...State.edges.entries()].forEach(([eid, e]) => {
-      if (toDelete.has(e.source) || toDelete.has(e.target)) State.edges.delete(eid);
+      if (toDelete.has(e.sourceNodeId) || toDelete.has(e.targetNodeId)) State.edges.delete(eid);
     });
     this.markDirty();
     this.select(null);
@@ -389,7 +390,7 @@ export const App = {
     if (!node || !node.branches) return;
     const removed = node.branches.splice(index, 1)[0];
     [...State.edges.entries()].forEach(([eid, e]) => {
-      if (e.source === nodeId && e.sourcePortName === removed) State.edges.delete(eid);
+      if (e.sourceNodeId === nodeId && e.sourcePortName === removed) State.edges.delete(eid);
     });
     this.markDirty();
     this.renderAll();
@@ -401,7 +402,7 @@ export const App = {
     const old = node.branches[index];
     node.branches[index] = newName;
     State.edges.forEach(e => {
-      if (e.source === nodeId && e.sourcePortName === old) e.sourcePortName = newName;
+      if (e.sourceNodeId === nodeId && e.sourcePortName === old) e.sourcePortName = newName;
     });
     this.markDirty();
     Nodes.render();
@@ -409,17 +410,17 @@ export const App = {
   },
 
   // ---------- EDGE OPS ----------
-  createEdge({ source, sourcePort, sourcePortName, target, targetPort }: CreateEdgeParams) {
+  createEdge({ sourceNodeId, sourcePort, sourcePortName, targetNodeId, targetPort }: CreateEdgeParams) {
     for (const e of State.edges.values()) {
-      if (e.source === source && e.sourcePort === sourcePort &&
-          e.sourcePortName === sourcePortName && e.target === target) return;
+      if (e.sourceNodeId === sourceNodeId && e.sourcePort === sourcePort &&
+          e.sourcePortName === sourcePortName && e.targetNodeId === targetNodeId) return;
     }
     const id = uid('e');
-    State.edges.set(id, { id, source, sourcePort, sourcePortName, target, targetPort });
+    State.edges.set(id, { id, sourceNodeId, sourcePort, sourcePortName, targetNodeId, targetPort });
     this.markDirty();
     Edges.render();
-    const s = State.nodes.get(source)?.name || '?';
-    const t = State.nodes.get(target)?.name || '?';
+    const s = State.nodes.get(sourceNodeId)?.nodeName || '?';
+    const t = State.nodes.get(targetNodeId)?.nodeName || '?';
     this.log('info', null, `Connected ${s} → ${t}`);
   },
 
@@ -433,7 +434,7 @@ export const App = {
 
   // ---------- WORKFLOW OPS ----------
   nextUntitledName(): string {
-    const existing = new Set(Object.values(State.workflows).map(w => w.name));
+    const existing = new Set(Object.values(State.workflows).map(w => w.workflowName));
     if (!existing.has('Untitled')) return 'Untitled';
     for (let i = 2; ; i++) {
       const candidate = `Untitled ${i}`;
@@ -445,7 +446,7 @@ export const App = {
     const id = uid('wf');
     const name = this.nextUntitledName();
     const wf: WorkflowData = {
-      id, name,
+      workflowId: id, workflowName: name,
       nodes: [], edges: [],
       createdAt: now(), updatedAt: now()
     };
@@ -458,7 +459,7 @@ export const App = {
     State.logs = [];
     // Set the title input BEFORE createNode/saveToStorage so the name isn't overwritten
     const titleInput = document.getElementById('wfTitleInput') as HTMLInputElement | null;
-    if (titleInput) titleInput.value = wf.name;
+    if (titleInput) titleInput.value = wf.workflowName;
     this.createNode('start', 240, 180);
     State.isDirty = false;
     this.saveToStorage();
@@ -470,7 +471,7 @@ export const App = {
     const wf = State.workflows[State.currentWfId || ''];
     if (!wf) return;
     const titleInput = document.getElementById('wfTitleInput') as HTMLInputElement | null;
-    wf.name = titleInput?.value || wf.name || 'Untitled';
+    wf.workflowName = titleInput?.value || wf.workflowName || 'Untitled';
     wf.nodes = [...State.nodes.values()];
     wf.edges = [...State.edges.values()];
     wf.updatedAt = now();
@@ -480,7 +481,7 @@ export const App = {
 
     // Always try server save
     try {
-      await saveWorkflowApi(wf.name, wf);
+      await saveWorkflowApi(wf.workflowName, wf);
       toast('Saved to server', 'success');
     } catch {
       toast('Saved locally', 'success');
@@ -500,26 +501,27 @@ export const App = {
     if (!State.openTabs.includes(id)) State.openTabs.push(id);
     // Normalize node types to canonical casing
     normalizeWorkflowNodeTypes(wf.nodes || []);
-    State.nodes = new Map((wf.nodes || []).map(n => [n.id, n]));
+    State.nodes = new Map((wf.nodes || []).map(n => [n.nodeId, n]));
     State.edges = new Map((wf.edges || []).map(e => [e.id, e]));
     State.isDirty = false;
     State.selection = { kind: null, id: null };
     State.logs = [];
     const titleInput = document.getElementById('wfTitleInput') as HTMLInputElement | null;
-    if (titleInput) titleInput.value = wf.name;
+    if (titleInput) titleInput.value = wf.workflowName;
     this.renderAll();
     Canvas.fitToView();
   },
 
-  /** Save current nodes/edges back into the workflow object without persisting */
+  /** Save current live state (nodes, edges, title) back into the workflow object */
   snapshotCurrentWorkflow() {
     if (!State.currentWfId) return;
     const wf = State.workflows[State.currentWfId];
     if (!wf) return;
     const titleInput = document.getElementById('wfTitleInput') as HTMLInputElement | null;
-    wf.name = titleInput?.value || wf.name;
+    if (titleInput) wf.workflowName = titleInput.value || wf.workflowName;
     wf.nodes = [...State.nodes.values()];
     wf.edges = [...State.edges.values()];
+    wf.updatedAt = now();
   },
 
   deleteWorkflow() {
@@ -527,11 +529,11 @@ export const App = {
     if (!wf) return;
     this.showModal({
       title: 'Delete workflow?',
-      body: `"${wf.name}" will be permanently removed.`,
+      body: `"${wf.workflowName}" will be permanently removed.`,
       confirmLabel: 'Delete',
       danger: true,
       onConfirm: async () => {
-        try { await deleteWorkflowApi(wf.name); } catch { /* server unavailable */ }
+        try { await deleteWorkflowApi(wf.workflowName); } catch { /* server unavailable */ }
         const delId = State.currentWfId || '';
         delete State.workflows[delId];
         State.openTabs = State.openTabs.filter(t => t !== delId);
@@ -551,7 +553,7 @@ export const App = {
     const wf = State.workflows[State.currentWfId || ''];
     if (!wf) return;
     const titleInput = document.getElementById('wfTitleInput') as HTMLInputElement | null;
-    wf.name = titleInput?.value || wf.name || 'Untitled';
+    wf.workflowName = titleInput?.value || wf.workflowName || 'Untitled';
     wf.nodes = [...State.nodes.values()];
     wf.edges = [...State.edges.values()];
     const data = JSON.stringify(wf, null, 2);
@@ -559,7 +561,7 @@ export const App = {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${wf.name.replace(/[^a-z0-9]+/gi, '_')}.flow.json`;
+    a.download = `${wf.workflowName.replace(/[^a-z0-9]+/gi, '_')}.flow.json`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -576,12 +578,14 @@ export const App = {
     reader.onload = (e) => {
       try {
         const data = JSON.parse(e.target?.result as string);
-        if (!data.id || !Array.isArray(data.nodes)) throw new Error('Invalid workflow JSON');
-        if (State.workflows[data.id]) data.id = uid('wf');
+        // Migrate old schema if needed
+        this.migrateWorkflow(data);
+        if (!data.workflowId || !Array.isArray(data.nodes)) throw new Error('Invalid workflow JSON');
+        if (State.workflows[data.workflowId]) data.workflowId = uid('wf');
         data.updatedAt = now();
-        State.workflows[data.id] = data;
+        State.workflows[data.workflowId] = data;
         this.saveToStorage();
-        this.loadWorkflow(data.id);
+        this.loadWorkflow(data.workflowId);
         toast('Imported workflow', 'success');
       } catch (err) {
         toast('Import failed: ' + (err as Error).message, 'error');
@@ -640,17 +644,19 @@ export const App = {
     document.body.appendChild(backdrop);
 
     // Filter input
-    const filterInput = modal.querySelector('.open-dialog-filter') as HTMLInputElement;
-    filterInput.addEventListener('input', () => {
-      const q = filterInput.value.toLowerCase();
-      modal.querySelectorAll('.open-dialog-item').forEach(item => {
-        const el = item as HTMLElement;
-        const name = el.querySelector('.open-dialog-item-name')?.textContent?.toLowerCase() || '';
-        const id = el.querySelector('.open-dialog-item-meta')?.textContent?.toLowerCase() || '';
-        el.style.display = (!q || name.includes(q) || id.includes(q)) ? '' : 'none';
+    const filterInput = modal.querySelector('.open-dialog-filter') as HTMLInputElement | null;
+    if (filterInput) {
+      filterInput.addEventListener('input', () => {
+        const q = filterInput.value.toLowerCase();
+        modal.querySelectorAll('.open-dialog-item').forEach(item => {
+          const el = item as HTMLElement;
+          const name = el.querySelector('.open-dialog-item-name')?.textContent?.toLowerCase() || '';
+          const id = el.querySelector('.open-dialog-item-meta')?.textContent?.toLowerCase() || '';
+          el.style.display = (!q || name.includes(q) || id.includes(q)) ? '' : 'none';
+        });
       });
-    });
-    filterInput.focus();
+      filterInput.focus();
+    }
 
     // Click to open a workflow
     modal.querySelectorAll('.open-dialog-item').forEach(item => {
@@ -658,30 +664,84 @@ export const App = {
         const wfId = (item as HTMLElement).dataset.wfId!;
         backdrop.remove();
         try {
-          const record = await getWorkflow(wfId) as { yaml?: string; sidecarJson?: string };
-          if (!record?.yaml) { toast('Empty workflow', 'error'); return; }
-          const data = JSON.parse(record.yaml);
-          // Merge sidecar metadata
+          const record = await getWorkflow(wfId) as { definition?: string; yaml?: string; sidecarJson?: string };
+          const rawDef = record?.definition || record?.yaml;
+          if (!rawDef) { toast('Empty workflow', 'error'); return; }
+          const data = JSON.parse(rawDef);
+          // Migrate old schema if needed
+          this.migrateWorkflow(data);
+
+          // The definition has engine-schema nodes (no positions).
+          // The sidecar has UI layout. Merge them.
           if (record.sidecarJson) {
             try {
               const sidecar = JSON.parse(record.sidecarJson);
               if (sidecar.createdAt) data.createdAt = sidecar.createdAt;
               if (sidecar.updatedAt) data.updatedAt = sidecar.updatedAt;
-            } catch { /* ignore */ }
+              if (sidecar.author) data.author = sidecar.author;
+
+              // Merge node positions from sidecar into nodes
+              if (sidecar.nodePositions && Array.isArray(data.nodes)) {
+                for (const node of data.nodes) {
+                  const nid = node.nodeId || node.id;
+                  const pos = sidecar.nodePositions[nid];
+                  if (pos) {
+                    node.x = pos.x ?? 0;
+                    node.y = pos.y ?? 0;
+                    node.width = pos.width ?? 220;
+                    if (pos.height) node.height = pos.height;
+                    if (pos.parentId) node.parentId = pos.parentId;
+                    if (pos.parentSlot) node.parentSlot = pos.parentSlot;
+                    if (pos.collapsed != null) node.collapsed = pos.collapsed;
+                    if (pos.branches) node.branches = pos.branches;
+                    if (pos.children) node.children = pos.children;
+                  }
+                }
+              }
+
+              // Merge edge labels from sidecar
+              if (sidecar.edgeLabels && Array.isArray(data.edges)) {
+                for (const edge of data.edges) {
+                  const lbl = sidecar.edgeLabels[edge.id];
+                  if (lbl) edge.label = lbl;
+                }
+              }
+            } catch { /* ignore corrupt sidecar */ }
           }
-          if (!data.id) data.id = uid('wf');
-          if (!data.name) data.name = wfId;
+
+          // Map engine-schema fields to UI fields
+          if (data.connections && !data.edges) {
+            data.edges = data.connections;
+            delete data.connections;
+          }
+          // Map node config from engine schema
+          if (Array.isArray(data.nodes)) {
+            for (const n of data.nodes) {
+              if (n.configuration && !n.config) {
+                n.config = n.configuration;
+                delete n.configuration;
+              }
+              if (n.x == null) n.x = 0;
+              if (n.y == null) n.y = 0;
+              if (!n.width) n.width = 220;
+              if (!n.status) n.status = '';
+              if (n.parentId === undefined) n.parentId = null;
+              if (n.parentSlot === undefined) n.parentSlot = null;
+            }
+          }
+          if (!data.workflowId) data.workflowId = uid('wf');
+          if (!data.workflowName) data.workflowName = wfId;
           if (!data.nodes) data.nodes = [];
           if (!data.edges) data.edges = [];
           data.updatedAt = data.updatedAt || now();
           data.createdAt = data.createdAt || now();
           // Use a local UID for state tracking, preserve server name
           const localId = uid('wf');
-          data.id = localId;
+          data.workflowId = localId;
           State.workflows[localId] = data;
           this.saveToStorage();
           this.loadWorkflow(localId);
-          toast(`Opened: ${data.name}`, 'success');
+          toast(`Opened: ${data.workflowName}`, 'success');
         } catch (err) {
           toast('Failed to open: ' + (err as Error).message, 'error');
         }
@@ -709,7 +769,7 @@ export const App = {
       const dirty = active && State.isDirty;
       return `
         <div class="tab ${active ? 'active' : ''} ${dirty ? 'dirty' : ''}" data-tab-id="${id}">
-          <span class="tab-name">${escapeHtml(wf.name)}</span>
+          <span class="tab-name">${escapeHtml(wf.workflowName)}</span>
           <span class="tab-dirty"></span>
           <button class="tab-close" data-action="close-tab" data-tab-id="${id}" title="Close">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
@@ -736,28 +796,70 @@ export const App = {
   closeTab(id: string) {
     const idx = State.openTabs.indexOf(id);
     if (idx < 0) return;
-    // Snapshot current before closing
-    if (State.currentWfId === id) {
-      this.snapshotCurrentWorkflow();
-    }
-    State.openTabs.splice(idx, 1);
-    // If closing the active tab, switch to an adjacent tab or create new
-    if (State.currentWfId === id) {
-      if (State.openTabs.length > 0) {
-        const nextIdx = Math.min(idx, State.openTabs.length - 1);
-        this.loadWorkflow(State.openTabs[nextIdx]);
+    const wf = State.workflows[id];
+    const isActive = State.currentWfId === id;
+    const isDirty = isActive && State.isDirty;
+
+    const doClose = () => {
+      State.openTabs.splice(State.openTabs.indexOf(id), 1);
+      this.saveToStorage();
+      if (isActive) {
+        if (State.openTabs.length > 0) {
+          const nextIdx = Math.min(idx, State.openTabs.length - 1);
+          this.loadWorkflow(State.openTabs[nextIdx]);
+        } else {
+          this.newWorkflow(true);
+        }
       } else {
-        this.newWorkflow(true);
+        this.renderTabs();
       }
+    };
+
+    if (isDirty && wf) {
+      // Show save/discard/cancel dialog
+      const backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      const modal = document.createElement('div');
+      modal.className = 'modal';
+      modal.innerHTML = `
+        <h3>Unsaved changes</h3>
+        <p>"${escapeHtml(wf.workflowName)}" has unsaved changes.</p>
+        <div class="modal-actions" style="gap: 6px;">
+          <button class="modal-btn-secondary" data-role="cancel">Cancel</button>
+          <button class="modal-btn-secondary" data-role="discard" style="color: var(--err);">Discard</button>
+          <button class="modal-btn-primary" data-role="save">Save & Close</button>
+        </div>
+      `;
+      backdrop.appendChild(modal);
+      document.body.appendChild(backdrop);
+
+      modal.querySelector('[data-role="cancel"]')!.addEventListener('click', () => backdrop.remove());
+      modal.querySelector('[data-role="discard"]')!.addEventListener('click', () => {
+        backdrop.remove();
+        // Reload from last saved state
+        if (wf.nodes) {
+          State.nodes = new Map(wf.nodes.map(n => [n.nodeId, n]));
+          State.edges = new Map(wf.edges.map(e => [e.id, e]));
+        }
+        State.isDirty = false;
+        doClose();
+      });
+      modal.querySelector('[data-role="save"]')!.addEventListener('click', async () => {
+        backdrop.remove();
+        await this.saveWorkflow();
+        doClose();
+      });
+      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) backdrop.remove(); });
     } else {
-      this.renderTabs();
+      if (isActive) this.snapshotCurrentWorkflow();
+      doClose();
     }
   },
 
   deleteWorkflowById(id: string) {
     const wf = State.workflows[id];
     if (!wf) return;
-    if (!confirm(`Delete "${wf.name}"?`)) return;
+    if (!confirm(`Delete "${wf.workflowName}"?`)) return;
     delete State.workflows[id];
     State.openTabs = State.openTabs.filter(t => t !== id);
     if (State.currentWfId === id) {
@@ -780,15 +882,8 @@ export const App = {
   },
 
   saveToStorage() {
-    if (State.currentWfId) {
-      const wf = State.workflows[State.currentWfId];
-      if (wf) {
-        const titleInput = document.getElementById('wfTitleInput') as HTMLInputElement | null;
-        wf.name = titleInput?.value || wf.name;
-        wf.nodes = [...State.nodes.values()];
-        wf.edges = [...State.edges.values()];
-      }
-    }
+    // Snapshot current workflow's live state before persisting
+    this.snapshotCurrentWorkflow();
     try {
       localStorage.setItem('flow-studio:workflows', JSON.stringify(State.workflows));
       localStorage.setItem('flow-studio:currentId', State.currentWfId || '');
@@ -803,13 +898,15 @@ export const App = {
       const raw = localStorage.getItem('flow-studio:workflows');
       if (raw) {
         const parsed = JSON.parse(raw);
-        // Deduplicate by name — drop extra copies of the same name (migration fix)
         const seen = new Set<string>();
         const clean: Record<string, WorkflowData> = {};
-        for (const wf of Object.values(parsed) as WorkflowData[]) {
-          if (!seen.has(wf.name)) {
-            seen.add(wf.name);
-            clean[wf.id] = wf;
+        for (const wf of Object.values(parsed) as Record<string, unknown>[]) {
+          // Migrate old schema field names to new engine-aligned names
+          this.migrateWorkflow(wf);
+          const migrated = wf as unknown as WorkflowData;
+          if (!seen.has(migrated.workflowName)) {
+            seen.add(migrated.workflowName);
+            clean[migrated.workflowId] = migrated;
           }
         }
         State.workflows = clean;
@@ -826,10 +923,37 @@ export const App = {
         this.loadWorkflow(currentId);
       } else {
         const first = Object.values(State.workflows)[0];
-        if (first) this.loadWorkflow(first.id);
+        if (first) this.loadWorkflow(first.workflowId);
       }
     } catch {
       // Nothing loaded
+    }
+  },
+
+  /** Migrate a workflow object from old schema to new engine-aligned schema */
+  migrateWorkflow(wf: Record<string, unknown>) {
+    // Workflow-level renames
+    if ('id' in wf && !('workflowId' in wf)) { wf.workflowId = wf.id; delete wf.id; }
+    if ('name' in wf && !('workflowName' in wf)) { wf.workflowName = wf.name; delete wf.name; }
+    if ('purpose' in wf && !('description' in wf)) { wf.description = wf.purpose; delete wf.purpose; }
+
+    // Migrate nodes
+    const nodes = wf.nodes as Record<string, unknown>[] | undefined;
+    if (Array.isArray(nodes)) {
+      for (const n of nodes) {
+        if ('id' in n && !('nodeId' in n)) { n.nodeId = n.id; delete n.id; }
+        if ('type' in n && !('runtimeType' in n)) { n.runtimeType = n.type; delete n.type; }
+        if ('name' in n && !('nodeName' in n)) { n.nodeName = n.name; delete n.name; }
+      }
+    }
+
+    // Migrate edges
+    const edges = wf.edges as Record<string, unknown>[] | undefined;
+    if (Array.isArray(edges)) {
+      for (const e of edges) {
+        if ('source' in e && !('sourceNodeId' in e)) { e.sourceNodeId = e.source; delete e.source; }
+        if ('target' in e && !('targetNodeId' in e)) { e.targetNodeId = e.target; delete e.target; }
+      }
     }
   },
 
@@ -859,7 +983,7 @@ export const App = {
       return;
     }
     body.innerHTML = State.logs.slice().reverse().map(e => {
-      const nodeName = e.nodeId ? (State.nodes.get(e.nodeId)?.name || e.nodeId) : 'system';
+      const nodeName = e.nodeId ? (State.nodes.get(e.nodeId)?.nodeName || e.nodeId) : 'system';
       return `<div class="log-line">
         <span class="log-time">${escapeHtml(e.t)}</span>
         <span class="log-level ${e.level}">${escapeHtml(e.level)}</span>
@@ -893,7 +1017,7 @@ export const App = {
     // Collect edges that are fully within the copied set
     const edges: FlowEdge[] = [];
     State.edges.forEach(e => {
-      if (ids.has(e.source) && ids.has(e.target)) {
+      if (ids.has(e.sourceNodeId) && ids.has(e.targetNodeId)) {
         edges.push(clone(e));
       }
     });
@@ -908,7 +1032,7 @@ export const App = {
 
     // Build old→new ID mapping
     const idMap = new Map<string, string>();
-    nodes.forEach(n => idMap.set(n.id, uid('n')));
+    nodes.forEach(n => idMap.set(n.nodeId, uid('n')));
     edges.forEach(e => idMap.set(e.id, uid('e')));
 
     // Paste offset so pasted nodes don't overlap originals
@@ -918,7 +1042,7 @@ export const App = {
     nodes.forEach(n => {
       const newNode: FlowNode = {
         ...clone(n),
-        id: idMap.get(n.id)!,
+        nodeId: idMap.get(n.nodeId)!,
         x: n.x + offset,
         y: n.y + offset,
         status: '',
@@ -933,7 +1057,7 @@ export const App = {
         }
         newNode.children = newChildren;
       }
-      State.nodes.set(newNode.id, newNode);
+      State.nodes.set(newNode.nodeId, newNode);
     });
 
     // Create new edges with remapped IDs
@@ -941,15 +1065,15 @@ export const App = {
       const newEdge: FlowEdge = {
         ...clone(e),
         id: idMap.get(e.id)!,
-        source: idMap.get(e.source) || e.source,
-        target: idMap.get(e.target) || e.target,
+        sourceNodeId: idMap.get(e.sourceNodeId) || e.sourceNodeId,
+        targetNodeId: idMap.get(e.targetNodeId) || e.targetNodeId,
       };
       State.edges.set(newEdge.id, newEdge);
     });
 
     this.markDirty();
     // Select the root pasted node
-    const newRootId = idMap.get(nodes[0].id);
+    const newRootId = idMap.get(nodes[0].nodeId);
     if (newRootId) this.select('node', newRootId);
     this.renderAll();
     toast(`Pasted ${nodes.length} node${nodes.length > 1 ? 's' : ''}`, 'success');

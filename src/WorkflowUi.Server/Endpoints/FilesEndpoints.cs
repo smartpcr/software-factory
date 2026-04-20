@@ -51,8 +51,8 @@ public static class FilesEndpoints
         {
             try
             {
-                var yaml = $"id: {request.Id}\nname: {request.Id}\nversion: '1.0'\nnodes: []\nconnections: []\n";
-                var result = await store.SaveAsync(request.Id, yaml, "{}", null, user, ct);
+                var definition = $"id: {request.Id}\nname: {request.Id}\nversion: '1.0'\nnodes: []\nconnections: []\n";
+                var result = await store.SaveAsync(request.Id, definition, "{}", null, user, ct);
                 return result == SaveResult.Created
                     ? Results.Created($"/api/workflows/{request.Id}", null)
                     : Results.Conflict();
@@ -87,7 +87,7 @@ public static class FilesEndpoints
                 }
 
                 // Save under new id, delete old
-                await store.SaveAsync(request.NewId, source.Yaml, source.SidecarJson, null, user, ct);
+                await store.SaveAsync(request.NewId, source.Definition, source.SidecarJson, null, user, ct);
                 await store.DeleteAsync(id, source.ETag, user, ct);
                 return Results.Ok();
             }
@@ -159,8 +159,8 @@ public static class FilesEndpoints
                     newId = await idGen.GenerateUniqueIdAsync(baseId, user, ct);
                 }
 
-                var yaml = source.Yaml.Replace(request.SourceId, newId);
-                await store.SaveAsync(newId, yaml, source.SidecarJson, null, user, ct);
+                var definition = source.Definition.Replace(request.SourceId, newId);
+                await store.SaveAsync(newId, definition, source.SidecarJson, null, user, ct);
                 return Results.Created($"/api/workflows/{newId}", new { id = newId });
             }
             catch (UnauthorizedAccessException)
@@ -189,10 +189,10 @@ public static class FilesEndpoints
                             continue;
                         }
 
-                        var yamlEntry = zip.CreateEntry($"{workflowId}.yaml");
-                        using (var writer = new StreamWriter(yamlEntry.Open()))
+                        var defEntry = zip.CreateEntry($"{workflowId}.json");
+                        using (var writer = new StreamWriter(defEntry.Open()))
                         {
-                            await writer.WriteAsync(record.Yaml);
+                            await writer.WriteAsync(record.Definition);
                         }
 
                         var sidecarEntry = zip.CreateEntry($"{workflowId}.ui.json");
@@ -228,25 +228,26 @@ public static class FilesEndpoints
                 var imported = new List<string>();
                 using (var zip = new ZipArchive(ms, ZipArchiveMode.Read))
                 {
-                    var yamlEntries = zip.Entries
-                        .Where(e => e.FullName.EndsWith(".yaml", StringComparison.OrdinalIgnoreCase))
+                    var defEntries = zip.Entries
+                        .Where(e => e.FullName.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+                            && !e.FullName.EndsWith(".ui.json", StringComparison.OrdinalIgnoreCase))
                         .ToList();
 
-                    foreach (var yamlEntry in yamlEntries)
+                    foreach (var defEntry in defEntries)
                     {
-                        if (!ZipEntryNameSanitiser.IsSafe(yamlEntry.FullName))
+                        if (!ZipEntryNameSanitiser.IsSafe(defEntry.FullName))
                         {
                             continue;
                         }
 
-                        using var reader = new StreamReader(yamlEntry.Open());
-                        var yaml = await reader.ReadToEndAsync(ct);
+                        using var reader = new StreamReader(defEntry.Open());
+                        var definition = await reader.ReadToEndAsync(ct);
 
-                        var id = yamlEntry.FullName
-                            .Replace(".yaml", string.Empty, StringComparison.OrdinalIgnoreCase);
+                        var id = defEntry.FullName
+                            .Replace(".json", string.Empty, StringComparison.OrdinalIgnoreCase);
 
-                        var sidecarName = yamlEntry.FullName
-                            .Replace(".yaml", ".ui.json", StringComparison.OrdinalIgnoreCase);
+                        var sidecarName = defEntry.FullName
+                            .Replace(".json", ".ui.json", StringComparison.OrdinalIgnoreCase);
                         var sidecarEntry = zip.GetEntry(sidecarName);
                         var sidecar = "{}";
                         if (sidecarEntry != null)
@@ -255,7 +256,7 @@ public static class FilesEndpoints
                             sidecar = await sidecarReader.ReadToEndAsync(ct);
                         }
 
-                        await store.SaveAsync(id, yaml, sidecar, null, user, ct);
+                        await store.SaveAsync(id, definition, sidecar, null, user, ct);
                         imported.Add(id);
                     }
                 }

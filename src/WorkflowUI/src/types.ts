@@ -31,9 +31,10 @@ export interface NodeTypeDefinition {
 }
 
 export interface FlowNode {
-  id: string;
-  type: string;
-  name: string;
+  nodeId: string;
+  runtimeType: string;
+  nodeName: string;
+  description?: string;
   x: number;
   y: number;
   width: number;
@@ -45,20 +46,33 @@ export interface FlowNode {
   branches?: string[];
   children?: Record<string, string[]>;
   collapsed?: boolean;
+  // Engine fields
+  joinType?: string;
+  priority?: string;
+  maxConcurrentExecutions?: number;
+  retryPolicy?: Record<string, unknown>;
+  circuitBreakerPolicy?: Record<string, unknown>;
+  compensationNodeId?: string;
+  fallbackNodeId?: string;
+  // UI-only transient fields
   _cachedHeight?: number;
   _iterCount?: number;
   _forceFail?: boolean;
-  /** Validation errors from server or local checks */
   validationErrors?: string[];
 }
 
 export interface FlowEdge {
   id: string;
-  source: string;
+  sourceNodeId: string;
   sourcePort: string;
   sourcePortName?: string;
-  target: string;
+  targetNodeId: string;
   targetPort: string;
+  triggerMessageType?: string;
+  condition?: string;
+  isEnabled?: boolean;
+  priority?: number;
+  metadata?: Record<string, unknown>;
   label?: string;
   _active?: boolean;
 }
@@ -82,15 +96,22 @@ export interface LogEntry {
 }
 
 export interface WorkflowData {
-  id: string;
-  name: string;
+  workflowId: string;
+  workflowName: string;
+  description?: string;
+  version?: string;
   nodes: FlowNode[];
   edges: FlowEdge[];
+  metadata?: Record<string, unknown>;
+  entryPointNodeId?: string;
+  maxConcurrency?: number;
+  allowPause?: boolean;
+  timeoutSeconds?: number;
+  defaultVariables?: Record<string, unknown>;
+  // UI sidecar fields
   createdAt: number;
   updatedAt: number;
   author?: string;
-  purpose?: string;
-  version?: string;
 }
 
 export interface PaletteSection {
@@ -112,10 +133,10 @@ export interface CreateNodeOptions {
 }
 
 export interface CreateEdgeParams {
-  source: string;
+  sourceNodeId: string;
   sourcePort: string;
   sourcePortName?: string;
-  target: string;
+  targetNodeId: string;
   targetPort: string;
 }
 

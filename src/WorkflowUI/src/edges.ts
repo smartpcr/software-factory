@@ -18,8 +18,8 @@ export const Edges = {
     let html = '<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--stroke-3)"/></marker><marker id="arrow-err" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--err)"/></marker><marker id="arrow-active" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--run)"/></marker></defs>';
 
     State.edges.forEach((edge, id) => {
-      const src = State.nodes.get(edge.source);
-      const tgt = State.nodes.get(edge.target);
+      const src = State.nodes.get(edge.sourceNodeId);
+      const tgt = State.nodes.get(edge.targetNodeId);
       if (!src || !tgt) return;
       const sp = getPortPos(src, edge.sourcePort, edge.sourcePortName);
       const tp = getPortPos(tgt, 'in');
@@ -164,10 +164,10 @@ export const Edges = {
         const targetId = target.dataset.nodeId;
         if (targetId && targetId !== nodeId) {
           callbacks.createEdge({
-            source: nodeId,
+            sourceNodeId: nodeId,
             sourcePort: portKind,
             sourcePortName: portName,
-            target: targetId,
+            targetNodeId: targetId,
             targetPort: 'in'
           });
         }
@@ -180,7 +180,7 @@ export const Edges = {
   getSuccessors(nodeId: string, portKind: string, portName?: string): FlowEdge[] {
     const results: FlowEdge[] = [];
     State.edges.forEach(edge => {
-      if (edge.source !== nodeId) return;
+      if (edge.sourceNodeId !== nodeId) return;
       if (portKind && edge.sourcePort !== portKind) return;
       if (portName !== undefined && edge.sourcePortName !== portName) return;
       results.push(edge);

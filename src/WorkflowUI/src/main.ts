@@ -15,10 +15,10 @@ function seedDemo() {
   // Create a dedicated demo workflow — don't mutate whatever newWorkflow() made
   const wfId = uid('wf');
   const wf = {
-    id: wfId,
-    name: 'Demo: User Onboarding',
+    workflowId: wfId,
+    workflowName: 'Demo: User Onboarding',
     nodes: [] as FlowNode[],
-    edges: [] as { id: string; source: string; sourcePort: string; sourcePortName?: string; target: string; targetPort: string }[],
+    edges: [] as { id: string; sourceNodeId: string; sourcePort: string; sourcePortName?: string; targetNodeId: string; targetPort: string }[],
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -26,7 +26,7 @@ function seedDemo() {
   const addNode = (type: string, x: number, y: number, overrides: Partial<FlowNode> = {}): FlowNode => {
     const t = NodeTypes[type];
     const n: FlowNode = {
-      id: uid('n'), type, name: t.label,
+      nodeId: uid('n'), runtimeType: type, nodeName: t.label,
       x, y, width: 220,
       config: clone(t.config || {}),
       status: '', parentId: null, parentSlot: null,
@@ -37,17 +37,17 @@ function seedDemo() {
     return n;
   };
 
-  const start = addNode('start', 200, 100, { name: 'Manual Trigger' });
+  const start = addNode('start', 200, 100, { nodeName: 'Manual Trigger' });
   const http = addNode('http', 200, 280, {
-    name: 'Fetch User Data',
+    nodeName: 'Fetch User Data',
     config: { method: 'GET', url: 'https://api.example.com/user/42', headers: '{}' }
   });
   const ifNode = addNode('if', 200, 480, {
-    name: 'Is premium?',
+    nodeName: 'Is premium?',
     config: { condition: 'input.user.tier === "premium"' }
   });
   const ai = addNode('ai', -40, 720, {
-    name: 'Generate Welcome',
+    nodeName: 'Generate Welcome',
     config: {
       mode: 'skill', skillId: 'generate_welcome',
       model: 'claude-opus-4-7',
@@ -57,33 +57,33 @@ function seedDemo() {
     }
   });
   const log = addNode('log', 440, 720, {
-    name: 'Log free-tier',
+    nodeName: 'Log free-tier',
     config: { level: 'info', message: 'Free-tier user visited' }
   });
   const forEach = addNode('foreach', -40, 920, {
-    name: 'For each message',
+    nodeName: 'For each message',
     config: { source: 'input.notifications', mode: 'foreach', maxIterations: 50 }
   });
   const send = addNode('action', -260, 1120, {
-    name: 'Send Notification',
+    nodeName: 'Send Notification',
     config: { actionType: 'function', handler: 'send_notif' }
   });
-  const end = addNode('end', 200, 1320, { name: 'Done' });
+  const end = addNode('end', 200, 1320, { nodeName: 'Done' });
 
   const addEdge = (source: string, sourcePort: string, target: string, sourcePortName?: string) => {
     const id = uid('e');
-    wf.edges.push({ id, source, sourcePort, sourcePortName, target, targetPort: 'in' });
+    wf.edges.push({ id, sourceNodeId: source, sourcePort, sourcePortName, targetNodeId: target, targetPort: 'in' });
   };
 
-  addEdge(start.id, 'out', http.id);
-  addEdge(http.id, 'out', ifNode.id);
-  addEdge(ifNode.id, 'branch', ai.id, 'true');
-  addEdge(ifNode.id, 'branch', log.id, 'false');
-  addEdge(ai.id, 'out', forEach.id);
-  addEdge(forEach.id, 'branch', send.id, 'iterate');
-  addEdge(forEach.id, 'out', end.id);
-  addEdge(log.id, 'out', end.id);
-  addEdge(send.id, 'out', forEach.id);
+  addEdge(start.nodeId, 'out', http.nodeId);
+  addEdge(http.nodeId, 'out', ifNode.nodeId);
+  addEdge(ifNode.nodeId, 'branch', ai.nodeId, 'true');
+  addEdge(ifNode.nodeId, 'branch', log.nodeId, 'false');
+  addEdge(ai.nodeId, 'out', forEach.nodeId);
+  addEdge(forEach.nodeId, 'branch', send.nodeId, 'iterate');
+  addEdge(forEach.nodeId, 'out', end.nodeId);
+  addEdge(log.nodeId, 'out', end.nodeId);
+  addEdge(send.nodeId, 'out', forEach.nodeId);
 
   // Register and load the demo workflow
   State.workflows[wfId] = wf;

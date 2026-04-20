@@ -233,9 +233,9 @@ export function resolveNodeType(type: string): string {
  */
 export function normalizeWorkflowNodeTypes(nodes: import('./types').FlowNode[]): void {
   for (const node of nodes) {
-    const canonical = resolveNodeType(node.type);
-    if (canonical !== node.type) {
-      node.type = canonical;
+    const canonical = resolveNodeType(node.runtimeType);
+    if (canonical !== node.runtimeType) {
+      node.runtimeType = canonical;
     }
   }
 }

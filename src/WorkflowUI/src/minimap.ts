@@ -91,7 +91,7 @@ export const Minimap = {
 
     let html = '';
     nodes.forEach(n => {
-      const c = NodeTypes[n.type]?.color || 'var(--text-3)';
+      const c = NodeTypes[n.runtimeType]?.color || 'var(--text-3)';
       html += `<rect x="${n.x}" y="${n.y}" width="220" height="80" rx="8" fill="${c}" opacity="0.5"/>`;
     });
 

@@ -2,7 +2,7 @@
 // Inspector panel rendering
 // -----------------------------------------------------------------------
 
-import type { FlowNode, AppCallbacks, NodeTypeDefinition } from './types';
+import type { FlowNode, AppCallbacks, NodeTypeDefinition, WorkflowData } from './types';
 import { NodeTypes } from './registry';
 import { State } from './state';
 import { escapeHtml } from './utils';
@@ -14,6 +14,28 @@ let nodeRenderTimer: ReturnType<typeof setTimeout> | null = null;
 function debouncedNodeRender() {
   if (nodeRenderTimer) clearTimeout(nodeRenderTimer);
   nodeRenderTimer = setTimeout(() => Nodes.render(), 300);
+}
+
+const chevronSvg = '<svg class="ins-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>';
+
+/** Wrap content in a collapsible section */
+function insSection(title: string, content: string, collapsed = false): string {
+  return `<div class="ins-section ${collapsed ? 'collapsed' : ''}">
+    <div class="ins-section-title">${chevronSvg}<span>${title}</span></div>
+    <div class="ins-section-body">${content}</div>
+  </div>`;
+}
+
+/** Bind collapse toggles on all section titles within a container */
+function bindSectionToggles(container: HTMLElement) {
+  container.querySelectorAll('.ins-section-title').forEach(title => {
+    title.addEventListener('click', (e) => {
+      // Don't toggle if clicking an input/select inside the title
+      if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'SELECT') return;
+      const section = title.closest('.ins-section');
+      if (section) section.classList.toggle('collapsed');
+    });
+  });
 }
 
 export const Inspector = {
@@ -60,27 +82,72 @@ export const Inspector = {
           </div>
         </div>
       </div>
-      <div class="ins-section">
-        <div class="ins-section-title">Properties</div>
+      ${insSection('Properties', `
         <div class="ins-field">
           <label class="ins-field-label">Name</label>
-          <input value="${escapeHtml(wf.name || '')}" data-bind="wf-name" />
+          <input value="${escapeHtml(wf.workflowName || '')}" data-bind="wf-workflowName" />
+        </div>
+        <div class="ins-field">
+          <label class="ins-field-label">Description</label>
+          <textarea placeholder="Describe what this workflow does…" data-bind="wf-description">${escapeHtml(wf.description || '')}</textarea>
+        </div>
+        <div class="ins-field">
+          <label class="ins-field-label">Version</label>
+          <input value="${escapeHtml(wf.version || '1.0')}" placeholder="1.0" data-bind="wf-version" />
         </div>
         <div class="ins-field">
           <label class="ins-field-label">Author</label>
           <input value="${escapeHtml(wf.author || '')}" placeholder="e.g. your name" data-bind="wf-author" />
         </div>
+      `)}
+      ${insSection('Execution', `
         <div class="ins-field">
-          <label class="ins-field-label">Version</label>
-          <input value="${escapeHtml(wf.version || '')}" placeholder="e.g. 1.0.0" data-bind="wf-version" />
+          <label class="ins-field-label">Entry point node</label>
+          <select data-bind="wf-entryPointNodeId">
+            <option value="">— auto-detect —</option>
+            ${[...State.nodes.values()].map(n =>
+              `<option value="${n.nodeId}" ${wf.entryPointNodeId === n.nodeId ? 'selected' : ''}>${escapeHtml(n.nodeName || n.nodeId)}</option>`
+            ).join('')}
+          </select>
+          <div class="ins-field-hint">If not set, nodes without incoming connections are used as entry points.</div>
         </div>
         <div class="ins-field">
-          <label class="ins-field-label">Purpose</label>
-          <textarea placeholder="Describe what this workflow does…" data-bind="wf-purpose">${escapeHtml(wf.purpose || '')}</textarea>
+          <label class="ins-field-label">Max concurrency</label>
+          <input type="number" min="0" value="${wf.maxConcurrency || 0}" data-bind="wf-maxConcurrency" />
+          <div class="ins-field-hint">Maximum concurrent node executions. 0 = unlimited.</div>
         </div>
-      </div>
-      <div class="ins-section">
-        <div class="ins-section-title">Metadata</div>
+        <div class="ins-field">
+          <label class="ins-field-label">Timeout (seconds)</label>
+          <input type="number" min="0" value="${wf.timeoutSeconds || 0}" data-bind="wf-timeoutSeconds" />
+          <div class="ins-field-hint">Entire workflow timeout. 0 = no timeout.</div>
+        </div>
+        <div class="ins-field">
+          <label style="display:flex; align-items:center; gap:6px; font-size:12px;">
+            <input type="checkbox" ${wf.allowPause !== false ? 'checked' : ''} data-bind="wf-allowPause" style="width:auto" />
+            Allow pause
+          </label>
+          <div class="ins-field-hint">Whether the workflow execution can be paused.</div>
+        </div>
+      `, true)}
+      ${insSection('Variables', `
+        <div class="var-editor" id="varEditor">
+          <div class="var-editor-header">
+            <span class="var-editor-col var-col-name">Name</span>
+            <span class="var-editor-col var-col-type">Type</span>
+            <span class="var-editor-col var-col-value">Default</span>
+            <span class="var-editor-col var-col-actions"></span>
+          </div>
+          <div class="var-editor-rows" id="varEditorRows">
+            ${this.renderVariableRows(wf.defaultVariables)}
+          </div>
+          <button class="var-editor-add" id="varEditorAdd">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+            Add variable
+          </button>
+        </div>
+        <div class="ins-field-hint" style="margin-top:4px;">Global variables available to all nodes at runtime.</div>
+      `, true)}
+      ${insSection('Info', `
         <div class="ins-field">
           <label class="ins-field-label">Created</label>
           <input readonly value="${fmtDate(wf.createdAt)}" class="mono" />
@@ -91,43 +158,184 @@ export const Inspector = {
         </div>
         <div class="ins-field">
           <label class="ins-field-label">Workflow ID</label>
-          <input readonly value="${escapeHtml(wf.id)}" class="mono" />
+          <input readonly value="${escapeHtml(wf.workflowId)}" class="mono" />
         </div>
-      </div>
+      `, true)}
     `;
 
     // Bind editable fields
-    el.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('[data-bind]').forEach(input => {
-      input.addEventListener('input', () => {
+    el.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('[data-bind]').forEach(input => {
+      const event = input.tagName === 'SELECT' ? 'change' : 'input';
+      input.addEventListener(event, () => {
         const field = input.dataset.bind;
         if (!wf) return;
         switch (field) {
-          case 'wf-name':
-            wf.name = input.value;
+          case 'wf-workflowName':
+            wf.workflowName = input.value;
             const titleInput = document.getElementById('wfTitleInput') as HTMLInputElement | null;
             if (titleInput) titleInput.value = input.value;
             callbacks.markDirty();
             break;
-          case 'wf-author': wf.author = input.value; callbacks.markDirty(); break;
+          case 'wf-description': wf.description = input.value; callbacks.markDirty(); break;
           case 'wf-version': wf.version = input.value; callbacks.markDirty(); break;
-          case 'wf-purpose': wf.purpose = input.value; callbacks.markDirty(); break;
+          case 'wf-author': wf.author = input.value; callbacks.markDirty(); break;
+          case 'wf-entryPointNodeId': wf.entryPointNodeId = input.value || undefined; callbacks.markDirty(); break;
+          case 'wf-maxConcurrency': wf.maxConcurrency = parseInt(input.value) || 0; callbacks.markDirty(); break;
+          case 'wf-timeoutSeconds': wf.timeoutSeconds = parseInt(input.value) || 0; callbacks.markDirty(); break;
+          case 'wf-allowPause': wf.allowPause = (input as HTMLInputElement).checked; callbacks.markDirty(); break;
         }
       });
     });
+
+    // Bind variable editor
+    this.bindVariableEditor(el, wf);
+
+    // Bind collapsible section toggles
+    bindSectionToggles(el);
+  },
+
+  renderVariableRows(vars: Record<string, unknown> | undefined): string {
+    if (!vars || Object.keys(vars).length === 0) {
+      return '<div class="var-editor-empty">No variables defined</div>';
+    }
+    return Object.entries(vars).map(([name, value]) => {
+      const vtype = this.inferVarType(value);
+      const displayVal = vtype === 'object' ? JSON.stringify(value) : String(value ?? '');
+      return `
+        <div class="var-editor-row" data-var-name="${escapeHtml(name)}">
+          <input class="var-input var-col-name mono" value="${escapeHtml(name)}" data-field="name" placeholder="key" />
+          <select class="var-select var-col-type" data-field="type">
+            <option value="string" ${vtype === 'string' ? 'selected' : ''}>string</option>
+            <option value="number" ${vtype === 'number' ? 'selected' : ''}>number</option>
+            <option value="boolean" ${vtype === 'boolean' ? 'selected' : ''}>boolean</option>
+            <option value="object" ${vtype === 'object' ? 'selected' : ''}>object</option>
+          </select>
+          ${vtype === 'boolean'
+            ? `<label class="var-col-value var-bool-wrap"><input type="checkbox" ${value ? 'checked' : ''} data-field="value" /><span>${value ? 'true' : 'false'}</span></label>`
+            : `<input class="var-input var-col-value mono" value="${escapeHtml(displayVal)}" data-field="value" placeholder="${vtype === 'object' ? '{}' : ''}" />`
+          }
+          <button class="var-row-del" data-field="delete" title="Remove">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>`;
+    }).join('');
+  },
+
+  inferVarType(value: unknown): string {
+    if (value === null || value === undefined) return 'string';
+    if (typeof value === 'boolean') return 'boolean';
+    if (typeof value === 'number') return 'number';
+    if (typeof value === 'object') return 'object';
+    return 'string';
+  },
+
+  parseVarValue(raw: string, type: string): unknown {
+    switch (type) {
+      case 'number': return parseFloat(raw) || 0;
+      case 'boolean': return raw === 'true';
+      case 'object': try { return JSON.parse(raw); } catch { return {}; }
+      default: return raw;
+    }
+  },
+
+  bindVariableEditor(el: HTMLElement, wf: WorkflowData) {
+    // Add variable
+    el.querySelector('#varEditorAdd')?.addEventListener('click', () => {
+      if (!wf.defaultVariables) wf.defaultVariables = {};
+      let name = 'newVar';
+      let i = 1;
+      while (name in wf.defaultVariables) { name = `newVar${++i}`; }
+      wf.defaultVariables[name] = '';
+      callbacks.markDirty();
+      this.refreshVariableEditor(el, wf);
+    });
+
+    this.bindVariableRows(el, wf);
+  },
+
+  bindVariableRows(el: HTMLElement, wf: WorkflowData) {
+    el.querySelectorAll('.var-editor-row').forEach(row => {
+      const rowEl = row as HTMLElement;
+      const origName = rowEl.dataset.varName!;
+
+      // Delete
+      rowEl.querySelector('[data-field="delete"]')?.addEventListener('click', () => {
+        if (wf.defaultVariables) delete wf.defaultVariables[origName];
+        callbacks.markDirty();
+        this.refreshVariableEditor(el, wf);
+      });
+
+      // Name change
+      const nameInput = rowEl.querySelector('[data-field="name"]') as HTMLInputElement | null;
+      nameInput?.addEventListener('change', () => {
+        const newName = nameInput.value.trim();
+        if (!newName || !wf.defaultVariables) return;
+        if (newName !== origName) {
+          const val = wf.defaultVariables[origName];
+          delete wf.defaultVariables[origName];
+          wf.defaultVariables[newName] = val;
+          callbacks.markDirty();
+          this.refreshVariableEditor(el, wf);
+        }
+      });
+
+      // Type change
+      const typeSelect = rowEl.querySelector('[data-field="type"]') as HTMLSelectElement | null;
+      typeSelect?.addEventListener('change', () => {
+        if (!wf.defaultVariables) return;
+        const oldVal = wf.defaultVariables[origName];
+        const newType = typeSelect.value;
+        // Convert value to new type
+        switch (newType) {
+          case 'string': wf.defaultVariables[origName] = String(oldVal ?? ''); break;
+          case 'number': wf.defaultVariables[origName] = Number(oldVal) || 0; break;
+          case 'boolean': wf.defaultVariables[origName] = Boolean(oldVal); break;
+          case 'object': wf.defaultVariables[origName] = typeof oldVal === 'object' ? oldVal : {}; break;
+        }
+        callbacks.markDirty();
+        this.refreshVariableEditor(el, wf);
+      });
+
+      // Value change
+      const valInput = rowEl.querySelector('[data-field="value"]') as HTMLInputElement | null;
+      if (valInput) {
+        const event = valInput.type === 'checkbox' ? 'change' : 'input';
+        valInput.addEventListener(event, () => {
+          if (!wf.defaultVariables) return;
+          const type = typeSelect?.value || 'string';
+          if (valInput.type === 'checkbox') {
+            wf.defaultVariables[origName] = valInput.checked;
+            const label = valInput.closest('.var-bool-wrap')?.querySelector('span');
+            if (label) label.textContent = valInput.checked ? 'true' : 'false';
+          } else {
+            wf.defaultVariables[origName] = this.parseVarValue(valInput.value, type);
+          }
+          callbacks.markDirty();
+        });
+      }
+    });
+  },
+
+  refreshVariableEditor(el: HTMLElement, wf: WorkflowData) {
+    const rowsEl = el.querySelector('#varEditorRows');
+    if (rowsEl) {
+      rowsEl.innerHTML = this.renderVariableRows(wf.defaultVariables);
+      this.bindVariableRows(el, wf);
+    }
   },
 
   renderEdge(id: string) {
     const edge = State.edges.get(id);
     if (!edge) return;
-    const src = State.nodes.get(edge.source);
-    const tgt = State.nodes.get(edge.target);
+    const src = State.nodes.get(edge.sourceNodeId);
+    const tgt = State.nodes.get(edge.targetNodeId);
     const el = document.getElementById('inspector')!;
     el.innerHTML = `
       <div class="ins-header">
         <div class="ins-title">
           <div class="ins-title-text">Edge</div>
         </div>
-        <div class="ins-subtitle mono">${escapeHtml(src?.name || '?')} → ${escapeHtml(tgt?.name || '?')}</div>
+        <div class="ins-subtitle mono">${escapeHtml(src?.nodeName || '?')} → ${escapeHtml(tgt?.nodeName || '?')}</div>
       </div>
       <div class="ins-section">
         <div class="ins-section-title">Connection</div>
@@ -137,7 +345,7 @@ export const Inspector = {
         </div>
         <div class="ins-field">
           <label class="ins-field-label">Target</label>
-          <input readonly value="${escapeHtml((tgt?.name || '?') + ' (in)')}" />
+          <input readonly value="${escapeHtml((tgt?.nodeName || '?') + ' (in)')}" />
         </div>
       </div>
       <div class="ins-section">
@@ -148,12 +356,13 @@ export const Inspector = {
       </div>
     `;
     this.bindInspectorActions(el);
+    bindSectionToggles(el);
   },
 
   renderNode(id: string) {
     const node = State.nodes.get(id);
     if (!node) return;
-    const type = NodeTypes[node.type];
+    const type = NodeTypes[node.runtimeType];
     if (!type) return;
     const el = document.getElementById('inspector')!;
     const configHtml = this.configFieldsHtml(node);
@@ -163,8 +372,8 @@ export const Inspector = {
         <div class="ins-title">
           <div class="node-icon" style="color: ${type.color}; width: 24px; height: 24px;">${type.icon}</div>
           <div>
-            <div class="ins-title-text">${escapeHtml(node.name || type.label)}</div>
-            <div class="ins-subtitle mono">${node.type}</div>
+            <div class="ins-title-text">${escapeHtml(node.nodeName || type.label)}</div>
+            <div class="ins-subtitle mono">${node.runtimeType}</div>
           </div>
         </div>
       </div>
@@ -172,7 +381,7 @@ export const Inspector = {
         <div class="ins-section-title">General</div>
         <div class="ins-field">
           <label class="ins-field-label">Name</label>
-          <input value="${escapeHtml(node.name || '')}" data-bind="name" data-node-id="${id}" />
+          <input value="${escapeHtml(node.nodeName || '')}" data-bind="name" data-node-id="${id}" />
         </div>
         <div class="ins-field">
           <label class="ins-field-label">Node ID</label>
@@ -197,13 +406,14 @@ export const Inspector = {
       </div>
     `;
     this.bindInspectorActions(el);
+    bindSectionToggles(el);
   },
 
   bindInspectorActions(el: HTMLElement) {
     // Name binding
     el.querySelectorAll<HTMLInputElement>('[data-bind="name"]').forEach(input => {
       input.addEventListener('input', () => {
-        callbacks.updateNode(input.dataset.nodeId!, { name: input.value } as Partial<FlowNode>);
+        callbacks.updateNode(input.dataset.nodeId!, { nodeName: input.value } as Partial<FlowNode>);
       });
     });
     // Config bindings
@@ -337,7 +547,7 @@ export const Inspector = {
       select.addEventListener('change', () => {
         const nodeId = select.dataset.nodeId!;
         const node = State.nodes.get(nodeId);
-        if (node && node.type.toLowerCase() === 'start') {
+        if (node && node.runtimeType.toLowerCase() === 'start') {
           this.validateStartNode(node);
           Nodes.render();
         }
@@ -349,7 +559,7 @@ export const Inspector = {
       input.addEventListener('input', () => {
         const nodeId = input.dataset.nodeId!;
         const node = State.nodes.get(nodeId);
-        if (node && node.type.toLowerCase() === 'start') {
+        if (node && node.runtimeType.toLowerCase() === 'start') {
           this.validateStartNode(node);
           this.updateCronDisplayInPlace(el, String(node.config.schedule || ''));
           debouncedNodeRender();
@@ -398,11 +608,11 @@ export const Inspector = {
 
   configFieldsHtml(node: FlowNode): string {
     const c = node.config || {};
-    const id = node.id;
+    const id = node.nodeId;
     let fields = '';
     let title = 'Configuration';
 
-    if (node.type === 'start') {
+    if (node.runtimeType === 'start') {
       title = 'Start Trigger';
       const trigType = String(c.triggerType || 'Manual');
       const cronDesc = trigType === 'Schedule' && c.schedule ? this.describeCron(String(c.schedule)) : '';
@@ -441,7 +651,7 @@ export const Inspector = {
           <div class="ins-field-hint">Name of the external event to listen for.</div>
         </div>` : ''}
       `;
-    } else if (node.type === 'trigger') {
+    } else if (node.runtimeType === 'trigger') {
       title = 'Webhook';
       // Parse params JSON safely
       let params: { name: string; value: string }[] = [];
@@ -480,7 +690,7 @@ export const Inspector = {
           <div class="ins-field-hint">Query or body parameters passed to the webhook.</div>
         </div>
       `;
-    } else if (node.type === 'if') {
+    } else if (node.runtimeType === 'if') {
       title = 'Condition';
       fields = `
         <div class="ins-field">
@@ -489,7 +699,7 @@ export const Inspector = {
           <div class="ins-field-hint">JavaScript-like expression. Connect <code>true</code> and <code>false</code> branches.</div>
         </div>
       `;
-    } else if (node.type === 'switch') {
+    } else if (node.runtimeType === 'switch') {
       title = 'Switch';
       fields = `
         <div class="ins-field">
@@ -511,7 +721,7 @@ export const Inspector = {
           <button class="add-case-btn" data-action="add-branch" data-node-id="${id}">+ Add case</button>
         </div>
       `;
-    } else if (node.type === 'parallel') {
+    } else if (node.runtimeType === 'parallel') {
       title = 'Parallel';
       fields = `
         <div class="ins-field">
@@ -541,7 +751,7 @@ export const Inspector = {
           <button class="add-case-btn" data-action="add-branch" data-node-id="${id}">+ Add branch</button>
         </div>
       `;
-    } else if (node.type === 'foreach') {
+    } else if (node.runtimeType === 'foreach') {
       title = 'ForEach';
       fields = `
         <div class="ins-field">
@@ -562,11 +772,11 @@ export const Inspector = {
           <div class="ins-field-hint">Connect <code>iterate</code> to loop body. The <code>out</code> port fires after all iterations.</div>
         </div>
       `;
-    } else if (node.type === 'subflow') {
+    } else if (node.runtimeType === 'subflow') {
       title = 'Subflow Reference';
       const wfOptions = Object.values(State.workflows)
-        .filter(w => w.id !== State.currentWfId)
-        .map(w => `<option value="${w.id}" ${c.workflowId === w.id ? 'selected' : ''}>${escapeHtml(w.name)}</option>`)
+        .filter(w => w.workflowId !== State.currentWfId)
+        .map(w => `<option value="${w.workflowId}" ${c.workflowId === w.workflowId ? 'selected' : ''}>${escapeHtml(w.workflowName)}</option>`)
         .join('');
       fields = `
         <div class="ins-field">
@@ -587,7 +797,7 @@ export const Inspector = {
           </label>
         </div>
       `;
-    } else if (node.type === 'ai') {
+    } else if (node.runtimeType === 'ai') {
       title = 'AI Configuration';
       fields = `
         <div class="ins-field">
@@ -646,7 +856,7 @@ export const Inspector = {
           </div>
         </div>
       `;
-    } else if (node.type === 'http') {
+    } else if (node.runtimeType === 'http') {
       fields = `
         <div class="ins-field" style="display:flex; gap:8px;">
           <div style="width: 90px">
@@ -669,7 +879,7 @@ export const Inspector = {
           <textarea data-config-key="headers" data-node-id="${id}">${escapeHtml(String(c.headers || '{}'))}</textarea>
         </div>
       `;
-    } else if (node.type === 'delay') {
+    } else if (node.runtimeType === 'delay') {
       fields = `
         <div class="ins-field" style="display:flex; gap:8px;">
           <div style="flex:2">
@@ -686,7 +896,7 @@ export const Inspector = {
           </div>
         </div>
       `;
-    } else if (node.type === 'transform') {
+    } else if (node.runtimeType === 'transform') {
       fields = `
         <div class="ins-field">
           <label class="ins-field-label">Expression</label>
@@ -694,7 +904,7 @@ export const Inspector = {
           <div class="ins-field-hint">Transform the input payload. Reference with <code>input</code>.</div>
         </div>
       `;
-    } else if (node.type === 'log') {
+    } else if (node.runtimeType === 'log') {
       fields = `
         <div class="ins-field">
           <label class="ins-field-label">Level</label>
@@ -710,7 +920,7 @@ export const Inspector = {
           <input value="${escapeHtml(String(c.message || ''))}" data-config-key="message" data-node-id="${id}" />
         </div>
       `;
-    } else if (node.type === 'container') {
+    } else if (node.runtimeType === 'container') {
       fields = `
         <div class="ins-field">
           <label class="ins-field-label">Label</label>
@@ -723,7 +933,7 @@ export const Inspector = {
           </label>
         </div>
       `;
-    } else if (node.type === 'end') {
+    } else if (node.runtimeType === 'end') {
       fields = `
         <div class="ins-field">
           <label class="ins-field-label">Exit status</label>
@@ -735,7 +945,7 @@ export const Inspector = {
       `;
     } else {
       // Try rendering from server-provided property descriptors
-      const typeDef = NodeTypes[node.type] as NodeTypeDefinition & { serverProperties?: { name: string; label: string; type: string; required: boolean; default: string | null; placeholder: string | null; options: string[] | null }[] };
+      const typeDef = NodeTypes[node.runtimeType] as NodeTypeDefinition & { serverProperties?: { name: string; label: string; type: string; required: boolean; default: string | null; placeholder: string | null; options: string[] | null }[] };
       if (typeDef?.serverProperties?.length) {
         fields = typeDef.serverProperties.map(prop => {
           const val = escapeHtml(String(c[prop.name] ?? prop.default ?? ''));
@@ -784,10 +994,7 @@ export const Inspector = {
       }
     }
 
-    return `<div class="ins-section">
-      <div class="ins-section-title">${title}</div>
-      ${fields}
-    </div>`;
+    return insSection(title, fields);
   },
 
   /** Human-readable description of a cron expression */

@@ -27,9 +27,9 @@ export function escapeHtml(s: string): string {
 /** Slot names for a node (branch names for if/switch/parallel/foreach, '_body' for container). */
 export function getSlots(node: FlowNode | undefined): string[] {
   if (!node) return [];
-  const t = NodeTypes[node.type];
+  const t = NodeTypes[node.runtimeType];
   if (t && t.branches) return node.branches || t.branches;
-  if (node.type === 'container') return ['_body'];
+  if (node.runtimeType === 'container') return ['_body'];
   return [];
 }
 
@@ -58,18 +58,18 @@ export function toast(msg: string, kind = 'info', ms = 2800): void {
  * Prefers live DOM measurement, falls back to math.
  */
 export function getPortPos(node: FlowNode, portKind: string, portName?: string): Point {
-  const dom = getPortPosFromDom(node.id, portKind, portName);
+  const dom = getPortPosFromDom(node.nodeId, portKind, portName);
   if (dom) return dom;
 
   const width = node.width || 220;
   const headH = 38;
   const bodyH = 32;
   const branchH = 48;
-  const type = NodeTypes[node.type];
+  const type = NodeTypes[node.runtimeType];
 
   let height = headH + bodyH;
   if (type?.branches && type.branches.length) height += branchH;
-  if (node.type === 'container') height = Math.max(160, node.height || 160);
+  if (node.runtimeType === 'container') height = Math.max(160, node.height || 160);
   node._cachedHeight = height;
 
   if (portKind === 'in') return { x: node.x + width / 2, y: node.y };
