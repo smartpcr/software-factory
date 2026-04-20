@@ -54,17 +54,26 @@ export async function saveWorkflow(id: string, data: WorkflowData): Promise<void
       compensationNodeId: n.compensationNodeId || null,
       fallbackNodeId: n.fallbackNodeId || null,
     })),
-    connections: (data.edges || []).map(e => ({
-      sourceNodeId: e.sourceNodeId,
-      targetNodeId: e.targetNodeId,
-      sourcePort: e.sourcePort || null,
-      targetPort: e.targetPort || null,
-      triggerMessageType: e.triggerMessageType || 'Complete',
-      condition: e.condition || null,
-      isEnabled: e.isEnabled !== false,
-      priority: e.priority || 0,
-      metadata: e.metadata || null,
-    })),
+    connections: (data.edges || []).map(e => {
+      // Derive triggerMessageType from sourcePort if not explicitly set
+      let msgType = e.triggerMessageType;
+      if (!msgType) {
+        if (e.sourcePort === 'error') msgType = 'Fail';
+        else if (e.sourcePortName) msgType = 'Complete'; // branch ports use Complete with sourcePort routing
+        else msgType = 'Complete';
+      }
+      return {
+        sourceNodeId: e.sourceNodeId,
+        targetNodeId: e.targetNodeId,
+        sourcePort: e.sourcePortName || e.sourcePort || null,
+        targetPort: e.targetPort || null,
+        triggerMessageType: msgType,
+        condition: e.condition || null,
+        isEnabled: e.isEnabled !== false,
+        priority: e.priority || 0,
+        metadata: e.metadata || null,
+      };
+    }),
   };
   const definition = JSON.stringify(workflowDef, null, 2);
   const sidecarJson = JSON.stringify({
@@ -174,6 +183,23 @@ export async function validateWorkflow(workflowId: string): Promise<ValidationEn
   });
   if (!res.ok) throw new Error(`POST validate failed: ${res.status}`);
   return res.json() as Promise<ValidationEntry[]>;
+}
+
+export interface NodeValidationEntry {
+  nodeId: string;
+  field: string;
+  message: string;
+  severity: string;
+}
+
+export async function validateNodesBatch(nodes: Record<string, unknown>[]): Promise<NodeValidationEntry[]> {
+  const res = await fetch('/api/nodes/validate-batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(nodes),
+  });
+  if (!res.ok) throw new Error(`POST validate-batch failed: ${res.status}`);
+  return res.json() as Promise<NodeValidationEntry[]>;
 }
 
 // ---- Node Types Catalog ----

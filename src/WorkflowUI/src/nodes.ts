@@ -237,7 +237,11 @@ export const Nodes = {
     }
     if (node.runtimeType === 'trigger') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.method))}</span><span class="val">${escapeHtml(String(c.route || '—'))}</span></div>`;
     if (node.runtimeType === 'transform') return `<div class="node-body-row"><span class="lab">expr</span><span class="val">${escapeHtml(String(c.expression || '—'))}</span></div>`;
-    if (node.runtimeType === 'log') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.level))}</span><span class="val">${escapeHtml(String(c.message || '—'))}</span></div>`;
+    if (node.runtimeType === 'log' || node.runtimeType === 'Log') {
+      const msg = String(c.messageTemplate || c.message || '—');
+      const truncated = msg.length > 30 ? msg.slice(0, 28) + '…' : msg;
+      return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.level || 'Info'))}</span><span class="val">${escapeHtml(truncated)}</span></div>`;
+    }
     if (node.runtimeType === 'parallel') return `<div class="node-body-row"><span class="lab">join</span><span class="val">${escapeHtml(String(c.joinMode))}</span></div>`;
     if (node.runtimeType === 'end') return `<div class="node-body-row"><span class="lab">status</span><span class="val">${escapeHtml(String(c.status))}</span></div>`;
     return `<div class="node-body-row"><span class="lab">type</span><span class="val">${type?.label || node.runtimeType}</span></div>`;

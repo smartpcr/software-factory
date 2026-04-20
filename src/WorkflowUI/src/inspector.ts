@@ -8,6 +8,8 @@ import { State } from './state';
 import { escapeHtml } from './utils';
 import { Nodes } from './nodes';
 import { aiModels, tierColor } from './config';
+import { discoverInboundFields } from './inboundSchema';
+import type { InboundField } from './inboundSchema';
 
 let callbacks: AppCallbacks;
 let nodeRenderTimer: ReturnType<typeof setTimeout> | null = null;
@@ -566,6 +568,52 @@ export const Inspector = {
         }
       });
     });
+    // Log node: parameter binding inputs
+    el.querySelectorAll<HTMLInputElement>('[data-binding-key]').forEach(input => {
+      input.addEventListener('input', () => {
+        const nodeId = input.dataset.nodeId!;
+        const bindingKey = input.dataset.bindingKey!;
+        const node = State.nodes.get(nodeId);
+        if (!node) return;
+        // Parse existing bindings
+        let bindings: Record<string, string> = {};
+        try {
+          bindings = typeof node.config.parameterBindings === 'string'
+            ? JSON.parse(node.config.parameterBindings as string)
+            : (node.config.parameterBindings as unknown as Record<string, string>) || {};
+        } catch { /* ignore */ }
+        bindings[bindingKey] = input.value;
+        callbacks.updateNodeConfig(nodeId, 'parameterBindings', JSON.stringify(bindings));
+      });
+    });
+    // Log node: re-render inspector when messageTemplate changes (to show/hide bindings)
+    el.querySelectorAll<HTMLTextAreaElement>('[data-config-key="messageTemplate"]').forEach(input => {
+      input.addEventListener('input', () => {
+        // Debounce the re-render to avoid losing focus
+        debouncedNodeRender();
+      });
+    });
+    // Inbound field click → insert into first empty binding or last focused binding input
+    el.querySelectorAll<HTMLElement>('.inbound-field').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const fieldPath = chip.dataset.fieldPath!;
+        const nodeId = chip.dataset.nodeId!;
+        // Find the first empty binding input, or the last one
+        const bindingInputs = el.querySelectorAll<HTMLInputElement>('.binding-input');
+        let targetInput: HTMLInputElement | null = null;
+        for (const inp of bindingInputs) {
+          if (!inp.value.trim()) { targetInput = inp; break; }
+        }
+        if (!targetInput && bindingInputs.length > 0) {
+          targetInput = bindingInputs[bindingInputs.length - 1];
+        }
+        if (targetInput) {
+          targetInput.value = fieldPath;
+          targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+          targetInput.focus();
+        }
+      });
+    });
   },
 
   /** Update the cron friendly text and validation indicator without full re-render */
@@ -904,21 +952,69 @@ export const Inspector = {
           <div class="ins-field-hint">Transform the input payload. Reference with <code>input</code>.</div>
         </div>
       `;
-    } else if (node.runtimeType === 'log') {
+    } else if (node.runtimeType === 'log' || node.runtimeType === 'Log') {
+      title = 'Log Output';
+      const level = String(c.level || 'Info');
+      const msgTpl = String(c.messageTemplate || c.message || '');
+      let bindings: Record<string, string> = {};
+      try {
+        bindings = typeof c.parameterBindings === 'string'
+          ? JSON.parse(c.parameterBindings as string)
+          : (c.parameterBindings as unknown as Record<string, string>) || {};
+      } catch { /* ignore */ }
+      const placeholders = (msgTpl.match(/\{(\w+)\}/g) || []).map((m: string) => m.slice(1, -1));
+
+      // Discover inbound fields from connected edges
+      const inboundFields = discoverInboundFields(node.nodeId);
+
       fields = `
         <div class="ins-field">
           <label class="ins-field-label">Level</label>
           <select data-config-key="level" data-node-id="${id}">
-            <option ${c.level === 'info' ? 'selected' : ''}>info</option>
-            <option ${c.level === 'warn' ? 'selected' : ''}>warn</option>
-            <option ${c.level === 'error' ? 'selected' : ''}>error</option>
-            <option ${c.level === 'debug' ? 'selected' : ''}>debug</option>
+            <option value="Debug" ${level === 'Debug' || level === 'debug' ? 'selected' : ''}>Debug</option>
+            <option value="Info" ${level === 'Info' || level === 'info' ? 'selected' : ''}>Info</option>
+            <option value="Warn" ${level === 'Warn' || level === 'warn' ? 'selected' : ''}>Warn</option>
+            <option value="Error" ${level === 'Error' || level === 'error' ? 'selected' : ''}>Error</option>
           </select>
         </div>
         <div class="ins-field">
-          <label class="ins-field-label">Message</label>
-          <input value="${escapeHtml(String(c.message || ''))}" data-config-key="message" data-node-id="${id}" />
+          <label class="ins-field-label">Message template</label>
+          <textarea class="mono" data-config-key="messageTemplate" data-node-id="${id}" placeholder="Error: {errorMessage} on node {nodeId}">${escapeHtml(msgTpl)}</textarea>
+          <div class="ins-field-hint">Use <code>{name}</code> placeholders to bind input parameters.</div>
         </div>
+        ${placeholders.length > 0 ? `
+        <div class="ins-field">
+          <label class="ins-field-label">Parameter bindings</label>
+          <div class="binding-editor">
+            ${placeholders.map((p: string) => {
+              const currentBinding = bindings[p] || '';
+              return `
+              <div class="binding-row">
+                <div class="binding-placeholder">
+                  <span class="binding-brace">{</span>${escapeHtml(p)}<span class="binding-brace">}</span>
+                </div>
+                <svg class="binding-arrow" width="16" height="12" viewBox="0 0 16 12"><path d="M0 6h12M10 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
+                <div class="binding-value-wrap">
+                  <input class="binding-input mono" value="${escapeHtml(currentBinding)}" data-binding-key="${escapeHtml(p)}" data-node-id="${id}" placeholder="select or type…" list="inbound-fields-${id}" />
+                </div>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>` : ''}
+        ${inboundFields.length > 0 ? `
+        <div class="ins-field">
+          <label class="ins-field-label">Available inbound fields</label>
+          <div class="inbound-fields-panel">
+            ${this.renderInboundFields(inboundFields, id, placeholders, bindings)}
+          </div>
+          <div class="ins-field-hint">Click a field to insert it into the active binding, or drag into the template.</div>
+        </div>` : `
+        <div class="ins-field">
+          <div class="ins-field-hint" style="font-style:italic; opacity:0.7;">Connect an input edge to discover available fields.</div>
+        </div>`}
+        <datalist id="inbound-fields-${id}">
+          ${inboundFields.map(f => `<option value="${escapeHtml(f.path)}">${escapeHtml(f.name)} (${f.sourceNode})</option>`).join('')}
+        </datalist>
       `;
     } else if (node.runtimeType === 'container') {
       fields = `
@@ -1094,5 +1190,49 @@ export const Inspector = {
       }
     }
     return null;
+  },
+
+  /** Render inbound fields panel with source-colored badges */
+  renderInboundFields(fields: InboundField[], nodeId: string, placeholders: string[], bindings: Record<string, string>): string {
+    const sourceColors: Record<string, string> = {
+      error: 'var(--err)',
+      output: 'var(--accent)',
+      context: 'var(--text-3)',
+    };
+    const typeIcons: Record<string, string> = {
+      string: 'abc',
+      number: '123',
+      boolean: '✓/✗',
+      datetime: '⏱',
+      guid: '#id',
+      object: '{ }',
+      unknown: '?',
+    };
+
+    // Group by source
+    const groups = new Map<string, InboundField[]>();
+    for (const f of fields) {
+      const key = f.source === 'error' ? '⚠ Error data' : f.source === 'context' ? '◈ Context' : `▸ ${f.sourceNode}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(f);
+    }
+
+    let html = '';
+    for (const [group, gFields] of groups) {
+      const color = sourceColors[gFields[0].source] || 'var(--text-3)';
+      html += `<div class="inbound-group">
+        <div class="inbound-group-label" style="color:${color}">${group}</div>`;
+      for (const f of gFields) {
+        const isBound = Object.values(bindings).includes(f.path);
+        html += `
+        <div class="inbound-field ${isBound ? 'bound' : ''}" data-field-path="${escapeHtml(f.path)}" data-node-id="${nodeId}" title="${escapeHtml(f.path)}">
+          <span class="inbound-field-type" style="color:${color}">${typeIcons[f.type] || '?'}</span>
+          <span class="inbound-field-name mono">${escapeHtml(f.name)}</span>
+          ${isBound ? '<span class="inbound-field-bound">✓</span>' : ''}
+        </div>`;
+      }
+      html += `</div>`;
+    }
+    return html;
   }
 };

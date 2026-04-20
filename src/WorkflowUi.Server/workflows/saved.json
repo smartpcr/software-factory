@@ -1,5 +1,5 @@
 {
-  "workflowId": "wf_oix85yo",
+  "workflowId": "wf_njnovzx",
   "workflowName": "saved",
   "description": "",
   "version": "1.0",
@@ -38,7 +38,7 @@
       "nodeName": "PowerShell Script",
       "description": "",
       "configuration": {
-        "scriptPath": "",
+        "scriptPath": "Scripts/Test.ps1",
         "requiredModules": "",
         "modulePaths": ""
       },
@@ -57,7 +57,44 @@
       "description": "",
       "configuration": {
         "level": "info",
-        "message": ""
+        "message": "",
+        "messageTemplate": "Error: nodeId={nodeId}, message={errorMessage}, exception={exception}"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_l6cppik",
+      "runtimeType": "Log",
+      "nodeName": "Log",
+      "description": "",
+      "configuration": {
+        "level": "Info",
+        "messageTemplate": "Done!",
+        "parameterBindings": "System.Collections.Generic.Dictionary`2[System.String,System.String]"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_hj2ne3z",
+      "runtimeType": "PowerShell",
+      "nodeName": "PowerShell Script",
+      "description": "",
+      "configuration": {
+        "scriptPath": "Scripts/Failed.ps1",
+        "requiredModules": "",
+        "modulePaths": ""
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -86,6 +123,50 @@
       "sourcePort": "error",
       "targetPort": "in",
       "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_ehhw9jr",
+      "targetNodeId": "n_l6cppik",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_a7yb2vh",
+      "targetNodeId": "n_hj2ne3z",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_hj2ne3z",
+      "targetNodeId": "n_l6cppik",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_hj2ne3z",
+      "targetNodeId": "n_lls3knp",
+      "sourcePort": "error",
+      "targetPort": "in",
+      "triggerMessageType": "Fail",
       "condition": null,
       "isEnabled": true,
       "priority": 0,

@@ -91,6 +91,7 @@ app.UseMiddleware<AuditMiddleware>();
 app.MapHealthEndpoints();
 app.MapEngineVersionEndpoints();
 app.MapWorkflowValidationEndpoints();
+app.MapNodeValidationEndpoints();
 app.MapMapperRoundTripEndpoints();
 app.MapWorkflowEndpoints();
 app.MapFilesEndpoints();

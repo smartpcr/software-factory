@@ -1341,6 +1341,29 @@ namespace ExecutionEngine.Engine
                         nodeContext.InputData[kvp.Key] = kvp.Value;
                     }
                 }
+                else if (lease.Message is Messages.NodeFailMessage failMsg)
+                {
+                    // For fail messages, expose error details as input data
+                    nodeContext.InputData["errorMessage"] = failMsg.ErrorMessage;
+                    nodeContext.InputData["nodeId"] = failMsg.NodeId;
+                    nodeContext.InputData["timestamp"] = failMsg.Timestamp.ToString("O");
+                    nodeContext.InputData["nodeInstanceId"] = failMsg.NodeInstanceId.ToString();
+                    if (failMsg.Exception != null)
+                    {
+                        nodeContext.InputData["exception"] = failMsg.Exception.ToString();
+                        nodeContext.InputData["exceptionType"] = failMsg.Exception.GetType().Name;
+                        nodeContext.InputData["stackTrace"] = failMsg.Exception.StackTrace ?? string.Empty;
+                    }
+
+                    // Also copy partial output data from the failed node if available
+                    if (failMsg.NodeContext?.OutputData != null)
+                    {
+                        foreach (var kvp in failMsg.NodeContext.OutputData)
+                        {
+                            nodeContext.InputData["failed_" + kvp.Key] = kvp.Value;
+                        }
+                    }
+                }
 
                 nodeInstance.ExecutionContext = nodeContext;
 

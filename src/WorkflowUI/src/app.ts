@@ -27,7 +27,7 @@ import { Edges } from './edges';
 import { Palette } from './palette';
 import { Inspector } from './inspector';
 import { Exec } from './exec';
-import { saveWorkflow as saveWorkflowApi, deleteWorkflowApi, listWorkflows, getWorkflow, fetchNodeTypes, validateWorkflow } from './api';
+import { saveWorkflow as saveWorkflowApi, deleteWorkflowApi, listWorkflows, getWorkflow, fetchNodeTypes, validateWorkflow, validateNodesBatch } from './api';
 import { loadServerNodeTypes, loadFallbackNodeTypes, normalizeWorkflowNodeTypes, resolveNodeType } from './registry';
 
 function buildCallbacks(): AppCallbacks {
@@ -324,22 +324,45 @@ export const App = {
     this.triggerValidation();
   },
 
-  /** Trigger server-side validation with 5s debounce */
+  /** Trigger server-side node validation with 5s debounce */
   triggerValidation() {
     debouncedValidation(async () => {
       if (!State.currentWfId) return;
-      const wf = State.workflows[State.currentWfId];
-      if (!wf) return;
       try {
-        // Save first so server has latest state
-        await saveWorkflowApi(wf.workflowName, wf);
-        const entries = await validateWorkflow(wf.workflowName);
+        // Build node definitions for validation
+        const nodeDefs = [...State.nodes.values()].map(n => ({
+          nodeId: n.nodeId,
+          runtimeType: n.runtimeType,
+          nodeName: n.nodeName,
+          configuration: n.config || {},
+          ...n.config, // spread config fields at top level too for the validator
+        }));
+
+        const entries = await validateNodesBatch(nodeDefs);
+
+        // Clear all existing validation errors
+        State.nodes.forEach(n => { n.validationErrors = undefined; });
+
+        // Group errors by nodeId
+        const errorsByNode = new Map<string, string[]>();
+        for (const entry of entries) {
+          if (!entry.nodeId) continue;
+          if (!errorsByNode.has(entry.nodeId)) errorsByNode.set(entry.nodeId, []);
+          errorsByNode.get(entry.nodeId)!.push(entry.message);
+        }
+
+        // Apply to nodes
+        for (const [nodeId, errors] of errorsByNode) {
+          const node = State.nodes.get(nodeId);
+          if (node) node.validationErrors = errors;
+        }
+
+        Nodes.render();
+
         if (entries.length === 0) {
-          this.log('success', null, '✓ Validation passed');
+          this.log('success', null, '✓ All nodes valid');
         } else {
-          entries.forEach(e => {
-            this.log(e.severity === 'error' ? 'error' : 'warn', e.nodeId || null, `Validation: ${e.message}`);
-          });
+          this.log('warn', null, `⚠ ${entries.length} validation issue${entries.length > 1 ? 's' : ''}`);
         }
       } catch {
         // Server unavailable — skip validation
@@ -423,7 +446,8 @@ export const App = {
           e.sourcePortName === sourcePortName && e.targetNodeId === targetNodeId) return;
     }
     const id = uid('e');
-    State.edges.set(id, { id, sourceNodeId, sourcePort, sourcePortName, targetNodeId, targetPort });
+    const triggerMessageType = sourcePort === 'error' ? 'Fail' : 'Complete';
+    State.edges.set(id, { id, sourceNodeId, sourcePort, sourcePortName, targetNodeId, targetPort, triggerMessageType });
     this.markDirty();
     Edges.render();
     const s = State.nodes.get(sourceNodeId)?.nodeName || '?';
@@ -495,6 +519,8 @@ export const App = {
     }
 
     this.renderAll();
+    // Validate all nodes after save
+    this.triggerValidation();
   },
 
   loadWorkflow(id: string) {
@@ -517,6 +543,8 @@ export const App = {
     if (titleInput) titleInput.value = wf.workflowName;
     this.renderAll();
     Canvas.fitToView();
+    // Validate all nodes immediately on load
+    this.triggerValidation();
   },
 
   /** Save current live state (nodes, edges, title) back into the workflow object */
@@ -718,8 +746,18 @@ export const App = {
 
           // Map engine-schema fields to UI fields
           if (data.connections && !data.edges) {
-            data.edges = data.connections;
+            // Engine connections don't have IDs — generate them
+            data.edges = data.connections.map((c: Record<string, unknown>) => ({
+              ...c,
+              id: c.id || uid('e'),
+            }));
             delete data.connections;
+          }
+          // Ensure all edges have IDs
+          if (Array.isArray(data.edges)) {
+            for (const e of data.edges) {
+              if (!e.id) e.id = uid('e');
+            }
           }
           // Map node config from engine schema
           if (Array.isArray(data.nodes)) {
@@ -960,6 +998,17 @@ export const App = {
       for (const e of edges) {
         if ('source' in e && !('sourceNodeId' in e)) { e.sourceNodeId = e.source; delete e.source; }
         if ('target' in e && !('targetNodeId' in e)) { e.targetNodeId = e.target; delete e.target; }
+        if (!e.id) e.id = uid('e');
+      }
+    }
+
+    // Also handle connections → edges rename
+    if ('connections' in wf && !('edges' in wf)) {
+      const conns = wf.connections as Record<string, unknown>[];
+      if (Array.isArray(conns)) {
+        for (const c of conns) { if (!c.id) c.id = uid('e'); }
+        wf.edges = conns;
+        delete wf.connections;
       }
     }
   },

@@ -6,13 +6,14 @@
 
 namespace ExecutionEngine.Nodes;
 
+using System.Text.RegularExpressions;
 using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
 using ExecutionEngine.Nodes.Definitions;
 
 /// <summary>
-/// Log message output node.
+/// Log message output node. Resolves template placeholders from input data.
 /// </summary>
 public class LogNode : ExecutableNodeBase
 {
@@ -44,8 +45,12 @@ public class LogNode : ExecutableNodeBase
             Timestamp = startTime,
         });
 
-        nodeContext.OutputData["level"] = logDef.Level;
-        nodeContext.OutputData["message"] = logDef.Message;
+        // Resolve template placeholders
+        var resolvedMessage = ResolveTemplate(logDef.MessageTemplate, logDef.ParameterBindings, nodeContext);
+
+        nodeContext.OutputData["level"] = logDef.Level.ToString().ToLowerInvariant();
+        nodeContext.OutputData["message"] = resolvedMessage;
+        nodeContext.OutputData["messageTemplate"] = logDef.MessageTemplate;
 
         await Task.Delay(10, cancellationToken);
 
@@ -58,5 +63,57 @@ public class LogNode : ExecutableNodeBase
             ExecutionContext = nodeContext,
             WorkflowInstanceId = workflowContext.InstanceId,
         };
+    }
+
+    private static string ResolveTemplate(
+        string template,
+        Dictionary<string, string> bindings,
+        NodeExecutionContext context)
+    {
+        if (string.IsNullOrEmpty(template))
+        {
+            return string.Empty;
+        }
+
+        return Regex.Replace(template, @"\{(\w+)\}", match =>
+        {
+            var name = match.Groups[1].Value;
+
+            // Check explicit bindings first
+            if (bindings.TryGetValue(name, out var expression))
+            {
+                return ResolveExpression(expression, context);
+            }
+
+            // Fall back to input data key match
+            if (context.InputData.TryGetValue(name, out var value))
+            {
+                return value?.ToString() ?? string.Empty;
+            }
+
+            // Unresolved placeholder — keep as-is
+            return match.Value;
+        });
+    }
+
+    private static string ResolveExpression(string expression, NodeExecutionContext context)
+    {
+        // Simple dot-notation resolution: "input.userId" → context.InputData["userId"]
+        if (expression.StartsWith("input.", StringComparison.OrdinalIgnoreCase))
+        {
+            var key = expression[6..];
+            if (context.InputData.TryGetValue(key, out var value))
+            {
+                return value?.ToString() ?? string.Empty;
+            }
+        }
+
+        // Direct key match
+        if (context.InputData.TryGetValue(expression, out var directValue))
+        {
+            return directValue?.ToString() ?? string.Empty;
+        }
+
+        return $"{{{expression}}}";
     }
 }
