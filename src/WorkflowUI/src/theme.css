@@ -963,6 +963,26 @@
   .node[data-status="paused"] .node-status-badge { background: var(--paused); color: #001a3a; }
   /* Light-theme status/accent text must contrast with the saturated (darker) status colors */
   :root[data-theme="light"] .node-status-badge { color: #ffffff !important; }
+
+  .node-duration-badge {
+    position: absolute;
+    top: -8px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 9px;
+    font-family: 'JetBrains Mono', monospace;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: var(--bg-2);
+    border: 1px solid var(--stroke-1);
+    color: var(--text-2);
+    white-space: nowrap;
+    z-index: 5;
+    pointer-events: none;
+  }
+  .node[data-status="success"] .node-duration-badge { background: color-mix(in srgb, var(--ok) 15%, var(--bg-1)); border-color: var(--ok); color: var(--ok); }
+  .node[data-status="failed"] .node-duration-badge { background: color-mix(in srgb, var(--err) 15%, var(--bg-1)); border-color: var(--err); color: var(--err); }
+
   :root[data-theme="light"] .port.error {
     background: var(--bg-1);
     box-shadow: 0 0 0 2px var(--bg-1), 0 0 4px rgba(181,45,45,0.3);
@@ -1232,6 +1252,36 @@
     margin-top: 3px;
     line-height: 1.4;
   }
+
+  /* Runtime data card (shown on edges during run view) */
+  .ins-runtime-card {
+    margin-top: 6px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--stroke-1);
+    background: var(--bg-2);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+  }
+  .ins-runtime-card.failed { border-color: var(--err); background: color-mix(in srgb, var(--err) 8%, var(--bg-2)); }
+  .ins-runtime-card.completed { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 8%, var(--bg-2)); }
+  .ins-runtime-type {
+    font-weight: 700;
+    font-size: 11px;
+    margin-bottom: 6px;
+    color: var(--text-0);
+    letter-spacing: 0.02em;
+  }
+  .ins-runtime-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 2px 0;
+    border-top: 1px solid var(--stroke-0);
+  }
+  .ins-runtime-row:first-of-type { border-top: none; }
+  .ins-runtime-key { color: var(--text-3); flex-shrink: 0; }
+  .ins-runtime-val { color: var(--text-1); text-align: right; word-break: break-all; }
 
   /* Cron editor styles */
   .ins-cron-friendly {

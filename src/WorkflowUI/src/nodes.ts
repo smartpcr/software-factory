@@ -197,9 +197,14 @@ export const Nodes = {
       ? `<div class="container-body"><div class="container-children"></div></div>`
       : `<div class="node-body"><div class="node-body-content">${this.bodyHtml(node)}</div></div>`;
 
+    const durationBadge = node._runDuration
+      ? `<div class="node-duration-badge" title="${escapeHtml(node._runError || '')}">${escapeHtml(node._runDuration)}</div>`
+      : '';
+
     return `
       ${dropAbove}
       <div class="node-status-badge">${node.status || ''}</div>
+      ${durationBadge}
       <div class="node-head">
         <div class="node-head-accent"></div>
         <div class="node-icon">${type.icon}</div>

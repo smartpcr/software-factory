@@ -1,5 +1,5 @@
 {
-  "workflowId": "wf_t50yy9m",
+  "workflowId": "wf_pv05zyc",
   "workflowName": "saved",
   "description": "",
   "version": "1.0",
@@ -56,7 +56,7 @@
       "nodeName": "Log",
       "description": "",
       "configuration": {
-        "level": "info",
+        "level": "Error",
         "message": "",
         "messageTemplate": "Error: nodeId={nodeId}, message={errorMessage}, exception={exception}"
       },

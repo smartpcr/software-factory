@@ -8,9 +8,12 @@ namespace WorkflowUi.Server.Endpoints;
 
 using System;
 using System.Security.Claims;
+using Microsoft.AspNetCore.Mvc;
 using WorkflowUi.Server.Hosting;
+using WorkflowUi.Server.Hubs;
 using WorkflowUi.Server.Mapping;
 using WorkflowUi.Server.Persistence;
+using WorkflowUi.Server.Telemetry;
 
 /// <summary>
 /// Minimal-API endpoints for starting, cancelling, and querying workflow runs.
@@ -53,13 +56,18 @@ public static class RunEndpoints
 
         group.MapGet("/{runId:guid}", (
             Guid runId,
-            RunManager runManager) =>
+            RunManager runManager,
+            RunHistoryBuffer historyBuffer) =>
         {
             var run = runManager.GetRun(runId);
             if (run == null)
             {
                 return Results.NotFound(new { message = $"Run '{runId}' not found." });
             }
+
+            // Include buffered events for this run
+            var replay = historyBuffer.Replay(runId, 0);
+            var events = replay.NotFound ? Array.Empty<RunEvent>() : replay.Events.ToArray();
 
             return Results.Ok(new
             {
@@ -69,13 +77,21 @@ public static class RunEndpoints
                 run.Status,
                 run.StartTimeUtc,
                 run.EndTimeUtc,
+                events,
             });
         })
         .WithName("GetRun");
 
-        group.MapGet("/", (RunManager runManager) =>
+        group.MapGet("/", (
+            RunManager runManager,
+            [FromQuery] string? workflowName) =>
         {
             var runs = runManager.GetRuns();
+            if (!string.IsNullOrEmpty(workflowName))
+            {
+                runs = runs.Where(r => r.WorkflowName == workflowName).ToList();
+            }
+
             var summaries = runs.Select(r => new
             {
                 r.RunId,

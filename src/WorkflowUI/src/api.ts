@@ -175,8 +175,9 @@ export async function getRunStatus(runId: string): Promise<RunStatus> {
   return res.json() as Promise<RunStatus>;
 }
 
-export async function listRuns(): Promise<RunStatus[]> {
-  const res = await fetch('/api/runs');
+export async function listRuns(workflowName?: string): Promise<RunStatus[]> {
+  const params = workflowName ? `?workflowName=${encodeURIComponent(workflowName)}` : '';
+  const res = await fetch(`/api/runs${params}`);
   if (!res.ok) throw new Error(`GET runs failed: ${res.status}`);
   return res.json() as Promise<RunStatus[]>;
 }

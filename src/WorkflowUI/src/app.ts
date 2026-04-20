@@ -565,6 +565,8 @@ export const App = {
     Canvas.fitToView();
     // Validate all nodes immediately on load
     this.triggerValidation();
+    // Refresh run history if the history tab is active
+    if (this._bottomTab === 'history') this.loadRunHistory();
   },
 
   /** Save current live state (nodes, edges, title) back into the workflow object */
@@ -1140,17 +1142,18 @@ export const App = {
   async loadRunHistory() {
     const body = document.getElementById('historyBody');
     if (!body) return;
+    const wf = State.workflows[State.currentWfId || ''];
+    const wfName = wf?.workflowName;
     try {
-      const runs = await listRuns();
+      const runs = await listRuns(wfName);
       if (!runs.length) {
-        body.innerHTML = '<div class="log-empty">No runs yet. Execute a workflow to see history.</div>';
+        body.innerHTML = `<div class="log-empty">No runs for "${escapeHtml(wfName || 'this workflow')}".</div>`;
         return;
       }
-      // Sort newest first
       runs.sort((a, b) => new Date(b.startTimeUtc).getTime() - new Date(a.startTimeUtc).getTime());
       body.innerHTML = `<table class="history-table">
         <thead><tr>
-          <th>Status</th><th>Workflow</th><th>Started</th><th>Duration</th><th>Run ID</th><th></th>
+          <th>Status</th><th>Started</th><th>Duration</th><th>Run ID</th><th></th>
         </tr></thead>
         <tbody>${runs.map(r => this.renderRunRow(r)).join('')}</tbody>
       </table>`;
@@ -1173,19 +1176,161 @@ export const App = {
       duration = '⏳';
     }
     const shortId = r.runId.substring(0, 8);
-    const name = escapeHtml(r.workflowName || r.workflowId || '—');
-    return `<tr data-run-id="${escapeHtml(r.runId)}" data-action="replay-run">
+    return `<tr data-run-id="${escapeHtml(r.runId)}">
       <td><span class="run-status ${status}"><span class="dot"></span>${status}</span></td>
-      <td>${name}</td>
       <td>${startStr}</td>
       <td class="run-duration">${duration}</td>
       <td class="run-id" title="${escapeHtml(r.runId)}">${shortId}…</td>
-      <td><button class="run-replay-btn" data-action="replay-run" data-run-id="${escapeHtml(r.runId)}">Replay</button></td>
+      <td class="run-actions">
+        <button class="run-replay-btn" data-action="view-run" data-run-id="${escapeHtml(r.runId)}" title="View on canvas">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          View
+        </button>
+        <button class="run-replay-btn" data-action="replay-run" data-run-id="${escapeHtml(r.runId)}" title="Replay in log">Log</button>
+      </td>
     </tr>`;
   },
 
+  async viewRunOnCanvas(runId: string) {
+    Exec.reset();
+    this.log('info', null, `Loading run ${runId.substring(0, 8)}…`);
+    try {
+      const res = await fetch(`/api/runs/${runId}`);
+      if (!res.ok) throw new Error(`Failed to fetch run: ${res.status}`);
+      const data = await res.json();
+      const events: Array<{ kind: string; nodeId?: string; payload?: Record<string, unknown>; timestampUtc: string }> = data.events || [];
+
+      // Build per-node summary from events
+      const nodeInfo = new Map<string, { status: string; duration?: string; error?: string; startTime?: string; endTime?: string; nodeInstanceId?: string; reason?: string }>();
+      for (const evt of events) {
+        if (!evt.nodeId) continue;
+        switch (evt.kind) {
+          case 'NodeStarted': {
+            const info = nodeInfo.get(evt.nodeId) || { status: 'running' };
+            info.status = 'running';
+            info.startTime = evt.timestampUtc;
+            info.nodeInstanceId = evt.payload?.nodeInstanceId as string;
+            nodeInfo.set(evt.nodeId, info);
+            break;
+          }
+          case 'NodeCompleted': {
+            const info = nodeInfo.get(evt.nodeId) || { status: 'success' };
+            info.status = 'success';
+            info.duration = evt.payload?.duration as string || '';
+            info.endTime = evt.timestampUtc;
+            nodeInfo.set(evt.nodeId, info);
+            break;
+          }
+          case 'NodeFailed': {
+            const info = nodeInfo.get(evt.nodeId) || { status: 'failed' };
+            info.status = 'failed';
+            info.error = evt.payload?.errorMessage as string || '';
+            info.endTime = evt.timestampUtc;
+            nodeInfo.set(evt.nodeId, info);
+            break;
+          }
+          case 'NodeCancelled': {
+            const info = nodeInfo.get(evt.nodeId) || { status: 'cancelled' };
+            info.status = 'cancelled';
+            info.reason = evt.payload?.reason as string || '';
+            info.endTime = evt.timestampUtc;
+            nodeInfo.set(evt.nodeId, info);
+            break;
+          }
+        }
+      }
+
+      // Apply statuses and runtime data to nodes
+      State.nodes.forEach(n => {
+        const info = nodeInfo.get(n.nodeId);
+        if (info) {
+          n.status = info.status as '' | 'running' | 'success' | 'failed' | 'cancelled';
+          n._runDuration = info.duration || undefined;
+          n._runError = info.error || undefined;
+          n._runData = {
+            status: info.status,
+            nodeInstanceId: info.nodeInstanceId,
+            startTime: info.startTime,
+            endTime: info.endTime,
+            duration: info.duration,
+            ...(info.error ? { errorMessage: info.error } : {}),
+            ...(info.reason ? { cancelReason: info.reason } : {}),
+          };
+        } else {
+          n.status = '';
+          n._runDuration = undefined;
+          n._runError = undefined;
+          n._runData = undefined;
+        }
+      });
+
+      // Activate edges that were actually traversed and attach runtime data
+      State.edges.forEach(e => {
+        const srcInfo = nodeInfo.get(e.sourceNodeId);
+        if (!srcInfo) {
+          e._active = false;
+          e._runtimeData = undefined;
+          return;
+        }
+        if (srcInfo.status === 'success') {
+          e._active = e.sourcePort !== 'error';
+          if (e._active) {
+            const srcNode = State.nodes.get(e.sourceNodeId);
+            e._runtimeData = {
+              messageType: 'NodeCompleteMessage',
+              sourceNodeId: e.sourceNodeId,
+              sourceNodeName: srcNode?.nodeName || e.sourceNodeId,
+              timestamp: srcInfo.startTime,
+              duration: srcInfo.duration,
+              status: 'Completed',
+            };
+          } else {
+            e._runtimeData = undefined;
+          }
+        } else if (srcInfo.status === 'failed') {
+          e._active = e.sourcePort === 'error';
+          if (e._active) {
+            const srcNode = State.nodes.get(e.sourceNodeId);
+            e._runtimeData = {
+              messageType: 'NodeFailMessage',
+              sourceNodeId: e.sourceNodeId,
+              sourceNodeName: srcNode?.nodeName || e.sourceNodeId,
+              errorMessage: srcInfo.error || 'Unknown error',
+              timestamp: srcInfo.startTime,
+              status: 'Failed',
+            };
+          } else {
+            e._runtimeData = undefined;
+          }
+        } else {
+          e._active = false;
+          e._runtimeData = undefined;
+        }
+      });
+
+      // Set exec status
+      const wfStatus = data.status?.toLowerCase() || 'idle';
+      Exec.setStatus(wfStatus === 'completed' ? 'success' : wfStatus === 'failed' ? 'failed' : wfStatus === 'cancelled' ? 'cancelled' : 'idle');
+
+      Nodes.render();
+      Edges.render();
+      this.log('success', null, `Run ${runId.substring(0, 8)}: ${data.status} (${nodeInfo.size} nodes)`);
+
+      // Log per-node details
+      for (const [nid, info] of nodeInfo) {
+        const name = State.nodes.get(nid)?.nodeName || nid;
+        if (info.status === 'failed') {
+          this.log('error', nid, `✗ ${name}: ${info.error || 'failed'}`);
+        } else if (info.status === 'success' && info.duration) {
+          this.log('success', nid, `✓ ${name} (${info.duration})`);
+        }
+      }
+    } catch (err) {
+      this.log('error', null, `View run failed: ${(err as Error).message}`);
+    }
+  },
+
   async replayRun(runId: string) {
-    // Connect to SignalR and replay all events for this run
     this.switchBottomTab('log');
     this.clearLogs();
     Exec.reset();
@@ -1351,6 +1496,11 @@ export const App = {
         case 'replay-run': {
           const runId = btn.dataset.runId || btn.closest('[data-run-id]')?.getAttribute('data-run-id');
           if (runId) this.replayRun(runId);
+          break;
+        }
+        case 'view-run': {
+          const runId = btn.dataset.runId || btn.closest('[data-run-id]')?.getAttribute('data-run-id');
+          if (runId) this.viewRunOnCanvas(runId);
           break;
         }
       }

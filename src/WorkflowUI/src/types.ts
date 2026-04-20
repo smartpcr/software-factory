@@ -58,6 +58,9 @@ export interface FlowNode {
   _cachedHeight?: number;
   _iterCount?: number;
   _forceFail?: boolean;
+  _runDuration?: string;
+  _runError?: string;
+  _runData?: Record<string, unknown>;
   validationErrors?: string[];
 }
 
@@ -75,6 +78,7 @@ export interface FlowEdge {
   metadata?: Record<string, unknown>;
   label?: string;
   _active?: boolean;
+  _runtimeData?: Record<string, unknown>;
 }
 
 export interface Selection {

@@ -326,12 +326,71 @@ export const Inspector = {
     }
   },
 
+  nodeRuntimeHtml(node: FlowNode): string {
+    const d = node._runData;
+    if (!d) return '';
+    const statusClass = (d.status as string || '').toLowerCase();
+    const fmtTime = (iso?: unknown) => {
+      if (!iso || typeof iso !== 'string') return '—';
+      try { return new Date(iso).toLocaleTimeString('en-US', { hour12: false }); }
+      catch { return String(iso); }
+    };
+    const fmtDuration = (dur?: unknown) => {
+      if (!dur || typeof dur !== 'string') return '—';
+      // Parse ISO 8601 duration like "PT0.0173158S"
+      const m = (dur as string).match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?/);
+      if (!m) return dur as string;
+      const s = parseFloat(m[3] || '0');
+      if (s < 1) return `${Math.round(s * 1000)}ms`;
+      return `${s.toFixed(2)}s`;
+    };
+    return `
+    <div class="ins-section">
+      <div class="ins-section-title">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        Execution
+      </div>
+      <div class="ins-runtime-card ${statusClass}">
+        <div class="ins-runtime-row"><span class="ins-runtime-key">Status</span><span class="ins-runtime-val"><strong>${escapeHtml(String(d.status || '—'))}</strong></span></div>
+        <div class="ins-runtime-row"><span class="ins-runtime-key">Start</span><span class="ins-runtime-val">${fmtTime(d.startTime)}</span></div>
+        <div class="ins-runtime-row"><span class="ins-runtime-key">End</span><span class="ins-runtime-val">${fmtTime(d.endTime)}</span></div>
+        <div class="ins-runtime-row"><span class="ins-runtime-key">Duration</span><span class="ins-runtime-val">${fmtDuration(d.duration)}</span></div>
+        ${d.errorMessage ? `<div class="ins-runtime-row"><span class="ins-runtime-key">Error</span><span class="ins-runtime-val" style="color:var(--err)">${escapeHtml(String(d.errorMessage))}</span></div>` : ''}
+        ${d.cancelReason ? `<div class="ins-runtime-row"><span class="ins-runtime-key">Reason</span><span class="ins-runtime-val">${escapeHtml(String(d.cancelReason))}</span></div>` : ''}
+        ${d.nodeInstanceId ? `<div class="ins-runtime-row"><span class="ins-runtime-key">Instance</span><span class="ins-runtime-val" style="font-size:9px">${escapeHtml(String(d.nodeInstanceId).substring(0, 8))}…</span></div>` : ''}
+      </div>
+    </div>`;
+  },
+
   renderEdge(id: string) {
     const edge = State.edges.get(id);
     if (!edge) return;
     const src = State.nodes.get(edge.sourceNodeId);
     const tgt = State.nodes.get(edge.targetNodeId);
     const el = document.getElementById('inspector')!;
+
+    // Build runtime data section if available
+    let runtimeHtml = '';
+    if (edge._runtimeData) {
+      const d = edge._runtimeData;
+      const msgType = d.messageType as string || 'Unknown';
+      const statusClass = (d.status as string || '').toLowerCase();
+      runtimeHtml = `
+      <div class="ins-section">
+        <div class="ins-section-title">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+          Runtime Data
+        </div>
+        <div class="ins-runtime-card ${statusClass}">
+          <div class="ins-runtime-type">${escapeHtml(msgType)}</div>
+          ${Object.entries(d)
+            .filter(([k]) => k !== 'messageType')
+            .map(([k, v]) => `<div class="ins-runtime-row"><span class="ins-runtime-key">${escapeHtml(k)}</span><span class="ins-runtime-val">${escapeHtml(String(v ?? '—'))}</span></div>`)
+            .join('')}
+        </div>
+      </div>`;
+    }
+
     el.innerHTML = `
       <div class="ins-header">
         <div class="ins-title">
@@ -350,6 +409,7 @@ export const Inspector = {
           <input readonly value="${escapeHtml((tgt?.nodeName || '?') + ' (in)')}" />
         </div>
       </div>
+      ${runtimeHtml}
       <div class="ins-section">
         <button class="tb-btn danger" data-action="delete-edge" data-edge-id="${id}" style="width:100%; justify-content:center; background:var(--bg-3); padding: 8px; border-radius:6px;">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="14" height="14"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
@@ -379,6 +439,7 @@ export const Inspector = {
           </div>
         </div>
       </div>
+      ${this.nodeRuntimeHtml(node)}
       <div class="ins-section">
         <div class="ins-section-title">General</div>
         <div class="ins-field">
