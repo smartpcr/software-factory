@@ -18,6 +18,7 @@ export const Edges = {
     let html = '<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--stroke-3)"/></marker><marker id="arrow-err" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--err)"/></marker><marker id="arrow-active" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--run)"/></marker></defs>';
 
     State.edges.forEach((edge, id) => {
+      if (edge._internal) return; // Skip auto-generated container edges
       const src = State.nodes.get(edge.sourceNodeId);
       const tgt = State.nodes.get(edge.targetNodeId);
       if (!src || !tgt) return;
@@ -35,6 +36,8 @@ export const Edges = {
       ].filter(Boolean).join(' ');
 
       const marker = isErr ? 'url(#arrow-err)' : active ? 'url(#arrow-active)' : 'url(#arrow)';
+      // Invisible wider hit target for easier clicking
+      html += `<path class="edge-hit" d="${path}" data-edge-id="${id}"/>`;
       html += `<path class="${cls}" d="${path}" data-edge-id="${id}" marker-end="${marker}"/>`;
 
       // Label: user-defined label takes priority, then branch port name
@@ -54,8 +57,8 @@ export const Edges = {
 
     svg.innerHTML = html;
 
-    // Click to select
-    svg.querySelectorAll('.edge-path').forEach(p => {
+    // Click to select (on hit target)
+    svg.querySelectorAll('.edge-hit').forEach(p => {
       p.addEventListener('click', (e: Event) => {
         e.stopPropagation();
         const pathEl = p as SVGPathElement;
@@ -64,7 +67,7 @@ export const Edges = {
     });
 
     // Double-click to add/edit label
-    svg.querySelectorAll('.edge-path').forEach(p => {
+    svg.querySelectorAll('.edge-hit').forEach(p => {
       p.addEventListener('dblclick', (e: Event) => {
         e.stopPropagation();
         const edgeId = (p as SVGPathElement).dataset.edgeId || '';

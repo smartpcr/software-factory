@@ -554,10 +554,13 @@ export const App = {
     for (const e of State.edges.values()) {
       if (e.sourceNodeId === sourceNodeId && e.targetNodeId === targetNodeId &&
           (e.sourcePort === sourcePort || e.sourcePortName === sourcePortName) &&
-          e.targetPort === targetPort) return;
+          e.targetPort === targetPort) {
+        e._internal = true; // Mark existing as internal
+        return;
+      }
     }
     const id = uid('e');
-    State.edges.set(id, { id, sourceNodeId, sourcePort, sourcePortName, targetNodeId, targetPort, triggerMessageType });
+    State.edges.set(id, { id, sourceNodeId, sourcePort, sourcePortName, targetNodeId, targetPort, triggerMessageType, _internal: true });
   },
 
   createEdge({ sourceNodeId, sourcePort, sourcePortName, targetNodeId, targetPort }: CreateEdgeParams) {
@@ -667,6 +670,8 @@ export const App = {
     State.isDirty = false;
     State.selection = { kind: null, id: null };
     State.logs = [];
+    State.activeRun = null;
+    Exec.setStatus('idle');
     const titleInput = document.getElementById('wfTitleInput') as HTMLInputElement | null;
     if (titleInput) titleInput.value = wf.workflowName;
     this.renderAll();

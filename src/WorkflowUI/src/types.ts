@@ -79,6 +79,7 @@ export interface FlowEdge {
   label?: string;
   _active?: boolean;
   _runtimeData?: Record<string, unknown>;
+  _internal?: boolean; // auto-generated container edge, hidden from canvas
 }
 
 export interface Selection {

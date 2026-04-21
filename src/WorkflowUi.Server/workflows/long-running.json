@@ -1,5 +1,5 @@
 {
-  "workflowId": "wf_bliprlk",
+  "workflowId": "wf_hs9zarb",
   "workflowName": "long-running",
   "description": "",
   "version": "1.0",
@@ -115,6 +115,22 @@
       "circuitBreakerPolicy": null,
       "compensationNodeId": null,
       "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_0yhlu0x",
+      "runtimeType": "End",
+      "nodeName": "End",
+      "description": "",
+      "configuration": {
+        "status": "success"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
     }
   ],
   "connections": [
@@ -135,8 +151,10 @@
       "sourcePort": "branch_1",
       "targetPort": "in",
       "triggerMessageType": "Complete",
+      "condition": null,
       "isEnabled": true,
-      "priority": 0
+      "priority": 0,
+      "metadata": null
     },
     {
       "sourceNodeId": "n_x9gscfb",
@@ -144,8 +162,10 @@
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",
+      "condition": null,
       "isEnabled": true,
-      "priority": 0
+      "priority": 0,
+      "metadata": null
     },
     {
       "sourceNodeId": "n_kxu2ocz",
@@ -153,8 +173,10 @@
       "sourcePort": "branch_2",
       "targetPort": "in",
       "triggerMessageType": "Complete",
+      "condition": null,
       "isEnabled": true,
-      "priority": 0
+      "priority": 0,
+      "metadata": null
     },
     {
       "sourceNodeId": "n_4dtca83",
@@ -162,8 +184,21 @@
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",
+      "condition": null,
       "isEnabled": true,
-      "priority": 0
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_kxu2ocz",
+      "targetNodeId": "n_0yhlu0x",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
     }
   ]
 }

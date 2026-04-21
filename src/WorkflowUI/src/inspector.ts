@@ -1201,12 +1201,16 @@ export const Inspector = {
           }
           // C# code fields: use Monaco editor
           const isCSharpCode = (prop.name === 'scriptContent' && (node.runtimeType === 'CSharpScript' || node.runtimeType === 'CSharpTask'))
-            || (prop.name === 'conditionExpression' && node.runtimeType === 'While');
+            || (prop.name === 'conditionExpression' && node.runtimeType === 'While')
+            || (prop.name === 'collectionExpression' && node.runtimeType === 'ForEach');
           if (isCSharpCode) {
             const editorId = `monaco-${id}-${prop.name}`;
-            const small = prop.name === 'conditionExpression';
+            const small = prop.name !== 'scriptContent';
+            const hint = prop.name === 'conditionExpression' ? ' <span class="ins-field-hint">(C# — must return bool)</span>'
+              : prop.name === 'collectionExpression' ? ' <span class="ins-field-hint">(C# — must return IEnumerable)</span>'
+              : '';
             return `<div class="ins-field">
-              <label class="ins-field-label">${escapeHtml(prop.label)}${small ? ' <span class="ins-field-hint">(C# — must return bool)</span>' : ''}</label>
+              <label class="ins-field-label">${escapeHtml(prop.label)}${hint}</label>
               <div class="ins-monaco-container${small ? ' ins-monaco-sm' : ''}" id="${editorId}" data-node-id="${id}" data-config-key="${escapeHtml(prop.name)}"></div>
             </div>`;
           }

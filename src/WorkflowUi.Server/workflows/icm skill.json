@@ -1,5 +1,5 @@
 {
-  "workflowId": "wf_h80zeb8",
+  "workflowId": "wf_149asot",
   "workflowName": "icm skill",
   "description": "",
   "version": "1.0",
@@ -7,7 +7,9 @@
   "maxConcurrency": 0,
   "allowPause": true,
   "timeoutSeconds": 0,
-  "defaultVariables": {},
+  "defaultVariables": {
+    "queryLoopCount": 0
+  },
   "metadata": {},
   "nodes": [
     {
@@ -161,7 +163,8 @@
       "configuration": {
         "source": "input.items",
         "maxIterations": 20,
-        "mode": "foreach"
+        "mode": "foreach",
+        "collectionExpression": "(int)GetVariable(\"queryLoopCount\") < 20"
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -306,42 +309,9 @@
       "metadata": null
     },
     {
-      "sourceNodeId": "n_dd6l953",
-      "targetNodeId": "n_aerbjlh",
-      "sourcePort": "out",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
       "sourceNodeId": "n_66awg84",
       "targetNodeId": "n_9ly0ev1",
       "sourcePort": "out",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
-      "sourceNodeId": "n_9ly0ev1",
-      "targetNodeId": "n_ypj0cb5",
-      "sourcePort": "branch",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
-      "sourceNodeId": "n_9ly0ev1",
-      "targetNodeId": "n_ypj0cb5",
-      "sourcePort": "branch",
       "targetPort": "in",
       "triggerMessageType": "Complete",
       "condition": null,
@@ -366,8 +336,10 @@
       "sourcePort": "branch_1",
       "targetPort": "in",
       "triggerMessageType": "Complete",
+      "condition": null,
       "isEnabled": true,
-      "priority": 0
+      "priority": 0,
+      "metadata": null
     },
     {
       "sourceNodeId": "n_dd6l953",
@@ -375,8 +347,10 @@
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",
+      "condition": null,
       "isEnabled": true,
-      "priority": 0
+      "priority": 0,
+      "metadata": null
     },
     {
       "sourceNodeId": "n_aerbjlh",
@@ -384,8 +358,10 @@
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",
+      "condition": null,
       "isEnabled": true,
-      "priority": 0
+      "priority": 0,
+      "metadata": null
     },
     {
       "sourceNodeId": "n_9ly0ev1",
@@ -393,17 +369,21 @@
       "sourcePort": "branch_2",
       "targetPort": "in",
       "triggerMessageType": "Complete",
+      "condition": null,
       "isEnabled": true,
-      "priority": 0
+      "priority": 0,
+      "metadata": null
     },
     {
       "sourceNodeId": "n_a0c9bq5",
       "targetNodeId": "n_dseqzdf",
       "sourcePort": "LoopBody",
       "targetPort": "in",
-      "triggerMessageType": "Complete",
+      "triggerMessageType": "Next",
+      "condition": null,
       "isEnabled": true,
-      "priority": 0
+      "priority": 0,
+      "metadata": null
     },
     {
       "sourceNodeId": "n_dseqzdf",
@@ -411,8 +391,10 @@
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",
+      "condition": null,
       "isEnabled": true,
-      "priority": 0
+      "priority": 0,
+      "metadata": null
     },
     {
       "sourceNodeId": "n_jq0uvcp",
@@ -420,8 +402,10 @@
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",
+      "condition": null,
       "isEnabled": true,
-      "priority": 0
+      "priority": 0,
+      "metadata": null
     },
     {
       "sourceNodeId": "n_uoisrv2",
@@ -429,8 +413,32 @@
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",
+      "condition": null,
       "isEnabled": true,
-      "priority": 0
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_ojuqxhi",
+      "targetNodeId": "n_a0c9bq5",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_9ly0ev1",
+      "targetNodeId": "n_ypj0cb5",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
     }
   ]
 }

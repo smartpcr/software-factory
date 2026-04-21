@@ -58,7 +58,22 @@ public class ParallelNode : ExecutableNodeBase
         nodeContext.OutputData["timeout"] = parallelDef.Timeout;
         nodeContext.OutputData["branches"] = string.Join(",", parallelDef.Branches);
 
-        await Task.Delay(10, cancellationToken);
+        // Route a NodeCompleteMessage to each branch port so branch children get triggered
+        if (workflowContext.Router != null)
+        {
+            foreach (var branch in parallelDef.Branches)
+            {
+                var branchMsg = new Messages.NodeCompleteMessage
+                {
+                    NodeId = this.NodeId,
+                    Timestamp = DateTime.UtcNow,
+                    NodeInstanceId = Guid.NewGuid(),
+                    NodeContext = nodeContext,
+                    SourcePort = branch,
+                };
+                await workflowContext.Router.RouteMessageAsync(branchMsg, workflowContext, cancellationToken);
+            }
+        }
 
         return new NodeInstance
         {

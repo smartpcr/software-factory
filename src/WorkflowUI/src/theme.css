@@ -575,7 +575,7 @@
     pointer-events: none;
     overflow: visible;
   }
-  .canvas svg.edges .edge-path { pointer-events: stroke; cursor: pointer; }
+  .canvas svg.edges .edge-hit { pointer-events: stroke; cursor: pointer; }
 
   .canvas-hud {
     position: absolute; bottom: 14px; right: 14px;
@@ -1095,13 +1095,21 @@
   @keyframes dashMove { to { stroke-dashoffset: -16; } }
 
   /* Edge styling */
+  .edge-hit {
+    stroke: transparent;
+    stroke-width: 16;
+    fill: none;
+    pointer-events: stroke;
+    cursor: pointer;
+  }
   .edge-path {
     stroke: var(--stroke-3);
     stroke-width: 1.6;
     fill: none;
     transition: stroke 0.12s, stroke-width 0.12s;
+    pointer-events: none;
   }
-  .edge-path:hover { stroke: var(--text-1); stroke-width: 2.2; }
+  .edge-hit:hover + .edge-path { stroke: var(--text-1); stroke-width: 2.2; }
   .edge-path.selected { stroke: var(--accent); stroke-width: 2.4; }
   .edge-path.error-edge { stroke: var(--err); stroke-dasharray: 4 3; opacity: 0.7; }
   .edge-path.error-edge:hover { opacity: 1; }
