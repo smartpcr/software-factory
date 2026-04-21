@@ -155,10 +155,11 @@ public static class WorkflowDefinitionMapper
             },
             RuntimeType.AI => new AINodeDefinition
             {
-                Mode = GetString(el, config, "mode") ?? "skill",
-                SkillId = GetString(el, config, "skillId"),
-                SubagentId = GetString(el, config, "subagentId"),
-                Model = GetString(el, config, "model") ?? "claude-opus-4-7",
+                Mode = GetEnum<AINodeMode>(el, config, "mode"),
+                SkillName = GetString(el, config, "skillName"),
+                SubAgentName = GetString(el, config, "subAgentName"),
+                Model = GetEnum<AIModelId>(el, config, "model"),
+                UserPrompt = GetString(el, config, "userPrompt"),
             },
             RuntimeType.Action => new ActionNodeDefinition
             {
@@ -229,7 +230,19 @@ public static class WorkflowDefinitionMapper
     internal static T GetEnum<T>(JsonElement el, JsonElement config, string name) where T : struct, Enum
     {
         var str = GetString(el, config, name);
-        return Enum.TryParse<T>(str, true, out var result) ? result : default;
+        if (string.IsNullOrEmpty(str))
+        {
+            return default;
+        }
+
+        try
+        {
+            return ExecutionEngine.Enums.EnumMemberHelper.ParseEnumMember<T>(str);
+        }
+        catch
+        {
+            return default;
+        }
     }
 
     /// <summary>

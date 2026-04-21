@@ -41,6 +41,11 @@ builder.Services.AddExecutionEngine();
 // DI: register auth services
 builder.Services.AddWorkflowUiAuth(builder.Configuration, builder.Environment.IsDevelopment());
 
+// DI: register AI registry
+builder.Services.Configure<AIRegistryOptions>(
+    builder.Configuration.GetSection(AIRegistryOptions.SectionName));
+builder.Services.AddSingleton<AIRegistryService>();
+
 // DI: register persistence services
 builder.Services.Configure<PersistenceOptions>(
     builder.Configuration.GetSection(PersistenceOptions.SectionName));
@@ -101,6 +106,7 @@ app.MapFilesEndpoints();
 app.MapNodeTypesEndpoints();
 app.MapVersionEndpoints();
 app.MapRunEndpoints();
+app.MapAIRegistryEndpoints();
 
 // SignalR hub
 app.MapHub<TelemetryHub>("/hubs/telemetry");

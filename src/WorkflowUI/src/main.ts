@@ -1,3 +1,4 @@
+// force-reload: 1776811144
 // -----------------------------------------------------------------------
 // Entry point — boot and demo seed
 // -----------------------------------------------------------------------
@@ -54,11 +55,11 @@ function seedDemo() {
   const ai = addNode('ai', -40, 720, {
     nodeName: 'Generate Welcome',
     config: {
-      mode: 'skill', skillId: 'generate_welcome',
-      model: 'claude-opus-4-7',
+      mode: 'skill', skillName: 'generate_welcome',
+      model: 'claude-opus-4.6-1m',
       systemPrompt: 'You are a concise welcome message generator.',
       inputMapping: 'input.user', outputKey: 'message',
-      temperature: 0.7, maxTokens: 500
+      confidence: 70, maxTokens: 500
     }
   });
   const log = addNode('log', 440, 720, {

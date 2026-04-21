@@ -18,27 +18,32 @@ public class AINodeDefinition : NodeDefinition
     public override RuntimeType RuntimeType => RuntimeType.AI;
 
     /// <summary>
-    /// Gets or sets the AI mode (skill or subagent).
+    /// Gets or sets the AI execution mode.
     /// </summary>
-    public string Mode { get; set; } = "skill";
+    public AINodeMode Mode { get; set; } = AINodeMode.Skill;
 
     /// <summary>
-    /// Gets or sets the skill identifier (required when Mode is "skill").
+    /// Gets or sets the skill name (required when Mode is Skill).
     /// </summary>
-    public string? SkillId { get; set; }
+    public string? SkillName { get; set; }
 
     /// <summary>
-    /// Gets or sets the subagent identifier (required when Mode is "subagent").
+    /// Gets or sets the sub-agent name (required when Mode is SubAgent).
     /// </summary>
-    public string? SubagentId { get; set; }
+    public string? SubAgentName { get; set; }
 
     /// <summary>
     /// Gets or sets the AI model to use.
     /// </summary>
-    public string Model { get; set; } = "claude-opus-4-7";
+    public AIModelId Model { get; set; } = AIModelId.ClaudeOpus46_1M;
 
     /// <summary>
-    /// Gets or sets the system prompt.
+    /// Gets or sets the user prompt (required when Mode is RawPrompt).
+    /// </summary>
+    public string? UserPrompt { get; set; }
+
+    /// <summary>
+    /// Gets or sets the system prompt (optional).
     /// </summary>
     public string? SystemPrompt { get; set; }
 
@@ -53,9 +58,9 @@ public class AINodeDefinition : NodeDefinition
     public string OutputKey { get; set; } = "result";
 
     /// <summary>
-    /// Gets or sets the temperature for AI generation.
+    /// Gets or sets the confidence level for AI generation (0–100).
     /// </summary>
-    public double Temperature { get; set; } = 0.7;
+    public int Confidence { get; set; } = 70;
 
     /// <summary>
     /// Gets or sets the maximum tokens for AI generation.
@@ -65,14 +70,19 @@ public class AINodeDefinition : NodeDefinition
     /// <inheritdoc/>
     public override IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
-        if (this.Mode == "skill" && string.IsNullOrWhiteSpace(this.SkillId))
+        if (this.Mode == AINodeMode.Skill && string.IsNullOrWhiteSpace(this.SkillName))
         {
-            yield return new ValidationResult("SkillId is required in skill mode.", new[] { nameof(this.SkillId) });
+            yield return new ValidationResult("SkillName is required in Skill mode.", new[] { nameof(this.SkillName) });
         }
 
-        if (this.Mode == "subagent" && string.IsNullOrWhiteSpace(this.SubagentId))
+        if (this.Mode == AINodeMode.SubAgent && string.IsNullOrWhiteSpace(this.SubAgentName))
         {
-            yield return new ValidationResult("SubagentId is required in subagent mode.", new[] { nameof(this.SubagentId) });
+            yield return new ValidationResult("SubAgentName is required in SubAgent mode.", new[] { nameof(this.SubAgentName) });
+        }
+
+        if (this.Mode == AINodeMode.RawPrompt && string.IsNullOrWhiteSpace(this.UserPrompt))
+        {
+            yield return new ValidationResult("UserPrompt is required in RawPrompt mode.", new[] { nameof(this.UserPrompt) });
         }
     }
 }

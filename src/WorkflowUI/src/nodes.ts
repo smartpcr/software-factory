@@ -8,6 +8,7 @@ import { State } from './state';
 import { getSlots, ensureChildren, escapeHtml } from './utils';
 import { Edges } from './edges';
 import { Minimap } from './minimap';
+import { aiModels } from './config';
 
 let callbacks: AppCallbacks;
 
@@ -226,9 +227,11 @@ export const Nodes = {
     if (node.runtimeType === 'if') return `<div class="node-body-row"><span class="lab">if</span><span class="val">${escapeHtml(String(c.condition || '—'))}</span></div>`;
     if (node.runtimeType === 'switch') return `<div class="node-body-row"><span class="lab">switch</span><span class="val">${escapeHtml(String(c.expression || '—'))}</span></div>`;
     if (node.runtimeType === 'foreach') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.mode))}</span><span class="val">${escapeHtml(String(c.source || '—'))}</span></div>`;
-    if (node.runtimeType === 'ai') {
-      const binding = c.mode === 'skill' ? String(c.skillId || '—') : String(c.subagentId || '—');
-      return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.mode))}</span><span class="val">${escapeHtml(binding)}</span></div><div class="node-body-row"><span class="lab">model</span><span class="val">${escapeHtml(String(c.model))}</span></div>`;
+    if (node.runtimeType.toLowerCase() === 'ai') {
+      const m = String(c.mode || 'skill').toLowerCase();
+      const binding = m === 'skill' ? String(c.skillName || '—') : m === 'subagent' ? String(c.subAgentName || '—') : m === 'prompt' ? 'prompt' : '—';
+      const modelLabel = aiModels.find(x => x.id === String(c.model))?.label ?? String(c.model || '—');
+      return `<div class="node-body-row"><span class="lab">${escapeHtml(m)}</span><span class="val">${escapeHtml(binding)}</span></div><div class="node-body-row"><span class="lab">model</span><span class="val">${escapeHtml(modelLabel)}</span></div>`;
     }
     if (node.runtimeType === 'http') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.method))}</span><span class="val">${escapeHtml(String(c.url || '—'))}</span></div>`;
     if (node.runtimeType === 'delay') return `<div class="node-body-row"><span class="lab">wait</span><span class="val">${escapeHtml(String(c.duration))}${escapeHtml(String(c.unit))}</span></div>`;

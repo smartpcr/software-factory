@@ -1,5 +1,5 @@
 {
-  "workflowId": "wf_149asot",
+  "workflowId": "wf_s3nrgkd",
   "workflowName": "icm skill",
   "description": "",
   "version": "1.0",
@@ -54,14 +54,14 @@
       "nodeName": "identify issues",
       "description": "",
       "configuration": {
-        "mode": "skill",
-        "skillId": "issueIdentifier",
-        "subagentId": "",
-        "model": "claude-opus-4-7",
+        "mode": "subagent",
+        "skillName": "issueIdentifier",
+        "subAgentName": "identify-issues",
+        "model": "claude-opus-4.7",
         "systemPrompt": "",
         "inputMapping": "input",
         "outputKey": "result",
-        "temperature": 0.7,
+        "confidence": 70,
         "maxTokens": 4096
       },
       "joinType": "Any",
@@ -79,13 +79,13 @@
       "description": "",
       "configuration": {
         "mode": "skill",
-        "skillId": "RepoIdentifier",
-        "subagentId": "",
-        "model": "claude-opus-4-7",
+        "skillName": "RepoIdentifier",
+        "subAgentName": "",
+        "model": "claude-opus-4.7",
         "systemPrompt": "",
         "inputMapping": "input",
         "outputKey": "result",
-        "temperature": 0.7,
+        "confidence": 70,
         "maxTokens": 4096
       },
       "joinType": "Any",
@@ -103,13 +103,13 @@
       "description": "",
       "configuration": {
         "mode": "subagent",
-        "skillId": "CodeExplorer",
-        "subagentId": "CodeExplorer",
-        "model": "claude-opus-4-7",
+        "skillName": "CodeExplorer",
+        "subAgentName": "CodeExplorer",
+        "model": "claude-opus-4.7",
         "systemPrompt": "",
         "inputMapping": "input",
         "outputKey": "result",
-        "temperature": 0.7,
+        "confidence": 70,
         "maxTokens": 4096
       },
       "joinType": "Any",
@@ -243,14 +243,20 @@
       "fallbackNodeId": null
     },
     {
-      "nodeId": "n_ypj0cb5",
-      "runtimeType": "HttpRequest",
-      "nodeName": "TSG",
+      "nodeId": "n_e8w8kjn",
+      "runtimeType": "AI",
+      "nodeName": "migitation steps",
       "description": "",
       "configuration": {
-        "method": "GET",
-        "url": "https://api.example.com",
-        "headers": "{}"
+        "mode": "subagent",
+        "skillName": "",
+        "subAgentName": "rca-generator",
+        "model": "claude-opus-4.6-1m",
+        "systemPrompt": "",
+        "inputMapping": "input",
+        "outputKey": "result",
+        "confidence": 90,
+        "maxTokens": 32000
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -261,19 +267,20 @@
       "fallbackNodeId": null
     },
     {
-      "nodeId": "n_e8w8kjn",
+      "nodeId": "n_buwqvpl",
       "runtimeType": "AI",
-      "nodeName": "migitation steps",
+      "nodeName": "find TSG",
       "description": "",
       "configuration": {
         "mode": "subagent",
-        "skillId": "",
-        "subagentId": "",
-        "model": "claude-opus-4-7",
+        "skillName": "",
+        "subAgentName": "find-tsg",
+        "model": "claude-sonnet-4.6",
+        "userPrompt": "",
         "systemPrompt": "",
         "inputMapping": "input",
         "outputKey": "result",
-        "temperature": 0.7,
+        "confidence": 70,
         "maxTokens": 4096
       },
       "joinType": "Any",
@@ -311,17 +318,6 @@
     {
       "sourceNodeId": "n_66awg84",
       "targetNodeId": "n_9ly0ev1",
-      "sourcePort": "out",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
-      "sourceNodeId": "n_ypj0cb5",
-      "targetNodeId": "n_e8w8kjn",
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",
@@ -375,6 +371,17 @@
       "metadata": null
     },
     {
+      "sourceNodeId": "n_ojuqxhi",
+      "targetNodeId": "n_a0c9bq5",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
       "sourceNodeId": "n_a0c9bq5",
       "targetNodeId": "n_dseqzdf",
       "sourcePort": "LoopBody",
@@ -419,8 +426,8 @@
       "metadata": null
     },
     {
-      "sourceNodeId": "n_ojuqxhi",
-      "targetNodeId": "n_a0c9bq5",
+      "sourceNodeId": "n_buwqvpl",
+      "targetNodeId": "n_e8w8kjn",
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",
@@ -431,7 +438,7 @@
     },
     {
       "sourceNodeId": "n_9ly0ev1",
-      "targetNodeId": "n_ypj0cb5",
+      "targetNodeId": "n_buwqvpl",
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",

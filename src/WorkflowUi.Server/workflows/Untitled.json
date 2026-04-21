@@ -169,13 +169,13 @@
       "description": "",
       "configuration": {
         "mode": "skill",
-        "skillId": "",
-        "subagentId": "",
-        "model": "claude-opus-4-7",
+        "skillName": "",
+        "subAgentName": "",
+        "model": "claude-opus-4.7",
         "systemPrompt": "",
         "inputMapping": "input",
         "outputKey": "result",
-        "temperature": 0.7,
+        "confidence": 70,
         "maxTokens": 4096
       },
       "joinType": "Any",

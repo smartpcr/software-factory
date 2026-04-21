@@ -317,7 +317,7 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
             if (reader.TokenType == JsonTokenType.String)
             {
                 var enumString = reader.GetString()!;
-                return Enum.Parse(underlyingType, enumString, ignoreCase: true);
+                return Enums.EnumMemberHelper.ParseEnumMember(underlyingType, enumString);
             }
             if (reader.TokenType == JsonTokenType.Number)
             {
@@ -448,7 +448,7 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
 
         if (underlyingType.IsEnum)
         {
-            writer.WriteStringValue(value.ToString());
+            writer.WriteStringValue(Enums.EnumMemberHelper.ToEnumMemberValue(underlyingType, value));
             return;
         }
 

@@ -418,6 +418,10 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
         {
             ReflectionYamlConverter<T>.WriteNestedObject(emitter, value, value.GetType(), serializer);
         }
+        else if (value.GetType().IsEnum)
+        {
+            emitter.Emit(new Scalar(Enums.EnumMemberHelper.ToEnumMemberValue(value.GetType(), value)));
+        }
         else
         {
             emitter.Emit(new Scalar(value.ToString() ?? ""));
@@ -526,7 +530,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
 
         if (underlyingType.IsEnum)
         {
-            return Enum.Parse(underlyingType, value, ignoreCase: true);
+            return Enums.EnumMemberHelper.ParseEnumMember(underlyingType, value);
         }
 
         return Type.GetTypeCode(underlyingType) switch

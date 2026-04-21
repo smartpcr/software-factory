@@ -262,3 +262,23 @@ export async function fetchNodeTypes(): Promise<ServerNodeType[]> {
   if (!res.ok) throw new Error(`GET /api/node-types failed: ${res.status}`);
   return res.json() as Promise<ServerNodeType[]>;
 }
+
+// ---- AI Registry ----
+
+export interface AIRegistryItem {
+  name: string;
+  description: string;
+  model: string | null;
+}
+
+export async function fetchAIAgents(): Promise<AIRegistryItem[]> {
+  const res = await fetch('/api/ai/agents');
+  if (!res.ok) throw new Error(`GET /api/ai/agents failed: ${res.status}`);
+  return res.json() as Promise<AIRegistryItem[]>;
+}
+
+export async function fetchAISkills(): Promise<AIRegistryItem[]> {
+  const res = await fetch('/api/ai/skills');
+  if (!res.ok) throw new Error(`GET /api/ai/skills failed: ${res.status}`);
+  return res.json() as Promise<AIRegistryItem[]>;
+}

@@ -11,8 +11,25 @@ import { aiModels, tierColor } from './config';
 import { mountCSharpEditor, disposeAllEditors } from './csharp-editor';
 import { discoverInboundFields } from './inboundSchema';
 import type { InboundField } from './inboundSchema';
+import { fetchAIAgents, fetchAISkills } from './api';
+import type { AIRegistryItem } from './api';
 
 let callbacks: AppCallbacks;
+
+// Cached AI registry items
+let cachedAgents: AIRegistryItem[] = [];
+let cachedSkills: AIRegistryItem[] = [];
+let registryLoaded = false;
+
+async function ensureAIRegistry(): Promise<void> {
+  if (registryLoaded) return;
+  try {
+    [cachedAgents, cachedSkills] = await Promise.all([fetchAIAgents(), fetchAISkills()]);
+    registryLoaded = true;
+  } catch (e) {
+    console.warn('Failed to load AI registry:', e);
+  }
+}
 let nodeRenderTimer: ReturnType<typeof setTimeout> | null = null;
 function debouncedNodeRender() {
   if (nodeRenderTimer) clearTimeout(nodeRenderTimer);
@@ -42,7 +59,11 @@ function bindSectionToggles(container: HTMLElement) {
 }
 
 export const Inspector = {
-  init(cb: AppCallbacks) { callbacks = cb; },
+  init(cb: AppCallbacks) {
+    callbacks = cb;
+    // Pre-load AI registry so dropdowns are ready
+    ensureAIRegistry().then(() => { if (State.selection.kind === 'node') this.render(); });
+  },
 
   render() {
     const el = document.getElementById('inspector');
@@ -557,7 +578,7 @@ export const Inspector = {
         const nodeId = input.dataset.nodeId!;
         const key = input.dataset.configKey!;
         let value: unknown = input.value;
-        if (input.type === 'number') value = parseFloat(input.value);
+        if (input.type === 'number' || input.type === 'range') value = parseFloat(input.value);
         if (input.type === 'checkbox') value = (input as HTMLInputElement).checked;
         callbacks.updateNodeConfig(nodeId, key, value);
       });
@@ -687,6 +708,17 @@ export const Inspector = {
         }
         setTimeout(() => this.render(), 50);
       });
+    });
+    // Re-render inspector when AI mode changes to show/hide mode-specific fields
+    el.querySelectorAll<HTMLSelectElement>('[data-config-key="mode"]').forEach(select => {
+      const nodeId = select.dataset.nodeId;
+      const node = nodeId ? State.nodes.get(nodeId) : null;
+      if (node && node.runtimeType.toLowerCase() === 'ai') {
+        select.addEventListener('change', () => {
+          debouncedNodeRender();
+          setTimeout(() => this.render(), 50);
+        });
+      }
     });
     // Local validation on schedule input — update badge + friendly text in-place, no re-render
     el.querySelectorAll<HTMLInputElement>('[data-config-key="schedule"]').forEach(input => {
@@ -978,35 +1010,51 @@ export const Inspector = {
           </label>
         </div>
       `;
-    } else if (node.runtimeType === 'ai') {
+    } else if (node.runtimeType.toLowerCase() === 'ai') {
       title = 'AI Configuration';
+      const mode = String(c.mode || 'skill').toLowerCase();
+      const modelVal = String(c.model || 'claude-opus-4.6-1m').replace(/_/g, '-');
+      // Normalize legacy model IDs: "claude-opus-4-7" → "claude-opus-4.7"
+      const modelId = aiModels.find(m => m.id === modelVal)
+        ? modelVal
+        : aiModels.find(m => m.id === modelVal.replace(/-(\d+)-(\d)/g, '-$1.$2'))?.id
+          ?? aiModels.find(m => m.label.toLowerCase().replace(/[^a-z0-9]/g, '').includes(modelVal.toLowerCase().replace(/[^a-z0-9]/g, '')))?.id
+          ?? aiModels[0].id;
       fields = `
         <div class="ins-field">
           <label class="ins-field-label">Mode</label>
           <select data-config-key="mode" data-node-id="${id}">
-            <option ${c.mode === 'skill' ? 'selected' : ''} value="skill">Skill</option>
-            <option ${c.mode === 'subagent' ? 'selected' : ''} value="subagent">Subagent</option>
-            <option ${c.mode === 'prompt' ? 'selected' : ''} value="prompt">Raw Prompt</option>
+            <option ${mode === 'skill' ? 'selected' : ''} value="skill">Skill</option>
+            <option ${mode === 'subagent' ? 'selected' : ''} value="subagent">SubAgent</option>
+            <option ${mode === 'mcp' ? 'selected' : ''} value="mcp">MCP</option>
+            <option ${mode === 'prompt' || mode === 'rawprompt' ? 'selected' : ''} value="prompt">Raw Prompt</option>
           </select>
         </div>
-        ${c.mode === 'skill' ? `
+        ${mode === 'skill' ? `
           <div class="ins-field">
-            <label class="ins-field-label">Skill ID</label>
-            <input class="mono" value="${escapeHtml(String(c.skillId || ''))}" placeholder="e.g. summarize_document" data-config-key="skillId" data-node-id="${id}" />
+            <label class="ins-field-label">Skill Name</label>
+            <select data-config-key="skillName" data-node-id="${id}">
+              <option value="">— select skill —</option>
+              ${cachedSkills.map(s => `<option value="${escapeHtml(s.name)}" ${String(c.skillName) === s.name ? 'selected' : ''} title="${escapeHtml(s.description)}">${escapeHtml(s.name)}</option>`).join('')}
+            </select>
           </div>
-        ` : c.mode === 'subagent' ? `
+        ` : ''}
+        ${mode === 'subagent' ? `
           <div class="ins-field">
-            <label class="ins-field-label">Subagent ID</label>
-            <input class="mono" value="${escapeHtml(String(c.subagentId || ''))}" placeholder="e.g. code_reviewer" data-config-key="subagentId" data-node-id="${id}" />
+            <label class="ins-field-label">SubAgent Name</label>
+            <select data-config-key="subAgentName" data-node-id="${id}">
+              <option value="">— select agent —</option>
+              ${cachedAgents.map(a => `<option value="${escapeHtml(a.name)}" ${String(c.subAgentName) === a.name ? 'selected' : ''} title="${escapeHtml(a.description)}">${escapeHtml(a.name)}</option>`).join('')}
+            </select>
           </div>
         ` : ''}
         <div class="ins-field">
           <label class="ins-field-label">Model</label>
           <select data-config-key="model" data-node-id="${id}" class="ai-model-select">
-            ${aiModels.map(m => `<option value="${escapeHtml(m.id)}" ${String(c.model) === m.id ? 'selected' : ''}>${escapeHtml(m.label)}</option>`).join('')}
+            ${aiModels.map(m => `<option value="${escapeHtml(m.id)}" ${modelId === m.id ? 'selected' : ''}>${escapeHtml(m.label)}</option>`).join('')}
           </select>
           ${(() => {
-            const sel = aiModels.find(m => m.id === String(c.model));
+            const sel = aiModels.find(m => m.id === modelId);
             if (!sel) return '';
             return `<div class="ins-model-badge" style="color: ${tierColor(sel.tier)}">
               <span class="ins-model-tier">${sel.tier}</span>
@@ -1014,10 +1062,16 @@ export const Inspector = {
             </div>`;
           })()}
         </div>
-        <div class="ins-field">
-          <label class="ins-field-label">System prompt</label>
-          <textarea data-config-key="systemPrompt" data-node-id="${id}" placeholder="You are a helpful assistant...">${escapeHtml(String(c.systemPrompt || ''))}</textarea>
-        </div>
+        ${mode === 'prompt' || mode === 'rawprompt' ? `
+          <div class="ins-field">
+            <label class="ins-field-label">User Prompt</label>
+            <textarea data-config-key="userPrompt" data-node-id="${id}" placeholder="Enter your prompt...">${escapeHtml(String(c.userPrompt || ''))}</textarea>
+          </div>
+          <div class="ins-field">
+            <label class="ins-field-label">System Prompt</label>
+            <textarea data-config-key="systemPrompt" data-node-id="${id}" placeholder="You are a helpful assistant...">${escapeHtml(String(c.systemPrompt || ''))}</textarea>
+          </div>
+        ` : ''}
         <div class="ins-field">
           <label class="ins-field-label">Input mapping</label>
           <input class="mono" value="${escapeHtml(String(c.inputMapping || 'input'))}" data-config-key="inputMapping" data-node-id="${id}" />
@@ -1026,14 +1080,14 @@ export const Inspector = {
           <label class="ins-field-label">Output key</label>
           <input class="mono" value="${escapeHtml(String(c.outputKey || 'result'))}" data-config-key="outputKey" data-node-id="${id}" />
         </div>
-        <div class="ins-field" style="display:flex; gap:8px;">
+        <div class="ins-field" style="display:flex; gap:8px; align-items:center;">
           <div style="flex:1">
-            <label class="ins-field-label">Temperature</label>
-            <input type="number" step="0.1" min="0" max="2" value="${c.temperature || 0.7}" data-config-key="temperature" data-node-id="${id}" />
+            <label class="ins-field-label">Confidence <span class="confidence-value" style="opacity:.5">${c.confidence ?? 70}%</span></label>
+            <input type="range" min="0" max="100" value="${c.confidence ?? 70}" data-config-key="confidence" data-node-id="${id}" oninput="this.closest('.ins-field').querySelector('.confidence-value').textContent=this.value+'%'" />
           </div>
           <div style="flex:1">
             <label class="ins-field-label">Max tokens</label>
-            <input type="number" value="${c.maxTokens || 4096}" data-config-key="maxTokens" data-node-id="${id}" />
+            <input type="number" step="1024" min="4096" max="32768" value="${c.maxTokens || 4096}" data-config-key="maxTokens" data-node-id="${id}" />
           </div>
         </div>
       `;

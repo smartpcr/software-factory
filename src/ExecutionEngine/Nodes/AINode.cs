@@ -44,21 +44,26 @@ public class AINode : ExecutableNodeBase
             Timestamp = startTime,
         });
 
-        nodeContext.OutputData["mode"] = aiDef.Mode;
-        nodeContext.OutputData["model"] = aiDef.Model;
+        nodeContext.OutputData["mode"] = EnumMemberHelper.ToEnumMemberValue(aiDef.Mode);
+        nodeContext.OutputData["model"] = EnumMemberHelper.ToEnumMemberValue(aiDef.Model);
         nodeContext.OutputData["inputMapping"] = aiDef.InputMapping;
         nodeContext.OutputData["outputKey"] = aiDef.OutputKey;
-        nodeContext.OutputData["temperature"] = aiDef.Temperature;
+        nodeContext.OutputData["confidence"] = aiDef.Confidence;
         nodeContext.OutputData["maxTokens"] = aiDef.MaxTokens;
 
-        if (!string.IsNullOrEmpty(aiDef.SkillId))
+        if (!string.IsNullOrEmpty(aiDef.SkillName))
         {
-            nodeContext.OutputData["skillId"] = aiDef.SkillId;
+            nodeContext.OutputData["skillName"] = aiDef.SkillName;
         }
 
-        if (!string.IsNullOrEmpty(aiDef.SubagentId))
+        if (!string.IsNullOrEmpty(aiDef.SubAgentName))
         {
-            nodeContext.OutputData["subagentId"] = aiDef.SubagentId;
+            nodeContext.OutputData["subAgentName"] = aiDef.SubAgentName;
+        }
+
+        if (!string.IsNullOrEmpty(aiDef.UserPrompt))
+        {
+            nodeContext.OutputData["userPrompt"] = aiDef.UserPrompt;
         }
 
         await Task.Delay(10, cancellationToken);
