@@ -219,11 +219,12 @@ public class MessageRouter(IDeadLetterQueue deadLetterQueue, ILogger<MessageRout
                 // Filter by source port (if specified on connection)
                 if (!string.IsNullOrEmpty(connection.SourcePort))
                 {
-                    // Extract source port from the message (supports both Complete and Fail messages)
+                    // Extract source port from the message
                     var messageSourcePort = message switch
                     {
                         NodeCompleteMessage cm => cm.SourcePort ?? string.Empty,
-                        NodeFailMessage => "error", // Fail messages always originate from the error port
+                        NodeFailMessage => "error",
+                        NodeNextMessage => connection.SourcePort, // Next messages match the connection's port (LoopBody, etc.)
                         _ => string.Empty,
                     };
 

@@ -175,8 +175,9 @@ export const Exec = {
   },
 
   reset() {
-    State.nodes.forEach(n => { n.status = ''; });
-    State.edges.forEach(e => { e._active = false; });
+    State.nodes.forEach(n => { n.status = ''; n._runData = undefined; n._runDuration = undefined; n._runError = undefined; });
+    State.edges.forEach(e => { e._active = false; e._runtimeData = undefined; });
+    State.activeRun = null;
     Nodes.render();
     Edges.render();
   },

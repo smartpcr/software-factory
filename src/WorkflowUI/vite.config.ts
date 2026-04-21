@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import monacoEditorPlugin from 'vite-plugin-monaco-editor';
 
 export default defineConfig({
   base: '/',
@@ -16,4 +17,9 @@ export default defineConfig({
   build: {
     outDir: 'dist',
   },
+  plugins: [
+    (monacoEditorPlugin as unknown as { default: typeof monacoEditorPlugin }).default({
+      languageWorkers: ['editorWorkerService'],
+    }),
+  ],
 });

@@ -16,4 +16,5 @@ export const State = {
   isLocked: false,
   lastSaved: null as number | null,
   logs: [] as LogEntry[],
+  activeRun: null as { runId: string; status: string; startTime?: string; endTime?: string; duration?: string; globalVariables?: Record<string, unknown> } | null,
 };

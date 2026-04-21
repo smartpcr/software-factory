@@ -92,7 +92,10 @@ export async function saveWorkflow(id: string, data: WorkflowData): Promise<void
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ definition, sidecarJson }),
   });
-  if (!res.ok) throw new Error(`PUT ${url} failed: ${res.status}`);
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => '');
+    throw new Error(`PUT ${url} failed: ${res.status} ${errBody}`);
+  }
 }
 
 export async function deleteWorkflowApi(id: string): Promise<boolean> {
@@ -147,7 +150,10 @@ export async function startRun(workflowId: string): Promise<{ runId: string }> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ workflowId }),
   });
-  if (!res.ok) throw new Error(`POST /api/runs failed: ${res.status}`);
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => '');
+    throw new Error(`POST /api/runs failed: ${res.status} ${errBody}`);
+  }
   return res.json() as Promise<{ runId: string }>;
 }
 

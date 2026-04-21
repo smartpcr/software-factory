@@ -26,6 +26,7 @@ import { Nodes } from './nodes';
 import { Edges } from './edges';
 import { Palette } from './palette';
 import { Inspector } from './inspector';
+import { disposeAllEditors } from './csharp-editor';
 import { Exec } from './exec';
 import { saveWorkflow as saveWorkflowApi, deleteWorkflowApi, listWorkflows, getWorkflow, fetchNodeTypes, validateWorkflow, validateNodesBatch, listRuns } from './api';
 import { loadServerNodeTypes, loadFallbackNodeTypes, normalizeWorkflowNodeTypes, resolveNodeType } from './registry';
@@ -256,12 +257,17 @@ export const App = {
     const newParent = State.nodes.get(newParentId);
     if (!node || !newParent || nodeId === newParentId) return;
     if (this.isDescendantOf(newParentId, nodeId)) return;
+
+    // Remove old parent-child relationship and cleanup old container edges
     if (node.parentId) {
       const oldParent = State.nodes.get(node.parentId);
       if (oldParent?.children?.[node.parentSlot!]) {
         oldParent.children[node.parentSlot!] = oldParent.children[node.parentSlot!].filter(id => id !== nodeId);
       }
+      // Remove auto-created container edges involving this node
+      this.removeContainerEdges(nodeId, node.parentId, node.parentSlot!);
     }
+
     ensureChildren(newParent);
     const arr = newParent.children![newSlot] || (newParent.children![newSlot] = []);
     if (arr.includes(nodeId)) arr.splice(arr.indexOf(nodeId), 1);
@@ -272,12 +278,10 @@ export const App = {
     }
     node.parentId = newParentId;
     node.parentSlot = newSlot;
-    [...State.edges.entries()].forEach(([eid, e]) => {
-      if (e.sourceNodeId === newParentId && e.sourcePort === 'branch' &&
-          e.sourcePortName === newSlot && e.targetNodeId === nodeId) {
-        State.edges.delete(eid);
-      }
-    });
+
+    // Auto-create container edges for the entire slot
+    this.rebuildContainerEdges(newParentId, newSlot);
+
     this.markDirty();
     this.renderAll();
     this.select('node', nodeId);
@@ -289,7 +293,93 @@ export const App = {
     if (!parent) return null;
     const slots = getSlots(parent);
     if (!slots.includes(slot)) return null;
-    return this.createNode(type, 0, 0, { parentId, parentSlot: slot, index });
+    const newId = this.createNode(type, 0, 0, { parentId, parentSlot: slot, index });
+    if (newId) {
+      this.rebuildContainerEdges(parentId, slot);
+    }
+    return newId;
+  },
+
+  /** Determine the triggerMessageType for a container slot */
+  containerSlotMessageType(parentType: string, _slot: string): string {
+    const loopTypes = ['While', 'ForEach', 'while', 'foreach'];
+    return loopTypes.includes(parentType) ? 'Next' : 'Complete';
+  },
+
+  /** Remove all auto-created container edges for a node in a slot */
+  removeContainerEdges(nodeId: string, parentId: string, slot: string) {
+    const parent = State.nodes.get(parentId);
+    const siblings = parent?.children?.[slot] || [];
+    // Remove edges: parent→node, node→sibling, sibling→node
+    [...State.edges.entries()].forEach(([eid, e]) => {
+      // Parent→first child
+      if (e.sourceNodeId === parentId && e.targetNodeId === nodeId && (e.sourcePort === slot || e.sourcePortName === slot)) {
+        State.edges.delete(eid);
+      }
+      // Sibling chain involving this node
+      if ((e.sourceNodeId === nodeId && siblings.includes(e.targetNodeId)) ||
+          (e.targetNodeId === nodeId && siblings.includes(e.sourceNodeId))) {
+        State.edges.delete(eid);
+      }
+    });
+  },
+
+  /** Rebuild all container edges for a specific slot: parent→first, chain siblings */
+  rebuildContainerEdges(parentId: string, slot: string) {
+    const parent = State.nodes.get(parentId);
+    if (!parent?.children?.[slot]) return;
+    const children = parent.children[slot];
+    if (children.length === 0) return;
+
+    const msgType = this.containerSlotMessageType(parent.runtimeType, slot);
+
+    // Remove existing auto-created edges for this slot
+    [...State.edges.entries()].forEach(([eid, e]) => {
+      // Parent→child in this slot
+      if (e.sourceNodeId === parentId && (e.sourcePort === slot || e.sourcePortName === slot) &&
+          children.includes(e.targetNodeId)) {
+        State.edges.delete(eid);
+      }
+      // Sibling chains within this slot
+      if (children.includes(e.sourceNodeId) && children.includes(e.targetNodeId) &&
+          e.sourcePort === 'out' && e.targetPort === 'in') {
+        State.edges.delete(eid);
+      }
+    });
+
+    // Parent → first child
+    this._insertEdge(parentId, slot, children[0], 'in', msgType, slot);
+
+    // Chain siblings: child[0]→child[1]→child[2]→...
+    for (let i = 0; i < children.length - 1; i++) {
+      this._insertEdge(children[i], 'out', children[i + 1], 'in');
+    }
+
+    // For loop containers (While/ForEach): add feedback edge from last child back to parent
+    const loopTypes = ['While', 'ForEach', 'while', 'foreach'];
+    if (loopTypes.includes(parent.runtimeType)) {
+      const lastChild = children[children.length - 1];
+      // Remove any existing feedback edge
+      [...State.edges.entries()].forEach(([eid, e]) => {
+        if (e.sourceNodeId === lastChild && e.targetNodeId === parentId &&
+            e.sourcePort === 'out' && e.targetPort === 'in') {
+          State.edges.delete(eid);
+        }
+      });
+      this._insertEdge(lastChild, 'out', parentId, 'in');
+    }
+  },
+
+  /** Ensure all container nodes have proper edges (called on workflow load) */
+  ensureAllContainerEdges() {
+    for (const node of State.nodes.values()) {
+      if (!node.children) continue;
+      for (const slot of Object.keys(node.children)) {
+        if (node.children[slot].length > 0) {
+          this.rebuildContainerEdges(node.nodeId, slot);
+        }
+      }
+    }
   },
 
   insertNodeRelative(type: string, refNodeId: string, position: string): string | null {
@@ -457,6 +547,19 @@ export const App = {
   },
 
   // ---------- EDGE OPS ----------
+
+  /** Insert an edge silently (no lock check, no dirty flag, no log). Used by container auto-wiring. */
+  _insertEdge(sourceNodeId: string, sourcePort: string, targetNodeId: string, targetPort: string, triggerMessageType = 'Complete', sourcePortName?: string) {
+    // Check for duplicate
+    for (const e of State.edges.values()) {
+      if (e.sourceNodeId === sourceNodeId && e.targetNodeId === targetNodeId &&
+          (e.sourcePort === sourcePort || e.sourcePortName === sourcePortName) &&
+          e.targetPort === targetPort) return;
+    }
+    const id = uid('e');
+    State.edges.set(id, { id, sourceNodeId, sourcePort, sourcePortName, targetNodeId, targetPort, triggerMessageType });
+  },
+
   createEdge({ sourceNodeId, sourcePort, sourcePortName, targetNodeId, targetPort }: CreateEdgeParams) {
     if (State.isLocked) return;
     for (const e of State.edges.values()) {
@@ -547,6 +650,7 @@ export const App = {
     // If switching tabs, save current state first
     if (State.currentWfId && State.currentWfId !== id) {
       this.snapshotCurrentWorkflow();
+      disposeAllEditors();
     }
     State.currentWfId = id;
     if (!State.openTabs.includes(id)) State.openTabs.push(id);
@@ -556,6 +660,10 @@ export const App = {
     this.rebuildChildren(wf.nodes || []);
     State.nodes = new Map((wf.nodes || []).map(n => [n.nodeId, n]));
     State.edges = new Map((wf.edges || []).map(e => [e.id, e]));
+
+    // Ensure container edges exist (parent→child, sibling chains, loop feedback)
+    this.ensureAllContainerEdges();
+
     State.isDirty = false;
     State.selection = { kind: null, id: null };
     State.logs = [];
@@ -1198,12 +1306,13 @@ export const App = {
       const res = await fetch(`/api/runs/${runId}`);
       if (!res.ok) throw new Error(`Failed to fetch run: ${res.status}`);
       const data = await res.json();
-      const events: Array<{ kind: string; nodeId?: string; payload?: Record<string, unknown>; timestampUtc: string }> = data.events || [];
+      const events: Array<{ kind: string; nodeId?: string; payload?: Record<string, unknown>; timestampUtc: string; synthetic?: boolean }> = data.events || [];
 
       // Build per-node summary from events
-      const nodeInfo = new Map<string, { status: string; duration?: string; error?: string; startTime?: string; endTime?: string; nodeInstanceId?: string; reason?: string }>();
+      const nodeInfo = new Map<string, { status: string; duration?: string; error?: string; startTime?: string; endTime?: string; nodeInstanceId?: string; reason?: string; inputData?: Record<string, unknown>; outputData?: Record<string, unknown>; globalVariables?: Record<string, unknown> }>();
       for (const evt of events) {
         if (!evt.nodeId) continue;
+        const isSynthetic = evt.synthetic;
         switch (evt.kind) {
           case 'NodeStarted': {
             const info = nodeInfo.get(evt.nodeId) || { status: 'running' };
@@ -1216,16 +1325,26 @@ export const App = {
           case 'NodeCompleted': {
             const info = nodeInfo.get(evt.nodeId) || { status: 'success' };
             info.status = 'success';
-            info.duration = evt.payload?.duration as string || '';
+            info.duration = evt.payload?.duration as string || info.duration || '';
             info.endTime = evt.timestampUtc;
+            // Synthetic events carry context data
+            if (isSynthetic && evt.payload) {
+              if (evt.payload.inputData) info.inputData = evt.payload.inputData as Record<string, unknown>;
+              if (evt.payload.outputData) info.outputData = evt.payload.outputData as Record<string, unknown>;
+              if (evt.payload.globalVariables) info.globalVariables = evt.payload.globalVariables as Record<string, unknown>;
+            }
             nodeInfo.set(evt.nodeId, info);
             break;
           }
           case 'NodeFailed': {
             const info = nodeInfo.get(evt.nodeId) || { status: 'failed' };
             info.status = 'failed';
-            info.error = evt.payload?.errorMessage as string || '';
+            info.error = evt.payload?.errorMessage as string || info.error || '';
             info.endTime = evt.timestampUtc;
+            if (isSynthetic && evt.payload) {
+              if (evt.payload.inputData) info.inputData = evt.payload.inputData as Record<string, unknown>;
+              if (evt.payload.globalVariables) info.globalVariables = evt.payload.globalVariables as Record<string, unknown>;
+            }
             nodeInfo.set(evt.nodeId, info);
             break;
           }
@@ -1255,6 +1374,9 @@ export const App = {
             duration: info.duration,
             ...(info.error ? { errorMessage: info.error } : {}),
             ...(info.reason ? { cancelReason: info.reason } : {}),
+            ...(info.inputData ? { inputData: info.inputData } : {}),
+            ...(info.outputData ? { outputData: info.outputData } : {}),
+            ...(info.globalVariables ? { globalVariables: info.globalVariables } : {}),
           };
         } else {
           n.status = '';
@@ -1308,12 +1430,27 @@ export const App = {
         }
       });
 
-      // Set exec status
+      // Set exec status and store run info
       const wfStatus = data.status?.toLowerCase() || 'idle';
       Exec.setStatus(wfStatus === 'completed' ? 'success' : wfStatus === 'failed' ? 'failed' : wfStatus === 'cancelled' ? 'cancelled' : 'idle');
 
+      // Get final global variables from the last synthetic event
+      const lastGlobals = [...events].reverse().find(e => e.synthetic && e.payload?.globalVariables);
+      const wfCompleted = events.find(e => e.kind === 'WorkflowCompleted' || e.kind === 'WorkflowFailed');
+
+      State.activeRun = {
+        runId,
+        status: data.status,
+        startTime: data.startTimeUtc,
+        endTime: data.endTimeUtc,
+        duration: (wfCompleted?.payload?.duration as string) || undefined,
+        globalVariables: (lastGlobals?.payload?.globalVariables as Record<string, unknown>) || undefined,
+      };
+
       Nodes.render();
       Edges.render();
+      // Re-render inspector to show run data
+      Inspector.render();
       this.log('success', null, `Run ${runId.substring(0, 8)}: ${data.status} (${nodeInfo.size} nodes)`);
 
       // Log per-node details

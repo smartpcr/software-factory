@@ -1,0 +1,103 @@
+{
+  "workflowId": "wf_h5oypdj",
+  "workflowName": "rolling dice",
+  "description": "",
+  "version": "1.0",
+  "entryPointNodeId": null,
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0,
+  "defaultVariables": {
+    "number": 0
+  },
+  "metadata": {},
+  "nodes": [
+    {
+      "nodeId": "n_1v4juib",
+      "runtimeType": "start",
+      "nodeName": "Start",
+      "description": "",
+      "configuration": {
+        "triggerType": "Manual",
+        "schedule": "",
+        "eventName": ""
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_r40byrg",
+      "runtimeType": "While",
+      "nodeName": "While",
+      "description": "",
+      "configuration": {
+        "conditionExpression": "(int)GetGlobal(\"number\") < 4",
+        "maxIterations": 10
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_skzqyyd",
+      "runtimeType": "CSharpScript",
+      "nodeName": "C# Script",
+      "description": "",
+      "configuration": {
+        "scriptPath": "",
+        "scriptContent": "var num = (new Random()).Next(6) + 1;\r\nSetGlobal(\"number\", num);"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    }
+  ],
+  "connections": [
+    {
+      "sourceNodeId": "n_1v4juib",
+      "targetNodeId": "n_r40byrg",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_r40byrg",
+      "targetNodeId": "n_skzqyyd",
+      "sourcePort": "LoopBody",
+      "targetPort": "in",
+      "triggerMessageType": "Next",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_skzqyyd",
+      "targetNodeId": "n_r40byrg",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    }
+  ]
+}

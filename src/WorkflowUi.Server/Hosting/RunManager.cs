@@ -184,6 +184,24 @@ public class RunManager
                 });
         };
 
+        engine.NodeCompletedEx += (nodeId, instanceId, duration, inputData, outputData, globals) =>
+        {
+            // Store context data in the same event via a separate "context" event
+            _ = this.PublishEventAsync(
+                runId,
+                RunEventKind.NodeCompleted,
+                nodeId: nodeId,
+                payload: new Dictionary<string, object>
+                {
+                    ["nodeInstanceId"] = instanceId.ToString(),
+                    ["duration"] = XmlConvert.ToString(duration),
+                    ["inputData"] = inputData ?? new Dictionary<string, object>(),
+                    ["outputData"] = outputData ?? new Dictionary<string, object>(),
+                    ["globalVariables"] = globals ?? new Dictionary<string, object>(),
+                },
+                synthetic: true);
+        };
+
         engine.NodeFailed += (nodeId, instanceId, errorMessage) =>
         {
             _ = this.PublishEventAsync(
@@ -195,6 +213,22 @@ public class RunManager
                     ["nodeInstanceId"] = instanceId.ToString(),
                     ["errorMessage"] = errorMessage,
                 });
+        };
+
+        engine.NodeFailedEx += (nodeId, instanceId, errorMessage, inputData, globals) =>
+        {
+            _ = this.PublishEventAsync(
+                runId,
+                RunEventKind.NodeFailed,
+                nodeId: nodeId,
+                payload: new Dictionary<string, object>
+                {
+                    ["nodeInstanceId"] = instanceId.ToString(),
+                    ["errorMessage"] = errorMessage,
+                    ["inputData"] = inputData ?? new Dictionary<string, object>(),
+                    ["globalVariables"] = globals ?? new Dictionary<string, object>(),
+                },
+                synthetic: true);
         };
 
         engine.NodeCancelled += (nodeId, instanceId, reason) =>
@@ -216,14 +250,15 @@ public class RunManager
         RunEventKind kind,
         string? nodeId = null,
         string? nodeName = null,
-        Dictionary<string, object>? payload = null)
+        Dictionary<string, object>? payload = null,
+        bool synthetic = false)
     {
         var runEvent = new RunEvent
         {
             RunId = runId,
             Seq = this.seqAllocator.Next(runId),
             Kind = kind,
-            Synthetic = false,
+            Synthetic = synthetic,
             TimestampUtc = DateTime.UtcNow,
             NodeId = nodeId,
             NodeName = nodeName,

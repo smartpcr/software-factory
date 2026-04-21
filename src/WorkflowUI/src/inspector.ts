@@ -8,6 +8,7 @@ import { State } from './state';
 import { escapeHtml } from './utils';
 import { Nodes } from './nodes';
 import { aiModels, tierColor } from './config';
+import { mountCSharpEditor, disposeAllEditors } from './csharp-editor';
 import { discoverInboundFields } from './inboundSchema';
 import type { InboundField } from './inboundSchema';
 
@@ -84,6 +85,7 @@ export const Inspector = {
           </div>
         </div>
       </div>
+      ${this.workflowRunHtml()}
       ${insSection('Properties', `
         <div class="ins-field">
           <label class="ins-field-label">Name</label>
@@ -325,6 +327,47 @@ export const Inspector = {
       this.bindVariableRows(el, wf);
     }
   },
+
+  workflowRunHtml(): string {
+    const run = State.activeRun;
+    if (!run) return '';
+    const statusClass = run.status.toLowerCase();
+    const fmtTime = (iso?: string) => {
+      if (!iso) return '—';
+      try { return new Date(iso).toLocaleTimeString('en-US', { hour12: false }); }
+      catch { return iso; }
+    };
+    const fmtDuration = (dur?: string) => {
+      if (!dur) return '—';
+      const m = dur.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?/);
+      if (!m) return dur;
+      const s = parseFloat(m[3] || '0');
+      if (s < 1) return `${Math.round(s * 1000)}ms`;
+      return `${s.toFixed(2)}s`;
+    };
+    const renderVars = (vars?: Record<string, unknown>) => {
+      if (!vars || Object.keys(vars).length === 0) return '';
+      return Object.entries(vars)
+        .filter(([k]) => !k.startsWith('__'))
+        .map(([k, v]) => `<div class="ins-runtime-row"><span class="ins-runtime-key">${escapeHtml(k)}</span><span class="ins-runtime-val">${escapeHtml(typeof v === 'object' ? JSON.stringify(v) : String(v ?? ''))}</span></div>`)
+        .join('');
+    };
+    const varsHtml = renderVars(run.globalVariables);
+    return `
+    <div class="ins-section">
+      <div class="ins-section-title">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        Run ${escapeHtml(run.runId.substring(0, 8))}…
+      </div>
+      <div class="ins-runtime-card ${statusClass}">
+        <div class="ins-runtime-row"><span class="ins-runtime-key">Status</span><span class="ins-runtime-val"><strong>${escapeHtml(run.status)}</strong></span></div>
+        <div class="ins-runtime-row"><span class="ins-runtime-key">Start</span><span class="ins-runtime-val">${fmtTime(run.startTime)}</span></div>
+        <div class="ins-runtime-row"><span class="ins-runtime-key">End</span><span class="ins-runtime-val">${fmtTime(run.endTime)}</span></div>
+        <div class="ins-runtime-row"><span class="ins-runtime-key">Duration</span><span class="ins-runtime-val">${fmtDuration(run.duration)}</span></div>
+      </div>
+      ${varsHtml ? `<div class="ins-runtime-data-section"><div class="ins-runtime-data-label">Final Variables</div>${varsHtml}</div>` : ''}
+    </div>`;
+  },
 
   nodeRuntimeHtml(node: FlowNode): string {
     const d = node._runData;
@@ -337,12 +380,23 @@ export const Inspector = {
     };
     const fmtDuration = (dur?: unknown) => {
       if (!dur || typeof dur !== 'string') return '—';
-      // Parse ISO 8601 duration like "PT0.0173158S"
       const m = (dur as string).match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?/);
       if (!m) return dur as string;
       const s = parseFloat(m[3] || '0');
       if (s < 1) return `${Math.round(s * 1000)}ms`;
       return `${s.toFixed(2)}s`;
+    };
+    const renderDataTable = (label: string, data: unknown) => {
+      if (!data || typeof data !== 'object') return '';
+      const entries = Object.entries(data as Record<string, unknown>);
+      if (entries.length === 0) return '';
+      return `<div class="ins-runtime-data-section">
+        <div class="ins-runtime-data-label">${escapeHtml(label)}</div>
+        ${entries.map(([k, v]) => {
+          const valStr = typeof v === 'object' ? JSON.stringify(v) : String(v ?? '');
+          return `<div class="ins-runtime-row"><span class="ins-runtime-key">${escapeHtml(k)}</span><span class="ins-runtime-val">${escapeHtml(valStr)}</span></div>`;
+        }).join('')}
+      </div>`;
     };
     return `
     <div class="ins-section">
@@ -359,6 +413,9 @@ export const Inspector = {
         ${d.cancelReason ? `<div class="ins-runtime-row"><span class="ins-runtime-key">Reason</span><span class="ins-runtime-val">${escapeHtml(String(d.cancelReason))}</span></div>` : ''}
         ${d.nodeInstanceId ? `<div class="ins-runtime-row"><span class="ins-runtime-key">Instance</span><span class="ins-runtime-val" style="font-size:9px">${escapeHtml(String(d.nodeInstanceId).substring(0, 8))}…</span></div>` : ''}
       </div>
+      ${renderDataTable('Input Data', d.inputData)}
+      ${renderDataTable('Output Data', d.outputData)}
+      ${renderDataTable('Global Variables', d.globalVariables)}
     </div>`;
   },
 
@@ -470,6 +527,20 @@ export const Inspector = {
     `;
     this.bindInspectorActions(el);
     bindSectionToggles(el);
+    this.mountCodeEditors(el, node);
+  },
+
+  mountCodeEditors(el: HTMLElement, node: FlowNode) {
+    // Find Monaco containers and mount editors
+    el.querySelectorAll<HTMLElement>('.ins-monaco-container').forEach(container => {
+      const nodeId = container.dataset.nodeId;
+      const configKey = container.dataset.configKey;
+      if (!nodeId || !configKey) return;
+      const value = String(node.config?.[configKey] ?? '');
+      mountCSharpEditor(container.id, value, (val) => {
+        callbacks.updateNodeConfig(nodeId, configKey, val);
+      });
+    });
   },
 
   bindInspectorActions(el: HTMLElement) {
@@ -801,11 +872,12 @@ export const Inspector = {
       `;
     } else if (node.runtimeType === 'if') {
       title = 'Condition';
+      const condEditorId = `monaco-${id}-condition`;
       fields = `
         <div class="ins-field">
-          <label class="ins-field-label">Condition expression</label>
-          <textarea data-config-key="condition" data-node-id="${id}" placeholder="input.value > 10">${escapeHtml(String(c.condition || ''))}</textarea>
-          <div class="ins-field-hint">JavaScript-like expression. Connect <code>true</code> and <code>false</code> branches.</div>
+          <label class="ins-field-label">Condition expression <span class="ins-field-hint">(C# — must return bool)</span></label>
+          <div class="ins-monaco-container ins-monaco-sm" id="${condEditorId}" data-node-id="${id}" data-config-key="condition"></div>
+          <div class="ins-field-hint">Connect <code>true</code> and <code>false</code> branches.</div>
         </div>
       `;
     } else if (node.runtimeType === 'switch') {
@@ -1125,6 +1197,17 @@ export const Inspector = {
             return `<div class="ins-field">
               <label class="ins-field-label">${escapeHtml(prop.label)}</label>
               <input type="number" value="${val}" data-config-key="${escapeHtml(prop.name)}" data-node-id="${id}" placeholder="${escapeHtml(prop.placeholder || '')}" />
+            </div>`;
+          }
+          // C# code fields: use Monaco editor
+          const isCSharpCode = (prop.name === 'scriptContent' && (node.runtimeType === 'CSharpScript' || node.runtimeType === 'CSharpTask'))
+            || (prop.name === 'conditionExpression' && node.runtimeType === 'While');
+          if (isCSharpCode) {
+            const editorId = `monaco-${id}-${prop.name}`;
+            const small = prop.name === 'conditionExpression';
+            return `<div class="ins-field">
+              <label class="ins-field-label">${escapeHtml(prop.label)}${small ? ' <span class="ins-field-hint">(C# — must return bool)</span>' : ''}</label>
+              <div class="ins-monaco-container${small ? ' ins-monaco-sm' : ''}" id="${editorId}" data-node-id="${id}" data-config-key="${escapeHtml(prop.name)}"></div>
             </div>`;
           }
           if (prop.type === 'code' || prop.type === 'expression') {

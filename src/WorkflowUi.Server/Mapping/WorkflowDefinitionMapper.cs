@@ -37,6 +37,25 @@ public static class WorkflowDefinitionMapper
             TimeoutSeconds = GetIntDirect(root, "timeoutSeconds", 0),
         };
 
+        // Parse default variables
+        if (root.TryGetProperty("defaultVariables", out var varsEl) && varsEl.ValueKind == JsonValueKind.Object)
+        {
+            wf.DefaultVariables = new Dictionary<string, object>();
+            foreach (var prop in varsEl.EnumerateObject())
+            {
+                wf.DefaultVariables[prop.Name] = prop.Value.ValueKind switch
+                {
+                    JsonValueKind.String => prop.Value.GetString()!,
+                    JsonValueKind.Number => prop.Value.TryGetInt32(out var i) ? (object)i
+                        : prop.Value.TryGetInt64(out var l) ? (object)l
+                        : prop.Value.GetDouble(),
+                    JsonValueKind.True => true,
+                    JsonValueKind.False => false,
+                    _ => prop.Value.GetRawText(),
+                };
+            }
+        }
+
         if (root.TryGetProperty("nodes", out var nodesEl))
         {
             foreach (var nodeEl in nodesEl.EnumerateArray())

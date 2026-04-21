@@ -1282,6 +1282,34 @@
   .ins-runtime-row:first-of-type { border-top: none; }
   .ins-runtime-key { color: var(--text-3); flex-shrink: 0; }
   .ins-runtime-val { color: var(--text-1); text-align: right; word-break: break-all; }
+  .ins-runtime-data-section {
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px solid var(--stroke-1);
+  }
+  .ins-runtime-data-label {
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    font-weight: 600;
+    margin-bottom: 3px;
+  }
+
+  /* Monaco editor container */
+  .ins-monaco-container {
+    width: 100%;
+    height: 280px;
+    border: 1px solid var(--stroke-1);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .ins-monaco-container.ins-monaco-sm {
+    height: 120px;
+  }
+  .ins-monaco-container .monaco-editor {
+    border-radius: 6px;
+  }
 
   /* Cron editor styles */
   .ins-cron-friendly {

@@ -104,13 +104,24 @@ namespace ExecutionEngine.Engine
 
         /// <summary>
         /// Event raised when a node completes successfully.
+        /// Parameters: nodeId, instanceId, duration, inputData, outputData, globalVariables snapshot.
         /// </summary>
         public event Action<string, Guid, TimeSpan>? NodeCompleted;
+
+        /// <summary>
+        /// Extended event raised when a node completes with full context data.
+        /// </summary>
+        public event Action<string, Guid, TimeSpan, Dictionary<string, object>?, Dictionary<string, object>?, Dictionary<string, object>?>? NodeCompletedEx;
 
         /// <summary>
         /// Event raised when a node fails during execution.
         /// </summary>
         public event Action<string, Guid, string>? NodeFailed;
+
+        /// <summary>
+        /// Extended event raised when a node fails with full context data.
+        /// </summary>
+        public event Action<string, Guid, string, Dictionary<string, object>?, Dictionary<string, object>?>? NodeFailedEx;
 
         /// <summary>
         /// Event raised when a node is cancelled.
@@ -1137,6 +1148,15 @@ namespace ExecutionEngine.Engine
             // Raise NodeFailed event
             this.NodeFailed?.Invoke(nodeId, nodeInstance.NodeInstanceId, errorMessage);
 
+            // Raise extended event with context data
+            if (this.NodeFailedEx != null)
+            {
+                var inputSnap = nodeInstance.ExecutionContext?.InputData != null
+                    ? new Dictionary<string, object>(nodeInstance.ExecutionContext.InputData) : null;
+                var globalsSnap = new Dictionary<string, object>(context.Variables);
+                this.NodeFailedEx.Invoke(nodeId, nodeInstance.NodeInstanceId, errorMessage, inputSnap, globalsSnap);
+            }
+
             // Publish NodeFailedEvent
             var nodeDef = workflowDefinition.Nodes.FirstOrDefault(n => n.NodeId == nodeId);
             context.PublishEvent(new NodeFailedEvent
@@ -1541,6 +1561,15 @@ namespace ExecutionEngine.Engine
                     // Raise NodeCompleted event
                     var duration = nodeInstance.Duration ?? TimeSpan.Zero;
                     this.NodeCompleted?.Invoke(nodeId, nodeInstance.NodeInstanceId, duration);
+
+                    // Raise extended event with context data
+                    if (this.NodeCompletedEx != null)
+                    {
+                        var inputSnap = nodeContext?.InputData != null ? new Dictionary<string, object>(nodeContext.InputData) : null;
+                        var outputSnap = nodeContext?.OutputData != null ? new Dictionary<string, object>(nodeContext.OutputData) : null;
+                        var globalsSnap = new Dictionary<string, object>(context.Variables);
+                        this.NodeCompletedEx.Invoke(nodeId, nodeInstance.NodeInstanceId, duration, inputSnap, outputSnap, globalsSnap);
+                    }
 
                     // Publish NodeCompletedEvent
                     context.PublishEvent(new NodeCompletedEvent

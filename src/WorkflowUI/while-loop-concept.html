@@ -1,0 +1,920 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>While Loop — Flow Studio Component Design</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=Fira+Code:wght@400;500&display=swap');
+
+  :root {
+    --bg-deep: #07080b;
+    --bg-panel: #11141b;
+    --bg-raised: #171b24;
+    --bg-surface: #1f2430;
+    --bg-hover: #2a3040;
+    --stroke-subtle: rgba(255,255,255,0.06);
+    --stroke-soft: rgba(255,255,255,0.12);
+    --stroke-medium: rgba(255,255,255,0.22);
+    --text-bright: #f5f6f8;
+    --text-primary: #d6dae3;
+    --text-secondary: #a0a6b2;
+    --text-muted: #6c7280;
+    --loop-accent: #7fc7b8;
+    --loop-accent-dim: #4a8f82;
+    --error-red: #ff8888;
+    --gold: #e5b36a;
+    --iterate-cyan: #5ec4d4;
+    --condition-amber: #e5b36a;
+    --body-blue: #94b4f7;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    font-family: 'DM Sans', sans-serif;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: 'Fira Code', monospace; }
+
+  /* ======== Canvas grid background ======== */
+  .canvas-wrap {
+    position: relative;
+    width: 100%;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 60px 40px 80px;
+    gap: 80px;
+    background:
+      radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px),
+      var(--bg-deep);
+    background-size: 24px 24px, 100% 100%;
+  }
+
+  .page-title {
+    position: fixed;
+    top: 16px; left: 32px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    z-index: 100;
+  }
+  .page-title span { color: var(--loop-accent); }
+
+  /* ======== Layout row ======== */
+  .concepts-row {
+    display: flex;
+    gap: 60px;
+    align-items: flex-start;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .concept-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+
+  .concept-label {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 16px;
+  }
+
+  /* ========================================================
+     PORT — reusable across all node types
+     ======================================================== */
+  .port {
+    position: absolute;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--bg-raised);
+    border: 2px solid var(--text-muted);
+    z-index: 20;
+    cursor: crosshair;
+    transition: transform 0.15s, background 0.15s, border-color 0.15s;
+  }
+  .port:hover {
+    transform: scale(1.3);
+    background: var(--gold);
+    border-color: var(--gold);
+  }
+  .port.in  { top: -7px; left: 50%; margin-left: -7px; }
+  .port.out { bottom: -7px; left: 50%; margin-left: -7px; }
+  .port.error {
+    right: -7px; top: 50%; margin-top: -6px;
+    width: 12px; height: 12px;
+    border-color: var(--error-red);
+    background: rgba(255,136,136,0.12);
+  }
+  .port.error:hover {
+    background: var(--error-red);
+    border-color: var(--error-red);
+  }
+
+  /* ========================================================
+     WHILE NODE — the actual component structure
+     ======================================================== */
+  .while-node {
+    position: relative;
+    width: 380px;
+    background: var(--bg-panel);
+    border: 1px solid var(--stroke-soft);
+    border-radius: 12px;
+    box-shadow:
+      0 1px 0 rgba(255,255,255,0.07) inset,
+      0 0 0 1px rgba(255,255,255,0.04),
+      0 4px 12px rgba(0,0,0,0.6),
+      0 24px 48px -16px rgba(0,0,0,0.9);
+  }
+
+  /* --- Header --- */
+  .wn-head {
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    gap: 10px;
+    border-bottom: 1px solid var(--stroke-subtle);
+    position: relative;
+  }
+  .wn-head-accent {
+    position: absolute; top: 0; left: 0;
+    width: 4px; height: 100%;
+    background: var(--loop-accent);
+    border-radius: 12px 0 0 0;
+  }
+  .wn-icon {
+    width: 28px; height: 28px;
+    border-radius: 7px;
+    background: rgba(127,199,184,0.12);
+    display: grid; place-items: center;
+    color: var(--loop-accent);
+    flex-shrink: 0;
+    font-size: 14px;
+  }
+  .wn-title {
+    font-size: 14px; font-weight: 600;
+    color: var(--text-bright);
+    flex: 1;
+  }
+  .wn-type-badge {
+    font-family: 'Fira Code', monospace;
+    font-size: 9px; font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--loop-accent);
+    background: rgba(127,199,184,0.08);
+    border: 1px solid rgba(127,199,184,0.18);
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+
+  /* --- Condition row --- */
+  .wn-condition {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    gap: 8px;
+    border-bottom: 1px solid var(--stroke-subtle);
+  }
+  .wn-cond-icon {
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    border: 1.5px solid var(--condition-amber);
+    display: grid; place-items: center;
+    color: var(--condition-amber);
+    font-size: 10px; font-weight: 700;
+    flex-shrink: 0;
+  }
+  .wn-cond-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .wn-cond-expr {
+    font-family: 'Fira Code', monospace;
+    font-size: 11px;
+    color: var(--condition-amber);
+    background: rgba(229,179,106,0.06);
+    border: 1px solid rgba(229,179,106,0.12);
+    padding: 3px 8px;
+    border-radius: 4px;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .wn-cond-expr.empty {
+    color: var(--text-muted);
+    border-color: var(--stroke-subtle);
+  }
+  .wn-max-iter {
+    font-family: 'Fira Code', monospace;
+    font-size: 9px;
+    color: var(--text-muted);
+    background: var(--bg-surface);
+    border: 1px solid var(--stroke-subtle);
+    padding: 2px 6px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  /* --- Loop body wrapper --- */
+  .wn-loop-body {
+    position: relative;
+    padding: 10px 12px 12px;
+  }
+
+  .wn-lb-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .wn-lb-label {
+    font-size: 9px; font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .wn-lb-line { flex: 1; height: 1px; background: var(--stroke-subtle); }
+
+  .wn-lb-onnext {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-family: 'Fira Code', monospace;
+    font-size: 9px;
+    color: var(--iterate-cyan);
+    padding: 2px 8px;
+    background: rgba(94,196,212,0.06);
+    border: 1px solid rgba(94,196,212,0.15);
+    border-radius: 5px;
+  }
+  .wn-lb-onnext-dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--iterate-cyan);
+  }
+
+  /* --- Loop body container (children go here) --- */
+  .wn-lb-children {
+    background: var(--bg-raised);
+    border: 1px dashed rgba(127,199,184,0.2);
+    border-radius: 10px;
+    padding: 10px;
+    min-height: 60px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  /* --- Iterate loop-back (right side, pure CSS) --- */
+  .wn-iterate-path {
+    position: absolute;
+    right: -28px;
+    top: 38px;
+    bottom: 12px;
+    width: 22px;
+    pointer-events: none;
+  }
+  /* Vertical bar */
+  .wn-iterate-path::before {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 8px;
+    bottom: 8px;
+    width: 1.5px;
+    background: repeating-linear-gradient(
+      to bottom,
+      var(--iterate-cyan) 0px, var(--iterate-cyan) 4px,
+      transparent 4px, transparent 7px
+    );
+    opacity: 0.45;
+  }
+  /* Top horizontal bar + arrow */
+  .wn-iterate-top {
+    position: absolute;
+    top: 0; right: 0;
+    width: 22px;
+    height: 16px;
+  }
+  .wn-iterate-top::before {
+    content: '';
+    position: absolute;
+    top: 8px; left: 0; right: 0;
+    height: 1.5px;
+    background: var(--iterate-cyan);
+    opacity: 0.45;
+  }
+  /* Arrow pointing left */
+  .wn-iterate-top::after {
+    content: '';
+    position: absolute;
+    top: 4px; left: 0;
+    width: 0; height: 0;
+    border-top: 4.5px solid transparent;
+    border-bottom: 4.5px solid transparent;
+    border-right: 6px solid var(--iterate-cyan);
+    opacity: 0.55;
+  }
+  /* Bottom horizontal bar */
+  .wn-iterate-bottom {
+    position: absolute;
+    bottom: 0; right: 0;
+    width: 22px;
+    height: 16px;
+  }
+  .wn-iterate-bottom::before {
+    content: '';
+    position: absolute;
+    top: 8px; left: 0; right: 0;
+    height: 1.5px;
+    background: var(--iterate-cyan);
+    opacity: 0.45;
+  }
+  /* "iterate" label (vertical text) */
+  .wn-iterate-label {
+    position: absolute;
+    right: -10px;
+    top: 50%;
+    transform: translateY(-50%) rotate(90deg);
+    font-family: 'Fira Code', monospace;
+    font-size: 8px;
+    letter-spacing: 0.04em;
+    color: var(--iterate-cyan);
+    opacity: 0.5;
+    white-space: nowrap;
+  }
+
+  /* --- Drop hint (empty state) --- */
+  .wn-drop-hint {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 50px;
+    border: 1px dashed var(--stroke-soft);
+    border-radius: 8px;
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+  .wn-drop-hint-plus {
+    font-size: 14px;
+    opacity: 0.5;
+  }
+
+  /* ========================================================
+     CHILD NODE — nested inside loop body
+     ======================================================== */
+  .child-node {
+    background: var(--bg-panel);
+    border: 1px solid var(--stroke-soft);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow:
+      0 1px 0 rgba(255,255,255,0.05) inset,
+      0 2px 6px rgba(0,0,0,0.35);
+  }
+  .cn-head {
+    display: flex;
+    align-items: center;
+    padding: 7px 10px;
+    gap: 8px;
+    border-bottom: 1px solid var(--stroke-subtle);
+    position: relative;
+  }
+  .cn-head-accent {
+    position: absolute; top: 0; left: 0;
+    width: 3px; height: 100%;
+    border-radius: 8px 0 0 0;
+  }
+  .cn-head-accent.blue { background: var(--body-blue); }
+  .cn-head-accent.amber { background: var(--condition-amber); }
+
+  .cn-icon {
+    width: 22px; height: 22px;
+    border-radius: 6px;
+    display: grid; place-items: center;
+    flex-shrink: 0;
+    font-size: 11px;
+  }
+  .cn-icon.blue  { background: rgba(148,180,247,0.1); color: var(--body-blue); }
+  .cn-icon.amber { background: rgba(229,179,106,0.1); color: var(--condition-amber); }
+
+  .cn-title {
+    font-size: 12px; font-weight: 500;
+    color: var(--text-bright);
+    flex: 1;
+  }
+  .cn-type-badge {
+    font-family: 'Fira Code', monospace;
+    font-size: 8px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: var(--bg-surface);
+    border: 1px solid var(--stroke-subtle);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .cn-body {
+    padding: 5px 10px;
+  }
+  .cn-body-row {
+    display: flex; gap: 8px;
+    font-size: 10px;
+  }
+  .cn-body-row .lab { color: var(--text-muted); }
+  .cn-body-row .val { font-family: 'Fira Code', monospace; color: var(--text-secondary); }
+
+  /* ========================================================
+     SIBLING CONNECTOR — arrow between children
+     ======================================================== */
+  .sibling-conn {
+    display: flex;
+    justify-content: center;
+    padding: 3px 0;
+    color: var(--text-muted);
+    opacity: 0.5;
+    font-size: 14px;
+    line-height: 1;
+  }
+
+  /* ========================================================
+     WIRE — edge connecting to port (in flow on page)
+     ======================================================== */
+  .wire {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    height: 36px;
+  }
+  .wire-line {
+    width: 1.5px;
+    flex: 1;
+  }
+  .wire-line.fade-in  { background: linear-gradient(to bottom, transparent, var(--text-muted)); }
+  .wire-line.fade-out { background: linear-gradient(to bottom, var(--text-muted), transparent); }
+  .wire-arrow-down {
+    width: 0; height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid var(--text-muted);
+    opacity: 0.6;
+  }
+
+  /* ========================================================
+     EXECUTION FLOW DIAGRAM — pure HTML+CSS
+     ======================================================== */
+  .flow-diagram {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    position: relative;
+  }
+  .flow-diagram-title {
+    font-size: 9px; font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 20px;
+  }
+
+  /* Flow boxes */
+  .fc-box {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-size: 11px; font-weight: 500;
+    padding: 8px 20px;
+    border-radius: 8px;
+    position: relative;
+    z-index: 2;
+  }
+  .fc-box.entry {
+    background: var(--bg-surface);
+    border: 1px solid var(--stroke-soft);
+    color: var(--text-secondary);
+  }
+  .fc-box.condition {
+    background: rgba(229,179,106,0.06);
+    border: 1.5px solid rgba(229,179,106,0.25);
+    color: var(--condition-amber);
+    padding: 10px 24px;
+  }
+  .fc-box.body {
+    background: rgba(127,199,184,0.06);
+    border: 1.5px solid rgba(127,199,184,0.25);
+    color: var(--loop-accent);
+    flex-direction: column;
+    gap: 2px;
+  }
+  .fc-box.body .fc-sub {
+    font-size: 9px; opacity: 0.6;
+  }
+  .fc-box.exit {
+    background: var(--bg-surface);
+    border: 1px solid var(--stroke-soft);
+    color: var(--text-secondary);
+    flex-direction: column;
+    gap: 2px;
+  }
+  .fc-box.exit .fc-sub {
+    font-size: 9px; opacity: 0.6;
+  }
+
+  /* Flow arrow (vertical) */
+  .fc-arrow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    position: relative;
+  }
+  .fc-arrow-line {
+    width: 1.5px;
+    height: 24px;
+    background: var(--text-muted);
+    opacity: 0.5;
+  }
+  .fc-arrow-head {
+    width: 0; height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid var(--text-muted);
+    opacity: 0.5;
+  }
+  .fc-label {
+    position: absolute;
+    font-family: 'Fira Code', monospace;
+    font-size: 9px;
+    white-space: nowrap;
+  }
+  .fc-label.left { right: 12px; top: 50%; transform: translateY(-50%); }
+
+  /* The flow layout wrapper (condition + body + loop-back + false-branch) */
+  .fc-flow-area {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  /* Loop-back: right side C-shaped path from body back to condition */
+  .fc-loopback {
+    position: absolute;
+    right: -60px;
+    top: 0;
+    bottom: 0;
+    width: 50px;
+    pointer-events: none;
+  }
+  /* Vertical bar on right */
+  .fc-loopback::before {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 16px;
+    bottom: 16px;
+    width: 1.5px;
+    background: repeating-linear-gradient(
+      to bottom,
+      var(--iterate-cyan) 0, var(--iterate-cyan) 4px,
+      transparent 4px, transparent 7px
+    );
+    opacity: 0.45;
+  }
+  /* Top arm */
+  .fc-lb-top {
+    position: absolute;
+    top: 16px;
+    left: 0; right: 0;
+    height: 1.5px;
+    background: var(--iterate-cyan);
+    opacity: 0.45;
+  }
+  /* Top arrow pointing left */
+  .fc-lb-top::after {
+    content: '';
+    position: absolute;
+    top: -4px; left: 0;
+    width: 0; height: 0;
+    border-top: 4.5px solid transparent;
+    border-bottom: 4.5px solid transparent;
+    border-right: 6px solid var(--iterate-cyan);
+    opacity: 1;
+  }
+  /* Bottom arm */
+  .fc-lb-bottom {
+    position: absolute;
+    bottom: 16px;
+    left: 0; right: 0;
+    height: 1.5px;
+    background: var(--iterate-cyan);
+    opacity: 0.45;
+  }
+  /* Label */
+  .fc-lb-label {
+    position: absolute;
+    right: -8px;
+    top: 50%;
+    transform: translateY(-50%) rotate(90deg);
+    font-family: 'Fira Code', monospace;
+    font-size: 8px;
+    color: var(--iterate-cyan);
+    opacity: 0.5;
+    white-space: nowrap;
+  }
+
+  /* False branch: right side from condition, down, back to output */
+  .fc-false-branch {
+    position: absolute;
+    right: -110px;
+    top: 0;
+    bottom: 0;
+    width: 100px;
+    pointer-events: none;
+  }
+  /* Vertical bar */
+  .fc-false-branch::before {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 16px;
+    bottom: 16px;
+    width: 1.5px;
+    background: repeating-linear-gradient(
+      to bottom,
+      var(--text-muted) 0, var(--text-muted) 4px,
+      transparent 4px, transparent 7px
+    );
+    opacity: 0.35;
+  }
+  .fc-fb-top {
+    position: absolute;
+    top: 16px;
+    left: 0; right: 0;
+    height: 1.5px;
+    background: var(--text-muted);
+    opacity: 0.35;
+  }
+  .fc-fb-bottom {
+    position: absolute;
+    bottom: 16px;
+    left: 0; right: 0;
+    height: 1.5px;
+    background: var(--text-muted);
+    opacity: 0.35;
+  }
+  /* Arrow pointing left at bottom */
+  .fc-fb-bottom::after {
+    content: '';
+    position: absolute;
+    top: -4px; left: 0;
+    width: 0; height: 0;
+    border-top: 4.5px solid transparent;
+    border-bottom: 4.5px solid transparent;
+    border-right: 6px solid var(--text-muted);
+    opacity: 1;
+  }
+  .fc-fb-label {
+    position: absolute;
+    right: -6px;
+    top: 50%;
+    transform: translateY(-50%) rotate(90deg);
+    font-family: 'Fira Code', monospace;
+    font-size: 8px;
+    color: var(--text-muted);
+    opacity: 0.45;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+
+<div class="canvas-wrap">
+  <div class="page-title">Flow Studio — <span>While Loop</span> Component</div>
+
+  <div class="concepts-row">
+
+    <!-- ============ CONCEPT A: With Loop Body Children ============ -->
+    <div class="concept-col">
+      <div class="concept-label">With Loop Body Children</div>
+
+      <!-- Incoming wire -->
+      <div class="wire">
+        <div class="wire-line fade-in"></div>
+        <div class="wire-arrow-down"></div>
+      </div>
+
+      <!-- While Node -->
+      <div class="while-node">
+        <div class="port in"></div>
+        <div class="port out"></div>
+        <div class="port error"></div>
+
+        <!-- Header -->
+        <div class="wn-head">
+          <div class="wn-head-accent"></div>
+          <div class="wn-icon">↻</div>
+          <div class="wn-title">Retry Upload</div>
+          <div class="wn-type-badge">while</div>
+        </div>
+
+        <!-- Condition -->
+        <div class="wn-condition">
+          <div class="wn-cond-icon">!</div>
+          <span class="wn-cond-label">while</span>
+          <span class="wn-cond-expr">retryCount &lt; 3 &amp;&amp; !success</span>
+          <span class="wn-max-iter">max: 1000</span>
+        </div>
+
+        <!-- Loop Body -->
+        <div class="wn-loop-body">
+          <div class="wn-lb-header">
+            <span class="wn-lb-label">Loop Body</span>
+            <div class="wn-lb-line"></div>
+            <div class="wn-lb-onnext">
+              <div class="wn-lb-onnext-dot"></div>
+              onNext
+            </div>
+          </div>
+
+          <div class="wn-lb-children">
+            <!-- Child 1 -->
+            <div class="child-node">
+              <div class="cn-head">
+                <div class="cn-head-accent blue"></div>
+                <div class="cn-icon blue">⊕</div>
+                <span class="cn-title">Upload File</span>
+                <span class="cn-type-badge">HttpRequest</span>
+              </div>
+              <div class="cn-body">
+                <div class="cn-body-row">
+                  <span class="lab">POST</span>
+                  <span class="val">/api/files/upload</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Sibling connector -->
+            <div class="sibling-conn">↓</div>
+
+            <!-- Child 2 -->
+            <div class="child-node">
+              <div class="cn-head">
+                <div class="cn-head-accent amber"></div>
+                <div class="cn-icon amber">&lt;/&gt;</div>
+                <span class="cn-title">Check Response</span>
+                <span class="cn-type-badge">CSharpScript</span>
+              </div>
+              <div class="cn-body">
+                <div class="cn-body-row">
+                  <span class="lab">expr</span>
+                  <span class="val">success = res.IsOk</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Iterate loop-back path (CSS only) -->
+          <div class="wn-iterate-path">
+            <div class="wn-iterate-top"></div>
+            <div class="wn-iterate-bottom"></div>
+            <div class="wn-iterate-label">iterate</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Outgoing wire -->
+      <div class="wire">
+        <div class="wire-line fade-out"></div>
+      </div>
+    </div>
+
+    <!-- ============ CONCEPT B: Empty Drop Target ============ -->
+    <div class="concept-col">
+      <div class="concept-label">Empty (Drop Target)</div>
+
+      <div class="wire">
+        <div class="wire-line fade-in"></div>
+        <div class="wire-arrow-down"></div>
+      </div>
+
+      <div class="while-node" style="width:320px;">
+        <div class="port in"></div>
+        <div class="port out"></div>
+        <div class="port error"></div>
+
+        <div class="wn-head">
+          <div class="wn-head-accent"></div>
+          <div class="wn-icon">↻</div>
+          <div class="wn-title">While</div>
+          <div class="wn-type-badge">while</div>
+        </div>
+
+        <div class="wn-condition">
+          <div class="wn-cond-icon">!</div>
+          <span class="wn-cond-label">while</span>
+          <span class="wn-cond-expr empty">— set condition —</span>
+        </div>
+
+        <div class="wn-loop-body">
+          <div class="wn-lb-header">
+            <span class="wn-lb-label">Loop Body</span>
+            <div class="wn-lb-line"></div>
+          </div>
+          <div class="wn-lb-children">
+            <div class="wn-drop-hint">
+              <span class="wn-drop-hint-plus">+</span>
+              Drop component here
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="wire">
+        <div class="wire-line fade-out"></div>
+      </div>
+    </div>
+
+    <!-- ============ CONCEPT C: Execution Flow ============ -->
+    <div class="concept-col">
+      <div class="concept-label">Execution Flow</div>
+
+      <div class="flow-diagram">
+        <!-- Entry -->
+        <div class="fc-box entry">Receive Input</div>
+
+        <div class="fc-arrow">
+          <div class="fc-arrow-line"></div>
+          <div class="fc-arrow-head"></div>
+        </div>
+
+        <!-- Flow area (condition + body, with loopback + false-branch alongside) -->
+        <div class="fc-flow-area">
+          <!-- Condition -->
+          <div class="fc-box condition">condition == true?</div>
+
+          <!-- true arrow down -->
+          <div class="fc-arrow">
+            <div class="fc-arrow-line"></div>
+            <div class="fc-arrow-head"></div>
+            <span class="fc-label left" style="color:var(--loop-accent);">true</span>
+          </div>
+
+          <!-- Body -->
+          <div class="fc-box body">
+            <span>Execute Loop Body</span>
+            <span class="fc-sub">(children run sequentially)</span>
+          </div>
+
+          <!-- Loop-back (right side, from body back up to condition) -->
+          <div class="fc-loopback">
+            <div class="fc-lb-top"></div>
+            <div class="fc-lb-bottom"></div>
+            <div class="fc-lb-label">onNext</div>
+          </div>
+
+          <!-- False branch (further right, from condition down to output) -->
+          <div class="fc-false-branch">
+            <div class="fc-fb-top"></div>
+            <div class="fc-fb-bottom"></div>
+            <div class="fc-fb-label">false</div>
+          </div>
+        </div>
+
+        <div class="fc-arrow">
+          <div class="fc-arrow-line" style="height:40px;"></div>
+          <div class="fc-arrow-head"></div>
+        </div>
+
+        <!-- Exit -->
+        <div class="fc-box exit">
+          <span>Output</span>
+          <span class="fc-sub">(onComplete)</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>

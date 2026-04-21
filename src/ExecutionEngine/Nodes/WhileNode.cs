@@ -194,7 +194,15 @@ public class WhileNode : ExecutableNodeBase
                         }
                     };
 
-                    await router.RouteMessageAsync(nextMessage, workflowContext, cancellationToken);
+                    var delivered = await router.RouteMessageAsync(nextMessage, workflowContext, cancellationToken);
+                    if (delivered == 0)
+                    {
+                        // No child nodes connected to LoopBody — fail immediately
+                        workflowContext.Variables.TryRemove(counterKey, out _);
+                        throw new InvalidOperationException(
+                            "While loop has no child nodes connected to LoopBody port. " +
+                            "Connect a node to the LoopBody slot to provide the loop body.");
+                    }
                 }
 
                 // Emit progress event

@@ -29,6 +29,40 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $UIDir = Join-Path $RepoRoot 'src\WorkflowUI'
 $ServerProj = Join-Path $RepoRoot 'src\WorkflowUi.Server\WorkflowUi.Server.csproj'
 
+# ── Stop existing processes ──────────────────────────────────────────────
+function Stop-ExistingProcesses {
+    # Stop existing .NET server
+    Get-Process -Name "dotnet" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like "*WorkflowUi.Server*" } |
+        ForEach-Object {
+            Write-Host "  Stopping existing server (PID $($_.Id))..." -ForegroundColor Gray
+            Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+        }
+    # Stop existing Vite dev server (node on port 5555)
+    Get-Process -Name "node" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like "*vite*" -and $_.CommandLine -like "*WorkflowUI*" } |
+        ForEach-Object {
+            Write-Host "  Stopping existing Vite (PID $($_.Id))..." -ForegroundColor Gray
+            Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+        }
+    # Also check by port
+    $portListeners = Get-NetTCPConnection -LocalPort 5226,5555 -State Listen -ErrorAction SilentlyContinue
+    foreach ($conn in $portListeners) {
+        $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+        if ($proc) {
+            Write-Host "  Stopping process on port $($conn.LocalPort) (PID $($proc.Id) $($proc.ProcessName))..." -ForegroundColor Gray
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+    # Clean up stale PowerShell jobs
+    Get-Job | Where-Object { $_.Name -like "*workflow*" -or $_.Command -like "*WorkflowUI*" -or $_.Command -like "*WorkflowUi.Server*" } |
+        ForEach-Object { Stop-Job $_ -ErrorAction SilentlyContinue; Remove-Job $_ -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Seconds 1
+}
+
+Write-Host "🧹 Stopping existing processes..." -ForegroundColor Yellow
+Stop-ExistingProcesses
+
 # ── Rebuild ──────────────────────────────────────────────────────────────
 if ($Rebuild) {
     if (-not $UIOnly) {
