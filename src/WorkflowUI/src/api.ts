@@ -55,7 +55,6 @@ export async function saveWorkflow(id: string, data: WorkflowData): Promise<void
       fallbackNodeId: n.fallbackNodeId || null,
     })),
     connections: (data.edges || []).map(e => {
-      // Always derive triggerMessageType from sourcePort to ensure correctness
       let msgType: string;
       if (e.sourcePort === 'error') {
         msgType = 'Fail';
@@ -65,8 +64,8 @@ export async function saveWorkflow(id: string, data: WorkflowData): Promise<void
       return {
         sourceNodeId: e.sourceNodeId,
         targetNodeId: e.targetNodeId,
-        sourcePort: e.sourcePortName || e.sourcePort || null,
-        targetPort: e.targetPort || null,
+        sourcePort: e.sourcePortName || e.sourcePort || 'out',
+        targetPort: e.targetPort || 'in',
         triggerMessageType: msgType,
         condition: e.condition || null,
         isEnabled: e.isEnabled !== false,

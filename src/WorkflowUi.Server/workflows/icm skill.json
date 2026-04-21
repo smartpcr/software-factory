@@ -1,5 +1,5 @@
 {
-  "workflowId": "wf_ufine8y",
+  "workflowId": "wf_h80zeb8",
   "workflowName": "icm skill",
   "description": "",
   "version": "1.0",
@@ -359,6 +359,78 @@
       "isEnabled": true,
       "priority": 0,
       "metadata": null
+    },
+    {
+      "sourceNodeId": "n_9ly0ev1",
+      "targetNodeId": "n_dd6l953",
+      "sourcePort": "branch_1",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "isEnabled": true,
+      "priority": 0
+    },
+    {
+      "sourceNodeId": "n_dd6l953",
+      "targetNodeId": "n_aerbjlh",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "isEnabled": true,
+      "priority": 0
+    },
+    {
+      "sourceNodeId": "n_aerbjlh",
+      "targetNodeId": "n_a0c9bq5",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "isEnabled": true,
+      "priority": 0
+    },
+    {
+      "sourceNodeId": "n_9ly0ev1",
+      "targetNodeId": "n_4iiemvf",
+      "sourcePort": "branch_2",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "isEnabled": true,
+      "priority": 0
+    },
+    {
+      "sourceNodeId": "n_a0c9bq5",
+      "targetNodeId": "n_dseqzdf",
+      "sourcePort": "LoopBody",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "isEnabled": true,
+      "priority": 0
+    },
+    {
+      "sourceNodeId": "n_dseqzdf",
+      "targetNodeId": "n_jq0uvcp",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "isEnabled": true,
+      "priority": 0
+    },
+    {
+      "sourceNodeId": "n_jq0uvcp",
+      "targetNodeId": "n_uoisrv2",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "isEnabled": true,
+      "priority": 0
+    },
+    {
+      "sourceNodeId": "n_uoisrv2",
+      "targetNodeId": "n_ojuqxhi",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "isEnabled": true,
+      "priority": 0
     }
   ]
 }

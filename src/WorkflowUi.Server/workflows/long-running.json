@@ -1,0 +1,169 @@
+{
+  "workflowId": "wf_bliprlk",
+  "workflowName": "long-running",
+  "description": "",
+  "version": "1.0",
+  "entryPointNodeId": "n_cgglqv9",
+  "maxConcurrency": 5,
+  "allowPause": true,
+  "timeoutSeconds": 0,
+  "defaultVariables": {},
+  "metadata": {},
+  "nodes": [
+    {
+      "nodeId": "n_cgglqv9",
+      "runtimeType": "start",
+      "nodeName": "Start",
+      "description": "",
+      "configuration": {
+        "triggerType": "Manual",
+        "schedule": "",
+        "eventName": ""
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_kxu2ocz",
+      "runtimeType": "Parallel",
+      "nodeName": "Parallel",
+      "description": "",
+      "configuration": {
+        "joinMode": "all",
+        "timeout": 30000,
+        "branches": "System.Collections.Generic.List`1[System.String]"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_x9gscfb",
+      "runtimeType": "Delay",
+      "nodeName": "Delay",
+      "description": "",
+      "configuration": {
+        "duration": 5000,
+        "unit": "ms"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_4dtca83",
+      "runtimeType": "Delay",
+      "nodeName": "Delay",
+      "description": "",
+      "configuration": {
+        "duration": 5000,
+        "unit": "ms"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_0ui7hny",
+      "runtimeType": "Log",
+      "nodeName": "Log",
+      "description": "",
+      "configuration": {
+        "level": "Info",
+        "messageTemplate": "branch_2",
+        "parameterBindings": "System.Collections.Generic.Dictionary`2[System.String,System.String]"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_xqjphkr",
+      "runtimeType": "Log",
+      "nodeName": "Log",
+      "description": "",
+      "configuration": {
+        "level": "Info",
+        "messageTemplate": "branch_1",
+        "parameterBindings": "System.Collections.Generic.Dictionary`2[System.String,System.String]"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    }
+  ],
+  "connections": [
+    {
+      "sourceNodeId": "n_cgglqv9",
+      "targetNodeId": "n_kxu2ocz",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_kxu2ocz",
+      "targetNodeId": "n_x9gscfb",
+      "sourcePort": "branch_1",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "isEnabled": true,
+      "priority": 0
+    },
+    {
+      "sourceNodeId": "n_x9gscfb",
+      "targetNodeId": "n_xqjphkr",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "isEnabled": true,
+      "priority": 0
+    },
+    {
+      "sourceNodeId": "n_kxu2ocz",
+      "targetNodeId": "n_4dtca83",
+      "sourcePort": "branch_2",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "isEnabled": true,
+      "priority": 0
+    },
+    {
+      "sourceNodeId": "n_4dtca83",
+      "targetNodeId": "n_0ui7hny",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "isEnabled": true,
+      "priority": 0
+    }
+  ]
+}

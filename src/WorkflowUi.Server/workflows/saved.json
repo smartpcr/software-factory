@@ -1,5 +1,5 @@
 {
-  "workflowId": "wf_pv05zyc",
+  "workflowId": "wf_v2xpygp",
   "workflowName": "saved",
   "description": "",
   "version": "1.0",
@@ -35,7 +35,7 @@
     {
       "nodeId": "n_ehhw9jr",
       "runtimeType": "PowerShell",
-      "nodeName": "PowerShell Script",
+      "nodeName": "PowerShell Script1",
       "description": "",
       "configuration": {
         "scriptPath": "Scripts/Test.ps1",
@@ -53,7 +53,7 @@
     {
       "nodeId": "n_lls3knp",
       "runtimeType": "Log",
-      "nodeName": "Log",
+      "nodeName": "Log2",
       "description": "",
       "configuration": {
         "level": "Error",
@@ -71,7 +71,7 @@
     {
       "nodeId": "n_l6cppik",
       "runtimeType": "Log",
-      "nodeName": "Log",
+      "nodeName": "Log1",
       "description": "",
       "configuration": {
         "level": "Info",
@@ -89,7 +89,7 @@
     {
       "nodeId": "n_hj2ne3z",
       "runtimeType": "PowerShell",
-      "nodeName": "PowerShell Script",
+      "nodeName": "PowerShell Script2",
       "description": "",
       "configuration": {
         "scriptPath": "Scripts/Failed.ps1",
@@ -103,11 +103,127 @@
       "circuitBreakerPolicy": null,
       "compensationNodeId": null,
       "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_pbqx83g",
+      "runtimeType": "Delay",
+      "nodeName": "Delay1",
+      "description": "",
+      "configuration": {
+        "duration": 1000,
+        "unit": "ms"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_1kas3is",
+      "runtimeType": "Delay",
+      "nodeName": "Delay2",
+      "description": "",
+      "configuration": {
+        "duration": 1000,
+        "unit": "ms"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_rikhz8t",
+      "runtimeType": "End",
+      "nodeName": "End",
+      "description": "",
+      "configuration": {
+        "status": "success"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
     }
   ],
   "connections": [
     {
       "sourceNodeId": "n_a7yb2vh",
+      "targetNodeId": "n_pbqx83g",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_ehhw9jr",
+      "targetNodeId": "n_lls3knp",
+      "sourcePort": "error",
+      "targetPort": "in",
+      "triggerMessageType": "Fail",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_ehhw9jr",
+      "targetNodeId": "n_l6cppik",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_a7yb2vh",
+      "targetNodeId": "n_1kas3is",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_hj2ne3z",
+      "targetNodeId": "n_l6cppik",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_hj2ne3z",
+      "targetNodeId": "n_lls3knp",
+      "sourcePort": "error",
+      "targetPort": "in",
+      "triggerMessageType": "Fail",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_pbqx83g",
       "targetNodeId": "n_ehhw9jr",
       "sourcePort": "out",
       "targetPort": "in",
@@ -118,29 +234,7 @@
       "metadata": null
     },
     {
-      "sourceNodeId": "n_ehhw9jr",
-      "targetNodeId": "n_lls3knp",
-      "sourcePort": "error",
-      "targetPort": "in",
-      "triggerMessageType": "Fail",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
-      "sourceNodeId": "n_ehhw9jr",
-      "targetNodeId": "n_l6cppik",
-      "sourcePort": "out",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
-      "sourceNodeId": "n_a7yb2vh",
+      "sourceNodeId": "n_1kas3is",
       "targetNodeId": "n_hj2ne3z",
       "sourcePort": "out",
       "targetPort": "in",
@@ -151,8 +245,8 @@
       "metadata": null
     },
     {
-      "sourceNodeId": "n_hj2ne3z",
-      "targetNodeId": "n_l6cppik",
+      "sourceNodeId": "n_l6cppik",
+      "targetNodeId": "n_rikhz8t",
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",
@@ -162,11 +256,11 @@
       "metadata": null
     },
     {
-      "sourceNodeId": "n_hj2ne3z",
-      "targetNodeId": "n_lls3knp",
-      "sourcePort": "error",
+      "sourceNodeId": "n_lls3knp",
+      "targetNodeId": "n_rikhz8t",
+      "sourcePort": "out",
       "targetPort": "in",
-      "triggerMessageType": "Fail",
+      "triggerMessageType": "Complete",
       "condition": null,
       "isEnabled": true,
       "priority": 0,

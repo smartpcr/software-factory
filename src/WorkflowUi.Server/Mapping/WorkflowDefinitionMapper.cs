@@ -155,7 +155,12 @@ public static class WorkflowDefinitionMapper
             {
                 Status = GetString(el, config, "status") ?? "success",
             },
-            RuntimeType.Parallel => new ParallelNodeDefinition(),
+            RuntimeType.Parallel => new ParallelNodeDefinition
+            {
+                JoinMode = GetString(el, config, "joinMode") ?? "all",
+                Timeout = GetInt(el, config, "timeout", 30000),
+                Branches = GetStringList(el, config, "branches") ?? ["branch_1", "branch_2"],
+            },
             RuntimeType.Container => new ContainerNodeDefinition(),
             _ => null,
         };
@@ -206,6 +211,26 @@ public static class WorkflowDefinitionMapper
     {
         var str = GetString(el, config, name);
         return Enum.TryParse<T>(str, true, out var result) ? result : default;
+    }
+
+    /// <summary>
+    /// Extracts a string list from a config object first, then falls back to the element.
+    /// Handles JSON arrays. Ignores .ToString() serialized values like "System.Collections...".
+    /// </summary>
+    internal static List<string>? GetStringList(JsonElement el, JsonElement config, string name)
+    {
+        JsonElement arr = default;
+        if (config.ValueKind == JsonValueKind.Object && config.TryGetProperty(name, out arr) && arr.ValueKind == JsonValueKind.Array)
+        {
+            return arr.EnumerateArray().Select(v => v.GetString() ?? "").ToList();
+        }
+
+        if (el.TryGetProperty(name, out arr) && arr.ValueKind == JsonValueKind.Array)
+        {
+            return arr.EnumerateArray().Select(v => v.GetString() ?? "").ToList();
+        }
+
+        return null;
     }
 
     /// <summary>
