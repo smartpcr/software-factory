@@ -5,6 +5,7 @@
 import { State } from './state';
 import { NodeTypes } from './registry';
 import { Canvas } from './canvas';
+import { getPortPos } from './utils';
 
 // Cached viewBox bounds for coordinate conversion
 let vbMinX = 0, vbMinY = 0, vbW = 1, vbH = 1;
@@ -71,30 +72,71 @@ export const Minimap = {
     // Lazy-bind drag handlers on first render
     if (!this._bound) this.init();
 
-    const nodes = [...State.nodes.values()].filter(n => !n.parentId);
-    if (!nodes.length) { svg.innerHTML = ''; return; }
+    const allNodes = [...State.nodes.values()];
+    // Use DOM positions for child nodes (they're rendered inside parents)
+    const nodeRects = new Map<string, { x: number; y: number; w: number; h: number }>();
+    for (const n of allNodes) {
+      const el = document.querySelector(`.node[data-id="${n.nodeId}"]`) as HTMLElement;
+      if (el) {
+        const layer = document.getElementById('nodesLayer');
+        if (layer) {
+          const lr = layer.getBoundingClientRect();
+          const nr = el.getBoundingClientRect();
+          const z = State.canvas.zoom;
+          nodeRects.set(n.nodeId, {
+            x: (nr.left - lr.left) / z,
+            y: (nr.top - lr.top) / z,
+            w: nr.width / z,
+            h: nr.height / z,
+          });
+        }
+      } else if (!n.parentId) {
+        nodeRects.set(n.nodeId, { x: n.x, y: n.y, w: n.width || 220, h: 80 });
+      }
+    }
+
+    if (!nodeRects.size) { svg.innerHTML = ''; return; }
+
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    nodes.forEach(n => {
-      minX = Math.min(minX, n.x);
-      minY = Math.min(minY, n.y);
-      maxX = Math.max(maxX, n.x + 220);
-      maxY = Math.max(maxY, n.y + 100);
-    });
+    for (const r of nodeRects.values()) {
+      minX = Math.min(minX, r.x);
+      minY = Math.min(minY, r.y);
+      maxX = Math.max(maxX, r.x + r.w);
+      maxY = Math.max(maxY, r.y + r.h);
+    }
     const pad = 40;
     minX -= pad; minY -= pad; maxX += pad; maxY += pad;
     const w = maxX - minX, h = maxY - minY;
-
-    // Cache for coordinate conversion
     vbMinX = minX; vbMinY = minY; vbW = w; vbH = h;
-
     svg.setAttribute('viewBox', `${minX} ${minY} ${w} ${h}`);
 
+    const sw = Math.max(1, w / 180); // stroke scaling
     let html = '';
-    nodes.forEach(n => {
-      const c = NodeTypes[n.runtimeType]?.color || 'var(--text-3)';
-      html += `<rect x="${n.x}" y="${n.y}" width="220" height="80" rx="8" fill="${c}" opacity="0.5"/>`;
+
+    // Draw edges
+    State.edges.forEach(edge => {
+      if (edge._internal) return;
+      const sr = nodeRects.get(edge.sourceNodeId);
+      const tr = nodeRects.get(edge.targetNodeId);
+      if (!sr || !tr) return;
+      const sx = sr.x + sr.w / 2, sy = sr.y + sr.h;
+      const tx = tr.x + tr.w / 2, ty = tr.y;
+      const isErr = edge.sourcePort === 'error';
+      const stroke = isErr ? 'var(--err)' : 'var(--stroke-3)';
+      const dash = isErr ? `stroke-dasharray="${2 * sw} ${2 * sw}"` : '';
+      html += `<line x1="${sx}" y1="${sy}" x2="${tx}" y2="${ty}" stroke="${stroke}" stroke-width="${sw}" opacity="0.5" ${dash}/>`;
     });
 
+    // Draw nodes
+    for (const [nid, r] of nodeRects) {
+      const n = State.nodes.get(nid);
+      if (!n) continue;
+      const c = NodeTypes[n.runtimeType]?.color || 'var(--text-3)';
+      const isChild = !!n.parentId;
+      html += `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="${isChild ? 4 : 8}" fill="${c}" opacity="${isChild ? 0.35 : 0.5}"/>`;
+    }
+
+    // Draw viewport rectangle
     const canvasRect = (Canvas.el || document.getElementById('canvas'));
     if (canvasRect) {
       const rect = canvasRect.getBoundingClientRect();
@@ -102,7 +144,7 @@ export const Minimap = {
       const vy = -State.canvas.y / State.canvas.zoom;
       const vw = rect.width / State.canvas.zoom;
       const vh = rect.height / State.canvas.zoom;
-      html += `<rect class="minimap-viewport" x="${vx}" y="${vy}" width="${vw}" height="${vh}" fill="rgba(229,179,106,0.08)" stroke="#d4a657" stroke-width="${3 * vbW / 180}" stroke-dasharray="${6 * vbW / 180} ${4 * vbW / 180}"/>`;
+      html += `<rect class="minimap-viewport" x="${vx}" y="${vy}" width="${vw}" height="${vh}" fill="rgba(229,179,106,0.08)" stroke="#d4a657" stroke-width="${3 * sw}" stroke-dasharray="${6 * sw} ${4 * sw}"/>`;
     }
 
     svg.innerHTML = html;
