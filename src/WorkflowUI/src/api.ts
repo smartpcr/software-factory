@@ -144,11 +144,13 @@ export async function importWorkflowsApi(zipBlob: Blob): Promise<{ imported: str
 
 // ---- Execution ----
 
-export async function startRun(workflowId: string): Promise<{ runId: string }> {
+export async function startRun(workflowId: string, testPayload?: string): Promise<{ runId: string }> {
+  const body: Record<string, unknown> = { workflowId };
+  if (testPayload) body.testPayload = testPayload;
   const res = await fetch('/api/runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ workflowId }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const errBody = await res.text().catch(() => '');

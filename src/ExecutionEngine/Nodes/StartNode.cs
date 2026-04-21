@@ -59,6 +59,33 @@ public class StartNode : ExecutableNodeBase
             nodeContext.OutputData["eventName"] = startDef.EventName;
         }
 
+        if (startDef.TriggerType == TriggerType.WebHook)
+        {
+            nodeContext.OutputData["webHookMethod"] = startDef.WebHookMethod;
+            nodeContext.OutputData["webHookRoute"] = $"/webhook/{startDef.WebHookRoute}";
+            if (!string.IsNullOrEmpty(startDef.BodyJsonSchema))
+            {
+                nodeContext.OutputData["bodyJsonSchema"] = startDef.BodyJsonSchema;
+            }
+
+            // Output messageType is the JSON object parsed from the request body
+            nodeContext.OutputData["messageType"] = "json";
+
+            // Copy test payload fields (body.*) from workflow variables to output
+            foreach (var kvp in workflowContext.Variables)
+            {
+                if (kvp.Key.StartsWith("body.", StringComparison.Ordinal))
+                {
+                    nodeContext.OutputData[kvp.Key] = kvp.Value;
+                }
+            }
+
+            if (workflowContext.Variables.TryGetValue("__webhookBody", out var rawBody))
+            {
+                nodeContext.OutputData["__webhookBody"] = rawBody;
+            }
+        }
+
         await Task.Delay(10, cancellationToken);
 
         return new NodeInstance

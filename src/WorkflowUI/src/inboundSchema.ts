@@ -39,6 +39,9 @@ const nodeOutputSchemas: Record<string, { name: string; type: InboundField['type
     { name: 'triggerTime', type: 'datetime' },
     { name: 'schedule', type: 'string' },
     { name: 'eventName', type: 'string' },
+    { name: 'webHookMethod', type: 'string' },
+    { name: 'webHookRoute', type: 'string' },
+    { name: 'messageType', type: 'string' },
   ],
   HttpRequest: [
     { name: 'statusCode', type: 'number' },
@@ -75,6 +78,55 @@ const nodeOutputSchemas: Record<string, { name: string; type: InboundField['type
     { name: 'currentIndex', type: 'number' },
   ],
 };
+
+/** Map a JSON Schema type string to an InboundField type */
+function jsonSchemaTypeToFieldType(
+  schemaType?: string,
+  format?: string,
+): InboundField['type'] {
+  if (format === 'date-time' || format === 'date') return 'datetime';
+  if (format === 'int64' || format === 'int32') return 'number';
+  switch (schemaType) {
+    case 'integer':
+    case 'number': return 'number';
+    case 'boolean': return 'boolean';
+    case 'string': return 'string';
+    case 'object': return 'object';
+    default: return 'unknown';
+  }
+}
+
+/**
+ * Parse a JSON Schema's "properties" into InboundField descriptors.
+ * Supports nested objects (flattened with dot-path).
+ */
+function parseJsonSchemaProperties(
+  schema: string,
+  prefix = 'body',
+): { name: string; path: string; type: InboundField['type'] }[] {
+  const results: { name: string; path: string; type: InboundField['type'] }[] = [];
+  try {
+    const parsed = JSON.parse(schema);
+    const props = parsed?.properties;
+    if (!props || typeof props !== 'object') return results;
+
+    for (const [key, def] of Object.entries(props)) {
+      const d = def as { type?: string; format?: string; properties?: object };
+      const path = `${prefix}.${key}`;
+      const fieldType = jsonSchemaTypeToFieldType(d.type, d.format);
+      results.push({ name: key, path, type: fieldType });
+
+      // Recurse into nested objects
+      if (d.type === 'object' && d.properties) {
+        const nested = parseJsonSchemaProperties(JSON.stringify({ properties: d.properties }), path);
+        results.push(...nested);
+      }
+    }
+  } catch {
+    // Invalid JSON — skip
+  }
+  return results;
+}
 
 /**
  * Discover all inbound fields available to a node by tracing its incoming edges.
@@ -120,6 +172,30 @@ export function discoverInboundFields(nodeId: string): InboundField[] {
         }
       }
 
+      // Start node with WebHook trigger → add payload fields from bodyJsonSchema
+      if (runtimeType.toLowerCase() === 'start' && sourceNode.config) {
+        const trigType = String(sourceNode.config.triggerType || '');
+        if (trigType === 'WebHook' && sourceNode.config.bodyJsonSchema) {
+          const payloadFields = parseJsonSchemaProperties(
+            String(sourceNode.config.bodyJsonSchema),
+            'body',
+          );
+          for (const pf of payloadFields) {
+            if (!seen.has(pf.path)) {
+              seen.add(pf.path);
+              fields.push({
+                path: pf.path,
+                name: pf.name,
+                type: pf.type,
+                source: 'output',
+                sourceNode: sourceName,
+                sourcePort: edge.sourcePort || 'out',
+              });
+            }
+          }
+        }
+      }
+
       // Also add any config-defined output keys from the source node
       if (sourceNode.config) {
         const outputKey = sourceNode.config.outputKey;
@@ -150,6 +226,32 @@ export function discoverInboundFields(nodeId: string): InboundField[] {
     if (!seen.has(f.path)) {
       seen.add(f.path);
       fields.push({ ...f, sourceNode: 'workflow', sourcePort: '' });
+    }
+  }
+
+  // Add workflow default variables as global fields
+  const wf = State.workflows[State.currentWfId || ''];
+  if (wf?.defaultVariables) {
+    for (const [key, val] of Object.entries(wf.defaultVariables)) {
+      const path = `global.${key}`;
+      if (!seen.has(path)) {
+        seen.add(path);
+        let varType: InboundField['type'] = 'unknown';
+        switch (typeof val) {
+          case 'string': varType = 'string'; break;
+          case 'number': varType = 'number'; break;
+          case 'boolean': varType = 'boolean'; break;
+          case 'object': varType = 'object'; break;
+        }
+        fields.push({
+          path,
+          name: key,
+          type: varType,
+          source: 'context',
+          sourceNode: 'workflow',
+          sourcePort: '',
+        });
+      }
     }
   }
 

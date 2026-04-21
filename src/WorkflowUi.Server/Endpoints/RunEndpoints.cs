@@ -38,7 +38,34 @@ public static class RunEndpoints
             }
 
             var workflow = WorkflowDefinitionMapper.MapFromJson(record.Definition);
-            var runId = await runManager.StartRunAsync(workflow);
+
+            // If a test payload is provided (for webhook testing), pass it as initial variables
+            Dictionary<string, object>? initialVars = null;
+            if (!string.IsNullOrWhiteSpace(request.TestPayload))
+            {
+                try
+                {
+                    var payloadDoc = System.Text.Json.JsonDocument.Parse(request.TestPayload);
+                    initialVars = new Dictionary<string, object> { ["__webhookBody"] = request.TestPayload };
+                    foreach (var prop in payloadDoc.RootElement.EnumerateObject())
+                    {
+                        initialVars[$"body.{prop.Name}"] = prop.Value.ValueKind switch
+                        {
+                            System.Text.Json.JsonValueKind.String => prop.Value.GetString()!,
+                            System.Text.Json.JsonValueKind.Number => prop.Value.TryGetInt64(out var l) ? (object)l : prop.Value.GetDouble(),
+                            System.Text.Json.JsonValueKind.True => true,
+                            System.Text.Json.JsonValueKind.False => false,
+                            _ => prop.Value.GetRawText(),
+                        };
+                    }
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    return Results.BadRequest(new { message = "Invalid test payload JSON." });
+                }
+            }
+
+            var runId = await runManager.StartRunAsync(workflow, initialVars);
             return Results.Ok(new { runId });
         })
         .WithName("StartRun");
@@ -112,4 +139,4 @@ public static class RunEndpoints
 /// <summary>
 /// Request body for starting a new workflow run.
 /// </summary>
-public record RunRequest(string WorkflowId);
+public record RunRequest(string WorkflowId, string? TestPayload = null);

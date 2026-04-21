@@ -22,7 +22,12 @@ public enum TriggerType
     Schedule,
 
     /// <summary>
-    /// Triggered by an external event or webhook.
+    /// Triggered by an external event.
     /// </summary>
-    Event
+    Event,
+
+    /// <summary>
+    /// Triggered by an incoming HTTP webhook request.
+    /// </summary>
+    WebHook
 }

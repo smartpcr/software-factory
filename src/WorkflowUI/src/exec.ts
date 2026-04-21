@@ -207,9 +207,25 @@ export const Exec = {
       logFn('warn', null, 'Could not save to server before execution');
     }
 
+    // Check if workflow has a WebHook start trigger — prompt for test payload
+    let testPayload: string | undefined;
+    const startNode = [...State.nodes.values()].find(
+      n => n.runtimeType.toLowerCase() === 'start' && String(n.config?.triggerType) === 'WebHook',
+    );
+    if (startNode?.config?.bodyJsonSchema) {
+      const sample = generateSampleFromSchema(String(startNode.config.bodyJsonSchema));
+      const input = prompt('Enter test webhook payload (JSON):', sample);
+      if (input === null) {
+        logFn('info', null, 'Run cancelled by user');
+        this.setStatus('idle');
+        return;
+      }
+      testPayload = input;
+    }
+
     // Start real execution via API
     try {
-      const result = await startRun(wf.workflowName);
+      const result = await startRun(wf.workflowName, testPayload);
       this.setStatus('running');
       logFn('info', null, `Run started (ID: ${result.runId})`);
 
@@ -357,4 +373,46 @@ export async function replayRunEvents(
       await new Promise(r => setTimeout(r, 120));
     }
   }
+}
+
+/** Generate a sample JSON object from a JSON Schema string */
+function generateSampleFromSchema(schemaStr: string): string {
+  try {
+    const schema = JSON.parse(schemaStr);
+    const sample = generateSampleObject(schema);
+    return JSON.stringify(sample, null, 2);
+  } catch {
+    return '{}';
+  }
+}
+
+function generateSampleObject(schema: Record<string, unknown>): unknown {
+  if (!schema || typeof schema !== 'object') return {};
+  const type = schema.type as string;
+  const format = schema.format as string | undefined;
+
+  if (type === 'object') {
+    const props = schema.properties as Record<string, Record<string, unknown>> | undefined;
+    if (!props) return {};
+    const obj: Record<string, unknown> = {};
+    for (const [key, propSchema] of Object.entries(props)) {
+      obj[key] = generateSampleObject(propSchema);
+    }
+    return obj;
+  }
+  if (type === 'array') {
+    const items = schema.items as Record<string, unknown> | undefined;
+    return items ? [generateSampleObject(items)] : [];
+  }
+  if (type === 'integer' || (type === 'number' && format?.startsWith('int'))) return 0;
+  if (type === 'number') return 0.0;
+  if (type === 'boolean') return false;
+  if (type === 'string') {
+    if (format === 'date-time') return new Date().toISOString();
+    if (format === 'date') return new Date().toISOString().slice(0, 10);
+    if (format === 'email') return 'user@example.com';
+    if (format === 'uri') return 'https://example.com';
+    return '';
+  }
+  return null;
 }

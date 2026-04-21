@@ -241,6 +241,7 @@ export const Nodes = {
       let detail = trigLabel;
       if (trigLabel === 'Schedule' && c.schedule) detail = String(c.schedule);
       if (trigLabel === 'Event' && c.eventName) detail = String(c.eventName);
+      if (trigLabel === 'WebHook' && c.webHookRoute) detail = `/webhook/${String(c.webHookRoute)}`;
       return `<div class="node-body-row"><span class="lab">trigger</span><span class="val">${escapeHtml(detail)}</span></div>`;
     }
     if (node.runtimeType === 'trigger') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.method))}</span><span class="val">${escapeHtml(String(c.route || '—'))}</span></div>`;

@@ -161,6 +161,70 @@ export function mountCSharpEditor(
   };
 }
 
+/**
+ * Create or update a Monaco JSON editor in a container element.
+ * Monaco provides built-in JSON validation (syntax errors, trailing commas, etc.).
+ * @param containerId The DOM element ID to host the editor.
+ * @param value Initial JSON content.
+ * @param onChange Callback when content changes.
+ * @returns Cleanup function to dispose the editor.
+ */
+export function mountJsonEditor(
+  containerId: string,
+  value: string,
+  onChange: (val: string) => void,
+): () => void {
+  // Dispose existing editor in this container
+  const existing = activeEditors.get(containerId);
+  if (existing) {
+    existing.dispose();
+    activeEditors.delete(containerId);
+  }
+
+  const container = document.getElementById(containerId);
+  if (!container) return () => {};
+
+  const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
+
+  // Configure JSON language defaults for validation
+  monaco.languages.json.jsonDefaults.setDiagnosticsOptions({
+    validate: true,
+    allowComments: false,
+    trailingCommas: 'error',
+    schemaValidation: 'error',
+  });
+
+  const editor = monaco.editor.create(container, {
+    value,
+    language: 'json',
+    theme: isDark ? 'vs-dark' : 'vs',
+    minimap: { enabled: false },
+    fontSize: 12,
+    fontFamily: "'JetBrains Mono', 'Fira Code', Consolas, monospace",
+    lineNumbers: 'on',
+    scrollBeyondLastLine: false,
+    automaticLayout: true,
+    tabSize: 2,
+    wordWrap: 'on',
+    renderLineHighlight: 'line',
+    padding: { top: 8, bottom: 8 },
+    scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
+    formatOnPaste: true,
+    formatOnType: true,
+  });
+
+  editor.onDidChangeModelContent(() => {
+    onChange(editor.getValue());
+  });
+
+  activeEditors.set(containerId, editor);
+
+  return () => {
+    editor.dispose();
+    activeEditors.delete(containerId);
+  };
+}
+
 /** Update theme for all active editors */
 export function updateEditorTheme(isDark: boolean) {
   monaco.editor.setTheme(isDark ? 'vs-dark' : 'vs');

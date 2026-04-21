@@ -8,7 +8,7 @@ import { State } from './state';
 import { escapeHtml } from './utils';
 import { Nodes } from './nodes';
 import { aiModels, tierColor } from './config';
-import { mountCSharpEditor, disposeAllEditors } from './csharp-editor';
+import { mountCSharpEditor, mountJsonEditor, disposeAllEditors } from './csharp-editor';
 import { discoverInboundFields } from './inboundSchema';
 import type { InboundField } from './inboundSchema';
 import { fetchAIAgents, fetchAISkills } from './api';
@@ -556,11 +556,18 @@ export const Inspector = {
     el.querySelectorAll<HTMLElement>('.ins-monaco-container').forEach(container => {
       const nodeId = container.dataset.nodeId;
       const configKey = container.dataset.configKey;
+      const lang = container.dataset.lang;
       if (!nodeId || !configKey) return;
       const value = String(node.config?.[configKey] ?? '');
-      mountCSharpEditor(container.id, value, (val) => {
-        callbacks.updateNodeConfig(nodeId, configKey, val);
-      });
+      if (lang === 'json') {
+        mountJsonEditor(container.id, value, (val) => {
+          callbacks.updateNodeConfig(nodeId, configKey, val);
+        });
+      } else {
+        mountCSharpEditor(container.id, value, (val) => {
+          callbacks.updateNodeConfig(nodeId, configKey, val);
+        });
+      }
     });
   },
 
@@ -815,16 +822,22 @@ export const Inspector = {
         errors.push('Event name is required when trigger type is Event');
       }
     }
+    if (String(c.triggerType) === 'WebHook') {
+      if (!c.webHookRoute || !String(c.webHookRoute).trim()) {
+        errors.push('Route is required when trigger type is WebHook');
+      }
+    }
     node.validationErrors = errors.length > 0 ? errors : undefined;
   },
 
   configFieldsHtml(node: FlowNode): string {
     const c = node.config || {};
     const id = node.nodeId;
+    const rt = node.runtimeType.toLowerCase();
     let fields = '';
     let title = 'Configuration';
 
-    if (node.runtimeType === 'start') {
+    if (rt === 'start') {
       title = 'Start Trigger';
       const trigType = String(c.triggerType || 'Manual');
       const cronDesc = trigType === 'Schedule' && c.schedule ? this.describeCron(String(c.schedule)) : '';
@@ -837,6 +850,7 @@ export const Inspector = {
             <option value="Manual" ${trigType === 'Manual' ? 'selected' : ''}>Manual</option>
             <option value="Schedule" ${trigType === 'Schedule' ? 'selected' : ''}>Schedule</option>
             <option value="Event" ${trigType === 'Event' ? 'selected' : ''}>Event</option>
+            <option value="WebHook" ${trigType === 'WebHook' ? 'selected' : ''}>WebHook</option>
           </select>
         </div>
         ${trigType === 'Schedule' ? `
@@ -862,8 +876,29 @@ export const Inspector = {
           <input class="mono" value="${escapeHtml(String(c.eventName || ''))}" placeholder="order.created" data-config-key="eventName" data-node-id="${id}" />
           <div class="ins-field-hint">Name of the external event to listen for.</div>
         </div>` : ''}
+        ${trigType === 'WebHook' ? `
+        <div class="ins-field">
+          <label class="ins-field-label">Method</label>
+          <select data-config-key="webHookMethod" data-node-id="${id}">
+            <option value="POST" ${String(c.webHookMethod || 'POST') === 'POST' ? 'selected' : ''}>POST</option>
+            <option value="PUT" ${String(c.webHookMethod) === 'PUT' ? 'selected' : ''}>PUT</option>
+            <option value="PATCH" ${String(c.webHookMethod) === 'PATCH' ? 'selected' : ''}>PATCH</option>
+          </select>
+        </div>
+        <div class="ins-field">
+          <label class="ins-field-label">Route</label>
+          <div style="display:flex; align-items:center; gap:0;">
+            <span class="ins-field-hint" style="white-space:nowrap; padding:4px 6px; background:var(--bg-2); border:1px solid var(--border); border-right:none; border-radius:4px 0 0 4px; font-size:12px;">/webhook/</span>
+            <input class="mono" style="border-radius:0 4px 4px 0;" value="${escapeHtml(String(c.webHookRoute || ''))}" placeholder="my-workflow" data-config-key="webHookRoute" data-node-id="${id}" />
+          </div>
+        </div>
+        <div class="ins-field">
+          <label class="ins-field-label">Body JSON Schema</label>
+          <div class="ins-monaco-container" id="monaco-${id}-bodyJsonSchema" data-node-id="${id}" data-config-key="bodyJsonSchema" data-lang="json"></div>
+          <div class="ins-field-hint">JSON Schema describing the expected request body. Output messageType is the parsed JSON object.</div>
+        </div>` : ''}
       `;
-    } else if (node.runtimeType === 'trigger') {
+    } else if (rt === 'trigger') {
       title = 'Webhook';
       // Parse params JSON safely
       let params: { name: string; value: string }[] = [];
@@ -902,7 +937,7 @@ export const Inspector = {
           <div class="ins-field-hint">Query or body parameters passed to the webhook.</div>
         </div>
       `;
-    } else if (node.runtimeType === 'if') {
+    } else if (rt === 'if' || rt === 'ifelse') {
       title = 'Condition';
       const condEditorId = `monaco-${id}-condition`;
       fields = `
@@ -912,7 +947,7 @@ export const Inspector = {
           <div class="ins-field-hint">Connect <code>true</code> and <code>false</code> branches.</div>
         </div>
       `;
-    } else if (node.runtimeType === 'switch') {
+    } else if (rt === 'switch') {
       title = 'Switch';
       fields = `
         <div class="ins-field">
@@ -934,7 +969,7 @@ export const Inspector = {
           <button class="add-case-btn" data-action="add-branch" data-node-id="${id}">+ Add case</button>
         </div>
       `;
-    } else if (node.runtimeType === 'parallel') {
+    } else if (rt === 'parallel') {
       title = 'Parallel';
       fields = `
         <div class="ins-field">
@@ -964,7 +999,7 @@ export const Inspector = {
           <button class="add-case-btn" data-action="add-branch" data-node-id="${id}">+ Add branch</button>
         </div>
       `;
-    } else if (node.runtimeType === 'foreach') {
+    } else if (rt === 'foreach') {
       title = 'ForEach';
       fields = `
         <div class="ins-field">
@@ -985,7 +1020,7 @@ export const Inspector = {
           <div class="ins-field-hint">Connect <code>iterate</code> to loop body. The <code>out</code> port fires after all iterations.</div>
         </div>
       `;
-    } else if (node.runtimeType === 'subflow') {
+    } else if (rt === 'subflow') {
       title = 'Subflow Reference';
       const wfOptions = Object.values(State.workflows)
         .filter(w => w.workflowId !== State.currentWfId)
@@ -1091,7 +1126,7 @@ export const Inspector = {
           </div>
         </div>
       `;
-    } else if (node.runtimeType === 'http') {
+    } else if (rt === 'http' || rt === 'httprequest') {
       fields = `
         <div class="ins-field" style="display:flex; gap:8px;">
           <div style="width: 90px">
@@ -1114,7 +1149,7 @@ export const Inspector = {
           <textarea data-config-key="headers" data-node-id="${id}">${escapeHtml(String(c.headers || '{}'))}</textarea>
         </div>
       `;
-    } else if (node.runtimeType === 'delay') {
+    } else if (rt === 'delay') {
       fields = `
         <div class="ins-field" style="display:flex; gap:8px;">
           <div style="flex:2">
@@ -1131,7 +1166,7 @@ export const Inspector = {
           </div>
         </div>
       `;
-    } else if (node.runtimeType === 'transform') {
+    } else if (rt === 'transform') {
       fields = `
         <div class="ins-field">
           <label class="ins-field-label">Expression</label>
@@ -1139,7 +1174,7 @@ export const Inspector = {
           <div class="ins-field-hint">Transform the input payload. Reference with <code>input</code>.</div>
         </div>
       `;
-    } else if (node.runtimeType === 'log' || node.runtimeType === 'Log') {
+    } else if (rt === 'log') {
       title = 'Log Output';
       const level = String(c.level || 'Info');
       const msgTpl = String(c.messageTemplate || c.message || '');
@@ -1203,7 +1238,7 @@ export const Inspector = {
           ${inboundFields.map(f => `<option value="${escapeHtml(f.path)}">${escapeHtml(f.name)} (${f.sourceNode})</option>`).join('')}
         </datalist>
       `;
-    } else if (node.runtimeType === 'container') {
+    } else if (rt === 'container') {
       fields = `
         <div class="ins-field">
           <label class="ins-field-label">Label</label>
@@ -1216,7 +1251,7 @@ export const Inspector = {
           </label>
         </div>
       `;
-    } else if (node.runtimeType === 'end') {
+    } else if (rt === 'end') {
       fields = `
         <div class="ins-field">
           <label class="ins-field-label">Exit status</label>
@@ -1254,9 +1289,9 @@ export const Inspector = {
             </div>`;
           }
           // C# code fields: use Monaco editor
-          const isCSharpCode = (prop.name === 'scriptContent' && (node.runtimeType === 'CSharpScript' || node.runtimeType === 'CSharpTask'))
-            || (prop.name === 'conditionExpression' && node.runtimeType === 'While')
-            || (prop.name === 'collectionExpression' && node.runtimeType === 'ForEach');
+          const isCSharpCode = (prop.name === 'scriptContent' && (rt === 'csharpscript' || rt === 'csharptask'))
+            || (prop.name === 'conditionExpression' && rt === 'while')
+            || (prop.name === 'collectionExpression' && rt === 'foreach');
           if (isCSharpCode) {
             const editorId = `monaco-${id}-${prop.name}`;
             const small = prop.name !== 'scriptContent';

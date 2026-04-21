@@ -1,0 +1,65 @@
+{
+  "workflowId": "wf_bytmp5b",
+  "workflowName": "Untitled 13",
+  "description": "",
+  "version": "1.0",
+  "entryPointNodeId": null,
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0,
+  "defaultVariables": {},
+  "metadata": {},
+  "nodes": [
+    {
+      "nodeId": "n_5vecfce",
+      "runtimeType": "start",
+      "nodeName": "Start",
+      "description": "",
+      "configuration": {
+        "triggerType": "WebHook",
+        "schedule": "0 * * * *",
+        "eventName": "",
+        "webHookRoute": "test",
+        "bodyJsonSchema": "{\n   \"type\": \"object\",\n   \"required\": [\"incidentId\", \"serviceName\", \"teamName\", \"timestamp\"],\n   \"properties\": {\n     \"incidentId\": { \"type\": \"integer\", \"format\": \"int64\" },\n     \"serviceName\": { \"type\": \"string\" },\n     \"teamName\": { \"type\": \"string\" },\n     \"timestamp\": { \"type\": \"string\", \"format\": \"date-time\" }\n   }\n }"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_6m5fwz9",
+      "runtimeType": "Log",
+      "nodeName": "Log",
+      "description": "",
+      "configuration": {
+        "level": "Info",
+        "messageTemplate": "",
+        "parameterBindings": "System.Collections.Generic.Dictionary`2[System.String,System.String]"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    }
+  ],
+  "connections": [
+    {
+      "sourceNodeId": "n_5vecfce",
+      "targetNodeId": "n_6m5fwz9",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    }
+  ]
+}

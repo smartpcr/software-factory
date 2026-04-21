@@ -43,7 +43,7 @@ public class RunManager
     /// Starts a new workflow run in a background task.
     /// Returns the run ID immediately; the engine executes asynchronously.
     /// </summary>
-    public async Task<Guid> StartRunAsync(WorkflowDefinition workflow)
+    public async Task<Guid> StartRunAsync(WorkflowDefinition workflow, Dictionary<string, object>? initialVariables = null)
     {
         var runId = Guid.NewGuid();
         var cts = new CancellationTokenSource();
@@ -68,11 +68,13 @@ public class RunManager
             ? TimeSpan.FromSeconds(workflow.TimeoutSeconds)
             : (TimeSpan?)null;
 
+        var initVars = initialVariables ?? [];
+
         activeRun.ExecutionTask = Task.Run(async () =>
         {
             try
             {
-                var context = await engine.StartAsync(workflow, timeout, cts.Token);
+                var context = await engine.StartAsync(workflow, initVars, timeout, cts.Token);
                 activeRun.Status = context.Status.ToString();
 
                 var kind = context.Status == ExecutionEngine.Enums.WorkflowExecutionStatus.Completed

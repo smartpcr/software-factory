@@ -32,6 +32,23 @@ public class StartNodeDefinition : NodeDefinition
     /// </summary>
     public string? EventName { get; set; }
 
+    /// <summary>
+    /// Gets or sets the HTTP method for the webhook (only used when TriggerType is WebHook).
+    /// </summary>
+    public string WebHookMethod { get; set; } = "POST";
+
+    /// <summary>
+    /// Gets or sets the route name for the webhook endpoint (only used when TriggerType is WebHook).
+    /// The full route is /webhook/{WebHookRoute}.
+    /// </summary>
+    public string? WebHookRoute { get; set; }
+
+    /// <summary>
+    /// Gets or sets the JSON schema describing the expected webhook request body
+    /// (only used when TriggerType is WebHook).
+    /// </summary>
+    public string? BodyJsonSchema { get; set; }
+
     /// <inheritdoc/>
     public override IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
@@ -72,6 +89,16 @@ public class StartNodeDefinition : NodeDefinition
                 yield return new ValidationResult(
                     "EventName is required when TriggerType is Event.",
                     new[] { nameof(this.EventName) });
+            }
+        }
+
+        if (this.TriggerType == TriggerType.WebHook)
+        {
+            if (string.IsNullOrWhiteSpace(this.WebHookRoute))
+            {
+                yield return new ValidationResult(
+                    "WebHookRoute is required when TriggerType is WebHook.",
+                    new[] { nameof(this.WebHookRoute) });
             }
         }
     }
