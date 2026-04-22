@@ -10,6 +10,7 @@ import { Edges } from './edges';
 import { startRun, cancelRun, saveWorkflow as saveWorkflowApi } from './api';
 import type { WorkflowData } from './types';
 import * as signalR from '@microsoft/signalr';
+import { mountJsonEditor, disposeAllEditors as _disposeEditors } from './csharp-editor';
 
 type LogFn = (level: string, nodeId: string | null, msg: string) => void;
 type ClearLogsFn = () => void;
@@ -57,7 +58,15 @@ function handleRunEvent(event: RunEvent) {
     case 'NodeCompleted': {
       const node = findNodeById(event.nodeId);
       if (node) { node.status = 'success'; Nodes.render(); }
-      logFn('success', event.nodeId || null, `✓ ${event.nodeName || event.nodeId} completed`);
+      // For Log nodes, display the resolved log message in the execution log
+      const outData = event.payload?.outputData as Record<string, unknown> | undefined;
+      if (node && node.runtimeType.toLowerCase() === 'log' && outData?.message) {
+        const lvl = String(outData.level || 'info');
+        const logLevel = lvl === 'error' ? 'error' : lvl === 'warn' || lvl === 'warning' ? 'warn' : 'info';
+        logFn(logLevel, event.nodeId || null, `📝 [${lvl.toUpperCase()}] ${String(outData.message)}`);
+      } else {
+        logFn('success', event.nodeId || null, `✓ ${event.nodeName || event.nodeId} completed`);
+      }
       // Animate edges
       if (event.nodeId) {
         State.edges.forEach(e => {
@@ -207,20 +216,20 @@ export const Exec = {
       logFn('warn', null, 'Could not save to server before execution');
     }
 
-    // Check if workflow has a WebHook start trigger — prompt for test payload
+    // Check if workflow has a WebHook start trigger — show payload editor dialog
     let testPayload: string | undefined;
     const startNode = [...State.nodes.values()].find(
       n => n.runtimeType.toLowerCase() === 'start' && String(n.config?.triggerType) === 'WebHook',
     );
     if (startNode?.config?.bodyJsonSchema) {
       const sample = generateSampleFromSchema(String(startNode.config.bodyJsonSchema));
-      const input = prompt('Enter test webhook payload (JSON):', sample);
-      if (input === null) {
+      const result = await showWebhookPayloadDialog(sample, String(startNode.config.webHookRoute || ''));
+      if (result === null) {
         logFn('info', null, 'Run cancelled by user');
         this.setStatus('idle');
         return;
       }
-      testPayload = input;
+      testPayload = result;
     }
 
     // Start real execution via API
@@ -355,7 +364,15 @@ export async function replayRunEvents(
         break;
       case 'NodeCompleted': {
         const dur = event.payload?.duration as string || '';
-        log('success', event.nodeId || null, `✓ ${event.nodeName || event.nodeId} completed ${dur ? `(${dur})` : ''}`);
+        const replayOut = event.payload?.outputData as Record<string, unknown> | undefined;
+        const replayNode = event.nodeId ? findNodeById(event.nodeId) : null;
+        if (replayNode && replayNode.runtimeType.toLowerCase() === 'log' && replayOut?.message) {
+          const rlvl = String(replayOut.level || 'info');
+          const rLogLevel = rlvl === 'error' ? 'error' : rlvl === 'warn' || rlvl === 'warning' ? 'warn' : 'info';
+          log(rLogLevel, event.nodeId || null, `📝 [${rlvl.toUpperCase()}] ${String(replayOut.message)}`);
+        } else {
+          log('success', event.nodeId || null, `✓ ${event.nodeName || event.nodeId} completed ${dur ? `(${dur})` : ''}`);
+        }
         break;
       }
       case 'NodeFailed':
@@ -415,4 +432,95 @@ function generateSampleObject(schema: Record<string, unknown>): unknown {
     return '';
   }
   return null;
+}
+
+/**
+ * Show a modal dialog with a Monaco JSON editor for entering webhook test payload.
+ * Returns the JSON string on confirm, or null on cancel.
+ */
+function showWebhookPayloadDialog(defaultValue: string, route: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    let editorCleanup: (() => void) | null = null;
+    let currentValue = defaultValue;
+
+    // Backdrop
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    backdrop.style.cssText = 'position:fixed;inset:0;z-index:9000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);';
+
+    // Dialog
+    const dialog = document.createElement('div');
+    dialog.className = 'modal';
+    dialog.style.cssText = 'width:560px;max-height:80vh;display:flex;flex-direction:column;padding:0;overflow:hidden;';
+
+    dialog.innerHTML = `
+      <div style="padding:20px 24px 12px;">
+        <h3 style="font-size:15px;margin:0 0 4px;">Test Webhook Payload</h3>
+        <p style="color:var(--text-2);font-size:12px;margin:0;">
+          POST <code style="background:var(--bg-2);padding:2px 6px;border-radius:3px;font-size:11px;">/webhook/${route}</code>
+          — edit the JSON body below and click Run.
+        </p>
+      </div>
+      <div style="flex:1;min-height:280px;padding:0 24px;">
+        <div id="webhook-payload-editor" style="height:280px;border:1px solid var(--stroke-1);border-radius:6px;overflow:hidden;"></div>
+      </div>
+      <div style="padding:4px 24px 8px;">
+        <div id="webhook-payload-error" style="font-size:11px;color:var(--err);min-height:16px;"></div>
+      </div>
+      <div class="modal-actions" style="padding:0 24px 20px;">
+        <button class="modal-btn-secondary" id="webhook-cancel">Cancel</button>
+        <button class="modal-btn-primary" id="webhook-run">▶ Run</button>
+      </div>
+    `;
+
+    backdrop.appendChild(dialog);
+    document.body.appendChild(backdrop);
+
+    // Mount Monaco JSON editor
+    requestAnimationFrame(() => {
+      editorCleanup = mountJsonEditor('webhook-payload-editor', defaultValue, (val) => {
+        currentValue = val;
+        // Live JSON validation feedback
+        const errEl = document.getElementById('webhook-payload-error');
+        if (errEl) {
+          try {
+            JSON.parse(val);
+            errEl.textContent = '';
+          } catch (e) {
+            errEl.textContent = `⚠ ${(e as Error).message}`;
+          }
+        }
+      });
+    });
+
+    const cleanup = () => {
+      if (editorCleanup) editorCleanup();
+      backdrop.remove();
+    };
+
+    // Cancel
+    dialog.querySelector('#webhook-cancel')!.addEventListener('click', () => {
+      cleanup();
+      resolve(null);
+    });
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) { cleanup(); resolve(null); }
+    });
+    document.addEventListener('keydown', function onEsc(e) {
+      if (e.key === 'Escape') { document.removeEventListener('keydown', onEsc); cleanup(); resolve(null); }
+    });
+
+    // Run
+    dialog.querySelector('#webhook-run')!.addEventListener('click', () => {
+      try {
+        JSON.parse(currentValue);
+      } catch (e) {
+        const errEl = document.getElementById('webhook-payload-error');
+        if (errEl) errEl.textContent = `⚠ ${(e as Error).message}`;
+        return;
+      }
+      cleanup();
+      resolve(currentValue);
+    });
+  });
 }

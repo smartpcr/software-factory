@@ -46,7 +46,7 @@ public class LogNode : ExecutableNodeBase
         });
 
         // Resolve template placeholders
-        var resolvedMessage = ResolveTemplate(logDef.MessageTemplate, logDef.ParameterBindings, nodeContext);
+        var resolvedMessage = ResolveTemplate(logDef.MessageTemplate, logDef.ParameterBindings, nodeContext, workflowContext);
 
         nodeContext.OutputData["level"] = logDef.Level.ToString().ToLowerInvariant();
         nodeContext.OutputData["message"] = resolvedMessage;
@@ -68,7 +68,8 @@ public class LogNode : ExecutableNodeBase
     private static string ResolveTemplate(
         string template,
         Dictionary<string, string> bindings,
-        NodeExecutionContext context)
+        NodeExecutionContext context,
+        WorkflowExecutionContext workflowContext)
     {
         if (string.IsNullOrEmpty(template))
         {
@@ -85,10 +86,22 @@ public class LogNode : ExecutableNodeBase
                 return ResolveExpression(expression, context);
             }
 
-            // Fall back to input data key match
+            // Check input data by exact key
             if (context.InputData.TryGetValue(name, out var value))
             {
                 return value?.ToString() ?? string.Empty;
+            }
+
+            // Check input data with "body." prefix (webhook payload fields)
+            if (context.InputData.TryGetValue($"body.{name}", out var bodyValue))
+            {
+                return bodyValue?.ToString() ?? string.Empty;
+            }
+
+            // Check workflow global variables
+            if (workflowContext.Variables.TryGetValue(name, out var globalValue))
+            {
+                return globalValue?.ToString() ?? string.Empty;
             }
 
             // Unresolved placeholder — keep as-is

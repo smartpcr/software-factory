@@ -434,6 +434,23 @@ export const Inspector = {
         ${d.cancelReason ? `<div class="ins-runtime-row"><span class="ins-runtime-key">Reason</span><span class="ins-runtime-val">${escapeHtml(String(d.cancelReason))}</span></div>` : ''}
         ${d.nodeInstanceId ? `<div class="ins-runtime-row"><span class="ins-runtime-key">Instance</span><span class="ins-runtime-val" style="font-size:9px">${escapeHtml(String(d.nodeInstanceId).substring(0, 8))}…</span></div>` : ''}
       </div>
+      ${(() => {
+        // For Log nodes, show resolved log message prominently
+        const rt = node.runtimeType?.toLowerCase();
+        const out = d.outputData as Record<string, unknown> | undefined;
+        if (rt === 'log' && out?.message) {
+          const lvl = String(out.level || 'info').toUpperCase();
+          const lvlColor = lvl === 'ERROR' ? 'var(--err)' : lvl === 'WARN' || lvl === 'WARNING' ? 'var(--warn, orange)' : 'var(--ok, #4caf50)';
+          return `<div class="ins-runtime-data-section">
+            <div class="ins-runtime-data-label">Log Output</div>
+            <div style="padding:6px 8px; border-radius:4px; background:var(--bg-2); border-left:3px solid ${lvlColor}; font-size:12px;">
+              <span style="font-weight:600; color:${lvlColor}; margin-right:6px;">${escapeHtml(lvl)}</span>
+              <span>${escapeHtml(String(out.message))}</span>
+            </div>
+          </div>`;
+        }
+        return '';
+      })()}
       ${renderDataTable('Input Data', d.inputData)}
       ${renderDataTable('Output Data', d.outputData)}
       ${renderDataTable('Global Variables', d.globalVariables)}
