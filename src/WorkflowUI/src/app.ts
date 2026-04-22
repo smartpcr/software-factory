@@ -1220,8 +1220,42 @@ export const App = {
       body.innerHTML = `<div class="log-empty">No execution logs yet. Hit Run to start.</div>`;
       return;
     }
-    body.innerHTML = State.logs.slice().reverse().map(e => {
+
+    // Merge consecutive NodeLog entries (🤖) from the same node into grouped blocks
+    const merged: typeof State.logs = [];
+    for (const entry of State.logs) {
+      const prev = merged.length > 0 ? merged[merged.length - 1] : null;
+      const isAgentLog = entry.msg.startsWith('🤖 ');
+      const prevIsAgentLog = prev?.msg.startsWith('🤖 ');
+
+      if (isAgentLog && prevIsAgentLog && entry.nodeId && entry.nodeId === prev?.nodeId) {
+        // Merge into previous entry
+        const prevMsg = prev.msg;
+        const newLine = entry.msg.replace(/^🤖 \[[^\]]*\]\s*/, '');
+        prev.msg = prevMsg + '\n' + newLine;
+      } else {
+        merged.push({ ...entry });
+      }
+    }
+
+    body.innerHTML = merged.slice().reverse().map(e => {
       const nodeName = e.nodeId ? (State.nodes.get(e.nodeId)?.nodeName || e.nodeId) : 'system';
+      const isMultiLine = e.msg.includes('\n');
+      if (isMultiLine) {
+        // Render merged agent log as a collapsible block
+        const lines = e.msg.split('\n');
+        const header = lines[0];
+        const details = lines.slice(1)
+          .map(l => `<div class="log-agent-line">${escapeHtml(l)}</div>`)
+          .join('');
+        return `<div class="log-line log-agent-group">
+          <span class="log-time">${escapeHtml(e.t)}</span>
+          <span class="log-level ${e.level}">${escapeHtml(e.level)}</span>
+          <span class="log-node">[${escapeHtml(nodeName)}]</span>
+          <span class="log-msg">${escapeHtml(header)}</span>
+          <details class="log-agent-details"><summary>${lines.length - 1} tool calls</summary>${details}</details>
+        </div>`;
+      }
       return `<div class="log-line">
         <span class="log-time">${escapeHtml(e.t)}</span>
         <span class="log-level ${e.level}">${escapeHtml(e.level)}</span>

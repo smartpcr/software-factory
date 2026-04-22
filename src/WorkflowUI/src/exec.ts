@@ -386,6 +386,14 @@ export async function replayRunEvents(
       case 'NodeFailed':
         log('error', event.nodeId || null, `✗ ${event.nodeName || event.nodeId} failed: ${event.payload?.errorMessage || 'unknown'}`);
         break;
+      case 'NodeLog': {
+        const logMsg = (event.payload?.message as string) || '';
+        if (logMsg) {
+          const logNodeName = event.nodeName || findNodeById(event.nodeId)?.nodeName || event.nodeId || '';
+          log('info', event.nodeId || null, `🤖 [${logNodeName}] ${logMsg}`);
+        }
+        break;
+      }
       case 'WorkflowCompleted':
         log('success', null, `✓ Workflow completed (${event.payload?.duration || ''})`);
         break;
