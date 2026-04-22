@@ -40,7 +40,7 @@
       "configuration": {
         "level": "Warn",
         "messageTemplate": "Incident={incidentId}, on {serviceName}/{teamName}, created at {timestamp}, global var: {newVar}",
-        "parameterBindings": "System.Collections.Generic.Dictionary`2[System.String,System.String]"
+        "parameterBindings": "{\"incidentId\":\"body.incidentId\",\"serviceName\":\"body.serviceName\",\"teamName\":\"body.teamName\",\"timestamp\":\"body.timestamp\",\"newVar\":\"global.newVar\"}"
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -83,8 +83,26 @@
       "description": "",
       "configuration": {
         "level": "Info",
-        "messageTemplate": "incident folder: {incidentFolder}",
-        "parameterBindings": "System.Collections.Generic.Dictionary`2[System.String,System.String]"
+        "messageTemplate": "incident folder: {incidentFolder}, cost: input={inputTokenUsed}, output={outputTokenUsed}",
+        "parameterBindings": "{\"incidentFolder\":\"incidentFolder\",\"tokenUsed\":\"ai.inputTokens\",\"inputTokenUsed\":\"ai.inputTokens\",\"outputTokenUsed\":\"ai.outputTokens\"}"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_5j72azt",
+      "runtimeType": "Log",
+      "nodeName": "Log",
+      "description": "",
+      "configuration": {
+        "level": "Error",
+        "messageTemplate": "Error: {errorMessage}",
+        "parameterBindings": "{\"errorMessage\":\"errorMessage\"}"
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -135,6 +153,17 @@
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_jboali7",
+      "targetNodeId": "n_5j72azt",
+      "sourcePort": "error",
+      "targetPort": "in",
+      "triggerMessageType": "Fail",
       "condition": null,
       "isEnabled": true,
       "priority": 0,

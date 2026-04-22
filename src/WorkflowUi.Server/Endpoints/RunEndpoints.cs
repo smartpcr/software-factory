@@ -9,6 +9,7 @@ namespace WorkflowUi.Server.Endpoints;
 using System;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 using WorkflowUi.Server.Hosting;
 using WorkflowUi.Server.Hubs;
 using WorkflowUi.Server.Mapping;
@@ -28,6 +29,8 @@ public static class RunEndpoints
             RunRequest request,
             RunManager runManager,
             IWorkflowStore store,
+            IOptions<PersistenceOptions> persistenceOptions,
+            IWebHostEnvironment env,
             ClaimsPrincipal user,
             CancellationToken ct) =>
         {
@@ -37,7 +40,10 @@ public static class RunEndpoints
                 return Results.NotFound(new { message = $"Workflow '{request.WorkflowId}' not found." });
             }
 
-            var workflow = WorkflowDefinitionMapper.MapFromJson(record.Definition);
+            var workflowsRoot = Path.Combine(env.ContentRootPath, persistenceOptions.Value.WorkflowsRoot);
+            var workflow = WorkflowDefinitionMapper.MapFromJson(
+                record.Definition,
+                workflowsRoot);
 
             // If a test payload is provided (for webhook testing), pass it as initial variables
             Dictionary<string, object>? initialVars = null;

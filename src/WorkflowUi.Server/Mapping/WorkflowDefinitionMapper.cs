@@ -20,7 +20,9 @@ public static class WorkflowDefinitionMapper
     /// <summary>
     /// Parses a workflow JSON string into a typed <see cref="WorkflowDefinition"/>.
     /// </summary>
-    public static WorkflowDefinition MapFromJson(string json)
+    /// <param name="json">Workflow JSON.</param>
+    /// <param name="workflowsRoot">Optional root directory for resolving subflow file paths from workflow IDs.</param>
+    public static WorkflowDefinition MapFromJson(string json, string? workflowsRoot = null)
     {
         var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
@@ -74,6 +76,12 @@ public static class WorkflowDefinitionMapper
             {
                 wf.Connections.Add(MapConnection(connEl));
             }
+        }
+
+        // Resolve subflow file paths from workflowId when workflowFilePath is empty
+        if (!string.IsNullOrEmpty(workflowsRoot))
+        {
+            ResolveSubflowPaths(wf, root, workflowsRoot);
         }
 
         return wf;
@@ -358,5 +366,41 @@ public static class WorkflowDefinitionMapper
         }
 
         return defaultValue;
+    }
+
+    /// <summary>
+    /// Post-process subflow nodes: resolve workflowId → workflowFilePath
+    /// when the file path is empty but a workflowId is set in the node config.
+    /// </summary>
+    private static void ResolveSubflowPaths(WorkflowDefinition wf, JsonElement root, string workflowsRoot)
+    {
+        if (!root.TryGetProperty("nodes", out var nodesEl)) return;
+
+        foreach (var nodeEl in nodesEl.EnumerateArray())
+        {
+            var rtStr = nodeEl.TryGetProperty("runtimeType", out var rt) ? rt.GetString() : null;
+            if (!string.Equals(rtStr, "Subflow", StringComparison.OrdinalIgnoreCase)) continue;
+
+            var nodeId = nodeEl.TryGetProperty("nodeId", out var nid) ? nid.GetString() : null;
+            if (string.IsNullOrEmpty(nodeId)) continue;
+
+            var subflowDef = wf.Nodes.OfType<SubflowNodeDefinition>()
+                .FirstOrDefault(n => n.NodeId == nodeId);
+            if (subflowDef == null || !string.IsNullOrWhiteSpace(subflowDef.WorkflowFilePath)) continue;
+
+            // Read workflowId from config
+            JsonElement config = default;
+            _ = nodeEl.TryGetProperty("configuration", out config) || nodeEl.TryGetProperty("config", out config);
+            var workflowId = GetString(nodeEl, config, "workflowId");
+
+            if (string.IsNullOrEmpty(workflowId)) continue;
+
+            // Resolve to file path: workflowsRoot/{workflowId}.json
+            var filePath = Path.GetFullPath(Path.Combine(workflowsRoot, workflowId + ".json"));
+            if (File.Exists(filePath))
+            {
+                subflowDef.WorkflowFilePath = filePath;
+            }
+        }
     }
 }

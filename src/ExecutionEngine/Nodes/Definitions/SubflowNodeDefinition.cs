@@ -35,6 +35,11 @@ namespace ExecutionEngine.Nodes.Definitions
 
         public override IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
         {
+            if (this.SkipValidation)
+            {
+                yield break;
+            }
+
             if (string.IsNullOrWhiteSpace(this.WorkflowFilePath) && this.WorkflowDefinition == null)
             {
                 yield return new ValidationResult(

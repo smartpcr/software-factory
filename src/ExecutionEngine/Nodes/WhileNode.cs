@@ -288,9 +288,12 @@ public class WhileNode : ExecutableNodeBase
                 .AddReferences(typeof(ExecutionState).Assembly)
                 .AddImports("System", "System.Collections", "System.Collections.Generic", "System.Linq");
 
+            // Pre-process {placeholder} syntax to valid C# expressions
+            var processedCondition = ExecutionState.PreProcessExpression(this.Condition);
+
             // Create and compile the script
             var script = CSharpScript.Create<object>(
-                this.Condition,
+                processedCondition,
                 scriptOptions,
                 globalsType: typeof(ExecutionState));
 

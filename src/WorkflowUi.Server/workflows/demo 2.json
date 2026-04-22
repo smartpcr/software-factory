@@ -1,0 +1,185 @@
+{
+  "workflowId": "wf_xx6ksqw",
+  "workflowName": "demo 2",
+  "description": "",
+  "version": "1.0",
+  "entryPointNodeId": null,
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0,
+  "defaultVariables": {
+    "num": 0
+  },
+  "metadata": {},
+  "nodes": [
+    {
+      "nodeId": "n_z7hofad",
+      "runtimeType": "start",
+      "nodeName": "Start",
+      "description": "",
+      "configuration": {
+        "triggerType": "Manual",
+        "schedule": "",
+        "eventName": "",
+        "webHookMethod": "POST",
+        "webHookRoute": "",
+        "bodyJsonSchema": ""
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_7alc03a",
+      "runtimeType": "Action",
+      "nodeName": "Action",
+      "description": "",
+      "configuration": {
+        "actionType": "function",
+        "handler": ""
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_j35b998",
+      "runtimeType": "IfElse",
+      "nodeName": "If / Else",
+      "description": "",
+      "configuration": {
+        "condition": "{num} > 10"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_p162q9l",
+      "runtimeType": "CSharpTask",
+      "nodeName": "C# Task",
+      "description": "",
+      "configuration": {
+        "scriptContent": "Console.WriteLine(\"Hello\");",
+        "executorTypeName": "",
+        "executorAssemblyPath": ""
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_s0qrp04",
+      "runtimeType": "CSharpScript",
+      "nodeName": "C# Script",
+      "description": "",
+      "configuration": {
+        "scriptPath": "",
+        "scriptContent": "Console.WriteLine($\"current time: {DateTime.Now}\");"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_d7ijw1x",
+      "runtimeType": "Subflow",
+      "nodeName": "Subflow",
+      "description": "",
+      "configuration": {
+        "workflowFilePath": "",
+        "workflowDefinition": "",
+        "inputMappings": "System.Collections.Generic.Dictionary`2[System.String,System.String]",
+        "outputMappings": "System.Collections.Generic.Dictionary`2[System.String,System.String]",
+        "timeout": "00:05:00",
+        "skipValidation": false,
+        "workflowId": "wf_jl0fx0y",
+        "waitForCompletion": true
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    }
+  ],
+  "connections": [
+    {
+      "sourceNodeId": "n_z7hofad",
+      "targetNodeId": "n_7alc03a",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_7alc03a",
+      "targetNodeId": "n_j35b998",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_j35b998",
+      "targetNodeId": "n_d7ijw1x",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_j35b998",
+      "targetNodeId": "n_p162q9l",
+      "sourcePort": "TrueBranch",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_j35b998",
+      "targetNodeId": "n_s0qrp04",
+      "sourcePort": "FalseBranch",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    }
+  ]
+}

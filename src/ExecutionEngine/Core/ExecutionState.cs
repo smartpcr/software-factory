@@ -7,6 +7,7 @@
 namespace ExecutionEngine.Core;
 
 using System.Collections.Concurrent;
+using System.Text.RegularExpressions;
 using ExecutionEngine.Contexts;
 
 /// <summary>
@@ -15,6 +16,8 @@ using ExecutionEngine.Contexts;
 /// </summary>
 public class ExecutionState
 {
+    private static readonly Regex PlaceholderPattern = new(@"\{([\w.]+)\}", RegexOptions.Compiled);
+
     /// <summary>
     /// Gets or sets the workflow execution context.
     /// </summary>
@@ -64,4 +67,48 @@ public class ExecutionState
     /// Helper function to set global variable value.
     /// </summary>
     public Action<string, object> SetGlobal { get; set; } = null!;
+
+    /// <summary>
+    /// Resolve a variable by name using the standard fallback chain:
+    /// Input → body-prefixed Input → GlobalVariables.
+    /// Usable in Roslyn expressions as <c>(dynamic)Get("varName")</c>.
+    /// </summary>
+    public object? Get(string key)
+    {
+        if (this.Input.TryGetValue(key, out var inputVal))
+        {
+            return inputVal;
+        }
+
+        if (this.Input.TryGetValue($"body.{key}", out var bodyVal))
+        {
+            return bodyVal;
+        }
+
+        if (this.GlobalVariables.TryGetValue(key, out var globalVal))
+        {
+            return globalVal;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Pre-process a condition/expression string: replace <c>{varName}</c> placeholders
+    /// with <c>(dynamic)Get("varName")</c> so Roslyn can compile the expression.
+    /// Pass-through if no placeholders are found (already valid C#).
+    /// </summary>
+    public static string PreProcessExpression(string expression)
+    {
+        if (string.IsNullOrEmpty(expression))
+        {
+            return expression;
+        }
+
+        return PlaceholderPattern.Replace(expression, match =>
+        {
+            var name = match.Groups[1].Value;
+            return $"((dynamic)Get(\"{name}\"))";
+        });
+    }
 }

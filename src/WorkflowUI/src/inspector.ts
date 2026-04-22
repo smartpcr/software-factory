@@ -9,6 +9,7 @@ import { escapeHtml } from './utils';
 import { Nodes } from './nodes';
 import { aiModels, tierColor } from './config';
 import { mountCSharpEditor, mountJsonEditor, disposeAllEditors } from './csharp-editor';
+import { mountTemplateEditor } from './template-editor';
 import { discoverInboundFields } from './inboundSchema';
 import type { InboundField } from './inboundSchema';
 import { fetchAIAgents, fetchAISkills, fetchAgentInputs, fetchSkillInputs } from './api';
@@ -548,12 +549,44 @@ export const Inspector = {
     if (!type) return;
     const el = document.getElementById('inspector')!;
 
-    // Pre-load input params for AI nodes
+    // Pre-load input params for AI nodes (this node or upstream AI nodes)
+    const aiNodesToFetch: { mode: string; name: string }[] = [];
+
     if (node.runtimeType.toLowerCase() === 'ai') {
       const mode = String(node.config?.mode || 'skill').toLowerCase();
       const name = mode === 'skill' ? String(node.config?.skillName || '') : String(node.config?.subAgentName || '');
       if (name && cachedInputParamsKey !== `${mode}:${name}`) {
-        loadInputParams(mode, name).then(() => this.render());
+        aiNodesToFetch.push({ mode, name });
+      }
+    }
+
+    // Also prefetch metadata for upstream AI nodes so inbound fields are available
+    State.edges.forEach(edge => {
+      if (edge.targetNodeId !== id) return;
+      const srcNode = State.nodes.get(edge.sourceNodeId);
+      if (!srcNode || srcNode.runtimeType.toLowerCase() !== 'ai') return;
+      const mode = String(srcNode.config?.mode || 'skill').toLowerCase();
+      const name = mode === 'skill' ? String(srcNode.config?.skillName || '') : String(srcNode.config?.subAgentName || '');
+      if (!name) return;
+      const key = `${mode}:${name}`;
+      const cached = (window as Record<string, unknown>).__cachedAIOutputs as Record<string, unknown> | undefined;
+      if (!cached?.[key]) {
+        aiNodesToFetch.push({ mode, name });
+      }
+    });
+
+    if (aiNodesToFetch.length > 0) {
+      Promise.all(aiNodesToFetch.map(a => loadInputParams(a.mode, a.name)))
+        .then(() => {
+          // Re-render after fetches complete to update inbound fields
+          this.renderNode(id);
+        });
+      // If we're fetching, still render with what we have now (will re-render after fetch)
+      if (aiNodesToFetch.some(a => {
+        const cached = (window as Record<string, unknown>).__cachedAIOutputs as Record<string, unknown> | undefined;
+        return !cached?.[`${a.mode}:${a.name}`];
+      })) {
+        // First render continues below — will re-render when fetch completes
       }
     }
 
@@ -613,6 +646,11 @@ export const Inspector = {
       const value = String(node.config?.[configKey] ?? '');
       if (lang === 'json') {
         mountJsonEditor(container.id, value, (val) => {
+          callbacks.updateNodeConfig(nodeId, configKey, val);
+        });
+      } else if (lang === 'template') {
+        const fields = discoverInboundFields(nodeId);
+        mountTemplateEditor(container.id, value, fields, (val) => {
           callbacks.updateNodeConfig(nodeId, configKey, val);
         });
       } else {
@@ -1087,15 +1125,25 @@ export const Inspector = {
     } else if (rt === 'if' || rt === 'ifelse') {
       title = 'Condition';
       const condEditorId = `monaco-${id}-condition`;
+      const inboundFields = discoverInboundFields(node.nodeId);
       fields = `
         <div class="ins-field">
           <label class="ins-field-label">Condition expression <span class="ins-field-hint">(C# — must return bool)</span></label>
           <div class="ins-monaco-container ins-monaco-sm" id="${condEditorId}" data-node-id="${id}" data-config-key="condition"></div>
-          <div class="ins-field-hint">Connect <code>true</code> and <code>false</code> branches.</div>
+          <div class="ins-field-hint">Use <code>{varName}</code> to reference input fields or global variables.</div>
         </div>
+        ${inboundFields.length > 0 ? `
+        <div class="ins-field">
+          <label class="ins-field-label">Available fields</label>
+          <div class="inbound-fields-panel">
+            ${this.renderInboundFields(inboundFields, id, [], {})}
+          </div>
+          <div class="ins-field-hint">Click a field to copy its name.</div>
+        </div>` : ''}
       `;
     } else if (rt === 'switch') {
       title = 'Switch';
+      const inboundFields = discoverInboundFields(node.nodeId);
       fields = `
         <div class="ins-field">
           <label class="ins-field-label">Switch expression</label>
@@ -1115,6 +1163,13 @@ export const Inspector = {
           </div>
           <button class="add-case-btn" data-action="add-branch" data-node-id="${id}">+ Add case</button>
         </div>
+        ${inboundFields.length > 0 ? `
+        <div class="ins-field">
+          <label class="ins-field-label">Available fields</label>
+          <div class="inbound-fields-panel">
+            ${this.renderInboundFields(inboundFields, id, [], {})}
+          </div>
+        </div>` : ''}
       `;
     } else if (rt === 'parallel') {
       title = 'Parallel';
@@ -1148,6 +1203,7 @@ export const Inspector = {
       `;
     } else if (rt === 'foreach') {
       title = 'ForEach';
+      const inboundFields = discoverInboundFields(node.nodeId);
       fields = `
         <div class="ins-field">
           <label class="ins-field-label">Mode</label>
@@ -1164,8 +1220,15 @@ export const Inspector = {
         <div class="ins-field">
           <label class="ins-field-label">Max iterations (safety)</label>
           <input type="number" value="${c.maxIterations || 100}" data-config-key="maxIterations" data-node-id="${id}" />
-          <div class="ins-field-hint">Connect <code>iterate</code> to loop body. The <code>out</code> port fires after all iterations.</div>
+          <div class="ins-field-hint">Use <code>{varName}</code> to reference fields. The <code>out</code> port fires after all iterations.</div>
         </div>
+        ${inboundFields.length > 0 ? `
+        <div class="ins-field">
+          <label class="ins-field-label">Available fields</label>
+          <div class="inbound-fields-panel">
+            ${this.renderInboundFields(inboundFields, id, [], {})}
+          </div>
+        </div>` : ''}
       `;
     } else if (rt === 'subflow') {
       title = 'Subflow Reference';
@@ -1438,8 +1501,8 @@ export const Inspector = {
         </div>
         <div class="ins-field">
           <label class="ins-field-label">Message template</label>
-          <textarea class="mono" data-config-key="messageTemplate" data-node-id="${id}" placeholder="Error: {errorMessage} on node {nodeId}">${escapeHtml(msgTpl)}</textarea>
-          <div class="ins-field-hint">Use <code>{name}</code> placeholders to bind input parameters.</div>
+          <div id="tpl-editor-${id}" class="ins-monaco-container" data-node-id="${id}" data-config-key="messageTemplate" data-lang="template" style="height:60px"></div>
+          <div class="ins-field-hint">Type <code>{</code> for available field suggestions.</div>
         </div>
         ${placeholders.length > 0 ? `
         <div class="ins-field">

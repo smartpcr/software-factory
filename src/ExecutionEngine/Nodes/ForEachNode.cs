@@ -216,9 +216,12 @@ public class ForEachNode : ExecutableNodeBase
                 .AddReferences(typeof(ExecutionState).Assembly)
                 .AddImports("System", "System.Collections", "System.Collections.Generic", "System.Linq");
 
+            // Pre-process {placeholder} syntax to valid C# expressions
+            var processedExpression = ExecutionState.PreProcessExpression(this.CollectionExpression);
+
             // Create and compile the script
             var script = CSharpScript.Create<object>(
-                this.CollectionExpression,
+                processedExpression,
                 scriptOptions,
                 globalsType: typeof(ExecutionState));
 

@@ -267,7 +267,6 @@ export const Nodes = {
         <div class="branch-port" data-branch="${escapeHtml(b)}" data-parent-id="${node.nodeId}">
           <div class="branch-port-label">${escapeHtml(b)}</div>
           <div class="branch-port-children"></div>
-          <div class="port" data-port-kind="branch" data-port-name="${escapeHtml(b)}" data-node-id="${node.nodeId}" data-tooltip="${tip}"></div>
         </div>
       `;
       }).join('')

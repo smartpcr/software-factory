@@ -188,7 +188,7 @@ public static class NodeTypeCatalog
         RuntimeType.Start or RuntimeType.Trigger or RuntimeType.Timer => (false, true, false),
         RuntimeType.End => (true, false, false),
         RuntimeType.Delay or RuntimeType.Log or RuntimeType.Noop => (true, true, false),
-        RuntimeType.IfElse or RuntimeType.Switch => (true, false, true),
+        RuntimeType.IfElse or RuntimeType.Switch => (true, true, true),
         RuntimeType.Parallel => (true, true, true),
         RuntimeType.ForEach or RuntimeType.While => (true, true, true),
         _ => (true, true, true),

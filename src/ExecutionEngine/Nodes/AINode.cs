@@ -118,7 +118,7 @@ public class AINode : ExecutableNodeBase
         var resolvedBindings = new Dictionary<string, string>();
         foreach (var binding in aiDef.InputBindings)
         {
-            resolvedBindings[binding.Key] = ResolveInputPath(binding.Value, nodeContext);
+            resolvedBindings[binding.Key] = BindingResolver.ResolveToString(binding.Value, nodeContext, workflowContext);
         }
 
         if (agentDef != null && promptResolver != null && (aiDef.Mode == AINodeMode.Skill || aiDef.Mode == AINodeMode.SubAgent))
@@ -152,18 +152,18 @@ public class AINode : ExecutableNodeBase
             catch (OperationCanceledException)
             {
                 logger.LogWarning("LLM prompt generation timed out, using fallback template");
-                userPrompt = BuildUserPrompt(aiDef, nodeContext);
+                userPrompt = BuildUserPrompt(aiDef, nodeContext, workflowContext);
             }
 
             // Append explicit UserPrompt if provided
             if (!string.IsNullOrEmpty(aiDef.UserPrompt))
             {
-                userPrompt = $"{ResolveTemplatePlaceholders(aiDef.UserPrompt, nodeContext)}\n\n{userPrompt}";
+                userPrompt = $"{BindingResolver.ResolveTemplate(aiDef.UserPrompt, null, nodeContext, workflowContext)}\n\n{userPrompt}";
             }
         }
         else
         {
-            userPrompt = BuildUserPrompt(aiDef, nodeContext);
+            userPrompt = BuildUserPrompt(aiDef, nodeContext, workflowContext);
         }
 
         // Map confidence (0-100) → temperature (0.0-2.0): high confidence = low temperature
@@ -217,19 +217,19 @@ public class AINode : ExecutableNodeBase
         };
     }
 
-    private static string BuildUserPrompt(AINodeDefinition aiDef, NodeExecutionContext nodeContext)
+    private static string BuildUserPrompt(AINodeDefinition aiDef, NodeExecutionContext nodeContext, WorkflowExecutionContext workflowContext)
     {
         // For RawPrompt mode, use the explicit user prompt
         if (aiDef.Mode == AINodeMode.RawPrompt && !string.IsNullOrEmpty(aiDef.UserPrompt))
         {
-            return ResolveTemplatePlaceholders(aiDef.UserPrompt, nodeContext);
+            return BindingResolver.ResolveTemplate(aiDef.UserPrompt, null, nodeContext, workflowContext);
         }
 
         // For Skill/SubAgent, build prompt from input bindings and data
         var sb = new StringBuilder();
         if (!string.IsNullOrEmpty(aiDef.UserPrompt))
         {
-            sb.AppendLine(ResolveTemplatePlaceholders(aiDef.UserPrompt, nodeContext));
+            sb.AppendLine(BindingResolver.ResolveTemplate(aiDef.UserPrompt, null, nodeContext, workflowContext));
             sb.AppendLine();
         }
 
@@ -239,7 +239,7 @@ public class AINode : ExecutableNodeBase
             sb.AppendLine("## Parameters");
             foreach (var binding in aiDef.InputBindings)
             {
-                var resolved = ResolveInputPath(binding.Value, nodeContext);
+                var resolved = BindingResolver.ResolveToString(binding.Value, nodeContext, workflowContext);
                 sb.AppendLine($"- **{binding.Key}**: {resolved}");
             }
 
@@ -275,62 +275,6 @@ public class AINode : ExecutableNodeBase
         }
 
         return sb.ToString().Trim();
-    }
-
-    private static string ResolveInputPath(string path, NodeExecutionContext context)
-    {
-        // Static value — return as-is (strip the "static:" prefix)
-        if (path.StartsWith("static:", StringComparison.Ordinal))
-        {
-            return path[7..];
-        }
-
-        // Direct match from input data
-        if (context.InputData.TryGetValue(path, out var value))
-        {
-            return value?.ToString() ?? string.Empty;
-        }
-
-        // Try without "body." prefix if the path starts with it
-        if (path.StartsWith("body.", StringComparison.Ordinal))
-        {
-            var shortKey = path[5..];
-            if (context.InputData.TryGetValue(shortKey, out var shortVal))
-            {
-                return shortVal?.ToString() ?? string.Empty;
-            }
-        }
-
-        // Try global variables
-        if (path.StartsWith("global.", StringComparison.Ordinal))
-        {
-            var globalKey = path[7..];
-            if (context.LocalVariables.TryGetValue(globalKey, out var globalVal))
-            {
-                return globalVal?.ToString() ?? string.Empty;
-            }
-        }
-
-        return $"({path} not found)";
-    }
-
-    private static string ResolveTemplatePlaceholders(string template, NodeExecutionContext context)
-    {
-        return System.Text.RegularExpressions.Regex.Replace(template, @"\{(\w+)\}", match =>
-        {
-            var name = match.Groups[1].Value;
-            if (context.InputData.TryGetValue(name, out var value))
-            {
-                return value?.ToString() ?? string.Empty;
-            }
-
-            if (context.InputData.TryGetValue($"body.{name}", out var bodyValue))
-            {
-                return bodyValue?.ToString() ?? string.Empty;
-            }
-
-            return match.Value;
-        });
     }
 
     private static string TrySerialize(object value)

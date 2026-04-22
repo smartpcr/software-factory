@@ -1,0 +1,2 @@
+{"RunId":"2d241301-7458-4333-8987-4dd8a26daddb","Seq":1,"Kind":"WorkflowStarted","Synthetic":false,"TimestampUtc":"2026-04-22T23:23:53.8983827Z","NodeId":null,"NodeName":null,"Payload":{"workflowId":"wf_xx6ksqw","workflowName":"demo 2","totalNodes":6}}
+{"RunId":"2d241301-7458-4333-8987-4dd8a26daddb","Seq":2,"Kind":"WorkflowFailed","Synthetic":false,"TimestampUtc":"2026-04-22T23:23:53.9373093Z","NodeId":null,"NodeName":null,"Payload":{"workflowId":"wf_xx6ksqw","errorMessage":"Workflow validation failed:\r\nEither workflowFilePath or workflowDefinition are required."}}

@@ -50,8 +50,16 @@ const nodeOutputSchemas: Record<string, { name: string; type: InboundField['type
   ],
   AI: [
     { name: 'result', type: 'string' },
+    { name: 'mode', type: 'string' },
+    { name: 'backend', type: 'string' },
     { name: 'model', type: 'string' },
-    { name: 'tokensUsed', type: 'number' },
+    { name: 'agentName', type: 'string' },
+    { name: 'agentSummary', type: 'string' },
+    { name: 'ai.success', type: 'boolean' },
+    { name: 'ai.model', type: 'string' },
+    { name: 'ai.durationMs', type: 'number' },
+    { name: 'ai.inputTokens', type: 'number' },
+    { name: 'ai.outputTokens', type: 'number' },
   ],
   Timer: [
     { name: 'triggerTime', type: 'datetime' },
@@ -130,12 +138,22 @@ function parseJsonSchemaProperties(
 
 /**
  * Discover all inbound fields available to a node by tracing its incoming edges.
+ * Fields use bare names by default; prefixes are added only when names conflict
+ * across sources (e.g. an output field shares a name with a global variable,
+ * or multiple upstream nodes produce a field with the same name).
  */
 export function discoverInboundFields(nodeId: string): InboundField[] {
-  const fields: InboundField[] = [];
-  const seen = new Set<string>();
+  // Phase 1: Collect all candidate fields with their canonical prefixed path
+  interface Candidate {
+    bareName: string;
+    prefixedPath: string;
+    type: InboundField['type'];
+    source: InboundField['source'];
+    sourceNode: string;
+    sourcePort: string;
+  }
+  const candidates: Candidate[] = [];
 
-  // Find all edges targeting this node
   State.edges.forEach(edge => {
     if (edge.targetNodeId !== nodeId) return;
 
@@ -144,35 +162,33 @@ export function discoverInboundFields(nodeId: string): InboundField[] {
     const sourceName = sourceNode.nodeName || sourceNode.nodeId;
 
     if (edge.sourcePort === 'error') {
-      // Error port → NodeFailMessage fields
       for (const f of errorMessageFields) {
-        if (!seen.has(f.path)) {
-          seen.add(f.path);
-          fields.push({ ...f, sourceNode: sourceName });
-        }
+        candidates.push({
+          bareName: f.name,
+          prefixedPath: `error.${f.name}`,
+          type: f.type,
+          source: 'error',
+          sourceNode: sourceName,
+          sourcePort: 'error',
+        });
       }
     } else {
-      // Normal output → node's output data fields
       const runtimeType = sourceNode.runtimeType;
       const schema = nodeOutputSchemas[runtimeType];
       if (schema) {
         for (const f of schema) {
-          const path = f.name;
-          if (!seen.has(path)) {
-            seen.add(path);
-            fields.push({
-              path,
-              name: f.name,
-              type: f.type,
-              source: 'output',
-              sourceNode: sourceName,
-              sourcePort: edge.sourcePort || 'out',
-            });
-          }
+          candidates.push({
+            bareName: f.name,
+            prefixedPath: `output.${f.name}`,
+            type: f.type,
+            source: 'output',
+            sourceNode: sourceName,
+            sourcePort: edge.sourcePort || 'out',
+          });
         }
       }
 
-      // Start node with WebHook trigger → add payload fields from bodyJsonSchema
+      // Start node with WebHook trigger → payload fields (body.X are literal keys)
       if (runtimeType.toLowerCase() === 'start' && sourceNode.config) {
         const trigType = String(sourceNode.config.triggerType || '');
         if (trigType === 'WebHook' && sourceNode.config.bodyJsonSchema) {
@@ -181,40 +197,33 @@ export function discoverInboundFields(nodeId: string): InboundField[] {
             'body',
           );
           for (const pf of payloadFields) {
-            if (!seen.has(pf.path)) {
-              seen.add(pf.path);
-              fields.push({
-                path: pf.path,
-                name: pf.name,
-                type: pf.type,
-                source: 'output',
-                sourceNode: sourceName,
-                sourcePort: edge.sourcePort || 'out',
-              });
-            }
-          }
-        }
-      }
-
-      // Also add any config-defined output keys from the source node
-      if (sourceNode.config) {
-        const outputKey = sourceNode.config.outputKey;
-        if (outputKey && typeof outputKey === 'string') {
-          const path = String(outputKey);
-          if (!seen.has(path)) {
-            seen.add(path);
-            fields.push({
-              path,
-              name: String(outputKey),
-              type: 'unknown',
+            candidates.push({
+              bareName: pf.name,
+              prefixedPath: pf.path,  // "body.fieldName" — literal key in InputData
+              type: pf.type,
               source: 'output',
               sourceNode: sourceName,
               sourcePort: edge.sourcePort || 'out',
             });
           }
         }
+      }
 
-        // AI nodes: add skill/agent declared output fields from cached metadata
+      // Config-defined output key
+      if (sourceNode.config) {
+        const outputKey = sourceNode.config.outputKey;
+        if (outputKey && typeof outputKey === 'string') {
+          candidates.push({
+            bareName: String(outputKey),
+            prefixedPath: `output.${outputKey}`,
+            type: 'unknown',
+            source: 'output',
+            sourceNode: sourceName,
+            sourcePort: edge.sourcePort || 'out',
+          });
+        }
+
+        // AI nodes: skill/agent declared output fields
         if (runtimeType.toLowerCase() === 'ai' && (window as Record<string, unknown>).__cachedAIOutputs) {
           const mode = String(sourceNode.config.mode || 'skill').toLowerCase();
           const name = mode === 'skill' ? String(sourceNode.config.skillName || '') : String(sourceNode.config.subAgentName || '');
@@ -223,19 +232,15 @@ export function discoverInboundFields(nodeId: string): InboundField[] {
           const aiOutputs = outputsMap[key];
           if (aiOutputs) {
             for (const ao of aiOutputs) {
-              const aoPath = `output.${ao.name}`;
-              if (!seen.has(aoPath)) {
-                seen.add(aoPath);
-                const fieldType: InboundField['type'] = ao.type === 'file' || ao.type === 'folder' ? 'string' : (ao.type as InboundField['type']) || 'unknown';
-                fields.push({
-                  path: aoPath,
-                  name: ao.name,
-                  type: fieldType,
-                  source: 'output',
-                  sourceNode: sourceName,
-                  sourcePort: edge.sourcePort || 'out',
-                });
-              }
+              const fieldType: InboundField['type'] = ao.type === 'file' || ao.type === 'folder' ? 'string' : (ao.type as InboundField['type']) || 'unknown';
+              candidates.push({
+                bareName: ao.name,
+                prefixedPath: `output.${ao.name}`,
+                type: fieldType,
+                source: 'output',
+                sourceNode: sourceName,
+                sourcePort: edge.sourcePort || 'out',
+              });
             }
           }
         }
@@ -243,41 +248,74 @@ export function discoverInboundFields(nodeId: string): InboundField[] {
     }
   });
 
-  // Add universal context fields
-  const contextFields: Omit<InboundField, 'sourceNode' | 'sourcePort'>[] = [
-    { path: 'global.__workflowId', name: '__workflowId', type: 'string', source: 'context' },
-    { path: 'global.__instanceId', name: '__instanceId', type: 'guid', source: 'context' },
-  ];
-  for (const f of contextFields) {
-    if (!seen.has(f.path)) {
-      seen.add(f.path);
-      fields.push({ ...f, sourceNode: 'workflow', sourcePort: '' });
+  // Add global/context fields
+  const wf = State.workflows[State.currentWfId || ''];
+  candidates.push(
+    { bareName: '__workflowId', prefixedPath: 'global.__workflowId', type: 'string', source: 'context', sourceNode: 'workflow', sourcePort: '' },
+    { bareName: '__instanceId', prefixedPath: 'global.__instanceId', type: 'guid', source: 'context', sourceNode: 'workflow', sourcePort: '' },
+  );
+  if (wf?.defaultVariables) {
+    for (const [key, val] of Object.entries(wf.defaultVariables)) {
+      let varType: InboundField['type'] = 'unknown';
+      switch (typeof val) {
+        case 'string': varType = 'string'; break;
+        case 'number': varType = 'number'; break;
+        case 'boolean': varType = 'boolean'; break;
+        case 'object': varType = 'object'; break;
+      }
+      candidates.push({
+        bareName: key,
+        prefixedPath: `global.${key}`,
+        type: varType,
+        source: 'context',
+        sourceNode: 'workflow',
+        sourcePort: '',
+      });
     }
   }
 
-  // Add workflow default variables as global fields
-  const wf = State.workflows[State.currentWfId || ''];
-  if (wf?.defaultVariables) {
-    for (const [key, val] of Object.entries(wf.defaultVariables)) {
-      const path = `global.${key}`;
-      if (!seen.has(path)) {
-        seen.add(path);
-        let varType: InboundField['type'] = 'unknown';
-        switch (typeof val) {
-          case 'string': varType = 'string'; break;
-          case 'number': varType = 'number'; break;
-          case 'boolean': varType = 'boolean'; break;
-          case 'object': varType = 'object'; break;
-        }
-        fields.push({
-          path,
-          name: key,
-          type: varType,
-          source: 'context',
-          sourceNode: 'workflow',
-          sourcePort: '',
-        });
-      }
+  // Phase 2: Detect conflicts — a bare name conflicts when used by multiple sources
+  const bareNameSources = new Map<string, Set<string>>();
+  for (const c of candidates) {
+    if (!bareNameSources.has(c.bareName)) bareNameSources.set(c.bareName, new Set());
+    bareNameSources.get(c.bareName)!.add(c.source === 'context' ? 'global' : c.source);
+  }
+
+  // Phase 3: Build final fields — bare name when unique, prefixed when conflicting
+  const fields: InboundField[] = [];
+  const seen = new Set<string>();
+
+  for (const c of candidates) {
+    const sources = bareNameSources.get(c.bareName)!;
+    const hasConflict = sources.size > 1;
+
+    // body.* fields always use their literal prefixed path (it's the actual InputData key)
+    const isBodyField = c.prefixedPath.startsWith('body.');
+    const path = (hasConflict || isBodyField) ? c.prefixedPath : c.bareName;
+
+    if (seen.has(path)) continue;
+    seen.add(path);
+
+    fields.push({
+      path,
+      name: c.bareName,
+      type: c.type,
+      source: c.source,
+      sourceNode: c.sourceNode,
+      sourcePort: c.sourcePort,
+    });
+
+    // When conflicting, also add the bare name so both are available for autocomplete
+    if (hasConflict && !isBodyField && !seen.has(c.bareName)) {
+      seen.add(c.bareName);
+      fields.push({
+        path: c.bareName,
+        name: c.bareName,
+        type: c.type,
+        source: c.source,
+        sourceNode: c.sourceNode,
+        sourcePort: c.sourcePort,
+      });
     }
   }
 
