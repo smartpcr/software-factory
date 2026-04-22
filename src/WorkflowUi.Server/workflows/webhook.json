@@ -66,7 +66,25 @@
         "outputKey": "result",
         "confidence": 70,
         "maxTokens": 4096,
-        "inputBindings": "{\"IncidentId\":\"body.incidentId\"}"
+        "inputBindings": "{\"IncidentId\":\"body.incidentId\",\"Headless\":\"static:\",\"Limit\":\"static:\"}"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_9rayebz",
+      "runtimeType": "Log",
+      "nodeName": "Log",
+      "description": "",
+      "configuration": {
+        "level": "Info",
+        "messageTemplate": "incident folder: {incidentFolder}",
+        "parameterBindings": "System.Collections.Generic.Dictionary`2[System.String,System.String]"
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -103,6 +121,17 @@
     {
       "sourceNodeId": "n_5vecfce",
       "targetNodeId": "n_jboali7",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_jboali7",
+      "targetNodeId": "n_9rayebz",
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",

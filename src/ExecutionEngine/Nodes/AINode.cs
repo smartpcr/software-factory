@@ -279,7 +279,13 @@ public class AINode : ExecutableNodeBase
 
     private static string ResolveInputPath(string path, NodeExecutionContext context)
     {
-        // Direct match
+        // Static value — return as-is (strip the "static:" prefix)
+        if (path.StartsWith("static:", StringComparison.Ordinal))
+        {
+            return path[7..];
+        }
+
+        // Direct match from input data
         if (context.InputData.TryGetValue(path, out var value))
         {
             return value?.ToString() ?? string.Empty;
@@ -292,6 +298,16 @@ public class AINode : ExecutableNodeBase
             if (context.InputData.TryGetValue(shortKey, out var shortVal))
             {
                 return shortVal?.ToString() ?? string.Empty;
+            }
+        }
+
+        // Try global variables
+        if (path.StartsWith("global.", StringComparison.Ordinal))
+        {
+            var globalKey = path[7..];
+            if (context.LocalVariables.TryGetValue(globalKey, out var globalVal))
+            {
+                return globalVal?.ToString() ?? string.Empty;
             }
         }
 

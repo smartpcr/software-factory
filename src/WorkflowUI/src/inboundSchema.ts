@@ -213,6 +213,32 @@ export function discoverInboundFields(nodeId: string): InboundField[] {
             });
           }
         }
+
+        // AI nodes: add skill/agent declared output fields from cached metadata
+        if (runtimeType.toLowerCase() === 'ai' && (window as Record<string, unknown>).__cachedAIOutputs) {
+          const mode = String(sourceNode.config.mode || 'skill').toLowerCase();
+          const name = mode === 'skill' ? String(sourceNode.config.skillName || '') : String(sourceNode.config.subAgentName || '');
+          const key = `${mode}:${name}`;
+          const outputsMap = (window as Record<string, unknown>).__cachedAIOutputs as Record<string, { name: string; type: string; description: string }[]>;
+          const aiOutputs = outputsMap[key];
+          if (aiOutputs) {
+            for (const ao of aiOutputs) {
+              const aoPath = `output.${ao.name}`;
+              if (!seen.has(aoPath)) {
+                seen.add(aoPath);
+                const fieldType: InboundField['type'] = ao.type === 'file' || ao.type === 'folder' ? 'string' : (ao.type as InboundField['type']) || 'unknown';
+                fields.push({
+                  path: aoPath,
+                  name: ao.name,
+                  type: fieldType,
+                  source: 'output',
+                  sourceNode: sourceName,
+                  sourcePort: edge.sourcePort || 'out',
+                });
+              }
+            }
+          }
+        }
       }
     }
   });

@@ -1424,55 +1424,137 @@
   .binding-editor {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
     margin-top: 4px;
   }
-  .binding-row {
-    display: flex;
-    align-items: center;
+
+  /* ---- Binding card: each parameter ---- */
+  .binding-card {
+    border: 1px solid var(--stroke-1);
+    border-radius: 8px;
+    background: var(--bg-0);
+    overflow: hidden;
+    transition: border-color 0.15s;
+  }
+  .binding-card:hover { border-color: var(--stroke-2); }
+
+  .binding-card-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 10px 2px;
     gap: 6px;
+  }
+  .binding-param-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; font-weight: 600;
+    color: var(--accent);
+  }
+  .binding-param-meta { display: flex; align-items: center; gap: 4px; }
+  .binding-type-badge {
+    font-size: 9px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--text-3); background: var(--bg-3);
+    padding: 1px 5px; border-radius: 3px;
+  }
+  .binding-req {
+    font-size: 9px; font-weight: 600; text-transform: uppercase;
+    color: var(--err); opacity: 0.8;
+  }
+  .binding-param-desc {
+    font-size: 10px; color: var(--text-3);
+    padding: 0 10px 4px; line-height: 1.4;
+  }
+
+  /* ---- Mode tabs: None / Field / Static ---- */
+  .binding-card-body { padding: 0 10px 8px; }
+  .binding-mode-tabs {
+    display: flex; gap: 0;
+    border: 1px solid var(--stroke-1); border-radius: 5px;
+    overflow: hidden; margin-bottom: 6px;
+  }
+  .binding-mode-tab {
+    flex: 1; padding: 3px 0; text-align: center;
+    font-size: 10px; font-weight: 500; letter-spacing: 0.03em;
+    color: var(--text-3); background: transparent;
+    border: none; border-right: 1px solid var(--stroke-1);
+    cursor: pointer; transition: all 0.12s;
+  }
+  .binding-mode-tab:last-child { border-right: none; }
+  .binding-mode-tab:hover { color: var(--text-1); background: var(--bg-2); }
+  .binding-mode-tab.active {
+    color: var(--accent-btn-text); background: var(--accent);
+    font-weight: 600;
+  }
+
+  /* ---- Value area ---- */
+  .binding-card-value { min-height: 28px; }
+  .binding-field-select {
+    width: 100%; font-size: 11px; padding: 4px 6px;
+    border: 1px solid var(--stroke-1); border-radius: 4px;
+    background: var(--bg-2); color: var(--text-0);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .binding-field-select:focus { border-color: var(--accent); background: var(--bg-1); }
+  .binding-static-input {
+    width: 100%; font-size: 11px; padding: 4px 8px;
+    border: 1px solid var(--stroke-1); border-radius: 4px;
+    background: var(--bg-2); color: var(--text-0);
+    font-family: 'JetBrains Mono', monospace;
+    box-sizing: border-box;
+  }
+  .binding-static-input:focus { border-color: var(--accent); background: var(--bg-1); outline: none; }
+  .binding-empty-hint {
+    font-size: 10px; color: var(--text-3); font-style: italic;
     padding: 4px 0;
   }
-  .binding-placeholder {
+
+  /* ---- Boolean toggle ---- */
+  .binding-toggle-wrap { display: flex; align-items: center; }
+  .binding-toggle {
+    display: flex; align-items: center; gap: 8px; cursor: pointer;
+  }
+  .binding-toggle input { display: none; }
+  .binding-toggle-track {
+    width: 32px; height: 18px; border-radius: 9px;
+    background: var(--bg-4); position: relative;
+    transition: background 0.15s;
+  }
+  .binding-toggle-track::after {
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--text-2); transition: all 0.15s;
+  }
+  .binding-toggle input:checked + .binding-toggle-track {
+    background: var(--ok);
+  }
+  .binding-toggle input:checked + .binding-toggle-track::after {
+    left: 16px; background: #fff;
+  }
+  .binding-toggle-label {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--accent);
-    background: rgba(229,179,106,0.08);
-    border: 1px solid rgba(229,179,106,0.2);
-    border-radius: 4px;
-    padding: 2px 6px;
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-  .binding-brace {
-    color: var(--text-3);
-    font-weight: 400;
-  }
-  .binding-arrow {
-    flex-shrink: 0;
-    color: var(--text-3);
-    opacity: 0.5;
-  }
-  .binding-value-wrap {
-    flex: 1;
-    min-width: 0;
-  }
-  .binding-input {
-    font-size: 11px !important;
-    padding: 3px 6px !important;
-    border-radius: 4px !important;
-    background: var(--bg-2) !important;
-    border: 1px solid var(--stroke-1) !important;
-    color: var(--text-0) !important;
-    width: 100% !important;
-  }
-  .binding-input:focus {
-    border-color: var(--accent) !important;
-    background: var(--bg-1) !important;
+    font-size: 11px; color: var(--text-2); font-weight: 500;
   }
 
   /* ============ INBOUND FIELDS PANEL ============ */
+
+  /* Log node message template bindings (placeholder → arrow → input) */
+  .binding-row {
+    display: flex; align-items: center; gap: 6px; padding: 4px 0;
+  }
+  .binding-placeholder {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; font-weight: 500; color: var(--accent);
+    background: rgba(229,179,106,0.08); border: 1px solid rgba(229,179,106,0.2);
+    border-radius: 4px; padding: 2px 6px; white-space: nowrap; flex-shrink: 0;
+  }
+  .binding-brace { color: var(--text-3); font-weight: 400; }
+  .binding-arrow { flex-shrink: 0; color: var(--text-3); opacity: 0.5; }
+  .binding-value-wrap { flex: 1; min-width: 0; }
+  .binding-input {
+    font-size: 11px !important; padding: 3px 6px !important; border-radius: 4px !important;
+    background: var(--bg-2) !important; border: 1px solid var(--stroke-1) !important;
+    color: var(--text-0) !important; width: 100% !important;
+  }
+  .binding-input:focus { border-color: var(--accent) !important; background: var(--bg-1) !important; }
+
   .inbound-fields-panel {
     border: 1px solid var(--stroke-1);
     border-radius: 6px;

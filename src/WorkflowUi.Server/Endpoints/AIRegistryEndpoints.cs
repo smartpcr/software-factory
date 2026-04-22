@@ -33,7 +33,7 @@ public static class AIRegistryEndpoints
         {
             var info = await resolver.LoadAgentAsync(name, ct);
             if (info == null) return Results.NotFound();
-            return Results.Ok(info.Inputs.Select(i => new { i.Name, i.Type, i.Required, i.Description }));
+            return Results.Ok(new { inputs = info.Inputs, outputs = info.Outputs });
         })
         .WithName("GetAgentInputs")
         .AllowAnonymous();
@@ -42,7 +42,7 @@ public static class AIRegistryEndpoints
         {
             var info = await resolver.LoadSkillAsync(name, ct);
             if (info == null) return Results.NotFound();
-            return Results.Ok(info.Inputs.Select(i => new { i.Name, i.Type, i.Required, i.Description }));
+            return Results.Ok(new { inputs = info.Inputs, outputs = info.Outputs });
         })
         .WithName("GetSkillInputs")
         .AllowAnonymous();

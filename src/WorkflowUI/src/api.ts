@@ -292,14 +292,25 @@ export interface AIInputParam {
   description: string;
 }
 
-export async function fetchAgentInputs(name: string): Promise<AIInputParam[]> {
-  const res = await fetch(`/api/ai/agents/${encodeURIComponent(name)}/inputs`);
-  if (!res.ok) return [];
-  return res.json() as Promise<AIInputParam[]>;
+export interface AIOutputField {
+  name: string;
+  type: string;
+  description: string;
 }
 
-export async function fetchSkillInputs(name: string): Promise<AIInputParam[]> {
+export interface AIMetadata {
+  inputs: AIInputParam[];
+  outputs: AIOutputField[];
+}
+
+export async function fetchAgentInputs(name: string): Promise<AIMetadata> {
+  const res = await fetch(`/api/ai/agents/${encodeURIComponent(name)}/inputs`);
+  if (!res.ok) return { inputs: [], outputs: [] };
+  return res.json() as Promise<AIMetadata>;
+}
+
+export async function fetchSkillInputs(name: string): Promise<AIMetadata> {
   const res = await fetch(`/api/ai/skills/${encodeURIComponent(name)}/inputs`);
-  if (!res.ok) return [];
-  return res.json() as Promise<AIInputParam[]>;
+  if (!res.ok) return { inputs: [], outputs: [] };
+  return res.json() as Promise<AIMetadata>;
 }

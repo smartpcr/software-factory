@@ -12,7 +12,7 @@ import { mountCSharpEditor, mountJsonEditor, disposeAllEditors } from './csharp-
 import { discoverInboundFields } from './inboundSchema';
 import type { InboundField } from './inboundSchema';
 import { fetchAIAgents, fetchAISkills, fetchAgentInputs, fetchSkillInputs } from './api';
-import type { AIRegistryItem, AIInputParam } from './api';
+import type { AIRegistryItem, AIInputParam, AIOutputField } from './api';
 
 let callbacks: AppCallbacks;
 
@@ -31,18 +31,25 @@ async function ensureAIRegistry(): Promise<void> {
   }
 }
 
-// Cached input params for the currently selected skill/agent
+// Cached input/output params for the currently selected skill/agent
 let cachedInputParams: AIInputParam[] = [];
+let cachedOutputFields: AIOutputField[] = [];
 let cachedInputParamsKey = '';
 
 async function loadInputParams(mode: string, name: string): Promise<AIInputParam[]> {
   const key = `${mode}:${name}`;
   if (key === cachedInputParamsKey) return cachedInputParams;
   try {
-    cachedInputParams = mode === 'skill'
+    const metadata = mode === 'skill'
       ? await fetchSkillInputs(name)
       : await fetchAgentInputs(name);
+    cachedInputParams = metadata.inputs;
+    cachedOutputFields = metadata.outputs;
     cachedInputParamsKey = key;
+    // Store outputs on window for inboundSchema to read (avoids circular dependency)
+    const outputsMap = ((window as Record<string, unknown>).__cachedAIOutputs || {}) as Record<string, unknown>;
+    outputsMap[key] = metadata.outputs;
+    (window as Record<string, unknown>).__cachedAIOutputs = outputsMap;
   } catch {
     cachedInputParams = [];
   }
@@ -784,7 +791,34 @@ export const Inspector = {
         });
       }
     });
-    // AI input binding selects
+    // AI input binding — mode tab clicks (None / Field / Static)
+    el.querySelectorAll<HTMLButtonElement>('[data-ai-mode]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const nodeId = btn.dataset.nodeId!;
+        const paramName = btn.dataset.aiParam!;
+        const mode = btn.dataset.aiMode!;
+        const node = State.nodes.get(nodeId);
+        if (!node) return;
+        let bindings: Record<string, string> = {};
+        try {
+          bindings = typeof node.config?.inputBindings === 'string'
+            ? JSON.parse(node.config.inputBindings as string)
+            : (node.config?.inputBindings as Record<string, string>) || {};
+        } catch { /* ignore */ }
+
+        if (mode === 'none') {
+          delete bindings[paramName];
+        } else if (mode === 'static') {
+          bindings[paramName] = 'static:';
+        } else if (mode === 'field') {
+          // Set to empty field selection — user will pick from dropdown
+          bindings[paramName] = '';
+        }
+        callbacks.updateNodeConfig(nodeId, 'inputBindings', JSON.stringify(bindings));
+        setTimeout(() => this.render(), 50);
+      });
+    });
+    // AI input binding — field select change
     el.querySelectorAll<HTMLSelectElement>('[data-ai-binding-key]').forEach(select => {
       select.addEventListener('change', () => {
         const nodeId = select.dataset.nodeId!;
@@ -797,13 +831,48 @@ export const Inspector = {
             ? JSON.parse(node.config.inputBindings as string)
             : (node.config?.inputBindings as Record<string, string>) || {};
         } catch { /* ignore */ }
-        if (select.value) {
-          bindings[bindingKey] = select.value;
-        } else {
-          delete bindings[bindingKey];
-        }
+        bindings[bindingKey] = select.value;
         callbacks.updateNodeConfig(nodeId, 'inputBindings', JSON.stringify(bindings));
       });
+    });
+    // AI static value inputs
+    el.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-ai-static-key]').forEach(input => {
+      const isBool = input.dataset.isBool === '1';
+      if (isBool) {
+        input.addEventListener('change', () => {
+          const nodeId = input.dataset.nodeId!;
+          const key = input.dataset.aiStaticKey!;
+          const node = State.nodes.get(nodeId);
+          if (!node) return;
+          let bindings: Record<string, string> = {};
+          try {
+            bindings = typeof node.config?.inputBindings === 'string'
+              ? JSON.parse(node.config.inputBindings as string)
+              : (node.config?.inputBindings as Record<string, string>) || {};
+          } catch { /* ignore */ }
+          const checked = (input as HTMLInputElement).checked;
+          bindings[key] = `static:${checked}`;
+          callbacks.updateNodeConfig(nodeId, 'inputBindings', JSON.stringify(bindings));
+          // Update label
+          const label = input.closest('.binding-toggle')?.querySelector('.binding-toggle-label');
+          if (label) label.textContent = String(checked);
+        });
+      } else {
+        input.addEventListener('input', () => {
+          const nodeId = input.dataset.nodeId!;
+          const key = input.dataset.aiStaticKey!;
+          const node = State.nodes.get(nodeId);
+          if (!node) return;
+          let bindings: Record<string, string> = {};
+          try {
+            bindings = typeof node.config?.inputBindings === 'string'
+              ? JSON.parse(node.config.inputBindings as string)
+              : (node.config?.inputBindings as Record<string, string>) || {};
+          } catch { /* ignore */ }
+          bindings[key] = `static:${input.value}`;
+          callbacks.updateNodeConfig(nodeId, 'inputBindings', JSON.stringify(bindings));
+        });
+      }
     });
     // Local validation on schedule input — update badge + friendly text in-place, no re-render
     el.querySelectorAll<HTMLInputElement>('[data-config-key="schedule"]').forEach(input => {
@@ -1231,19 +1300,55 @@ export const Inspector = {
             <div class="binding-editor">
               ${params.map(p => {
                 const currentBinding = bindings[p.name] || '';
-                const reqBadge = p.required ? '<span style="color:var(--err);font-size:10px;margin-left:4px;">*</span>' : '';
+                const isStatic = currentBinding.startsWith('static:');
+                const staticVal = isStatic ? currentBinding.slice(7) : '';
+                const fieldVal = isStatic ? '' : currentBinding;
+                const reqBadge = p.required ? '<span class="binding-req">required</span>' : '';
+                const isBool = p.type === 'boolean';
+                const boundFieldLabel = !isStatic && fieldVal
+                  ? inboundFields.find(f => f.path === fieldVal)?.name || fieldVal
+                  : '';
+
                 return `
-                <div class="binding-row" title="${escapeHtml(p.description)}">
-                  <div class="binding-placeholder">
-                    <span style="opacity:.5;font-size:10px;">${escapeHtml(p.type)}</span>
-                    ${escapeHtml(p.name)}${reqBadge}
+                <div class="binding-card" title="${escapeHtml(p.description)}">
+                  <div class="binding-card-header">
+                    <div class="binding-param-name">${escapeHtml(p.name)}</div>
+                    <div class="binding-param-meta">
+                      <span class="binding-type-badge">${escapeHtml(p.type)}</span>
+                      ${reqBadge}
+                    </div>
                   </div>
-                  <svg class="binding-arrow" width="16" height="12" viewBox="0 0 16 12"><path d="M0 6h12M10 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
-                  <div class="binding-value-wrap">
-                    <select class="binding-input mono" data-ai-binding-key="${escapeHtml(p.name)}" data-node-id="${id}">
-                      <option value="">— select —</option>
-                      ${inboundFields.map(f => `<option value="${escapeHtml(f.path)}" ${currentBinding === f.path ? 'selected' : ''}>${escapeHtml(f.name)} (${escapeHtml(f.sourceNode)})</option>`).join('')}
-                    </select>
+                  ${p.description ? `<div class="binding-param-desc">${escapeHtml(p.description)}</div>` : ''}
+                  <div class="binding-card-body">
+                    <div class="binding-mode-tabs">
+                      <button class="binding-mode-tab ${!isStatic && !fieldVal ? 'active' : ''}" data-ai-mode="none" data-ai-param="${escapeHtml(p.name)}" data-node-id="${id}">None</button>
+                      <button class="binding-mode-tab ${!isStatic && fieldVal ? 'active' : ''}" data-ai-mode="field" data-ai-param="${escapeHtml(p.name)}" data-node-id="${id}">Field</button>
+                      <button class="binding-mode-tab ${isStatic ? 'active' : ''}" data-ai-mode="static" data-ai-param="${escapeHtml(p.name)}" data-node-id="${id}">Static</button>
+                    </div>
+                    <div class="binding-card-value">
+                      ${!isStatic && fieldVal ? `
+                        <select class="binding-field-select" data-ai-binding-key="${escapeHtml(p.name)}" data-node-id="${id}">
+                          <option value="">— select field —</option>
+                          ${inboundFields.map(f => `<option value="${escapeHtml(f.path)}" ${fieldVal === f.path ? 'selected' : ''}>${escapeHtml(f.name)} · ${escapeHtml(f.sourceNode)}</option>`).join('')}
+                        </select>
+                      ` : isStatic ? (isBool
+                        ? `<div class="binding-toggle-wrap">
+                            <label class="binding-toggle">
+                              <input type="checkbox" ${staticVal === 'true' ? 'checked' : ''} data-ai-static-key="${escapeHtml(p.name)}" data-node-id="${id}" data-is-bool="1" />
+                              <span class="binding-toggle-track"></span>
+                              <span class="binding-toggle-label">${staticVal === 'true' ? 'true' : 'false'}</span>
+                            </label>
+                          </div>`
+                        : `<input class="binding-static-input" data-ai-static-key="${escapeHtml(p.name)}" data-node-id="${id}" value="${escapeHtml(staticVal)}" placeholder="Enter ${escapeHtml(p.type)} value…" />`
+                      ) : (!isStatic && !fieldVal ? `
+                        <div class="binding-empty-hint">Choose Field or Static to bind this parameter</div>
+                      ` : `
+                        <select class="binding-field-select" data-ai-binding-key="${escapeHtml(p.name)}" data-node-id="${id}">
+                          <option value="">— select field —</option>
+                          ${inboundFields.map(f => `<option value="${escapeHtml(f.path)}" ${fieldVal === f.path ? 'selected' : ''}>${escapeHtml(f.name)} · ${escapeHtml(f.sourceNode)}</option>`).join('')}
+                        </select>
+                      `)}
+                    </div>
                   </div>
                 </div>`;
               }).join('')}

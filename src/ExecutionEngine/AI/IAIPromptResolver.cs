@@ -56,6 +56,9 @@ public class AgentDefinitionInfo
     /// <summary>Gets or sets the LLM-extracted input parameters.</summary>
     public List<AgentInputParam> Inputs { get; set; } = [];
 
+    /// <summary>Gets or sets the LLM-extracted output fields produced by this agent/skill.</summary>
+    public List<AgentOutputField> Outputs { get; set; } = [];
+
     /// <summary>Gets or sets the path to the executable script (for skills with .ps1/.py files).</summary>
     public string? ScriptPath { get; set; }
 
@@ -84,5 +87,20 @@ public class AgentInputParam
     public bool Required { get; set; }
 
     /// <summary>Gets or sets a description of this parameter.</summary>
+    public string Description { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Describes an output field produced by an agent or skill.
+/// </summary>
+public class AgentOutputField
+{
+    /// <summary>Gets or sets the output field name.</summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>Gets or sets the output field type (string, object, file, folder).</summary>
+    public string Type { get; set; } = "string";
+
+    /// <summary>Gets or sets a description of this output.</summary>
     public string Description { get; set; } = string.Empty;
 }

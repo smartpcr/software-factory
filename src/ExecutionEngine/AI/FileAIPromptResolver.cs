@@ -146,6 +146,7 @@ public class FileAIPromptResolver : IAIPromptResolver
                 ModelHint = info.ModelHint,
                 AllowedTools = info.AllowedTools,
                 Inputs = info.Inputs,
+                Outputs = info.Outputs,
                 SourceHash = info.SourceHash,
                 ExtractedAt = info.ExtractedAt,
                 // Don't store SystemPrompt in cache — it can be huge
@@ -175,6 +176,9 @@ public class FileAIPromptResolver : IAIPromptResolver
               "modelHint": "opus|sonnet|haiku or null",
               "inputs": [
                 { "name": "paramName", "type": "string|integer|boolean|object", "required": true, "description": "what this param is" }
+              ],
+              "outputs": [
+                { "name": "outputName", "type": "string|object|file|folder", "description": "what this output is" }
               ]
             }
             """;
@@ -188,6 +192,11 @@ public class FileAIPromptResolver : IAIPromptResolver
             + "- For PowerShell scripts, extract from param() blocks\n"
             + "- For markdown-only agents, extract from \"Input\" or \"Task\" sections\n"
             + "- Mark required vs optional based on documentation\n\n"
+            + "Rules for extracting outputs:\n"
+            + "- Look for output files, output folders, return values, and generated artifacts\n"
+            + "- Check for Output sections, file paths, saved files, and result descriptions\n"
+            + "- Use type 'file' for individual output files, 'folder' for output directories\n"
+            + "- Use type 'string' for text results, 'object' for structured data\n\n"
             + "--- FILE CONTENT ---\n"
             + inputText;
 
@@ -237,6 +246,19 @@ public class FileAIPromptResolver : IAIPromptResolver
                         Type = inp.TryGetProperty("type", out var pt) ? pt.GetString() ?? "string" : "string",
                         Required = inp.TryGetProperty("required", out var pr) && pr.ValueKind == JsonValueKind.True,
                         Description = inp.TryGetProperty("description", out var pd) ? pd.GetString() ?? "" : "",
+                    });
+                }
+            }
+
+            if (root.TryGetProperty("outputs", out var outputs) && outputs.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var outp in outputs.EnumerateArray())
+                {
+                    info.Outputs.Add(new AgentOutputField
+                    {
+                        Name = outp.TryGetProperty("name", out var on) ? on.GetString() ?? "" : "",
+                        Type = outp.TryGetProperty("type", out var ot) ? ot.GetString() ?? "string" : "string",
+                        Description = outp.TryGetProperty("description", out var od) ? od.GetString() ?? "" : "",
                     });
                 }
             }
