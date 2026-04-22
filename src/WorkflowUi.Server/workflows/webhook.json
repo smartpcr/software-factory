@@ -49,12 +49,60 @@
       "circuitBreakerPolicy": null,
       "compensationNodeId": null,
       "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_jboali7",
+      "runtimeType": "AI",
+      "nodeName": "Extract ICM content",
+      "description": "",
+      "configuration": {
+        "mode": "skill",
+        "skillName": "open-icm",
+        "subAgentName": "",
+        "model": "claude-sonnet-4.6",
+        "userPrompt": "",
+        "systemPrompt": "",
+        "inputMapping": "input",
+        "outputKey": "result",
+        "confidence": 70,
+        "maxTokens": 4096,
+        "inputBindings": "{\"IncidentId\":\"body.incidentId\"}"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
     }
   ],
   "connections": [
     {
       "sourceNodeId": "n_5vecfce",
       "targetNodeId": "n_6m5fwz9",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_6m5fwz9",
+      "targetNodeId": "n_jboali7",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_5vecfce",
+      "targetNodeId": "n_jboali7",
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",

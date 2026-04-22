@@ -284,3 +284,22 @@ export async function fetchAISkills(): Promise<AIRegistryItem[]> {
   if (!res.ok) throw new Error(`GET /api/ai/skills failed: ${res.status}`);
   return res.json() as Promise<AIRegistryItem[]>;
 }
+
+export interface AIInputParam {
+  name: string;
+  type: string;
+  required: boolean;
+  description: string;
+}
+
+export async function fetchAgentInputs(name: string): Promise<AIInputParam[]> {
+  const res = await fetch(`/api/ai/agents/${encodeURIComponent(name)}/inputs`);
+  if (!res.ok) return [];
+  return res.json() as Promise<AIInputParam[]>;
+}
+
+export async function fetchSkillInputs(name: string): Promise<AIInputParam[]> {
+  const res = await fetch(`/api/ai/skills/${encodeURIComponent(name)}/inputs`);
+  if (!res.ok) return [];
+  return res.json() as Promise<AIInputParam[]>;
+}

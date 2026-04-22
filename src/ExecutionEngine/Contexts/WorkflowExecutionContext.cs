@@ -37,6 +37,16 @@ public class WorkflowExecutionContext : IDisposable
     }
 
     /// <summary>
+    /// Initializes a new instance of the WorkflowExecutionContext class with a specific instance ID.
+    /// </summary>
+    public WorkflowExecutionContext(Guid instanceId)
+    {
+        this.InstanceId = instanceId;
+        this.StartTime = DateTime.UtcNow;
+        this.Status = WorkflowExecutionStatus.Pending;
+    }
+
+    /// <summary>
     /// Gets the unique identifier for this workflow instance.
     /// </summary>
     public Guid InstanceId { get; }

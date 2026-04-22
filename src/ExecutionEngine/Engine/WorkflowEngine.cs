@@ -140,12 +140,22 @@ namespace ExecutionEngine.Engine
             TimeSpan? timeout = null,
             CancellationToken cancellationToken = default)
         {
-            return await this.StartAsync(workflowDefinition, [], timeout, cancellationToken);
+            return await this.StartAsync(workflowDefinition, [], null, timeout, cancellationToken);
         }
 
         public async Task<WorkflowExecutionContext> StartAsync(
             WorkflowDefinition workflowDefinition,
             Dictionary<string, object> initialVariables,
+            TimeSpan? timeout = null,
+            CancellationToken cancellationToken = default)
+        {
+            return await this.StartAsync(workflowDefinition, initialVariables, null, timeout, cancellationToken);
+        }
+
+        public async Task<WorkflowExecutionContext> StartAsync(
+            WorkflowDefinition workflowDefinition,
+            Dictionary<string, object> initialVariables,
+            Guid? instanceId,
             TimeSpan? timeout = null,
             CancellationToken cancellationToken = default)
         {
@@ -173,7 +183,7 @@ namespace ExecutionEngine.Engine
                 }
 
                 // Execute the workflow with initial variables
-                var context = await this.ExecuteAsync(workflowDefinition, initialVariables, workflowCts.Token);
+                var context = await this.ExecuteAsync(workflowDefinition, initialVariables, instanceId, workflowCts.Token);
                 workflowInstanceId = context.InstanceId;
 
                 // Track active workflow (InstanceId is auto-generated in WorkflowExecutionContext constructor)
@@ -539,24 +549,25 @@ namespace ExecutionEngine.Engine
             WorkflowDefinition workflowDefinition,
             CancellationToken cancellationToken = default)
         {
-            return await this.ExecuteAsync(workflowDefinition, [], cancellationToken);
+            return await this.ExecuteAsync(workflowDefinition, [], null, cancellationToken);
         }
 
         private async Task<WorkflowExecutionContext> ExecuteAsync(
             WorkflowDefinition workflowDefinition,
             Dictionary<string, object> initialVariables,
+            Guid? instanceId,
             CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(workflowDefinition);
 
-            // Create execution context
-            var context = new WorkflowExecutionContext
-            {
-                GraphId = workflowDefinition.WorkflowId,
-                Status = WorkflowExecutionStatus.Running,
-                LoggerFactory = this.loggerFactory,
-                ServiceProvider = this.serviceProvider
-            };
+            // Create execution context — use provided instanceId if given
+            var context = instanceId.HasValue
+                ? new WorkflowExecutionContext(instanceId.Value)
+                : new WorkflowExecutionContext();
+            context.GraphId = workflowDefinition.WorkflowId;
+            context.Status = WorkflowExecutionStatus.Running;
+            context.LoggerFactory = this.loggerFactory;
+            context.ServiceProvider = this.serviceProvider;
 
             // Populate default variables from workflow definition
             if (workflowDefinition.DefaultVariables != null)

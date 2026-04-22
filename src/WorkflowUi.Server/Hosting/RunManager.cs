@@ -74,7 +74,7 @@ public class RunManager
         {
             try
             {
-                var context = await engine.StartAsync(workflow, initVars, timeout, cts.Token);
+                var context = await engine.StartAsync(workflow, initVars, runId, timeout, cts.Token);
                 activeRun.Status = context.Status.ToString();
 
                 var kind = context.Status == ExecutionEngine.Enums.WorkflowExecutionStatus.Completed

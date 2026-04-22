@@ -93,6 +93,14 @@ function handleRunEvent(event: RunEvent) {
       logFn('warn', event.nodeId || null, `■ ${event.nodeName || event.nodeId} cancelled`);
       break;
     }
+    case 'NodeLog': {
+      const msg = (event.payload?.message as string) || '';
+      if (msg) {
+        const nodeName = event.nodeName || findNodeById(event.nodeId)?.nodeName || event.nodeId || '';
+        logFn('info', event.nodeId || null, `🤖 [${nodeName}] ${msg}`);
+      }
+      break;
+    }
     case 'EdgeActivated': {
       // Synthetic event from EdgeActivationDeriver
       break;

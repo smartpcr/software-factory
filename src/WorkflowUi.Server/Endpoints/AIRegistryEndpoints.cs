@@ -29,6 +29,24 @@ public static class AIRegistryEndpoints
         .WithName("ListSkills")
         .AllowAnonymous();
 
+        group.MapGet("/agents/{name}/inputs", async (string name, ExecutionEngine.AI.IAIPromptResolver resolver, CancellationToken ct) =>
+        {
+            var info = await resolver.LoadAgentAsync(name, ct);
+            if (info == null) return Results.NotFound();
+            return Results.Ok(info.Inputs.Select(i => new { i.Name, i.Type, i.Required, i.Description }));
+        })
+        .WithName("GetAgentInputs")
+        .AllowAnonymous();
+
+        group.MapGet("/skills/{name}/inputs", async (string name, ExecutionEngine.AI.IAIPromptResolver resolver, CancellationToken ct) =>
+        {
+            var info = await resolver.LoadSkillAsync(name, ct);
+            if (info == null) return Results.NotFound();
+            return Results.Ok(info.Inputs.Select(i => new { i.Name, i.Type, i.Required, i.Description }));
+        })
+        .WithName("GetSkillInputs")
+        .AllowAnonymous();
+
         return app;
     }
 }

@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using ExecutionEngine.AI;
 using WorkflowUi.Server.Auth;
 using WorkflowUi.Server.Endpoints;
 using WorkflowUi.Server.Files;
@@ -45,6 +46,18 @@ builder.Services.AddWorkflowUiAuth(builder.Configuration, builder.Environment.Is
 builder.Services.Configure<AIRegistryOptions>(
     builder.Configuration.GetSection(AIRegistryOptions.SectionName));
 builder.Services.AddSingleton<AIRegistryService>();
+
+// DI: register AI execution services
+var aiRegistryOpts = new AIRegistryOptions();
+builder.Configuration.GetSection(AIRegistryOptions.SectionName).Bind(aiRegistryOpts);
+builder.Services.AddSingleton<IAIPromptResolver>(sp =>
+    new FileAIPromptResolver(
+        aiRegistryOpts.AgentsPath,
+        aiRegistryOpts.SkillsPath,
+        sp.GetRequiredService<ILogger<FileAIPromptResolver>>()));
+builder.Services.AddSingleton<IAIExecutor, CopilotAIExecutor>();
+builder.Services.AddSingleton<IAIExecutor, ClaudeCliAIExecutor>();
+builder.Services.AddSingleton<IAINodeLogger, SignalRAINodeLogger>();
 
 // DI: register persistence services
 builder.Services.Configure<PersistenceOptions>(

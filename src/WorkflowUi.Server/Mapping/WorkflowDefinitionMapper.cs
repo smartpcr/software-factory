@@ -159,10 +159,12 @@ public static class WorkflowDefinitionMapper
             RuntimeType.AI => new AINodeDefinition
             {
                 Mode = GetEnum<AINodeMode>(el, config, "mode"),
+                Backend = GetEnum<AIBackend>(el, config, "backend"),
                 SkillName = GetString(el, config, "skillName"),
                 SubAgentName = GetString(el, config, "subAgentName"),
                 Model = GetEnum<AIModelId>(el, config, "model"),
                 UserPrompt = GetString(el, config, "userPrompt"),
+                SystemPrompt = GetString(el, config, "systemPrompt"),
             },
             RuntimeType.Action => new ActionNodeDefinition
             {

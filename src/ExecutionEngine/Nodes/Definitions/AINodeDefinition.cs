@@ -23,6 +23,11 @@ public class AINodeDefinition : NodeDefinition
     public AINodeMode Mode { get; set; } = AINodeMode.Skill;
 
     /// <summary>
+    /// Gets or sets the AI backend (Copilot or Claude).
+    /// </summary>
+    public AIBackend Backend { get; set; } = AIBackend.Copilot;
+
+    /// <summary>
     /// Gets or sets the skill name (required when Mode is Skill).
     /// </summary>
     public string? SkillName { get; set; }
@@ -51,6 +56,12 @@ public class AINodeDefinition : NodeDefinition
     /// Gets or sets the input mapping expression.
     /// </summary>
     public string InputMapping { get; set; } = "input";
+
+    /// <summary>
+    /// Gets or sets bindings that map skill/agent input parameter names to input data paths.
+    /// Key = parameter name (e.g. "incidentId"), Value = input expression (e.g. "body.incidentId").
+    /// </summary>
+    public Dictionary<string, string> InputBindings { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the output key name.

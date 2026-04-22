@@ -11,8 +11,8 @@ import { aiModels, tierColor } from './config';
 import { mountCSharpEditor, mountJsonEditor, disposeAllEditors } from './csharp-editor';
 import { discoverInboundFields } from './inboundSchema';
 import type { InboundField } from './inboundSchema';
-import { fetchAIAgents, fetchAISkills } from './api';
-import type { AIRegistryItem } from './api';
+import { fetchAIAgents, fetchAISkills, fetchAgentInputs, fetchSkillInputs } from './api';
+import type { AIRegistryItem, AIInputParam } from './api';
 
 let callbacks: AppCallbacks;
 
@@ -29,6 +29,24 @@ async function ensureAIRegistry(): Promise<void> {
   } catch (e) {
     console.warn('Failed to load AI registry:', e);
   }
+}
+
+// Cached input params for the currently selected skill/agent
+let cachedInputParams: AIInputParam[] = [];
+let cachedInputParamsKey = '';
+
+async function loadInputParams(mode: string, name: string): Promise<AIInputParam[]> {
+  const key = `${mode}:${name}`;
+  if (key === cachedInputParamsKey) return cachedInputParams;
+  try {
+    cachedInputParams = mode === 'skill'
+      ? await fetchSkillInputs(name)
+      : await fetchAgentInputs(name);
+    cachedInputParamsKey = key;
+  } catch {
+    cachedInputParams = [];
+  }
+  return cachedInputParams;
 }
 let nodeRenderTimer: ReturnType<typeof setTimeout> | null = null;
 function debouncedNodeRender() {
@@ -522,6 +540,16 @@ export const Inspector = {
     const type = NodeTypes[node.runtimeType];
     if (!type) return;
     const el = document.getElementById('inspector')!;
+
+    // Pre-load input params for AI nodes
+    if (node.runtimeType.toLowerCase() === 'ai') {
+      const mode = String(node.config?.mode || 'skill').toLowerCase();
+      const name = mode === 'skill' ? String(node.config?.skillName || '') : String(node.config?.subAgentName || '');
+      if (name && cachedInputParamsKey !== `${mode}:${name}`) {
+        loadInputParams(mode, name).then(() => this.render());
+      }
+    }
+
     const configHtml = this.configFieldsHtml(node);
 
     el.innerHTML = `
@@ -743,6 +771,39 @@ export const Inspector = {
           setTimeout(() => this.render(), 50);
         });
       }
+    });
+    // Re-render when AI skill/agent selection changes to load input params
+    el.querySelectorAll<HTMLSelectElement>('[data-config-key="skillName"], [data-config-key="subAgentName"]').forEach(select => {
+      const nodeId = select.dataset.nodeId;
+      const node = nodeId ? State.nodes.get(nodeId) : null;
+      if (node && node.runtimeType.toLowerCase() === 'ai') {
+        select.addEventListener('change', async () => {
+          const mode = String(node.config?.mode || 'skill').toLowerCase();
+          await loadInputParams(mode, select.value);
+          setTimeout(() => this.render(), 50);
+        });
+      }
+    });
+    // AI input binding selects
+    el.querySelectorAll<HTMLSelectElement>('[data-ai-binding-key]').forEach(select => {
+      select.addEventListener('change', () => {
+        const nodeId = select.dataset.nodeId!;
+        const bindingKey = select.dataset.aiBindingKey!;
+        const node = State.nodes.get(nodeId);
+        if (!node) return;
+        let bindings: Record<string, string> = {};
+        try {
+          bindings = typeof node.config?.inputBindings === 'string'
+            ? JSON.parse(node.config.inputBindings as string)
+            : (node.config?.inputBindings as Record<string, string>) || {};
+        } catch { /* ignore */ }
+        if (select.value) {
+          bindings[bindingKey] = select.value;
+        } else {
+          delete bindings[bindingKey];
+        }
+        callbacks.updateNodeConfig(nodeId, 'inputBindings', JSON.stringify(bindings));
+      });
     });
     // Local validation on schedule input — update badge + friendly text in-place, no re-render
     el.querySelectorAll<HTMLInputElement>('[data-config-key="schedule"]').forEach(input => {
@@ -1065,6 +1126,7 @@ export const Inspector = {
     } else if (node.runtimeType.toLowerCase() === 'ai') {
       title = 'AI Configuration';
       const mode = String(c.mode || 'skill').toLowerCase();
+      const backend = String(c.backend || 'copilot').toLowerCase();
       const modelVal = String(c.model || 'claude-opus-4.6-1m').replace(/_/g, '-');
       // Normalize legacy model IDs: "claude-opus-4-7" → "claude-opus-4.7"
       const modelId = aiModels.find(m => m.id === modelVal)
@@ -1080,6 +1142,13 @@ export const Inspector = {
             <option ${mode === 'subagent' ? 'selected' : ''} value="subagent">SubAgent</option>
             <option ${mode === 'mcp' ? 'selected' : ''} value="mcp">MCP</option>
             <option ${mode === 'prompt' || mode === 'rawprompt' ? 'selected' : ''} value="prompt">Raw Prompt</option>
+          </select>
+        </div>
+        <div class="ins-field">
+          <label class="ins-field-label">Backend</label>
+          <select data-config-key="backend" data-node-id="${id}">
+            <option ${backend === 'copilot' ? 'selected' : ''} value="copilot">Copilot</option>
+            <option ${backend === 'claude' ? 'selected' : ''} value="claude">Claude</option>
           </select>
         </div>
         ${mode === 'skill' ? `
@@ -1142,6 +1211,52 @@ export const Inspector = {
             <input type="number" step="1024" min="4096" max="32768" value="${c.maxTokens || 4096}" data-config-key="maxTokens" data-node-id="${id}" />
           </div>
         </div>
+        ${(() => {
+          // Show input bindings for skill/agent
+          const selectedName = mode === 'skill' ? String(c.skillName || '') : mode === 'subagent' ? String(c.subAgentName || '') : '';
+          if (!selectedName || (mode !== 'skill' && mode !== 'subagent')) return '';
+          let bindings: Record<string, string> = {};
+          try {
+            bindings = typeof c.inputBindings === 'string'
+              ? JSON.parse(c.inputBindings as string)
+              : (c.inputBindings as unknown as Record<string, string>) || {};
+          } catch { /* ignore */ }
+          const inboundFields = discoverInboundFields(node.nodeId);
+          const params = cachedInputParams.filter(() => cachedInputParamsKey === `${mode}:${selectedName}`);
+          if (params.length === 0 && inboundFields.length === 0) return '';
+          return `
+          <div class="ins-field">
+            <label class="ins-field-label">Input Bindings</label>
+            ${params.length > 0 ? `
+            <div class="binding-editor">
+              ${params.map(p => {
+                const currentBinding = bindings[p.name] || '';
+                const reqBadge = p.required ? '<span style="color:var(--err);font-size:10px;margin-left:4px;">*</span>' : '';
+                return `
+                <div class="binding-row" title="${escapeHtml(p.description)}">
+                  <div class="binding-placeholder">
+                    <span style="opacity:.5;font-size:10px;">${escapeHtml(p.type)}</span>
+                    ${escapeHtml(p.name)}${reqBadge}
+                  </div>
+                  <svg class="binding-arrow" width="16" height="12" viewBox="0 0 16 12"><path d="M0 6h12M10 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
+                  <div class="binding-value-wrap">
+                    <select class="binding-input mono" data-ai-binding-key="${escapeHtml(p.name)}" data-node-id="${id}">
+                      <option value="">— select —</option>
+                      ${inboundFields.map(f => `<option value="${escapeHtml(f.path)}" ${currentBinding === f.path ? 'selected' : ''}>${escapeHtml(f.name)} (${escapeHtml(f.sourceNode)})</option>`).join('')}
+                    </select>
+                  </div>
+                </div>`;
+              }).join('')}
+            </div>` : `
+            <div class="ins-field-hint" style="font-style:italic; opacity:0.7;">
+              No declared inputs. Add <code>inputs:</code> to the agent/skill frontmatter.
+            </div>`}
+            ${inboundFields.length > 0 ? `
+            <div class="inbound-fields-panel" style="margin-top:6px;">
+              ${this.renderInboundFields(inboundFields, id, params.map(p => p.name), bindings)}
+            </div>` : ''}
+          </div>`;
+        })()}
       `;
     } else if (rt === 'http' || rt === 'httprequest') {
       fields = `
