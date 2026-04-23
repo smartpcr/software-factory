@@ -38,6 +38,7 @@ function buildCallbacks(): AppCallbacks {
     createChildNode: (type, parentId, slot, index) => App.createChildNode(type, parentId, slot, index),
     insertNodeRelative: (type, refNodeId, position) => App.insertNodeRelative(type, refNodeId, position),
     reparentNode: (nodeId, newParentId, newSlot, index) => App.reparentNode(nodeId, newParentId, newSlot, index),
+    unparentNode: (nodeId, canvasX, canvasY) => App.unparentNode(nodeId, canvasX, canvasY),
     updateNode: (id, patch) => App.updateNode(id, patch),
     updateNodeConfig: (id, key, value) => App.updateNodeConfig(id, key, value),
     deleteNode: (id) => App.deleteNode(id),
@@ -292,6 +293,26 @@ export const App = {
     this.log('info', null, `Moved "${node.nodeName}" into ${newParent.nodeName || newParent.runtimeType}/${newSlot}`);
   },
 
+  /** Remove a node from its parent container, making it a top-level canvas node */
+  unparentNode(nodeId: string, canvasX: number, canvasY: number) {
+    const node = State.nodes.get(nodeId);
+    if (!node || !node.parentId) return;
+    const oldParent = State.nodes.get(node.parentId);
+    if (oldParent?.children?.[node.parentSlot!]) {
+      oldParent.children[node.parentSlot!] = oldParent.children[node.parentSlot!].filter(id => id !== nodeId);
+    }
+    this.removeContainerEdges(nodeId, node.parentId, node.parentSlot!);
+    this.rebuildContainerEdges(node.parentId, node.parentSlot!);
+    node.parentId = null;
+    node.parentSlot = null;
+    node.x = canvasX;
+    node.y = canvasY;
+    this.markDirty();
+    this.renderAll();
+    this.select('node', nodeId);
+    this.log('info', null, `Moved "${node.nodeName}" to canvas`);
+  },
+
   createChildNode(type: string, parentId: string, slot: string, index?: number): string | null {
     const parent = State.nodes.get(parentId);
     if (!parent) return null;
@@ -434,19 +455,43 @@ export const App = {
     this.triggerValidation();
   },
 
-  /** Trigger server-side node validation with 5s debounce */
+  /** Trigger node validation — immediate client-side + debounced server-side */
   triggerValidation() {
+    // Immediate client-side validation
+    State.nodes.forEach(n => {
+      if (n.runtimeType.toLowerCase() === 'group') {
+        Inspector.validateGroupNode(n);
+      }
+    });
+    Nodes.render();
+
     debouncedValidation(async () => {
       if (!State.currentWfId) return;
       try {
         // Build node definitions for validation
-        const nodeDefs = [...State.nodes.values()].map(n => ({
-          nodeId: n.nodeId,
-          runtimeType: n.runtimeType,
-          nodeName: n.nodeName,
-          configuration: n.config || {},
-          ...n.config, // spread config fields at top level too for the validator
-        }));
+        const allNodes = [...State.nodes.values()];
+        const nodeDefs = allNodes.map(n => {
+          const { childNodes: _drop, childConnections: _drop2, ...configWithout } = (n.config || {}) as Record<string, unknown>;
+          const cleanConfig = { ...configWithout };
+          const def: Record<string, unknown> = {
+            nodeId: n.nodeId,
+            runtimeType: n.runtimeType,
+            nodeName: n.nodeName,
+            configuration: cleanConfig,
+            ...configWithout,
+          };
+          // Include childNodes for Group nodes so server-side validation works
+          if (n.runtimeType.toLowerCase() === 'group') {
+            let children = allNodes.filter(c => c.parentId === n.nodeId);
+            // Also check children from config (may not have parentId set in older sessions)
+            if (children.length === 0 && n.children) {
+              const childIds = Object.values(n.children).flat();
+              children = childIds.map(id => allNodes.find(c => c.nodeId === id)).filter(Boolean) as typeof allNodes;
+            }
+            def.childNodes = children.map(c => ({ nodeId: c.nodeId, runtimeType: c.runtimeType, nodeName: c.nodeName }));
+          }
+          return def;
+        });
 
         const entries = await validateNodesBatch(nodeDefs);
 
@@ -945,6 +990,39 @@ export const App = {
               if (n.parentId === undefined) n.parentId = null;
               if (n.parentSlot === undefined) n.parentSlot = null;
             }
+            // Extract embedded Group childNodes into flat node list
+            const extractedNodes: typeof data.nodes = [];
+            const extractedEdges: typeof data.edges = [];
+            for (const n of data.nodes) {
+              if (n.runtimeType?.toLowerCase() === 'group' && n.config?.childNodes && Array.isArray(n.config.childNodes)) {
+                for (const child of n.config.childNodes) {
+                  if (child.configuration && !child.config) {
+                    child.config = child.configuration;
+                    delete child.configuration;
+                  }
+                  child.parentId = n.nodeId;
+                  child.parentSlot = '_body';
+                  if (child.x == null) child.x = 0;
+                  if (child.y == null) child.y = 0;
+                  if (!child.width) child.width = 220;
+                  if (!child.status) child.status = '';
+                  extractedNodes.push(child);
+                }
+                // Extract child connections as edges
+                if (Array.isArray(n.config.childConnections)) {
+                  for (const conn of n.config.childConnections) {
+                    extractedEdges.push({ ...conn, id: conn.id || uid('e') });
+                  }
+                }
+                delete n.config.childNodes;
+                delete n.config.childConnections;
+              }
+            }
+            if (extractedNodes.length) data.nodes.push(...extractedNodes);
+            if (extractedEdges.length) {
+              if (!data.edges) data.edges = [];
+              data.edges.push(...extractedEdges);
+            }
             // Rebuild children arrays from parentId/parentSlot
             this.rebuildChildren(data.nodes);
           }
@@ -1413,6 +1491,24 @@ export const App = {
         }
       }
 
+      // Synthesize runtime data for Group child nodes from ChildResults
+      for (const [nodeId, info] of nodeInfo) {
+        const node = State.nodes.get(nodeId);
+        if (!node || node.runtimeType.toLowerCase() !== 'group') continue;
+        const childResults = info.outputData?.ChildResults as Record<string, Record<string, unknown>> | undefined;
+        if (!childResults) continue;
+        for (const [childId, childOut] of Object.entries(childResults)) {
+          if (nodeInfo.has(childId)) continue; // don't overwrite direct events
+          nodeInfo.set(childId, {
+            status: 'success',
+            startTime: info.startTime,
+            endTime: info.endTime,
+            duration: info.duration,
+            outputData: childOut,
+          });
+        }
+      }
+
       // Apply statuses and runtime data to nodes
       State.nodes.forEach(n => {
         const info = nodeInfo.get(n.nodeId);
@@ -1568,6 +1664,14 @@ export const App = {
     toast(`Copied ${nodes.length} node${nodes.length > 1 ? 's' : ''}`, 'info');
   },
 
+  cutSelected() {
+    if (State.selection.kind !== 'node' || !State.selection.id) return;
+    if (State.isLocked) return;
+    this.copySelected();
+    this.deleteNode(State.selection.id!);
+    toast('Cut to clipboard', 'info');
+  },
+
   pasteClipboard() {
     if (!this._clipboard) return;
     const { nodes, edges } = this._clipboard;
@@ -1628,6 +1732,7 @@ export const App = {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); this.saveWorkflow(); }
       if ((e.ctrlKey || e.metaKey) && e.key === 'n') { e.preventDefault(); this.newWorkflow(); }
       if ((e.ctrlKey || e.metaKey) && e.key === 'c') { this.copySelected(); }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'x') { e.preventDefault(); this.cutSelected(); }
       if ((e.ctrlKey || e.metaKey) && e.key === 'v') { if (!State.isLocked) this.pasteClipboard(); }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (State.isLocked) return;

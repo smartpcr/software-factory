@@ -2,7 +2,7 @@
 // Server API client
 // -----------------------------------------------------------------------
 
-import type { WorkflowData } from './types';
+import type { WorkflowData, FlowNode } from './types';
 
 function encodePath(p: string): string {
   return p.split('/').map(seg => encodeURIComponent(seg)).join('/');
@@ -29,6 +29,80 @@ export async function getWorkflow(id: string): Promise<unknown> {
 export async function saveWorkflow(id: string, data: WorkflowData): Promise<void> {
   const url = `${API_BASE}/${encodePath(id)}`;
   // Map to engine WorkflowDefinition schema
+  // Identify Group children (nodes with parentId pointing to a Group)
+  const allNodes = data.nodes || [];
+  const groupChildIds = new Set<string>();
+  for (const n of allNodes) {
+    if (n.parentId) {
+      const parent = allNodes.find(p => p.nodeId === n.parentId);
+      if (parent && parent.runtimeType.toLowerCase() === 'group') {
+        groupChildIds.add(n.nodeId);
+      }
+    }
+  }
+
+  const mapNode = (n: FlowNode) => ({
+    nodeId: n.nodeId,
+    runtimeType: n.runtimeType,
+    nodeName: n.nodeName,
+    description: n.description || '',
+    configuration: n.config || {},
+    joinType: n.joinType || 'Any',
+    priority: n.priority || 'Normal',
+    maxConcurrentExecutions: n.maxConcurrentExecutions || 0,
+    retryPolicy: n.retryPolicy || null,
+    circuitBreakerPolicy: n.circuitBreakerPolicy || null,
+    compensationNodeId: n.compensationNodeId || null,
+    fallbackNodeId: n.fallbackNodeId || null,
+  });
+
+  const allEdges = data.edges || [];
+
+  const topLevelNodes = allNodes.filter(n => !groupChildIds.has(n.nodeId)).map(n => {
+    const mapped = mapNode(n);
+    // Embed children inside Group nodes
+    if (n.runtimeType.toLowerCase() === 'group') {
+      const children = allNodes.filter(c => c.parentId === n.nodeId);
+      const childNodeIds = new Set(children.map(c => c.nodeId));
+      // Only connections between children (not group↔child which are structural)
+      const childConns = allEdges.filter(e => {
+        const srcIsChild = childNodeIds.has(e.sourceNodeId);
+        const tgtIsChild = childNodeIds.has(e.targetNodeId);
+        return srcIsChild && tgtIsChild;
+      });
+      (mapped.configuration as Record<string, unknown>).childNodes = children.map(mapNode);
+      (mapped.configuration as Record<string, unknown>).childConnections = childConns.map(e => ({
+        sourceNodeId: e.sourceNodeId,
+        targetNodeId: e.targetNodeId,
+        sourcePort: e.sourcePortName || e.sourcePort || 'out',
+        targetPort: e.targetPort || 'in',
+        triggerMessageType: e.sourcePort === 'error' ? 'Fail' : (e.triggerMessageType || 'Complete'),
+      }));
+      // Remove engine-level defaults that are now embedded
+      delete (mapped.configuration as Record<string, unknown>).executionMode;
+    }
+    return mapped;
+  });
+
+  // Filter out edges internal to groups:
+  // - child↔child edges (embedded in childConnections)
+  // - group↔child structural edges (_body port, feedback loops) — UI-only, not needed by engine
+  const groupInternalEdgeIds = new Set<string>();
+  for (const n of allNodes) {
+    if (n.runtimeType.toLowerCase() !== 'group') continue;
+    const childNodeIds = new Set(allNodes.filter(c => c.parentId === n.nodeId).map(c => c.nodeId));
+    for (const e of allEdges) {
+      const srcIsChild = childNodeIds.has(e.sourceNodeId);
+      const tgtIsChild = childNodeIds.has(e.targetNodeId);
+      const srcIsGroup = e.sourceNodeId === n.nodeId;
+      const tgtIsGroup = e.targetNodeId === n.nodeId;
+      // Exclude: child↔child, group→child (_body), child→group (feedback)
+      if ((srcIsChild && tgtIsChild) || (srcIsGroup && tgtIsChild) || (srcIsChild && tgtIsGroup)) {
+        groupInternalEdgeIds.add(e.id);
+      }
+    }
+  }
+
   const workflowDef = {
     workflowId: data.workflowId,
     workflowName: data.workflowName,
@@ -40,21 +114,8 @@ export async function saveWorkflow(id: string, data: WorkflowData): Promise<void
     timeoutSeconds: data.timeoutSeconds || 0,
     defaultVariables: data.defaultVariables || {},
     metadata: data.metadata || {},
-    nodes: (data.nodes || []).map(n => ({
-      nodeId: n.nodeId,
-      runtimeType: n.runtimeType,
-      nodeName: n.nodeName,
-      description: n.description || '',
-      configuration: n.config || {},
-      joinType: n.joinType || 'Any',
-      priority: n.priority || 'Normal',
-      maxConcurrentExecutions: n.maxConcurrentExecutions || 0,
-      retryPolicy: n.retryPolicy || null,
-      circuitBreakerPolicy: n.circuitBreakerPolicy || null,
-      compensationNodeId: n.compensationNodeId || null,
-      fallbackNodeId: n.fallbackNodeId || null,
-    })),
-    connections: (data.edges || []).map(e => {
+    nodes: topLevelNodes,
+    connections: allEdges.filter(e => !groupInternalEdgeIds.has(e.id)).map(e => {
       let msgType: string;
       if (e.sourcePort === 'error') {
         msgType = 'Fail';

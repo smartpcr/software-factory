@@ -384,12 +384,79 @@ export const Nodes = {
         }
       });
     } else {
+      // Nested nodes: click to select + drag to reparent
+      let dragging = false;
+      let dragStart = { x: 0, y: 0 };
+      let moved = false;
+      let lastHover: HTMLElement | null = null;
+
+      const clearHover = () => {
+        if (lastHover) { lastHover.classList.remove('reparent-target'); lastHover = null; }
+      };
+      const findSlotAt = (clientX: number, clientY: number) => {
+        const target = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+        if (!target) return null;
+        const branchEl = target.closest('.branch-port[data-parent-id]') as HTMLElement | null;
+        if (branchEl) {
+          const parentEl = branchEl.closest('.node') as HTMLElement | null;
+          const parentId = parentEl?.dataset.id;
+          if (parentId && parentId !== node.nodeId && !callbacks.isDescendantOf(parentId, node.nodeId)) {
+            return { el: branchEl, parentId, slot: branchEl.dataset.branch || '' };
+          }
+        }
+        const bodyEl = target.closest('.container-body') as HTMLElement | null;
+        if (bodyEl) {
+          const parentEl = bodyEl.closest('.node.container') as HTMLElement | null;
+          const parentId = parentEl?.dataset.id;
+          if (parentId && parentId !== node.nodeId && parentId !== node.parentId && !callbacks.isDescendantOf(parentId, node.nodeId)) {
+            return { el: bodyEl, parentId, slot: '_body' };
+          }
+        }
+        return null;
+      };
+
       el.addEventListener('pointerdown', (e: PointerEvent) => {
         const t = e.target as HTMLElement;
         if (t.classList.contains('port')) return;
         if (t.classList.contains('drop-zone')) return;
         e.stopPropagation();
         callbacks.select('node', node.nodeId);
+        if (State.isLocked) return;
+        dragging = true;
+        moved = false;
+        dragStart = { x: e.clientX, y: e.clientY };
+        el.setPointerCapture(e.pointerId);
+      });
+      el.addEventListener('pointermove', (e: PointerEvent) => {
+        if (!dragging) return;
+        const dx = Math.abs(e.clientX - dragStart.x);
+        const dy = Math.abs(e.clientY - dragStart.y);
+        if (dx + dy < 8) return; // dead zone to avoid accidental drags
+        moved = true;
+        el.classList.add('dragging');
+        const hit = findSlotAt(e.clientX, e.clientY);
+        if (hit && hit.el !== lastHover) { clearHover(); lastHover = hit.el; lastHover.classList.add('reparent-target'); }
+        else if (!hit) { clearHover(); }
+      });
+      el.addEventListener('pointerup', (e: PointerEvent) => {
+        if (!dragging) return;
+        dragging = false;
+        el.classList.remove('dragging');
+        el.releasePointerCapture(e.pointerId);
+        clearHover();
+        if (moved) {
+          const hit = findSlotAt(e.clientX, e.clientY);
+          if (hit) {
+            callbacks.reparentNode(node.nodeId, hit.parentId, hit.slot);
+          } else {
+            // Dropped on empty canvas — unparent the node
+            const canvasEl = document.getElementById('canvas');
+            const rect = canvasEl?.getBoundingClientRect() || { left: 0, top: 0 };
+            const cx = (e.clientX - rect.left - State.canvas.x) / State.canvas.zoom;
+            const cy = (e.clientY - rect.top - State.canvas.y) / State.canvas.zoom;
+            callbacks.unparentNode(node.nodeId, cx - 110, cy - 20);
+          }
+        }
       });
     }
 

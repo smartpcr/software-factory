@@ -67,6 +67,26 @@ function handleRunEvent(event: RunEvent) {
       } else {
         logFn('success', event.nodeId || null, `✓ ${event.nodeName || event.nodeId} completed`);
       }
+      // Extract child results from Group nodes
+      if (node && node.runtimeType.toLowerCase() === 'group' && outData?.ChildResults) {
+        const childResults = outData.ChildResults as Record<string, Record<string, unknown>>;
+        for (const [childId, childOut] of Object.entries(childResults)) {
+          const childNode = findNodeById(childId);
+          const childName = childNode?.nodeName || childId;
+          if (childNode) {
+            childNode.status = 'completed';
+            childNode._runDuration = '';
+            Nodes.render();
+          }
+          if (childNode?.runtimeType.toLowerCase() === 'log' && childOut.message) {
+            const clvl = String(childOut.level || 'info');
+            const cLogLevel = clvl === 'error' ? 'error' : clvl === 'warn' || clvl === 'warning' ? 'warn' : 'info';
+            logFn(cLogLevel, childId, `📝 [${clvl.toUpperCase()}] ${String(childOut.message)}`);
+          } else {
+            logFn('success', childId, `✓ ${childName} completed (inside group)`);
+          }
+        }
+      }
       // Animate edges
       if (event.nodeId) {
         State.edges.forEach(e => {
@@ -380,6 +400,25 @@ export async function replayRunEvents(
           log(rLogLevel, event.nodeId || null, `📝 [${rlvl.toUpperCase()}] ${String(replayOut.message)}`);
         } else {
           log('success', event.nodeId || null, `✓ ${event.nodeName || event.nodeId} completed ${dur ? `(${dur})` : ''}`);
+        }
+        // Extract child results from Group nodes and display them
+        if (replayNode && replayNode.runtimeType.toLowerCase() === 'group' && replayOut?.ChildResults) {
+          const childResults = replayOut.ChildResults as Record<string, Record<string, unknown>>;
+          for (const [childId, childOut] of Object.entries(childResults)) {
+            const childNode = findNodeById(childId);
+            const childName = childNode?.nodeName || childId;
+            if (childNode) {
+              childNode.status = 'completed';
+              childNode._runDuration = '';
+            }
+            if (childNode?.runtimeType.toLowerCase() === 'log' && childOut.message) {
+              const clvl = String(childOut.level || 'info');
+              const cLogLevel = clvl === 'error' ? 'error' : clvl === 'warn' || clvl === 'warning' ? 'warn' : 'info';
+              log(cLogLevel, childId, `📝 [${clvl.toUpperCase()}] ${String(childOut.message)}`);
+            } else {
+              log('success', childId, `✓ ${childName} completed (inside group)`);
+            }
+          }
         }
         break;
       }

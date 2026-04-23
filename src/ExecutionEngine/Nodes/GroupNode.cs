@@ -351,6 +351,24 @@ public class GroupNode : ExecutableNodeBase
             OutputData = []
         };
 
+        // Inject scoped variables into child input data
+        var groupDef = this.Definition as GroupNodeDefinition;
+        if (groupDef?.ScopedVariables != null)
+        {
+            foreach (var sv in groupDef.ScopedVariables)
+            {
+                if (!string.IsNullOrEmpty(sv.Name) && !childContext.InputData.ContainsKey(sv.Name))
+                {
+                    childContext.InputData[sv.Name] = sv.Type switch
+                    {
+                        "number" => double.TryParse(sv.Default, out var d) ? (object)d : sv.Default,
+                        "boolean" => bool.TryParse(sv.Default, out var b) ? (object)b : sv.Default,
+                        _ => sv.Default ?? string.Empty,
+                    };
+                }
+            }
+        }
+
         // Mark as running
         lock (this.stateLock)
         {

@@ -41,6 +41,22 @@ public static class NodeValidationEndpoints
                 var doc = JsonDocument.Parse(json);
                 var allEntries = new List<object>();
 
+                // Pre-scan: build parentId→children map so Group nodes know their children
+                var childrenByParent = new Dictionary<string, List<JsonElement>>();
+                foreach (var nodeEl in doc.RootElement.EnumerateArray())
+                {
+                    if (nodeEl.TryGetProperty("parentId", out var pid) && pid.ValueKind == JsonValueKind.String)
+                    {
+                        var parentId = pid.GetString();
+                        if (!string.IsNullOrEmpty(parentId))
+                        {
+                            if (!childrenByParent.ContainsKey(parentId))
+                                childrenByParent[parentId] = [];
+                            childrenByParent[parentId].Add(nodeEl);
+                        }
+                    }
+                }
+
                 foreach (var nodeEl in doc.RootElement.EnumerateArray())
                 {
                     var nodeId = nodeEl.TryGetProperty("nodeId", out var nid) ? nid.GetString() : "";
@@ -69,6 +85,28 @@ public static class NodeValidationEndpoints
                     if (nodeDef == null)
                     {
                         continue;
+                    }
+
+                    // For Group nodes, also resolve children from parentId relationships in the batch
+                    if (runtimeType == RuntimeType.Group && nodeDef is GroupNodeDefinition gnd)
+                    {
+                        // If childNodes wasn't populated from the payload, resolve from parentId
+                        if ((gnd.ChildNodes == null || gnd.ChildNodes.Count == 0) && childrenByParent.TryGetValue(nodeId ?? "", out var childEls))
+                        {
+                            gnd.ChildNodes = [];
+                            foreach (var childEl in childEls)
+                            {
+                                var childRtStr = childEl.TryGetProperty("runtimeType", out var crt) ? crt.GetString() : null;
+                                if (string.IsNullOrEmpty(childRtStr)) continue;
+                                if (!Enum.TryParse<RuntimeType>(childRtStr, true, out var childRt)) continue;
+                                var childDef = WorkflowDefinitionMapper.CreateNodeDefinition(childRt, childEl);
+                                if (childDef != null)
+                                {
+                                    childDef.NodeId = childEl.TryGetProperty("nodeId", out var cid) ? cid.GetString() ?? "" : "";
+                                    gnd.ChildNodes.Add(childDef);
+                                }
+                            }
+                        }
                     }
 
                     nodeDef.NodeId = nodeId ?? "";

@@ -160,6 +160,7 @@ export interface AppCallbacks {
   createChildNode(type: string, parentId: string, slot: string, index?: number): string | null;
   insertNodeRelative(type: string, refNodeId: string, position: string): string | null;
   reparentNode(nodeId: string, newParentId: string, newSlot: string, index?: number): void;
+  unparentNode(nodeId: string, canvasX: number, canvasY: number): void;
   updateNode(id: string, patch: Partial<FlowNode>): void;
   updateNodeConfig(id: string, key: string, value: unknown): void;
   deleteNode(id: string): void;

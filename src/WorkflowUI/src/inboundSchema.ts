@@ -274,6 +274,35 @@ export function discoverInboundFields(nodeId: string): InboundField[] {
     }
   }
 
+  // Add scoped variables from enclosing Group nodes
+  let current = State.nodes.get(nodeId);
+  const visited = new Set<string>();
+  while (current?.parentId && !visited.has(current.parentId)) {
+    visited.add(current.parentId);
+    const parent = State.nodes.get(current.parentId);
+    if (parent && parent.runtimeType.toLowerCase() === 'group' && parent.config?.scopedVariables) {
+      let scopedVars: { name: string; type: string; default?: string }[] = [];
+      try {
+        scopedVars = typeof parent.config.scopedVariables === 'string'
+          ? JSON.parse(parent.config.scopedVariables as string)
+          : Array.isArray(parent.config.scopedVariables) ? parent.config.scopedVariables as { name: string; type: string }[] : [];
+      } catch { /* ignore */ }
+      const groupName = parent.nodeName || parent.nodeId;
+      for (const v of scopedVars) {
+        if (!v.name) continue;
+        candidates.push({
+          bareName: v.name,
+          prefixedPath: `scope.${v.name}`,
+          type: (v.type as InboundField['type']) || 'unknown',
+          source: 'context',
+          sourceNode: groupName,
+          sourcePort: '',
+        });
+      }
+    }
+    current = parent || undefined;
+  }
+
   // Phase 2: Detect conflicts — a bare name conflicts when used by multiple sources
   const bareNameSources = new Map<string, Set<string>>();
   for (const c of candidates) {

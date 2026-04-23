@@ -623,10 +623,44 @@ function renderLog(ctx: InspectorContext): NodeInspectorResult {
 
 function renderGroup(ctx: InspectorContext): NodeInspectorResult {
   const { node, id, c, escapeHtml } = ctx;
+  let scopedVars: { name: string; type: string; default: string }[] = [];
+  try {
+    scopedVars = Array.isArray(c.scopedVariables)
+      ? c.scopedVariables as { name: string; type: string; default: string }[]
+      : typeof c.scopedVariables === 'string'
+        ? JSON.parse(c.scopedVariables as string)
+        : [];
+  } catch { /* ignore */ }
+
+  const varRows = scopedVars.map((v, i) => `
+    <div class="binding-card" style="padding:6px 8px; display:flex; gap:6px; align-items:center;">
+      <input class="mono" style="flex:2" value="${escapeHtml(v.name)}" placeholder="name" data-scoped-var-field="name" data-scoped-var-index="${i}" data-node-id="${id}" />
+      <select style="flex:1" data-scoped-var-field="type" data-scoped-var-index="${i}" data-node-id="${id}">
+        <option ${v.type === 'string' ? 'selected' : ''}>string</option>
+        <option ${v.type === 'number' ? 'selected' : ''}>number</option>
+        <option ${v.type === 'boolean' ? 'selected' : ''}>boolean</option>
+        <option ${v.type === 'object' ? 'selected' : ''}>object</option>
+        <option ${v.type === 'array' ? 'selected' : ''}>array</option>
+      </select>
+      <input class="mono" style="flex:2" value="${escapeHtml(v.default || '')}" placeholder="default" data-scoped-var-field="default" data-scoped-var-index="${i}" data-node-id="${id}" />
+      <button class="btn-icon" data-action="remove-scoped-var" data-scoped-var-index="${i}" data-node-id="${id}" title="Remove" style="flex-shrink:0">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+  `).join('');
+
   const html = `
     <div class="ins-field">
       <label class="ins-field-label">Label</label>
       <input value="${escapeHtml(String(c.label || 'Group'))}" data-config-key="label" data-node-id="${id}" />
+    </div>
+    <div class="ins-field">
+      <label class="ins-field-label">Scoped Variables</label>
+      <div class="ins-field-hint">Available to child nodes as <code>scope.&lt;name&gt;</code></div>
+      <div class="scoped-vars-list" style="display:flex; flex-direction:column; gap:4px; margin-top:4px;">
+        ${varRows}
+      </div>
+      <button class="btn-secondary" data-action="add-scoped-var" data-node-id="${id}" style="margin-top:6px; font-size:11px;">+ Add variable</button>
     </div>
     <div class="ins-field">
       <label style="display:flex; align-items:center; gap:6px; font-size:12px;">

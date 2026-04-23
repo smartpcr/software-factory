@@ -194,9 +194,80 @@ public static class WorkflowDefinitionMapper
                 Timeout = GetInt(el, config, "timeout", 30000),
                 Branches = GetStringList(el, config, "branches") ?? ["branch_1", "branch_2"],
             },
-            RuntimeType.Group => new GroupNodeDefinition(),
+            RuntimeType.Group => CreateGroupNodeDefinition(el, config),
             _ => null,
         };
+
+        return def;
+    }
+
+    private static GroupNodeDefinition CreateGroupNodeDefinition(JsonElement el, JsonElement config)
+    {
+        var def = new GroupNodeDefinition();
+
+        // Parse childNodes — check top-level first, then configuration
+        JsonElement childArr = default;
+        var hasChildren = el.TryGetProperty("childNodes", out childArr) && childArr.ValueKind == JsonValueKind.Array;
+        if (!hasChildren && config.ValueKind == JsonValueKind.Object)
+        {
+            hasChildren = config.TryGetProperty("childNodes", out childArr) && childArr.ValueKind == JsonValueKind.Array;
+        }
+
+        if (hasChildren)
+        {
+            def.ChildNodes = [];
+            foreach (var child in childArr.EnumerateArray())
+            {
+                var childRtStr = child.TryGetProperty("runtimeType", out var crt) ? crt.GetString() : null;
+                if (string.IsNullOrEmpty(childRtStr)) continue;
+                if (!Enum.TryParse<RuntimeType>(childRtStr, true, out var childRt)) continue;
+                var childDef = CreateNodeDefinition(childRt, child);
+                if (childDef != null)
+                {
+                    childDef.NodeId = child.TryGetProperty("nodeId", out var cid) ? cid.GetString() ?? "" : "";
+                    childDef.NodeName = child.TryGetProperty("nodeName", out var cnm) ? cnm.GetString() ?? "" : "";
+                    def.ChildNodes.Add(childDef);
+                }
+            }
+        }
+
+        // Parse childConnections
+        JsonElement connArr = default;
+        var hasConns = el.TryGetProperty("childConnections", out connArr) && connArr.ValueKind == JsonValueKind.Array;
+        if (!hasConns && config.ValueKind == JsonValueKind.Object)
+        {
+            hasConns = config.TryGetProperty("childConnections", out connArr) && connArr.ValueKind == JsonValueKind.Array;
+        }
+
+        if (hasConns)
+        {
+            def.ChildConnections = [];
+            foreach (var connEl in connArr.EnumerateArray())
+            {
+                def.ChildConnections.Add(MapConnection(connEl));
+            }
+        }
+
+        var mode = GetString(el, config, "executionMode");
+        if (!string.IsNullOrEmpty(mode) && Enum.TryParse<ExecutionMode>(mode, true, out var em))
+        {
+            def.ExecutionMode = em;
+        }
+
+        // Parse scopedVariables (stored as JSON string in configuration)
+        var scopedVarsStr = GetString(el, config, "scopedVariables");
+        if (!string.IsNullOrEmpty(scopedVarsStr))
+        {
+            try
+            {
+                var varsArr = System.Text.Json.JsonSerializer.Deserialize<List<ScopedVariable>>(scopedVarsStr);
+                if (varsArr?.Count > 0)
+                {
+                    def.ScopedVariables = varsArr;
+                }
+            }
+            catch { /* ignore malformed JSON */ }
+        }
 
         return def;
     }

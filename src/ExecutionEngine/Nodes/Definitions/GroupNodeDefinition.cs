@@ -21,6 +21,12 @@ namespace ExecutionEngine.Nodes.Definitions
 
         public ExecutionMode ExecutionMode { get; set; } = ExecutionMode.Sequential;
 
+        /// <summary>
+        /// Scoped variables available only to child nodes.
+        /// Each entry has a name, type, and default value.
+        /// </summary>
+        public List<ScopedVariable>? ScopedVariables { get; set; }
+
         public override IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
         {
             if (this.ChildNodes?.Any() != true)
@@ -30,5 +36,20 @@ namespace ExecutionEngine.Nodes.Definitions
                     new[] { nameof(this.ChildNodes) });
             }
         }
+    }
+
+    /// <summary>
+    /// A scoped variable with name, type, and default value.
+    /// </summary>
+    public class ScopedVariable
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("name")]
+        public string Name { get; set; } = string.Empty;
+
+        [System.Text.Json.Serialization.JsonPropertyName("type")]
+        public string Type { get; set; } = "string";
+
+        [System.Text.Json.Serialization.JsonPropertyName("default")]
+        public string Default { get; set; } = string.Empty;
     }
 }

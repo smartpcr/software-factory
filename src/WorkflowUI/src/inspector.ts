@@ -833,6 +833,49 @@ export const Inspector = {
         callbacks.updateNodeConfig(nodeId, 'params', JSON.stringify(params));
       });
     });
+    // Scoped variable: add
+    el.querySelectorAll('[data-action="add-scoped-var"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const nodeId = (btn as HTMLElement).dataset.nodeId!;
+        const node = State.nodes.get(nodeId);
+        if (!node) return;
+        let vars: { name: string; type: string; default: string }[] = [];
+        try { vars = JSON.parse(String(node.config.scopedVariables || '[]')); } catch { /* ignore */ }
+        vars.push({ name: '', type: 'string', default: '' });
+        callbacks.updateNodeConfig(nodeId, 'scopedVariables', JSON.stringify(vars));
+        this.render();
+      });
+    });
+    // Scoped variable: remove
+    el.querySelectorAll('[data-action="remove-scoped-var"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const b = btn as HTMLElement;
+        const nodeId = b.dataset.nodeId!;
+        const idx = parseInt(b.dataset.scopedVarIndex || '0');
+        const node = State.nodes.get(nodeId);
+        if (!node) return;
+        let vars: { name: string; type: string; default: string }[] = [];
+        try { vars = JSON.parse(String(node.config.scopedVariables || '[]')); } catch { /* ignore */ }
+        vars.splice(idx, 1);
+        callbacks.updateNodeConfig(nodeId, 'scopedVariables', JSON.stringify(vars));
+        this.render();
+      });
+    });
+    // Scoped variable: edit name/type/default
+    el.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-scoped-var-field]').forEach(input => {
+      const event = input.tagName === 'SELECT' ? 'change' : 'input';
+      input.addEventListener(event, () => {
+        const nodeId = input.dataset.nodeId!;
+        const idx = parseInt(input.dataset.scopedVarIndex || '0');
+        const field = input.dataset.scopedVarField!;
+        const node = State.nodes.get(nodeId);
+        if (!node) return;
+        let vars: { name: string; type: string; default: string }[] = [];
+        try { vars = JSON.parse(String(node.config.scopedVariables || '[]')); } catch { /* ignore */ }
+        if (vars[idx]) (vars[idx] as Record<string, string>)[field] = input.value;
+        callbacks.updateNodeConfig(nodeId, 'scopedVariables', JSON.stringify(vars));
+      });
+    });
     // Cron preset buttons
     el.querySelectorAll<HTMLButtonElement>('.ins-cron-preset').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -1090,6 +1133,16 @@ export const Inspector = {
       if (!c.webHookRoute || !String(c.webHookRoute).trim()) {
         errors.push('Route is required when trigger type is WebHook');
       }
+    }
+    node.validationErrors = errors.length > 0 ? errors : undefined;
+  },
+
+  /** Run local validation on a Group node and update its validationErrors */
+  validateGroupNode(node: FlowNode) {
+    const errors: string[] = [];
+    const hasChildren = [...State.nodes.values()].some(n => n.parentId === node.nodeId);
+    if (!hasChildren) {
+      errors.push('Group node must have at least one child node');
     }
     node.validationErrors = errors.length > 0 ? errors : undefined;
   },
