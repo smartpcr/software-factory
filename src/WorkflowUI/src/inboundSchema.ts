@@ -209,27 +209,19 @@ export function discoverInboundFields(nodeId: string): InboundField[] {
         }
       }
 
-      // Config-defined output key
+      // Config-defined output key (skip for AI nodes with declared outputs)
       if (sourceNode.config) {
+        const isAI = runtimeType.toLowerCase() === 'ai';
         const outputKey = sourceNode.config.outputKey;
-        if (outputKey && typeof outputKey === 'string') {
-          candidates.push({
-            bareName: String(outputKey),
-            prefixedPath: `output.${outputKey}`,
-            type: 'unknown',
-            source: 'output',
-            sourceNode: sourceName,
-            sourcePort: edge.sourcePort || 'out',
-          });
-        }
 
-        // AI nodes: skill/agent declared output fields
-        if (runtimeType.toLowerCase() === 'ai' && (window as unknown as Record<string, unknown>).__cachedAIOutputs) {
+        // AI nodes: skill/agent declared output fields (scenario-aware)
+        let aiOutputs: { name: string; type: string; description: string }[] | undefined;
+        if (isAI && (window as unknown as Record<string, unknown>).__cachedAIOutputs) {
           const mode = String(sourceNode.config.mode || 'skill').toLowerCase();
           const name = mode === 'skill' ? String(sourceNode.config.skillName || '') : String(sourceNode.config.subAgentName || '');
           const key = `${mode}:${name}`;
           const outputsMap = (window as unknown as Record<string, unknown>).__cachedAIOutputs as Record<string, { name: string; type: string; description: string }[]>;
-          const aiOutputs = outputsMap[key];
+          aiOutputs = outputsMap[key];
           if (aiOutputs) {
             for (const ao of aiOutputs) {
               const fieldType: InboundField['type'] = ao.type === 'file' || ao.type === 'folder' ? 'string' : (ao.type as InboundField['type']) || 'unknown';
@@ -243,6 +235,18 @@ export function discoverInboundFields(nodeId: string): InboundField[] {
               });
             }
           }
+        }
+
+        // Only add generic outputKey if no AI declared outputs exist
+        if (outputKey && typeof outputKey === 'string' && !(isAI && aiOutputs && aiOutputs.length > 0)) {
+          candidates.push({
+            bareName: String(outputKey),
+            prefixedPath: `output.${outputKey}`,
+            type: 'unknown',
+            source: 'output',
+            sourceNode: sourceName,
+            sourcePort: edge.sourcePort || 'out',
+          });
         }
       }
     }
@@ -303,9 +307,20 @@ export function discoverInboundFields(nodeId: string): InboundField[] {
     current = parent || undefined;
   }
 
+  // Deduplicate candidates by prefixedPath (same source + same field = one entry)
+  const seenPaths = new Set<string>();
+  const dedupedCandidates: Candidate[] = [];
+  for (const c of candidates) {
+    const key = `${c.sourceNode}:${c.prefixedPath}`;
+    if (!seenPaths.has(key)) {
+      seenPaths.add(key);
+      dedupedCandidates.push(c);
+    }
+  }
+
   // Phase 2: Detect conflicts — a bare name conflicts when used by multiple sources
   const bareNameSources = new Map<string, Set<string>>();
-  for (const c of candidates) {
+  for (const c of dedupedCandidates) {
     if (!bareNameSources.has(c.bareName)) bareNameSources.set(c.bareName, new Set());
     bareNameSources.get(c.bareName)!.add(c.source === 'context' ? 'global' : c.source);
   }
@@ -314,7 +329,7 @@ export function discoverInboundFields(nodeId: string): InboundField[] {
   const fields: InboundField[] = [];
   const seen = new Set<string>();
 
-  for (const c of candidates) {
+  for (const c of dedupedCandidates) {
     const sources = bareNameSources.get(c.bareName)!;
     const hasConflict = sources.size > 1;
 

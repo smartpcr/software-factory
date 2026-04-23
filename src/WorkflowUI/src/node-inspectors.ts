@@ -438,12 +438,14 @@ function renderAI(ctx: InspectorContext): NodeInspectorResult {
           ${params.map(p => {
             const currentBinding = bindings[p.name] || '';
             const isStatic = currentBinding.startsWith('static:');
-            const isFieldMode = currentBinding.startsWith('field:') || (!isStatic && currentBinding !== '' && !currentBinding.startsWith('static:'));
+            const isDynamic = currentBinding.startsWith('dynamic:');
+            const isFieldMode = currentBinding.startsWith('field:') || (!isStatic && !isDynamic && currentBinding !== '' && !currentBinding.startsWith('static:') && !currentBinding.startsWith('dynamic:'));
             const staticVal = isStatic ? currentBinding.slice(7) : '';
+            const dynamicVal = isDynamic ? currentBinding.slice(8) : '';
             const fieldVal = isFieldMode ? (currentBinding.startsWith('field:') ? currentBinding.slice(6) : currentBinding) : '';
             const reqBadge = p.required ? '<span class="binding-req">required</span>' : '';
             const isBool = p.type === 'boolean';
-            const isNone = !isStatic && !isFieldMode;
+            const isNone = !isStatic && !isFieldMode && !isDynamic;
 
             return `
             <div class="binding-card" title="${escapeHtml(p.description)}">
@@ -460,6 +462,7 @@ function renderAI(ctx: InspectorContext): NodeInspectorResult {
                   <button class="binding-mode-tab ${isNone ? 'active' : ''}" data-ai-mode="none" data-ai-param="${escapeHtml(p.name)}" data-node-id="${id}">None</button>
                   <button class="binding-mode-tab ${isFieldMode ? 'active' : ''}" data-ai-mode="field" data-ai-param="${escapeHtml(p.name)}" data-node-id="${id}">Field</button>
                   <button class="binding-mode-tab ${isStatic ? 'active' : ''}" data-ai-mode="static" data-ai-param="${escapeHtml(p.name)}" data-node-id="${id}">Static</button>
+                  <button class="binding-mode-tab ${isDynamic ? 'active' : ''}" data-ai-mode="dynamic" data-ai-param="${escapeHtml(p.name)}" data-node-id="${id}">Dynamic</button>
                 </div>
                 <div class="binding-card-value">
                   ${isFieldMode ? `
@@ -476,8 +479,11 @@ function renderAI(ctx: InspectorContext): NodeInspectorResult {
                         </label>
                       </div>`
                     : `<input class="binding-static-input" data-ai-static-key="${escapeHtml(p.name)}" data-node-id="${id}" value="${escapeHtml(staticVal)}" placeholder="Enter ${escapeHtml(p.type)} value…" />`
-                  ) : `
-                    <div class="binding-empty-hint">Choose Field or Static to bind this parameter</div>
+                  ) : isDynamic ? `
+                    <div class="ins-dynamic-editor" id="dynamic-editor-${escapeHtml(p.name)}-${id}" data-node-id="${id}" data-ai-dynamic-key="${escapeHtml(p.name)}" style="height:60px;border:1px solid var(--stroke-1);border-radius:4px;overflow:hidden;"></div>
+                    <div class="ins-field-hint" style="font-size:9px;margin-top:2px;">C# expression · use {field} for upstream values</div>
+                  ` : `
+                    <div class="binding-empty-hint">Choose Field, Static, or Dynamic to bind this parameter</div>
                   `}
                 </div>
               </div>
@@ -761,37 +767,93 @@ function renderFallback(ctx: InspectorContext): NodeInspectorResult {
 
 function renderSetter(ctx: InspectorContext): NodeInspectorResult {
   const { id, c, escapeHtml, inboundFields } = ctx;
-  const mappings: Record<string, string> = (c.variableMappings as Record<string, string>) || {};
+  let mappings: Record<string, string> = {};
+  if (typeof c.variableMappings === 'string' && c.variableMappings) {
+    try { mappings = JSON.parse(c.variableMappings as string); } catch { /* ignore */ }
+  } else if (c.variableMappings && typeof c.variableMappings === 'object') {
+    mappings = c.variableMappings as Record<string, string>;
+  }
+  let ops: Record<string, string> = {};
+  if (typeof c.variableOps === 'string' && c.variableOps) {
+    try { ops = JSON.parse(c.variableOps as string); } catch { /* ignore */ }
+  } else if (c.variableOps && typeof c.variableOps === 'object') {
+    ops = c.variableOps as Record<string, string>;
+  }
   const entries = Object.entries(mappings);
 
-  const fieldOptions = inboundFields.map(f => {
-    const label = escapeHtml(`${f.sourceNode}.${f.name}`);
-    return `<option value="${escapeHtml(f.path)}">${label}</option>`;
+  // Global variables for target dropdown
+  const globalFields = inboundFields.filter(f => f.source === 'context' && !f.name.startsWith('__'));
+  // Source fields: upstream outputs + globals
+  const sourceOptions = inboundFields.map(f => {
+    const label = f.source === 'context' ? `global.${f.name}` : `${f.sourceNode}.${f.name}`;
+    return { value: f.path, label, tooltip: f.path };
+  });
+
+  const rows = entries.map(([globalKey, sourceExpr], i) => {
+    const op = ops[globalKey] || 'set';
+    const isExpr = op === 'expr';
+    // Target: global variable dropdown
+    const hasGlobalMatch = globalFields.some(f => f.name === globalKey);
+    const globalOpts = globalFields.map(f =>
+      `<option value="${escapeHtml(f.name)}" ${globalKey === f.name ? 'selected' : ''}>${escapeHtml(f.name)}</option>`
+    ).join('');
+    const extraGlobalOpt = globalKey && !hasGlobalMatch ? `<option value="${escapeHtml(globalKey)}" selected>${escapeHtml(globalKey)}</option>` : '';
+
+    // Source: upstream output + global fields dropdown (only for set/increment)
+    const sourceOpts = sourceOptions.map(o =>
+      `<option value="${escapeHtml(o.value)}" title="${escapeHtml(o.tooltip)}" ${sourceExpr === o.value ? 'selected' : ''}>${escapeHtml(o.label)}</option>`
+    ).join('');
+    const hasSourceMatch = sourceOptions.some(o => o.value === sourceExpr);
+    const extraSourceOpt = sourceExpr && !hasSourceMatch && !isExpr ? `<option value="${escapeHtml(sourceExpr)}" title="${escapeHtml(sourceExpr)}" selected>${escapeHtml(sourceExpr)}</option>` : '';
+
+    const sourceCell = isExpr
+      ? `<div class="ins-setter-expr-editor" id="setter-expr-${i}-${id}" data-node="${id}" data-idx="${i}" style="height:48px;border:1px solid var(--stroke-1);border-radius:4px;overflow:hidden;"></div>`
+      : `<select class="ins-select ins-setter-source" data-node="${id}" data-idx="${i}" title="${escapeHtml(sourceExpr || 'select source')}">
+          <option value="">— source —</option>
+          ${sourceOpts}
+          ${extraSourceOpt}
+        </select>`;
+
+    const exprRow = isExpr
+      ? `<div style="margin-top:6px;">
+          <div class="ins-setter-expr-editor" id="setter-expr-${i}-${id}" data-node="${id}" data-idx="${i}" style="height:60px;border:1px solid var(--stroke-1);border-radius:6px;overflow:hidden;"></div>
+          <div class="ins-field-hint" style="font-size:9px;margin-top:3px;">C# expression · use {field} for upstream values</div>
+        </div>`
+      : '';
+
+    return `
+    <div class="binding-card" style="padding:0;">
+      <div style="display:flex;align-items:center;gap:6px;padding:8px 10px;">
+        <select class="ins-select ins-setter-key" data-node="${id}" data-idx="${i}" title="${escapeHtml(globalKey || 'select target')}" style="flex:3;">
+          <option value="">— target —</option>
+          ${globalOpts}
+          ${extraGlobalOpt}
+          <option value="__new__" style="font-style:italic">+ new variable…</option>
+        </select>
+        <select class="ins-select ins-setter-op" data-node="${id}" data-idx="${i}" style="flex:0 0 auto;width:90px;">
+          <option value="set" ${op === 'set' ? 'selected' : ''}>set (=)</option>
+          <option value="increment" ${op === 'increment' ? 'selected' : ''}>incre (++)</option>
+          <option value="expr" ${op === 'expr' ? 'selected' : ''}>expr (C#)</option>
+        </select>
+        ${isExpr ? '' : `<select class="ins-select ins-setter-source" data-node="${id}" data-idx="${i}" title="${escapeHtml(sourceExpr || 'select source')}" style="flex:3;">
+          <option value="">— source —</option>
+          ${sourceOpts}
+          ${extraSourceOpt}
+        </select>`}
+        <button class="ins-btn-icon ins-setter-remove" data-node="${id}" data-idx="${i}" title="Remove" style="flex-shrink:0;">✕</button>
+      </div>
+      ${exprRow ? `<div style="padding:0 10px 10px;">${exprRow}</div>` : ''}
+    </div>`;
   }).join('');
 
-  const rows = entries.map(([globalKey, sourceExpr], i) => `
-    <tr class="ins-setter-row" data-idx="${i}">
-      <td><input type="text" class="ins-input ins-setter-key" value="${escapeHtml(globalKey)}" placeholder="Global variable name" data-node="${id}" data-idx="${i}"/></td>
-      <td>
-        <select class="ins-select ins-setter-source" data-node="${id}" data-idx="${i}">
-          <option value="">— select source —</option>
-          ${fieldOptions}
-          <option value="${escapeHtml(sourceExpr)}" selected>${escapeHtml(sourceExpr)}</option>
-        </select>
-      </td>
-      <td><button class="ins-btn-icon ins-setter-remove" data-node="${id}" data-idx="${i}" title="Remove">✕</button></td>
-    </tr>
-  `).join('');
-
   const html = `
-    <div class="ins-section">
-      <label class="ins-label">Variable Mappings</label>
-      <p class="ins-field-hint">Map upstream output fields to global workflow variables.</p>
-      <table class="ins-setter-table" style="width:100%;border-collapse:collapse;">
-        <thead><tr><th style="text-align:left;padding:4px;">Global Variable</th><th style="text-align:left;padding:4px;">Source Field</th><th></th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-      <button class="ins-btn ins-setter-add" data-node="${id}" style="margin-top:6px;">+ Add mapping</button>
+    <div class="ins-field">
+      <label class="ins-field-label">Variable Mappings</label>
+      <div class="ins-field-hint">Map upstream fields → global variables. <code>incre</code> adds to existing value. <code>expr</code> evaluates C# with <code>{placeholders}</code>.</div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+        ${entries.length === 0 ? `<div style="text-align:center;color:var(--text-3);font-size:11px;padding:16px 0;border:1px dashed var(--stroke-1);border-radius:6px;">No mappings yet</div>` : rows}
+      </div>
+      <button class="btn-secondary ins-setter-add" data-node="${id}" style="margin-top:8px;font-size:11px;width:100%;">+ Add mapping</button>
     </div>
   `;
 

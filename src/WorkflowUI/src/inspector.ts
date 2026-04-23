@@ -8,7 +8,7 @@ import { State } from './state';
 import { escapeHtml } from './utils';
 import { Nodes } from './nodes';
 import { aiModels, tierColor } from './config';
-import { mountCSharpEditor, mountJsonEditor, disposeAllEditors } from './csharp-editor';
+import { mountCSharpEditor, mountJsonEditor, disposeAllEditors, setPlaceholderFields } from './csharp-editor';
 import { mountTemplateEditor } from './template-editor';
 import { discoverInboundFields } from './inboundSchema';
 import type { InboundField } from './inboundSchema';
@@ -107,6 +107,8 @@ function debouncedNodeRender() {
 
 const chevronSvg = '<svg class="ins-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>';
 
+const fullscreenBtn = '<button class="panel-fullscreen-toggle" data-action="toggle-inspector-fullscreen" title="Toggle fullscreen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="14" height="14"><path d="M3 7V3h4M21 7V3h-4M3 17v4h4M21 17v4h-4"/></svg></button>';
+
 /** Wrap content in a collapsible section */
 function insSection(title: string, content: string, collapsed = false): string {
   return `<div class="ins-section ${collapsed ? 'collapsed' : ''}">
@@ -152,7 +154,7 @@ export const Inspector = {
   renderWorkflowProperties(el: HTMLElement) {
     const wf = State.workflows[State.currentWfId || ''];
     if (!wf) {
-      el.innerHTML = `<div class="ins-empty">
+      el.innerHTML = `${fullscreenBtn}<div class="ins-empty">
         <svg class="ins-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l2 2"/></svg>
         <div>No workflow loaded</div>
       </div>`;
@@ -163,7 +165,7 @@ export const Inspector = {
     const nodeCount = State.nodes.size;
     const edgeCount = State.edges.size;
 
-    el.innerHTML = `
+    el.innerHTML = `${fullscreenBtn}
       <div class="ins-header">
         <div class="ins-title">
           <div class="node-icon" style="color: var(--accent); width: 24px; height: 24px;">
@@ -555,7 +557,7 @@ export const Inspector = {
       </div>`;
     }
 
-    el.innerHTML = `
+    el.innerHTML = `${fullscreenBtn}
       <div class="ins-header">
         <div class="ins-title">
           <div class="ins-title-text">Edge</div>
@@ -645,7 +647,7 @@ export const Inspector = {
 
     const configHtml = this.configFieldsHtml(node);
 
-    el.innerHTML = `
+    el.innerHTML = `${fullscreenBtn}
       <div class="ins-header">
         <div class="ins-title">
           <div class="node-icon" style="color: ${type.color}; width: 24px; height: 24px;">${type.icon}</div>
@@ -711,6 +713,56 @@ export const Inspector = {
           callbacks.updateNodeConfig(nodeId, configKey, val);
         });
       }
+    });
+    // Set placeholder fields for expression autocomplete
+    const inboundFields = discoverInboundFields(node.nodeId);
+    setPlaceholderFields(inboundFields.map(f => ({
+      name: f.name,
+      path: f.path,
+      type: f.type,
+      source: f.source,
+      sourceNode: f.sourceNode,
+    })));
+    // Mount Monaco editors for dynamic AI input bindings
+    el.querySelectorAll<HTMLElement>('.ins-dynamic-editor').forEach(container => {
+      const nodeId = container.dataset.nodeId;
+      const paramKey = container.dataset.aiDynamicKey;
+      if (!nodeId || !paramKey) return;
+      let bindings: Record<string, string> = {};
+      try {
+        bindings = typeof node.config?.inputBindings === 'string'
+          ? JSON.parse(node.config.inputBindings as string)
+          : (node.config?.inputBindings as unknown as Record<string, string>) || {};
+      } catch { /* ignore */ }
+      const currentVal = bindings[paramKey] || '';
+      const dynamicVal = currentVal.startsWith('dynamic:') ? currentVal.slice(8) : '';
+      mountCSharpEditor(container.id, dynamicVal, (val) => {
+        let b: Record<string, string> = {};
+        try {
+          b = typeof node.config?.inputBindings === 'string'
+            ? JSON.parse(node.config.inputBindings as string)
+            : (node.config?.inputBindings as unknown as Record<string, string>) || {};
+        } catch { /* ignore */ }
+        b[paramKey] = `dynamic:${val}`;
+        callbacks.updateNodeConfig(nodeId, 'inputBindings', JSON.stringify(b));
+      });
+    });
+    // Mount Monaco editors for Setter expression op
+    el.querySelectorAll<HTMLElement>('.ins-setter-expr-editor').forEach(container => {
+      const nodeId = container.dataset.node;
+      const idx = parseInt(container.dataset.idx || '0');
+      if (!nodeId) return;
+      const raw = node.config?.variableMappings;
+      const mappings: Record<string, string> = (raw && typeof raw === 'object') ? raw as Record<string, string> : {};
+      const keys = Object.keys(mappings);
+      const currentVal = keys[idx] !== undefined ? mappings[keys[idx]] || '' : '';
+      mountCSharpEditor(container.id, currentVal, (val) => {
+        const latestRaw = node.config?.variableMappings;
+        const latestMappings: Record<string, string> = (latestRaw && typeof latestRaw === 'object') ? { ...latestRaw as Record<string, string> } : {};
+        const latestKeys = Object.keys(latestMappings);
+        if (latestKeys[idx] !== undefined) latestMappings[latestKeys[idx]] = val;
+        callbacks.updateNodeConfig(nodeId, 'variableMappings', latestMappings);
+      });
     });
   },
 
@@ -876,6 +928,93 @@ export const Inspector = {
         callbacks.updateNodeConfig(nodeId, 'scopedVariables', JSON.stringify(vars));
       });
     });
+    // Setter node: add mapping
+    el.querySelectorAll('.ins-setter-add').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const nodeId = (btn as HTMLElement).dataset.node!;
+        const node = State.nodes.get(nodeId);
+        if (!node) return;
+        const raw = node.config?.variableMappings;
+        const mappings: Record<string, string> = (raw && typeof raw === 'object') ? { ...raw as Record<string, string> } : {};
+        mappings[''] = '';
+        callbacks.updateNodeConfig(nodeId, 'variableMappings', mappings);
+        this.render();
+      });
+    });
+    // Setter node: remove mapping
+    el.querySelectorAll('.ins-setter-remove').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const b = btn as HTMLElement;
+        const nodeId = b.dataset.node!;
+        const idx = parseInt(b.dataset.idx || '0');
+        const node = State.nodes.get(nodeId);
+        if (!node) return;
+        const raw = node.config?.variableMappings;
+        const mappings: Record<string, string> = (raw && typeof raw === 'object') ? { ...raw as Record<string, string> } : {};
+        const keys = Object.keys(mappings);
+        if (keys[idx] !== undefined) delete mappings[keys[idx]];
+        callbacks.updateNodeConfig(nodeId, 'variableMappings', mappings);
+        this.render();
+      });
+    });
+    // Setter node: edit target (global variable)
+    el.querySelectorAll<HTMLSelectElement>('.ins-setter-key').forEach(select => {
+      select.addEventListener('change', () => {
+        const nodeId = select.dataset.node!;
+        const idx = parseInt(select.dataset.idx || '0');
+        const node = State.nodes.get(nodeId);
+        if (!node) return;
+        let newKey = select.value;
+        if (newKey === '__new__') {
+          const name = prompt('Enter new global variable name:');
+          if (!name) { this.render(); return; }
+          newKey = name;
+        }
+        const raw = node.config?.variableMappings;
+        const oldMappings: Record<string, string> = (raw && typeof raw === 'object') ? raw as Record<string, string> : {};
+        const entries = Object.entries(oldMappings);
+        if (entries[idx]) {
+          const newMappings: Record<string, string> = {};
+          entries.forEach(([k, v], i) => {
+            newMappings[i === idx ? newKey : k] = v;
+          });
+          callbacks.updateNodeConfig(nodeId, 'variableMappings', newMappings);
+          this.render();
+        }
+      });
+    });
+    // Setter node: edit source field
+    el.querySelectorAll<HTMLSelectElement>('.ins-setter-source').forEach(select => {
+      select.addEventListener('change', () => {
+        const nodeId = select.dataset.node!;
+        const idx = parseInt(select.dataset.idx || '0');
+        const node = State.nodes.get(nodeId);
+        if (!node) return;
+        const raw = node.config?.variableMappings;
+        const mappings: Record<string, string> = (raw && typeof raw === 'object') ? { ...raw as Record<string, string> } : {};
+        const keys = Object.keys(mappings);
+        if (keys[idx] !== undefined) mappings[keys[idx]] = select.value;
+        callbacks.updateNodeConfig(nodeId, 'variableMappings', mappings);
+      });
+    });
+    // Setter node: edit operation (set / increment)
+    el.querySelectorAll<HTMLSelectElement>('.ins-setter-op').forEach(select => {
+      select.addEventListener('change', () => {
+        const nodeId = select.dataset.node!;
+        const idx = parseInt(select.dataset.idx || '0');
+        const node = State.nodes.get(nodeId);
+        if (!node) return;
+        const rawMappings = node.config?.variableMappings;
+        const mappings: Record<string, string> = (rawMappings && typeof rawMappings === 'object') ? rawMappings as Record<string, string> : {};
+        const rawOps = node.config?.variableOps;
+        const ops: Record<string, string> = (rawOps && typeof rawOps === 'object') ? { ...rawOps as Record<string, string> } : {};
+        const keys = Object.keys(mappings);
+        if (keys[idx] !== undefined) ops[keys[idx]] = select.value;
+        callbacks.updateNodeConfig(nodeId, 'variableOps', ops);
+        // Re-render to switch between dropdown and Monaco editor
+        this.render();
+      });
+    });
     // Cron preset buttons
     el.querySelectorAll<HTMLButtonElement>('.ins-cron-preset').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -972,6 +1111,8 @@ export const Inspector = {
           bindings[paramName] = 'static:';
         } else if (mode === 'field') {
           bindings[paramName] = 'field:';
+        } else if (mode === 'dynamic') {
+          bindings[paramName] = 'dynamic:';
         }
         callbacks.updateNodeConfig(nodeId, 'inputBindings', JSON.stringify(bindings));
         // Re-render inspector to reflect the new mode

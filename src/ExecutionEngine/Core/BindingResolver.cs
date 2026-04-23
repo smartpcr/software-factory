@@ -57,6 +57,18 @@ public static class BindingResolver
             return Resolve(inner, nodeContext, workflowContext);
         }
 
+        // 1c. "dynamic:" prefix — C# template expression with {placeholder} resolution
+        if (expression.StartsWith("dynamic:", StringComparison.OrdinalIgnoreCase))
+        {
+            var template = expression[8..];
+            if (string.IsNullOrEmpty(template))
+            {
+                return null;
+            }
+
+            return ResolveTemplate(template, null, nodeContext, workflowContext);
+        }
+
         // 2. Explicit input/output prefix → strip and search InputData
         if (expression.StartsWith("input.", StringComparison.OrdinalIgnoreCase))
         {

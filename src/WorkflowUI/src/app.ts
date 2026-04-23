@@ -1787,6 +1787,16 @@ export const App = {
         case 'toggle-palette': this.togglePanel('palette'); break;
         case 'toggle-inspector': this.togglePanel('inspector'); break;
         case 'toggle-logs': this.togglePanel('logs'); break;
+        case 'toggle-inspector-fullscreen': {
+          const el = document.getElementById('inspector');
+          if (el) el.classList.toggle('fullscreen');
+          break;
+        }
+        case 'toggle-logs-fullscreen': {
+          const el = document.querySelector('.logs');
+          if (el) el.classList.toggle('fullscreen');
+          break;
+        }
         case 'clear-logs': this.clearLogs(); break;
         case 'refresh-history': this.loadRunHistory(); break;
         case 'replay-run': {

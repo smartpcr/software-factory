@@ -98,6 +98,72 @@ function registerCSharpCompletions() {
       return { suggestions };
     },
   });
+
+  // Placeholder completion: triggered by { for template expressions like {incidentFolder}
+  monaco.languages.registerCompletionItemProvider('csharp', {
+    triggerCharacters: ['{'],
+    provideCompletionItems(model, position) {
+      const textUntilPosition = model.getValueInRange({
+        startLineNumber: position.lineNumber,
+        startColumn: 1,
+        endLineNumber: position.lineNumber,
+        endColumn: position.column,
+      });
+
+      // Only trigger after an opening brace
+      if (!textUntilPosition.endsWith('{')) return { suggestions: [] };
+
+      const word = model.getWordUntilPosition(position);
+      const range = {
+        startLineNumber: position.lineNumber,
+        endLineNumber: position.lineNumber,
+        startColumn: word.startColumn,
+        endColumn: word.endColumn,
+      };
+
+      const suggestions: monaco.languages.CompletionItem[] = [];
+
+      // Add fields from the placeholder fields store
+      for (const f of _placeholderFields) {
+        suggestions.push({
+          label: `{${f.name}}`,
+          kind: monaco.languages.CompletionItemKind.Variable,
+          detail: `${f.source} · ${f.type}`,
+          documentation: `From: ${f.sourceNode}\nPath: ${f.path}`,
+          insertText: `${f.name}}`,
+          sortText: `0_${f.name}`,
+          range,
+        } as monaco.languages.CompletionItem);
+      }
+
+      // Add workflow default variables
+      const wf = State.workflows[State.currentWfId || ''];
+      if (wf?.defaultVariables) {
+        for (const [key, val] of Object.entries(wf.defaultVariables)) {
+          if (suggestions.some(s => s.label === `{${key}}`)) continue;
+          suggestions.push({
+            label: `{${key}}`,
+            kind: monaco.languages.CompletionItemKind.Variable,
+            detail: `global · ${typeof val}`,
+            documentation: `Default: ${JSON.stringify(val)}`,
+            insertText: `${key}}`,
+            sortText: `1_${key}`,
+            range,
+          } as monaco.languages.CompletionItem);
+        }
+      }
+
+      return { suggestions };
+    },
+  });
+}
+
+/** Placeholder fields available for {placeholder} autocomplete in expression editors */
+let _placeholderFields: { name: string; path: string; type: string; source: string; sourceNode: string }[] = [];
+
+/** Set available placeholder fields for expression editor autocomplete */
+export function setPlaceholderFields(fields: typeof _placeholderFields) {
+  _placeholderFields = fields;
 }
 
 /** Active editor instances keyed by container element ID */

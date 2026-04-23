@@ -1174,9 +1174,67 @@
     overflow-y: auto;
     display: flex; flex-direction: column;
     transition: opacity 0.2s ease;
+    position: relative;
   }
   .app.inspector-collapsed .inspector {
     opacity: 0; pointer-events: none; overflow: hidden;
+  }
+  /* Fullscreen toggle button */
+  .panel-fullscreen-toggle {
+    position: absolute; top: 10px; right: 10px; z-index: 10;
+    width: 24px; height: 24px;
+    display: grid; place-items: center;
+    border-radius: 4px;
+    color: var(--text-3);
+    background: transparent;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .panel-fullscreen-toggle:hover { background: var(--bg-3); color: var(--text-0); }
+  /* Inspector fullscreen */
+  .inspector.fullscreen {
+    position: fixed !important;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 1000;
+    width: 100vw !important;
+    max-width: 100vw !important;
+    border: none;
+    padding: 0;
+  }
+  .inspector.fullscreen > .ins-header,
+  .inspector.fullscreen > .ins-section,
+  .inspector.fullscreen > .ins-field,
+  .inspector.fullscreen > div:not(.ins-empty) {
+    max-width: 800px;
+    margin-left: auto;
+    margin-right: auto;
+    width: 100%;
+  }
+  .inspector.fullscreen .ins-header {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px 24px 16px;
+  }
+  .inspector.fullscreen .ins-section {
+    padding: 12px 16px;
+  }
+  .inspector.fullscreen .ins-setter-row td {
+    padding: 6px 4px;
+  }
+  .inspector.fullscreen .ins-setter-expr-editor {
+    height: 80px !important;
+  }
+  .inspector.fullscreen .ins-dynamic-editor {
+    height: 80px !important;
+  }
+  /* Logs fullscreen */
+  .logs.fullscreen {
+    position: fixed !important;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 1000;
+    height: 100vh !important;
+    max-height: 100vh !important;
+    border: none;
   }
   .ins-header {
     padding: 12px 14px;
@@ -1428,6 +1486,41 @@
     flex-direction: column;
     gap: 8px;
     margin-top: 4px;
+  }
+
+  /* ---- Setter mapping rows ---- */
+  .ins-setter-row td {
+    padding: 4px 3px;
+    vertical-align: top;
+  }
+  .ins-setter-row .ins-select,
+  .ins-setter-row .ins-input {
+    font-size: 11px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--stroke-1);
+    background: var(--bg-0);
+    color: var(--text-1);
+    width: 100%;
+    transition: border-color 0.12s;
+  }
+  .ins-setter-row .ins-select:hover,
+  .ins-setter-row .ins-input:hover { border-color: var(--stroke-2); }
+  .ins-setter-row .ins-select:focus,
+  .ins-setter-row .ins-input:focus { border-color: var(--accent); outline: none; }
+  .ins-setter-row .ins-btn-icon {
+    width: 22px; height: 22px;
+    display: grid; place-items: center;
+    border-radius: 4px;
+    color: var(--text-3);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .ins-setter-row .ins-btn-icon:hover { background: rgba(255,80,80,0.15); color: var(--err); }
+  .ins-setter-expr-editor {
+    border-radius: 6px !important;
+    border-color: var(--stroke-1) !important;
   }
 
   /* ---- Binding card: each parameter ---- */

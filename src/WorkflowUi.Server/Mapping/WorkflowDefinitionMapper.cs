@@ -110,6 +110,7 @@ public static class WorkflowDefinitionMapper
             RuntimeType.Setter => new SetterNodeDefinition
             {
                 VariableMappings = GetStringDictionary(el, config, "variableMappings"),
+                VariableOps = GetStringDictionary(el, config, "variableOps"),
             },
             RuntimeType.IfElse => new IfElseNodeDefinition { Condition = GetString(el, config, "condition") ?? "" },
             RuntimeType.ForEach => new ForEachNodeDefinition

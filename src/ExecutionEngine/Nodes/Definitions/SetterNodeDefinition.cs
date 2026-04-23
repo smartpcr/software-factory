@@ -20,6 +20,11 @@ namespace ExecutionEngine.Nodes.Definitions
         /// </summary>
         public Dictionary<string, string>? VariableMappings { get; set; }
 
+        /// <summary>
+        /// Per-variable operation. Key = global variable name, Value = "set" (default) or "increment".
+        /// </summary>
+        public Dictionary<string, string>? VariableOps { get; set; }
+
         public override IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
         {
             yield break;
