@@ -29,7 +29,7 @@ export function getSlots(node: FlowNode | undefined): string[] {
   if (!node) return [];
   const t = NodeTypes[node.runtimeType];
   if (t && t.branches) return node.branches || t.branches;
-  if (node.runtimeType === 'group') return ['_body'];
+  if (node.runtimeType.toLowerCase() === 'group') return ['_body'];
   return [];
 }
 
@@ -69,7 +69,7 @@ export function getPortPos(node: FlowNode, portKind: string, portName?: string):
 
   let height = headH + bodyH;
   if (type?.branches && type.branches.length) height += branchH;
-  if (node.runtimeType === 'group') height = Math.max(160, node.height || 160);
+  if (node.runtimeType.toLowerCase() === 'group') height = Math.max(160, node.height || 160);
   node._cachedHeight = height;
 
   if (portKind === 'in') return { x: node.x + width / 2, y: node.y };

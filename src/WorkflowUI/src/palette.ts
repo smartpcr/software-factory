@@ -3,10 +3,19 @@
 // -----------------------------------------------------------------------
 
 import { NodeTypes, PaletteOrder } from './registry';
+import { State } from './state';
+
+/** Callback to create a node on the canvas */
+let onCreateNode: ((type: string, x: number, y: number) => void) | null = null;
 
 export const Palette = {
   /** Track collapsed categories */
   _collapsed: new Set<string>(),
+
+  /** Register the callback used to create nodes on the canvas */
+  onCreateNode(cb: (type: string, x: number, y: number) => void) {
+    onCreateNode = cb;
+  },
 
   render() {
     const container = document.getElementById('paletteSections');
@@ -64,6 +73,18 @@ export const Palette = {
       el.addEventListener('dragend', () => {
         document.body.classList.remove('dragging-palette');
         document.querySelectorAll('.drop-active').forEach(d => d.classList.remove('drop-active'));
+      });
+      el.addEventListener('dblclick', () => {
+        if (!onCreateNode) return;
+        const type = el.dataset.type || '';
+        if (!type) return;
+        // Place at center of visible canvas
+        const canvasEl = document.getElementById('canvas');
+        if (!canvasEl) return;
+        const rect = canvasEl.getBoundingClientRect();
+        const cx = (rect.width / 2 - State.canvas.x) / State.canvas.zoom;
+        const cy = (rect.height / 2 - State.canvas.y) / State.canvas.zoom;
+        onCreateNode(type, cx - 110, cy - 20);
       });
     });
   },

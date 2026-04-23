@@ -66,6 +66,7 @@ export const App = {
       () => this.clearLogs(),
     );
     loadFallbackNodeTypes(); // Minimal palette until server responds
+    Palette.onCreateNode((type, x, y) => this.createNode(type, x, y));
     Palette.render();
     this.bindShortcuts();
     this.bindTitleInput();
@@ -224,7 +225,7 @@ export const App = {
       parentSlot: opts.parentSlot || null,
     };
     if (tpl.branches) node.branches = [...tpl.branches];
-    if (resolved.toLowerCase() === 'group') { node.width = 280; node.height = 180; node.collapsed = false; }
+    if (resolved.toLowerCase() === 'group') { node.width = 280; node.collapsed = false; }
     ensureChildren(node);
     State.nodes.set(node.nodeId, node);
     if (node.parentId) {

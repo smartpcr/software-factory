@@ -1039,33 +1039,33 @@
 
   /* Group node */
   .node.container {
-    background: linear-gradient(180deg, rgba(155,163,180,0.05) 0%, rgba(155,163,180,0.02) 100%);
-    border: 1px dashed var(--stroke-2);
     border-radius: 12px;
     min-height: 140px;
   }
   .node.container.collapsed { min-height: auto; }
   .node.container .container-body {
-    padding: 10px;
+    padding: 6px 10px 14px;
     min-height: 80px;
     position: relative;
     display: flex;
     flex-direction: column;
     gap: 8px;
+    border-top: 1px solid var(--stroke-1);
+    background: rgba(0,0,0,0.18);
     border-radius: 0 0 11px 11px;
     transition: background 0.12s, border-color 0.12s;
-    border: 1px dashed transparent;
   }
   .node.container.collapsed .container-body { display: none; }
   .node.container .container-hint {
     color: var(--text-3);
-    font-size: 10.5px;
+    font-size: 10px;
     font-family: 'JetBrains Mono', monospace;
     pointer-events: none;
     text-align: center;
-    padding: 18px 6px;
+    padding: 14px 6px;
     border: 1px dashed var(--stroke-1);
     border-radius: 4px;
+    background: rgba(255,255,255,0.015);
   }
   .node.container .container-child-count {
     font-size: 10px;
