@@ -3,7 +3,7 @@ WorkflowName: Container Parallel
 Description: null
 Version: 1.0
 Nodes:
-- runtimeType: Container
+- runtimeType: Group
   ChildNodes:
   - runtimeType: Noop
     NodeId: child-a

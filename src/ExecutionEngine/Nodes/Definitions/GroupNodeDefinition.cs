@@ -1,5 +1,5 @@
-﻿// -----------------------------------------------------------------------
-// <copyright file="ContainerNodeDefinition.cs" company="Microsoft Corp.">
+// -----------------------------------------------------------------------
+// <copyright file="GroupNodeDefinition.cs" company="Microsoft Corp.">
 //     Copyright (c) Microsoft Corp. All rights reserved.
 // </copyright>
 // -----------------------------------------------------------------------
@@ -11,9 +11,9 @@ namespace ExecutionEngine.Nodes.Definitions
     using ExecutionEngine.Workflow;
     using ValidationResult = System.ComponentModel.DataAnnotations.ValidationResult;
 
-    public class ContainerNodeDefinition : NodeDefinition
+    public class GroupNodeDefinition : NodeDefinition
     {
-        public override RuntimeType RuntimeType => RuntimeType.Container;
+        public override RuntimeType RuntimeType => RuntimeType.Group;
 
         public List<NodeDefinition>? ChildNodes { get; set; }
 
@@ -26,7 +26,7 @@ namespace ExecutionEngine.Nodes.Definitions
             if (this.ChildNodes?.Any() != true)
             {
                 yield return new ValidationResult(
-                    "Container node must have at least one child node.",
+                    "Group node must have at least one child node.",
                     new[] { nameof(this.ChildNodes) });
             }
         }

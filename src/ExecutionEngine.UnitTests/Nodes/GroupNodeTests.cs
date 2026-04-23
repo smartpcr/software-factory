@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="ContainerNodeTests.cs" company="Microsoft Corp.">
+// <copyright file="GroupNodeTests.cs" company="Microsoft Corp.">
 //     Copyright (c) Microsoft Corp. All rights reserved.
 // </copyright>
 // -----------------------------------------------------------------------
@@ -16,16 +16,16 @@ using ExecutionEngine.Workflow;
 using FluentAssertions;
 
 [TestClass]
-public class ContainerNodeTests
+public class GroupNodeTests
 {
     [TestMethod]
     public void Initialize_WithValidChildNodes_ShouldSucceed()
     {
         // Arrange
-        var definition = this.CreateContainerDefinitionWithParallelChildren(3);
+        var definition = this.CreateGroupDefinitionWithParallelChildren(3);
 
         // Act
-        var node = new ContainerNode();
+        var node = new GroupNode();
         var act = () => node.Initialize(definition);
 
         // Assert
@@ -38,7 +38,7 @@ public class ContainerNodeTests
     public void Initialize_WithNullChildNodes_ShouldThrowException()
     {
         // Arrange
-        var definition = new ContainerNodeDefinition
+        var definition = new GroupNodeDefinition
         {
             NodeId = "container-1",
             ChildNodes = [],
@@ -46,7 +46,7 @@ public class ContainerNodeTests
         };
 
         // Act
-        var node = new ContainerNode();
+        var node = new GroupNode();
         var act = () => node.Initialize(definition);
 
         // Assert
@@ -58,7 +58,7 @@ public class ContainerNodeTests
     public void Initialize_WithEmptyChildNodes_ShouldThrowException()
     {
         // Arrange
-        var definition = new ContainerNodeDefinition
+        var definition = new GroupNodeDefinition
         {
             NodeId = "container-1",
             ChildNodes = [],
@@ -66,7 +66,7 @@ public class ContainerNodeTests
         };
 
         // Act
-        var node = new ContainerNode();
+        var node = new GroupNode();
         var act = () => node.Initialize(definition);
 
         // Assert
@@ -92,7 +92,7 @@ public class ContainerNodeTests
             new() { SourceNodeId = "c", TargetNodeId = "a" } // Cycle!
         };
 
-        var definition = new ContainerNodeDefinition
+        var definition = new GroupNodeDefinition
         {
             NodeId = "container-1",
             ChildNodes = childNodes,
@@ -100,7 +100,7 @@ public class ContainerNodeTests
         };
 
         // Act
-        var node = new ContainerNode();
+        var node = new GroupNode();
         var act = () => node.Initialize(definition);
 
         // Assert
@@ -123,7 +123,7 @@ public class ContainerNodeTests
             new() { SourceNodeId = "a", TargetNodeId = "z" } // 'z' doesn't exist!
         };
 
-        var definition = new ContainerNodeDefinition
+        var definition = new GroupNodeDefinition
         {
             NodeId = "container-1",
             ChildNodes = childNodes,
@@ -131,7 +131,7 @@ public class ContainerNodeTests
         };
 
         // Act
-        var node = new ContainerNode();
+        var node = new GroupNode();
         var act = () => node.Initialize(definition);
 
         // Assert
@@ -143,8 +143,8 @@ public class ContainerNodeTests
     public async Task ExecuteAsync_WithParallelChildren_AllChildrenExecute()
     {
         // Arrange
-        var definition = this.CreateContainerDefinitionWithParallelChildren(3);
-        var node = new ContainerNode();
+        var definition = this.CreateGroupDefinitionWithParallelChildren(3);
+        var node = new GroupNode();
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -157,8 +157,8 @@ public class ContainerNodeTests
         instance.Should().NotBeNull();
         if (instance.Status != NodeExecutionStatus.Completed)
         {
-            Console.WriteLine($"Container Status: {instance.Status}");
-            Console.WriteLine($"Container Error: {instance.ErrorMessage}");
+            Console.WriteLine($"Group Status: {instance.Status}");
+            Console.WriteLine($"Group Error: {instance.ErrorMessage}");
             if (instance.Exception != null)
             {
                 Console.WriteLine($"Exception: {instance.Exception}");
@@ -188,7 +188,7 @@ public class ContainerNodeTests
             new() { SourceNodeId = "b", TargetNodeId = "c", TriggerMessageType = MessageType.Complete }
         };
 
-        var definition = new ContainerNodeDefinition
+        var definition = new GroupNodeDefinition
         {
             NodeId = "container-1",
             ChildNodes = childNodes,
@@ -196,7 +196,7 @@ public class ContainerNodeTests
             ExecutionMode = ExecutionMode.Sequential
         };
 
-        var node = new ContainerNode();
+        var node = new GroupNode();
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -216,8 +216,8 @@ public class ContainerNodeTests
     public async Task ExecuteAsync_AllChildrenSucceed_ReturnsCompleted()
     {
         // Arrange
-        var definition = this.CreateContainerDefinitionWithParallelChildren(3);
-        var node = new ContainerNode();
+        var definition = this.CreateGroupDefinitionWithParallelChildren(3);
+        var node = new GroupNode();
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -229,7 +229,7 @@ public class ContainerNodeTests
         // Assert
         if (instance.Status != NodeExecutionStatus.Completed)
         {
-            Console.WriteLine($"Container failed with error: {instance.ErrorMessage}");
+            Console.WriteLine($"Group failed with error: {instance.ErrorMessage}");
         }
 
         instance.Status.Should().Be(NodeExecutionStatus.Completed);
@@ -248,14 +248,14 @@ public class ContainerNodeTests
             CreateScriptChild("child-b", "SetOutput(\"value\", \"B\");")
         };
 
-        var definition = new ContainerNodeDefinition
+        var definition = new GroupNodeDefinition
         {
             NodeId = "container-1",
             ChildConnections = [],
             ChildNodes = childNodes
         };
 
-        var node = new ContainerNode();
+        var node = new GroupNode();
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -276,11 +276,11 @@ public class ContainerNodeTests
     }
 
     [TestMethod]
-    public async Task ExecuteAsync_ContainerCancelled_ReturnsCancelled()
+    public async Task ExecuteAsync_GroupCancelled_ReturnsCancelled()
     {
         // Arrange
-        var definition = this.CreateContainerDefinitionWithParallelChildren(3);
-        var node = new ContainerNode();
+        var definition = this.CreateGroupDefinitionWithParallelChildren(3);
+        var node = new GroupNode();
         node.Initialize(definition);
 
         var workflowContext = new WorkflowExecutionContext();
@@ -299,7 +299,7 @@ public class ContainerNodeTests
     }
 
     // Helper methods
-    private NodeDefinition CreateContainerDefinitionWithParallelChildren(int childCount)
+    private NodeDefinition CreateGroupDefinitionWithParallelChildren(int childCount)
     {
         var childNodes = new List<NodeDefinition>();
         for (var i = 0; i < childCount; i++)
@@ -307,7 +307,7 @@ public class ContainerNodeTests
             childNodes.Add(CreateScriptChild($"child-{i}", $"SetOutput(\"index\", {i});"));
         }
 
-        return new ContainerNodeDefinition
+        return new GroupNodeDefinition
         {
             NodeId = "container-1",
             ChildNodes = childNodes,

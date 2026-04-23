@@ -333,17 +333,17 @@ public class SubflowNode : ExecutableNodeBase
                 this.NodeId, childWorkflowDef.WorkflowId);
             var engine = new WorkflowEngine(null, workflowContext.ServiceProvider);
 
-            // Track child node completion for progress calculation (like ContainerNode)
+            // Track child node completion for progress calculation (like GroupNode)
             var totalChildNodes = childWorkflowDef.Nodes.Count;
             var completedChildNodes = 0;
             var childNodeLock = new object();
 
-            // Subscribe to NodeCreated event to register OnProgress handlers (like ContainerNode)
+            // Subscribe to NodeCreated event to register OnProgress handlers (like GroupNode)
             engine.NodeCreated += (nodeId, node) =>
             {
                 if (node is ExecutableNodeBase executableNode)
                 {
-                    // Subscribe to child node's OnProgress events (like ContainerNode does)
+                    // Subscribe to child node's OnProgress events (like GroupNode does)
                     executableNode.OnProgress += (sender, e) =>
                     {
                         // Forward child node progress with hierarchical key
@@ -386,7 +386,7 @@ public class SubflowNode : ExecutableNodeBase
                     ProgressPercent = 100
                 });
 
-                // Update overall progress based on completed children (like ContainerNode)
+                // Update overall progress based on completed children (like GroupNode)
                 lock (childNodeLock)
                 {
                     completedChildNodes++;

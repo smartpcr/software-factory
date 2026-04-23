@@ -180,7 +180,7 @@ public class EngineDtoMapperBaseTests
     [Fact]
     public void Registry_dispatches_all_13_runtime_types()
     {
-        Assert.Equal(13, EngineDtoMapper.SupportedRuntimeTypes.Count);
+        Assert.Equal(23, EngineDtoMapper.SupportedRuntimeTypes.Count);
     }
 
     [Fact]

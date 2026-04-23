@@ -54,7 +54,7 @@ export const Nodes = {
       slotEl.innerHTML = '';
       if (!childIds.length) {
         const empty = document.createElement('div');
-        empty.className = parentNode.runtimeType === 'container' ? 'container-hint' : 'branch-port-empty';
+        empty.className = parentNode.runtimeType === 'group' ? 'container-hint' : 'branch-port-empty';
         empty.textContent = 'Drop component';
         slotEl.appendChild(empty);
       } else {
@@ -110,7 +110,7 @@ export const Nodes = {
   },
 
   findSlotEl(parentEl: HTMLElement, parentNode: FlowNode, slot: string): HTMLElement | null {
-    if (parentNode.runtimeType === 'container' && slot === '_body') {
+    if (parentNode.runtimeType === 'group' && slot === '_body') {
       return parentEl.querySelector(':scope > .container-body > .container-children');
     }
     return parentEl.querySelector(
@@ -139,7 +139,7 @@ export const Nodes = {
     el.style.color = type.color;
     el.dataset.status = node.status || '';
     el.classList.toggle('selected', State.selection.kind === 'node' && State.selection.id === node.nodeId);
-    if (node.runtimeType === 'container') {
+    if (node.runtimeType === 'group') {
       el.classList.add('container');
       el.classList.toggle('collapsed', !!node.collapsed);
     }
@@ -185,7 +185,7 @@ export const Nodes = {
       : '';
 
     const branchesHtml = type.branches ? this.branchHtml(node) : '';
-    const collapseBtn = node.runtimeType === 'container'
+    const collapseBtn = node.runtimeType === 'group'
       ? `<button class="collapse-btn" data-action="toggle-collapse" data-node-id="${node.nodeId}"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>`
       : '';
     const typeLabel = `<span class="node-type-label mono">${node.runtimeType}</span>`;
@@ -194,7 +194,7 @@ export const Nodes = {
     const dropError = ports.error ? `<div class="drop-zone error-right" data-node-id="${node.nodeId}" data-position="after-error"></div>` : '';
     const safeName = escapeHtml(node.nodeName || type.label);
 
-    const bodyContent = node.runtimeType.toLowerCase() === 'container'
+    const bodyContent = node.runtimeType.toLowerCase() === 'group'
       ? `<div class="container-body"><div class="container-children"></div></div>`
       : `<div class="node-body"><div class="node-body-content">${this.bodyHtml(node)}</div></div>`;
 
@@ -426,7 +426,7 @@ export const Nodes = {
   attachOwnSlotHandlers(el: HTMLElement, node: FlowNode) {
     const slots = getSlots(node);
     slots.forEach(slot => {
-      const dropEl = node.runtimeType === 'container' && slot === '_body'
+      const dropEl = node.runtimeType === 'group' && slot === '_body'
         ? el.querySelector(':scope > .container-body') as HTMLElement | null
         : el.querySelector(`:scope > .branch-ports > .branch-port[data-branch="${CSS.escape(slot)}"]`) as HTMLElement | null;
       if (!dropEl) return;

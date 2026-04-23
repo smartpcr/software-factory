@@ -621,7 +621,7 @@ function renderLog(ctx: InspectorContext): NodeInspectorResult {
   return { title: 'Log Output', html, includeInboundPanel: false };
 }
 
-function renderContainer(ctx: InspectorContext): NodeInspectorResult {
+function renderGroup(ctx: InspectorContext): NodeInspectorResult {
   const { node, id, c, escapeHtml } = ctx;
   const html = `
     <div class="ins-field">
@@ -740,7 +740,7 @@ const renderers: Record<string, (ctx: InspectorContext) => NodeInspectorResult> 
   delay: renderDelay,
   transform: renderTransform,
   log: renderLog,
-  container: renderContainer,
+  group: renderGroup,
   end: renderEnd,
 };
 

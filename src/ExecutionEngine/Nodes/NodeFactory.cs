@@ -112,8 +112,8 @@ public class NodeFactory
                 case Enums.RuntimeType.Timer:
                     node = CreateTimerNode(definition);
                     break;
-                case Enums.RuntimeType.Container:
-                    node = CreateContainerNode(definition);
+                case Enums.RuntimeType.Group:
+                    node = CreateGroupNode(definition);
                     break;
                 case Enums.RuntimeType.Start:
                     node = CreateStartNode(definition);
@@ -351,13 +351,13 @@ public class NodeFactory
     }
 
     /// <summary>
-    /// Creates a Container node for grouping related nodes.
+    /// Creates a Group node for grouping related nodes.
     /// </summary>
     /// <param name="definition">The node definition.</param>
-    /// <returns>The created Container node.</returns>
-    private static ExecutableNodeBase CreateContainerNode(NodeDefinition definition)
+    /// <returns>The created Group node.</returns>
+    private static ExecutableNodeBase CreateGroupNode(NodeDefinition definition)
     {
-        return new ContainerNode();
+        return new GroupNode();
     }
 
     private static ExecutableNodeBase CreateStartNode(NodeDefinition definition)

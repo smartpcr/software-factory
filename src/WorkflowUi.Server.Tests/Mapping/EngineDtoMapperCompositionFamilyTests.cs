@@ -15,7 +15,7 @@ using WorkflowUi.Server.Mapping;
 using Xunit;
 
 /// <summary>
-/// Tests for Subflow, Timer, Container mapper partials.
+/// Tests for Subflow, Timer, Group mapper partials.
 /// </summary>
 public class EngineDtoMapperCompositionFamilyTests
 {
@@ -94,12 +94,12 @@ public class EngineDtoMapperCompositionFamilyTests
     }
 
     [Fact]
-    public void Container_parallel_roundtrips()
+    public void Group_parallel_roundtrips()
     {
-        var source = new ContainerNodeDefinition
+        var source = new GroupNodeDefinition
         {
             NodeId = "container-1",
-            NodeName = "Parallel Container",
+            NodeName = "Parallel Group",
             ExecutionMode = ExecutionMode.Parallel,
             ChildNodes =
             [
@@ -118,13 +118,13 @@ public class EngineDtoMapperCompositionFamilyTests
         };
 
         var dto = EngineDtoMapper.MapToDto(source);
-        Assert.Equal("Container", dto.RuntimeType);
+        Assert.Equal("Group", dto.RuntimeType);
         Assert.Equal("Parallel", dto.ExecutionMode);
         Assert.Equal(2, dto.ChildNodes!.Count);
         Assert.Single(dto.ChildConnections!);
 
         var rt = EngineDtoMapper.MapFromDto(dto);
-        var container = Assert.IsType<ContainerNodeDefinition>(rt);
+        var container = Assert.IsType<GroupNodeDefinition>(rt);
         Assert.Equal(ExecutionMode.Parallel, container.ExecutionMode);
         Assert.Equal(2, container.ChildNodes!.Count);
         Assert.Single(container.ChildConnections!);

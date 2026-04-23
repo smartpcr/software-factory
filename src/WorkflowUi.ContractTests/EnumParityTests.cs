@@ -37,7 +37,7 @@ public class EnumParityTests
             "Noop", "CSharp", "CSharpScript", "CSharpTask",
             "PowerShell", "PowerShellTask",
             "IfElse", "ForEach", "While", "Switch",
-            "Subflow", "Timer", "Container",
+            "Subflow", "Timer", "Group",
         };
         var actual = Enum.GetNames<RuntimeType>();
         Assert.Equal(expected, actual);
@@ -49,7 +49,7 @@ public class EnumParityTests
         var ordinals = EngineReflection.OrdinalsOf(typeof(RuntimeType));
         Assert.Equal(13, ordinals.Count);
         Assert.Equal(0, ordinals[0]); // Noop
-        Assert.Equal(12, ordinals[12]); // Container
+        Assert.Equal(12, ordinals[12]); // Group
     }
 
     [Fact]

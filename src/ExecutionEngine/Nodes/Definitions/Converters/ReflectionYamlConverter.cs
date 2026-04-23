@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="ReflectionYamlConverter.cs" company="Microsoft Corp.">
 //     Copyright (c) Microsoft Corp. All rights reserved.
 // </copyright>
@@ -382,7 +382,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
             "Switch" => typeof(SwitchNodeDefinition),
             "Subflow" => typeof(SubflowNodeDefinition),
             "Timer" => typeof(TimerNodeDefinition),
-            "Container" => typeof(ContainerNodeDefinition),
+            "Group" => typeof(GroupNodeDefinition),
             "Start" => typeof(StartNodeDefinition),
             "Trigger" => typeof(TriggerNodeDefinition),
             "Action" => typeof(ActionNodeDefinition),

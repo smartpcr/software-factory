@@ -3,7 +3,7 @@ workflowName: Container Sequential
 nodes:
   - nodeId: c1
     nodeName: Sequential Container
-    runtimeType: Container
+    runtimeType: Group
     executionMode: Sequential
     childNodes:
       - nodeId: c1a

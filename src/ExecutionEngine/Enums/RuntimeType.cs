@@ -72,10 +72,10 @@ public enum RuntimeType
     Timer,
 
     /// <summary>
-    /// Container node for grouping related nodes into logical units with encapsulated execution flow.
+    /// Group node for grouping related nodes into logical units with encapsulated execution flow.
     /// Similar to Subflow but with inline definition instead of external file.
     /// </summary>
-    Container,
+    Group,
 
     /// <summary>
     /// Start node — workflow entry point with manual, schedule, or event trigger.

@@ -135,7 +135,7 @@ public static class NodeTypeCatalog
         RuntimeType.While => "While",
         RuntimeType.End => "End",
         RuntimeType.AI => "AI",
-        RuntimeType.Container => "Container",
+        RuntimeType.Group => "Group",
         RuntimeType.Subflow => "Subflow",
         _ => rt.ToString(),
     };
@@ -151,7 +151,7 @@ public static class NodeTypeCatalog
         RuntimeType.IfElse or RuntimeType.Switch or RuntimeType.Parallel
             or RuntimeType.ForEach or RuntimeType.While => "Flow Control",
         RuntimeType.AI => "AI",
-        RuntimeType.Container or RuntimeType.Subflow => "Containers",
+        RuntimeType.Group or RuntimeType.Subflow => "Containers",
         _ => "Other",
     };
 
@@ -178,7 +178,7 @@ public static class NodeTypeCatalog
         RuntimeType.While => "Repeat while a condition is true.",
         RuntimeType.End => "Workflow terminator.",
         RuntimeType.AI => "AI skill or subagent.",
-        RuntimeType.Container => "Group nodes into a logical unit.",
+        RuntimeType.Group => "Group nodes into a logical unit.",
         RuntimeType.Subflow => "Execute another workflow as a child process.",
         _ => rt.ToString(),
     };
@@ -222,7 +222,7 @@ public static class NodeTypeCatalog
     private static string[] GetEvents(RuntimeType rt) => rt switch
     {
         RuntimeType.ForEach or RuntimeType.While => ["OnStart", "OnProgress", "OnNext"],
-        RuntimeType.Container or RuntimeType.Subflow => ["OnStart", "OnProgress"],
+        RuntimeType.Group or RuntimeType.Subflow => ["OnStart", "OnProgress"],
         _ => [],
     };
 

@@ -33,7 +33,7 @@ nodes:
     runtimeType: Timer
     schedule: "*/5 * * * *"
   - nodeId: n13
-    runtimeType: Container
+    runtimeType: Group
 connections:
   - sourceNodeId: n1
     targetNodeId: n2

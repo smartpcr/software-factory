@@ -1,7 +1,7 @@
 # Test workflow with container containing subflow nodes
 workflowId: test-container-subflows
-workflowName: Test Container with Subflow Children
-description: Tests container node with subflow child nodes
+workflowName: Test Group with Subflow Children
+description: Tests group node with subflow child nodes
 
 nodes:
   - nodeId: start
@@ -10,8 +10,8 @@ nodes:
     scriptContent: "SetOutput(\"started\", true);"
 
   - nodeId: deployment-container
-    nodeName: Deployment Container
-    runtimeType: Container
+    nodeName: Deployment Group
+    runtimeType: Group
     ExecutionMode: "Parallel"
     ChildNodes:
       - nodeId: deploy-region1

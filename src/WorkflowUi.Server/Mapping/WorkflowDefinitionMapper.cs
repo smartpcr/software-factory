@@ -194,7 +194,7 @@ public static class WorkflowDefinitionMapper
                 Timeout = GetInt(el, config, "timeout", 30000),
                 Branches = GetStringList(el, config, "branches") ?? ["branch_1", "branch_2"],
             },
-            RuntimeType.Container => new ContainerNodeDefinition(),
+            RuntimeType.Group => new GroupNodeDefinition(),
             _ => null,
         };
 

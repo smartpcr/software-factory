@@ -21,7 +21,7 @@ nodes:
   # Container node with three parallel children
   - nodeId: validation-container
     nodeName: Validation Checks Container
-    runtimeType: Container
+    runtimeType: Group
     ExecutionMode: "Parallel"
     ChildNodes:
       # Child 1: Check network

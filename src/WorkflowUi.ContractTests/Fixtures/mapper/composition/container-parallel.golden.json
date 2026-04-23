@@ -4,7 +4,7 @@
   "version": "1.0",
   "nodes": [
     {
-      "runtimeType": "Container",
+      "runtimeType": "Group",
       "nodeId": "container-1",
       "nodeName": "Parallel Group",
       "joinType": "Any",

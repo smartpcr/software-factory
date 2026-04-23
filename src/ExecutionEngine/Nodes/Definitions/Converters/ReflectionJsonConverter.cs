@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="ReflectionJsonConverter.cs" company="Microsoft Corp.">
 //     Copyright (c) Microsoft Corp. All rights reserved.
 // </copyright>
@@ -356,7 +356,7 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
             "Switch" => typeof(SwitchNodeDefinition),
             "Subflow" => typeof(SubflowNodeDefinition),
             "Timer" => typeof(TimerNodeDefinition),
-            "Container" => typeof(ContainerNodeDefinition),
+            "Group" => typeof(GroupNodeDefinition),
             "Start" => typeof(StartNodeDefinition),
             "Trigger" => typeof(TriggerNodeDefinition),
             "Action" => typeof(ActionNodeDefinition),

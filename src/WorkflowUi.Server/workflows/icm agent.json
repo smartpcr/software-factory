@@ -13,7 +13,7 @@
     {
       "nodeId": "n_jwecixd",
       "runtimeType": "start",
-      "nodeName": "Start",
+      "nodeName": "timer",
       "description": "",
       "configuration": {
         "triggerType": "Schedule",
@@ -34,7 +34,7 @@
     {
       "nodeId": "n_w2s7rw0",
       "runtimeType": "AI",
-      "nodeName": "AI",
+      "nodeName": "get team incidents",
       "description": "",
       "configuration": {
         "mode": "Skill",

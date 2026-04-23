@@ -3,12 +3,12 @@ workflowName: Container Nested
 nodes:
   - nodeId: c1
     nodeName: Outer
-    runtimeType: Container
+    runtimeType: Group
     executionMode: Sequential
     childNodes:
       - nodeId: c2
         nodeName: Inner
-        runtimeType: Container
+        runtimeType: Group
         executionMode: Parallel
         childNodes:
           - nodeId: c2a

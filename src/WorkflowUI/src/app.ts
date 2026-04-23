@@ -224,7 +224,7 @@ export const App = {
       parentSlot: opts.parentSlot || null,
     };
     if (tpl.branches) node.branches = [...tpl.branches];
-    if (resolved.toLowerCase() === 'container') { node.width = 280; node.height = 180; node.collapsed = false; }
+    if (resolved.toLowerCase() === 'group') { node.width = 280; node.height = 180; node.collapsed = false; }
     ensureChildren(node);
     State.nodes.set(node.nodeId, node);
     if (node.parentId) {

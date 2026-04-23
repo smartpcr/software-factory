@@ -3,7 +3,7 @@ workflowName: Container Parallel
 nodes:
   - nodeId: c1
     nodeName: Parallel Container
-    runtimeType: Container
+    runtimeType: Group
     executionMode: Parallel
     childNodes:
       - nodeId: c1a

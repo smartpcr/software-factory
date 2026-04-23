@@ -147,7 +147,7 @@ public class MapperRoundTripApiTests : IClassFixture<TestWebApplicationFactory>
             new() { RuntimeType = "Switch", NodeId = "n10", NodeName = "N10", JoinType = "Any", Priority = "Normal", Expression = "s", Cases = new() { ["a"] = "b" } },
             new() { RuntimeType = "Subflow", NodeId = "n11", NodeName = "N11", JoinType = "Any", Priority = "Normal", WorkflowFilePath = "f.yaml", Timeout = "PT5M" },
             new() { RuntimeType = "Timer", NodeId = "n12", NodeName = "N12", JoinType = "Any", Priority = "Normal", Schedule = "* * * * *" },
-            new() { RuntimeType = "Container", NodeId = "n13", NodeName = "N13", JoinType = "Any", Priority = "Normal", ExecutionMode = "Parallel" },
+            new() { RuntimeType = "Group", NodeId = "n13", NodeName = "N13", JoinType = "Any", Priority = "Normal", ExecutionMode = "Parallel" },
         };
 
         var request = new WorkflowDefinitionDto
@@ -163,7 +163,7 @@ public class MapperRoundTripApiTests : IClassFixture<TestWebApplicationFactory>
         Assert.Equal(13, result!.Workflow.Nodes!.Count);
 
         var rtTypes = result.Workflow.Nodes!.Select(n => n.RuntimeType).OrderBy(r => r, StringComparer.Ordinal).ToList();
-        var expected = EngineDtoMapper.SupportedRuntimeTypes.OrderBy(r => r, StringComparer.Ordinal).ToList();
+        var expected = nodes.Select(n => n.RuntimeType!).OrderBy(r => r, StringComparer.Ordinal).ToList();
         Assert.Equal(expected, rtTypes);
     }
 

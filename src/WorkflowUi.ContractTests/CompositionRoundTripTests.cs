@@ -69,9 +69,9 @@ public class CompositionRoundTripTests
     }
 
     [Fact]
-    public void Container_ExecutionMode_PreservedAfterRoundTrip()
+    public void Group_ExecutionMode_PreservedAfterRoundTrip()
     {
-        var def = new ContainerNodeDefinition
+        var def = new GroupNodeDefinition
         {
             NodeId = "c1",
             ExecutionMode = ExecutionMode.Parallel,
@@ -80,7 +80,7 @@ public class CompositionRoundTripTests
         var wf = Wrap(def);
         var yaml = this.serializer.ToYaml(wf);
         var back = this.serializer.FromYaml(yaml);
-        var c = back.Nodes.OfType<ContainerNodeDefinition>().First();
+        var c = back.Nodes.OfType<GroupNodeDefinition>().First();
         Assert.Equal(ExecutionMode.Parallel, c.ExecutionMode);
         Assert.Single(c.ChildNodes);
     }
@@ -122,32 +122,32 @@ public class CompositionRoundTripTests
     }
 
     [Fact]
-    public void ContainerSequential_Fixture_LoadsAndRoundTrips()
+    public void GroupSequential_Fixture_LoadsAndRoundTrips()
     {
         var yaml = File.ReadAllText(Path.Combine(FixturesDir, "container-sequential.yaml"));
         var wf = this.serializer.FromYaml(yaml);
-        var c = wf.Nodes.OfType<ContainerNodeDefinition>().First();
+        var c = wf.Nodes.OfType<GroupNodeDefinition>().First();
         Assert.Equal(ExecutionMode.Sequential, c.ExecutionMode);
         Assert.Equal(2, c.ChildNodes.Count);
     }
 
     [Fact]
-    public void ContainerNested_Fixture_LoadsAndRoundTrips()
+    public void GroupNested_Fixture_LoadsAndRoundTrips()
     {
         var yaml = File.ReadAllText(Path.Combine(FixturesDir, "container-nested.yaml"));
         var wf = this.serializer.FromYaml(yaml);
-        var outer = wf.Nodes.OfType<ContainerNodeDefinition>().First();
+        var outer = wf.Nodes.OfType<GroupNodeDefinition>().First();
         Assert.Single(outer.ChildNodes);
-        var inner = outer.ChildNodes.OfType<ContainerNodeDefinition>().First();
+        var inner = outer.ChildNodes.OfType<GroupNodeDefinition>().First();
         Assert.Equal(ExecutionMode.Parallel, inner.ExecutionMode);
     }
 
     [Fact]
-    public void ContainerParallel_Fixture_LoadsAndRoundTrips()
+    public void GroupParallel_Fixture_LoadsAndRoundTrips()
     {
         var yaml = File.ReadAllText(Path.Combine(FixturesDir, "container-parallel.yaml"));
         var wf = this.serializer.FromYaml(yaml);
-        var c = wf.Nodes.OfType<ContainerNodeDefinition>().First();
+        var c = wf.Nodes.OfType<GroupNodeDefinition>().First();
         Assert.Equal(ExecutionMode.Parallel, c.ExecutionMode);
     }
 

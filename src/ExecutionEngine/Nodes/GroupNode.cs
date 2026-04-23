@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="ContainerNode.cs" company="Microsoft Corp.">
+// <copyright file="GroupNode.cs" company="Microsoft Corp.">
 //     Copyright (c) Microsoft Corp. All rights reserved.
 // </copyright>
 // -----------------------------------------------------------------------
@@ -13,11 +13,11 @@ using ExecutionEngine.Nodes.Definitions;
 using ExecutionEngine.Workflow;
 
 /// <summary>
-/// Container node that groups related nodes into a logical unit with encapsulated execution flow.
+/// Group node that groups related nodes into a logical unit with encapsulated execution flow.
 /// Behaves like SubflowNode (OnComplete when all children succeed, OnFail when any child fails)
 /// but defines children inline in the same workflow file instead of external file reference.
 /// </summary>
-public class ContainerNode : ExecutableNodeBase
+public class GroupNode : ExecutableNodeBase
 {
     private readonly Dictionary<string, INode> childNodeInstances = [];
     private ChildCompletionState completionState = new();
@@ -44,9 +44,9 @@ public class ContainerNode : ExecutableNodeBase
     /// <inheritdoc/>
     public override void Initialize(NodeDefinition definition)
     {
-        if (definition is not ContainerNodeDefinition containerDef)
+        if (definition is not GroupNodeDefinition containerDef)
         {
-            throw new InvalidOperationException($"Invalid node definition type for ContainerNode: {definition.GetType().Name}");
+            throw new InvalidOperationException($"Invalid node definition type for GroupNode: {definition.GetType().Name}");
         }
 
         this.Definition = definition;
@@ -140,7 +140,7 @@ public class ContainerNode : ExecutableNodeBase
 
                     this.RaiseOnProgress(new ProgressEventArgs
                     {
-                        Status = $"Container progress: {completedCount}/{totalCount} children completed",
+                        Status = $"Group progress: {completedCount}/{totalCount} children completed",
                         ProgressPercent = overallProgress
                     });
                 }
@@ -178,7 +178,7 @@ public class ContainerNode : ExecutableNodeBase
         {
             instance.Status = NodeExecutionStatus.Cancelled;
             instance.EndTime = DateTime.UtcNow;
-            instance.ErrorMessage = "Container execution was cancelled";
+            instance.ErrorMessage = "Group execution was cancelled";
         }
         catch (Exception ex)
         {
@@ -199,7 +199,7 @@ public class ContainerNode : ExecutableNodeBase
         // Validate ChildNodes is not null or empty
         if (this.ChildNodes == null || this.ChildNodes.Count == 0)
         {
-            throw new InvalidOperationException("ChildNodes cannot be null or empty. Container must have at least one child node.");
+            throw new InvalidOperationException("ChildNodes cannot be null or empty. Group must have at least one child node.");
         }
 
         // Validate all node IDs in ChildConnections exist in ChildNodes
@@ -233,7 +233,7 @@ public class ContainerNode : ExecutableNodeBase
         {
             if (this.HasCycle(node.NodeId, visited, recursionStack))
             {
-                throw new InvalidOperationException("Circular reference detected in ChildConnections. Container cannot have cycles.");
+                throw new InvalidOperationException("Circular reference detected in ChildConnections. Group cannot have cycles.");
             }
         }
     }
@@ -571,8 +571,8 @@ public class ContainerNode : ExecutableNodeBase
 
         public bool IsComplete()
         {
-            // Container is complete when ALL children succeed
-            // Container fails immediately when ANY child fails
+            // Group is complete when ALL children succeed
+            // Group fails immediately when ANY child fails
             return this.CompletedChildren.Count == this.TotalChildren && !this.HasFailed;
         }
     }

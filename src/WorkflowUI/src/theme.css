@@ -34,7 +34,7 @@
     --n-loop:     #7fc7b8;
     --n-ai:       #c49bff;
     --n-subflow:  #ffd36e;
-    --n-container:#9ba3b4;
+    --n-group:#9ba3b4;
     --n-end:      #ff9c95;
 
     --grid-dot: rgba(255,255,255,0.09);
@@ -86,7 +86,7 @@
     --n-loop:     #0e6c5e;
     --n-ai:       #5a32b0;
     --n-subflow:  #8a6200;
-    --n-container:#374151;
+    --n-group:#374151;
     --n-end:      #9a2b2b;
 
     --grid-dot: rgba(15,20,30,0.12);
@@ -828,7 +828,7 @@
     background: rgba(229,179,106,0.10);
   }
 
-  /* Nested child nodes inside a branch slot or container body */
+  /* Nested child nodes inside a branch slot or group body */
   .node.nested {
     position: relative !important;
     left: auto !important;
@@ -1037,7 +1037,7 @@
       var(--node-shadow);
   }
 
-  /* Container node */
+  /* Group node */
   .node.container {
     background: linear-gradient(180deg, rgba(155,163,180,0.05) 0%, rgba(155,163,180,0.02) 100%);
     border: 1px dashed var(--stroke-2);

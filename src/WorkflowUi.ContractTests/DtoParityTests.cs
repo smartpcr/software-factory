@@ -170,12 +170,12 @@ public class DtoParityTests
     }
 
     [Fact]
-    public void ContainerNodeDefinition_HasExactly3Properties_AndExecutionModeDefaultIsSequential()
+    public void GroupNodeDefinition_HasExactly3Properties_AndExecutionModeDefaultIsSequential()
     {
-        var props = GetPropertyNames(typeof(ContainerNodeDefinition));
+        var props = GetPropertyNames(typeof(GroupNodeDefinition));
         var nonRuntime = props.Where(n => n != "RuntimeType").ToArray();
         Assert.Equal(3, nonRuntime.Length);
-        var instance = new ContainerNodeDefinition();
+        var instance = new GroupNodeDefinition();
         Assert.Equal(ExecutionMode.Sequential, instance.ExecutionMode);
     }
 

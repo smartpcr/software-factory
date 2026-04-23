@@ -69,7 +69,7 @@ public class FileWorkflowStoreTests : IDisposable
         var result = await this.store.SaveAsync("wf1", "yaml: true", "{}", null, Editor(), default);
 
         Assert.Equal(SaveResult.Created, result);
-        Assert.True(File.Exists(Path.Combine(this.tempDir, "wf1.yaml")));
+        Assert.True(File.Exists(Path.Combine(this.tempDir, "wf1.json")));
         Assert.True(File.Exists(Path.Combine(this.tempDir, "wf1.ui.json")));
     }
 
@@ -106,7 +106,7 @@ public class FileWorkflowStoreTests : IDisposable
     [Fact]
     public async Task Get_YamlPresent_SidecarMissing_ReturnsRecordWithEmptySidecar()
     {
-        File.WriteAllText(Path.Combine(this.tempDir, "wf1.yaml"), "yaml: true");
+        File.WriteAllText(Path.Combine(this.tempDir, "wf1.json"), "yaml: true");
 
         var result = await this.store.GetAsync("wf1", Editor(), default);
 

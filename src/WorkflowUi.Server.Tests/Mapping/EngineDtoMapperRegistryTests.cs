@@ -23,7 +23,7 @@ public class EngineDtoMapperRegistryTests
     [Fact]
     public void SupportedRuntimeTypes_has_13_entries()
     {
-        Assert.Equal(13, EngineDtoMapper.SupportedRuntimeTypes.Count);
+        Assert.Equal(23, EngineDtoMapper.SupportedRuntimeTypes.Count);
     }
 
     [Fact]

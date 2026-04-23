@@ -1,7 +1,7 @@
 # Test workflow with sequential container execution
 workflowId: test-container-sequential
-workflowName: Test Container with Sequential Children
-description: Tests container node with sequential child execution and child connections
+workflowName: Test Group with Sequential Children
+description: Tests group node with sequential child execution and child connections
 
 nodes:
   - nodeId: start
@@ -11,8 +11,8 @@ nodes:
       script: "SetOutput(\"started\", true);"
 
   - nodeId: sequential-container
-    nodeName: Sequential Container
-    runtimeType: Container
+    nodeName: Sequential Group
+    runtimeType: Group
     ExecutionMode: "Sequential"
     ChildNodes:
       - nodeId: step1

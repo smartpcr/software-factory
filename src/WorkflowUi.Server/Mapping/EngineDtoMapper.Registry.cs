@@ -36,7 +36,7 @@ public static partial class EngineDtoMapper
             WhileNodeDefinition wh => MapWhile(wh),
             SubflowNodeDefinition subflow => MapSubflow(subflow),
             TimerNodeDefinition timer => MapTimer(timer),
-            ContainerNodeDefinition container => MapContainer(container),
+            GroupNodeDefinition group => MapGroup(group),
             _ => throw new ArgumentException($"Unsupported node definition type: {source.GetType().Name}"),
         };
     }
@@ -60,7 +60,7 @@ public static partial class EngineDtoMapper
             "While" => MapWhileFromDto(dto),
             "Subflow" => MapSubflowFromDto(dto),
             "Timer" => MapTimerFromDto(dto),
-            "Container" => MapContainerFromDto(dto),
+            "Group" => MapGroupFromDto(dto),
             _ => throw new ArgumentException($"Unsupported runtime type: {dto.RuntimeType}"),
         };
     }
@@ -145,6 +145,8 @@ public static partial class EngineDtoMapper
         "Noop", "CSharp", "CSharpScript", "CSharpTask",
         "PowerShell", "PowerShellTask",
         "IfElse", "ForEach", "While", "Switch",
-        "Subflow", "Timer", "Container",
+        "Subflow", "Timer", "Group",
+        "Start", "Trigger", "Action", "HttpRequest",
+        "Transform", "Delay", "Log", "AI", "End", "Parallel",
     ];
 }
