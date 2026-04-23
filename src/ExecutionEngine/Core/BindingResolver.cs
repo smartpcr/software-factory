@@ -45,6 +45,18 @@ public static class BindingResolver
             return expression[7..];
         }
 
+        // 1b. "field:" prefix — strip and resolve the inner expression
+        if (expression.StartsWith("field:", StringComparison.OrdinalIgnoreCase))
+        {
+            var inner = expression[6..];
+            if (string.IsNullOrEmpty(inner))
+            {
+                return null;
+            }
+
+            return Resolve(inner, nodeContext, workflowContext);
+        }
+
         // 2. Explicit input/output prefix → strip and search InputData
         if (expression.StartsWith("input.", StringComparison.OrdinalIgnoreCase))
         {

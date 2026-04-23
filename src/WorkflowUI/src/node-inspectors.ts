@@ -412,13 +412,12 @@ function renderAI(ctx: InspectorContext): NodeInspectorResult {
           ${params.map(p => {
             const currentBinding = bindings[p.name] || '';
             const isStatic = currentBinding.startsWith('static:');
+            const isFieldMode = currentBinding.startsWith('field:') || (!isStatic && currentBinding !== '' && !currentBinding.startsWith('static:'));
             const staticVal = isStatic ? currentBinding.slice(7) : '';
-            const fieldVal = isStatic ? '' : currentBinding;
+            const fieldVal = isFieldMode ? (currentBinding.startsWith('field:') ? currentBinding.slice(6) : currentBinding) : '';
             const reqBadge = p.required ? '<span class="binding-req">required</span>' : '';
             const isBool = p.type === 'boolean';
-            const boundFieldLabel = !isStatic && fieldVal
-              ? inboundFields.find(f => f.path === fieldVal)?.name || fieldVal
-              : '';
+            const isNone = !isStatic && !isFieldMode;
 
             return `
             <div class="binding-card" title="${escapeHtml(p.description)}">
@@ -432,12 +431,12 @@ function renderAI(ctx: InspectorContext): NodeInspectorResult {
               ${p.description ? `<div class="binding-param-desc">${escapeHtml(p.description)}</div>` : ''}
               <div class="binding-card-body">
                 <div class="binding-mode-tabs">
-                  <button class="binding-mode-tab ${!isStatic && !fieldVal ? 'active' : ''}" data-ai-mode="none" data-ai-param="${escapeHtml(p.name)}" data-node-id="${id}">None</button>
-                  <button class="binding-mode-tab ${!isStatic && fieldVal ? 'active' : ''}" data-ai-mode="field" data-ai-param="${escapeHtml(p.name)}" data-node-id="${id}">Field</button>
+                  <button class="binding-mode-tab ${isNone ? 'active' : ''}" data-ai-mode="none" data-ai-param="${escapeHtml(p.name)}" data-node-id="${id}">None</button>
+                  <button class="binding-mode-tab ${isFieldMode ? 'active' : ''}" data-ai-mode="field" data-ai-param="${escapeHtml(p.name)}" data-node-id="${id}">Field</button>
                   <button class="binding-mode-tab ${isStatic ? 'active' : ''}" data-ai-mode="static" data-ai-param="${escapeHtml(p.name)}" data-node-id="${id}">Static</button>
                 </div>
                 <div class="binding-card-value">
-                  ${!isStatic && fieldVal ? `
+                  ${isFieldMode ? `
                     <select class="binding-field-select" data-ai-binding-key="${escapeHtml(p.name)}" data-node-id="${id}">
                       <option value="">— select field —</option>
                       ${inboundFields.map(f => `<option value="${escapeHtml(f.path)}" ${fieldVal === f.path ? 'selected' : ''}>${escapeHtml(f.name)} · ${escapeHtml(f.sourceNode)}</option>`).join('')}
@@ -451,14 +450,9 @@ function renderAI(ctx: InspectorContext): NodeInspectorResult {
                         </label>
                       </div>`
                     : `<input class="binding-static-input" data-ai-static-key="${escapeHtml(p.name)}" data-node-id="${id}" value="${escapeHtml(staticVal)}" placeholder="Enter ${escapeHtml(p.type)} value…" />`
-                  ) : (!isStatic && !fieldVal ? `
+                  ) : `
                     <div class="binding-empty-hint">Choose Field or Static to bind this parameter</div>
-                  ` : `
-                    <select class="binding-field-select" data-ai-binding-key="${escapeHtml(p.name)}" data-node-id="${id}">
-                      <option value="">— select field —</option>
-                      ${inboundFields.map(f => `<option value="${escapeHtml(f.path)}" ${fieldVal === f.path ? 'selected' : ''}>${escapeHtml(f.name)} · ${escapeHtml(f.sourceNode)}</option>`).join('')}
-                    </select>
-                  `)}
+                  `}
                 </div>
               </div>
             </div>`;

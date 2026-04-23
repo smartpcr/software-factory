@@ -853,7 +853,9 @@ export const Inspector = {
     });
     // AI input binding — mode tab clicks (None / Field / Static)
     el.querySelectorAll<HTMLButtonElement>('[data-ai-mode]').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         const nodeId = btn.dataset.nodeId!;
         const paramName = btn.dataset.aiParam!;
         const mode = btn.dataset.aiMode!;
@@ -871,11 +873,11 @@ export const Inspector = {
         } else if (mode === 'static') {
           bindings[paramName] = 'static:';
         } else if (mode === 'field') {
-          // Set to empty field selection — user will pick from dropdown
-          bindings[paramName] = '';
+          bindings[paramName] = 'field:';
         }
         callbacks.updateNodeConfig(nodeId, 'inputBindings', JSON.stringify(bindings));
-        setTimeout(() => this.render(), 50);
+        // Re-render inspector to reflect the new mode
+        this.renderNode(nodeId);
       });
     });
     // AI input binding — field select change
