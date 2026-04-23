@@ -25,7 +25,7 @@ import { Minimap } from './minimap';
 import { Nodes } from './nodes';
 import { Edges } from './edges';
 import { Palette } from './palette';
-import { Inspector } from './inspector';
+import { Inspector, ensureServerWorkflows } from './inspector';
 import { disposeAllEditors } from './csharp-editor';
 import { Exec } from './exec';
 import { saveWorkflow as saveWorkflowApi, deleteWorkflowApi, listWorkflows, getWorkflow, fetchNodeTypes, validateWorkflow, validateNodesBatch, listRuns } from './api';
@@ -67,13 +67,15 @@ export const App = {
     );
     loadFallbackNodeTypes(); // Minimal palette until server responds
     Palette.render();
-    this.loadWorkflowsFromStorage();
     this.bindShortcuts();
     this.bindTitleInput();
     this.bindFileInput();
     this.bindTopbarActions();
     this.syncThemeIcon();
     this.renderAll();
+
+    // Pre-fetch server workflow list for subflow dropdowns
+    ensureServerWorkflows();
 
     // Load node types from server (single source of truth)
     fetchNodeTypes().then(types => {
@@ -647,6 +649,52 @@ export const App = {
     this.triggerValidation();
   },
 
+  /** Switch to a workflow tab, prompting to save if current workflow is dirty */
+  switchToWorkflow(id: string) {
+    if (State.currentWfId === id) {
+      this.loadWorkflow(id);
+      return;
+    }
+    if (!State.isDirty) {
+      this.loadWorkflow(id);
+      return;
+    }
+    // Current workflow is dirty — prompt user
+    const currentName = State.workflows[State.currentWfId || '']?.workflowName || 'current workflow';
+    this.showDirtyPrompt(currentName, () => {
+      // Save then switch
+      this.saveWorkflow().then(() => this.loadWorkflow(id));
+    }, () => {
+      // Discard and switch
+      State.isDirty = false;
+      this.loadWorkflow(id);
+    });
+  },
+
+  /** Show a 3-button modal: Save / Discard / Cancel */
+  showDirtyPrompt(workflowName: string, onSave: () => void, onDiscard: () => void) {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.innerHTML = `
+      <h3>Unsaved changes</h3>
+      <p>"${escapeHtml(workflowName)}" has unsaved changes. What would you like to do?</p>
+      <div class="modal-actions">
+        <button class="modal-btn-secondary" data-action="cancel">Cancel</button>
+        <button class="modal-btn-danger" data-action="discard">Discard</button>
+        <button class="modal-btn-primary" data-action="save">Save</button>
+      </div>
+    `;
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+
+    modal.querySelector('[data-action="cancel"]')!.addEventListener('click', () => backdrop.remove());
+    modal.querySelector('[data-action="discard"]')!.addEventListener('click', () => { backdrop.remove(); onDiscard(); });
+    modal.querySelector('[data-action="save"]')!.addEventListener('click', () => { backdrop.remove(); onSave(); });
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) backdrop.remove(); });
+  },
+
   loadWorkflow(id: string) {
     const wf = State.workflows[id];
     if (!wf) return;
@@ -917,12 +965,36 @@ export const App = {
           if (!data.edges) data.edges = [];
           data.updatedAt = data.updatedAt || now();
           data.createdAt = data.createdAt || now();
-          // Use a local UID for state tracking, preserve server name
-          const localId = uid('wf');
-          data.workflowId = localId;
-          State.workflows[localId] = data;
+          // Preserve the workflow's own ID; use server filename ID as fallback
+          const stableId = data.workflowId || wfId;
+          data.workflowId = stableId;
+          // Store server-side file ID so save can PUT back to the right path
+          data._serverId = wfId;
+
+          // Remove any stale entries with the same name but different ID (old regenerated IDs)
+          for (const [existingId, existingWf] of Object.entries(State.workflows)) {
+            if (existingId !== stableId && existingWf.workflowName === data.workflowName) {
+              delete State.workflows[existingId];
+              State.openTabs = State.openTabs.filter(t => t !== existingId);
+            }
+          }
+
+          // If already open, just switch to that tab
+          if (State.openTabs.includes(stableId)) {
+            State.workflows[stableId] = data; // refresh with latest server data
+            if (State.currentWfId !== stableId) {
+              this.switchToWorkflow(stableId);
+            } else {
+              this.loadWorkflow(stableId);
+            }
+            this.saveToStorage();
+            toast(`Switched to: ${data.workflowName}`, 'success');
+            return;
+          }
+
+          State.workflows[stableId] = data;
           this.saveToStorage();
-          this.loadWorkflow(localId);
+          this.switchToWorkflow(stableId);
           toast(`Opened: ${data.workflowName}`, 'success');
         } catch (err) {
           toast('Failed to open: ' + (err as Error).message, 'error');
@@ -963,7 +1035,7 @@ export const App = {
     el.querySelectorAll('.tab').forEach(tab => {
       tab.addEventListener('click', (e) => {
         if ((e.target as HTMLElement).closest('.tab-close')) return;
-        this.loadWorkflow((tab as HTMLElement).dataset.tabId!);
+        this.switchToWorkflow((tab as HTMLElement).dataset.tabId!);
       });
     });
     // Close tab
@@ -1060,56 +1132,13 @@ export const App = {
     try {
       localStorage.removeItem('flow-studio:workflows');
       localStorage.removeItem('flow-studio:currentId');
+      localStorage.removeItem('flow-studio:openTabs');
     } catch { /* ignore */ }
   },
 
+  /** No-op — server is the source of truth. Kept for API compat. */
   saveToStorage() {
-    // Snapshot current workflow's live state before persisting
-    this.snapshotCurrentWorkflow();
-    try {
-      localStorage.setItem('flow-studio:workflows', JSON.stringify(State.workflows));
-      localStorage.setItem('flow-studio:currentId', State.currentWfId || '');
-      localStorage.setItem('flow-studio:openTabs', JSON.stringify(State.openTabs));
-    } catch {
-      // Storage unavailable
-    }
-  },
-
-  loadWorkflowsFromStorage() {
-    try {
-      const raw = localStorage.getItem('flow-studio:workflows');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        const seen = new Set<string>();
-        const clean: Record<string, WorkflowData> = {};
-        for (const wf of Object.values(parsed) as Record<string, unknown>[]) {
-          // Migrate old schema field names to new engine-aligned names
-          this.migrateWorkflow(wf);
-          const migrated = wf as unknown as WorkflowData;
-          if (!seen.has(migrated.workflowName)) {
-            seen.add(migrated.workflowName);
-            clean[migrated.workflowId] = migrated;
-          }
-        }
-        State.workflows = clean;
-      }
-      const currentId = localStorage.getItem('flow-studio:currentId');
-      // Restore open tabs
-      try {
-        const tabsRaw = localStorage.getItem('flow-studio:openTabs');
-        if (tabsRaw) {
-          State.openTabs = JSON.parse(tabsRaw).filter((id: string) => State.workflows[id]);
-        }
-      } catch { /* ignore */ }
-      if (currentId && State.workflows[currentId]) {
-        this.loadWorkflow(currentId);
-      } else {
-        const first = Object.values(State.workflows)[0];
-        if (first) this.loadWorkflow(first.workflowId);
-      }
-    } catch {
-      // Nothing loaded
-    }
+    // Workflows are persisted via server save (saveWorkflow), not localStorage.
   },
 
   /** Migrate a workflow object from old schema to new engine-aligned schema */

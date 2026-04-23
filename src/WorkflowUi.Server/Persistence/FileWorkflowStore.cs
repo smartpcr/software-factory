@@ -56,7 +56,20 @@ public class FileWorkflowStore : IWorkflowStore
             var id = Path.GetRelativePath(root, f)
                 .Replace(Path.DirectorySeparatorChar, '/')
                 .Replace(".json", string.Empty, StringComparison.OrdinalIgnoreCase);
-            return new WorkflowSummary(id, info.LastWriteTimeUtc, info.Length);
+            string? workflowId = null;
+            string? workflowName = null;
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(f));
+                if (doc.RootElement.TryGetProperty("workflowId", out var wid)) workflowId = wid.GetString();
+                if (doc.RootElement.TryGetProperty("workflowName", out var wn)) workflowName = wn.GetString();
+            }
+            catch
+            {
+                // Skip unparseable files
+            }
+
+            return new WorkflowSummary(id, info.LastWriteTimeUtc, info.Length, workflowId, workflowName ?? id);
         }).ToList();
 
         return Task.FromResult<IReadOnlyList<WorkflowSummary>>(summaries);

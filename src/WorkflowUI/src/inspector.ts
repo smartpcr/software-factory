@@ -12,10 +12,27 @@ import { mountCSharpEditor, mountJsonEditor, disposeAllEditors } from './csharp-
 import { mountTemplateEditor } from './template-editor';
 import { discoverInboundFields } from './inboundSchema';
 import type { InboundField } from './inboundSchema';
-import { fetchAIAgents, fetchAISkills, fetchAgentInputs, fetchSkillInputs } from './api';
+import { fetchAIAgents, fetchAISkills, fetchAgentInputs, fetchSkillInputs, listWorkflows } from './api';
 import type { AIRegistryItem, AIInputParam, AIOutputField } from './api';
+import { renderNodeConfig } from './node-inspectors';
+import type { InspectorContext } from './node-inspectors';
 
 let callbacks: AppCallbacks;
+
+/** Cached server workflow summaries for subflow dropdown */
+let cachedServerWorkflows: { id: string; workflowId?: string; workflowName?: string }[] = [];
+let serverWorkflowsLoaded = false;
+export async function ensureServerWorkflows(): Promise<typeof cachedServerWorkflows> {
+  if (!serverWorkflowsLoaded) {
+    try {
+      const list = await listWorkflows() as { id: string; workflowId?: string; workflowName?: string }[];
+      cachedServerWorkflows = list;
+      serverWorkflowsLoaded = true;
+    } catch { /* ignore */ }
+  }
+  return cachedServerWorkflows;
+}
+export function invalidateServerWorkflows() { serverWorkflowsLoaded = false; }
 
 // Cached AI registry items
 let cachedAgents: AIRegistryItem[] = [];
@@ -590,6 +607,11 @@ export const Inspector = {
       }
     }
 
+    // Prefetch server workflows for subflow dropdown
+    if (node.runtimeType.toLowerCase() === 'subflow' && !serverWorkflowsLoaded) {
+      ensureServerWorkflows().then(() => this.renderNode(id));
+    }
+
     const configHtml = this.configFieldsHtml(node);
 
     el.innerHTML = `
@@ -1016,618 +1038,39 @@ export const Inspector = {
   },
 
   configFieldsHtml(node: FlowNode): string {
-    const c = node.config || {};
-    const id = node.nodeId;
-    const rt = node.runtimeType.toLowerCase();
-    let fields = '';
-    let title = 'Configuration';
+    const inboundFields = discoverInboundFields(node.nodeId);
+    const ctx: InspectorContext = {
+      node,
+      id: node.nodeId,
+      c: node.config || {},
+      escapeHtml,
+      inboundFields,
+      renderInboundFields: (f, nid, p, b) => this.renderInboundFields(f, nid, p, b),
+      describeCron: (cron) => this.describeCron(cron),
+      validateCron: (cron) => this.validateCron(cron),
+      ai: { skills: cachedSkills, agents: cachedAgents, inputParams: cachedInputParams, inputParamsKey: cachedInputParamsKey, models: aiModels, tierColor },
+      workflows: State.workflows,
+      serverWorkflows: cachedServerWorkflows,
+      currentWfId: State.currentWfId || undefined,
+      nodeType: NodeTypes[node.runtimeType] as InspectorContext['nodeType'],
+    };
 
-    if (rt === 'start') {
-      title = 'Start Trigger';
-      const trigType = String(c.triggerType || 'Manual');
-      const cronDesc = trigType === 'Schedule' && c.schedule ? this.describeCron(String(c.schedule)) : '';
-      const cronValid = trigType === 'Schedule' ? this.validateCron(String(c.schedule || '')) : null;
+    const result = renderNodeConfig(ctx);
 
-      fields = `
-        <div class="ins-field">
-          <label class="ins-field-label">Trigger type</label>
-          <select data-config-key="triggerType" data-node-id="${id}">
-            <option value="Manual" ${trigType === 'Manual' ? 'selected' : ''}>Manual</option>
-            <option value="Schedule" ${trigType === 'Schedule' ? 'selected' : ''}>Schedule</option>
-            <option value="Event" ${trigType === 'Event' ? 'selected' : ''}>Event</option>
-            <option value="WebHook" ${trigType === 'WebHook' ? 'selected' : ''}>WebHook</option>
-          </select>
-        </div>
-        ${trigType === 'Schedule' ? `
-        <div class="ins-field">
-          <label class="ins-field-label">Cron schedule ${cronValid ? '<span class="ins-validation-err" data-tooltip="' + escapeHtml(cronValid) + '">⚠</span>' : '<span class="ins-validation-ok">✓</span>'}</label>
-          <input class="mono" value="${escapeHtml(String(c.schedule || ''))}" placeholder="0 */5 * * *" data-config-key="schedule" data-node-id="${id}" />
-          ${cronDesc ? `<div class="ins-cron-friendly">${escapeHtml(cronDesc)}</div>` : ''}
-          <div class="ins-field-hint">
-            Format: minute hour day month weekday<br>
-            <code>*</code> = any &nbsp; <code>*/5</code> = every 5 &nbsp; <code>1,15</code> = 1st and 15th
-          </div>
-          <div class="ins-cron-presets">
-            <button class="ins-cron-preset" data-preset="* * * * *" data-node-id="${id}">Every min</button>
-            <button class="ins-cron-preset" data-preset="*/5 * * * *" data-node-id="${id}">Every 5m</button>
-            <button class="ins-cron-preset" data-preset="0 * * * *" data-node-id="${id}">Hourly</button>
-            <button class="ins-cron-preset" data-preset="0 0 * * *" data-node-id="${id}">Daily</button>
-            <button class="ins-cron-preset" data-preset="0 0 * * 1" data-node-id="${id}">Weekly</button>
-          </div>
-        </div>` : ''}
-        ${trigType === 'Event' ? `
-        <div class="ins-field">
-          <label class="ins-field-label">Event name</label>
-          <input class="mono" value="${escapeHtml(String(c.eventName || ''))}" placeholder="order.created" data-config-key="eventName" data-node-id="${id}" />
-          <div class="ins-field-hint">Name of the external event to listen for.</div>
-        </div>` : ''}
-        ${trigType === 'WebHook' ? `
-        <div class="ins-field">
-          <label class="ins-field-label">Method</label>
-          <select data-config-key="webHookMethod" data-node-id="${id}">
-            <option value="POST" ${String(c.webHookMethod || 'POST') === 'POST' ? 'selected' : ''}>POST</option>
-            <option value="PUT" ${String(c.webHookMethod) === 'PUT' ? 'selected' : ''}>PUT</option>
-            <option value="PATCH" ${String(c.webHookMethod) === 'PATCH' ? 'selected' : ''}>PATCH</option>
-          </select>
-        </div>
-        <div class="ins-field">
-          <label class="ins-field-label">Route</label>
-          <div style="display:flex; align-items:center; gap:0;">
-            <span class="ins-field-hint" style="white-space:nowrap; padding:4px 6px; background:var(--bg-2); border:1px solid var(--border); border-right:none; border-radius:4px 0 0 4px; font-size:12px;">/webhook/</span>
-            <input class="mono" style="border-radius:0 4px 4px 0;" value="${escapeHtml(String(c.webHookRoute || ''))}" placeholder="my-workflow" data-config-key="webHookRoute" data-node-id="${id}" />
-          </div>
-        </div>
-        <div class="ins-field">
-          <label class="ins-field-label">Body JSON Schema</label>
-          <div class="ins-monaco-container" id="monaco-${id}-bodyJsonSchema" data-node-id="${id}" data-config-key="bodyJsonSchema" data-lang="json"></div>
-          <div class="ins-field-hint">JSON Schema describing the expected request body. Output messageType is the parsed JSON object.</div>
-        </div>` : ''}
-      `;
-    } else if (rt === 'trigger') {
-      title = 'Webhook';
-      // Parse params JSON safely
-      let params: { name: string; value: string }[] = [];
-      try { params = JSON.parse(String(c.params || '[]')); } catch { /* ignore */ }
-      fields = `
-        <div class="ins-field" style="display:flex; gap:8px;">
-          <div style="width: 90px">
-            <label class="ins-field-label">Method</label>
-            <select data-config-key="method" data-node-id="${id}">
-              <option ${c.method === 'GET' ? 'selected' : ''}>GET</option>
-              <option ${c.method === 'POST' ? 'selected' : ''}>POST</option>
-              <option ${c.method === 'PUT' ? 'selected' : ''}>PUT</option>
-              <option ${c.method === 'PATCH' ? 'selected' : ''}>PATCH</option>
-              <option ${c.method === 'DELETE' ? 'selected' : ''}>DELETE</option>
-            </select>
-          </div>
-          <div style="flex:1">
-            <label class="ins-field-label">Route URI</label>
-            <input class="mono" value="${escapeHtml(String(c.route || ''))}" placeholder="/webhook/my-hook" data-config-key="route" data-node-id="${id}" />
-          </div>
-        </div>
-        <div class="ins-field">
-          <label class="ins-field-label">Parameters</label>
-          <div class="switch-cases-list" id="triggerParams_${id}">
-            ${params.map((p, i) => `
-              <div class="switch-case" style="display:flex; gap:4px; align-items:center;">
-                <input value="${escapeHtml(p.name)}" placeholder="name" class="mono" style="flex:1" data-param-name data-node-id="${id}" data-param-index="${i}" />
-                <input value="${escapeHtml(p.value)}" placeholder="value" class="mono" style="flex:1" data-param-value data-node-id="${id}" data-param-index="${i}" />
-                <button class="switch-case-del" data-action="remove-trigger-param" data-node-id="${id}" data-param-index="${i}">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-                </button>
-              </div>
-            `).join('')}
-          </div>
-          <button class="add-case-btn" data-action="add-trigger-param" data-node-id="${id}">+ Add parameter</button>
-          <div class="ins-field-hint">Query or body parameters passed to the webhook.</div>
-        </div>
-      `;
-    } else if (rt === 'if' || rt === 'ifelse') {
-      title = 'Condition';
-      const condEditorId = `monaco-${id}-condition`;
-      const inboundFields = discoverInboundFields(node.nodeId);
-      fields = `
-        <div class="ins-field">
-          <label class="ins-field-label">Condition expression <span class="ins-field-hint">(C# — must return bool)</span></label>
-          <div class="ins-monaco-container ins-monaco-sm" id="${condEditorId}" data-node-id="${id}" data-config-key="condition"></div>
-          <div class="ins-field-hint">Use <code>{varName}</code> to reference input fields or global variables.</div>
-        </div>
-        ${inboundFields.length > 0 ? `
+    // Auto-append generic inbound fields panel
+    const type = NodeTypes[node.runtimeType];
+    let inboundHtml = '';
+    if (result.includeInboundPanel && type?.ports?.in && inboundFields.length > 0) {
+      inboundHtml = `
         <div class="ins-field">
           <label class="ins-field-label">Available fields</label>
           <div class="inbound-fields-panel">
-            ${this.renderInboundFields(inboundFields, id, [], {})}
+            ${this.renderInboundFields(inboundFields, node.nodeId, [], {})}
           </div>
-          <div class="ins-field-hint">Click a field to copy its name.</div>
-        </div>` : ''}
-      `;
-    } else if (rt === 'switch') {
-      title = 'Switch';
-      const inboundFields = discoverInboundFields(node.nodeId);
-      fields = `
-        <div class="ins-field">
-          <label class="ins-field-label">Switch expression</label>
-          <textarea data-config-key="expression" data-node-id="${id}" placeholder="input.type">${escapeHtml(String(c.expression || ''))}</textarea>
-        </div>
-        <div class="ins-field">
-          <label class="ins-field-label">Cases</label>
-          <div class="switch-cases-list">
-            ${(node.branches || []).map((b, i) => `
-              <div class="switch-case">
-                <input value="${escapeHtml(b)}" data-branch-rename data-node-id="${id}" data-branch-index="${i}" class="mono" />
-                <button class="switch-case-del" data-action="remove-branch" data-node-id="${id}" data-branch-index="${i}">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-                </button>
-              </div>
-            `).join('')}
-          </div>
-          <button class="add-case-btn" data-action="add-branch" data-node-id="${id}">+ Add case</button>
-        </div>
-        ${inboundFields.length > 0 ? `
-        <div class="ins-field">
-          <label class="ins-field-label">Available fields</label>
-          <div class="inbound-fields-panel">
-            ${this.renderInboundFields(inboundFields, id, [], {})}
-          </div>
-        </div>` : ''}
-      `;
-    } else if (rt === 'parallel') {
-      title = 'Parallel';
-      fields = `
-        <div class="ins-field">
-          <label class="ins-field-label">Join mode</label>
-          <select data-config-key="joinMode" data-node-id="${id}">
-            <option ${c.joinMode === 'all' ? 'selected' : ''} value="all">all — wait for all</option>
-            <option ${c.joinMode === 'any' ? 'selected' : ''} value="any">any — first to finish</option>
-            <option ${c.joinMode === 'race' ? 'selected' : ''} value="race">race — cancel others</option>
-          </select>
-        </div>
-        <div class="ins-field">
-          <label class="ins-field-label">Timeout (ms)</label>
-          <input type="number" value="${c.timeout || 30000}" data-config-key="timeout" data-node-id="${id}" />
-        </div>
-        <div class="ins-field">
-          <label class="ins-field-label">Branches</label>
-          <div class="switch-cases-list">
-            ${(node.branches || []).map((b, i) => `
-              <div class="switch-case">
-                <input value="${escapeHtml(b)}" data-branch-rename data-node-id="${id}" data-branch-index="${i}" class="mono" />
-                <button class="switch-case-del" data-action="remove-branch" data-node-id="${id}" data-branch-index="${i}">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-                </button>
-              </div>
-            `).join('')}
-          </div>
-          <button class="add-case-btn" data-action="add-branch" data-node-id="${id}">+ Add branch</button>
-        </div>
-      `;
-    } else if (rt === 'foreach') {
-      title = 'ForEach';
-      const inboundFields = discoverInboundFields(node.nodeId);
-      fields = `
-        <div class="ins-field">
-          <label class="ins-field-label">Mode</label>
-          <select data-config-key="mode" data-node-id="${id}">
-            <option ${c.mode === 'foreach' ? 'selected' : ''}>foreach</option>
-            <option ${c.mode === 'while' ? 'selected' : ''}>while</option>
-            <option ${c.mode === 'times' ? 'selected' : ''}>times</option>
-          </select>
-        </div>
-        <div class="ins-field">
-          <label class="ins-field-label">${c.mode === 'while' ? 'Condition' : c.mode === 'times' ? 'Count' : 'Source expression'}</label>
-          <input class="mono" value="${escapeHtml(String(c.source || ''))}" data-config-key="source" data-node-id="${id}" />
-        </div>
-        <div class="ins-field">
-          <label class="ins-field-label">Max iterations (safety)</label>
-          <input type="number" value="${c.maxIterations || 100}" data-config-key="maxIterations" data-node-id="${id}" />
-          <div class="ins-field-hint">Use <code>{varName}</code> to reference fields. The <code>out</code> port fires after all iterations.</div>
-        </div>
-        ${inboundFields.length > 0 ? `
-        <div class="ins-field">
-          <label class="ins-field-label">Available fields</label>
-          <div class="inbound-fields-panel">
-            ${this.renderInboundFields(inboundFields, id, [], {})}
-          </div>
-        </div>` : ''}
-      `;
-    } else if (rt === 'subflow') {
-      title = 'Subflow Reference';
-      const wfOptions = Object.values(State.workflows)
-        .filter(w => w.workflowId !== State.currentWfId)
-        .map(w => `<option value="${w.workflowId}" ${c.workflowId === w.workflowId ? 'selected' : ''}>${escapeHtml(w.workflowName)}</option>`)
-        .join('');
-      fields = `
-        <div class="ins-field">
-          <label class="ins-field-label">Workflow</label>
-          <select data-config-key="workflowId" data-node-id="${id}">
-            <option value="">— select a workflow —</option>
-            ${wfOptions}
-          </select>
-        </div>
-        <div class="ins-field">
-          <label class="ins-field-label">Input mapping (JSON)</label>
-          <textarea data-config-key="inputMapping" data-node-id="${id}">${escapeHtml(String(c.inputMapping || '{}'))}</textarea>
-        </div>
-        <div class="ins-field">
-          <label style="display:flex; align-items:center; gap:6px; font-size:12px;">
-            <input type="checkbox" ${c.waitForCompletion ? 'checked' : ''} data-config-key="waitForCompletion" data-node-id="${id}" style="width:auto" />
-            Wait for subflow completion
-          </label>
-        </div>
-      `;
-    } else if (node.runtimeType.toLowerCase() === 'ai') {
-      title = 'AI Configuration';
-      const mode = String(c.mode || 'skill').toLowerCase();
-      const backend = String(c.backend || 'copilot').toLowerCase();
-      const modelVal = String(c.model || 'claude-opus-4.6-1m').replace(/_/g, '-');
-      // Normalize legacy model IDs: "claude-opus-4-7" → "claude-opus-4.7"
-      const modelId = aiModels.find(m => m.id === modelVal)
-        ? modelVal
-        : aiModels.find(m => m.id === modelVal.replace(/-(\d+)-(\d)/g, '-$1.$2'))?.id
-          ?? aiModels.find(m => m.label.toLowerCase().replace(/[^a-z0-9]/g, '').includes(modelVal.toLowerCase().replace(/[^a-z0-9]/g, '')))?.id
-          ?? aiModels[0].id;
-      fields = `
-        <div class="ins-field">
-          <label class="ins-field-label">Mode</label>
-          <select data-config-key="mode" data-node-id="${id}">
-            <option ${mode === 'skill' ? 'selected' : ''} value="skill">Skill</option>
-            <option ${mode === 'subagent' ? 'selected' : ''} value="subagent">SubAgent</option>
-            <option ${mode === 'mcp' ? 'selected' : ''} value="mcp">MCP</option>
-            <option ${mode === 'prompt' || mode === 'rawprompt' ? 'selected' : ''} value="prompt">Raw Prompt</option>
-          </select>
-        </div>
-        <div class="ins-field">
-          <label class="ins-field-label">Backend</label>
-          <select data-config-key="backend" data-node-id="${id}">
-            <option ${backend === 'copilot' ? 'selected' : ''} value="copilot">Copilot</option>
-            <option ${backend === 'claude' ? 'selected' : ''} value="claude">Claude</option>
-          </select>
-        </div>
-        ${mode === 'skill' ? `
-          <div class="ins-field">
-            <label class="ins-field-label">Skill Name</label>
-            <select data-config-key="skillName" data-node-id="${id}">
-              <option value="">— select skill —</option>
-              ${cachedSkills.map(s => `<option value="${escapeHtml(s.name)}" ${String(c.skillName) === s.name ? 'selected' : ''} title="${escapeHtml(s.description)}">${escapeHtml(s.name)}</option>`).join('')}
-            </select>
-          </div>
-        ` : ''}
-        ${mode === 'subagent' ? `
-          <div class="ins-field">
-            <label class="ins-field-label">SubAgent Name</label>
-            <select data-config-key="subAgentName" data-node-id="${id}">
-              <option value="">— select agent —</option>
-              ${cachedAgents.map(a => `<option value="${escapeHtml(a.name)}" ${String(c.subAgentName) === a.name ? 'selected' : ''} title="${escapeHtml(a.description)}">${escapeHtml(a.name)}</option>`).join('')}
-            </select>
-          </div>
-        ` : ''}
-        <div class="ins-field">
-          <label class="ins-field-label">Model</label>
-          <select data-config-key="model" data-node-id="${id}" class="ai-model-select">
-            ${aiModels.map(m => `<option value="${escapeHtml(m.id)}" ${modelId === m.id ? 'selected' : ''}>${escapeHtml(m.label)}</option>`).join('')}
-          </select>
-          ${(() => {
-            const sel = aiModels.find(m => m.id === modelId);
-            if (!sel) return '';
-            return `<div class="ins-model-badge" style="color: ${tierColor(sel.tier)}">
-              <span class="ins-model-tier">${sel.tier}</span>
-              <span class="ins-model-cost">${sel.costMultiplier}x</span>
-            </div>`;
-          })()}
-        </div>
-        ${mode === 'prompt' || mode === 'rawprompt' ? `
-          <div class="ins-field">
-            <label class="ins-field-label">User Prompt</label>
-            <textarea data-config-key="userPrompt" data-node-id="${id}" placeholder="Enter your prompt...">${escapeHtml(String(c.userPrompt || ''))}</textarea>
-          </div>
-          <div class="ins-field">
-            <label class="ins-field-label">System Prompt</label>
-            <textarea data-config-key="systemPrompt" data-node-id="${id}" placeholder="You are a helpful assistant...">${escapeHtml(String(c.systemPrompt || ''))}</textarea>
-          </div>
-        ` : ''}
-        <div class="ins-field">
-          <label class="ins-field-label">Input mapping</label>
-          <input class="mono" value="${escapeHtml(String(c.inputMapping || 'input'))}" data-config-key="inputMapping" data-node-id="${id}" />
-        </div>
-        <div class="ins-field">
-          <label class="ins-field-label">Output key</label>
-          <input class="mono" value="${escapeHtml(String(c.outputKey || 'result'))}" data-config-key="outputKey" data-node-id="${id}" />
-        </div>
-        <div class="ins-field" style="display:flex; gap:8px; align-items:center;">
-          <div style="flex:1">
-            <label class="ins-field-label">Confidence <span class="confidence-value" style="opacity:.5">${c.confidence ?? 70}%</span></label>
-            <input type="range" min="0" max="100" value="${c.confidence ?? 70}" data-config-key="confidence" data-node-id="${id}" oninput="this.closest('.ins-field').querySelector('.confidence-value').textContent=this.value+'%'" />
-          </div>
-          <div style="flex:1">
-            <label class="ins-field-label">Max tokens</label>
-            <input type="number" step="1024" min="4096" max="32768" value="${c.maxTokens || 4096}" data-config-key="maxTokens" data-node-id="${id}" />
-          </div>
-        </div>
-        ${(() => {
-          // Show input bindings for skill/agent
-          const selectedName = mode === 'skill' ? String(c.skillName || '') : mode === 'subagent' ? String(c.subAgentName || '') : '';
-          if (!selectedName || (mode !== 'skill' && mode !== 'subagent')) return '';
-          let bindings: Record<string, string> = {};
-          try {
-            bindings = typeof c.inputBindings === 'string'
-              ? JSON.parse(c.inputBindings as string)
-              : (c.inputBindings as unknown as Record<string, string>) || {};
-          } catch { /* ignore */ }
-          const inboundFields = discoverInboundFields(node.nodeId);
-          const params = cachedInputParams.filter(() => cachedInputParamsKey === `${mode}:${selectedName}`);
-          if (params.length === 0 && inboundFields.length === 0) return '';
-          return `
-          <div class="ins-field">
-            <label class="ins-field-label">Input Bindings</label>
-            ${params.length > 0 ? `
-            <div class="binding-editor">
-              ${params.map(p => {
-                const currentBinding = bindings[p.name] || '';
-                const isStatic = currentBinding.startsWith('static:');
-                const staticVal = isStatic ? currentBinding.slice(7) : '';
-                const fieldVal = isStatic ? '' : currentBinding;
-                const reqBadge = p.required ? '<span class="binding-req">required</span>' : '';
-                const isBool = p.type === 'boolean';
-                const boundFieldLabel = !isStatic && fieldVal
-                  ? inboundFields.find(f => f.path === fieldVal)?.name || fieldVal
-                  : '';
-
-                return `
-                <div class="binding-card" title="${escapeHtml(p.description)}">
-                  <div class="binding-card-header">
-                    <div class="binding-param-name">${escapeHtml(p.name)}</div>
-                    <div class="binding-param-meta">
-                      <span class="binding-type-badge">${escapeHtml(p.type)}</span>
-                      ${reqBadge}
-                    </div>
-                  </div>
-                  ${p.description ? `<div class="binding-param-desc">${escapeHtml(p.description)}</div>` : ''}
-                  <div class="binding-card-body">
-                    <div class="binding-mode-tabs">
-                      <button class="binding-mode-tab ${!isStatic && !fieldVal ? 'active' : ''}" data-ai-mode="none" data-ai-param="${escapeHtml(p.name)}" data-node-id="${id}">None</button>
-                      <button class="binding-mode-tab ${!isStatic && fieldVal ? 'active' : ''}" data-ai-mode="field" data-ai-param="${escapeHtml(p.name)}" data-node-id="${id}">Field</button>
-                      <button class="binding-mode-tab ${isStatic ? 'active' : ''}" data-ai-mode="static" data-ai-param="${escapeHtml(p.name)}" data-node-id="${id}">Static</button>
-                    </div>
-                    <div class="binding-card-value">
-                      ${!isStatic && fieldVal ? `
-                        <select class="binding-field-select" data-ai-binding-key="${escapeHtml(p.name)}" data-node-id="${id}">
-                          <option value="">— select field —</option>
-                          ${inboundFields.map(f => `<option value="${escapeHtml(f.path)}" ${fieldVal === f.path ? 'selected' : ''}>${escapeHtml(f.name)} · ${escapeHtml(f.sourceNode)}</option>`).join('')}
-                        </select>
-                      ` : isStatic ? (isBool
-                        ? `<div class="binding-toggle-wrap">
-                            <label class="binding-toggle">
-                              <input type="checkbox" ${staticVal === 'true' ? 'checked' : ''} data-ai-static-key="${escapeHtml(p.name)}" data-node-id="${id}" data-is-bool="1" />
-                              <span class="binding-toggle-track"></span>
-                              <span class="binding-toggle-label">${staticVal === 'true' ? 'true' : 'false'}</span>
-                            </label>
-                          </div>`
-                        : `<input class="binding-static-input" data-ai-static-key="${escapeHtml(p.name)}" data-node-id="${id}" value="${escapeHtml(staticVal)}" placeholder="Enter ${escapeHtml(p.type)} value…" />`
-                      ) : (!isStatic && !fieldVal ? `
-                        <div class="binding-empty-hint">Choose Field or Static to bind this parameter</div>
-                      ` : `
-                        <select class="binding-field-select" data-ai-binding-key="${escapeHtml(p.name)}" data-node-id="${id}">
-                          <option value="">— select field —</option>
-                          ${inboundFields.map(f => `<option value="${escapeHtml(f.path)}" ${fieldVal === f.path ? 'selected' : ''}>${escapeHtml(f.name)} · ${escapeHtml(f.sourceNode)}</option>`).join('')}
-                        </select>
-                      `)}
-                    </div>
-                  </div>
-                </div>`;
-              }).join('')}
-            </div>` : `
-            <div class="ins-field-hint" style="font-style:italic; opacity:0.7;">
-              No declared inputs. Add <code>inputs:</code> to the agent/skill frontmatter.
-            </div>`}
-            ${inboundFields.length > 0 ? `
-            <div class="inbound-fields-panel" style="margin-top:6px;">
-              ${this.renderInboundFields(inboundFields, id, params.map(p => p.name), bindings)}
-            </div>` : ''}
-          </div>`;
-        })()}
-      `;
-    } else if (rt === 'http' || rt === 'httprequest') {
-      fields = `
-        <div class="ins-field" style="display:flex; gap:8px;">
-          <div style="width: 90px">
-            <label class="ins-field-label">Method</label>
-            <select data-config-key="method" data-node-id="${id}">
-              <option ${c.method === 'GET' ? 'selected' : ''}>GET</option>
-              <option ${c.method === 'POST' ? 'selected' : ''}>POST</option>
-              <option ${c.method === 'PUT' ? 'selected' : ''}>PUT</option>
-              <option ${c.method === 'PATCH' ? 'selected' : ''}>PATCH</option>
-              <option ${c.method === 'DELETE' ? 'selected' : ''}>DELETE</option>
-            </select>
-          </div>
-          <div style="flex:1">
-            <label class="ins-field-label">URL</label>
-            <input class="mono" value="${escapeHtml(String(c.url || ''))}" data-config-key="url" data-node-id="${id}" />
-          </div>
-        </div>
-        <div class="ins-field">
-          <label class="ins-field-label">Headers (JSON)</label>
-          <textarea data-config-key="headers" data-node-id="${id}">${escapeHtml(String(c.headers || '{}'))}</textarea>
-        </div>
-      `;
-    } else if (rt === 'delay') {
-      fields = `
-        <div class="ins-field" style="display:flex; gap:8px;">
-          <div style="flex:2">
-            <label class="ins-field-label">Duration</label>
-            <input type="number" value="${c.duration || 1000}" data-config-key="duration" data-node-id="${id}" />
-          </div>
-          <div style="flex:1">
-            <label class="ins-field-label">Unit</label>
-            <select data-config-key="unit" data-node-id="${id}">
-              <option ${c.unit === 'ms' ? 'selected' : ''}>ms</option>
-              <option ${c.unit === 's' ? 'selected' : ''}>s</option>
-              <option ${c.unit === 'm' ? 'selected' : ''}>m</option>
-            </select>
-          </div>
-        </div>
-      `;
-    } else if (rt === 'transform') {
-      fields = `
-        <div class="ins-field">
-          <label class="ins-field-label">Expression</label>
-          <textarea data-config-key="expression" data-node-id="${id}">${escapeHtml(String(c.expression || ''))}</textarea>
-          <div class="ins-field-hint">Transform the input payload. Reference with <code>input</code>.</div>
-        </div>
-      `;
-    } else if (rt === 'log') {
-      title = 'Log Output';
-      const level = String(c.level || 'Info');
-      const msgTpl = String(c.messageTemplate || c.message || '');
-      let bindings: Record<string, string> = {};
-      try {
-        bindings = typeof c.parameterBindings === 'string'
-          ? JSON.parse(c.parameterBindings as string)
-          : (c.parameterBindings as unknown as Record<string, string>) || {};
-      } catch { /* ignore */ }
-      const placeholders = (msgTpl.match(/\{(\w+)\}/g) || []).map((m: string) => m.slice(1, -1));
-
-      // Discover inbound fields from connected edges
-      const inboundFields = discoverInboundFields(node.nodeId);
-
-      fields = `
-        <div class="ins-field">
-          <label class="ins-field-label">Level</label>
-          <select data-config-key="level" data-node-id="${id}">
-            <option value="Debug" ${level === 'Debug' || level === 'debug' ? 'selected' : ''}>Debug</option>
-            <option value="Info" ${level === 'Info' || level === 'info' ? 'selected' : ''}>Info</option>
-            <option value="Warn" ${level === 'Warn' || level === 'warn' ? 'selected' : ''}>Warn</option>
-            <option value="Error" ${level === 'Error' || level === 'error' ? 'selected' : ''}>Error</option>
-          </select>
-        </div>
-        <div class="ins-field">
-          <label class="ins-field-label">Message template</label>
-          <div id="tpl-editor-${id}" class="ins-monaco-container" data-node-id="${id}" data-config-key="messageTemplate" data-lang="template" style="height:60px"></div>
-          <div class="ins-field-hint">Type <code>{</code> for available field suggestions.</div>
-        </div>
-        ${placeholders.length > 0 ? `
-        <div class="ins-field">
-          <label class="ins-field-label">Parameter bindings</label>
-          <div class="binding-editor">
-            ${placeholders.map((p: string) => {
-              const currentBinding = bindings[p] || '';
-              return `
-              <div class="binding-row">
-                <div class="binding-placeholder">
-                  <span class="binding-brace">{</span>${escapeHtml(p)}<span class="binding-brace">}</span>
-                </div>
-                <svg class="binding-arrow" width="16" height="12" viewBox="0 0 16 12"><path d="M0 6h12M10 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
-                <div class="binding-value-wrap">
-                  <input class="binding-input mono" value="${escapeHtml(currentBinding)}" data-binding-key="${escapeHtml(p)}" data-node-id="${id}" placeholder="select or type…" list="inbound-fields-${id}" />
-                </div>
-              </div>`;
-            }).join('')}
-          </div>
-        </div>` : ''}
-        ${inboundFields.length > 0 ? `
-        <div class="ins-field">
-          <label class="ins-field-label">Available inbound fields</label>
-          <div class="inbound-fields-panel">
-            ${this.renderInboundFields(inboundFields, id, placeholders, bindings)}
-          </div>
-          <div class="ins-field-hint">Click a field to insert it into the active binding, or drag into the template.</div>
-        </div>` : `
-        <div class="ins-field">
-          <div class="ins-field-hint" style="font-style:italic; opacity:0.7;">Connect an input edge to discover available fields.</div>
-        </div>`}
-        <datalist id="inbound-fields-${id}">
-          ${inboundFields.map(f => `<option value="${escapeHtml(f.path)}">${escapeHtml(f.name)} (${f.sourceNode})</option>`).join('')}
-        </datalist>
-      `;
-    } else if (rt === 'container') {
-      fields = `
-        <div class="ins-field">
-          <label class="ins-field-label">Label</label>
-          <input value="${escapeHtml(String(c.label || 'Group'))}" data-config-key="label" data-node-id="${id}" />
-        </div>
-        <div class="ins-field">
-          <label style="display:flex; align-items:center; gap:6px; font-size:12px;">
-            <input type="checkbox" ${node.collapsed ? 'checked' : ''} data-action="toggle-collapse-insp" data-node-id="${id}" style="width:auto" />
-            Collapsed
-          </label>
-        </div>
-      `;
-    } else if (rt === 'end') {
-      fields = `
-        <div class="ins-field">
-          <label class="ins-field-label">Exit status</label>
-          <select data-config-key="status" data-node-id="${id}">
-            <option ${c.status === 'success' ? 'selected' : ''}>success</option>
-            <option ${c.status === 'failure' ? 'selected' : ''}>failure</option>
-          </select>
-        </div>
-      `;
-    } else {
-      // Try rendering from server-provided property descriptors
-      const typeDef = NodeTypes[node.runtimeType] as NodeTypeDefinition & { serverProperties?: { name: string; label: string; type: string; required: boolean; default: string | null; placeholder: string | null; options: string[] | null }[] };
-      if (typeDef?.serverProperties?.length) {
-        fields = typeDef.serverProperties.map(prop => {
-          const val = escapeHtml(String(c[prop.name] ?? prop.default ?? ''));
-          if (prop.type === 'enum' && prop.options) {
-            const opts = prop.options.map(o => `<option ${String(c[prop.name]) === o ? 'selected' : ''} value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
-            return `<div class="ins-field">
-              <label class="ins-field-label">${escapeHtml(prop.label)}</label>
-              <select data-config-key="${escapeHtml(prop.name)}" data-node-id="${id}">${opts}</select>
-            </div>`;
-          }
-          if (prop.type === 'boolean') {
-            return `<div class="ins-field">
-              <label style="display:flex; align-items:center; gap:6px; font-size:12px;">
-                <input type="checkbox" ${c[prop.name] ? 'checked' : ''} data-config-key="${escapeHtml(prop.name)}" data-node-id="${id}" style="width:auto" />
-                ${escapeHtml(prop.label)}
-              </label>
-            </div>`;
-          }
-          if (prop.type === 'number') {
-            return `<div class="ins-field">
-              <label class="ins-field-label">${escapeHtml(prop.label)}</label>
-              <input type="number" value="${val}" data-config-key="${escapeHtml(prop.name)}" data-node-id="${id}" placeholder="${escapeHtml(prop.placeholder || '')}" />
-            </div>`;
-          }
-          // C# code fields: use Monaco editor
-          const isCSharpCode = (prop.name === 'scriptContent' && (rt === 'csharpscript' || rt === 'csharptask'))
-            || (prop.name === 'conditionExpression' && rt === 'while')
-            || (prop.name === 'collectionExpression' && rt === 'foreach');
-          if (isCSharpCode) {
-            const editorId = `monaco-${id}-${prop.name}`;
-            const small = prop.name !== 'scriptContent';
-            const hint = prop.name === 'conditionExpression' ? ' <span class="ins-field-hint">(C# — must return bool)</span>'
-              : prop.name === 'collectionExpression' ? ' <span class="ins-field-hint">(C# — must return IEnumerable)</span>'
-              : '';
-            return `<div class="ins-field">
-              <label class="ins-field-label">${escapeHtml(prop.label)}${hint}</label>
-              <div class="ins-monaco-container${small ? ' ins-monaco-sm' : ''}" id="${editorId}" data-node-id="${id}" data-config-key="${escapeHtml(prop.name)}"></div>
-            </div>`;
-          }
-          if (prop.type === 'code' || prop.type === 'expression') {
-            return `<div class="ins-field">
-              <label class="ins-field-label">${escapeHtml(prop.label)}</label>
-              <textarea class="mono" data-config-key="${escapeHtml(prop.name)}" data-node-id="${id}" placeholder="${escapeHtml(prop.placeholder || '')}">${val}</textarea>
-            </div>`;
-          }
-          if (prop.type === 'map') {
-            return `<div class="ins-field">
-              <label class="ins-field-label">${escapeHtml(prop.label)}</label>
-              <textarea class="mono" data-config-key="${escapeHtml(prop.name)}" data-node-id="${id}" placeholder="${escapeHtml(prop.placeholder || '{}')}">${val}</textarea>
-              <div class="ins-field-hint">JSON key-value mapping</div>
-            </div>`;
-          }
-          // Default: string input
-          return `<div class="ins-field">
-            <label class="ins-field-label">${escapeHtml(prop.label)}${prop.required ? ' *' : ''}</label>
-            <input value="${val}" data-config-key="${escapeHtml(prop.name)}" data-node-id="${id}" placeholder="${escapeHtml(prop.placeholder || '')}" class="${prop.type === 'duration' ? 'mono' : ''}" />
-          </div>`;
-        }).join('');
-      } else {
-        fields = `<div class="ins-field-hint">No additional configuration.</div>`;
-      }
+        </div>`;
     }
 
-    return insSection(title, fields);
+    return insSection(result.title, result.html + inboundHtml);
   },
 
   /** Human-readable description of a cron expression */

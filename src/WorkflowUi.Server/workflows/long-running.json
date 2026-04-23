@@ -1,5 +1,5 @@
 {
-  "workflowId": "wf_hs9zarb",
+  "workflowId": "wf_nvxcput",
   "workflowName": "long-running",
   "description": "",
   "version": "1.0",
@@ -87,7 +87,7 @@
       "description": "",
       "configuration": {
         "level": "Info",
-        "messageTemplate": "branch_2",
+        "messageTemplate": "branch_2: {duration}",
         "parameterBindings": "System.Collections.Generic.Dictionary`2[System.String,System.String]"
       },
       "joinType": "Any",
@@ -105,7 +105,7 @@
       "description": "",
       "configuration": {
         "level": "Info",
-        "messageTemplate": "branch_1",
+        "messageTemplate": "branch_1 {duration}",
         "parameterBindings": "System.Collections.Generic.Dictionary`2[System.String,System.String]"
       },
       "joinType": "Any",
@@ -137,6 +137,17 @@
     {
       "sourceNodeId": "n_cgglqv9",
       "targetNodeId": "n_kxu2ocz",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_kxu2ocz",
+      "targetNodeId": "n_0yhlu0x",
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",
@@ -181,17 +192,6 @@
     {
       "sourceNodeId": "n_4dtca83",
       "targetNodeId": "n_0ui7hny",
-      "sourcePort": "out",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
-      "sourceNodeId": "n_kxu2ocz",
-      "targetNodeId": "n_0yhlu0x",
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",

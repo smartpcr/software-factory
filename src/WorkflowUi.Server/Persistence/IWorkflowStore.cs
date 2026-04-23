@@ -35,7 +35,7 @@ public interface IWorkflowStore
 /// <summary>
 /// Summary of a workflow in the store (lightweight, no body).
 /// </summary>
-public record WorkflowSummary(string Id, DateTime LastModifiedUtc, long SizeBytes);
+public record WorkflowSummary(string Id, DateTime LastModifiedUtc, long SizeBytes, string? WorkflowId = null, string? WorkflowName = null);
 
 /// <summary>
 /// Full workflow record with definition JSON, sidecar, and ETag.

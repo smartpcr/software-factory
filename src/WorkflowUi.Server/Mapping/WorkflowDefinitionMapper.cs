@@ -375,6 +375,10 @@ public static class WorkflowDefinitionMapper
     private static void ResolveSubflowPaths(WorkflowDefinition wf, JsonElement root, string workflowsRoot)
     {
         if (!root.TryGetProperty("nodes", out var nodesEl)) return;
+        if (!Directory.Exists(workflowsRoot)) return;
+
+        // Build a lookup: workflowId → file content (scan once for all subflow nodes)
+        Dictionary<string, string>? idToContent = null;
 
         foreach (var nodeEl in nodesEl.EnumerateArray())
         {
@@ -386,20 +390,55 @@ public static class WorkflowDefinitionMapper
 
             var subflowDef = wf.Nodes.OfType<SubflowNodeDefinition>()
                 .FirstOrDefault(n => n.NodeId == nodeId);
-            if (subflowDef == null || !string.IsNullOrWhiteSpace(subflowDef.WorkflowFilePath)) continue;
+            if (subflowDef == null) continue;
+            // Skip if already resolved
+            if (subflowDef.WorkflowDefinition != null || !string.IsNullOrWhiteSpace(subflowDef.WorkflowFilePath)) continue;
 
-            // Read workflowId from config
             JsonElement config = default;
             _ = nodeEl.TryGetProperty("configuration", out config) || nodeEl.TryGetProperty("config", out config);
             var workflowId = GetString(nodeEl, config, "workflowId");
 
             if (string.IsNullOrEmpty(workflowId)) continue;
 
-            // Resolve to file path: workflowsRoot/{workflowId}.json
-            var filePath = Path.GetFullPath(Path.Combine(workflowsRoot, workflowId + ".json"));
-            if (File.Exists(filePath))
+            // Lazy-build the ID → content index on first subflow node
+            if (idToContent == null)
             {
-                subflowDef.WorkflowFilePath = filePath;
+                idToContent = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var file in Directory.GetFiles(workflowsRoot, "*.json", SearchOption.AllDirectories)
+                    .Where(f => !f.EndsWith(".ui.json", StringComparison.OrdinalIgnoreCase)))
+                {
+                    try
+                    {
+                        var text = File.ReadAllText(file);
+                        using var doc = JsonDocument.Parse(text);
+                        if (doc.RootElement.TryGetProperty("workflowId", out var wid))
+                        {
+                            var id = wid.GetString();
+                            if (!string.IsNullOrEmpty(id))
+                            {
+                                idToContent[id] = text;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // Skip unparseable files
+                    }
+                }
+            }
+
+            // Pre-map the child workflow so SubflowNode gets a fully resolved WorkflowDefinition
+            if (idToContent.TryGetValue(workflowId, out var childJson))
+            {
+                try
+                {
+                    subflowDef.WorkflowDefinition = MapFromJson(childJson, workflowsRoot);
+                    subflowDef.SkipValidation = true;
+                }
+                catch
+                {
+                    // Fall back to file path if mapping fails
+                }
             }
         }
     }

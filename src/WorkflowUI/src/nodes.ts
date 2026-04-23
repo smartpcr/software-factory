@@ -8,7 +8,6 @@ import { State } from './state';
 import { getSlots, ensureChildren, escapeHtml } from './utils';
 import { Edges } from './edges';
 import { Minimap } from './minimap';
-import { aiModels } from './config';
 
 let callbacks: AppCallbacks;
 
@@ -123,6 +122,7 @@ export const Nodes = {
     const el = document.createElement('div');
     el.className = 'node' + (isNested ? ' nested' : '');
     el.dataset.id = node.nodeId;
+    el.title = this.nodeTooltip(node);
     el.innerHTML = this.html(node);
     this.refreshElement(el, node, isNested);
     this.attachHandlers(el, node, isNested);
@@ -222,38 +222,69 @@ export const Nodes = {
   },
 
   bodyHtml(node: FlowNode): string {
-    const type = NodeTypes[node.runtimeType];
     const c = node.config || {};
-    if (node.runtimeType === 'if') return `<div class="node-body-row"><span class="lab">if</span><span class="val">${escapeHtml(String(c.condition || '—'))}</span></div>`;
-    if (node.runtimeType === 'switch') return `<div class="node-body-row"><span class="lab">switch</span><span class="val">${escapeHtml(String(c.expression || '—'))}</span></div>`;
-    if (node.runtimeType === 'foreach') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.mode))}</span><span class="val">${escapeHtml(String(c.source || '—'))}</span></div>`;
-    if (node.runtimeType.toLowerCase() === 'ai') {
-      const m = String(c.mode || 'skill').toLowerCase();
-      const binding = m === 'skill' ? String(c.skillName || '—') : m === 'subagent' ? String(c.subAgentName || '—') : m === 'prompt' ? 'prompt' : '—';
-      const modelLabel = aiModels.find(x => x.id === String(c.model))?.label ?? String(c.model || '—');
-      return `<div class="node-body-row"><span class="lab">${escapeHtml(m)}</span><span class="val">${escapeHtml(binding)}</span></div><div class="node-body-row"><span class="lab">model</span><span class="val">${escapeHtml(modelLabel)}</span></div>`;
-    }
-    if (node.runtimeType === 'http') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.method))}</span><span class="val">${escapeHtml(String(c.url || '—'))}</span></div>`;
-    if (node.runtimeType === 'delay') return `<div class="node-body-row"><span class="lab">wait</span><span class="val">${escapeHtml(String(c.duration))}${escapeHtml(String(c.unit))}</span></div>`;
-    if (node.runtimeType === 'subflow') return `<div class="node-body-row"><span class="lab">flow</span><span class="val">${escapeHtml(c.workflowId ? (State.workflows[String(c.workflowId)]?.workflowName || String(c.workflowId)) : '—')}</span></div>`;
-    if (node.runtimeType === 'start') {
+    const rt = node.runtimeType.toLowerCase();
+    const row = (label: string, value: string, mono = false) =>
+      `<div class="node-body-row"><span class="lab">${escapeHtml(label)}</span><span class="val${mono ? ' mono' : ''}">${escapeHtml(value)}</span></div>`;
+
+    if (rt === 'start') {
       const trigLabel = String(c.triggerType || 'Manual');
       let detail = trigLabel;
       if (trigLabel === 'Schedule' && c.schedule) detail = String(c.schedule);
       if (trigLabel === 'Event' && c.eventName) detail = String(c.eventName);
       if (trigLabel === 'WebHook' && c.webHookRoute) detail = `/webhook/${String(c.webHookRoute)}`;
-      return `<div class="node-body-row"><span class="lab">trigger</span><span class="val">${escapeHtml(detail)}</span></div>`;
+      return row('Trigger', detail);
     }
-    if (node.runtimeType === 'trigger') return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.method))}</span><span class="val">${escapeHtml(String(c.route || '—'))}</span></div>`;
-    if (node.runtimeType === 'transform') return `<div class="node-body-row"><span class="lab">expr</span><span class="val">${escapeHtml(String(c.expression || '—'))}</span></div>`;
-    if (node.runtimeType === 'log' || node.runtimeType === 'Log') {
+    if (rt === 'trigger') return row('Method', String(c.method || 'POST')) + row('Route', String(c.route || '—'));
+    if (rt === 'if' || rt === 'ifelse') return row('Condition', String(c.condition || '—'), true);
+    if (rt === 'switch') return row('Expression', String(c.expression || '—'), true);
+    if (rt === 'foreach') return row('Mode', String(c.mode || 'foreach')) + row('Source', String(c.source || '—'), true);
+    if (rt === 'ai') {
+      const m = String(c.mode || 'skill').toLowerCase();
+      const binding = m === 'skill' ? String(c.skillName || '—') : m === 'subagent' ? String(c.subAgentName || '—') : m === 'prompt' ? 'prompt' : '—';
+      return row('Mode', m) + row(m === 'skill' ? 'Skill' : m === 'subagent' ? 'Agent' : 'Prompt', binding);
+    }
+    if (rt === 'http' || rt === 'httprequest') return row('Method', String(c.method || 'GET')) + row('URL', String(c.url || '—'));
+    if (rt === 'delay') return row('Duration', `${String(c.duration || 0)}${String(c.unit || 'ms')}`);
+    if (rt === 'subflow') {
+      const refId = String(c.workflowId || '');
+      const refWf = refId ? State.workflows[refId] : null;
+      const name = refWf?.workflowName || refId || '—';
+      return row('Workflow', name) + row('ID', refId || '—', true);
+    }
+    if (rt === 'action') return row('Action', String(c.actionType || '—')) + row('Handler', String(c.handler || '—'));
+    if (rt === 'transform') return row('Expression', String(c.expression || '—'), true);
+    if (rt === 'log') {
       const msg = String(c.messageTemplate || c.message || '—');
       const truncated = msg.length > 30 ? msg.slice(0, 28) + '…' : msg;
-      return `<div class="node-body-row"><span class="lab">${escapeHtml(String(c.level || 'Info'))}</span><span class="val">${escapeHtml(truncated)}</span></div>`;
+      return row('Level', String(c.level || 'Info')) + row('Message', truncated);
     }
-    if (node.runtimeType === 'parallel') return `<div class="node-body-row"><span class="lab">join</span><span class="val">${escapeHtml(String(c.joinMode))}</span></div>`;
-    if (node.runtimeType === 'end') return `<div class="node-body-row"><span class="lab">status</span><span class="val">${escapeHtml(String(c.status))}</span></div>`;
-    return `<div class="node-body-row"><span class="lab">type</span><span class="val">${type?.label || node.runtimeType}</span></div>`;
+    if (rt === 'parallel') return row('Join', String(c.joinMode || 'all'));
+    if (rt === 'end') return row('Status', String(c.status || 'success'));
+    if (node.description) return row('Description', node.description);
+    return '';
+  },
+
+  /** Build a tooltip string for a node with metadata */
+  nodeTooltip(node: FlowNode): string {
+    const c = node.config || {};
+    const rt = node.runtimeType.toLowerCase();
+    const parts: string[] = [];
+    parts.push(`Type: ${node.runtimeType}`);
+    parts.push(`ID: ${node.nodeId}`);
+    if (node.description) parts.push(`Description: ${node.description}`);
+    if (rt === 'subflow') {
+      const refId = String(c.workflowId || '');
+      const refWf = refId ? State.workflows[refId] : null;
+      if (refWf) {
+        parts.push(`Workflow: ${refWf.workflowName}`);
+        if ((refWf as Record<string, unknown>)._serverId) parts.push(`Path: workflows/${(refWf as Record<string, unknown>)._serverId}.json`);
+        if (refWf.createdAt) parts.push(`Created: ${refWf.createdAt}`);
+        if (refWf.updatedAt) parts.push(`Modified: ${refWf.updatedAt}`);
+        if ((refWf as Record<string, unknown>).author) parts.push(`Author: ${(refWf as Record<string, unknown>).author}`);
+      }
+    }
+    return parts.join('\n');
   },
 
   branchHtml(node: FlowNode): string {
