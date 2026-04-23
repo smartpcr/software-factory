@@ -224,11 +224,11 @@ export function discoverInboundFields(nodeId: string): InboundField[] {
         }
 
         // AI nodes: skill/agent declared output fields
-        if (runtimeType.toLowerCase() === 'ai' && (window as Record<string, unknown>).__cachedAIOutputs) {
+        if (runtimeType.toLowerCase() === 'ai' && (window as unknown as Record<string, unknown>).__cachedAIOutputs) {
           const mode = String(sourceNode.config.mode || 'skill').toLowerCase();
           const name = mode === 'skill' ? String(sourceNode.config.skillName || '') : String(sourceNode.config.subAgentName || '');
           const key = `${mode}:${name}`;
-          const outputsMap = (window as Record<string, unknown>).__cachedAIOutputs as Record<string, { name: string; type: string; description: string }[]>;
+          const outputsMap = (window as unknown as Record<string, unknown>).__cachedAIOutputs as Record<string, { name: string; type: string; description: string }[]>;
           const aiOutputs = outputsMap[key];
           if (aiOutputs) {
             for (const ao of aiOutputs) {

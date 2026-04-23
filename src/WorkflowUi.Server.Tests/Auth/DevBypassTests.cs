@@ -10,7 +10,10 @@ using System.Net;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -37,7 +40,8 @@ public class DevBypassTests
             loggerFactory,
             encoder,
             authOptions,
-            env);
+            env,
+            new FakeServer());
 
         var scheme = new AuthenticationScheme(
             DevBypassAuthenticationHandler.SchemeName,
@@ -147,6 +151,21 @@ public class DevBypassTests
         public string ApplicationName { get; set; } = "TestApp";
         public string ContentRootPath { get; set; } = ".";
         public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+    }
+
+    private class FakeServer : IServer
+    {
+        public IFeatureCollection Features { get; } = new FeatureCollection();
+
+        public void Dispose()
+        {
+        }
+
+        public Task StartAsync<TContext>(IHttpApplication<TContext> application, CancellationToken cancellationToken) where TContext : notnull
+            => Task.CompletedTask;
+
+        public Task StopAsync(CancellationToken cancellationToken)
+            => Task.CompletedTask;
     }
 
     private class OptionsMonitor<T> : IOptionsMonitor<T>

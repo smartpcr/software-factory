@@ -187,12 +187,15 @@ export function mountJsonEditor(
   const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
 
   // Configure JSON language defaults for validation
-  monaco.languages.json.jsonDefaults.setDiagnosticsOptions({
-    validate: true,
-    allowComments: false,
-    trailingCommas: 'error',
-    schemaValidation: 'error',
-  });
+  const jsonDefaults = (monaco.languages as unknown as Record<string, unknown>).json as unknown as { setDiagnosticsOptions: (opts: Record<string, unknown>) => void };
+  if (jsonDefaults?.setDiagnosticsOptions) {
+    jsonDefaults.setDiagnosticsOptions({
+      validate: true,
+      allowComments: false,
+      trailingCommas: 'error',
+      schemaValidation: 'error',
+    });
+  }
 
   const editor = monaco.editor.create(container, {
     value,

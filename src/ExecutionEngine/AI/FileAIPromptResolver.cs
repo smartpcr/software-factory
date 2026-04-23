@@ -105,7 +105,48 @@ public class FileAIPromptResolver : IAIPromptResolver
         var mdContent = await File.ReadAllTextAsync(mdPath, ct);
         var currentHash = ComputeHash(mdContent);
 
-        // Check for cached sidecar
+        // 1. Prefer explicit SKILL.schema.json (parameter sets / scenarios)
+        var schemaPath = Path.ChangeExtension(mdPath, ".schema.json");
+        if (File.Exists(schemaPath))
+        {
+            try
+            {
+                var schemaJson = await File.ReadAllTextAsync(schemaPath, ct);
+                var schema = JsonSerializer.Deserialize<SkillSchemaFile>(schemaJson, JsonOpts);
+                if (schema?.Scenarios != null && schema.Scenarios.Count > 0)
+                {
+                    this.logger.LogDebug("Using SKILL.schema.json for {Name} ({Count} scenarios)", name, schema.Scenarios.Count);
+                    var info = new AgentDefinitionInfo
+                    {
+                        Name = schema.Name ?? name,
+                        Scenarios = schema.Scenarios,
+                        DefaultScenario = schema.DefaultScenario,
+                        SourceHash = currentHash,
+                        ExtractedAt = DateTime.UtcNow,
+                        SystemPrompt = ExtractBodyAfterFrontmatter(mdContent),
+                        ScriptPath = DetectMainScript(mdPath),
+                    };
+
+                    // Populate flat Inputs/Outputs from default scenario for backward compat
+                    var (defaultInputs, defaultOutputs) = info.GetScenarioIO();
+                    info.Inputs = defaultInputs;
+                    info.Outputs = defaultOutputs;
+
+                    // Extract summary/description from frontmatter
+                    var frontmatter = ExtractFrontmatter(mdContent);
+                    if (frontmatter.TryGetValue("description", out var desc)) info.Description = desc;
+                    if (frontmatter.TryGetValue("model", out var model)) info.ModelHint = model;
+
+                    return info;
+                }
+            }
+            catch (Exception ex)
+            {
+                this.logger.LogWarning(ex, "Failed to read SKILL.schema.json for {Name}, falling back", name);
+            }
+        }
+
+        // 2. Check for legacy cached sidecar (SKILL.inputs.json)
         var cachePath = Path.ChangeExtension(mdPath, ".inputs.json");
         if (File.Exists(cachePath))
         {
@@ -127,29 +168,28 @@ public class FileAIPromptResolver : IAIPromptResolver
             }
         }
 
-        // Extract via LLM
+        // 3. Extract via LLM
         this.logger.LogInformation("Extracting metadata for {Name} via {Model}...", name, ExtractionModel);
-        var info = await this.ExtractWithLlmAsync(mdContent, name, ct);
-        info.SourceHash = currentHash;
-        info.ExtractedAt = DateTime.UtcNow;
-        info.SystemPrompt = ExtractBodyAfterFrontmatter(mdContent);
-        info.ScriptPath = DetectMainScript(mdPath);
+        var extracted = await this.ExtractWithLlmAsync(mdContent, name, ct);
+        extracted.SourceHash = currentHash;
+        extracted.ExtractedAt = DateTime.UtcNow;
+        extracted.SystemPrompt = ExtractBodyAfterFrontmatter(mdContent);
+        extracted.ScriptPath = DetectMainScript(mdPath);
 
         // Write cache sidecar
         try
         {
             var cacheClone = new AgentDefinitionInfo
             {
-                Name = info.Name,
-                Description = info.Description,
-                Summary = info.Summary,
-                ModelHint = info.ModelHint,
-                AllowedTools = info.AllowedTools,
-                Inputs = info.Inputs,
-                Outputs = info.Outputs,
-                SourceHash = info.SourceHash,
-                ExtractedAt = info.ExtractedAt,
-                // Don't store SystemPrompt in cache — it can be huge
+                Name = extracted.Name,
+                Description = extracted.Description,
+                Summary = extracted.Summary,
+                ModelHint = extracted.ModelHint,
+                AllowedTools = extracted.AllowedTools,
+                Inputs = extracted.Inputs,
+                Outputs = extracted.Outputs,
+                SourceHash = extracted.SourceHash,
+                ExtractedAt = extracted.ExtractedAt,
             };
             var json = JsonSerializer.Serialize(cacheClone, JsonOpts);
             await File.WriteAllTextAsync(cachePath, json, ct);
@@ -160,7 +200,16 @@ public class FileAIPromptResolver : IAIPromptResolver
             this.logger.LogWarning(ex, "Failed to write cache for {Name}", name);
         }
 
-        return info;
+        return extracted;
+    }
+
+    /// <summary>Minimal DTO for deserializing SKILL.schema.json.</summary>
+    private class SkillSchemaFile
+    {
+        public string? Name { get; set; }
+        public string? Version { get; set; }
+        public string? DefaultScenario { get; set; }
+        public Dictionary<string, AgentScenario>? Scenarios { get; set; }
     }
 
     private async Task<AgentDefinitionInfo> ExtractWithLlmAsync(string mdContent, string name, CancellationToken ct)
@@ -327,6 +376,27 @@ public class FileAIPromptResolver : IAIPromptResolver
         }
 
         return content.Trim();
+    }
+
+    private static Dictionary<string, string> ExtractFrontmatter(string content)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var lines = content.Split('\n');
+        if (lines.Length == 0 || lines[0].Trim() != "---") return result;
+
+        for (var i = 1; i < lines.Length; i++)
+        {
+            if (lines[i].TrimEnd('\r').Trim() == "---") break;
+            var colonIdx = lines[i].IndexOf(':');
+            if (colonIdx > 0)
+            {
+                var key = lines[i][..colonIdx].Trim();
+                var val = lines[i][(colonIdx + 1)..].Trim();
+                result[key] = val;
+            }
+        }
+
+        return result;
     }
 
     private static string BuildFallbackPrompt(

@@ -33,7 +33,14 @@ public static class AIRegistryEndpoints
         {
             var info = await resolver.LoadAgentAsync(name, ct);
             if (info == null) return Results.NotFound();
-            return Results.Ok(new { inputs = info.Inputs, outputs = info.Outputs });
+            var hasScenarios = info.Scenarios != null && info.Scenarios.Count > 0;
+            return Results.Ok(new
+            {
+                inputs = hasScenarios ? (object)System.Array.Empty<object>() : info.Inputs,
+                outputs = hasScenarios ? (object)System.Array.Empty<object>() : info.Outputs,
+                scenarios = info.Scenarios,
+                defaultScenario = info.DefaultScenario,
+            });
         })
         .WithName("GetAgentInputs")
         .AllowAnonymous();
@@ -42,7 +49,14 @@ public static class AIRegistryEndpoints
         {
             var info = await resolver.LoadSkillAsync(name, ct);
             if (info == null) return Results.NotFound();
-            return Results.Ok(new { inputs = info.Inputs, outputs = info.Outputs });
+            var hasScenarios = info.Scenarios != null && info.Scenarios.Count > 0;
+            return Results.Ok(new
+            {
+                inputs = hasScenarios ? (object)System.Array.Empty<object>() : info.Inputs,
+                outputs = hasScenarios ? (object)System.Array.Empty<object>() : info.Outputs,
+                scenarios = info.Scenarios,
+                defaultScenario = info.DefaultScenario,
+            });
         })
         .WithName("GetSkillInputs")
         .AllowAnonymous();

@@ -10,9 +10,11 @@ using ExecutionEngine.Contexts;
 using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
 using ExecutionEngine.Nodes.Definitions;
+using Microsoft.CodeAnalysis.CSharp.Scripting;
+using Microsoft.CodeAnalysis.Scripting;
 
 /// <summary>
-/// Data transformation node.
+/// Data transformation node. Evaluates a C# expression with TransformHelpers available.
 /// </summary>
 public class TransformNode : ExecutableNodeBase
 {
@@ -44,9 +46,41 @@ public class TransformNode : ExecutableNodeBase
             Timestamp = startTime,
         });
 
-        nodeContext.OutputData["expression"] = transformDef.Expression;
+        var state = CreateExecutionState(workflowContext, nodeContext);
 
-        await Task.Delay(10, cancellationToken);
+        // Pre-process {placeholder} syntax
+        var processedExpr = ExecutionState.PreProcessExpression(transformDef.Expression);
+
+        // Build script with TransformHelpers imported as static
+        var scriptOptions = ScriptOptions.Default
+            .AddReferences(typeof(ExecutionState).Assembly)
+            .AddReferences(typeof(System.Text.Json.JsonElement).Assembly)
+            .AddImports(
+                "System",
+                "System.Collections.Generic",
+                "System.Linq",
+                "System.Text.Json",
+                "ExecutionEngine.Core");
+
+        var script = CSharpScript.Create<object>(
+            processedExpr,
+            scriptOptions,
+            globalsType: typeof(ExecutionState));
+
+        var diagnostics = script.Compile(cancellationToken);
+        if (diagnostics.Any(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error))
+        {
+            var errors = string.Join(Environment.NewLine, diagnostics.Select(d => d.ToString()));
+            throw new InvalidOperationException($"Transform expression compilation failed:{Environment.NewLine}{errors}");
+        }
+
+        var scriptState = await script.RunAsync(state, cancellationToken);
+        var result = scriptState.ReturnValue;
+
+        var outputKey = transformDef.OutputKey;
+        if (string.IsNullOrEmpty(outputKey)) outputKey = "result";
+        nodeContext.OutputData[outputKey] = result!;
+        nodeContext.OutputData["mode"] = transformDef.Mode;
 
         return new NodeInstance
         {

@@ -33,6 +33,12 @@ namespace ExecutionEngine.Nodes.Definitions
 
         public bool SkipValidation { get; set; } = false;
 
+        /// <summary>
+        /// When true, the subflow node waits for the child workflow to complete before continuing.
+        /// When false, the child workflow runs fire-and-forget and the node completes immediately.
+        /// </summary>
+        public bool WaitForCompletion { get; set; } = true;
+
         public override IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
         {
             if (this.SkipValidation)

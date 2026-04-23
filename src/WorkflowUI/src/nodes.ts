@@ -238,7 +238,11 @@ export const Nodes = {
     if (rt === 'trigger') return row('Method', String(c.method || 'POST')) + row('Route', String(c.route || '—'));
     if (rt === 'if' || rt === 'ifelse') return row('Condition', String(c.condition || '—'), true);
     if (rt === 'switch') return row('Expression', String(c.expression || '—'), true);
-    if (rt === 'foreach') return row('Mode', String(c.mode || 'foreach')) + row('Source', String(c.source || '—'), true);
+    if (rt === 'foreach') {
+      const itemVar = String(c.itemVariable || 'item');
+      const collVar = String(c.collectionVariable || '—');
+      return row('Loop', `${itemVar} in ${collVar}`, true);
+    }
     if (rt === 'ai') {
       const m = String(c.mode || 'skill').toLowerCase();
       const binding = m === 'skill' ? String(c.skillName || '—') : m === 'subagent' ? String(c.subAgentName || '—') : m === 'prompt' ? 'prompt' : '—';
@@ -249,8 +253,8 @@ export const Nodes = {
     if (rt === 'subflow') {
       const refId = String(c.workflowId || '');
       const refWf = refId ? State.workflows[refId] : null;
-      const name = refWf?.workflowName || refId || '—';
-      return row('Workflow', name) + row('ID', refId || '—', true);
+      const name = refWf?.workflowName || (refId && State.workflowIndex[refId]) || '—';
+      return row('Name', name) + row('ID', refId || '—', true);
     }
     if (rt === 'action') return row('Action', String(c.actionType || '—')) + row('Handler', String(c.handler || '—'));
     if (rt === 'transform') return row('Expression', String(c.expression || '—'), true);
@@ -278,10 +282,10 @@ export const Nodes = {
       const refWf = refId ? State.workflows[refId] : null;
       if (refWf) {
         parts.push(`Workflow: ${refWf.workflowName}`);
-        if ((refWf as Record<string, unknown>)._serverId) parts.push(`Path: workflows/${(refWf as Record<string, unknown>)._serverId}.json`);
+        if ((refWf as unknown as Record<string, unknown>)._serverId) parts.push(`Path: workflows/${(refWf as unknown as Record<string, unknown>)._serverId}.json`);
         if (refWf.createdAt) parts.push(`Created: ${refWf.createdAt}`);
         if (refWf.updatedAt) parts.push(`Modified: ${refWf.updatedAt}`);
-        if ((refWf as Record<string, unknown>).author) parts.push(`Author: ${(refWf as Record<string, unknown>).author}`);
+        if ((refWf as unknown as Record<string, unknown>).author) parts.push(`Author: ${(refWf as unknown as Record<string, unknown>).author}`);
       }
     }
     return parts.join('\n');
@@ -364,6 +368,7 @@ export const Nodes = {
         Edges.render();
         Minimap.render();
         State.isDirty = true;
+        if (State.currentWfId) State.dirtyWorkflows.add(State.currentWfId);
       });
       el.addEventListener('pointerup', (e: PointerEvent) => {
         if (!dragging) return;

@@ -301,6 +301,8 @@ export interface AIOutputField {
 export interface AIMetadata {
   inputs: AIInputParam[];
   outputs: AIOutputField[];
+  scenarios?: Record<string, { description?: string; inputs: AIInputParam[]; outputs: AIOutputField[] }>;
+  defaultScenario?: string;
 }
 
 export async function fetchAgentInputs(name: string): Promise<AIMetadata> {

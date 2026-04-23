@@ -53,11 +53,17 @@ public class AgentDefinitionInfo
     /// <summary>Gets or sets the allowed tools from frontmatter.</summary>
     public List<string> AllowedTools { get; set; } = [];
 
-    /// <summary>Gets or sets the LLM-extracted input parameters.</summary>
+    /// <summary>Gets or sets the LLM-extracted input parameters (flat, for backward compat).</summary>
     public List<AgentInputParam> Inputs { get; set; } = [];
 
-    /// <summary>Gets or sets the LLM-extracted output fields produced by this agent/skill.</summary>
+    /// <summary>Gets or sets the LLM-extracted output fields (flat, for backward compat).</summary>
     public List<AgentOutputField> Outputs { get; set; } = [];
+
+    /// <summary>Gets or sets the named scenarios (parameter sets). When present, Inputs/Outputs are derived from the active scenario.</summary>
+    public Dictionary<string, AgentScenario>? Scenarios { get; set; }
+
+    /// <summary>Gets or sets the default scenario name.</summary>
+    public string? DefaultScenario { get; set; }
 
     /// <summary>Gets or sets the path to the executable script (for skills with .ps1/.py files).</summary>
     public string? ScriptPath { get; set; }
@@ -70,6 +76,48 @@ public class AgentDefinitionInfo
 
     /// <summary>Gets or sets when the extraction was performed.</summary>
     public DateTime? ExtractedAt { get; set; }
+
+    /// <summary>
+    /// Get inputs/outputs for a specific scenario, falling back to the flat Inputs/Outputs.
+    /// </summary>
+    public (List<AgentInputParam> Inputs, List<AgentOutputField> Outputs) GetScenarioIO(string? scenarioName = null)
+    {
+        if (this.Scenarios == null || this.Scenarios.Count == 0)
+        {
+            return (this.Inputs, this.Outputs);
+        }
+
+        var name = scenarioName ?? this.DefaultScenario;
+        if (!string.IsNullOrEmpty(name) && this.Scenarios.TryGetValue(name, out var scenario))
+        {
+            return (scenario.Inputs, scenario.Outputs);
+        }
+
+        // Fall back to default scenario or first scenario
+        if (!string.IsNullOrEmpty(this.DefaultScenario) && this.Scenarios.TryGetValue(this.DefaultScenario, out var defScenario))
+        {
+            return (defScenario.Inputs, defScenario.Outputs);
+        }
+
+        var first = this.Scenarios.Values.FirstOrDefault();
+        return first != null ? (first.Inputs, first.Outputs) : (this.Inputs, this.Outputs);
+    }
+}
+
+/// <summary>
+/// A named scenario (parameter set) with its own inputs and outputs.
+/// Inspired by PowerShell ParameterSets.
+/// </summary>
+public class AgentScenario
+{
+    /// <summary>Gets or sets the scenario description.</summary>
+    public string Description { get; set; } = string.Empty;
+
+    /// <summary>Gets or sets the input parameters for this scenario.</summary>
+    public List<AgentInputParam> Inputs { get; set; } = [];
+
+    /// <summary>Gets or sets the output fields for this scenario.</summary>
+    public List<AgentOutputField> Outputs { get; set; } = [];
 }
 
 /// <summary>

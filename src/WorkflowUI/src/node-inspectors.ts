@@ -5,7 +5,7 @@
 
 import type { FlowNode, NodeTypeDefinition } from './types';
 import type { InboundField } from './inboundSchema';
-import type { AIRegistryItem, AIInputParam } from './api';
+import type { AIRegistryItem, AIInputParam, AIOutputField } from './api';
 import type { AIModel } from './config';
 
 export interface InspectorContext {
@@ -24,6 +24,8 @@ export interface InspectorContext {
     inputParamsKey: string;
     models: AIModel[];
     tierColor: (tier: AIModel['tier']) => string;
+    scenarios?: Record<string, { description?: string; inputs: AIInputParam[]; outputs: AIOutputField[] }>;
+    defaultScenario?: string;
   };
   workflows?: Record<string, { workflowId: string; workflowName: string }>;
   /** Server-side workflow summaries for subflow dropdown */
@@ -235,32 +237,29 @@ function renderParallel(ctx: InspectorContext): NodeInspectorResult {
 }
 
 function renderForEach(ctx: InspectorContext): NodeInspectorResult {
-  const { id, c, escapeHtml, inboundFields, renderInboundFields } = ctx;
+  const { id, c, escapeHtml, inboundFields } = ctx;
+  const collectionVar = String(c.collectionVariable || '');
+  const itemVar = String(c.itemVariable || 'item');
+  const fieldOptions = inboundFields.map(f =>
+    `<option value="${escapeHtml(f.path)}" ${collectionVar === f.path ? 'selected' : ''}>${escapeHtml(f.name)} · ${escapeHtml(f.sourceNode)}</option>`
+  ).join('');
   const html = `
     <div class="ins-field">
-      <label class="ins-field-label">Mode</label>
-      <select data-config-key="mode" data-node-id="${id}">
-        <option ${c.mode === 'foreach' ? 'selected' : ''}>foreach</option>
-        <option ${c.mode === 'while' ? 'selected' : ''}>while</option>
-        <option ${c.mode === 'times' ? 'selected' : ''}>times</option>
+      <label class="ins-field-label">Collection variable</label>
+      <select data-config-key="collectionVariable" data-node-id="${id}">
+        <option value="">— select field —</option>
+        ${fieldOptions}
       </select>
     </div>
     <div class="ins-field">
-      <label class="ins-field-label">${c.mode === 'while' ? 'Condition' : c.mode === 'times' ? 'Count' : 'Source expression'}</label>
-      <input class="mono" value="${escapeHtml(String(c.source || ''))}" data-config-key="source" data-node-id="${id}" />
+      <label class="ins-field-label">Item variable</label>
+      <input class="mono" value="${escapeHtml(itemVar)}" data-config-key="itemVariable" data-node-id="${id}" placeholder="item" />
+      <div class="ins-field-hint">Available to child nodes as <code>{${escapeHtml(itemVar)}}</code></div>
     </div>
     <div class="ins-field">
       <label class="ins-field-label">Max iterations (safety)</label>
       <input type="number" value="${c.maxIterations || 100}" data-config-key="maxIterations" data-node-id="${id}" />
-      <div class="ins-field-hint">Use <code>{varName}</code> to reference fields. The <code>out</code> port fires after all iterations.</div>
     </div>
-    ${inboundFields.length > 0 ? `
-    <div class="ins-field">
-      <label class="ins-field-label">Available fields</label>
-      <div class="inbound-fields-panel">
-        ${renderInboundFields(inboundFields, id, [], {})}
-      </div>
-    </div>` : ''}
   `;
   return { title: 'ForEach', html, includeInboundPanel: false };
 }
@@ -304,8 +303,21 @@ function renderAI(ctx: InspectorContext): NodeInspectorResult {
   const tColor = ai?.tierColor || (() => '');
   const skills = ai?.skills || [];
   const agents = ai?.agents || [];
-  const inputParams = ai?.inputParams || [];
+  const scenarios = ai?.scenarios;
+  const scenarioNames = scenarios ? Object.keys(scenarios) : [];
+  const hasScenarios = scenarioNames.length > 0;
+
+  // Resolve active scenario and derive inputs from it
+  const selectedScenario = hasScenarios
+    ? String(c.scenario || ai?.defaultScenario || scenarioNames[0])
+    : '';
+  let inputParams: AIInputParam[];
   const inputParamsKey = ai?.inputParamsKey || '';
+  if (hasScenarios && selectedScenario && scenarios![selectedScenario]) {
+    inputParams = scenarios![selectedScenario].inputs || [];
+  } else {
+    inputParams = ai?.inputParams || [];
+  }
 
   const mode = String(c.mode || 'skill').toLowerCase();
   const backend = String(c.backend || 'copilot').toLowerCase();
@@ -349,6 +361,20 @@ function renderAI(ctx: InspectorContext): NodeInspectorResult {
           <option value="">— select agent —</option>
           ${agents.map(a => `<option value="${escapeHtml(a.name)}" ${String(c.subAgentName) === a.name ? 'selected' : ''} title="${escapeHtml(a.description)}">${escapeHtml(a.name)}</option>`).join('')}
         </select>
+      </div>
+    ` : ''}
+    ${hasScenarios ? `
+      <div class="ins-field">
+        <label class="ins-field-label">Scenario</label>
+        <select data-config-key="scenario" data-node-id="${id}">
+          ${scenarioNames.map(s => {
+            const desc = scenarios![s].description || '';
+            return `<option value="${escapeHtml(s)}" ${selectedScenario === s ? 'selected' : ''} title="${escapeHtml(desc)}">${escapeHtml(s)}</option>`;
+          }).join('')}
+        </select>
+        ${selectedScenario && scenarios![selectedScenario]?.description
+          ? `<div class="ins-field-hint">${escapeHtml(scenarios![selectedScenario].description!)}</div>`
+          : ''}
       </div>
     ` : ''}
     <div class="ins-field">

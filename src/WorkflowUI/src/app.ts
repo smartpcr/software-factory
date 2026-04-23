@@ -134,6 +134,7 @@ export const App = {
 
   markDirty() {
     State.isDirty = true;
+    if (State.currentWfId) State.dirtyWorkflows.add(State.currentWfId);
     this.renderStatus();
     this.renderTabs();
   },
@@ -619,7 +620,7 @@ export const App = {
     if (titleInput) titleInput.value = wf.workflowName;
     this.createNode('start', 240, 180);
     State.isDirty = false;
-    this.saveToStorage();
+    State.dirtyWorkflows.delete(id);
     this.renderAll();
     if (!silent) toast('New workflow created', 'success');
   },
@@ -633,8 +634,8 @@ export const App = {
     wf.edges = [...State.edges.values()];
     wf.updatedAt = now();
     State.isDirty = false;
+    if (State.currentWfId) State.dirtyWorkflows.delete(State.currentWfId);
     State.lastSaved = now();
-    this.saveToStorage();
 
     // Always try server save
     try {
@@ -655,20 +656,9 @@ export const App = {
       this.loadWorkflow(id);
       return;
     }
-    if (!State.isDirty) {
-      this.loadWorkflow(id);
-      return;
-    }
-    // Current workflow is dirty — prompt user
-    const currentName = State.workflows[State.currentWfId || '']?.workflowName || 'current workflow';
-    this.showDirtyPrompt(currentName, () => {
-      // Save then switch
-      this.saveWorkflow().then(() => this.loadWorkflow(id));
-    }, () => {
-      // Discard and switch
-      State.isDirty = false;
-      this.loadWorkflow(id);
-    });
+    // Auto-snapshot current tab and switch — no prompt needed
+    this.snapshotCurrentWorkflow();
+    this.loadWorkflow(id);
   },
 
   /** Show a 3-button modal: Save / Discard / Cancel */
@@ -698,9 +688,8 @@ export const App = {
   loadWorkflow(id: string) {
     const wf = State.workflows[id];
     if (!wf) return;
-    // If switching tabs, save current state first
+    // Dispose editors from previous tab
     if (State.currentWfId && State.currentWfId !== id) {
-      this.snapshotCurrentWorkflow();
       disposeAllEditors();
     }
     State.currentWfId = id;
@@ -715,7 +704,7 @@ export const App = {
     // Ensure container edges exist (parent→child, sibling chains, loop feedback)
     this.ensureAllContainerEdges();
 
-    State.isDirty = false;
+    State.isDirty = State.dirtyWorkflows.has(id);
     State.selection = { kind: null, id: null };
     State.logs = [];
     State.activeRun = null;
@@ -739,7 +728,6 @@ export const App = {
     if (titleInput) wf.workflowName = titleInput.value || wf.workflowName;
     wf.nodes = [...State.nodes.values()];
     wf.edges = [...State.edges.values()];
-    wf.updatedAt = now();
   },
 
   deleteWorkflow() {
@@ -1020,7 +1008,7 @@ export const App = {
       const wf = State.workflows[id];
       if (!wf) return '';
       const active = id === State.currentWfId;
-      const dirty = active && State.isDirty;
+      const dirty = State.dirtyWorkflows.has(id);
       return `
         <div class="tab ${active ? 'active' : ''} ${dirty ? 'dirty' : ''}" data-tab-id="${id}">
           <span class="tab-name">${escapeHtml(wf.workflowName)}</span>
@@ -1052,9 +1040,10 @@ export const App = {
     if (idx < 0) return;
     const wf = State.workflows[id];
     const isActive = State.currentWfId === id;
-    const isDirty = isActive && State.isDirty;
+    const isDirty = State.dirtyWorkflows.has(id);
 
     const doClose = () => {
+      State.dirtyWorkflows.delete(id);
       State.openTabs.splice(State.openTabs.indexOf(id), 1);
       this.saveToStorage();
       if (isActive) {
@@ -1096,6 +1085,7 @@ export const App = {
           State.edges = new Map(wf.edges.map(e => [e.id, e]));
         }
         State.isDirty = false;
+        State.dirtyWorkflows.delete(id);
         doClose();
       });
       modal.querySelector('[data-role="save"]')!.addEventListener('click', async () => {
@@ -1129,16 +1119,11 @@ export const App = {
   clearStorage() {
     State.workflows = {};
     State.currentWfId = null;
-    try {
-      localStorage.removeItem('flow-studio:workflows');
-      localStorage.removeItem('flow-studio:currentId');
-      localStorage.removeItem('flow-studio:openTabs');
-    } catch { /* ignore */ }
+    State.openTabs = [];
   },
 
   /** No-op — server is the source of truth. Kept for API compat. */
   saveToStorage() {
-    // Workflows are persisted via server save (saveWorkflow), not localStorage.
   },
 
   /** Migrate a workflow object from old schema to new engine-aligned schema */

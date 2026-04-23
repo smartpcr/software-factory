@@ -13,7 +13,7 @@ import { mountTemplateEditor } from './template-editor';
 import { discoverInboundFields } from './inboundSchema';
 import type { InboundField } from './inboundSchema';
 import { fetchAIAgents, fetchAISkills, fetchAgentInputs, fetchSkillInputs, listWorkflows } from './api';
-import type { AIRegistryItem, AIInputParam, AIOutputField } from './api';
+import type { AIRegistryItem, AIInputParam, AIOutputField, AIMetadata } from './api';
 import { renderNodeConfig } from './node-inspectors';
 import type { InspectorContext } from './node-inspectors';
 
@@ -28,6 +28,13 @@ export async function ensureServerWorkflows(): Promise<typeof cachedServerWorkfl
       const list = await listWorkflows() as { id: string; workflowId?: string; workflowName?: string }[];
       cachedServerWorkflows = list;
       serverWorkflowsLoaded = true;
+      // Populate lightweight name index for subflow body display
+      for (const w of list) {
+        const wfId = w.workflowId || w.id;
+        if (w.workflowName) {
+          State.workflowIndex[wfId] = w.workflowName;
+        }
+      }
     } catch { /* ignore */ }
   }
   return cachedServerWorkflows;
@@ -52,22 +59,41 @@ async function ensureAIRegistry(): Promise<void> {
 // Cached input/output params for the currently selected skill/agent
 let cachedInputParams: AIInputParam[] = [];
 let cachedOutputFields: AIOutputField[] = [];
+let cachedScenarios: AIMetadata['scenarios'] = undefined;
+let cachedDefaultScenario: string | undefined = undefined;
 let cachedInputParamsKey = '';
+let cachedScenarioKey = '';
 
-async function loadInputParams(mode: string, name: string): Promise<AIInputParam[]> {
+async function loadInputParams(mode: string, name: string, activeScenario?: string): Promise<AIInputParam[]> {
   const key = `${mode}:${name}`;
-  if (key === cachedInputParamsKey) return cachedInputParams;
+  const scenarioKey = activeScenario || '';
+  // Skip if same skill/agent AND same scenario
+  if (key === cachedInputParamsKey && scenarioKey === cachedScenarioKey) return cachedInputParams;
   try {
-    const metadata = mode === 'skill'
-      ? await fetchSkillInputs(name)
-      : await fetchAgentInputs(name);
-    cachedInputParams = metadata.inputs;
-    cachedOutputFields = metadata.outputs;
-    cachedInputParamsKey = key;
+    if (key !== cachedInputParamsKey) {
+      const metadata = mode === 'skill'
+        ? await fetchSkillInputs(name)
+        : await fetchAgentInputs(name);
+      cachedScenarios = metadata.scenarios;
+      cachedDefaultScenario = metadata.defaultScenario;
+      cachedInputParamsKey = key;
+      if (!cachedScenarios || Object.keys(cachedScenarios).length === 0) {
+        cachedInputParams = metadata.inputs;
+        cachedOutputFields = metadata.outputs;
+      }
+    }
+    // Derive inputs/outputs from active scenario (node config > default > first)
+    if (cachedScenarios && Object.keys(cachedScenarios).length > 0) {
+      const scenarioName = activeScenario || cachedDefaultScenario || Object.keys(cachedScenarios)[0];
+      const scenario = cachedScenarios[scenarioName];
+      cachedInputParams = scenario?.inputs || [];
+      cachedOutputFields = scenario?.outputs || [];
+    }
+    cachedScenarioKey = scenarioKey;
     // Store outputs on window for inboundSchema to read (avoids circular dependency)
-    const outputsMap = ((window as Record<string, unknown>).__cachedAIOutputs || {}) as Record<string, unknown>;
-    outputsMap[key] = metadata.outputs;
-    (window as Record<string, unknown>).__cachedAIOutputs = outputsMap;
+    const outputsMap = ((window as unknown as Record<string, unknown>).__cachedAIOutputs || {}) as Record<string, unknown>;
+    outputsMap[key] = cachedOutputFields;
+    (window as unknown as Record<string, unknown>).__cachedAIOutputs = outputsMap;
   } catch {
     cachedInputParams = [];
   }
@@ -567,13 +593,17 @@ export const Inspector = {
     const el = document.getElementById('inspector')!;
 
     // Pre-load input params for AI nodes (this node or upstream AI nodes)
-    const aiNodesToFetch: { mode: string; name: string }[] = [];
+    const aiNodesToFetch: { mode: string; name: string; scenario?: string }[] = [];
 
     if (node.runtimeType.toLowerCase() === 'ai') {
       const mode = String(node.config?.mode || 'skill').toLowerCase();
       const name = mode === 'skill' ? String(node.config?.skillName || '') : String(node.config?.subAgentName || '');
+      const scenario = String(node.config?.scenario || '');
       if (name && cachedInputParamsKey !== `${mode}:${name}`) {
-        aiNodesToFetch.push({ mode, name });
+        aiNodesToFetch.push({ mode, name, scenario: scenario || undefined });
+      } else if (name && scenario && scenario !== cachedScenarioKey) {
+        // Same skill/agent but scenario changed — need to re-derive inputs/outputs
+        aiNodesToFetch.push({ mode, name, scenario });
       }
     }
 
@@ -586,21 +616,22 @@ export const Inspector = {
       const name = mode === 'skill' ? String(srcNode.config?.skillName || '') : String(srcNode.config?.subAgentName || '');
       if (!name) return;
       const key = `${mode}:${name}`;
-      const cached = (window as Record<string, unknown>).__cachedAIOutputs as Record<string, unknown> | undefined;
+      const scenario = String(srcNode.config?.scenario || '');
+      const cached = (window as unknown as Record<string, unknown>).__cachedAIOutputs as Record<string, unknown> | undefined;
       if (!cached?.[key]) {
-        aiNodesToFetch.push({ mode, name });
+        aiNodesToFetch.push({ mode, name, scenario: scenario || undefined });
       }
     });
 
     if (aiNodesToFetch.length > 0) {
-      Promise.all(aiNodesToFetch.map(a => loadInputParams(a.mode, a.name)))
+      Promise.all(aiNodesToFetch.map(a => loadInputParams(a.mode, a.name, a.scenario)))
         .then(() => {
           // Re-render after fetches complete to update inbound fields
           this.renderNode(id);
         });
       // If we're fetching, still render with what we have now (will re-render after fetch)
       if (aiNodesToFetch.some(a => {
-        const cached = (window as Record<string, unknown>).__cachedAIOutputs as Record<string, unknown> | undefined;
+        const cached = (window as unknown as Record<string, unknown>).__cachedAIOutputs as Record<string, unknown> | undefined;
         return !cached?.[`${a.mode}:${a.name}`];
       })) {
         // First render continues below — will re-render when fetch completes
@@ -851,6 +882,30 @@ export const Inspector = {
         });
       }
     });
+    // Re-render when AI scenario selection changes to refresh input/output bindings
+    el.querySelectorAll<HTMLSelectElement>('[data-config-key="scenario"]').forEach(select => {
+      const nodeId = select.dataset.nodeId;
+      const node = nodeId ? State.nodes.get(nodeId) : null;
+      if (node && node.runtimeType.toLowerCase() === 'ai') {
+        select.addEventListener('change', () => {
+          // Update outputs cache for selected scenario
+          if (cachedScenarios && cachedScenarios[select.value]) {
+            const scenario = cachedScenarios[select.value];
+            cachedInputParams = scenario.inputs || [];
+            cachedOutputFields = scenario.outputs || [];
+            const mode = String(node.config?.mode || 'skill').toLowerCase();
+            const name = mode === 'skill' ? String(node.config?.skillName || '') : String(node.config?.subAgentName || '');
+            if (name) {
+              const outputsMap = ((window as unknown as Record<string, unknown>).__cachedAIOutputs || {}) as Record<string, unknown>;
+              outputsMap[`${mode}:${name}`] = scenario.outputs || [];
+              (window as unknown as Record<string, unknown>).__cachedAIOutputs = outputsMap;
+            }
+          }
+          debouncedNodeRender();
+          setTimeout(() => this.render(), 50);
+        });
+      }
+    });
     // AI input binding — mode tab clicks (None / Field / Static)
     el.querySelectorAll<HTMLButtonElement>('[data-ai-mode]').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -865,7 +920,7 @@ export const Inspector = {
         try {
           bindings = typeof node.config?.inputBindings === 'string'
             ? JSON.parse(node.config.inputBindings as string)
-            : (node.config?.inputBindings as Record<string, string>) || {};
+            : (node.config?.inputBindings as unknown as Record<string, string>) || {};
         } catch { /* ignore */ }
 
         if (mode === 'none') {
@@ -891,7 +946,7 @@ export const Inspector = {
         try {
           bindings = typeof node.config?.inputBindings === 'string'
             ? JSON.parse(node.config.inputBindings as string)
-            : (node.config?.inputBindings as Record<string, string>) || {};
+            : (node.config?.inputBindings as unknown as Record<string, string>) || {};
         } catch { /* ignore */ }
         bindings[bindingKey] = select.value;
         callbacks.updateNodeConfig(nodeId, 'inputBindings', JSON.stringify(bindings));
@@ -910,7 +965,7 @@ export const Inspector = {
           try {
             bindings = typeof node.config?.inputBindings === 'string'
               ? JSON.parse(node.config.inputBindings as string)
-              : (node.config?.inputBindings as Record<string, string>) || {};
+              : (node.config?.inputBindings as unknown as Record<string, string>) || {};
           } catch { /* ignore */ }
           const checked = (input as HTMLInputElement).checked;
           bindings[key] = `static:${checked}`;
@@ -929,7 +984,7 @@ export const Inspector = {
           try {
             bindings = typeof node.config?.inputBindings === 'string'
               ? JSON.parse(node.config.inputBindings as string)
-              : (node.config?.inputBindings as Record<string, string>) || {};
+              : (node.config?.inputBindings as unknown as Record<string, string>) || {};
           } catch { /* ignore */ }
           bindings[key] = `static:${input.value}`;
           callbacks.updateNodeConfig(nodeId, 'inputBindings', JSON.stringify(bindings));
@@ -1050,7 +1105,7 @@ export const Inspector = {
       renderInboundFields: (f, nid, p, b) => this.renderInboundFields(f, nid, p, b),
       describeCron: (cron) => this.describeCron(cron),
       validateCron: (cron) => this.validateCron(cron),
-      ai: { skills: cachedSkills, agents: cachedAgents, inputParams: cachedInputParams, inputParamsKey: cachedInputParamsKey, models: aiModels, tierColor },
+      ai: { skills: cachedSkills, agents: cachedAgents, inputParams: cachedInputParams, inputParamsKey: cachedInputParamsKey, models: aiModels, tierColor, scenarios: cachedScenarios, defaultScenario: cachedDefaultScenario },
       workflows: State.workflows,
       serverWorkflows: cachedServerWorkflows,
       currentWfId: State.currentWfId || undefined,

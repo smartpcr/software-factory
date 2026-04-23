@@ -83,7 +83,7 @@ public class FileWorkflowStoreTests : IDisposable
 
         Assert.Equal(SaveResult.Updated, result);
         var updated = await this.store.GetAsync("wf1", Editor(), default);
-        Assert.Equal("yaml: v2", updated!.Yaml);
+        Assert.Equal("yaml: v2", updated!.Definition);
     }
 
     [Fact]
