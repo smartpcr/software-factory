@@ -107,7 +107,10 @@ public static class WorkflowDefinitionMapper
                 WebHookRoute = GetString(el, config, "webHookRoute"),
                 BodyJsonSchema = GetString(el, config, "bodyJsonSchema"),
             },
-            RuntimeType.Noop => new NoopNodeDefinition(),
+            RuntimeType.Setter => new SetterNodeDefinition
+            {
+                VariableMappings = GetStringDictionary(el, config, "variableMappings"),
+            },
             RuntimeType.IfElse => new IfElseNodeDefinition { Condition = GetString(el, config, "condition") ?? "" },
             RuntimeType.ForEach => new ForEachNodeDefinition
             {
@@ -344,6 +347,22 @@ public static class WorkflowDefinitionMapper
         if (el.TryGetProperty(name, out arr) && arr.ValueKind == JsonValueKind.Array)
         {
             return arr.EnumerateArray().Select(v => v.GetString() ?? "").ToList();
+        }
+
+        return null;
+    }
+
+    internal static Dictionary<string, string>? GetStringDictionary(JsonElement el, JsonElement config, string name)
+    {
+        JsonElement obj = default;
+        if (config.ValueKind == JsonValueKind.Object && config.TryGetProperty(name, out obj) && obj.ValueKind == JsonValueKind.Object)
+        {
+            return obj.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString() ?? "");
+        }
+
+        if (el.TryGetProperty(name, out obj) && obj.ValueKind == JsonValueKind.Object)
+        {
+            return obj.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString() ?? "");
         }
 
         return null;

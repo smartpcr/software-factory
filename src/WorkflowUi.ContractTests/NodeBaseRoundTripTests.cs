@@ -24,7 +24,7 @@ public class NodeBaseRoundTripTests
     [Fact]
     public void NullPolicy_StaysNull_AfterSerialize()
     {
-        var def = new NoopNodeDefinition
+        var def = new SetterNodeDefinition
         {
             NodeId = "n",
             RetryPolicy = null,
@@ -40,7 +40,7 @@ public class NodeBaseRoundTripTests
     [Fact]
     public void NonNullRetryPolicy_PreservedAfterSerialize()
     {
-        var def = new NoopNodeDefinition
+        var def = new SetterNodeDefinition
         {
             NodeId = "n",
             RetryPolicy = new ExecutionEngine.Policies.RetryPolicy

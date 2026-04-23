@@ -12,9 +12,9 @@ namespace ExecutionEngine.Enums;
 public enum RuntimeType
 {
     /// <summary>
-    /// Noop node that performs no operation.
+    /// Setter node that maps input fields to global variables.
     /// </summary>
-    Noop = 0,
+    Setter = 0,
 
     /// <summary>
     /// Compiled C# assembly node.

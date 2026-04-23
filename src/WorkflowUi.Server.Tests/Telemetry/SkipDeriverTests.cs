@@ -34,8 +34,8 @@ public class SkipDeriverTests
         var nodes = new List<NodeDefinition>
         {
             new IfElseNodeDefinition { NodeId = "if1", NodeName = "If", Condition = "true" },
-            new NoopNodeDefinition { NodeId = "true-target", NodeName = "True Target" },
-            new NoopNodeDefinition { NodeId = "false-target", NodeName = "False Target" },
+            new SetterNodeDefinition { NodeId = "true-target", NodeName = "True Target" },
+            new SetterNodeDefinition { NodeId = "false-target", NodeName = "False Target" },
         };
 
         var connections = new List<NodeConnection>
@@ -71,9 +71,9 @@ public class SkipDeriverTests
         var nodes = new List<NodeDefinition>
         {
             new SwitchNodeDefinition { NodeId = "sw1", NodeName = "Switch", Expression = "x" },
-            new NoopNodeDefinition { NodeId = "case-a", NodeName = "Case A" },
-            new NoopNodeDefinition { NodeId = "case-b", NodeName = "Case B" },
-            new NoopNodeDefinition { NodeId = "case-c", NodeName = "Case C" },
+            new SetterNodeDefinition { NodeId = "case-a", NodeName = "Case A" },
+            new SetterNodeDefinition { NodeId = "case-b", NodeName = "Case B" },
+            new SetterNodeDefinition { NodeId = "case-c", NodeName = "Case C" },
         };
 
         var connections = new List<NodeConnection>
@@ -114,8 +114,8 @@ public class SkipDeriverTests
         var nodes = new List<NodeDefinition>
         {
             new IfElseNodeDefinition { NodeId = "if1", Condition = "true" },
-            new NoopNodeDefinition { NodeId = "true-target" },
-            new NoopNodeDefinition { NodeId = "false-target" },
+            new SetterNodeDefinition { NodeId = "true-target" },
+            new SetterNodeDefinition { NodeId = "false-target" },
         };
 
         var connections = new List<NodeConnection>
@@ -151,9 +151,9 @@ public class SkipDeriverTests
     {
         var nodes = new List<NodeDefinition>
         {
-            new NoopNodeDefinition { NodeId = "noop1" },
-            new NoopNodeDefinition { NodeId = "n2" },
-            new NoopNodeDefinition { NodeId = "n3" },
+            new SetterNodeDefinition { NodeId = "noop1" },
+            new SetterNodeDefinition { NodeId = "n2" },
+            new SetterNodeDefinition { NodeId = "n3" },
         };
 
         var connections = new List<NodeConnection>
@@ -185,7 +185,7 @@ public class SkipDeriverTests
         var nodes = new List<NodeDefinition>
         {
             new IfElseNodeDefinition { NodeId = "if1", Condition = "true" },
-            new NoopNodeDefinition { NodeId = "only-target" },
+            new SetterNodeDefinition { NodeId = "only-target" },
         };
 
         var connections = new List<NodeConnection>

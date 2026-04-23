@@ -7,10 +7,10 @@ nodes:
     condition: ""
   - nodeId: then1
     nodeName: Then
-    runtimeType: Noop
+    runtimeType: Setter
   - nodeId: else1
     nodeName: Else
-    runtimeType: Noop
+    runtimeType: Setter
 connections:
   - sourceNodeId: ie1
     targetNodeId: then1

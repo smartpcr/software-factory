@@ -8,8 +8,8 @@ nodes:
     childNodes:
       - nodeId: c1a
         nodeName: Branch A
-        runtimeType: Noop
+        runtimeType: Setter
       - nodeId: c1b
         nodeName: Branch B
-        runtimeType: Noop
+        runtimeType: Setter
 connections: []

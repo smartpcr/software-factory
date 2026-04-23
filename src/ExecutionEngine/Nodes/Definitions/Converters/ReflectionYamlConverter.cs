@@ -370,7 +370,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
     {
         return runtimeType switch
         {
-            "Noop" => typeof(NoopNodeDefinition),
+            "Setter" => typeof(SetterNodeDefinition),
             "CSharp" => typeof(CSharpNodeDefinition),
             "CSharpScript" => typeof(CSharpScriptNodeDefinition),
             "CSharpTask" => typeof(CSharpTaskNodeDefinition),

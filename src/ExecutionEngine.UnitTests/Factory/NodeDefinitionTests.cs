@@ -38,12 +38,12 @@ public class NodeDefinitionTests
     public void NodeDefinition_DefaultValues_ShouldBeEmpty()
     {
         // Arrange & Act
-        var definition = new NoopNodeDefinition();
+        var definition = new SetterNodeDefinition();
 
         // Assert
         definition.NodeId.Should().BeEmpty();
         definition.NodeName.Should().BeEmpty();
-        definition.RuntimeType.Should().Be(ExecutionEngine.Enums.RuntimeType.Noop);
+        definition.RuntimeType.Should().Be(ExecutionEngine.Enums.RuntimeType.Setter);
         definition.Description.Should().BeNull();
         definition.Configuration.Should().BeNull();
     }
@@ -94,7 +94,7 @@ public class NodeDefinitionTests
     public void NodeDefinition_Configuration_CanStoreArbitraryData()
     {
         // Arrange & Act
-        var definition = new NoopNodeDefinition
+        var definition = new SetterNodeDefinition
         {
             NodeId = "config-node",
             Configuration = new Dictionary<string, object>

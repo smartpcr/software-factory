@@ -75,7 +75,7 @@ public class CompositionRoundTripTests
         {
             NodeId = "c1",
             ExecutionMode = ExecutionMode.Parallel,
-            ChildNodes = [new NoopNodeDefinition { NodeId = "c1a" }],
+            ChildNodes = [new SetterNodeDefinition { NodeId = "c1a" }],
         };
         var wf = Wrap(def);
         var yaml = this.serializer.ToYaml(wf);

@@ -61,11 +61,12 @@ public class DtoParityTests
     }
 
     [Fact]
-    public void NoopNodeDefinition_HasZeroExtraProperties()
+    public void SetterNodeDefinition_HasVariableMappingsProperty()
     {
-        var props = GetPropertyNames(typeof(NoopNodeDefinition));
-        // Only RuntimeType override, which is filtered out
-        Assert.Empty(props.Where(n => n != "RuntimeType"));
+        var props = GetPropertyNames(typeof(SetterNodeDefinition));
+        var extra = props.Where(n => n != "RuntimeType").ToList();
+        Assert.Single(extra);
+        Assert.Contains("VariableMappings", extra);
     }
 
     [Fact]

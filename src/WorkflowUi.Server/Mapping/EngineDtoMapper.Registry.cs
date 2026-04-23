@@ -24,7 +24,7 @@ public static partial class EngineDtoMapper
     {
         return source switch
         {
-            NoopNodeDefinition noop => MapNoop(noop),
+            SetterNodeDefinition setter => MapSetter(setter),
             CSharpNodeDefinition csharp => MapCSharp(csharp),
             CSharpScriptNodeDefinition csharpScript => MapCSharpScript(csharpScript),
             CSharpTaskNodeDefinition csharpTask => MapCSharpTask(csharpTask),
@@ -48,7 +48,7 @@ public static partial class EngineDtoMapper
     {
         return dto.RuntimeType switch
         {
-            "Noop" => MapNoopFromDto(dto),
+            "Setter" => MapSetterFromDto(dto),
             "CSharp" => MapCSharpFromDto(dto),
             "CSharpScript" => MapCSharpScriptFromDto(dto),
             "CSharpTask" => MapCSharpTaskFromDto(dto),
@@ -142,7 +142,7 @@ public static partial class EngineDtoMapper
     /// </summary>
     public static readonly IReadOnlyList<string> SupportedRuntimeTypes =
     [
-        "Noop", "CSharp", "CSharpScript", "CSharpTask",
+        "Setter", "CSharp", "CSharpScript", "CSharpTask",
         "PowerShell", "PowerShellTask",
         "IfElse", "ForEach", "While", "Switch",
         "Subflow", "Timer", "Group",

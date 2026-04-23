@@ -51,8 +51,8 @@ public class EngineDtoMapperRegistryTests
             DefaultVariables = new Dictionary<string, object> { ["region"] = "us-east" },
             Nodes =
             [
-                new NoopNodeDefinition { NodeId = "start", NodeName = "Start" },
-                new NoopNodeDefinition { NodeId = "end", NodeName = "End" },
+                new SetterNodeDefinition { NodeId = "start", NodeName = "Start" },
+                new SetterNodeDefinition { NodeId = "end", NodeName = "End" },
             ],
             Connections =
             [
@@ -92,8 +92,8 @@ public class EngineDtoMapperRegistryTests
             WorkflowId = "diag-test",
             Nodes =
             [
-                new NodeDto { RuntimeType = "Noop", NodeId = "a" },
-                new NodeDto { RuntimeType = "Noop", NodeId = "b" },
+                new NodeDto { RuntimeType = "Setter", NodeId = "a" },
+                new NodeDto { RuntimeType = "Setter", NodeId = "b" },
                 new NodeDto { RuntimeType = "CSharp", NodeId = "c" },
             ],
             Connections =
@@ -106,7 +106,7 @@ public class EngineDtoMapperRegistryTests
         Assert.Equal("diag-test", summary.WorkflowId);
         Assert.Equal(3, summary.NodeCount);
         Assert.Equal(1, summary.ConnectionCount);
-        Assert.Equal(2, summary.NodesByKind["Noop"]);
+        Assert.Equal(2, summary.NodesByKind["Setter"]);
         Assert.Equal(1, summary.NodesByKind["CSharp"]);
     }
 
@@ -117,7 +117,7 @@ public class EngineDtoMapperRegistryTests
         {
             Nodes =
             [
-                new NodeDto { RuntimeType = "Noop", NodeId = "a" },
+                new NodeDto { RuntimeType = "Setter", NodeId = "a" },
                 new NodeDto { RuntimeType = "CustomWidget", NodeId = "b" },
             ],
         };

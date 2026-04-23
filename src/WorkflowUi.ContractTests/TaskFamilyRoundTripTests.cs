@@ -38,11 +38,11 @@ public class TaskFamilyRoundTripTests
     private static string FixturesDir => Path.Combine(RepoRoot, "src", "WorkflowUi.ContractTests", "Fixtures");
 
     [Fact]
-    public void NoopMinimal_RoundTrips()
+    public void SetterMinimal_RoundTrips()
     {
-        var yaml = File.ReadAllText(Path.Combine(FixturesDir, "noop-minimal.yaml"));
+        var yaml = File.ReadAllText(Path.Combine(FixturesDir, "setter-minimal.yaml"));
         var wf = this.serializer.FromYaml(yaml);
-        Assert.True(wf.Nodes.All(n => n is NoopNodeDefinition));
+        Assert.True(wf.Nodes.All(n => n is SetterNodeDefinition));
         var reYaml = this.serializer.ToYaml(wf);
         var wf2 = this.serializer.FromYaml(reYaml);
         Assert.Equal(wf.Nodes.Count, wf2.Nodes.Count);

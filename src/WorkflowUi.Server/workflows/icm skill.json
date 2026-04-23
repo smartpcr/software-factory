@@ -13,42 +13,6 @@
   "metadata": {},
   "nodes": [
     {
-      "nodeId": "n_luf7ix2",
-      "runtimeType": "Trigger",
-      "nodeName": "new incident",
-      "description": "",
-      "configuration": {
-        "method": "POST",
-        "route": "/webhook",
-        "params": "[]"
-      },
-      "joinType": "Any",
-      "priority": "Normal",
-      "maxConcurrentExecutions": 0,
-      "retryPolicy": null,
-      "circuitBreakerPolicy": null,
-      "compensationNodeId": null,
-      "fallbackNodeId": null
-    },
-    {
-      "nodeId": "n_0t7vbsu",
-      "runtimeType": "HttpRequest",
-      "nodeName": "web crawler",
-      "description": "",
-      "configuration": {
-        "method": "GET",
-        "url": "https://api.example.com",
-        "headers": "{}"
-      },
-      "joinType": "Any",
-      "priority": "Normal",
-      "maxConcurrentExecutions": 0,
-      "retryPolicy": null,
-      "circuitBreakerPolicy": null,
-      "compensationNodeId": null,
-      "fallbackNodeId": null
-    },
-    {
       "nodeId": "n_66awg84",
       "runtimeType": "AI",
       "nodeName": "identify issues",
@@ -62,7 +26,8 @@
         "inputMapping": "input",
         "outputKey": "result",
         "confidence": 70,
-        "maxTokens": 4096
+        "maxTokens": 4096,
+        "inputBindings": "{\"incidentFolder\":\"incidentFolder\"}"
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -78,9 +43,9 @@
       "nodeName": "identify repos",
       "description": "",
       "configuration": {
-        "mode": "skill",
+        "mode": "subagent",
         "skillName": "RepoIdentifier",
-        "subAgentName": "",
+        "subAgentName": "repo-identifier",
         "model": "claude-opus-4.7",
         "systemPrompt": "",
         "inputMapping": "input",
@@ -290,34 +255,80 @@
       "circuitBreakerPolicy": null,
       "compensationNodeId": null,
       "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_pesatyk",
+      "runtimeType": "start",
+      "nodeName": "Start",
+      "description": "",
+      "configuration": {
+        "triggerType": "WebHook",
+        "schedule": "0 * * * *",
+        "eventName": "",
+        "webHookRoute": "investigate-icm",
+        "bodyJsonSchema": "{\n   \"type\": \"object\",\n   \"required\": [\"incidentId\", \"serviceName\", \"teamName\", \"timestamp\"],\n   \"properties\": {\n     \"incidentId\": { \"type\": \"integer\", \"format\": \"int64\" },\n     \"serviceName\": { \"type\": \"string\" },\n     \"teamName\": { \"type\": \"string\" },\n     \"timestamp\": { \"type\": \"string\", \"format\": \"date-time\" }\n   }\n }"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_ym05bcg",
+      "runtimeType": "AI",
+      "nodeName": "Extract ICM content",
+      "description": "",
+      "configuration": {
+        "mode": "skill",
+        "skillName": "open-icm",
+        "subAgentName": "",
+        "model": "claude-sonnet-4.6",
+        "userPrompt": "",
+        "systemPrompt": "",
+        "inputMapping": "input",
+        "outputKey": "result",
+        "confidence": 70,
+        "maxTokens": 4096,
+        "inputBindings": "{\"IncidentId\":\"body.incidentId\",\"Headless\":\"static:\",\"Limit\":\"static:\"}"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
     }
   ],
   "connections": [
     {
-      "sourceNodeId": "n_luf7ix2",
-      "targetNodeId": "n_0t7vbsu",
-      "sourcePort": "out",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
-      "sourceNodeId": "n_0t7vbsu",
-      "targetNodeId": "n_66awg84",
-      "sourcePort": "out",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
       "sourceNodeId": "n_66awg84",
       "targetNodeId": "n_9ly0ev1",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_buwqvpl",
+      "targetNodeId": "n_e8w8kjn",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_9ly0ev1",
+      "targetNodeId": "n_buwqvpl",
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",
@@ -371,17 +382,6 @@
       "metadata": null
     },
     {
-      "sourceNodeId": "n_ojuqxhi",
-      "targetNodeId": "n_a0c9bq5",
-      "sourcePort": "out",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
       "sourceNodeId": "n_a0c9bq5",
       "targetNodeId": "n_dseqzdf",
       "sourcePort": "LoopBody",
@@ -426,8 +426,8 @@
       "metadata": null
     },
     {
-      "sourceNodeId": "n_buwqvpl",
-      "targetNodeId": "n_e8w8kjn",
+      "sourceNodeId": "n_ojuqxhi",
+      "targetNodeId": "n_a0c9bq5",
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",
@@ -437,8 +437,19 @@
       "metadata": null
     },
     {
-      "sourceNodeId": "n_9ly0ev1",
-      "targetNodeId": "n_buwqvpl",
+      "sourceNodeId": "n_pesatyk",
+      "targetNodeId": "n_ym05bcg",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_ym05bcg",
+      "targetNodeId": "n_66awg84",
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",

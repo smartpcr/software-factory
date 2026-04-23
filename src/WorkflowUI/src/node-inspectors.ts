@@ -756,6 +756,49 @@ function renderFallback(ctx: InspectorContext): NodeInspectorResult {
 }
 
 // ---------------------------------------------------------------------------
+// Setter inspector
+// ---------------------------------------------------------------------------
+
+function renderSetter(ctx: InspectorContext): NodeInspectorResult {
+  const { id, c, escapeHtml, inboundFields } = ctx;
+  const mappings: Record<string, string> = (c.variableMappings as Record<string, string>) || {};
+  const entries = Object.entries(mappings);
+
+  const fieldOptions = inboundFields.map(f => {
+    const label = escapeHtml(`${f.sourceNode}.${f.name}`);
+    return `<option value="${escapeHtml(f.path)}">${label}</option>`;
+  }).join('');
+
+  const rows = entries.map(([globalKey, sourceExpr], i) => `
+    <tr class="ins-setter-row" data-idx="${i}">
+      <td><input type="text" class="ins-input ins-setter-key" value="${escapeHtml(globalKey)}" placeholder="Global variable name" data-node="${id}" data-idx="${i}"/></td>
+      <td>
+        <select class="ins-select ins-setter-source" data-node="${id}" data-idx="${i}">
+          <option value="">— select source —</option>
+          ${fieldOptions}
+          <option value="${escapeHtml(sourceExpr)}" selected>${escapeHtml(sourceExpr)}</option>
+        </select>
+      </td>
+      <td><button class="ins-btn-icon ins-setter-remove" data-node="${id}" data-idx="${i}" title="Remove">✕</button></td>
+    </tr>
+  `).join('');
+
+  const html = `
+    <div class="ins-section">
+      <label class="ins-label">Variable Mappings</label>
+      <p class="ins-field-hint">Map upstream output fields to global workflow variables.</p>
+      <table class="ins-setter-table" style="width:100%;border-collapse:collapse;">
+        <thead><tr><th style="text-align:left;padding:4px;">Global Variable</th><th style="text-align:left;padding:4px;">Source Field</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <button class="ins-btn ins-setter-add" data-node="${id}" style="margin-top:6px;">+ Add mapping</button>
+    </div>
+  `;
+
+  return { title: 'Setter', html, includeInboundPanel: false };
+}
+
+// ---------------------------------------------------------------------------
 // Registry + dispatcher
 // ---------------------------------------------------------------------------
 
@@ -776,6 +819,8 @@ const renderers: Record<string, (ctx: InspectorContext) => NodeInspectorResult> 
   log: renderLog,
   group: renderGroup,
   end: renderEnd,
+  noop: renderSetter,
+  setter: renderSetter,
 };
 
 export function renderNodeConfig(ctx: InspectorContext): NodeInspectorResult {

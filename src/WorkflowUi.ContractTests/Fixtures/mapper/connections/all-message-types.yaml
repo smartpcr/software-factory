@@ -3,7 +3,7 @@ WorkflowName: All Message Types
 Description: null
 Version: 1.0
 Nodes:
-- runtimeType: Noop
+- runtimeType: Setter
   NodeId: src
   NodeName: Source
   Description: null
@@ -15,7 +15,7 @@ Nodes:
   CircuitBreakerPolicy: null
   CompensationNodeId: null
   FallbackNodeId: null
-- runtimeType: Noop
+- runtimeType: Setter
   NodeId: on-complete
   NodeName: On Complete
   Description: null
@@ -27,7 +27,7 @@ Nodes:
   CircuitBreakerPolicy: null
   CompensationNodeId: null
   FallbackNodeId: null
-- runtimeType: Noop
+- runtimeType: Setter
   NodeId: on-fail
   NodeName: On Fail
   Description: null

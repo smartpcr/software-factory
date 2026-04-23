@@ -3,5 +3,5 @@ workflowName: Subflow Child
 nodes:
   - nodeId: c1
     nodeName: Child Start
-    runtimeType: Noop
+    runtimeType: Setter
 connections: []

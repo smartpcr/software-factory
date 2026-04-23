@@ -38,7 +38,7 @@ namespace ExecutionEngine.IntegrationTests.Steps
             var nodeNames = new[] { nodeA, nodeB, nodeC };
             foreach (var nodeName in nodeNames)
             {
-                this.workflowDefinition.Nodes.Add(new NoopNodeDefinition()
+                this.workflowDefinition.Nodes.Add(new SetterNodeDefinition()
                 {
                     NodeId = nodeName,
                     NodeName = nodeName,

@@ -2,7 +2,7 @@ workflowId: roundtrip-all-13-kinds
 workflowName: All 13 Kinds
 nodes:
   - nodeId: n1
-    runtimeType: Noop
+    runtimeType: Setter
   - nodeId: n2
     runtimeType: CSharp
   - nodeId: n3

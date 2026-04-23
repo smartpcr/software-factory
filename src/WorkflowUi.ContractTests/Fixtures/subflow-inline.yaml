@@ -10,6 +10,6 @@ nodes:
       nodes:
         - nodeId: ic1
           nodeName: InlineStart
-          runtimeType: Noop
+          runtimeType: Setter
       connections: []
 connections: []

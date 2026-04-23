@@ -8,10 +8,10 @@ nodes:
     itemVariableName: item
   - nodeId: body1
     nodeName: Body
-    runtimeType: Noop
+    runtimeType: Setter
   - nodeId: done1
     nodeName: Done
-    runtimeType: Noop
+    runtimeType: Setter
 connections:
   - sourceNodeId: fe1
     targetNodeId: body1

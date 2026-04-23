@@ -79,6 +79,9 @@ public class NodeFactory
             ExecutableNodeBase? node;
             switch (definition.RuntimeType)
             {
+                case Enums.RuntimeType.Setter:
+                    node = CreateSetterNode(definition);
+                    break;
                 case Enums.RuntimeType.CSharp:
                     node = this.CreateCSharpNode(definition);
                     break;
@@ -408,6 +411,11 @@ public class NodeFactory
     private static ExecutableNodeBase CreateParallelNode(NodeDefinition definition)
     {
         return new ParallelNode();
+    }
+
+    private static ExecutableNodeBase CreateSetterNode(NodeDefinition definition)
+    {
+        return new SetterNode();
     }
 
     /// <summary>

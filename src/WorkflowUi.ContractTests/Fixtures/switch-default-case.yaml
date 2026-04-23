@@ -9,10 +9,10 @@ nodes:
       ready: Continue
   - nodeId: n1
     nodeName: Ready
-    runtimeType: Noop
+    runtimeType: Setter
   - nodeId: n2
     nodeName: Default
-    runtimeType: Noop
+    runtimeType: Setter
 connections:
   - sourceNodeId: sw1
     targetNodeId: n1

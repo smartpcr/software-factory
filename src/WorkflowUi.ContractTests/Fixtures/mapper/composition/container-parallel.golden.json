@@ -13,7 +13,7 @@
       "executionMode": "Parallel",
       "childNodes": [
         {
-          "runtimeType": "Noop",
+          "runtimeType": "Setter",
           "nodeId": "child-a",
           "nodeName": "A",
           "joinType": "Any",
@@ -21,7 +21,7 @@
           "maxConcurrentExecutions": 0
         },
         {
-          "runtimeType": "Noop",
+          "runtimeType": "Setter",
           "nodeId": "child-b",
           "nodeName": "B",
           "joinType": "Any",

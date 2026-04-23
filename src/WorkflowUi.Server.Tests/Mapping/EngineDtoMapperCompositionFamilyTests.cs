@@ -53,7 +53,7 @@ public class EngineDtoMapperCompositionFamilyTests
         {
             WorkflowId = "inline-wf",
             WorkflowName = "Inline",
-            Nodes = [new NoopNodeDefinition { NodeId = "inner-noop", NodeName = "Inner" }],
+            Nodes = [new SetterNodeDefinition { NodeId = "inner-noop", NodeName = "Inner" }],
         };
 
         var source = new SubflowNodeDefinition
@@ -103,8 +103,8 @@ public class EngineDtoMapperCompositionFamilyTests
             ExecutionMode = ExecutionMode.Parallel,
             ChildNodes =
             [
-                new NoopNodeDefinition { NodeId = "child-a", NodeName = "A" },
-                new NoopNodeDefinition { NodeId = "child-b", NodeName = "B" },
+                new SetterNodeDefinition { NodeId = "child-a", NodeName = "A" },
+                new SetterNodeDefinition { NodeId = "child-b", NodeName = "B" },
             ],
             ChildConnections =
             [

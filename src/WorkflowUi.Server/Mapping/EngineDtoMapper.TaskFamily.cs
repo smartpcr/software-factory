@@ -9,14 +9,14 @@ namespace WorkflowUi.Server.Mapping;
 using ExecutionEngine.Nodes.Definitions;
 
 /// <summary>
-/// Mapper partials for Noop and compiled CSharp runtime kinds.
+/// Mapper partials for Setter and compiled CSharp runtime kinds.
 /// </summary>
 public static partial class EngineDtoMapper
 {
     /// <summary>
-    /// Maps a Noop engine definition to DTO.
+    /// Maps a Setter engine definition to DTO.
     /// </summary>
-    public static NodeDto MapNoop(NoopNodeDefinition source)
+    public static NodeDto MapSetter(SetterNodeDefinition source)
     {
         var dto = new NodeDto();
         MapBaseToDto(source, dto);
@@ -24,11 +24,11 @@ public static partial class EngineDtoMapper
     }
 
     /// <summary>
-    /// Maps a DTO to Noop engine definition.
+    /// Maps a DTO to Setter engine definition.
     /// </summary>
-    public static NoopNodeDefinition MapNoopFromDto(NodeDto dto)
+    public static SetterNodeDefinition MapSetterFromDto(NodeDto dto)
     {
-        var target = new NoopNodeDefinition();
+        var target = new SetterNodeDefinition();
         MapBaseFromDto(dto, target);
         return target;
     }

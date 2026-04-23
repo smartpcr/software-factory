@@ -1,11 +1,11 @@
-WorkflowId: noop-basic
-WorkflowName: Noop Basic
+WorkflowId: setter-basic
+WorkflowName: Setter Basic
 Description: null
 Version: 1.0
 Nodes:
-- runtimeType: Noop
-  NodeId: noop-1
-  NodeName: Simple Noop
+- runtimeType: Setter
+  NodeId: setter-1
+  NodeName: Simple Setter
   Description: null
   Configuration: null
   JoinType: Any

@@ -115,8 +115,8 @@
     },
     {
       "nodeId": "n_ucajd2y",
-      "runtimeType": "Noop",
-      "nodeName": "Noop",
+      "runtimeType": "Setter",
+      "nodeName": "Setter",
       "description": "",
       "configuration": {},
       "joinType": "Any",

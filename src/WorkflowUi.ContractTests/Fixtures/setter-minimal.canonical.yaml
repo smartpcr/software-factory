@@ -1,9 +1,9 @@
-WorkflowId: noop-minimal
-WorkflowName: Noop Minimal
-Description: A minimal 2-node Noop workflow for parity testing
+WorkflowId: setter-minimal
+WorkflowName: Setter Minimal
+Description: A minimal 2-node Setter workflow for parity testing
 Version: 1.0
 Nodes:
-- runtimeType: Noop
+- runtimeType: Setter
   NodeId: start
   NodeName: Start
   Description: null
@@ -15,7 +15,7 @@ Nodes:
   CircuitBreakerPolicy: null
   CompensationNodeId: null
   FallbackNodeId: null
-- runtimeType: Noop
+- runtimeType: Setter
   NodeId: end
   NodeName: End
   Description: null

@@ -21,7 +21,7 @@ public class SidecarMergerTests
         var workflow = new WorkflowDefinitionDto
         {
             WorkflowId = "test-wf",
-            Nodes = [new NodeDto { NodeId = "n1", RuntimeType = "Noop" }],
+            Nodes = [new NodeDto { NodeId = "n1", RuntimeType = "Setter" }],
         };
 
         var sidecar = new SidecarDto
@@ -93,7 +93,7 @@ public class SidecarMergerTests
             WorkflowId = "rt-test",
             Nodes =
             [
-                new NodeDto { NodeId = "a", RuntimeType = "Noop" },
+                new NodeDto { NodeId = "a", RuntimeType = "Setter" },
                 new NodeDto { NodeId = "b", RuntimeType = "CSharp" },
             ],
         };

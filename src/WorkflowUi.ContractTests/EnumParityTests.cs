@@ -30,11 +30,11 @@ public class EnumParityTests
     };
 
     [Fact]
-    public void RuntimeType_Has13Members_ExactNames()
+    public void RuntimeType_HasExpectedMembers_ExactNames()
     {
         var expected = new[]
         {
-            "Noop", "CSharp", "CSharpScript", "CSharpTask",
+            "Setter", "CSharp", "CSharpScript", "CSharpTask",
             "PowerShell", "PowerShellTask",
             "IfElse", "ForEach", "While", "Switch",
             "Subflow", "Timer", "Group",
@@ -48,7 +48,7 @@ public class EnumParityTests
     {
         var ordinals = EngineReflection.OrdinalsOf(typeof(RuntimeType));
         Assert.Equal(13, ordinals.Count);
-        Assert.Equal(0, ordinals[0]); // Noop
+        Assert.Equal(0, ordinals[0]); // Setter
         Assert.Equal(12, ordinals[12]); // Group
     }
 
