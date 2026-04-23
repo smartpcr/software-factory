@@ -89,4 +89,14 @@ public interface IMessageRouter
     /// Clears all routing entries.
     /// </summary>
     void ClearRoutes();
+
+    /// <summary>
+    /// Finds terminal nodes reachable from a specific source node and port.
+    /// Terminal nodes are those with no outgoing Complete connections to other reachable nodes.
+    /// Used by ParallelNode to determine when branches have finished executing.
+    /// </summary>
+    /// <param name="sourceNodeId">The source node ID to start traversal from.</param>
+    /// <param name="sourcePort">The source port to filter initial connections.</param>
+    /// <returns>A set of terminal node IDs reachable from the given source port.</returns>
+    HashSet<string> FindTerminalNodesFromPort(string sourceNodeId, string sourcePort);
 }

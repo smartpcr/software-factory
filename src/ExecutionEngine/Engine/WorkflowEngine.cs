@@ -669,6 +669,12 @@ namespace ExecutionEngine.Engine
                         .Cast<NodeMessageQueue>()
                         .All(q => q.Count == 0);
 
+                    // Check for timed-out parallel joins before termination check
+                    if (context.Router is MessageRouter mainRouter)
+                    {
+                        await this.CheckParallelJoinTimeoutsAsync(context, mainRouter, workflowDefinition, cancellationToken);
+                    }
+
                     // Log queue counts for debugging
                     foreach (var queueEntry in context.NodeQueues)
                     {
@@ -1306,7 +1312,8 @@ namespace ExecutionEngine.Engine
                 // If node has already reached a terminal status, complete the lease and skip execution
                 if (nodeInstance.Status == NodeExecutionStatus.Completed ||
                     nodeInstance.Status == NodeExecutionStatus.Failed ||
-                    nodeInstance.Status == NodeExecutionStatus.Cancelled)
+                    nodeInstance.Status == NodeExecutionStatus.Cancelled ||
+                    nodeInstance.Status == NodeExecutionStatus.WaitingForJoin)
                 {
                     await queue.CompleteAsync(lease, cancellationToken);
                     return;
@@ -1596,6 +1603,9 @@ namespace ExecutionEngine.Engine
                     // Publish progress update
                     var progress = this.CalculateProgress(context, workflowDefinition.Nodes.Count);
                     context.PublishProgress(progress);
+
+                    // Check if this node completion satisfies any pending parallel join
+                    await this.CheckParallelJoinsAsync(nodeId, context, router, workflowDefinition, cancellationToken);
                 }
                 else if (nodeInstance.Status == NodeExecutionStatus.Failed)
                 {
@@ -2040,6 +2050,225 @@ namespace ExecutionEngine.Engine
             }
 
             return checkpoint;
+        }
+
+        /// <summary>
+        /// Checks if a completed node satisfies any pending parallel join conditions.
+        /// Called after routing a node completion message.
+        /// </summary>
+        private async Task CheckParallelJoinsAsync(
+            string completedNodeId,
+            WorkflowExecutionContext context,
+            MessageRouter router,
+            WorkflowDefinition workflowDefinition,
+            CancellationToken cancellationToken)
+        {
+            // Find all active parallel tracking entries
+            var trackingKeys = context.Variables.Keys
+                .Where(k => k.StartsWith("__parallel_") && k.EndsWith("_branchTerminals"))
+                .ToList();
+
+            foreach (var key in trackingKeys)
+            {
+                if (!context.Variables.TryGetValue(key, out var terminalsObj) ||
+                    terminalsObj is not Dictionary<string, HashSet<string>> branchTerminals)
+                {
+                    continue;
+                }
+
+                var prefix = key[..^"_branchTerminals".Length];
+
+                // Check if the completed node is a terminal for any branch
+                string? matchedBranch = null;
+                foreach (var kvp in branchTerminals)
+                {
+                    if (kvp.Value.Contains(completedNodeId))
+                    {
+                        matchedBranch = kvp.Key;
+                        break;
+                    }
+                }
+
+                if (matchedBranch == null)
+                {
+                    continue;
+                }
+
+                // Mark this branch as completed
+                if (!context.Variables.TryGetValue($"{prefix}_completedBranches", out var completedObj) ||
+                    completedObj is not ConcurrentDictionary<string, bool> completedBranches)
+                {
+                    continue;
+                }
+
+                completedBranches[matchedBranch] = true;
+
+                // Check join condition
+                var joinMode = context.Variables.TryGetValue($"{prefix}_joinMode", out var jm)
+                    ? jm.ToString() ?? "all"
+                    : "all";
+                var expected = context.Variables.TryGetValue($"{prefix}_expected", out var exp)
+                    ? (int)exp
+                    : 0;
+
+                var shouldComplete = joinMode switch
+                {
+                    "any" or "race" => completedBranches.Count >= 1,
+                    _ => completedBranches.Count >= expected, // "all"
+                };
+
+                if (shouldComplete)
+                {
+                    var parallelNodeId = prefix["__parallel_".Length..];
+                    this.logger.LogInformation(
+                        "Parallel join condition met for {NodeId}: mode={JoinMode}, completed={Completed}/{Expected}",
+                        parallelNodeId, joinMode, completedBranches.Count, expected);
+                    await this.CompleteParallelJoinAsync(
+                        parallelNodeId, completedBranches, context, router, workflowDefinition, cancellationToken);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Checks for timed-out parallel joins and completes them with timeout info.
+        /// Called from the main execution loop.
+        /// </summary>
+        private async Task CheckParallelJoinTimeoutsAsync(
+            WorkflowExecutionContext context,
+            MessageRouter router,
+            WorkflowDefinition workflowDefinition,
+            CancellationToken cancellationToken)
+        {
+            var deadlineKeys = context.Variables.Keys
+                .Where(k => k.StartsWith("__parallel_") && k.EndsWith("_deadline"))
+                .ToList();
+
+            foreach (var key in deadlineKeys)
+            {
+                if (!context.Variables.TryGetValue(key, out var deadlineObj) ||
+                    deadlineObj is not DateTime deadline)
+                {
+                    continue;
+                }
+
+                if (DateTime.UtcNow < deadline)
+                {
+                    continue;
+                }
+
+                var prefix = key[..^"_deadline".Length];
+                var parallelNodeId = prefix["__parallel_".Length..];
+
+                // Only timeout if node is still WaitingForJoin
+                if (!this.nodeExecutionTracking.TryGetValue(parallelNodeId, out var nodeInstance) ||
+                    nodeInstance.Status != NodeExecutionStatus.WaitingForJoin)
+                {
+                    continue;
+                }
+
+                this.logger.LogWarning("Parallel join timed out for {NodeId}", parallelNodeId);
+
+                // Get completed branches for output
+                var completedBranches = context.Variables.TryGetValue($"{prefix}_completedBranches", out var cbObj) &&
+                                        cbObj is ConcurrentDictionary<string, bool> cb
+                    ? cb
+                    : new ConcurrentDictionary<string, bool>();
+
+                // Set timeout info on the node context
+                if (context.Variables.TryGetValue($"{prefix}_nodeContext", out var ncObj) &&
+                    ncObj is NodeExecutionContext nodeContext)
+                {
+                    nodeContext.OutputData["timedOut"] = true;
+                }
+
+                await this.CompleteParallelJoinAsync(
+                    parallelNodeId, completedBranches, context, router, workflowDefinition, cancellationToken);
+            }
+        }
+
+        /// <summary>
+        /// Completes a parallel join by marking the parallel node as Completed,
+        /// routing its completion message downstream, and cleaning up tracking variables.
+        /// </summary>
+        private async Task CompleteParallelJoinAsync(
+            string parallelNodeId,
+            ConcurrentDictionary<string, bool> completedBranches,
+            WorkflowExecutionContext context,
+            MessageRouter router,
+            WorkflowDefinition workflowDefinition,
+            CancellationToken cancellationToken)
+        {
+            if (!this.nodeExecutionTracking.TryGetValue(parallelNodeId, out var nodeInstance))
+            {
+                return;
+            }
+
+            // Retrieve stored node context
+            var trackingPrefix = $"__parallel_{parallelNodeId}";
+            NodeExecutionContext? nodeContext = null;
+            if (context.Variables.TryGetValue($"{trackingPrefix}_nodeContext", out var ncObj))
+            {
+                nodeContext = ncObj as NodeExecutionContext;
+            }
+
+            nodeContext ??= new NodeExecutionContext();
+
+            // Set output data
+            nodeContext.OutputData["completedBranches"] = string.Join(",", completedBranches.Keys);
+            nodeContext.OutputData["completedCount"] = completedBranches.Count;
+
+            // Update node status to Completed
+            nodeInstance.Status = NodeExecutionStatus.Completed;
+            nodeInstance.EndTime = DateTime.UtcNow;
+            nodeInstance.ExecutionContext = nodeContext;
+
+            // Route completion message downstream (no SourcePort, so "out" connections match)
+            var completeMessage = new NodeCompleteMessage
+            {
+                NodeId = parallelNodeId,
+                Timestamp = DateTime.UtcNow,
+                NodeInstanceId = nodeInstance.NodeInstanceId,
+                NodeContext = nodeContext,
+            };
+
+            this.logger.LogDebug("Routing parallel join completion from {NodeId} to downstream nodes", parallelNodeId);
+            await router.RouteMessageAsync(completeMessage, context, cancellationToken);
+
+            // Raise NodeCompleted event
+            var duration = nodeInstance.Duration ?? TimeSpan.Zero;
+            this.NodeCompleted?.Invoke(parallelNodeId, nodeInstance.NodeInstanceId, duration);
+
+            if (this.NodeCompletedEx != null)
+            {
+                var inputSnap = nodeContext.InputData.Count > 0 ? new Dictionary<string, object>(nodeContext.InputData) : null;
+                var outputSnap = nodeContext.OutputData.Count > 0 ? new Dictionary<string, object>(nodeContext.OutputData) : null;
+                var globalsSnap = new Dictionary<string, object>(context.Variables);
+                this.NodeCompletedEx.Invoke(parallelNodeId, nodeInstance.NodeInstanceId, duration, inputSnap, outputSnap, globalsSnap);
+            }
+
+            // Publish NodeCompletedEvent
+            var nodeDef = workflowDefinition.Nodes.FirstOrDefault(n => n.NodeId == parallelNodeId);
+            context.PublishEvent(new NodeCompletedEvent
+            {
+                WorkflowInstanceId = context.InstanceId,
+                NodeId = parallelNodeId,
+                NodeName = nodeDef?.NodeName ?? parallelNodeId,
+                NodeInstanceId = nodeInstance.NodeInstanceId,
+                Duration = duration,
+                Timestamp = DateTime.UtcNow
+            });
+
+            // Publish progress update
+            var progress = this.CalculateProgress(context, workflowDefinition.Nodes.Count);
+            context.PublishProgress(progress);
+
+            // Clean up tracking variables
+            foreach (var key in context.Variables.Keys
+                .Where(k => k.StartsWith(trackingPrefix))
+                .ToList())
+            {
+                context.Variables.TryRemove(key, out _);
+            }
         }
     }
 }

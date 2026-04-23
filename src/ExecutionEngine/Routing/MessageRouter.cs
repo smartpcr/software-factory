@@ -229,10 +229,10 @@ public class MessageRouter(IDeadLetterQueue deadLetterQueue, ILogger<MessageRout
                     };
 
                     // "out" is the default output port name used by the UI.
-                    // Generic nodes (Start, Log, etc.) don't set SourcePort explicitly,
-                    // so an empty message port should match a connection with port "out".
-                    var isDefaultPortMatch = string.IsNullOrEmpty(messageSourcePort) &&
-                        connection.SourcePort.Equals("out", StringComparison.OrdinalIgnoreCase);
+                    // It acts as a catch-all: matches any completion message,
+                    // even from branch-based nodes (IfElse, Switch) that set a specific SourcePort.
+                    var isDefaultPortMatch = connection.SourcePort.Equals("out", StringComparison.OrdinalIgnoreCase) &&
+                        (string.IsNullOrEmpty(messageSourcePort) || message is NodeCompleteMessage);
 
                     if (!isDefaultPortMatch &&
                         !connection.SourcePort.Equals(messageSourcePort, StringComparison.OrdinalIgnoreCase))
@@ -365,6 +365,67 @@ public class MessageRouter(IDeadLetterQueue deadLetterQueue, ILogger<MessageRout
     public void ClearRoutes()
     {
         this.routingTable.Clear();
+    }
+
+    /// <inheritdoc/>
+    public HashSet<string> FindTerminalNodesFromPort(string sourceNodeId, string sourcePort)
+    {
+        var visited = new HashSet<string>();
+        var queue = new Queue<string>();
+
+        // Find direct children from this specific port
+        var initialConnections = this.GetConnections(sourceNodeId);
+        foreach (var conn in initialConnections)
+        {
+            if (conn.IsEnabled &&
+                conn.TriggerMessageType == MessageType.Complete &&
+                string.Equals(conn.SourcePort, sourcePort, StringComparison.OrdinalIgnoreCase))
+            {
+                queue.Enqueue(conn.TargetNodeId);
+            }
+        }
+
+        // BFS to find all reachable nodes
+        while (queue.Count > 0)
+        {
+            var nodeId = queue.Dequeue();
+            if (!visited.Add(nodeId))
+            {
+                continue;
+            }
+
+            // Follow outgoing Complete connections (any port)
+            var outgoing = this.GetConnections(nodeId);
+            foreach (var conn in outgoing)
+            {
+                if (conn.IsEnabled &&
+                    conn.TriggerMessageType == MessageType.Complete &&
+                    conn.TargetNodeId != sourceNodeId &&
+                    !visited.Contains(conn.TargetNodeId))
+                {
+                    queue.Enqueue(conn.TargetNodeId);
+                }
+            }
+        }
+
+        // Terminal nodes: visited nodes with no outgoing Complete connections to other visited nodes
+        var terminals = new HashSet<string>();
+        foreach (var nodeId in visited)
+        {
+            var outgoing = this.GetConnections(nodeId);
+            var hasOutgoingToVisited = outgoing.Any(c =>
+                c.IsEnabled &&
+                c.TriggerMessageType == MessageType.Complete &&
+                c.TargetNodeId != sourceNodeId &&
+                visited.Contains(c.TargetNodeId));
+
+            if (!hasOutgoingToVisited)
+            {
+                terminals.Add(nodeId);
+            }
+        }
+
+        return terminals;
     }
 
     /// <summary>
