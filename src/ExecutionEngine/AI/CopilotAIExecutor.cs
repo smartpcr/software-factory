@@ -71,9 +71,9 @@ public class CopilotAIExecutor : IAIExecutor
         var currentBlock = new StringBuilder();
         int inputTokens = 0, outputTokens = 0;
 
-        // Idle timeout: cancel if no streaming events received for this duration.
-        // Use the request timeout as the idle timeout — the node's configured timeout IS the patience window.
-        var idleTimeout = request.Timeout;
+        // Idle timeout: fixed 5 min — detects truly stuck/hanging sessions.
+        // Independent from the node's hard timeout (request.Timeout).
+        var idleTimeout = TimeSpan.FromMinutes(5);
         var lastEventTime = DateTime.UtcNow;
 
         // Repeat-failure detector: bail if the same tool keeps failing with the same error.

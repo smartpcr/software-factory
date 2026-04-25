@@ -182,6 +182,13 @@ public static class WorkflowDefinitionMapper
                 Model = GetEnum<AIModelId>(el, config, "model"),
                 UserPrompt = GetString(el, config, "userPrompt"),
                 SystemPrompt = GetString(el, config, "systemPrompt"),
+                InputMapping = GetString(el, config, "inputMapping") ?? "input",
+                OutputKey = GetString(el, config, "outputKey") ?? "result",
+                Confidence = GetInt(el, config, "confidence", 70),
+                MaxTokens = GetInt(el, config, "maxTokens", 4096),
+                TimeoutMinutes = GetInt(el, config, "timeoutMinutes", 5),
+                WorkingDirectory = GetString(el, config, "workingDirectory"),
+                InputBindings = GetStringDictionary(el, config, "inputBindings") ?? [],
             },
             RuntimeType.Action => new ActionNodeDefinition
             {
