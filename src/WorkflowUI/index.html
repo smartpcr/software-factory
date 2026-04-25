@@ -166,14 +166,13 @@
   <div class="logs">
     <div class="logs-header">
       <div class="bottom-tabs">
-        <button class="bottom-tab active" data-bottom-tab="log">Execution Log</button>
-        <button class="bottom-tab" data-bottom-tab="history">Run History</button>
+        <button class="bottom-tab active" data-bottom-tab="log">Execution Log <span class="tab-badge" id="logCount">0</span></button>
+        <button class="bottom-tab" data-bottom-tab="history">Run History <span class="tab-badge" id="historyCount"></span></button>
       </div>
-      <span class="logs-count mono" id="logCount">0</span>
       <div class="spacer" style="flex:1"></div>
       <button class="logs-clear" data-action="clear-logs" title="Clear log">Clear</button>
       <button class="logs-clear" data-action="refresh-history" title="Refresh history" style="display:none" id="btnRefreshHistory">Refresh</button>
-      <button class="panel-fullscreen-toggle" data-action="toggle-logs-fullscreen" title="Toggle fullscreen">
+      <button class="logs-fullscreen-btn" data-action="toggle-logs-fullscreen" title="Toggle fullscreen">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="14" height="14"><path d="M3 7V3h4M21 7V3h-4M3 17v4h4M21 17v4h-4"/></svg>
       </button>
     </div>

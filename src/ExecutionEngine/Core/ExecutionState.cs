@@ -72,25 +72,33 @@ public class ExecutionState
     /// Resolve a variable by name using the standard fallback chain:
     /// Input → body-prefixed Input → GlobalVariables.
     /// Usable in Roslyn expressions as <c>(dynamic)Get("varName")</c>.
+    /// String values that look numeric are auto-converted to support comparison operators.
     /// </summary>
     public object? Get(string key)
     {
+        object? raw = null;
         if (this.Input.TryGetValue(key, out var inputVal))
         {
-            return inputVal;
+            raw = inputVal;
         }
-
-        if (this.Input.TryGetValue($"body.{key}", out var bodyVal))
+        else if (this.Input.TryGetValue($"body.{key}", out var bodyVal))
         {
-            return bodyVal;
+            raw = bodyVal;
         }
-
-        if (this.GlobalVariables.TryGetValue(key, out var globalVal))
+        else if (this.GlobalVariables.TryGetValue(key, out var globalVal))
         {
-            return globalVal;
+            raw = globalVal;
         }
 
-        return null;
+        // Auto-convert string values that are numeric so comparison operators work
+        if (raw is string s)
+        {
+            if (long.TryParse(s, out var l)) return l;
+            if (double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d)) return d;
+            if (bool.TryParse(s, out var b)) return b;
+        }
+
+        return raw;
     }
 
     /// <summary>

@@ -53,6 +53,42 @@ public class AINode : ExecutableNodeBase
             Timestamp = startTime,
         });
 
+        try
+        {
+            return await this.ExecuteCoreAsync(aiDef, workflowContext, nodeContext, logger, startTime, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "AI node execution failed: {Message}", ex.Message);
+
+            // Emit error to the execution log so the UI shows it
+            var aiLogger = workflowContext.ServiceProvider?.GetService<IAINodeLogger>();
+            aiLogger?.EmitLine(workflowContext.InstanceId, this.NodeId, $"❌ {ex.GetType().Name}: {ex.Message}");
+
+            nodeContext.OutputData["ai.error"] = ex.Message;
+            return new NodeInstance
+            {
+                NodeId = this.Definition!.NodeId,
+                Status = NodeExecutionStatus.Failed,
+                ErrorMessage = ex.Message,
+                Exception = ex,
+                StartTime = startTime,
+                EndTime = DateTime.UtcNow,
+                ExecutionContext = nodeContext,
+                WorkflowInstanceId = workflowContext.InstanceId,
+            };
+        }
+    }
+
+    private async Task<NodeInstance> ExecuteCoreAsync(
+        AINodeDefinition aiDef,
+        WorkflowExecutionContext workflowContext,
+        NodeExecutionContext nodeContext,
+        ILogger logger,
+        DateTime startTime,
+        CancellationToken cancellationToken)
+    {
+
         // Record config metadata
         nodeContext.OutputData["mode"] = EnumMemberHelper.ToEnumMemberValue(aiDef.Mode);
         nodeContext.OutputData["backend"] = EnumMemberHelper.ToEnumMemberValue(aiDef.Backend);
@@ -101,6 +137,23 @@ public class AINode : ExecutableNodeBase
                 if (!string.IsNullOrEmpty(aiDef.SystemPrompt))
                 {
                     systemPrompt += $"\n\n## Additional Instructions\n{aiDef.SystemPrompt}";
+                }
+
+                // Append structured output instructions so the agent emits key=value pairs
+                if (agentDef.Outputs.Count > 0)
+                {
+                    var outputInstructions = new StringBuilder();
+                    outputInstructions.AppendLine("\n\n## Required Output");
+                    outputInstructions.AppendLine("After completing the task, emit each output on its own line in this exact format:");
+                    outputInstructions.AppendLine("```");
+                    foreach (var output in agentDef.Outputs)
+                    {
+                        outputInstructions.AppendLine($"[OUTPUT:{output.Name}] <value>");
+                    }
+
+                    outputInstructions.AppendLine("```");
+                    outputInstructions.AppendLine("Replace <value> with the actual result. Emit ALL output lines even if a value is empty.");
+                    systemPrompt += outputInstructions.ToString();
                 }
 
                 if (agentDef.ModelHint != null)
@@ -176,6 +229,36 @@ public class AINode : ExecutableNodeBase
         // Wire stdout streaming to UI via IAINodeLogger
         var aiLogger = workflowContext.ServiceProvider?.GetService<IAINodeLogger>();
 
+        // Log resolved input bindings
+        if (aiLogger != null && resolvedBindings.Count > 0)
+        {
+            aiLogger.EmitLine(workflowContext.InstanceId, this.NodeId, "📥 Inputs:");
+            foreach (var kvp in resolvedBindings)
+            {
+                var val = kvp.Value.Length > 100 ? kvp.Value[..97] + "…" : kvp.Value;
+                aiLogger.EmitLine(workflowContext.InstanceId, this.NodeId, $"  {kvp.Key} = {val}");
+            }
+        }
+
+        // Resolve working directory — supports same binding syntax as input bindings:
+        // "global.incidentFolder", "output.path", "body.folder", "static:/path", bare keys, or {template}
+        string? workingDir = null;
+        if (!string.IsNullOrEmpty(aiDef.WorkingDirectory))
+        {
+            workingDir = BindingResolver.ResolveToString(aiDef.WorkingDirectory, nodeContext, workflowContext);
+            if (string.IsNullOrEmpty(workingDir))
+            {
+                // Fallback: try as template with {placeholders}
+                workingDir = BindingResolver.ResolveTemplate(aiDef.WorkingDirectory, null, nodeContext, workflowContext);
+            }
+
+            if (!string.IsNullOrEmpty(workingDir) && !System.IO.Directory.Exists(workingDir))
+            {
+                logger.LogWarning("Working directory does not exist: {Path}, using default", workingDir);
+                workingDir = null;
+            }
+        }
+
         var execRequest = new AIExecutionRequest
         {
             Prompt = userPrompt,
@@ -183,13 +266,21 @@ public class AINode : ExecutableNodeBase
             Model = EnumMemberHelper.ToEnumMemberValue(aiDef.Model),
             MaxTokens = aiDef.MaxTokens,
             Temperature = temperature,
-            Timeout = TimeSpan.FromMinutes(10),
+            Timeout = TimeSpan.FromMinutes(aiDef.TimeoutMinutes > 0 ? aiDef.TimeoutMinutes : 5),
+            WorkingDirectory = workingDir,
             OnOutputLine = aiLogger != null
                 ? line => aiLogger.EmitLine(workflowContext.InstanceId, this.NodeId, line)
                 : null,
         };
 
         var result = await executor.ExecuteAsync(execRequest, cancellationToken);
+
+        // Log execution summary
+        if (aiLogger != null)
+        {
+            aiLogger.EmitLine(workflowContext.InstanceId, this.NodeId,
+                $"📊 {(result.Success ? "OK" : "FAIL")} | {result.InputTokens}in/{result.OutputTokens}out | {result.Duration.TotalSeconds:0.0}s | {result.ModelUsed}");
+        }
 
         // Write results to output
         nodeContext.OutputData[aiDef.OutputKey] = result.Content;
@@ -198,6 +289,60 @@ public class AINode : ExecutableNodeBase
         nodeContext.OutputData["ai.durationMs"] = (int)result.Duration.TotalMilliseconds;
         nodeContext.OutputData["ai.inputTokens"] = result.InputTokens;
         nodeContext.OutputData["ai.outputTokens"] = result.OutputTokens;
+
+        // Extract structured outputs from [OUTPUT:name] markers in the response
+        var extractedOutputCount = 0;
+        if (agentDef?.Outputs.Count > 0 && !string.IsNullOrEmpty(result.Content))
+        {
+            foreach (var output in agentDef.Outputs)
+            {
+                var marker = $"[OUTPUT:{output.Name}]";
+                var idx = result.Content.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                if (idx >= 0)
+                {
+                    var valueStart = idx + marker.Length;
+                    var lineEnd = result.Content.IndexOf('\n', valueStart);
+                    var value = lineEnd >= 0
+                        ? result.Content[valueStart..lineEnd].Trim()
+                        : result.Content[valueStart..].Trim();
+                    if (!string.IsNullOrEmpty(value))
+                    {
+                        nodeContext.OutputData[output.Name] = value;
+                        extractedOutputCount++;
+                    }
+                }
+            }
+
+            // If no declared outputs were extracted but AI reported success,
+            // check for tool failures in the response (agent couldn't do the work)
+            if (extractedOutputCount == 0 && result.Success)
+            {
+                var content = result.Content.ToLowerInvariant();
+                var hasToolFailure = content.Contains("permission error")
+                    || content.Contains("tool error")
+                    || content.Contains("all tools")
+                    || content.Contains("unable to")
+                    || content.Contains("cannot access")
+                    || content.Contains("please try running");
+
+                if (hasToolFailure)
+                {
+                    result = new AIExecutionResult
+                    {
+                        Success = false,
+                        Error = "AI agent could not execute the skill (tool permission errors). Check working directory and permissions.",
+                        Content = result.Content,
+                        Duration = result.Duration,
+                        ModelUsed = result.ModelUsed,
+                        InputTokens = result.InputTokens,
+                        OutputTokens = result.OutputTokens,
+                    };
+                    nodeContext.OutputData["ai.success"] = false;
+                    nodeContext.OutputData["ai.error"] = result.Error;
+                    logger.LogWarning("AI reported success but no outputs extracted and tool failures detected");
+                }
+            }
+        }
 
         if (!result.Success)
         {
@@ -210,6 +355,7 @@ public class AINode : ExecutableNodeBase
         {
             NodeId = this.Definition!.NodeId,
             Status = status,
+            ErrorMessage = result.Success ? null : (result.Error ?? "AI execution failed"),
             StartTime = startTime,
             EndTime = DateTime.UtcNow,
             ExecutionContext = nodeContext,

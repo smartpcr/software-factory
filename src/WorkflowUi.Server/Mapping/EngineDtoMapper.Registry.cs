@@ -25,6 +25,7 @@ public static partial class EngineDtoMapper
         return source switch
         {
             SetterNodeDefinition setter => MapSetter(setter),
+            AssertNodeDefinition assert => MapAssert(assert),
             CSharpNodeDefinition csharp => MapCSharp(csharp),
             CSharpScriptNodeDefinition csharpScript => MapCSharpScript(csharpScript),
             CSharpTaskNodeDefinition csharpTask => MapCSharpTask(csharpTask),
@@ -49,6 +50,7 @@ public static partial class EngineDtoMapper
         return dto.RuntimeType switch
         {
             "Setter" => MapSetterFromDto(dto),
+            "Assert" => MapAssertFromDto(dto),
             "CSharp" => MapCSharpFromDto(dto),
             "CSharpScript" => MapCSharpScriptFromDto(dto),
             "CSharpTask" => MapCSharpTaskFromDto(dto),
@@ -142,7 +144,7 @@ public static partial class EngineDtoMapper
     /// </summary>
     public static readonly IReadOnlyList<string> SupportedRuntimeTypes =
     [
-        "Setter", "CSharp", "CSharpScript", "CSharpTask",
+        "Setter", "Assert", "CSharp", "CSharpScript", "CSharpTask",
         "PowerShell", "PowerShellTask",
         "IfElse", "ForEach", "While", "Switch",
         "Subflow", "Timer", "Group",

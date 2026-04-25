@@ -34,6 +34,26 @@ public static partial class EngineDtoMapper
     }
 
     /// <summary>
+    /// Maps an Assert engine definition to DTO.
+    /// </summary>
+    public static NodeDto MapAssert(AssertNodeDefinition source)
+    {
+        var dto = new NodeDto();
+        MapBaseToDto(source, dto);
+        return dto;
+    }
+
+    /// <summary>
+    /// Maps a DTO to Assert engine definition.
+    /// </summary>
+    public static AssertNodeDefinition MapAssertFromDto(NodeDto dto)
+    {
+        var target = new AssertNodeDefinition();
+        MapBaseFromDto(dto, target);
+        return target;
+    }
+
+    /// <summary>
     /// Maps a compiled CSharp engine definition to DTO.
     /// </summary>
     public static NodeDto MapCSharp(CSharpNodeDefinition source)

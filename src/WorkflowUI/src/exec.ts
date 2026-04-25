@@ -14,9 +14,11 @@ import { mountJsonEditor, disposeAllEditors as _disposeEditors } from './csharp-
 
 type LogFn = (level: string, nodeId: string | null, msg: string) => void;
 type ClearLogsFn = () => void;
+type RunFinishedFn = () => void;
 
 let logFn: LogFn;
 let clearLogsFn: ClearLogsFn;
+let runFinishedFn: RunFinishedFn | null = null;
 let hubConnection: signalR.HubConnection | null = null;
 let currentRunId: string | null = null;
 
@@ -51,13 +53,40 @@ function handleRunEvent(event: RunEvent) {
   switch (event.kind) {
     case 'NodeStarted': {
       const node = findNodeById(event.nodeId);
-      if (node) { node.status = 'running'; Nodes.render(); }
+      if (node) {
+        if (node.status === 'running' || node.status === 'success') {
+          // Node starting again (While loop iteration)
+          node._iterCount = (node._iterCount || 0) + 1;
+        } else {
+          node._iterCount = node.runtimeType.toLowerCase() === 'while' ? 0 : undefined;
+        }
+        node.status = 'running';
+        Nodes.render();
+      }
       logFn('info', event.nodeId || null, `▶ ${event.nodeName || event.nodeId} started`);
       break;
     }
     case 'NodeCompleted': {
       const node = findNodeById(event.nodeId);
-      if (node) { node.status = 'success'; Nodes.render(); }
+      if (node) {
+        node.status = 'success';
+        // Duration from any completed event
+        if (event.payload?.duration) {
+          node._runDuration = event.payload.duration as string;
+        }
+        // Populate runtime data from synthetic events
+        if (event.synthetic && event.payload) {
+          node._runData = {
+            status: 'success',
+            nodeInstanceId: event.payload.nodeInstanceId as string,
+            duration: event.payload.duration as string,
+            ...(event.payload.inputData ? { inputData: event.payload.inputData as Record<string, unknown> } : {}),
+            ...(event.payload.outputData ? { outputData: event.payload.outputData as Record<string, unknown> } : {}),
+            ...(event.payload.globalVariables ? { globalVariables: event.payload.globalVariables as Record<string, unknown> } : {}),
+          };
+        }
+        Nodes.render();
+      }
       // For Log nodes, display the resolved log message in the execution log
       const outData = event.payload?.outputData as Record<string, unknown> | undefined;
       if (node && node.runtimeType.toLowerCase() === 'log' && outData?.message) {
@@ -102,14 +131,40 @@ function handleRunEvent(event: RunEvent) {
     }
     case 'NodeFailed': {
       const node = findNodeById(event.nodeId);
-      if (node) { node.status = 'failed'; Nodes.render(); }
-      const errMsg = (event.payload?.errorMessage as string) || 'Unknown error';
-      logFn('error', event.nodeId || null, `✗ ${event.nodeName || event.nodeId} failed: ${errMsg}`);
+      if (node) {
+        node.status = 'failed';
+        const errMsg = (event.payload?.errorMessage as string) || 'Unknown error';
+        node._runError = errMsg;
+        // Duration from any failed event
+        if (event.payload?.duration) {
+          node._runDuration = event.payload.duration as string;
+        }
+        // Populate runtime data from synthetic events
+        if (event.synthetic && event.payload) {
+          node._runData = {
+            status: 'failed',
+            nodeInstanceId: event.payload.nodeInstanceId as string,
+            errorMessage: errMsg,
+            duration: event.payload.duration as string,
+            ...(event.payload.inputData ? { inputData: event.payload.inputData as Record<string, unknown> } : {}),
+            ...(event.payload.globalVariables ? { globalVariables: event.payload.globalVariables as Record<string, unknown> } : {}),
+          };
+        }
+        Nodes.render();
+      }
+      const failErrMsg = (event.payload?.errorMessage as string) || 'Unknown error';
+      logFn('error', event.nodeId || null, `✗ ${event.nodeName || event.nodeId} failed: ${failErrMsg}`);
       break;
     }
     case 'NodeCancelled': {
       const node = findNodeById(event.nodeId);
-      if (node) { node.status = 'cancelled'; Nodes.render(); }
+      if (node) {
+        node.status = 'cancelled';
+        if (event.payload?.duration) {
+          node._runDuration = event.payload.duration as string;
+        }
+        Nodes.render();
+      }
       logFn('warn', event.nodeId || null, `■ ${event.nodeName || event.nodeId} cancelled`);
       break;
     }
@@ -183,6 +238,7 @@ function detachRun() {
     } catch { /* ignore */ }
   }
   currentRunId = null;
+  runFinishedFn?.();
 }
 
 export const Exec = {
@@ -191,6 +247,10 @@ export const Exec = {
   init(log: LogFn, clearLogs: ClearLogsFn) {
     logFn = log;
     clearLogsFn = clearLogs;
+  },
+
+  onRunFinished(fn: RunFinishedFn) {
+    runFinishedFn = fn;
   },
 
   setStatus(status: ExecState) {
@@ -316,15 +376,15 @@ export const Exec = {
           }
         } else {
           // Still running — poll again
-          setTimeout(poll, 500);
+          setTimeout(poll, 5000);
         }
       } catch {
         // Server unavailable, try again
-        setTimeout(poll, 2000);
+        setTimeout(poll, 5000);
       }
     };
     // Start polling after a short delay to give SignalR a chance
-    setTimeout(poll, 300);
+    setTimeout(poll, 1000);
   },
 
   async cancel() {

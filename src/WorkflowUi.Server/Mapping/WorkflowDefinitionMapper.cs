@@ -112,6 +112,11 @@ public static class WorkflowDefinitionMapper
                 VariableMappings = GetStringDictionary(el, config, "variableMappings"),
                 VariableOps = GetStringDictionary(el, config, "variableOps"),
             },
+            RuntimeType.Assert => new AssertNodeDefinition
+            {
+                Condition = GetString(el, config, "condition") ?? "",
+                Message = GetString(el, config, "message"),
+            },
             RuntimeType.IfElse => new IfElseNodeDefinition { Condition = GetString(el, config, "condition") ?? "" },
             RuntimeType.ForEach => new ForEachNodeDefinition
             {

@@ -646,17 +646,25 @@ namespace ExecutionEngine.Engine
 
                         if (hasSignal || hasMessages)
                         {
-                            // If we have a signal, use it. Otherwise, we'll try to lease directly from the queue.
-                            // ExecuteNodeAsync will handle the case where there's no message available.
+                            // If we have a signal, use it. Otherwise, peek at the actual queue message
+                            // to get the correct type (cancel vs complete). Using a dummy Complete message
+                            // would bypass cancel handling in ProcessMessageAsync.
                             messageProcessed = true;
 
-                            // Use signal if available, otherwise create a dummy signal
-                            // ProcessMessageAsync will trigger ExecuteNodeAsync which will lease the actual message
-                            var messageToProcess = hasSignal ? signal! : new NodeCompleteMessage
+                            INodeMessage messageToProcess;
+                            if (hasSignal)
                             {
-                                NodeId = "__dummy__",
-                                Timestamp = DateTime.UtcNow
-                            };
+                                messageToProcess = signal!;
+                            }
+                            else
+                            {
+                                var peeked = nodeQueue.PeekFirstMessage();
+                                messageToProcess = peeked ?? new NodeCompleteMessage
+                                {
+                                    NodeId = "__dummy__",
+                                    Timestamp = DateTime.UtcNow
+                                };
+                            }
 
                             // Handle the message based on type
                             await this.ProcessMessageAsync(nodeDef, messageToProcess, workflowDefinition, context, cancellationToken);
@@ -719,10 +727,27 @@ namespace ExecutionEngine.Engine
                         break;
                     }
 
-                    // If no messages were processed, wait briefly to avoid busy-wait
+                    // If no messages were processed, wait for any queue to signal instead of busy-polling
                     if (!messageProcessed)
                     {
-                        await Task.Delay(10, cancellationToken);
+                        // Build a combined wait on all queue channels — wake up when ANY queue gets a message
+                        var waitTasks = new List<Task>();
+                        foreach (var qe in context.NodeQueues)
+                        {
+                            var q = (NodeMessageQueue)qe.Value;
+                            waitTasks.Add(q.MessageSignals.WaitToReadAsync(cancellationToken).AsTask());
+                        }
+
+                        if (waitTasks.Count > 0)
+                        {
+                            // Wait for any signal or a short timeout (to re-check termination)
+                            var timeout = Task.Delay(500, cancellationToken);
+                            await Task.WhenAny(waitTasks.Append(timeout));
+                        }
+                        else
+                        {
+                            await Task.Delay(10, cancellationToken);
+                        }
                     }
                 }
 
@@ -1150,7 +1175,7 @@ namespace ExecutionEngine.Engine
             nodeInstance.ErrorMessage = errorMessage;
             nodeInstance.Exception = exception;
 
-            // Route fail message to downstream nodes
+            // Route fail message to downstream nodes (error port connections)
             var failMessage = new NodeFailMessage
             {
                 NodeId = nodeId,
@@ -1160,7 +1185,7 @@ namespace ExecutionEngine.Engine
             };
 
             this.logger.LogDebug("Routing fail message from {NodeId} to downstream nodes", nodeId);
-            await router.RouteMessageAsync(failMessage, context, cancellationToken);
+            var errorHandlerCount = await router.RouteMessageAsync(failMessage, context, cancellationToken);
 
             // Raise NodeFailed event
             this.NodeFailed?.Invoke(nodeId, nodeInstance.NodeInstanceId, errorMessage);
@@ -1191,6 +1216,54 @@ namespace ExecutionEngine.Engine
             var progress = this.CalculateProgress(context, workflowDefinition.Nodes.Count);
             context.PublishProgress(progress);
 
+            // Propagate cancellation to downstream nodes BEFORE compensation
+            // to prevent race conditions where downstream nodes start before cancel arrives
+            await this.CancelNodeAndPropagate(nodeId, errorMessage, workflowDefinition, context, cancellationToken);
+
+            // If no error handler exists (no error-port connections accepted the fail message),
+            // this is an unhandled failure — cancel ALL remaining nodes and fail the workflow immediately
+            if (errorHandlerCount == 0)
+            {
+                this.logger.LogInformation("Unhandled node failure (no error handler): {NodeId}. Failing workflow.", nodeId);
+                context.Variables["__error"] = $"Unhandled failure in node '{nodeDef?.NodeName ?? nodeId}': {errorMessage}";
+
+                // Cancel all pending/running nodes to stop the workflow
+                foreach (var tracked in this.nodeExecutionTracking.Values)
+                {
+                    if (tracked.WorkflowInstanceId == context.InstanceId &&
+                        (tracked.Status == NodeExecutionStatus.Pending ||
+                         tracked.Status == NodeExecutionStatus.Running))
+                    {
+                        tracked.Status = NodeExecutionStatus.Cancelled;
+                        tracked.ErrorMessage = $"Cancelled: upstream node '{nodeDef?.NodeName ?? nodeId}' failed";
+                        this.NodeCancelled?.Invoke(tracked.NodeId, tracked.NodeInstanceId, tracked.ErrorMessage);
+                        context.PublishEvent(new NodeCancelledEvent
+                        {
+                            WorkflowInstanceId = context.InstanceId,
+                            NodeId = tracked.NodeId,
+                            NodeName = workflowDefinition.Nodes.FirstOrDefault(n => n.NodeId == tracked.NodeId)?.NodeName ?? tracked.NodeId,
+                            NodeInstanceId = tracked.NodeInstanceId,
+                            Reason = tracked.ErrorMessage,
+                            Timestamp = DateTime.UtcNow,
+                        });
+                    }
+                }
+
+                // Drain all queues so the main loop terminates
+                foreach (var queueEntry in context.NodeQueues)
+                {
+                    var queue = (NodeMessageQueue)queueEntry.Value;
+                    while (queue.Count > 0)
+                    {
+                        var lease = await queue.LeaseAsync(cancellationToken);
+                        if (lease != null)
+                        {
+                            await queue.CompleteAsync(lease, cancellationToken);
+                        }
+                    }
+                }
+            }
+
             // Execute compensation logic (Saga pattern)
             await this.ExecuteCompensationAsync(
                 nodeId,
@@ -1199,9 +1272,6 @@ namespace ExecutionEngine.Engine
                 workflowDefinition,
                 context,
                 cancellationToken);
-
-            // Propagate cancellation to downstream nodes
-            await this.CancelNodeAndPropagate(nodeId, errorMessage, workflowDefinition, context, cancellationToken);
         }
 
         /// <summary>

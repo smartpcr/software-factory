@@ -6,10 +6,14 @@
 
 namespace ExecutionEngine.Nodes
 {
+    using ExecutionEngine.AI;
     using ExecutionEngine.Contexts;
     using ExecutionEngine.Core;
     using ExecutionEngine.Enums;
     using ExecutionEngine.Nodes.Definitions;
+    using Microsoft.CodeAnalysis.CSharp.Scripting;
+    using Microsoft.CodeAnalysis.Scripting;
+    using Microsoft.Extensions.DependencyInjection;
 
     public class SetterNode : ExecutableNodeBase
     {
@@ -29,44 +33,68 @@ namespace ExecutionEngine.Nodes
 
             // Read variable mappings and set/increment global variables from input data
             var setterDef = (SetterNodeDefinition)this.Definition!;
+            var aiLogger = workflowContext.ServiceProvider?.GetService<IAINodeLogger>();
             if (setterDef.VariableMappings != null)
             {
                 foreach (var (globalKey, inputExpr) in setterDef.VariableMappings)
                 {
-                    var value = BindingResolver.Resolve(inputExpr, nodeContext, workflowContext);
-                    if (value == null) continue;
-
                     var op = "set";
                     if (setterDef.VariableOps != null && setterDef.VariableOps.TryGetValue(globalKey, out var opVal))
                     {
                         op = opVal;
                     }
 
-                    if (op == "increment")
+                    if (op == "expr")
                     {
-                        var addend = Convert.ToDouble(value);
-                        if (workflowContext.Variables.TryGetValue(globalKey, out var existing))
+                        // Expression mode: evaluate as real C# using Roslyn with typed variables
+                        var state = CreateExecutionState(workflowContext, nodeContext);
+                        var processedExpr = ExecutionState.PreProcessExpression(inputExpr);
+                        try
                         {
-                            var current = Convert.ToDouble(existing);
-                            workflowContext.Variables[globalKey] = current + addend;
+                            var scriptOptions = ScriptOptions.Default
+                                .AddReferences(typeof(ExecutionState).Assembly, typeof(Math).Assembly)
+                                .AddImports("System", "System.IO", "System.Linq", "System.Collections.Generic");
+                            var result = await CSharpScript.EvaluateAsync<object>(
+                                processedExpr, scriptOptions, state, typeof(ExecutionState), cancellationToken);
+                            workflowContext.Variables[globalKey] = result ?? "";
                         }
-                        else
+                        catch
                         {
-                            workflowContext.Variables[globalKey] = addend;
+                            // Fallback: resolve as template + string concatenation
+                            var resolved = BindingResolver.ResolveTemplate(inputExpr, null, nodeContext, workflowContext);
+                            resolved = EvaluateStringConcatenation(resolved);
+                            workflowContext.Variables[globalKey] = resolved;
                         }
-                    }
-                    else if (op == "expr")
-                    {
-                        // Expression mode: the inputExpr is a C# template with {placeholders}
-                        var resolved = BindingResolver.ResolveTemplate(inputExpr, null, nodeContext, workflowContext);
-                        workflowContext.Variables[globalKey] = resolved;
                     }
                     else
                     {
-                        workflowContext.Variables[globalKey] = value;
+                        var value = BindingResolver.Resolve(inputExpr, nodeContext, workflowContext);
+                        if (value == null) continue;
+
+                        if (op == "increment")
+                        {
+                            var addend = Convert.ToDouble(value);
+                            if (workflowContext.Variables.TryGetValue(globalKey, out var existing))
+                            {
+                                var current = Convert.ToDouble(existing);
+                                workflowContext.Variables[globalKey] = current + addend;
+                            }
+                            else
+                            {
+                                workflowContext.Variables[globalKey] = addend;
+                            }
+                        }
+                        else
+                        {
+                            workflowContext.Variables[globalKey] = value;
+                        }
                     }
 
                     nodeContext.OutputData[globalKey] = workflowContext.Variables[globalKey];
+
+                    // Emit log so the UI shows each variable assignment
+                    var displayVal = FormatValueForLog(workflowContext.Variables[globalKey]);
+                    aiLogger?.EmitLine(workflowContext.InstanceId, this.NodeId, $"  {globalKey} {(op == "increment" ? "+=" : "=")} {displayVal}");
                 }
             }
 
@@ -80,6 +108,55 @@ namespace ExecutionEngine.Nodes
                 WorkflowInstanceId = workflowContext.InstanceId,
                 StartTime = startTime,
             };
+        }
+
+        private static string FormatValueForLog(object value)
+        {
+            if (value is string s)
+            {
+                return s.Length > 120 ? $"\"{s[..117]}…\"" : $"\"{s}\"";
+            }
+
+            return value?.ToString() ?? "null";
+        }
+
+        /// <summary>
+        /// Evaluates simple string concatenation patterns left over after template resolution.
+        /// Handles: <c>someValue + "literal" + "literal"</c> → <c>someValueliteralliteral</c>.
+        /// Also handles single-quoted strings and trims whitespace around the + operator.
+        /// </summary>
+        private static string EvaluateStringConcatenation(string input)
+        {
+            if (!input.Contains('+'))
+            {
+                return input;
+            }
+
+            // Split on + and concatenate, stripping quotes from string literals
+            var parts = input.Split('+');
+            var sb = new System.Text.StringBuilder();
+            foreach (var part in parts)
+            {
+                var trimmed = part.Trim();
+
+                // Strip surrounding double quotes: "value" → value
+                if (trimmed.Length >= 2 && trimmed[0] == '"' && trimmed[^1] == '"')
+                {
+                    sb.Append(trimmed[1..^1]);
+                }
+                // Strip surrounding single quotes: 'value' → value
+                else if (trimmed.Length >= 2 && trimmed[0] == '\'' && trimmed[^1] == '\'')
+                {
+                    sb.Append(trimmed[1..^1]);
+                }
+                else
+                {
+                    // Unquoted part (resolved placeholder value) — use as-is
+                    sb.Append(trimmed);
+                }
+            }
+
+            return sb.ToString();
         }
     }
 }

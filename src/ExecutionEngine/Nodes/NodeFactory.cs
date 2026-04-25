@@ -82,6 +82,9 @@ public class NodeFactory
                 case Enums.RuntimeType.Setter:
                     node = CreateSetterNode(definition);
                     break;
+                case Enums.RuntimeType.Assert:
+                    node = CreateAssertNode(definition);
+                    break;
                 case Enums.RuntimeType.CSharp:
                     node = this.CreateCSharpNode(definition);
                     break;
@@ -416,6 +419,11 @@ public class NodeFactory
     private static ExecutableNodeBase CreateSetterNode(NodeDefinition definition)
     {
         return new SetterNode();
+    }
+
+    private static ExecutableNodeBase CreateAssertNode(NodeDefinition definition)
+    {
+        return new AssertNode();
     }
 
     /// <summary>

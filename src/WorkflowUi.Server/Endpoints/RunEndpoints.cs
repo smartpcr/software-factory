@@ -90,7 +90,8 @@ public static class RunEndpoints
         group.MapGet("/{runId:guid}", (
             Guid runId,
             RunManager runManager,
-            RunHistoryBuffer historyBuffer) =>
+            RunHistoryBuffer historyBuffer,
+            RunHistoryReader historyReader) =>
         {
             var run = runManager.GetRun(runId);
             if (run == null)
@@ -98,9 +99,20 @@ public static class RunEndpoints
                 return Results.NotFound(new { message = $"Run '{runId}' not found." });
             }
 
-            // Include buffered events for this run
+            // Try in-memory buffer first (for active runs); fall back to JSONL
+            // file when buffer is truncated or empty (completed/evicted runs).
             var replay = historyBuffer.Replay(runId, 0);
-            var events = replay.NotFound ? Array.Empty<RunEvent>() : replay.Events.ToArray();
+            RunEvent[] events;
+            if (replay.NotFound || replay.Truncated || replay.Events.Count == 0)
+            {
+                // Buffer lost early events or run is no longer tracked — read full history from disk
+                var fromFile = historyReader.Read(runId);
+                events = fromFile.Count > 0 ? fromFile.ToArray() : (replay.NotFound ? Array.Empty<RunEvent>() : replay.Events.ToArray());
+            }
+            else
+            {
+                events = replay.Events.ToArray();
+            }
 
             return Results.Ok(new
             {

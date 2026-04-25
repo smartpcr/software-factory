@@ -266,7 +266,10 @@ async function processIncident(page, incidentId) {
         try {
             await page.waitForURL(u => u.includes('microsofticm.com/imp'), { timeout: 300000 });
         } catch {
-            throw new Error(`Authentication timed out. Final URL: ${page.url()}`);
+            // Timeout may fire just as navigation completes — re-check the URL before failing
+            if (!page.url().includes('microsofticm.com/imp')) {
+                throw new Error(`Authentication timed out. Final URL: ${page.url()}`);
+            }
         }
         await waitReady(page);
     }
@@ -399,15 +402,18 @@ async function main() {
     const page = await context.newPage();
     page.setDefaultTimeout(60000);
 
+    let exitCode = 0;
     try {
         await processIncident(page, INCIDENT_ID);
     } catch (err) {
         console.error('\nError:', err.message);
         if (err.stack) console.error(err.stack);
-        process.exit(1);
+        exitCode = 1;
     } finally {
+        // Always close context so session cookies are flushed to the persistent profile on disk
         await context.close().catch(() => {});
     }
+    process.exit(exitCode);
 }
 
 main().catch(err => { console.error('Fatal:', err.message); process.exit(1); });

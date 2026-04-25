@@ -29,7 +29,17 @@ public static class CliLocator
 
     private static string Resolve(string name)
     {
-        // Try well-known npm global path first
+        // Try npm global native binary first (bypasses .cmd/.ps1 shim issues)
+        var npmNativePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "npm", "node_modules", $"@github/{name}", "node_modules",
+            $"@github/{name}-win32-x64", $"{name}.exe");
+        if (File.Exists(npmNativePath))
+        {
+            return npmNativePath;
+        }
+
+        // Try well-known npm global .cmd path
         var npmPath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "npm",
@@ -55,12 +65,12 @@ public static class CliLocator
             {
                 var output = proc.StandardOutput.ReadToEnd().Trim();
                 proc.WaitForExit();
-                // Pick the first .cmd or .exe, skip .ps1
+                // Pick the first .exe or .cmd, skip .ps1
                 foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
                 {
                     var path = line.Trim();
-                    if (path.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) ||
-                        path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                    if (path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ||
+                        path.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
                     {
                         return path;
                     }

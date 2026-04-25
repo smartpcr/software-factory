@@ -66,6 +66,7 @@ export const App = {
       (level, nodeId, msg) => this.log(level, nodeId, msg),
       () => this.clearLogs(),
     );
+    Exec.onRunFinished(() => this.loadRunHistory());
     loadFallbackNodeTypes(); // Minimal palette until server responds
     Palette.onCreateNode((type, x, y) => this.createNode(type, x, y));
     Palette.render();
@@ -1308,7 +1309,7 @@ export const App = {
     const body = document.getElementById('logsBody');
     const count = document.getElementById('logCount');
     if (!body || !count) return;
-    count.textContent = String(State.logs.length);
+    count.textContent = State.logs.length > 0 ? String(State.logs.length) : '';
     if (!State.logs.length) {
       body.innerHTML = `<div class="log-empty">No execution logs yet. Hit Run to start.</div>`;
       return;
@@ -1367,7 +1368,6 @@ export const App = {
     const histBody = document.getElementById('historyBody');
     const clearBtn = document.querySelector('[data-action="clear-logs"]') as HTMLElement | null;
     const refreshBtn = document.getElementById('btnRefreshHistory');
-    const countEl = document.getElementById('logCount');
     document.querySelectorAll('.bottom-tab').forEach(t => {
       t.classList.toggle('active', (t as HTMLElement).dataset.bottomTab === tab);
     });
@@ -1375,17 +1375,18 @@ export const App = {
     if (histBody) histBody.style.display = tab === 'history' ? '' : 'none';
     if (clearBtn) clearBtn.style.display = tab === 'log' ? '' : 'none';
     if (refreshBtn) refreshBtn.style.display = tab === 'history' ? '' : 'none';
-    if (countEl) countEl.style.display = tab === 'log' ? '' : 'none';
     if (tab === 'history') this.loadRunHistory();
   },
 
   async loadRunHistory() {
     const body = document.getElementById('historyBody');
+    const countEl = document.getElementById('historyCount');
     if (!body) return;
     const wf = State.workflows[State.currentWfId || ''];
     const wfName = wf?.workflowName;
     try {
       const runs = await listRuns(wfName);
+      if (countEl) countEl.textContent = runs.length > 0 ? String(runs.length) : '';
       if (!runs.length) {
         body.innerHTML = `<div class="log-empty">No runs for "${escapeHtml(wfName || 'this workflow')}".</div>`;
         return;
@@ -1399,6 +1400,7 @@ export const App = {
       </table>`;
     } catch {
       body.innerHTML = '<div class="log-empty">Could not load run history from server.</div>';
+      if (countEl) countEl.textContent = '';
     }
   },
 
@@ -1441,7 +1443,7 @@ export const App = {
       const events: Array<{ kind: string; nodeId?: string; payload?: Record<string, unknown>; timestampUtc: string; synthetic?: boolean }> = data.events || [];
 
       // Build per-node summary from events
-      const nodeInfo = new Map<string, { status: string; duration?: string; error?: string; startTime?: string; endTime?: string; nodeInstanceId?: string; reason?: string; inputData?: Record<string, unknown>; outputData?: Record<string, unknown>; globalVariables?: Record<string, unknown> }>();
+      const nodeInfo = new Map<string, { status: string; duration?: string; error?: string; startTime?: string; endTime?: string; nodeInstanceId?: string; reason?: string; inputData?: Record<string, unknown>; outputData?: Record<string, unknown>; globalVariables?: Record<string, unknown>; startCount?: number }>();
       for (const evt of events) {
         if (!evt.nodeId) continue;
         const isSynthetic = evt.synthetic;
@@ -1451,6 +1453,7 @@ export const App = {
             info.status = 'running';
             info.startTime = evt.timestampUtc;
             info.nodeInstanceId = evt.payload?.nodeInstanceId as string;
+            info.startCount = (info.startCount || 0) + 1;
             nodeInfo.set(evt.nodeId, info);
             break;
           }
@@ -1516,6 +1519,7 @@ export const App = {
           n.status = info.status as '' | 'running' | 'success' | 'failed' | 'cancelled';
           n._runDuration = info.duration || undefined;
           n._runError = info.error || undefined;
+          n._iterCount = (info.startCount && info.startCount > 1) ? info.startCount - 1 : undefined;
           n._runData = {
             status: info.status,
             nodeInstanceId: info.nodeInstanceId,
@@ -1533,6 +1537,7 @@ export const App = {
           n._runDuration = undefined;
           n._runError = undefined;
           n._runData = undefined;
+          n._iterCount = undefined;
         }
       });
 

@@ -17,6 +17,11 @@ public enum RuntimeType
     Setter = 0,
 
     /// <summary>
+    /// Assert node that evaluates a condition and fails if not met.
+    /// </summary>
+    Assert,
+
+    /// <summary>
     /// Compiled C# assembly node.
     /// </summary>
     CSharp,

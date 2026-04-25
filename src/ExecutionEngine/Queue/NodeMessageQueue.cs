@@ -270,6 +270,17 @@ namespace ExecutionEngine.Queue
         }
 
         /// <summary>
+        /// Peeks at the first ready message without leasing it.
+        /// Returns null if the queue is empty.
+        /// </summary>
+        public INodeMessage? PeekFirstMessage()
+        {
+            var all = this.buffer.GetAllMessagesAsync(CancellationToken.None).GetAwaiter().GetResult();
+            var first = all.FirstOrDefault(e => e.Status == MessageStatus.Ready);
+            return first?.Payload as INodeMessage;
+        }
+
+        /// <summary>
         /// Gets all messages in the queue.
         /// Used for checkpoint serialization.
         /// </summary>

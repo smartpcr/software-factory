@@ -21,7 +21,7 @@ public class NodeDto
 
     public string? Description { get; set; }
 
-    public string JoinType { get; set; } = "Any";
+    public string JoinType { get; set; } = "All";
 
     public string Priority { get; set; } = "Normal";
 

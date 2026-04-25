@@ -402,12 +402,19 @@ function renderAI(ctx: InspectorContext): NodeInspectorResult {
       </div>
     ` : ''}
     <div class="ins-field">
-      <label class="ins-field-label">Input mapping</label>
-      <input class="mono" value="${escapeHtml(String(c.inputMapping || 'input'))}" data-config-key="inputMapping" data-node-id="${id}" />
-    </div>
-    <div class="ins-field">
-      <label class="ins-field-label">Output key</label>
-      <input class="mono" value="${escapeHtml(String(c.outputKey || 'result'))}" data-config-key="outputKey" data-node-id="${id}" />
+      <label class="ins-field-label">Working directory</label>
+      <select data-config-key="workingDirectory" data-node-id="${id}" class="ins-select" style="margin-bottom:4px;">
+        <option value="" ${!c.workingDirectory ? 'selected' : ''}>— default —</option>
+        ${inboundFields.filter(f => f.type === 'string' || f.type === 'unknown').map(f => {
+          const label = f.source === 'context' ? 'global.' + f.name : f.sourceNode + '.' + f.name;
+          return '<option value="' + escapeHtml(f.path) + '" ' + (String(c.workingDirectory) === f.path ? 'selected' : '') + ' title="' + escapeHtml(f.path) + '">' + escapeHtml(label) + '</option>';
+        }).join('')}
+        <option value="__custom__" ${c.workingDirectory && !inboundFields.some(f => f.path === String(c.workingDirectory)) && String(c.workingDirectory) !== '' ? 'selected' : ''}>Custom path…</option>
+      </select>
+      ${c.workingDirectory && !inboundFields.some(f => f.path === String(c.workingDirectory)) && String(c.workingDirectory) !== ''
+        ? '<input class="mono" value="' + escapeHtml(String(c.workingDirectory)) + '" data-config-key="workingDirectory" data-node-id="' + id + '" placeholder="E:\\work or {incidentFolder}" />'
+        : ''}
+      <div class="ins-field-hint">Bind to a field or enter a path. Agent runs in this directory.</div>
     </div>
     <div class="ins-field" style="display:flex; gap:8px; align-items:center;">
       <div style="flex:1">
@@ -417,6 +424,10 @@ function renderAI(ctx: InspectorContext): NodeInspectorResult {
       <div style="flex:1">
         <label class="ins-field-label">Max tokens</label>
         <input type="number" step="1024" min="4096" max="32768" value="${c.maxTokens || 4096}" data-config-key="maxTokens" data-node-id="${id}" />
+      </div>
+      <div style="flex:0 0 70px">
+        <label class="ins-field-label">Timeout</label>
+        <input type="number" step="1" min="1" max="60" value="${c.timeoutMinutes || 5}" data-config-key="timeoutMinutes" data-node-id="${id}" style="width:100%" title="Minutes before idle timeout" />
       </div>
     </div>
     ${(() => {
@@ -766,7 +777,7 @@ function renderFallback(ctx: InspectorContext): NodeInspectorResult {
 // ---------------------------------------------------------------------------
 
 function renderSetter(ctx: InspectorContext): NodeInspectorResult {
-  const { id, c, escapeHtml, inboundFields } = ctx;
+  const { id, c, escapeHtml, inboundFields, renderInboundFields } = ctx;
   let mappings: Record<string, string> = {};
   if (typeof c.variableMappings === 'string' && c.variableMappings) {
     try { mappings = JSON.parse(c.variableMappings as string); } catch { /* ignore */ }
@@ -846,6 +857,12 @@ function renderSetter(ctx: InspectorContext): NodeInspectorResult {
     </div>`;
   }).join('');
 
+  // Collect bound source values to highlight in the inbound panel
+  const boundSources: Record<string, string> = {};
+  for (const [, sourceExpr] of entries) {
+    if (sourceExpr) boundSources[sourceExpr] = sourceExpr;
+  }
+
   const html = `
     <div class="ins-field">
       <label class="ins-field-label">Variable Mappings</label>
@@ -855,9 +872,36 @@ function renderSetter(ctx: InspectorContext): NodeInspectorResult {
       </div>
       <button class="btn-secondary ins-setter-add" data-node="${id}" style="margin-top:8px;font-size:11px;width:100%;">+ Add mapping</button>
     </div>
+    ${inboundFields.length > 0 ? `
+    <div class="ins-field">
+      <label class="ins-field-label">Available fields</label>
+      <div class="inbound-fields-panel" style="margin-top:4px;">
+        ${renderInboundFields(inboundFields, id, [], boundSources)}
+      </div>
+    </div>` : ''}
   `;
 
   return { title: 'Setter', html, includeInboundPanel: false };
+}
+
+function renderAssert(ctx: InspectorContext): NodeInspectorResult {
+  const { id, c, escapeHtml, inboundFields } = ctx;
+  const message = String(c.message || '');
+
+  const html = `
+    <div class="ins-field">
+      <label class="ins-field-label">Condition</label>
+      <div class="ins-assert-condition-editor" id="assert-condition-${id}" data-node="${id}" style="height:60px;border:1px solid var(--stroke-1);border-radius:6px;overflow:hidden;"></div>
+      <div class="ins-field-hint">C# expression with {field} placeholders. Operators: ==, !=, &gt;, &lt;, contains, startsWith</div>
+    </div>
+    <div class="ins-field">
+      <label class="ins-field-label">Error message</label>
+      <input class="mono" value="${escapeHtml(message)}" data-config-key="message" data-node-id="${id}"
+        placeholder="Optional. Shown when assertion fails." />
+      <div class="ins-field-hint">Supports {field} placeholders. Blank = auto-generated from condition.</div>
+    </div>
+  `;
+  return { title: 'Assert', html, includeInboundPanel: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -883,6 +927,7 @@ const renderers: Record<string, (ctx: InspectorContext) => NodeInspectorResult> 
   end: renderEnd,
   noop: renderSetter,
   setter: renderSetter,
+  assert: renderAssert,
 };
 
 export function renderNodeConfig(ctx: InspectorContext): NodeInspectorResult {

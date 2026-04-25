@@ -123,6 +123,7 @@ public static class NodeTypeCatalog
         RuntimeType.Delay => "Delay",
         RuntimeType.Log => "Log",
         RuntimeType.Setter => "Setter",
+        RuntimeType.Assert => "Assert",
         RuntimeType.CSharp => "C# Assembly",
         RuntimeType.CSharpScript => "C# Script",
         RuntimeType.CSharpTask => "C# Task",
@@ -145,7 +146,8 @@ public static class NodeTypeCatalog
         RuntimeType.Start or RuntimeType.End => "Workflow",
         RuntimeType.Trigger or RuntimeType.Timer => "Trigger",
         RuntimeType.Action or RuntimeType.HttpRequest or RuntimeType.Transform
-            or RuntimeType.Delay or RuntimeType.Log or RuntimeType.Setter => "Actions",
+            or RuntimeType.Delay or RuntimeType.Log or RuntimeType.Setter
+            or RuntimeType.Assert => "Actions",
         RuntimeType.CSharp or RuntimeType.CSharpScript or RuntimeType.CSharpTask
             or RuntimeType.PowerShell or RuntimeType.PowerShellTask => "Code",
         RuntimeType.IfElse or RuntimeType.Switch or RuntimeType.Parallel
@@ -166,6 +168,7 @@ public static class NodeTypeCatalog
         RuntimeType.Delay => "Pause for a duration.",
         RuntimeType.Log => "Output a log message.",
         RuntimeType.Setter => "Set global variables from upstream output fields.",
+        RuntimeType.Assert => "Evaluate a condition and fail the node if not met.",
         RuntimeType.CSharp => "Load and execute a compiled C# INode from an assembly.",
         RuntimeType.CSharpScript => "Execute a C# script using Roslyn.",
         RuntimeType.CSharpTask => "Execute an inline C# script or compiled executor.",
@@ -187,7 +190,7 @@ public static class NodeTypeCatalog
     {
         RuntimeType.Start or RuntimeType.Trigger or RuntimeType.Timer => (false, true, false),
         RuntimeType.End => (true, false, false),
-        RuntimeType.Delay or RuntimeType.Log or RuntimeType.Setter => (true, true, false),
+        RuntimeType.Delay or RuntimeType.Log or RuntimeType.Setter or RuntimeType.Assert => (true, true, false),
         RuntimeType.IfElse or RuntimeType.Switch => (true, true, true),
         RuntimeType.Parallel => (true, true, true),
         RuntimeType.ForEach or RuntimeType.While => (true, true, true),

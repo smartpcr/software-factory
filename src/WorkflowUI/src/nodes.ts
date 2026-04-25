@@ -11,6 +11,39 @@ import { Minimap } from './minimap';
 
 let callbacks: AppCallbacks;
 
+/** Format ISO duration (PT1M2.3S) to human-readable */
+function formatDuration(iso: string): string {
+  if (!iso) return '';
+  const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?/i);
+  if (!m) return iso;
+  const h = m[1] ? `${m[1]}h ` : '';
+  const min = m[2] ? `${m[2]}m ` : '';
+  const sec = m[3] ? `${parseFloat(m[3]).toFixed(1)}s` : '';
+  return (h + min + sec).trim() || '0s';
+}
+
+/** Format ISO timestamp to short local time */
+function formatTimestamp(ts: string): string {
+  if (!ts) return '';
+  try {
+    const d = new Date(ts.endsWith('Z') ? ts : ts + 'Z');
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  } catch { return ts; }
+}
+
+/** Truncate string with ellipsis */
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
+
+/** Format a value for display in tooltip */
+function formatValue(v: unknown): string {
+  if (v === null || v === undefined) return '—';
+  if (typeof v === 'string') return v || '""';
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  try { return JSON.stringify(v); } catch { return String(v); }
+}
+
 export const Nodes = {
   init(cb: AppCallbacks) { callbacks = cb; },
 
@@ -148,6 +181,23 @@ export const Nodes = {
     // Only update body content, not the error port/drop zones
     const bodyContentEl = el.querySelector(':scope > .node-body > .node-body-content');
     if (bodyContentEl) bodyContentEl.innerHTML = this.bodyHtml(node);
+    // Update tooltip with runtime data
+    el.title = this.nodeTooltip(node);
+    // Duration badge
+    let durBadge = el.querySelector(':scope > .node-duration-badge') as HTMLElement | null;
+    if (node._runDuration) {
+      if (!durBadge) {
+        durBadge = document.createElement('div');
+        durBadge.className = 'node-duration-badge';
+        const head = el.querySelector(':scope > .node-head');
+        if (head) el.insertBefore(durBadge, head);
+        else el.appendChild(durBadge);
+      }
+      durBadge.textContent = formatDuration(node._runDuration);
+      durBadge.title = node._runError || '';
+    } else if (durBadge) {
+      durBadge.remove();
+    }
     // Validation badge
     const hasErrors = node.validationErrors && node.validationErrors.length > 0;
     el.classList.toggle('has-validation-error', !!hasErrors);
@@ -237,11 +287,22 @@ export const Nodes = {
     }
     if (rt === 'trigger') return row('Method', String(c.method || 'POST')) + row('Route', String(c.route || '—'));
     if (rt === 'if' || rt === 'ifelse') return row('Condition', String(c.condition || '—'), true);
+    if (rt === 'assert') {
+      const cond = String(c.condition || '—');
+      const truncated = cond.length > 30 ? cond.slice(0, 28) + '…' : cond;
+      return row('Assert', truncated, true);
+    }
     if (rt === 'switch') return row('Expression', String(c.expression || '—'), true);
     if (rt === 'foreach') {
       const itemVar = String(c.itemVariable || 'item');
       const collVar = String(c.collectionVariable || '—');
       return row('Loop', `${itemVar} in ${collVar}`, true);
+    }
+    if (rt === 'while') {
+      const cond = String(c.conditionExpression || '—');
+      const truncated = cond.length > 30 ? cond.slice(0, 28) + '…' : cond;
+      const iterLabel = node._iterCount != null ? `Iteration ${node._iterCount}` : truncated;
+      return row('While', iterLabel, true);
     }
     if (rt === 'ai') {
       const m = String(c.mode || 'skill').toLowerCase();
@@ -269,7 +330,7 @@ export const Nodes = {
     return '';
   },
 
-  /** Build a tooltip string for a node with metadata */
+  /** Build a tooltip string for a node with metadata and runtime data */
   nodeTooltip(node: FlowNode): string {
     const c = node.config || {};
     const rt = node.runtimeType.toLowerCase();
@@ -288,6 +349,38 @@ export const Nodes = {
         if ((refWf as unknown as Record<string, unknown>).author) parts.push(`Author: ${(refWf as unknown as Record<string, unknown>).author}`);
       }
     }
+
+    // Runtime data from loaded run
+    const d = node._runData;
+    if (d) {
+      parts.push(''); // separator
+      parts.push(`── Run ──`);
+      if (d.startTime) parts.push(`Start: ${formatTimestamp(d.startTime as string)}`);
+      if (d.duration) parts.push(`Duration: ${formatDuration(d.duration as string)}`);
+      if (d.status) parts.push(`Status: ${d.status}`);
+      if (d.errorMessage) {
+        parts.push(`Error: ${truncate(d.errorMessage as string, 200)}`);
+      }
+      if (d.cancelReason) {
+        parts.push(`Cancelled: ${d.cancelReason}`);
+      }
+      const outputData = d.outputData as Record<string, unknown> | undefined;
+      if (outputData && Object.keys(outputData).length > 0) {
+        parts.push('── Output ──');
+        for (const [k, v] of Object.entries(outputData)) {
+          if (k === 'ChildResults') continue; // skip bulky group internals
+          parts.push(`  ${k}: ${truncate(formatValue(v), 120)}`);
+        }
+      }
+      const inputData = d.inputData as Record<string, unknown> | undefined;
+      if (inputData && Object.keys(inputData).length > 0) {
+        parts.push('── Input ──');
+        for (const [k, v] of Object.entries(inputData)) {
+          parts.push(`  ${k}: ${truncate(formatValue(v), 120)}`);
+        }
+      }
+    }
+
     return parts.join('\n');
   },
 

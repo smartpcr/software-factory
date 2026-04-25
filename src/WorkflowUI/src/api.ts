@@ -47,7 +47,7 @@ export async function saveWorkflow(id: string, data: WorkflowData): Promise<void
     nodeName: n.nodeName,
     description: n.description || '',
     configuration: n.config || {},
-    joinType: n.joinType || 'Any',
+    joinType: n.joinType || 'All',
     priority: n.priority || 'Normal',
     maxConcurrentExecutions: n.maxConcurrentExecutions || 0,
     retryPolicy: n.retryPolicy || null,

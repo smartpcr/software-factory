@@ -28,8 +28,42 @@ public class CopilotAIExecutor : IAIExecutor
     /// <inheritdoc/>
     public AIBackend Backend => AIBackend.Copilot;
 
+    /// <summary>Model fallback chain — when a model is unavailable, try the next one.</summary>
+    private static readonly Dictionary<string, string[]> ModelFallbacks = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["claude-opus-4.7"] = ["claude-opus-4.6", "claude-sonnet-4.6"],
+        ["claude-opus-4.6"] = ["claude-opus-4.7", "claude-sonnet-4.6"],
+        ["claude-opus-4.5"] = ["claude-opus-4.6", "claude-sonnet-4.5"],
+        ["claude-sonnet-4.6"] = ["claude-sonnet-4.5", "claude-sonnet-4"],
+        ["claude-sonnet-4.5"] = ["claude-sonnet-4.6", "claude-sonnet-4"],
+    };
+
     /// <inheritdoc/>
     public async Task<AIExecutionResult> ExecuteAsync(AIExecutionRequest request, CancellationToken cancellationToken)
+    {
+        var result = await this.ExecuteWithModelAsync(request, request.Model, cancellationToken);
+        if (!result.Success && result.Error != null && result.Error.Contains("is not available", StringComparison.OrdinalIgnoreCase))
+        {
+            // Model unavailable — try fallbacks
+            if (ModelFallbacks.TryGetValue(request.Model, out var fallbacks))
+            {
+                foreach (var fallback in fallbacks)
+                {
+                    this.logger.LogWarning("Model {Model} unavailable, trying fallback {Fallback}", request.Model, fallback);
+                    request.OnOutputLine?.Invoke($"⚠ Model {request.Model} unavailable, trying {fallback}…");
+                    result = await this.ExecuteWithModelAsync(request, fallback, cancellationToken);
+                    if (result.Success || result.Error == null || !result.Error.Contains("is not available", StringComparison.OrdinalIgnoreCase))
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private async Task<AIExecutionResult> ExecuteWithModelAsync(AIExecutionRequest request, string model, CancellationToken cancellationToken)
     {
         var sw = Stopwatch.StartNew();
         var contentBuilder = new StringBuilder();
@@ -37,9 +71,13 @@ public class CopilotAIExecutor : IAIExecutor
         var currentBlock = new StringBuilder();
         int inputTokens = 0, outputTokens = 0;
 
+        // Idle timeout: cancel if no streaming events received for this duration
+        var idleTimeout = TimeSpan.FromMinutes(5);
+        var lastEventTime = DateTime.UtcNow;
+
         this.logger.LogInformation(
-            "Copilot SDK: model={Model}, prompt length={Length}",
-            request.Model, request.Prompt.Length);
+            "Copilot SDK: model={Model}, prompt length={Length}, timeout={Timeout}",
+            model, request.Prompt.Length, request.Timeout);
 
         CopilotSession? session = null;
         IDisposable? subscription = null;
@@ -49,15 +87,24 @@ public class CopilotAIExecutor : IAIExecutor
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(request.Timeout);
 
-            await using var client = new CopilotClient();
+            var clientOptions = new CopilotClientOptions
+            {
+                CliArgs = ["--yolo"],
+                CliPath = CliLocator.Copilot,
+            };
+            if (!string.IsNullOrEmpty(request.WorkingDirectory))
+            {
+                clientOptions.Cwd = request.WorkingDirectory;
+            }
+
+            await using var client = new CopilotClient(clientOptions);
             var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
             // Create session with system prompt and model
             var sessionConfig = new SessionConfig
             {
-                Model = request.Model,
-                OnPermissionRequest = async (req, invocation) =>
-                    new PermissionRequestResult { Kind = PermissionRequestResultKind.Approved },
+                Model = model,
+                OnPermissionRequest = PermissionHandler.ApproveAll,
             };
 
             if (!string.IsNullOrEmpty(request.SystemPrompt))
@@ -78,6 +125,9 @@ public class CopilotAIExecutor : IAIExecutor
             {
                 try
                 {
+                    // Update idle timer on every event
+                    lastEventTime = DateTime.UtcNow;
+
                     switch (evt)
                 {
                     case AssistantMessageDeltaEvent delta:
@@ -110,14 +160,59 @@ public class CopilotAIExecutor : IAIExecutor
 
                     case ToolExecutionStartEvent toolStart:
                         toolCallCount++;
-                        this.logger.LogInformation("Tool start #{Count}: {Tool}", toolCallCount, toolStart.Data.ToolName);
-                        request.OnOutputLine?.Invoke($"🔧 {toolStart.Data.ToolName}");
+                        var toolName = toolStart.Data.ToolName;
+                        this.logger.LogInformation("Tool start #{Count}: {Tool}", toolCallCount, toolName);
+
+                        // Show tool name + arguments summary in execution log
+                        var argsStr = "";
+                        if (toolStart.Data.Arguments != null)
+                        {
+                            try
+                            {
+                                var argsJson = System.Text.Json.JsonSerializer.Serialize(toolStart.Data.Arguments);
+                                // Extract key argument for common tools
+                                argsStr = toolName switch
+                                {
+                                    "view" => ExtractArg(argsJson, "path"),
+                                    "edit" => ExtractArg(argsJson, "path"),
+                                    "create" => ExtractArg(argsJson, "path"),
+                                    "grep" => ExtractArg(argsJson, "pattern"),
+                                    "glob" => ExtractArg(argsJson, "pattern"),
+                                    "powershell" => ExtractArg(argsJson, "command", 120),
+                                    "task" => ExtractArg(argsJson, "prompt", 80),
+                                    _ => argsJson.Length > 100 ? argsJson[..97] + "…" : argsJson,
+                                };
+                            }
+                            catch { /* ignore serialization errors */ }
+                        }
+
+                        request.OnOutputLine?.Invoke(string.IsNullOrEmpty(argsStr)
+                            ? $"🔧 {toolName}"
+                            : $"🔧 {toolName} → {argsStr}");
                         break;
 
                     case ToolExecutionCompleteEvent toolComplete:
                         var status = toolComplete.Data.Success ? "✓" : "✗";
                         this.logger.LogInformation("Tool complete: {Status}", status);
-                        request.OnOutputLine?.Invoke($"   {status} done");
+                        if (!toolComplete.Data.Success && toolComplete.Data.Error != null)
+                        {
+                            // Show the actual error from the tool
+                            try
+                            {
+                                var errJson = System.Text.Json.JsonSerializer.Serialize(toolComplete.Data.Error);
+                                var errPreview = errJson.Length > 200 ? errJson[..197] + "…" : errJson;
+                                request.OnOutputLine?.Invoke($"   {status} {errPreview}");
+                            }
+                            catch
+                            {
+                                request.OnOutputLine?.Invoke($"   {status} done (error)");
+                            }
+                        }
+                        else
+                        {
+                            request.OnOutputLine?.Invoke($"   {status} done");
+                        }
+
                         break;
 
                     case AssistantIntentEvent intent:
@@ -181,27 +276,36 @@ public class CopilotAIExecutor : IAIExecutor
                 new MessageOptions { Prompt = request.Prompt },
                 cts.Token);
 
-            // Wait for completion or timeout
-            var completed = await Task.WhenAny(
-                done.Task,
-                Task.Delay(request.Timeout, cts.Token));
+            // Wait for completion, overall timeout, or idle timeout
+            while (true)
+            {
+                var timeSinceLastEvent = DateTime.UtcNow - lastEventTime;
+                var remainingIdle = idleTimeout - timeSinceLastEvent;
+                if (remainingIdle <= TimeSpan.Zero)
+                {
+                    sw.Stop();
+                    request.OnOutputLine?.Invoke($"⚠ No activity for {idleTimeout.TotalMinutes:0}m — terminating");
+                    this.logger.LogWarning("Idle timeout: no events for {IdleTimeout}", idleTimeout);
+                    return new AIExecutionResult
+                    {
+                        Success = false,
+                        Error = $"Idle timeout: no streaming events for {idleTimeout.TotalMinutes:0} minutes",
+                        Content = contentBuilder.ToString().Trim(),
+                        Duration = sw.Elapsed,
+                        ModelUsed = model,
+                        InputTokens = inputTokens,
+                        OutputTokens = outputTokens,
+                    };
+                }
+
+                var completed = await Task.WhenAny(
+                    done.Task,
+                    Task.Delay(remainingIdle < TimeSpan.FromSeconds(10) ? remainingIdle : TimeSpan.FromSeconds(10), cts.Token));
+
+                if (done.Task.IsCompleted) break;
+            }
 
             sw.Stop();
-
-            if (completed != done.Task)
-            {
-                this.logger.LogWarning("Copilot SDK execution timed out after {Timeout}", request.Timeout);
-                return new AIExecutionResult
-                {
-                    Success = false,
-                    Error = $"Execution timed out after {request.Timeout.TotalSeconds}s",
-                    Content = contentBuilder.ToString().Trim(),
-                    Duration = sw.Elapsed,
-                    ModelUsed = request.Model,
-                    InputTokens = inputTokens,
-                    OutputTokens = outputTokens,
-                };
-            }
 
             var fullContent = contentBuilder.ToString().Trim();
             this.logger.LogInformation(
@@ -213,7 +317,7 @@ public class CopilotAIExecutor : IAIExecutor
                 Success = true,
                 Content = fullContent,
                 Duration = sw.Elapsed,
-                ModelUsed = request.Model,
+                ModelUsed = model,
                 InputTokens = inputTokens,
                 OutputTokens = outputTokens,
             };
@@ -227,7 +331,7 @@ public class CopilotAIExecutor : IAIExecutor
                 Error = "AI execution timed out or was cancelled.",
                 Content = contentBuilder.ToString().Trim(),
                 Duration = sw.Elapsed,
-                ModelUsed = request.Model,
+                ModelUsed = model,
                 InputTokens = inputTokens,
                 OutputTokens = outputTokens,
             };
@@ -242,7 +346,7 @@ public class CopilotAIExecutor : IAIExecutor
                 Error = $"Copilot SDK error: {ex.Message}",
                 Content = contentBuilder.ToString().Trim(),
                 Duration = sw.Elapsed,
-                ModelUsed = request.Model,
+                ModelUsed = model,
                 InputTokens = inputTokens,
                 OutputTokens = outputTokens,
             };
@@ -256,5 +360,22 @@ public class CopilotAIExecutor : IAIExecutor
                 catch { /* best-effort cleanup */ }
             }
         }
+    }
+
+    /// <summary>Extract a specific argument value from a JSON args string.</summary>
+    private static string ExtractArg(string argsJson, string key, int maxLen = 200)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(argsJson);
+            if (doc.RootElement.TryGetProperty(key, out var val))
+            {
+                var s = val.ToString();
+                return s.Length > maxLen ? s[..(maxLen - 1)] + "…" : s;
+            }
+        }
+        catch { /* ignore */ }
+
+        return argsJson.Length > 80 ? argsJson[..77] + "…" : argsJson;
     }
 }

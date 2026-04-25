@@ -8,7 +8,9 @@
   "allowPause": true,
   "timeoutSeconds": 0,
   "defaultVariables": {
-    "newVar": "abc"
+    "newVar": "abc",
+    "icmFolder": "E:\\icms",
+    "agentFolder": "E:\\work\\hub\\docs\\wiki"
   },
   "metadata": {},
   "nodes": [
@@ -66,7 +68,8 @@
         "outputKey": "result",
         "confidence": 70,
         "maxTokens": 4096,
-        "inputBindings": "{\"IncidentId\":\"body.incidentId\",\"Headless\":\"static:\",\"Limit\":\"static:\"}"
+        "inputBindings": "{\"IncidentId\":\"body.incidentId\",\"Headless\":\"static:\",\"Limit\":\"static:\"}",
+        "workingDirectory": "agentFolder"
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -103,6 +106,39 @@
         "level": "Error",
         "messageTemplate": "Error: {errorMessage}",
         "parameterBindings": "{\"errorMessage\":\"errorMessage\"}"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_ygzx5gr",
+      "runtimeType": "Assert",
+      "nodeName": "check incident folder",
+      "description": "",
+      "configuration": {
+        "condition": "Directory.Exists({incidentFolder})",
+        "message": ""
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_pstfl88",
+      "runtimeType": "End",
+      "nodeName": "End",
+      "description": "",
+      "configuration": {
+        "status": "success"
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -164,6 +200,50 @@
       "sourcePort": "error",
       "targetPort": "in",
       "triggerMessageType": "Fail",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_jboali7",
+      "targetNodeId": "n_ygzx5gr",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_9rayebz",
+      "targetNodeId": "n_pstfl88",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_ygzx5gr",
+      "targetNodeId": "n_pstfl88",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_5j72azt",
+      "targetNodeId": "n_pstfl88",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
       "condition": null,
       "isEnabled": true,
       "priority": 0,

@@ -345,6 +345,7 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
         return runtimeType switch
         {
             "Setter" => typeof(SetterNodeDefinition),
+            "Assert" => typeof(AssertNodeDefinition),
             "CSharp" => typeof(CSharpNodeDefinition),
             "CSharpScript" => typeof(CSharpScriptNodeDefinition),
             "CSharpTask" => typeof(CSharpTaskNodeDefinition),

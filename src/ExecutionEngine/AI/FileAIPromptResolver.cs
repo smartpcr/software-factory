@@ -15,7 +15,7 @@ using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// Resolves agent/skill definitions by reading .md files and using an LLM (Sonnet 4.6 via
-/// Copilot CLI) to extract structured metadata. Results are cached as .inputs.json sidecar
+/// Copilot CLI) to extract structured metadata. Results are cached as .schema.json sidecar
 /// files and only re-extracted when the source .md file changes.
 /// </summary>
 public class FileAIPromptResolver : IAIPromptResolver
@@ -105,17 +105,19 @@ public class FileAIPromptResolver : IAIPromptResolver
         var mdContent = await File.ReadAllTextAsync(mdPath, ct);
         var currentHash = ComputeHash(mdContent);
 
-        // 1. Prefer explicit SKILL.schema.json (parameter sets / scenarios)
+        // 1. Check for .schema.json (scenarios or cached extraction)
         var schemaPath = Path.ChangeExtension(mdPath, ".schema.json");
         if (File.Exists(schemaPath))
         {
             try
             {
                 var schemaJson = await File.ReadAllTextAsync(schemaPath, ct);
+
+                // 1a. Try as scenario-based schema
                 var schema = JsonSerializer.Deserialize<SkillSchemaFile>(schemaJson, JsonOpts);
                 if (schema?.Scenarios != null && schema.Scenarios.Count > 0)
                 {
-                    this.logger.LogDebug("Using SKILL.schema.json for {Name} ({Count} scenarios)", name, schema.Scenarios.Count);
+                    this.logger.LogDebug("Using schema.json scenarios for {Name} ({Count} scenarios)", name, schema.Scenarios.Count);
                     var info = new AgentDefinitionInfo
                     {
                         Name = schema.Name ?? name,
@@ -139,24 +141,12 @@ public class FileAIPromptResolver : IAIPromptResolver
 
                     return info;
                 }
-            }
-            catch (Exception ex)
-            {
-                this.logger.LogWarning(ex, "Failed to read SKILL.schema.json for {Name}, falling back", name);
-            }
-        }
 
-        // 2. Check for legacy cached sidecar (SKILL.inputs.json)
-        var cachePath = Path.ChangeExtension(mdPath, ".inputs.json");
-        if (File.Exists(cachePath))
-        {
-            try
-            {
-                var cacheJson = await File.ReadAllTextAsync(cachePath, ct);
-                var cached = JsonSerializer.Deserialize<AgentDefinitionInfo>(cacheJson, JsonOpts);
+                // 1b. Try as cached flat extraction
+                var cached = JsonSerializer.Deserialize<AgentDefinitionInfo>(schemaJson, JsonOpts);
                 if (cached != null && cached.SourceHash == currentHash)
                 {
-                    this.logger.LogDebug("Using cached extraction for {Name}", name);
+                    this.logger.LogDebug("Using cached schema.json for {Name}", name);
                     cached.SystemPrompt = ExtractBodyAfterFrontmatter(mdContent);
                     cached.ScriptPath ??= DetectMainScript(mdPath);
                     return cached;
@@ -164,7 +154,29 @@ public class FileAIPromptResolver : IAIPromptResolver
             }
             catch (Exception ex)
             {
-                this.logger.LogWarning(ex, "Failed to read cache for {Name}, will re-extract", name);
+                this.logger.LogWarning(ex, "Failed to read schema.json for {Name}, falling back", name);
+            }
+        }
+
+        // 2. Legacy fallback: check for old .inputs.json sidecar
+        var legacyCachePath = Path.ChangeExtension(mdPath, ".inputs.json");
+        if (File.Exists(legacyCachePath))
+        {
+            try
+            {
+                var cacheJson = await File.ReadAllTextAsync(legacyCachePath, ct);
+                var cached = JsonSerializer.Deserialize<AgentDefinitionInfo>(cacheJson, JsonOpts);
+                if (cached != null && cached.SourceHash == currentHash)
+                {
+                    this.logger.LogDebug("Using legacy .inputs.json cache for {Name}", name);
+                    cached.SystemPrompt = ExtractBodyAfterFrontmatter(mdContent);
+                    cached.ScriptPath ??= DetectMainScript(mdPath);
+                    return cached;
+                }
+            }
+            catch (Exception ex)
+            {
+                this.logger.LogWarning(ex, "Failed to read legacy cache for {Name}, will re-extract", name);
             }
         }
 
@@ -176,7 +188,7 @@ public class FileAIPromptResolver : IAIPromptResolver
         extracted.SystemPrompt = ExtractBodyAfterFrontmatter(mdContent);
         extracted.ScriptPath = DetectMainScript(mdPath);
 
-        // Write cache sidecar
+        // Write cache sidecar (.schema.json)
         try
         {
             var cacheClone = new AgentDefinitionInfo
@@ -192,6 +204,7 @@ public class FileAIPromptResolver : IAIPromptResolver
                 ExtractedAt = extracted.ExtractedAt,
             };
             var json = JsonSerializer.Serialize(cacheClone, JsonOpts);
+            var cachePath = Path.ChangeExtension(mdPath, ".schema.json");
             await File.WriteAllTextAsync(cachePath, json, ct);
             this.logger.LogInformation("Cached extraction for {Name} → {Path}", name, cachePath);
         }
@@ -327,12 +340,11 @@ public class FileAIPromptResolver : IAIPromptResolver
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(TimeSpan.FromSeconds(120));
 
-            await using var client = new CopilotClient();
+            await using var client = new CopilotClient(new CopilotClientOptions { CliArgs = ["--yolo"], CliPath = CliLocator.Copilot });
             var session = await client.CreateSessionAsync(new SessionConfig
             {
                 Model = model,
-                OnPermissionRequest = async (req, invocation) =>
-                    new PermissionRequestResult { Kind = PermissionRequestResultKind.Approved },
+                OnPermissionRequest = PermissionHandler.ApproveAll,
             }, cts.Token);
 
             try

@@ -109,6 +109,6 @@
     <!-- CLI -->
     <PackageVersion Include="Spectre.Console.Cli" Version="0.53.0" />
     <!-- GitHub Copilot SDK -->
-    <PackageVersion Include="GitHub.Copilot.SDK" Version="0.2.2" />
+    <PackageVersion Include="GitHub.Copilot.SDK" Version="0.3.0" />
   </ItemGroup>
 </Project>

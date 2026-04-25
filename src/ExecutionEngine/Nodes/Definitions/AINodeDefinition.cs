@@ -78,6 +78,18 @@ public class AINodeDefinition : NodeDefinition
     /// </summary>
     public int MaxTokens { get; set; } = 4096;
 
+    /// <summary>
+    /// Gets or sets the execution timeout in minutes.
+    /// If no streaming events are received within this period, the execution is terminated.
+    /// </summary>
+    public int TimeoutMinutes { get; set; } = 5;
+
+    /// <summary>
+    /// Gets or sets the working directory for skill/agent execution.
+    /// Supports binding expressions (e.g. <c>{incidentFolder}</c>).
+    /// </summary>
+    public string? WorkingDirectory { get; set; }
+
     /// <inheritdoc/>
     public override IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {

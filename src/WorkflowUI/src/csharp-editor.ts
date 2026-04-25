@@ -32,6 +32,47 @@ const dictMembers = [
   { label: 'Remove', kind: monaco.languages.CompletionItemKind.Method, detail: 'bool Remove(string key)', insertText: 'Remove("${1:key}")', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
 ];
 
+/** Common .NET BCL type members for intellisense */
+const bclTypeMembersMap: Record<string, Array<{ label: string; kind: monaco.languages.CompletionItemKind; detail: string; insertText?: string; insertTextRules?: monaco.languages.CompletionItemInsertTextRule }>> = {
+  Directory: [
+    { label: 'Exists', kind: monaco.languages.CompletionItemKind.Method, detail: 'bool Directory.Exists(string path)', insertText: 'Exists(${1:path})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'GetFiles', kind: monaco.languages.CompletionItemKind.Method, detail: 'string[] Directory.GetFiles(string path)', insertText: 'GetFiles(${1:path})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'GetDirectories', kind: monaco.languages.CompletionItemKind.Method, detail: 'string[] Directory.GetDirectories(string path)', insertText: 'GetDirectories(${1:path})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'CreateDirectory', kind: monaco.languages.CompletionItemKind.Method, detail: 'DirectoryInfo Directory.CreateDirectory(string path)', insertText: 'CreateDirectory(${1:path})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+  ],
+  File: [
+    { label: 'Exists', kind: monaco.languages.CompletionItemKind.Method, detail: 'bool File.Exists(string path)', insertText: 'Exists(${1:path})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'ReadAllText', kind: monaco.languages.CompletionItemKind.Method, detail: 'string File.ReadAllText(string path)', insertText: 'ReadAllText(${1:path})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'WriteAllText', kind: monaco.languages.CompletionItemKind.Method, detail: 'void File.WriteAllText(string path, string contents)', insertText: 'WriteAllText(${1:path}, ${2:contents})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'ReadAllLines', kind: monaco.languages.CompletionItemKind.Method, detail: 'string[] File.ReadAllLines(string path)', insertText: 'ReadAllLines(${1:path})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+  ],
+  Path: [
+    { label: 'Combine', kind: monaco.languages.CompletionItemKind.Method, detail: 'string Path.Combine(params string[])', insertText: 'Combine(${1:path1}, ${2:path2})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'GetFileName', kind: monaco.languages.CompletionItemKind.Method, detail: 'string Path.GetFileName(string path)', insertText: 'GetFileName(${1:path})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'GetDirectoryName', kind: monaco.languages.CompletionItemKind.Method, detail: 'string? Path.GetDirectoryName(string path)', insertText: 'GetDirectoryName(${1:path})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'GetExtension', kind: monaco.languages.CompletionItemKind.Method, detail: 'string Path.GetExtension(string path)', insertText: 'GetExtension(${1:path})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'GetFileNameWithoutExtension', kind: monaco.languages.CompletionItemKind.Method, detail: 'string Path.GetFileNameWithoutExtension(string path)', insertText: 'GetFileNameWithoutExtension(${1:path})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+  ],
+  String: [
+    { label: 'IsNullOrEmpty', kind: monaco.languages.CompletionItemKind.Method, detail: 'bool String.IsNullOrEmpty(string value)', insertText: 'IsNullOrEmpty(${1:value})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'IsNullOrWhiteSpace', kind: monaco.languages.CompletionItemKind.Method, detail: 'bool String.IsNullOrWhiteSpace(string value)', insertText: 'IsNullOrWhiteSpace(${1:value})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'Format', kind: monaco.languages.CompletionItemKind.Method, detail: 'string String.Format(string format, params object[])', insertText: 'Format("${1:format}", ${2:args})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'Join', kind: monaco.languages.CompletionItemKind.Method, detail: 'string String.Join(string separator, string[])', insertText: 'Join("${1:,}", ${2:values})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+  ],
+  Convert: [
+    { label: 'ToInt32', kind: monaco.languages.CompletionItemKind.Method, detail: 'int Convert.ToInt32(object value)', insertText: 'ToInt32(${1:value})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'ToDouble', kind: monaco.languages.CompletionItemKind.Method, detail: 'double Convert.ToDouble(object value)', insertText: 'ToDouble(${1:value})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'ToString', kind: monaco.languages.CompletionItemKind.Method, detail: 'string Convert.ToString(object value)', insertText: 'ToString(${1:value})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'ToBoolean', kind: monaco.languages.CompletionItemKind.Method, detail: 'bool Convert.ToBoolean(object value)', insertText: 'ToBoolean(${1:value})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+  ],
+  Math: [
+    { label: 'Abs', kind: monaco.languages.CompletionItemKind.Method, detail: 'double Math.Abs(double value)' },
+    { label: 'Max', kind: monaco.languages.CompletionItemKind.Method, detail: 'double Math.Max(double a, double b)', insertText: 'Max(${1:a}, ${2:b})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'Min', kind: monaco.languages.CompletionItemKind.Method, detail: 'double Math.Min(double a, double b)', insertText: 'Min(${1:a}, ${2:b})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+    { label: 'Round', kind: monaco.languages.CompletionItemKind.Method, detail: 'double Math.Round(double value)', insertText: 'Round(${1:value})', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet },
+  ],
+};
+
 function registerCSharpCompletions() {
   if (registered) return;
   registered = true;
@@ -64,6 +105,13 @@ function registerCSharpCompletions() {
             suggestions: dictMembers.map(m => ({ ...m, range })) as monaco.languages.CompletionItem[],
           };
         }
+        // .NET BCL type members
+        const bclMembers = bclTypeMembersMap[obj];
+        if (bclMembers) {
+          return {
+            suggestions: bclMembers.map(m => ({ ...m, range })) as monaco.languages.CompletionItem[],
+          };
+        }
       }
 
       // Top-level: show ExecutionState members + workflow variables
@@ -94,6 +142,18 @@ function registerCSharpCompletions() {
         { label: 'foreach', kind: monaco.languages.CompletionItemKind.Snippet, insertText: 'foreach (var ${1:item} in ${2:collection})\n{\n    ${3}\n}', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, range, detail: 'foreach loop' } as monaco.languages.CompletionItem,
         { label: 'Console.WriteLine', kind: monaco.languages.CompletionItemKind.Method, insertText: 'Console.WriteLine(${1});', insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, range, detail: 'void Console.WriteLine(object)' } as monaco.languages.CompletionItem,
       );
+
+      // .NET BCL types as top-level completions
+      for (const typeName of Object.keys(bclTypeMembersMap)) {
+        suggestions.push({
+          label: typeName,
+          kind: monaco.languages.CompletionItemKind.Class,
+          detail: `System.IO.${typeName}`,
+          documentation: `Type . to see ${typeName} members`,
+          insertText: typeName,
+          range,
+        } as monaco.languages.CompletionItem);
+      }
 
       return { suggestions };
     },

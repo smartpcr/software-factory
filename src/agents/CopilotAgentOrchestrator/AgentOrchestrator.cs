@@ -456,9 +456,7 @@ public class AgentOrchestrator : IAsyncDisposable
                 },
                 WorkingDirectory = agentConfig.WorkingDirectory,
                 Tools = agentConfig.Tools,
-                // Auto-approve all tool calls for subagents
-                OnPermissionRequest = async (request, invocation) =>
-                    new PermissionRequestResult { Kind = PermissionRequestResultKind.Approved }
+                OnPermissionRequest = PermissionHandler.ApproveAll,
             }, cancellationToken);
 
             await this.TrackSessionAsync(session);

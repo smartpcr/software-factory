@@ -46,7 +46,7 @@ public abstract class NodeDefinition : IValidatableObject
     /// Any: Trigger when ANY upstream completes (OR logic) - default.
     /// All: Trigger only when ALL upstreams complete (AND logic).
     /// </summary>
-    public JoinType JoinType { get; set; } = JoinType.Any;
+    public JoinType JoinType { get; set; } = JoinType.All;
 
     /// <summary>
     /// Gets or sets the execution priority for this node.

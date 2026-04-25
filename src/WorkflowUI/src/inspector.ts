@@ -668,6 +668,13 @@ export const Inspector = {
           <label class="ins-field-label">Node ID</label>
           <input readonly value="${id}" class="mono" />
         </div>
+        ${type.ports.in ? `<div class="ins-field">
+          <label class="ins-field-label">Join Type</label>
+          <select data-bind="joinType" data-node-id="${id}">
+            <option value="Any" ${node.joinType === 'Any' ? 'selected' : ''}>Any (first input triggers)</option>
+            <option value="All" ${(node.joinType || 'All') === 'All' ? 'selected' : ''}>All (wait for all inputs)</option>
+          </select>
+        </div>` : ''}
       </div>
       ${configHtml}
       <div class="ins-section">
@@ -764,6 +771,15 @@ export const Inspector = {
         callbacks.updateNodeConfig(nodeId, 'variableMappings', latestMappings);
       });
     });
+    // Mount Monaco editor for Assert condition
+    el.querySelectorAll<HTMLElement>('.ins-assert-condition-editor').forEach(container => {
+      const nodeId = container.dataset.node;
+      if (!nodeId) return;
+      const currentVal = String(node.config?.condition || '');
+      mountCSharpEditor(container.id, currentVal, (val) => {
+        callbacks.updateNodeConfig(nodeId, 'condition', val);
+      });
+    });
   },
 
   bindInspectorActions(el: HTMLElement) {
@@ -771,6 +787,12 @@ export const Inspector = {
     el.querySelectorAll<HTMLInputElement>('[data-bind="name"]').forEach(input => {
       input.addEventListener('input', () => {
         callbacks.updateNode(input.dataset.nodeId!, { nodeName: input.value } as Partial<FlowNode>);
+      });
+    });
+    // JoinType binding
+    el.querySelectorAll<HTMLSelectElement>('[data-bind="joinType"]').forEach(select => {
+      select.addEventListener('change', () => {
+        callbacks.updateNode(select.dataset.nodeId!, { joinType: select.value } as Partial<FlowNode>);
       });
     });
     // Config bindings
@@ -926,6 +948,17 @@ export const Inspector = {
         try { vars = JSON.parse(String(node.config.scopedVariables || '[]')); } catch { /* ignore */ }
         if (vars[idx]) (vars[idx] as Record<string, string>)[field] = input.value;
         callbacks.updateNodeConfig(nodeId, 'scopedVariables', JSON.stringify(vars));
+      });
+    });
+    // Runtime data: click value to copy
+    el.querySelectorAll('.ins-runtime-val').forEach(valEl => {
+      (valEl as HTMLElement).addEventListener('click', () => {
+        const text = (valEl as HTMLElement).textContent || '';
+        navigator.clipboard.writeText(text).then(() => {
+          const orig = (valEl as HTMLElement).style.outline;
+          (valEl as HTMLElement).style.outline = '1px solid var(--ok)';
+          setTimeout(() => { (valEl as HTMLElement).style.outline = orig; }, 400);
+        }).catch(() => { /* clipboard not available */ });
       });
     });
     // Setter node: add mapping
