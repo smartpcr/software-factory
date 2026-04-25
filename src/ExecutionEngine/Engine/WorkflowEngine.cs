@@ -727,27 +727,10 @@ namespace ExecutionEngine.Engine
                         break;
                     }
 
-                    // If no messages were processed, wait for any queue to signal instead of busy-polling
+                    // If no messages were processed, wait briefly to avoid busy-wait
                     if (!messageProcessed)
                     {
-                        // Build a combined wait on all queue channels — wake up when ANY queue gets a message
-                        var waitTasks = new List<Task>();
-                        foreach (var qe in context.NodeQueues)
-                        {
-                            var q = (NodeMessageQueue)qe.Value;
-                            waitTasks.Add(q.MessageSignals.WaitToReadAsync(cancellationToken).AsTask());
-                        }
-
-                        if (waitTasks.Count > 0)
-                        {
-                            // Wait for any signal or a short timeout (to re-check termination)
-                            var timeout = Task.Delay(500, cancellationToken);
-                            await Task.WhenAny(waitTasks.Append(timeout));
-                        }
-                        else
-                        {
-                            await Task.Delay(10, cancellationToken);
-                        }
+                        await Task.Delay(50, cancellationToken);
                     }
                 }
 
@@ -1113,14 +1096,18 @@ namespace ExecutionEngine.Engine
                     {
                         var shouldExecute = false;
 
-                        if (this.upstreamCompletionTracking.TryGetValue(nodeDef.NodeId, out var completedUpstreams))
+                        // Nodes with no expected upstreams (entry points) execute immediately
+                        if (!this.expectedUpstreamCount.TryGetValue(nodeDef.NodeId, out var expected) || expected == 0)
+                        {
+                            shouldExecute = true;
+                        }
+                        else if (this.upstreamCompletionTracking.TryGetValue(nodeDef.NodeId, out var completedUpstreams))
                         {
                             lock (completedUpstreams)
                             {
                                 completedUpstreams.Add(sourceNodeId);
 
-                                if (this.expectedUpstreamCount.TryGetValue(nodeDef.NodeId, out var expected) &&
-                                    completedUpstreams.Count >= expected)
+                                if (completedUpstreams.Count >= expected)
                                 {
                                     shouldExecute = true;
                                     completedUpstreams.Clear();

@@ -3,7 +3,7 @@
   "workflowName": "icm skill",
   "description": "",
   "version": "1.0",
-  "entryPointNodeId": null,
+  "entryPointNodeId": "n_pesatyk",
   "maxConcurrency": 0,
   "allowPause": true,
   "timeoutSeconds": 0,
@@ -42,7 +42,8 @@
         "outputKey": "result",
         "confidence": 70,
         "maxTokens": 4096,
-        "inputBindings": "{\"incidentFolder\":\"incidentFolder\"}"
+        "inputBindings": "{\"incidentFolder\":\"incidentFolder\"}",
+        "timeoutMinutes": 10
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -68,7 +69,8 @@
         "confidence": 90,
         "maxTokens": 32000,
         "inputBindings": "{\"incidentFolder\":\"incidentFolder\",\"summary.md\":\"summaryFile.md\",\"metadata.md\":\"metadataFile\",\"code_issues.md\":\"codeIssueFile\",\"etw_events.md\":\"etwEventsFile\",\"applicable_tsgs.md\":\"applicableTsgFile\",\"similar_incidents.md\":\"similar_incidents.md\",\"incident_folder\":\"incidentFolder\"}",
-        "workingDirectory": "agentFolder"
+        "workingDirectory": "agentFolder",
+        "timeoutMinutes": 15
       },
       "joinType": "All",
       "priority": "Normal",
@@ -185,7 +187,8 @@
         "confidence": 70,
         "maxTokens": 4096,
         "inputBindings": "{\"issuesFile\":\"issueListFile\",\"reposMd\":\"repoMdFile\"}",
-        "workingDirectory": "agentFolder"
+        "workingDirectory": "agentFolder",
+        "timeoutMinutes": 10
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -212,7 +215,8 @@
         "inputBindings": "{\"incidentFolderPath\":\"incidentFolder\"}",
         "outputKey": "result",
         "confidence": 70,
-        "maxTokens": 4096
+        "maxTokens": 4096,
+        "timeoutMinutes": 10
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -240,7 +244,7 @@
         "outputKey": "result",
         "confidence": 70,
         "maxTokens": 32000,
-        "timeoutMinutes": 15,
+        "timeoutMinutes": 20,
         "workingDirectory": "agentFolder"
       },
       "joinType": "Any",
@@ -346,7 +350,8 @@
         "outputKey": "result",
         "confidence": 70,
         "maxTokens": 32000,
-        "workingDirectory": "agentFolder"
+        "workingDirectory": "agentFolder",
+        "timeoutMinutes": 20
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -401,7 +406,8 @@
         "outputKey": "result",
         "confidence": 70,
         "maxTokens": 4096,
-        "workingDirectory": "agentFolder"
+        "workingDirectory": "agentFolder",
+        "timeoutMinutes": 15
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -504,7 +510,7 @@
         "outputKey": "result",
         "confidence": 70,
         "maxTokens": 4096,
-        "timeoutMinutes": 5,
+        "timeoutMinutes": 15,
         "workingDirectory": "agentFolder"
       },
       "joinType": "Any",

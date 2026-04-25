@@ -314,18 +314,19 @@ public class AINode : ExecutableNodeBase
             }
 
             // If no declared outputs were extracted but AI reported success,
-            // check for tool failures in the response (agent couldn't do the work)
+            // check for tool failures in the response (agent couldn't do the work).
+            // Require multiple indicators to avoid false positives from incident content.
             if (extractedOutputCount == 0 && result.Success)
             {
                 var content = result.Content.ToLowerInvariant();
-                var hasToolFailure = content.Contains("permission error")
-                    || content.Contains("tool error")
-                    || content.Contains("all tools")
-                    || content.Contains("unable to")
-                    || content.Contains("cannot access")
-                    || content.Contains("please try running");
+                var failureIndicators = 0;
+                if (content.Contains("permission error")) failureIndicators++;
+                if (content.Contains("tool error")) failureIndicators++;
+                if (content.Contains("all tools are currently failing")) failureIndicators++;
+                if (content.Contains("please try running") && content.Contains("manually")) failureIndicators++;
+                if (content.Contains("unhandled permission result kind")) failureIndicators++;
 
-                if (hasToolFailure)
+                if (failureIndicators >= 2)
                 {
                     result = new AIExecutionResult
                     {

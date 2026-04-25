@@ -46,23 +46,38 @@ namespace ExecutionEngine.Nodes
 
                     if (op == "expr")
                     {
-                        // Expression mode: evaluate as real C# using Roslyn with typed variables
-                        var state = CreateExecutionState(workflowContext, nodeContext);
-                        var processedExpr = ExecutionState.PreProcessExpression(inputExpr);
-                        try
+                        // Expression mode: first try simple string concatenation (handles path expressions correctly).
+                        // Only use Roslyn for complex expressions (Math.Max, method calls, etc.)
+                        var resolved = BindingResolver.ResolveTemplate(inputExpr, null, nodeContext, workflowContext);
+                        resolved = EvaluateStringConcatenation(resolved);
+
+                        // Check if any {placeholders} remain unresolved or if the expression has method calls
+                        var hasUnresolved = System.Text.RegularExpressions.Regex.IsMatch(resolved, @"\{[\w.]+\}");
+                        var hasMethodCalls = inputExpr.Contains('(') && inputExpr.Contains(')');
+
+                        if (hasMethodCalls || hasUnresolved)
                         {
-                            var scriptOptions = ScriptOptions.Default
-                                .AddReferences(typeof(ExecutionState).Assembly, typeof(Math).Assembly)
-                                .AddImports("System", "System.IO", "System.Linq", "System.Collections.Generic");
-                            var result = await CSharpScript.EvaluateAsync<object>(
-                                processedExpr, scriptOptions, state, typeof(ExecutionState), cancellationToken);
-                            workflowContext.Variables[globalKey] = result ?? "";
+                            // Complex expression — evaluate with Roslyn using typed variables
+                            try
+                            {
+                                var state = CreateExecutionState(workflowContext, nodeContext);
+                                var processedExpr = ExecutionState.PreProcessExpression(inputExpr);
+                                var scriptOptions = ScriptOptions.Default
+                                    .AddReferences(typeof(ExecutionState).Assembly, typeof(Math).Assembly)
+                                    .AddImports("System", "System.IO", "System.Linq", "System.Collections.Generic");
+                                var result = await CSharpScript.EvaluateAsync<object>(
+                                    processedExpr, scriptOptions, state, typeof(ExecutionState), cancellationToken);
+                                workflowContext.Variables[globalKey] = result ?? "";
+                            }
+                            catch
+                            {
+                                // Roslyn failed — use the template-resolved string
+                                workflowContext.Variables[globalKey] = resolved;
+                            }
                         }
-                        catch
+                        else
                         {
-                            // Fallback: resolve as template + string concatenation
-                            var resolved = BindingResolver.ResolveTemplate(inputExpr, null, nodeContext, workflowContext);
-                            resolved = EvaluateStringConcatenation(resolved);
+                            // Simple concatenation result — use directly
                             workflowContext.Variables[globalKey] = resolved;
                         }
                     }

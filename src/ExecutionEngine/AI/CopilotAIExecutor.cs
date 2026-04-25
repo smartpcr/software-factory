@@ -71,9 +71,19 @@ public class CopilotAIExecutor : IAIExecutor
         var currentBlock = new StringBuilder();
         int inputTokens = 0, outputTokens = 0;
 
-        // Idle timeout: cancel if no streaming events received for this duration
-        var idleTimeout = TimeSpan.FromMinutes(5);
+        // Idle timeout: cancel if no streaming events received for this duration.
+        // Use the request timeout as the idle timeout — the node's configured timeout IS the patience window.
+        var idleTimeout = request.Timeout;
         var lastEventTime = DateTime.UtcNow;
+
+        // Repeat-failure detector: bail if the same tool keeps failing with the same error.
+        // This catches "stuck agent" cases like a 'create' tool whose schema requires
+        // file_text but the model omits it — the model retries identically, wasting wallclock.
+        const int MaxIdenticalToolFailures = 3;
+        var lastToolName = string.Empty;
+        var lastFailureFingerprint = string.Empty;
+        var consecutiveFailureCount = 0;
+        var stuckReason = string.Empty;
 
         this.logger.LogInformation(
             "Copilot SDK: model={Model}, prompt length={Length}, timeout={Timeout}",
@@ -161,6 +171,7 @@ public class CopilotAIExecutor : IAIExecutor
                     case ToolExecutionStartEvent toolStart:
                         toolCallCount++;
                         var toolName = toolStart.Data.ToolName;
+                        lastToolName = toolName;
                         this.logger.LogInformation("Tool start #{Count}: {Tool}", toolCallCount, toolName);
 
                         // Show tool name + arguments summary in execution log
@@ -197,20 +208,45 @@ public class CopilotAIExecutor : IAIExecutor
                         if (!toolComplete.Data.Success && toolComplete.Data.Error != null)
                         {
                             // Show the actual error from the tool
+                            string errJson;
                             try
                             {
-                                var errJson = System.Text.Json.JsonSerializer.Serialize(toolComplete.Data.Error);
-                                var errPreview = errJson.Length > 200 ? errJson[..197] + "…" : errJson;
-                                request.OnOutputLine?.Invoke($"   {status} {errPreview}");
+                                errJson = System.Text.Json.JsonSerializer.Serialize(toolComplete.Data.Error);
                             }
                             catch
                             {
-                                request.OnOutputLine?.Invoke($"   {status} done (error)");
+                                errJson = toolComplete.Data.Error.ToString() ?? "(error)";
+                            }
+
+                            var errPreview = errJson.Length > 200 ? errJson[..197] + "…" : errJson;
+                            request.OnOutputLine?.Invoke($"   {status} {errPreview}");
+
+                            // Update repeat-failure detector. Fingerprint is tool name + error
+                            // string — if the model is making the same broken call, both stay
+                            // constant; if it adapts, the fingerprint changes and we reset.
+                            var fingerprint = $"{lastToolName}|{errJson}";
+                            if (fingerprint == lastFailureFingerprint)
+                            {
+                                consecutiveFailureCount++;
+                                if (consecutiveFailureCount >= MaxIdenticalToolFailures && string.IsNullOrEmpty(stuckReason))
+                                {
+                                    stuckReason = $"Tool '{lastToolName}' failed {consecutiveFailureCount} times with the same error: {errPreview}";
+                                    request.OnOutputLine?.Invoke($"⚠ Stuck: {stuckReason}");
+                                    this.logger.LogWarning("Repeat-failure detector tripped: {Reason}", stuckReason);
+                                }
+                            }
+                            else
+                            {
+                                lastFailureFingerprint = fingerprint;
+                                consecutiveFailureCount = 1;
                             }
                         }
                         else
                         {
                             request.OnOutputLine?.Invoke($"   {status} done");
+                            // Any successful tool call clears the streak.
+                            lastFailureFingerprint = string.Empty;
+                            consecutiveFailureCount = 0;
                         }
 
                         break;
@@ -276,10 +312,54 @@ public class CopilotAIExecutor : IAIExecutor
                 new MessageOptions { Prompt = request.Prompt },
                 cts.Token);
 
-            // Wait for completion, overall timeout, or idle timeout
+            // Wait for completion, hard timeout, or idle timeout.
+            // Hard timeout = total wall-clock budget (request.Timeout, e.g. 15 min).
+            // Idle timeout = no streaming events received for `idleTimeout` (e.g. 5 min).
+            // Both must be enforced explicitly here — Task.WhenAny does not propagate
+            // cancellation from the linked cts to throw out of the loop, so we poll.
+            var hardDeadline = DateTime.UtcNow + request.Timeout;
+
             while (true)
             {
-                var timeSinceLastEvent = DateTime.UtcNow - lastEventTime;
+                var now = DateTime.UtcNow;
+
+                // Repeat-failure detector — agent is stuck retrying the same broken tool call
+                if (!string.IsNullOrEmpty(stuckReason))
+                {
+                    sw.Stop();
+                    this.logger.LogWarning("Bailing out due to repeat tool failure: {Reason}", stuckReason);
+                    return new AIExecutionResult
+                    {
+                        Success = false,
+                        Error = $"Stuck on repeated tool failure: {stuckReason}",
+                        Content = contentBuilder.ToString().Trim(),
+                        Duration = sw.Elapsed,
+                        ModelUsed = model,
+                        InputTokens = inputTokens,
+                        OutputTokens = outputTokens,
+                    };
+                }
+
+                // Hard timeout — overall budget exhausted
+                if (now >= hardDeadline)
+                {
+                    sw.Stop();
+                    request.OnOutputLine?.Invoke($"⚠ Hard timeout after {request.Timeout.TotalMinutes:0}m — terminating");
+                    this.logger.LogWarning("Hard timeout: exceeded {Timeout}", request.Timeout);
+                    return new AIExecutionResult
+                    {
+                        Success = false,
+                        Error = $"Hard timeout: exceeded {request.Timeout.TotalMinutes:0}m budget",
+                        Content = contentBuilder.ToString().Trim(),
+                        Duration = sw.Elapsed,
+                        ModelUsed = model,
+                        InputTokens = inputTokens,
+                        OutputTokens = outputTokens,
+                    };
+                }
+
+                // Idle timeout — no streaming events for too long
+                var timeSinceLastEvent = now - lastEventTime;
                 var remainingIdle = idleTimeout - timeSinceLastEvent;
                 if (remainingIdle <= TimeSpan.Zero)
                 {
@@ -298,9 +378,14 @@ public class CopilotAIExecutor : IAIExecutor
                     };
                 }
 
-                var completed = await Task.WhenAny(
-                    done.Task,
-                    Task.Delay(remainingIdle < TimeSpan.FromSeconds(10) ? remainingIdle : TimeSpan.FromSeconds(10), cts.Token));
+                // Wait for either next event/completion or until the soonest deadline.
+                var hardRemaining = hardDeadline - now;
+                var wait = TimeSpan.FromSeconds(10);
+                if (remainingIdle < wait) wait = remainingIdle;
+                if (hardRemaining < wait) wait = hardRemaining;
+                if (wait < TimeSpan.FromMilliseconds(100)) wait = TimeSpan.FromMilliseconds(100);
+
+                await Task.WhenAny(done.Task, Task.Delay(wait, cts.Token));
 
                 if (done.Task.IsCompleted) break;
             }

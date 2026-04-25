@@ -348,10 +348,6 @@ export const Exec = {
 
         if (status === 'completed') {
           if (this.state === 'running') {
-            // Mark all nodes as success if we missed individual events
-            State.nodes.forEach(n => {
-              if (n.status === 'running' || n.status === '') n.status = 'success';
-            });
             Nodes.render();
             this.setStatus('success');
             logFn('success', null, '✓ Workflow completed');
@@ -359,6 +355,7 @@ export const Exec = {
           }
         } else if (status === 'failed') {
           if (this.state === 'running') {
+            // Mark running nodes as failed, leave not-started nodes as-is
             State.nodes.forEach(n => {
               if (n.status === 'running') n.status = 'failed';
             });
@@ -370,6 +367,11 @@ export const Exec = {
           }
         } else if (status === 'cancelled') {
           if (this.state === 'running') {
+            // Mark running nodes as cancelled, leave not-started nodes as-is
+            State.nodes.forEach(n => {
+              if (n.status === 'running') n.status = 'cancelled';
+            });
+            Nodes.render();
             this.setStatus('cancelled');
             logFn('warn', null, '■ Workflow cancelled');
             detachRun();
