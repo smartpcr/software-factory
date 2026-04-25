@@ -587,6 +587,11 @@ namespace ExecutionEngine.Engine
                 }
             }
 
+            // Parallel dispatch state — declared here so the catch block can drain.
+            // See the comment by the main loop for semantics.
+            var inflightTasks = new ConcurrentDictionary<Guid, (Task task, CancellationTokenSource cts)>();
+            var nodeInFlight = new ConcurrentDictionary<string, byte>();
+
             try
             {
                 // Publish WorkflowStartedEvent
@@ -622,6 +627,13 @@ namespace ExecutionEngine.Engine
                 // Step 5: Trigger entry point nodes by enqueueing initial messages
                 await TriggerEntryPointNodesAsync(entryNodes, context, cancellationToken);
 
+                // Parallel dispatch — siblings (different nodes) run concurrently; the same
+                // node never runs two messages at once (the per-node guard preserves the
+                // contract Setter / ForEach / Group rely on). Workflow-level concurrency is
+                // still enforced inside ExecuteNodeAsync via workflowConcurrencyLimiters[...]
+                // .AcquireAsync; that gate now actually fires because more than one node can
+                // be in flight at the same time.
+
                 // Step 6: Centralized execution loop - checks all queues for messages
                 var loopIteration = 0;
                 while (!cancellationToken.IsCancellationRequested)
@@ -646,6 +658,17 @@ namespace ExecutionEngine.Engine
 
                         if (hasSignal || hasMessages)
                         {
+                            // Per-node guard: if this node is already running, leave the
+                            // message in place and revisit on the next loop tick. We may
+                            // have already drained the signal pulse, but that's fine — the
+                            // queue still holds the actual messages, and Count > 0 will
+                            // re-trigger this branch (signal is a coalesced wakeup, not the
+                            // message itself).
+                            if (!nodeInFlight.TryAdd(nodeId, 0))
+                            {
+                                continue;
+                            }
+
                             // If we have a signal, use it. Otherwise, peek at the actual queue message
                             // to get the correct type (cancel vs complete). Using a dummy Complete message
                             // would bypass cancel handling in ProcessMessageAsync.
@@ -666,8 +689,38 @@ namespace ExecutionEngine.Engine
                                 };
                             }
 
-                            // Handle the message based on type
-                            await this.ProcessMessageAsync(nodeDef, messageToProcess, workflowDefinition, context, cancellationToken);
+                            // Fire-and-forget: dispatch in the background so siblings can run
+                            // concurrently. The dispatcher loop continues immediately.
+                            var dispatchedNodeId = nodeId;
+                            var dispatchedNodeDef = nodeDef;
+                            var dispatchedMessage = messageToProcess;
+                            var taskKey = Guid.NewGuid();
+                            var taskCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                            var task = Task.Run(
+                                async () =>
+                                {
+                                    try
+                                    {
+                                        await this.ProcessMessageAsync(dispatchedNodeDef, dispatchedMessage, workflowDefinition, context, taskCts.Token);
+                                    }
+                                    catch (OperationCanceledException) when (taskCts.IsCancellationRequested)
+                                    {
+                                        // Workflow cancellation — expected, swallow.
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        this.logger.LogError(ex, "Background dispatch failed for node {NodeId}", dispatchedNodeId);
+                                    }
+                                    finally
+                                    {
+                                        nodeInFlight.TryRemove(dispatchedNodeId, out _);
+                                        inflightTasks.TryRemove(taskKey, out _);
+                                        taskCts.Dispose();
+                                    }
+                                },
+                                taskCts.Token);
+
+                            inflightTasks[taskKey] = (task, taskCts);
                         }
                     }
 
@@ -719,19 +772,32 @@ namespace ExecutionEngine.Engine
                         }
                     }
 
-                    // Exit when all queues are empty AND all tracked nodes are terminal
-                    // This ensures we don't exit before all nodes have had a chance to execute
-                    if (allQueuesEmpty && allTrackedNodesTerminal)
+                    // Exit when all queues are empty AND no background dispatches are
+                    // running AND all tracked nodes are terminal. inflightTasks.IsEmpty
+                    // is checked first so a still-running task can't enqueue new messages
+                    // between the queue check and the break.
+                    if (inflightTasks.IsEmpty && allQueuesEmpty && allTrackedNodesTerminal)
                     {
-                        this.logger.LogInformation("Workflow termination condition met: all queues empty and all nodes terminal");
+                        this.logger.LogInformation("Workflow termination condition met: no inflight tasks, all queues empty, all nodes terminal");
                         break;
                     }
 
-                    // If no messages were processed, wait briefly to avoid busy-wait
+                    // If we didn't dispatch anything this iteration but tasks are still in
+                    // flight, sleep briefly and re-check rather than busy-wait.
                     if (!messageProcessed)
                     {
                         await Task.Delay(50, cancellationToken);
                     }
+                }
+
+                // Drain any tasks still finishing — they may publish events or write output
+                // data that downstream code (status, persistence) depends on.
+                if (!inflightTasks.IsEmpty)
+                {
+                    this.logger.LogDebug("Awaiting {Count} inflight node tasks before completion", inflightTasks.Count);
+                    var snapshot = inflightTasks.Values.Select(v => v.task).ToArray();
+                    try { await Task.WhenAll(snapshot); }
+                    catch { /* individual failures already logged inside each task */ }
                 }
 
                 // Step 7: Wait for all nodes to complete
@@ -790,6 +856,20 @@ namespace ExecutionEngine.Engine
             }
             catch (Exception ex)
             {
+                // Cancel any background dispatches and wait for them to unwind before we
+                // raise the workflow-level failure. Otherwise their late status updates
+                // could race with the failure event we publish below.
+                foreach (var (_, cts) in inflightTasks.Values)
+                {
+                    try { cts.Cancel(); } catch { /* already disposed */ }
+                }
+
+                if (!inflightTasks.IsEmpty)
+                {
+                    var snapshot = inflightTasks.Values.Select(v => v.task).ToArray();
+                    try { await Task.WhenAll(snapshot); } catch { /* failures already logged */ }
+                }
+
                 context.Status = WorkflowExecutionStatus.Failed;
                 context.EndTime = DateTime.UtcNow;
                 context.Variables["__error"] = ex.Message;
@@ -1075,7 +1155,12 @@ namespace ExecutionEngine.Engine
                 }
 
                 // Check join type for other messages
-                if (nodeDef.JoinType == JoinType.Any)
+                // Loop control nodes (While, ForEach) must always use Any — they re-trigger on each iteration feedback
+                var effectiveJoinType = nodeDef.RuntimeType is RuntimeType.While or RuntimeType.ForEach
+                    ? JoinType.Any
+                    : nodeDef.JoinType;
+
+                if (effectiveJoinType == JoinType.Any)
                 {
                     // ANY: Execute immediately when any message arrives
                     await this.ExecuteNodeAsync(nodeDef.NodeId, workflowDefinition, context, cancellationToken);

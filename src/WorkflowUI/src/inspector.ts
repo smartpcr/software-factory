@@ -668,13 +668,22 @@ export const Inspector = {
           <label class="ins-field-label">Node ID</label>
           <input readonly value="${id}" class="mono" />
         </div>
-        ${type.ports.in ? `<div class="ins-field">
-          <label class="ins-field-label">Join Type</label>
-          <select data-bind="joinType" data-node-id="${id}">
-            <option value="Any" ${node.joinType === 'Any' ? 'selected' : ''}>Any (first input triggers)</option>
-            <option value="All" ${(node.joinType || 'All') === 'All' ? 'selected' : ''}>All (wait for all inputs)</option>
-          </select>
-        </div>` : ''}
+        ${(() => {
+          const rt = node.runtimeType.toLowerCase();
+          const isLoop = rt === 'while' || rt === 'foreach';
+          if (!type.ports.in) return '';
+          if (isLoop) return `<div class="ins-field">
+            <label class="ins-field-label">Join Type</label>
+            <input readonly value="Any (loop control)" class="mono" style="opacity:.6" title="Loop nodes (While, ForEach) always use Any. They re-trigger on each iteration's feedback — using All would deadlock because loop body nodes depend on the loop to start them." />
+          </div>`;
+          return `<div class="ins-field">
+            <label class="ins-field-label">Join Type</label>
+            <select data-bind="joinType" data-node-id="${id}">
+              <option value="Any" ${node.joinType === 'Any' ? 'selected' : ''}>Any (first input triggers)</option>
+              <option value="All" ${(node.joinType || 'All') === 'All' ? 'selected' : ''}>All (wait for all inputs)</option>
+            </select>
+          </div>`;
+        })()}
       </div>
       ${configHtml}
       <div class="ins-section">
