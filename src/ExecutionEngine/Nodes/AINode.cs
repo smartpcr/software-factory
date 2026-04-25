@@ -307,6 +307,8 @@ public class AINode : ExecutableNodeBase
                         : result.Content[valueStart..].Trim();
                     if (!string.IsNullOrEmpty(value))
                     {
+                        // Strip markdown formatting (bold, italic, backticks)
+                        value = value.TrimStart('*', '_', '`', ' ').TrimEnd('*', '_', '`', ' ');
                         nodeContext.OutputData[output.Name] = value;
                         extractedOutputCount++;
                     }

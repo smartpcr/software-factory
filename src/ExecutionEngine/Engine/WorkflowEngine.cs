@@ -1155,13 +1155,42 @@ namespace ExecutionEngine.Engine
                 }
 
                 // Check join type for other messages
-                // Loop control nodes (While, ForEach) must always use Any — they re-trigger on each iteration feedback
+                // Loop control nodes (While, ForEach): use Any, but only accept feedback
+                // from terminal loop-body nodes (not intermediate children like Iteration++)
                 var effectiveJoinType = nodeDef.RuntimeType is RuntimeType.While or RuntimeType.ForEach
                     ? JoinType.Any
                     : nodeDef.JoinType;
 
                 if (effectiveJoinType == JoinType.Any)
                 {
+                    // For While nodes: filter feedback to terminal loop-body nodes only
+                    if (nodeDef.RuntimeType == RuntimeType.While)
+                    {
+                        string? feedbackSource = signal switch
+                        {
+                            NodeCompleteMessage cm => cm.NodeId,
+                            NodeFailMessage fm => fm.NodeId,
+                            _ => null,
+                        };
+
+                        // Check if the iteration counter exists (loop has started iterating)
+                        var counterKey = WhileNode.GetIterationCounterKey(nodeDef.NodeId);
+                        var isLoopRunning = context.Variables.ContainsKey(counterKey);
+
+                        if (isLoopRunning && feedbackSource != null)
+                        {
+                            // Find terminal nodes of the loop body
+                            var router = context.Router as MessageRouter;
+                            var terminalNodes = router?.FindTerminalNodesFromPort(nodeDef.NodeId, WhileNode.LoopBodyPort) ?? [];
+
+                            if (terminalNodes.Count > 0 && !terminalNodes.Contains(feedbackSource))
+                            {
+                                // Non-terminal child completed — ignore, don't re-trigger
+                                return;
+                            }
+                        }
+                    }
+
                     // ANY: Execute immediately when any message arrives
                     await this.ExecuteNodeAsync(nodeDef.NodeId, workflowDefinition, context, cancellationToken);
                 }
@@ -1691,9 +1720,12 @@ namespace ExecutionEngine.Engine
 
                 // Route completion/failure messages to downstream queues
                 // MessageRouter enqueues → triggers channel signals → downstream workers wake up
-                // Check result status (not nodeInstance status) to handle While iteration checks
-                var shouldRouteComplete = nodeInstance.Status == NodeExecutionStatus.Completed ||
-                                          (result != null && result.Status == NodeExecutionStatus.Completed);
+                // Skip routing for While IterationCheck — children are triggered via NextMessage, not Complete
+                var isWhileIteration = nodeDef.RuntimeType == RuntimeType.While &&
+                                       result != null && result.SourcePort == "IterationCheck";
+                var shouldRouteComplete = !isWhileIteration &&
+                                          (nodeInstance.Status == NodeExecutionStatus.Completed ||
+                                           (result != null && result.Status == NodeExecutionStatus.Completed));
 
                 if (shouldRouteComplete)
                 {

@@ -9,6 +9,7 @@ namespace ExecutionEngine.Catalog;
 using System.ComponentModel.DataAnnotations;
 using System.Reflection;
 using ExecutionEngine.Enums;
+using ExecutionEngine.Nodes;
 using ExecutionEngine.Nodes.Definitions;
 
 /// <summary>
@@ -203,8 +204,8 @@ public static class NodeTypeCatalog
         {
             RuntimeType.IfElse => (["TrueBranch", "FalseBranch"], false),
             RuntimeType.Switch => (["Default"], true),
-            RuntimeType.ForEach => (["LoopBody"], false),
-            RuntimeType.While => (["LoopBody"], false),
+            RuntimeType.ForEach => ([WhileNode.LoopBodyPort], false),
+            RuntimeType.While => ([WhileNode.LoopBodyPort], false),
             RuntimeType.Parallel when instance is ParallelNodeDefinition pd
                 => ([.. pd.Branches], true),
             _ => ([], false),
@@ -217,7 +218,7 @@ public static class NodeTypeCatalog
         {
             ["in"] = "input",
             ["out"] = "output (onComplete)",
-            ["LoopBody"] = "iterate (onNext)",
+            [WhileNode.LoopBodyPort] = "iterate (onNext)",
         },
         _ => null,
     };

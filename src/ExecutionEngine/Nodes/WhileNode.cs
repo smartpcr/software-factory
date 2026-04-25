@@ -37,6 +37,11 @@ public class WhileNode : ExecutableNodeBase
     public const int DefaultMaxIterations = 1000;
 
     /// <summary>
+    /// Gets the workflow variable key used to track iteration count for a While node.
+    /// </summary>
+    public static string GetIterationCounterKey(string nodeId) => $"__{nodeId}__iterationCount";
+
+    /// <summary>
     /// Gets or sets the condition expression that must evaluate to true for iteration to continue.
     /// This should be a valid C# expression that evaluates to bool.
     /// IMPORTANT: Condition is re-evaluated before each iteration.
@@ -105,7 +110,7 @@ public class WhileNode : ExecutableNodeBase
         CancellationToken cancellationToken)
     {
         // Track iteration count using workflow variables
-        var counterKey = $"__{this.NodeId}__iterationCount";
+        var counterKey = GetIterationCounterKey(this.NodeId);
         var iterationCount = 0;
         if (workflowContext.Variables.TryGetValue(counterKey, out var counterValue))
         {
