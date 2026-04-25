@@ -204,7 +204,7 @@ public class RunManager
                 synthetic: true);
         };
 
-        engine.NodeFailed += (nodeId, instanceId, errorMessage) =>
+        engine.NodeFailed += (nodeId, instanceId, errorMessage, duration) =>
         {
             _ = this.PublishEventAsync(
                 runId,
@@ -214,10 +214,11 @@ public class RunManager
                 {
                     ["nodeInstanceId"] = instanceId.ToString(),
                     ["errorMessage"] = errorMessage,
+                    ["duration"] = XmlConvert.ToString(duration),
                 });
         };
 
-        engine.NodeFailedEx += (nodeId, instanceId, errorMessage, inputData, globals) =>
+        engine.NodeFailedEx += (nodeId, instanceId, errorMessage, duration, inputData, globals) =>
         {
             _ = this.PublishEventAsync(
                 runId,
@@ -227,6 +228,7 @@ public class RunManager
                 {
                     ["nodeInstanceId"] = instanceId.ToString(),
                     ["errorMessage"] = errorMessage,
+                    ["duration"] = XmlConvert.ToString(duration),
                     ["inputData"] = inputData ?? new Dictionary<string, object>(),
                     ["globalVariables"] = globals ?? new Dictionary<string, object>(),
                 },

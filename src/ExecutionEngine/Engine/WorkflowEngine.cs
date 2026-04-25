@@ -115,13 +115,15 @@ namespace ExecutionEngine.Engine
 
         /// <summary>
         /// Event raised when a node fails during execution.
+        /// Parameters: nodeId, instanceId, errorMessage, duration.
         /// </summary>
-        public event Action<string, Guid, string>? NodeFailed;
+        public event Action<string, Guid, string, TimeSpan>? NodeFailed;
 
         /// <summary>
         /// Extended event raised when a node fails with full context data.
+        /// Parameters: nodeId, instanceId, errorMessage, duration, inputData, globalVariables.
         /// </summary>
-        public event Action<string, Guid, string, Dictionary<string, object>?, Dictionary<string, object>?>? NodeFailedEx;
+        public event Action<string, Guid, string, TimeSpan, Dictionary<string, object>?, Dictionary<string, object>?>? NodeFailedEx;
 
         /// <summary>
         /// Event raised when a node is cancelled.
@@ -1289,7 +1291,8 @@ namespace ExecutionEngine.Engine
             var errorHandlerCount = await router.RouteMessageAsync(failMessage, context, cancellationToken);
 
             // Raise NodeFailed event
-            this.NodeFailed?.Invoke(nodeId, nodeInstance.NodeInstanceId, errorMessage);
+            var failDuration = nodeInstance.Duration ?? TimeSpan.Zero;
+            this.NodeFailed?.Invoke(nodeId, nodeInstance.NodeInstanceId, errorMessage, failDuration);
 
             // Raise extended event with context data
             if (this.NodeFailedEx != null)
@@ -1297,7 +1300,7 @@ namespace ExecutionEngine.Engine
                 var inputSnap = nodeInstance.ExecutionContext?.InputData != null
                     ? new Dictionary<string, object>(nodeInstance.ExecutionContext.InputData) : null;
                 var globalsSnap = new Dictionary<string, object>(context.Variables);
-                this.NodeFailedEx.Invoke(nodeId, nodeInstance.NodeInstanceId, errorMessage, inputSnap, globalsSnap);
+                this.NodeFailedEx.Invoke(nodeId, nodeInstance.NodeInstanceId, errorMessage, failDuration, inputSnap, globalsSnap);
             }
 
             // Publish NodeFailedEvent
@@ -1310,6 +1313,7 @@ namespace ExecutionEngine.Engine
                 NodeInstanceId = nodeInstance.NodeInstanceId,
                 ErrorMessage = errorMessage,
                 Exception = exception,
+                Duration = failDuration,
                 Timestamp = DateTime.UtcNow
             });
 

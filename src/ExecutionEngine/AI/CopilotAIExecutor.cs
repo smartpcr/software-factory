@@ -224,29 +224,35 @@ public class CopilotAIExecutor : IAIExecutor
                             // Update repeat-failure detector. Fingerprint is tool name + error
                             // string — if the model is making the same broken call, both stay
                             // constant; if it adapts, the fingerprint changes and we reset.
-                            var fingerprint = $"{lastToolName}|{errJson}";
-                            if (fingerprint == lastFailureFingerprint)
+                            // Skip polling/async tools that are expected to timeout while waiting.
+                            var isPollingTool = lastToolName is "read_agent" or "read_powershell" or "write_agent";
+                            if (!isPollingTool)
                             {
-                                consecutiveFailureCount++;
-                                if (consecutiveFailureCount >= MaxIdenticalToolFailures && string.IsNullOrEmpty(stuckReason))
+                                var fingerprint = $"{lastToolName}|{errJson}";
+                                if (fingerprint == lastFailureFingerprint)
                                 {
-                                    stuckReason = $"Tool '{lastToolName}' failed {consecutiveFailureCount} times with the same error: {errPreview}";
-                                    request.OnOutputLine?.Invoke($"⚠ Stuck: {stuckReason}");
-                                    this.logger.LogWarning("Repeat-failure detector tripped: {Reason}", stuckReason);
+                                    consecutiveFailureCount++;
+                                    if (consecutiveFailureCount >= MaxIdenticalToolFailures && string.IsNullOrEmpty(stuckReason))
+                                    {
+                                        stuckReason = $"Tool '{lastToolName}' failed {consecutiveFailureCount} times with the same error: {errPreview}";
+                                        request.OnOutputLine?.Invoke($"⚠ Stuck: {stuckReason}");
+                                        this.logger.LogWarning("Repeat-failure detector tripped: {Reason}", stuckReason);
+                                    }
                                 }
-                            }
-                            else
-                            {
-                                lastFailureFingerprint = fingerprint;
-                                consecutiveFailureCount = 1;
+                                else
+                                {
+                                    lastFailureFingerprint = fingerprint;
+                                    consecutiveFailureCount = 1;
+                                }
                             }
                         }
                         else
                         {
                             request.OnOutputLine?.Invoke($"   {status} done");
-                            // Any successful tool call clears the streak.
+                            // Any successful tool call clears the streak and recovery.
                             lastFailureFingerprint = string.Empty;
                             consecutiveFailureCount = 0;
+                            stuckReason = string.Empty;
                         }
 
                         break;

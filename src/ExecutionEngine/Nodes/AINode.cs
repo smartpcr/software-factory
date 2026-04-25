@@ -294,6 +294,7 @@ public class AINode : ExecutableNodeBase
         var extractedOutputCount = 0;
         if (agentDef?.Outputs.Count > 0 && !string.IsNullOrEmpty(result.Content))
         {
+            // Phase 1: Try marker-based extraction [OUTPUT:name] value
             foreach (var output in agentDef.Outputs)
             {
                 var marker = $"[OUTPUT:{output.Name}]";
@@ -315,9 +316,32 @@ public class AINode : ExecutableNodeBase
                 }
             }
 
-            // If no declared outputs were extracted but AI reported success,
-            // check for tool failures in the response (agent couldn't do the work).
-            // Require multiple indicators to avoid false positives from incident content.
+            // Phase 2: If markers didn't work, use a lightweight LLM call to extract outputs
+            if (extractedOutputCount == 0 && result.Success)
+            {
+                try
+                {
+                    var extracted = await this.ExtractOutputsWithLlmAsync(
+                        result.Content, agentDef.Outputs, workflowContext, cancellationToken);
+                    foreach (var kvp in extracted)
+                    {
+                        nodeContext.OutputData[kvp.Key] = kvp.Value;
+                        extractedOutputCount++;
+                    }
+
+                    if (extractedOutputCount > 0)
+                    {
+                        aiLogger?.EmitLine(workflowContext.InstanceId, this.NodeId,
+                            $"📤 Extracted {extractedOutputCount} outputs via summary");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "LLM output extraction failed, skipping");
+                }
+            }
+
+            // Phase 3: If still nothing, check for tool failures
             if (extractedOutputCount == 0 && result.Success)
             {
                 var content = result.Content.ToLowerInvariant();
@@ -436,6 +460,82 @@ public class AINode : ExecutableNodeBase
         {
             return value.ToString() ?? "(object)";
         }
+    }
+
+    /// <summary>
+    /// Uses a lightweight Sonnet LLM call to extract expected output field values from the agent's response.
+    /// </summary>
+    private async Task<Dictionary<string, string>> ExtractOutputsWithLlmAsync(
+        string agentResponse,
+        List<AgentOutputField> outputs,
+        WorkflowExecutionContext workflowContext,
+        CancellationToken cancellationToken)
+    {
+        var result = new Dictionary<string, string>();
+
+        // Truncate response for the extraction prompt
+        var truncated = agentResponse.Length > 8000 ? agentResponse[..8000] + "\n[... truncated ...]" : agentResponse;
+
+        // Build the extraction prompt
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("Extract the following output values from the agent response below.");
+        sb.AppendLine("Return ONLY lines in this exact format, one per field. No markdown, no explanation:");
+        sb.AppendLine();
+        foreach (var output in outputs)
+        {
+            sb.AppendLine($"{output.Name}: <value>");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("Rules:");
+        sb.AppendLine("- For file/folder paths, return the full absolute path");
+        sb.AppendLine("- If a value is not found in the response, return: <FIELD_NAME>: NOT_FOUND");
+        sb.AppendLine("- No quotes around values, no markdown formatting");
+        sb.AppendLine();
+        sb.AppendLine("--- AGENT RESPONSE ---");
+        sb.AppendLine(truncated);
+
+        // Use Sonnet for fast extraction
+        var executor = workflowContext.ServiceProvider?.GetServices<IAIExecutor>()
+            ?.FirstOrDefault(e => e.Backend == Enums.AIBackend.Copilot);
+        if (executor == null) return result;
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(TimeSpan.FromSeconds(30));
+
+        var extractResult = await executor.ExecuteAsync(new AIExecutionRequest
+        {
+            Prompt = sb.ToString(),
+            Model = "claude-sonnet-4.6",
+            MaxTokens = 1024,
+            Temperature = 0,
+            Timeout = TimeSpan.FromSeconds(30),
+        }, cts.Token);
+
+        if (!extractResult.Success || string.IsNullOrWhiteSpace(extractResult.Content)) return result;
+
+        // Parse "fieldName: value" lines
+        foreach (var line in extractResult.Content.Split('\n'))
+        {
+            var colonIdx = line.IndexOf(':');
+            if (colonIdx <= 0) continue;
+            var key = line[..colonIdx].Trim();
+            var value = line[(colonIdx + 1)..].Trim();
+
+            // Skip NOT_FOUND values
+            if (string.Equals(value, "NOT_FOUND", StringComparison.OrdinalIgnoreCase)) continue;
+            if (string.IsNullOrEmpty(value)) continue;
+
+            // Match against declared outputs (case-insensitive)
+            var matchedOutput = outputs.FirstOrDefault(o =>
+                string.Equals(o.Name, key, StringComparison.OrdinalIgnoreCase));
+            if (matchedOutput != null)
+            {
+                result[matchedOutput.Name] = value;
+            }
+        }
+
+        return result;
     }
 
     private static NodeInstance CompletedInstance(

@@ -47,6 +47,23 @@ interface RunEvent {
   payload?: Record<string, unknown>;
 }
 
+/** Derive node start time from end timestamp and ISO duration (fallback when _startedAt not tracked) */
+function deriveStartTime(endTimestamp: string, isoDuration?: string): string | undefined {
+  if (!isoDuration || !endTimestamp) return undefined;
+  try {
+    const m = isoDuration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?/i);
+    if (!m) return undefined;
+    const h = parseFloat(m[1] || '0');
+    const min = parseFloat(m[2] || '0');
+    const s = parseFloat(m[3] || '0');
+    const durationMs = (h * 3600 + min * 60 + s) * 1000;
+    const endMs = new Date(endTimestamp.endsWith('Z') ? endTimestamp : endTimestamp + 'Z').getTime();
+    return new Date(endMs - durationMs).toISOString();
+  } catch {
+    return undefined;
+  }
+}
+
 function handleRunEvent(event: RunEvent) {
   if (!event || event.runId !== currentRunId) return;
 
@@ -61,6 +78,7 @@ function handleRunEvent(event: RunEvent) {
           node._iterCount = node.runtimeType.toLowerCase() === 'while' ? 0 : undefined;
         }
         node.status = 'running';
+        node._startedAt = event.timestampUtc;
         Nodes.render();
       }
       logFn('info', event.nodeId || null, `▶ ${event.nodeName || event.nodeId} started`);
@@ -74,11 +92,15 @@ function handleRunEvent(event: RunEvent) {
         if (event.payload?.duration) {
           node._runDuration = event.payload.duration as string;
         }
-        // Populate runtime data from synthetic events
-        if (event.synthetic && event.payload) {
+        // Always populate runtime data (merge with existing to preserve data from prior events)
+        if (event.payload) {
+          const startTime = node._startedAt || deriveStartTime(event.timestampUtc, event.payload.duration as string);
           node._runData = {
+            ...(node._runData || {}),
             status: 'success',
             nodeInstanceId: event.payload.nodeInstanceId as string,
+            startTime,
+            endTime: event.timestampUtc,
             duration: event.payload.duration as string,
             ...(event.payload.inputData ? { inputData: event.payload.inputData as Record<string, unknown> } : {}),
             ...(event.payload.outputData ? { outputData: event.payload.outputData as Record<string, unknown> } : {}),
@@ -139,12 +161,16 @@ function handleRunEvent(event: RunEvent) {
         if (event.payload?.duration) {
           node._runDuration = event.payload.duration as string;
         }
-        // Populate runtime data from synthetic events
-        if (event.synthetic && event.payload) {
+        // Always populate runtime data (merge with existing)
+        if (event.payload) {
+          const startTime = node._startedAt || deriveStartTime(event.timestampUtc, event.payload.duration as string);
           node._runData = {
+            ...(node._runData || {}),
             status: 'failed',
             nodeInstanceId: event.payload.nodeInstanceId as string,
             errorMessage: errMsg,
+            startTime,
+            endTime: event.timestampUtc,
             duration: event.payload.duration as string,
             ...(event.payload.inputData ? { inputData: event.payload.inputData as Record<string, unknown> } : {}),
             ...(event.payload.globalVariables ? { globalVariables: event.payload.globalVariables as Record<string, unknown> } : {}),
@@ -162,6 +188,19 @@ function handleRunEvent(event: RunEvent) {
         node.status = 'cancelled';
         if (event.payload?.duration) {
           node._runDuration = event.payload.duration as string;
+        }
+        // Populate runtime data for cancelled nodes
+        if (event.payload) {
+          const startTime = node._startedAt || deriveStartTime(event.timestampUtc, event.payload.duration as string);
+          node._runData = {
+            ...(node._runData || {}),
+            status: 'cancelled',
+            nodeInstanceId: event.payload.nodeInstanceId as string,
+            cancelReason: event.payload.reason as string,
+            startTime,
+            endTime: event.timestampUtc,
+            ...(event.payload.duration ? { duration: event.payload.duration as string } : {}),
+          };
         }
         Nodes.render();
       }
@@ -272,7 +311,7 @@ export const Exec = {
   },
 
   reset() {
-    State.nodes.forEach(n => { n.status = ''; n._runData = undefined; n._runDuration = undefined; n._runError = undefined; });
+    State.nodes.forEach(n => { n.status = ''; n._runData = undefined; n._runDuration = undefined; n._runError = undefined; n._startedAt = undefined; });
     State.edges.forEach(e => { e._active = false; e._runtimeData = undefined; });
     State.activeRun = null;
     Nodes.render();

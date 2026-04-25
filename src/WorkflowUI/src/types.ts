@@ -58,6 +58,7 @@ export interface FlowNode {
   _cachedHeight?: number;
   _iterCount?: number;
   _forceFail?: boolean;
+  _startedAt?: string;
   _runDuration?: string;
   _runError?: string;
   _runData?: Record<string, unknown>;

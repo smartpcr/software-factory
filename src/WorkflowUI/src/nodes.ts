@@ -194,7 +194,13 @@ export const Nodes = {
         else el.appendChild(durBadge);
       }
       durBadge.textContent = formatDuration(node._runDuration);
-      durBadge.title = node._runError || '';
+      // Build tooltip: start time, duration, error
+      const tooltipParts: string[] = [];
+      const d = node._runData;
+      if (d?.startTime) tooltipParts.push(`Start: ${formatTimestamp(d.startTime as string)}`);
+      if (d?.endTime) tooltipParts.push(`End: ${formatTimestamp(d.endTime as string)}`);
+      if (node._runError) tooltipParts.push(`Error: ${node._runError}`);
+      durBadge.title = tooltipParts.join('\n') || node._runError || '';
     } else if (durBadge) {
       durBadge.remove();
     }
@@ -249,7 +255,16 @@ export const Nodes = {
       : `<div class="node-body"><div class="node-body-content">${this.bodyHtml(node)}</div></div>`;
 
     const durationBadge = node._runDuration
-      ? `<div class="node-duration-badge" title="${escapeHtml(node._runError || '')}">${escapeHtml(node._runDuration)}</div>`
+      ? `<div class="node-duration-badge" title="${escapeHtml(
+          (() => {
+            const parts: string[] = [];
+            const d = node._runData;
+            if (d?.startTime) parts.push(`Start: ${formatTimestamp(d.startTime as string)}`);
+            if (d?.endTime) parts.push(`End: ${formatTimestamp(d.endTime as string)}`);
+            if (node._runError) parts.push(`Error: ${node._runError}`);
+            return parts.join('\n') || node._runError || '';
+          })()
+        )}">${escapeHtml(formatDuration(node._runDuration))}</div>`
       : '';
 
     return `

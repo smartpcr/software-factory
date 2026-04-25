@@ -241,7 +241,7 @@ public class Program
                         }
                     };
 
-                    engine.NodeFailed += (nodeId, instanceId, error) =>
+                    engine.NodeFailed += (nodeId, instanceId, error, duration) =>
                     {
                         if (nodeProgressMap.TryGetValue(nodeId, out var progressNode))
                         {

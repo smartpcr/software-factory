@@ -400,11 +400,11 @@ public class SubflowNode : ExecutableNodeBase
                 }
             };
 
-            engine.NodeFailed += (nodeId, instanceId, error) =>
+            engine.NodeFailed += (nodeId, instanceId, error, duration) =>
             {
                 this.RaiseOnProgress(new ProgressEventArgs
                 {
-                    Status = $"[{this.NodeId}/{nodeId}] Failed: {error}",
+                    Status = $"[{this.NodeId}/{nodeId}] Failed after {duration.TotalSeconds:F1}s: {error}",
                     ProgressPercent = 100
                 });
 
