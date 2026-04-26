@@ -1,4 +1,4 @@
-import type { ForgeState } from '@/types';
+import type { Card, ColumnId, ForgeState } from '@/types';
 import { sampleState } from '@/sampleData';
 
 const baseUrl = import.meta.env.VITE_FORGE_API_URL ?? '';
@@ -26,9 +26,14 @@ function useLocalSeed(): boolean {
   return new URLSearchParams(window.location.search).get('seed') === 'local';
 }
 
-async function fetchJson<T>(path: string): Promise<T> {
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${baseUrl}${path}`, {
-    headers: { Accept: 'application/json' },
+    headers: {
+      Accept: 'application/json',
+      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(init?.headers ?? {}),
+    },
+    ...init,
   });
   if (!res.ok) {
     let problem: ProblemDetails | null = null;
@@ -43,7 +48,20 @@ async function fetchJson<T>(path: string): Promise<T> {
     const detail = problem?.detail ?? problem?.title ?? res.statusText;
     throw new ForgeApiError(res.status, problem, `${path}: ${res.status} ${detail}`);
   }
+  if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
+}
+
+export interface MoveCardResponse {
+  card: Card;
+  policy: {
+    allow: boolean;
+    toast?: string | null;
+    title?: string | null;
+    text?: string | null;
+    warn?: string | null;
+    confirm?: boolean;
+  };
 }
 
 export const forgeApi = {
@@ -60,5 +78,29 @@ export const forgeApi = {
       }
       throw err;
     }
+  },
+
+  /** POST /api/cards. */
+  async createCard(card: Card): Promise<Card> {
+    return fetchJson<Card>('/api/cards', {
+      method: 'POST',
+      body: JSON.stringify({ card }),
+    });
+  },
+
+  /** PATCH /api/cards/{id}. */
+  async patchCard(id: string, patch: Partial<Card>): Promise<Card> {
+    return fetchJson<Card>(`/api/cards/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  /** POST /api/cards/{id}/move. */
+  async moveCard(id: string, toCol: ColumnId, force = false): Promise<MoveCardResponse> {
+    return fetchJson<MoveCardResponse>(`/api/cards/${encodeURIComponent(id)}/move`, {
+      method: 'POST',
+      body: JSON.stringify({ toCol, force }),
+    });
   },
 };

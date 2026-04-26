@@ -12,7 +12,9 @@ test.describe('/plan', () => {
     await expect(page.locator('aside.sidebar .nav-item.active .label')).toHaveText('Plan & Design');
     await expect(page.locator('main.main .page-eyebrow .num')).toHaveText('01');
     await expect(page.locator('main.main h1.page-title')).toContainText('Sprint 14 board');
-    await expect(page.locator('main.main h1.page-title .sprint-pill')).toContainText('34 / 89 pts');
+    // Phase 1.11 wires the sprint pill to the real burn-down, so the values
+    // are computed from the seed data (not the prototype's hard-coded "34 / 89").
+    await expect(page.locator('main.main h1.page-title .sprint-pill')).toContainText(/\d+ \/ \d+ pts/);
   });
 
   test('routes between views', async ({ page }) => {

@@ -312,27 +312,6 @@
       "fallbackNodeId": null
     },
     {
-      "nodeId": "n_fvvzrv1",
-      "runtimeType": "Setter",
-      "nodeName": "Iteration++",
-      "description": "",
-      "configuration": {
-        "variableMappings": {
-          "queryLoopCount": ""
-        },
-        "variableOps": {
-          "queryLoopCount": "increment"
-        }
-      },
-      "joinType": "Any",
-      "priority": "Normal",
-      "maxConcurrentExecutions": 0,
-      "retryPolicy": null,
-      "circuitBreakerPolicy": null,
-      "compensationNodeId": null,
-      "fallbackNodeId": null
-    },
-    {
       "nodeId": "n_nuxfxwv",
       "runtimeType": "AI",
       "nodeName": "find ETW events",
@@ -474,14 +453,16 @@
     {
       "nodeId": "n_ijgj8z0",
       "runtimeType": "Setter",
-      "nodeName": "query score",
+      "nodeName": "query score & loop count",
       "description": "",
       "configuration": {
         "variableMappings": {
-          "maxQueryScore": "Math.Max({score}, {maxQueryScore})"
+          "maxQueryScore": "Math.Max({score}, {maxQueryScore})",
+          "queryLoopCount": "{queryLoopCount} + 1"
         },
         "variableOps": {
-          "maxQueryScore": "expr"
+          "maxQueryScore": "expr",
+          "queryLoopCount": "expr"
         }
       },
       "joinType": "Any",
@@ -618,17 +599,6 @@
       "metadata": null
     },
     {
-      "sourceNodeId": "n_fvvzrv1",
-      "targetNodeId": "n_48s864k",
-      "sourcePort": "out",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
       "sourceNodeId": "n_p4i33a1",
       "targetNodeId": "n_48s864k",
       "sourcePort": "out",
@@ -697,28 +667,6 @@
     {
       "sourceNodeId": "n_x0rtrlj",
       "targetNodeId": "n_buwqvpl",
-      "sourcePort": "out",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
-      "sourceNodeId": "n_48s864k",
-      "targetNodeId": "n_fvvzrv1",
-      "sourcePort": "LoopBody",
-      "targetPort": "in",
-      "triggerMessageType": "Next",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
-      "sourceNodeId": "n_fvvzrv1",
-      "targetNodeId": "n_nuxfxwv",
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",

@@ -6,6 +6,7 @@
 
 using Forge.Api.Endpoints;
 using Forge.Api.Persistence;
+using Forge.Api.Realtime;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -50,6 +51,9 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
+// SignalR.
+builder.Services.AddSignalR();
+
 // Problem details (RFC-7807).
 builder.Services.AddProblemDetails();
 
@@ -78,6 +82,9 @@ if (app.Environment.IsDevelopment())
 
 app.MapHealthEndpoints();
 app.MapStateEndpoints();
+app.MapCardsEndpoints();
+
+app.MapHub<ForgeHub>("/hubs/forge");
 
 app.Run();
 

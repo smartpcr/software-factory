@@ -46,18 +46,25 @@ namespace ExecutionEngine.Nodes
 
                     if (op == "expr")
                     {
-                        // Expression mode: first try simple string concatenation (handles path expressions correctly).
-                        // Only use Roslyn for complex expressions (Math.Max, method calls, etc.)
-                        var resolved = BindingResolver.ResolveTemplate(inputExpr, null, nodeContext, workflowContext);
-                        resolved = EvaluateStringConcatenation(resolved);
-
-                        // Check if any {placeholders} remain unresolved or if the expression has method calls
-                        var hasUnresolved = System.Text.RegularExpressions.Regex.IsMatch(resolved, @"\{[\w.]+\}");
+                        // Check if expression needs Roslyn (method calls, arithmetic, comparisons)
+                        // vs simple string/path concatenation ({folder} + "\file.md")
                         var hasMethodCalls = inputExpr.Contains('(') && inputExpr.Contains(')');
+                        var hasArithmetic = System.Text.RegularExpressions.Regex.IsMatch(
+                            inputExpr, @"[+\-*/]\s*\d|[+\-*/]\s*{");
+                        var isPathConcat = !hasMethodCalls && !hasArithmetic
+                            && inputExpr.Contains('+')
+                            && System.Text.RegularExpressions.Regex.IsMatch(inputExpr, @"""[^""]*\\");
 
-                        if (hasMethodCalls || hasUnresolved)
+                        if (isPathConcat)
                         {
-                            // Complex expression — evaluate with Roslyn using typed variables
+                            // Simple path concatenation: {folder} + "\file.md"
+                            var resolved = BindingResolver.ResolveTemplate(inputExpr, null, nodeContext, workflowContext);
+                            resolved = EvaluateStringConcatenation(resolved);
+                            workflowContext.Variables[globalKey] = resolved;
+                        }
+                        else
+                        {
+                            // Complex/arithmetic expression — evaluate with Roslyn
                             try
                             {
                                 var state = CreateExecutionState(workflowContext, nodeContext);
@@ -71,24 +78,21 @@ namespace ExecutionEngine.Nodes
                             }
                             catch
                             {
-                                // Roslyn failed — use the template-resolved string
+                                // Roslyn failed — fallback to template resolution
+                                var resolved = BindingResolver.ResolveTemplate(inputExpr, null, nodeContext, workflowContext);
+                                resolved = EvaluateStringConcatenation(resolved);
                                 workflowContext.Variables[globalKey] = resolved;
                             }
-                        }
-                        else
-                        {
-                            // Simple concatenation result — use directly
-                            workflowContext.Variables[globalKey] = resolved;
                         }
                     }
                     else
                     {
                         var value = BindingResolver.Resolve(inputExpr, nodeContext, workflowContext);
-                        if (value == null) continue;
 
                         if (op == "increment")
                         {
-                            var addend = Convert.ToDouble(value);
+                            // Default increment by 1 when source is empty/null
+                            var addend = value != null ? Convert.ToDouble(value) : 1.0;
                             if (workflowContext.Variables.TryGetValue(globalKey, out var existing))
                             {
                                 var current = Convert.ToDouble(existing);
@@ -101,6 +105,7 @@ namespace ExecutionEngine.Nodes
                         }
                         else
                         {
+                            if (value == null) continue;
                             workflowContext.Variables[globalKey] = value;
                         }
                     }

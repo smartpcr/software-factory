@@ -15,4 +15,8 @@
     <ProjectReference Include="..\Forge.Api\Forge.Api.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\Forge.UI\src\board\policy.fixtures.ts" Link="Fixtures\policy.fixtures.ts" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
