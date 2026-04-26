@@ -1475,6 +1475,7 @@ export const App = {
             const info = nodeInfo.get(evt.nodeId) || { status: 'failed' };
             info.status = 'failed';
             info.error = evt.payload?.errorMessage as string || info.error || '';
+            info.duration = evt.payload?.duration as string || info.duration || '';
             info.endTime = evt.timestampUtc;
             if (isSynthetic && evt.payload) {
               if (evt.payload.inputData) info.inputData = evt.payload.inputData as Record<string, unknown>;
@@ -1487,6 +1488,7 @@ export const App = {
             const info = nodeInfo.get(evt.nodeId) || { status: 'cancelled' };
             info.status = 'cancelled';
             info.reason = evt.payload?.reason as string || '';
+            info.duration = evt.payload?.duration as string || info.duration || '';
             info.endTime = evt.timestampUtc;
             nodeInfo.set(evt.nodeId, info);
             break;
