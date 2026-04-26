@@ -72,6 +72,9 @@ public class CardRow
     public string? BlockedReason { get; set; }
 
     public string? DoneAt { get; set; }
+
+    /// <summary>Phase 5.10 — opaque marker that bumps when a provider sync replaces the row.</summary>
+    public string? RemoteRevision { get; set; }
 }
 
 public class ColumnRow

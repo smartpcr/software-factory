@@ -6,6 +6,7 @@ import { PlanView } from '@/views/PlanView';
 import { TimelineView } from '@/views/TimelineView';
 import { WorkstreamsView } from '@/views/WorkstreamsView';
 import { PrsView } from '@/views/PrsView';
+import { SettingsView } from '@/views/SettingsView';
 import { useStateStore } from '@/state/useStateStore';
 
 export function App() {
@@ -25,6 +26,7 @@ export function App() {
           <Route path="/timeline" element={<TimelineView />} />
           <Route path="/workstreams" element={<WorkstreamsView />} />
           <Route path="/prs" element={<PrsView />} />
+          <Route path="/settings" element={<SettingsView />} />
           <Route path="*" element={<Navigate to="/plan" replace />} />
         </Route>
       </Routes>

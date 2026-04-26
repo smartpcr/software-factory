@@ -1,6 +1,16 @@
 import type { Card, ColumnId, ForgeState, Pr, TimelineResponse, Workstream } from '@/types';
 import { sampleState } from '@/sampleData';
 
+export interface ProviderHealth {
+  kind: string;
+  ok: boolean;
+  message: string | null;
+  lastSync: string | null;
+  lastErrorCount: number;
+  rateLimitRemaining: number | null;
+  rateLimitLimit: number | null;
+}
+
 const baseUrl = import.meta.env.VITE_FORGE_API_URL ?? '';
 
 interface ProblemDetails {
@@ -206,6 +216,25 @@ export const forgeApi = {
       method: 'POST',
       headers: { 'X-Forge-User': writerHeader() },
     });
+  },
+
+  /** GET /api/providers — last-known health snapshot for every provider. */
+  async listProviders(): Promise<ProviderHealth[]> {
+    if (useLocalSeed()) return [];
+    try {
+      return await fetchJson<ProviderHealth[]>('/api/providers');
+    } catch (err) {
+      if (import.meta.env.DEV) {
+        console.warn('[forge] /api/providers failed', err);
+        return [];
+      }
+      throw err;
+    }
+  },
+
+  /** GET /api/providers/{kind}/test — live probe. */
+  async testProvider(kind: string): Promise<ProviderHealth> {
+    return fetchJson<ProviderHealth>(`/api/providers/${encodeURIComponent(kind)}/test`);
   },
 
   /** GET /api/timeline?from=…&to=… . */

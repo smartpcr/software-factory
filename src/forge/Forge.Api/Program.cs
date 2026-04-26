@@ -6,6 +6,9 @@
 
 using Forge.Api.Endpoints;
 using Forge.Api.Persistence;
+using Forge.Api.Providers;
+using Forge.Api.Providers.Ado;
+using Forge.Api.Providers.GitHub;
 using Forge.Api.Realtime;
 using Forge.Api.Services.Git;
 using Microsoft.EntityFrameworkCore;
@@ -59,6 +62,19 @@ builder.Services.AddSignalR();
 builder.Services.Configure<GitWorktreeOptions>(builder.Configuration.GetSection(GitWorktreeOptions.SectionName));
 builder.Services.AddSingleton<IGitWorktreeService, GitWorktreeService>();
 
+// Phase 5 — provider abstraction + ADO/GitHub implementations + sync.
+builder.Services.Configure<AdoOptions>(builder.Configuration.GetSection(AdoOptions.SectionName));
+builder.Services.Configure<GitHubOptions>(builder.Configuration.GetSection(GitHubOptions.SectionName));
+builder.Services.Configure<ProviderSyncOptions>(builder.Configuration.GetSection(ProviderSyncOptions.SectionName));
+builder.Services.AddHttpClient(AdoProvider.ClientName);
+builder.Services.AddHttpClient(GitHubProvider.ClientName);
+builder.Services.AddSingleton<IForgeProvider, AdoProvider>();
+builder.Services.AddSingleton<IForgeProvider, GitHubProvider>();
+builder.Services.AddSingleton<WebhookActivity>();
+builder.Services.AddScoped<ProviderCache>();
+builder.Services.AddSingleton<ProviderSyncService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ProviderSyncService>());
+
 // Problem details (RFC-7807).
 builder.Services.AddProblemDetails();
 
@@ -91,6 +107,8 @@ app.MapCardsEndpoints();
 app.MapTimelineEndpoints();
 app.MapWorkstreamsEndpoints();
 app.MapPrsEndpoints();
+app.MapProvidersEndpoints();
+app.MapWebhooksEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 

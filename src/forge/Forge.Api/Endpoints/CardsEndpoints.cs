@@ -76,7 +76,13 @@ public static class CardsEndpoints
         return Results.Created($"/api/cards/{row.Id}", card);
     }
 
-    // PATCH /api/cards/{id}
+    // PATCH /api/cards/{id}.
+    //
+    // Phase 5.9: callers may pass `IfMatchRemoteRevision` (or an `If-Match`
+    // header). When it differs from the row's current `RemoteRevision`, the
+    // server returns 409 + the current row so the UI can surface the
+    // "remote changed since" badge + discard / overwrite choice. Pass
+    // `X-Forge-Overwrite: true` to clobber.
     public sealed record PatchCardRequest(
         string? Title = null,
         int? Pts = null,
@@ -85,16 +91,33 @@ public static class CardsEndpoints
         bool? AgentNull = null,
         IReadOnlyList<string>? Tags = null,
         string? Type = null,
-        string? AutoNext = null);
+        string? AutoNext = null,
+        string? IfMatchRemoteRevision = null);
 
     private static async Task<IResult> Patch(
         string id,
         [FromBody] PatchCardRequest req,
+        HttpContext ctx,
         ForgeDbContext db,
         IHubContext<ForgeHub> hub)
     {
         var row = await db.Cards.FirstOrDefaultAsync(c => c.Id == id);
         if (row is null) return NotFound(id);
+
+        // Conflict policy. Header beats body so curl callers can use If-Match.
+        var ifMatch = ctx.Request.Headers["If-Match"].FirstOrDefault() ?? req.IfMatchRemoteRevision;
+        var force = string.Equals(ctx.Request.Headers["X-Forge-Overwrite"].FirstOrDefault(), "true", StringComparison.OrdinalIgnoreCase);
+        if (!force && !string.IsNullOrEmpty(ifMatch) && !string.Equals(ifMatch, row.RemoteRevision, StringComparison.Ordinal))
+        {
+            return Results.Json(new
+            {
+                requireConfirm = true,
+                title = "Remote changed since",
+                detail = $"Card {row.Id} was updated by a provider sync. Re-fetch and merge, or re-send with X-Forge-Overwrite: true to clobber.",
+                currentRevision = row.RemoteRevision,
+                current = CardMapper.ToContract(row),
+            }, statusCode: 409);
+        }
 
         if (req.Title != null)    row.Title = req.Title;
         if (req.Pts.HasValue)     row.Pts = req.Pts.Value;

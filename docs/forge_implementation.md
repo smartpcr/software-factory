@@ -143,18 +143,18 @@ PR board (Implementation → Build → Review → Merged) with build, review and
 
 Bring real work items, branches and PRs into the cache.
 
-- [ ] **5.1** Add `IForgeProvider` interface in `Forge.Api/Providers/` (`ListWorkItems`, `ListPullRequests`, `ListBuilds`, `GetWorkItem`, `GetPr`, …).
-- [ ] **5.2** Implement `AdoProvider` using `Microsoft.TeamFoundationServer.Client` / REST; PAT in user-secrets `Forge:Ado:Pat`.
-- [ ] **5.3** Implement `GitHubProvider` using Octokit; PAT or fine-grained token in `Forge:GitHub:Pat`.
-- [ ] **5.4** Provider config UI page `/settings` (React): org/project (ADO), owner/repo (GitHub), PAT entry, "test connection".
-- [ ] **5.5** Map ADO work item → `Card`: state → column, area path → epic, tags → tags, story points → pts, assigned-to → agent (human role).
-- [ ] **5.6** Map GitHub issue + PR → `Card` / `Pr` (issue type by labels, PR draft status preserved).
-- [ ] **5.7** Background sync: `IHostedService` polling on configurable interval (default 60s), with jitter + ETag/If-None-Match where supported.
-- [ ] **5.8** Webhook receiver `POST /api/webhooks/{provider}` for ADO Service Hooks and GitHub webhooks; HMAC verification; falls back to polling if webhook is silent for >5 min.
-- [ ] **5.9** Conflict policy on overlapping local + remote edits: last-writer-wins by default, with a "remote changed since" badge on the card and an explicit "discard local" / "overwrite remote" choice.
-- [ ] **5.10** Cache invalidation on webhook; SignalR `card.changed` fan-out.
-- [ ] **5.11** Provider health on `/settings`: last sync, error rate, rate-limit budget remaining.
-- [ ] **5.12** Tests: provider contract tests against recorded HTTP cassettes (WireMock.Net); webhook signature unit tests; one end-to-end test that boots the provider with a fake server and asserts cards appear.
+- [x] **5.1** Add `IForgeProvider` interface in `Forge.Api/Providers/` (`ListWorkItems`, `ListPullRequests`, `ListBuilds`, `GetWorkItem`, `GetPr`, …).
+- [x] **5.2** Implement `AdoProvider` using `Microsoft.TeamFoundationServer.Client` / REST; PAT in user-secrets `Forge:Ado:Pat`. _(REST via HttpClient, not the TFS client lib — keeps deps small)_
+- [x] **5.3** Implement `GitHubProvider` using Octokit; PAT or fine-grained token in `Forge:GitHub:Pat`. _(REST via HttpClient, not Octokit — same reason)_
+- [~] **5.4** Provider config UI page `/settings` (React): org/project (ADO), owner/repo (GitHub), PAT entry, "test connection". _(read + Test connection live; PAT entry intentionally NOT in the UI to avoid storing secrets in SQLite without an encryption story — config flows through user-secrets / env)_
+- [x] **5.5** Map ADO work item → `Card`: state → column, area path → epic, tags → tags, story points → pts, assigned-to → agent (human role).
+- [x] **5.6** Map GitHub issue + PR → `Card` / `Pr` (issue type by labels, PR draft status preserved).
+- [~] **5.7** Background sync: `IHostedService` polling on configurable interval (default 60s), with jitter + ETag/If-None-Match where supported. _(polling + jitter shipped; ETag/If-None-Match is Phase R)_
+- [x] **5.8** Webhook receiver `POST /api/webhooks/{provider}` for ADO Service Hooks and GitHub webhooks; HMAC verification; falls back to polling if webhook is silent for >5 min.
+- [~] **5.9** Conflict policy on overlapping local + remote edits: last-writer-wins by default, with a "remote changed since" badge on the card and an explicit "discard local" / "overwrite remote" choice. _(server-side 409 + currentRevision payload + X-Forge-Overwrite header land; UI badge + choice modal is Phase R)_
+- [x] **5.10** Cache invalidation on webhook; SignalR `card.changed` fan-out.
+- [x] **5.11** Provider health on `/settings`: last sync, error rate, rate-limit budget remaining.
+- [x] **5.12** Tests: provider contract tests against recorded HTTP cassettes (WireMock.Net); webhook signature unit tests; one end-to-end test that boots the provider with a fake server and asserts cards appear. _(used a 50-line StubHttpMessageHandler instead of WireMock.Net — same coverage, no extra dep)_
 
 ## Phase 6 — Write actions: WI, PR, pipelines
 
