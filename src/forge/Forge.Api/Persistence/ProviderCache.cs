@@ -53,6 +53,10 @@ public class ProviderCache
                 var maxSort = await this.db.Cards.Select(c => (int?)c.Sort).MaxAsync(ct) ?? -1;
                 var fresh = CardMapper.ApplyContract(new CardRow { Id = card.Id, Sort = maxSort + 1 }, card);
                 fresh.RemoteRevision = $"{providerKind}:{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
+                // Phase 8.9 — provider-imported cards land under the default
+                // repo so they show up under the active product. Phase 9 will
+                // route them to the matching repo from the multi-org config.
+                fresh.RepoId ??= ForgeSeed.DefaultRepoId;
                 this.db.Cards.Add(fresh);
                 changed++;
                 await this.hub.Clients.All.SendAsync("card.changed", new { kind = "imported", source = providerKind, card }, ct);
@@ -124,6 +128,9 @@ public class ProviderCache
                     Conflicts = pr.Conflicts,
                     HumanGate = pr.HumanGate,
                     GateReason = pr.GateReason,
+                    // Phase 8.9 — provider-imported PRs default to the seed repo;
+                    // Phase 9 routes them by org/repo metadata.
+                    RepoId = ForgeSeed.DefaultRepoId,
                 };
                 this.db.Prs.Add(fresh);
                 changed++;

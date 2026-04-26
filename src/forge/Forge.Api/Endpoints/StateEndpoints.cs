@@ -24,14 +24,28 @@ public static class StateEndpoints
 
     public static WebApplication MapStateEndpoints(this WebApplication app)
     {
-        app.MapGet("/api/state", async (ForgeDbContext db) =>
+        app.MapGet("/api/state", async (HttpContext ctx, ForgeDbContext db) =>
         {
+            // Phase 8.9 — scope cards / workstreams / prs to the active product.
+            // Epics, columns, ws-events, ws-stats, overview-* are NOT repo-scoped
+            // today (they describe the workspace as a whole) so they ship as-is.
+            var scope = await ProductScope.ResolveAsync(ctx, db);
             var epics = await db.Epics.AsNoTracking().OrderBy(e => e.Sort).ToListAsync();
-            var cards = await db.Cards.AsNoTracking().OrderBy(c => c.Sort).ToListAsync();
+            var cardsQ = db.Cards.AsNoTracking().AsQueryable();
+            var wsQ = db.Workstreams.AsNoTracking().AsQueryable();
+            var prsQ = db.Prs.AsNoTracking().AsQueryable();
+            if (!scope.IsAll)
+            {
+                var ids = scope.RepoIds!;
+                cardsQ = cardsQ.Where(c => c.RepoId != null && ids.Contains(c.RepoId));
+                wsQ = wsQ.Where(w => w.RepoId != null && ids.Contains(w.RepoId));
+                prsQ = prsQ.Where(p => p.RepoId != null && ids.Contains(p.RepoId));
+            }
+            var cards = await cardsQ.OrderBy(c => c.Sort).ToListAsync();
             var columns = await db.Columns.AsNoTracking().OrderBy(c => c.Sort).ToListAsync();
-            var workstreams = await db.Workstreams.AsNoTracking().OrderBy(w => w.Sort).ToListAsync();
+            var workstreams = await wsQ.OrderBy(w => w.Sort).ToListAsync();
             var wsEvents = await db.WsEvents.AsNoTracking().OrderBy(w => w.Sort).ToListAsync();
-            var prs = await db.Prs.AsNoTracking().OrderBy(p => p.Sort).ToListAsync();
+            var prs = await prsQ.OrderBy(p => p.Sort).ToListAsync();
             var wsStats = await db.WsStats.AsNoTracking().OrderBy(s => s.Sort).ToListAsync();
             var activity = await db.OverviewActivity.AsNoTracking().OrderBy(a => a.Sort).ToListAsync();
             var agents = await db.OverviewAgents.AsNoTracking().OrderBy(a => a.Sort).ToListAsync();
@@ -78,7 +92,8 @@ public static class StateEndpoints
         Deserialize<List<string>>(r.PrsJson) ?? new(),
         Deserialize<List<string>>(r.CardsJson) ?? new(),
         r.Commits, r.Ahead, r.Behind, r.Conflicts, r.Summary,
-        r.BarStart, r.BarEnd, r.Planned);
+        r.BarStart, r.BarEnd, r.Planned,
+        r.RepoId);
 
     private static WsEvent MapWsEvent(WsEventRow r) => new(r.Ws, r.Day, r.Kind, r.Label);
 

@@ -401,6 +401,68 @@ public class AdoProvider : IForgeProvider
         return client;
     }
 
+    /// <summary>
+    /// Phase 8.5 — list repositories the configured PAT can see in the
+    /// configured project. ADO REST: <c>GET {org}/{project}/_apis/git/repositories</c>.
+    /// Returns an empty list when not configured or the call fails — the picker
+    /// degrades to free-text URL entry rather than blocking the operator.
+    /// </summary>
+    public async Task<IReadOnlyList<DiscoverableRepo>> ListRepositoriesAsync(CancellationToken ct = default)
+    {
+        if (!this.IsConfigured) return Array.Empty<DiscoverableRepo>();
+        try
+        {
+            var client = this.NewClient();
+            var resp = await client.GetAsync($"{this.options.Project}/_apis/git/repositories?api-version=7.1", ct);
+            this.health.RecordResponse(resp);
+            if (!resp.IsSuccessStatusCode) return Array.Empty<DiscoverableRepo>();
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            var orgName = TrimOrgFromUrl(this.options.OrgUrl);
+            var list = new List<DiscoverableRepo>();
+            foreach (var r in doc.RootElement.GetProperty("value").EnumerateArray())
+            {
+                var name = r.GetProperty("name").GetString() ?? string.Empty;
+                var remoteUrl = r.TryGetProperty("remoteUrl", out var u) ? u.GetString() ?? string.Empty : string.Empty;
+                var defaultBranch = r.TryGetProperty("defaultBranch", out var db)
+                    ? (db.GetString() ?? "refs/heads/main").Replace("refs/heads/", string.Empty)
+                    : "main";
+                if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(remoteUrl)) continue;
+                list.Add(new DiscoverableRepo(
+                    Kind: "ado",
+                    DisplayName: name,
+                    RemoteUrl: remoteUrl,
+                    DefaultBranch: defaultBranch,
+                    AdoOrg: orgName,
+                    AdoProject: this.options.Project));
+            }
+            return list;
+        }
+        catch (Exception ex)
+        {
+            this.health.RecordError(ex);
+            this.logger.LogWarning(ex, "ADO ListRepositoriesAsync failed");
+            return Array.Empty<DiscoverableRepo>();
+        }
+    }
+
+    private static string? TrimOrgFromUrl(string? orgUrl)
+    {
+        if (string.IsNullOrWhiteSpace(orgUrl)) return null;
+        if (Uri.TryCreate(orgUrl, UriKind.Absolute, out var uri))
+        {
+            // dev.azure.com/{org} or {org}.visualstudio.com.
+            if (uri.Host.EndsWith("dev.azure.com", StringComparison.OrdinalIgnoreCase))
+            {
+                return uri.AbsolutePath.Trim('/').Split('/')[0];
+            }
+            if (uri.Host.EndsWith("visualstudio.com", StringComparison.OrdinalIgnoreCase))
+            {
+                return uri.Host.Split('.')[0];
+            }
+        }
+        return null;
+    }
+
     public async Task<ProviderHealth> TestConnectionAsync(CancellationToken ct = default)
     {
         if (!this.IsConfigured)

@@ -40,6 +40,10 @@ public class ForgeDbContext : DbContext
 
     public DbSet<IdempotencyRow> Idempotency => this.Set<IdempotencyRow>();
 
+    public DbSet<ProductRow> Products => this.Set<ProductRow>();
+
+    public DbSet<RepoRow> Repos => this.Set<RepoRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         mb.Entity<EpicRow>().ToTable("epics").HasKey(x => x.Id);
@@ -53,5 +57,21 @@ public class ForgeDbContext : DbContext
         mb.Entity<OverviewAgentRow>().ToTable("overview_agents").HasKey(x => x.Id);
         mb.Entity<AuditRow>().ToTable("forge_actions").HasKey(x => x.Id);
         mb.Entity<IdempotencyRow>().ToTable("idempotency").HasKey(x => x.Key);
+
+        // Phase 8 — products / repos with Q5 invariants enforced at the DB layer.
+        mb.Entity<ProductRow>().ToTable("products").HasKey(x => x.Id);
+        mb.Entity<ProductRow>().HasIndex(x => x.Slug).IsUnique();
+
+        mb.Entity<RepoRow>().ToTable("repos").HasKey(x => x.Id);
+        // Q5: same remote URL cannot live under two products.
+        mb.Entity<RepoRow>().HasIndex(x => x.RemoteUrl).IsUnique();
+        // Q2: same clone root cannot host two repos (worktrees would race).
+        mb.Entity<RepoRow>().HasIndex(x => x.CloneRoot).IsUnique();
+        // FK on product_id; cascade delete when a product goes away.
+        mb.Entity<RepoRow>()
+            .HasOne<ProductRow>()
+            .WithMany()
+            .HasForeignKey(x => x.ProductId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }

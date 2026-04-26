@@ -1,4 +1,15 @@
-import type { Card, ColumnId, ForgeState, Pr, TimelineResponse, Workstream } from '@/types';
+import type {
+  Card,
+  ColumnId,
+  DiscoverableRepo,
+  ForgeState,
+  Pr,
+  Product,
+  ProductStats,
+  Repo,
+  TimelineResponse,
+  Workstream,
+} from '@/types';
 import { sampleState } from '@/sampleData';
 
 export interface ProviderHealth {
@@ -60,13 +71,30 @@ function writerHeader(): string {
   return window.localStorage.getItem('forge.user') ?? 'forge-ui';
 }
 
+/** Phase 8.8 — active product the UI is scoped to (TopBar switcher). */
+const ACTIVE_PRODUCT_KEY = 'forge.activeProductId';
+
+export function getActiveProductId(): string | null {
+  if (typeof window === 'undefined') return null;
+  return window.localStorage.getItem(ACTIVE_PRODUCT_KEY);
+}
+
+export function setActiveProductId(id: string | null): void {
+  if (typeof window === 'undefined') return;
+  if (id === null) window.localStorage.removeItem(ACTIVE_PRODUCT_KEY);
+  else window.localStorage.setItem(ACTIVE_PRODUCT_KEY, id);
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const { headers: extraHeaders, ...rest } = init ?? {};
+  // Phase 8.9 — automatically scope every read to the active product when set.
+  const productId = getActiveProductId();
   const res = await fetch(`${baseUrl}${path}`, {
     ...rest,
     headers: {
       Accept: 'application/json',
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(productId ? { 'X-Forge-Product-Id': productId } : {}),
       ...(extraHeaders ?? {}),
     },
   });
@@ -319,6 +347,82 @@ export const forgeApi = {
   /** GET /api/providers/{kind}/test — live probe. */
   async testProvider(kind: string): Promise<ProviderHealth> {
     return fetchJson<ProviderHealth>(`/api/providers/${encodeURIComponent(kind)}/test`);
+  },
+
+  // ----- Phase 8 — products & repos --------------------------------------
+
+  /** GET /api/products. */
+  async listProducts(): Promise<Product[]> {
+    return fetchJson<Product[]>('/api/products');
+  },
+
+  /** GET /api/products/{id}. */
+  async getProduct(id: string): Promise<Product> {
+    return fetchJson<Product>(`/api/products/${encodeURIComponent(id)}`);
+  },
+
+  /** GET /api/products/{id}/repos. */
+  async listProductRepos(id: string): Promise<Repo[]> {
+    return fetchJson<Repo[]>(`/api/products/${encodeURIComponent(id)}/repos`);
+  },
+
+  /** GET /api/products/{id}/stats — repo count + activity roll-up. */
+  async getProductStats(id: string): Promise<ProductStats> {
+    return fetchJson<ProductStats>(`/api/products/${encodeURIComponent(id)}/stats`);
+  },
+
+  /** POST /api/products. */
+  async createProduct(req: {
+    id: string;
+    name: string;
+    slug?: string;
+    description?: string;
+    ownerUserId?: string | null;
+  }): Promise<Product> {
+    return fetchJson<Product>('/api/products', {
+      method: 'POST',
+      body: JSON.stringify(req),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/products/{id}/repos. */
+  async attachRepo(productId: string, req: {
+    id: string;
+    kind: 'ado' | 'github';
+    remoteUrl: string;
+    displayName: string;
+    cloneRoot: string;
+    defaultBranch?: string;
+    adoOrg?: string;
+    adoProject?: string;
+    ghOwner?: string;
+    ghRepo?: string;
+  }): Promise<Repo> {
+    return fetchJson<Repo>(`/api/products/${encodeURIComponent(productId)}/repos`, {
+      method: 'POST',
+      body: JSON.stringify(req),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** GET /api/repos[?productId=…]. */
+  async listRepos(productId?: string): Promise<Repo[]> {
+    const qs = productId ? `?productId=${encodeURIComponent(productId)}` : '';
+    return fetchJson<Repo[]>(`/api/repos${qs}`);
+  },
+
+  /** DELETE /api/repos/{id}?force=true. */
+  async deleteRepo(id: string, force = false): Promise<void> {
+    await fetchJson<void>(`/api/repos/${encodeURIComponent(id)}?force=${force}`, {
+      method: 'DELETE',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** GET /api/providers/{kind}/repos — Phase 8.5 server-driven add-repo picker. */
+  async discoverProviderRepos(kind: 'ado' | 'github'): Promise<DiscoverableRepo[]> {
+    return fetchJson<DiscoverableRepo[]>(`/api/providers/${encodeURIComponent(kind)}/repos`);
   },
 
   /** GET /api/timeline?from=…&to=… . */

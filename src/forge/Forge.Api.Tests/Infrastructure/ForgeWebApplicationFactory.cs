@@ -26,6 +26,10 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
             config.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["Forge:Db:Path"] = this.dbPath,
+                // Phase 8.10 — auto-clone shells out to `git clone`, which
+                // doesn't make sense in CI / unit tests. Workstream-create
+                // tests assume the auto-clone path is a no-op.
+                ["Forge:Repo:AutoClone"] = "false",
             });
         });
     }

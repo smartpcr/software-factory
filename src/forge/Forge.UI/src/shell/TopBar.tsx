@@ -1,4 +1,6 @@
+import { useEffect } from 'react';
 import { useThemeStore } from '@/state/useThemeStore';
+import { useProductsStore } from '@/state/useProductsStore';
 
 interface TopBarProps {
   section: string;
@@ -7,9 +9,17 @@ interface TopBarProps {
 
 // Verbatim port of the prototype's <header class="topbar">.
 // DOM structure, classNames, and inline SVGs are kept identical.
+// Phase 8.8 — the breadcrumb's "current" segment is replaced by a
+// product <select> so the operator can scope every view at the top.
 export function TopBar({ section, current }: TopBarProps) {
   const theme = useThemeStore((s) => s.theme);
   const toggle = useThemeStore((s) => s.toggle);
+  const products = useProductsStore((s) => s.products);
+  const activeProductId = useProductsStore((s) => s.activeProductId);
+  const loadProducts = useProductsStore((s) => s.load);
+  const setActive = useProductsStore((s) => s.setActive);
+
+  useEffect(() => { void loadProducts(); }, [loadProducts]);
 
   return (
     <header className="topbar">
@@ -25,7 +35,29 @@ export function TopBar({ section, current }: TopBarProps) {
         <div className="breadcrumb-top">
           <span id="bc-section">{section}</span>
           <span className="sep">/</span>
-          <span className="current" id="bc-current">{current}</span>
+          {products.length > 0 ? (
+            <select
+              className="topbar-product-switch current"
+              id="bc-current"
+              value={activeProductId ?? products[0]?.id ?? ''}
+              onChange={(e) => setActive(e.target.value)}
+              title="Active product — every view is scoped to this"
+              style={{
+                background: 'transparent',
+                color: 'inherit',
+                border: 'none',
+                font: 'inherit',
+                cursor: 'pointer',
+                padding: 0,
+              }}
+            >
+              {products.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          ) : (
+            <span className="current" id="bc-current">{current}</span>
+          )}
         </div>
       </div>
 

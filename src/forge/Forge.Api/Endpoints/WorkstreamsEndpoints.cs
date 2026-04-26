@@ -86,9 +86,16 @@ public static class WorkstreamsEndpoints
     }
 
     // GET /api/workstreams
-    private static async Task<IResult> GetAll(ForgeDbContext db, IGitWorktreeService git)
+    private static async Task<IResult> GetAll(HttpContext ctx, ForgeDbContext db, IGitWorktreeService git)
     {
-        var rows = await db.Workstreams.AsNoTracking().OrderBy(w => w.Sort).ToListAsync();
+        var scope = await ProductScope.ResolveAsync(ctx, db);
+        var q = db.Workstreams.AsNoTracking().AsQueryable();
+        if (!scope.IsAll)
+        {
+            var ids = scope.RepoIds!;
+            q = q.Where(w => w.RepoId != null && ids.Contains(w.RepoId));
+        }
+        var rows = await q.OrderBy(w => w.Sort).ToListAsync();
         var list = rows.Select(WorkstreamMapper.ToContract).ToList();
         // Best-effort live ahead/behind/conflicts when a git checkout is configured.
         // We do not block the response on git errors.
@@ -124,7 +131,9 @@ public static class WorkstreamsEndpoints
         string Branch,
         string Base,
         string Epic,
-        string? WorktreePath = null);
+        string? WorktreePath = null,
+        /// <summary>Phase 8.10 — repo this workstream belongs to. Auto-clone fires when the repo's cloneRoot is empty.</summary>
+        string? RepoId = null);
 
     // POST /api/workstreams
     private static async Task<IResult> Create(
@@ -132,6 +141,7 @@ public static class WorkstreamsEndpoints
         [FromBody] CreateWorkstreamRequest req,
         ForgeDbContext db,
         IGitWorktreeService git,
+        IRepoCloneService cloneSvc,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -146,6 +156,30 @@ public static class WorkstreamsEndpoints
             return Results.Problem(title: $"Workstream {req.Id} already exists", statusCode: 409);
         }
 
+        // Phase 8.10 — if the workstream targets a repo whose cloneRoot is
+        // empty, run git clone first (silent / Q6). On hard failure we abort
+        // the workstream creation rather than leaving a dangling row.
+        var repoId = string.IsNullOrWhiteSpace(req.RepoId) ? ForgeSeed.DefaultRepoId : req.RepoId;
+        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId);
+        if (repo is not null)
+        {
+            var clone = await cloneSvc.EnsureClonedAsync(repo);
+            if (clone.Outcome == RepoCloneOutcome.Mismatched)
+            {
+                return Results.Problem(
+                    title: "Repo cloneRoot mismatch",
+                    detail: clone.Message,
+                    statusCode: 409);
+            }
+            if (clone.Outcome == RepoCloneOutcome.Failed)
+            {
+                return Results.Problem(
+                    title: "Auto-clone failed",
+                    detail: clone.Message,
+                    statusCode: 502);
+            }
+        }
+
         var maxSort = await db.Workstreams.Select(w => (int?)w.Sort).MaxAsync() ?? -1;
         var worktree = req.WorktreePath is null
             ? new[] { "(not yet created)" }
@@ -155,6 +189,7 @@ public static class WorkstreamsEndpoints
         {
             Id = req.Id,
             Sort = maxSort + 1,
+            RepoId = repo?.Id,
             Name = req.Name,
             Branch = req.Branch,
             Base = req.Base,

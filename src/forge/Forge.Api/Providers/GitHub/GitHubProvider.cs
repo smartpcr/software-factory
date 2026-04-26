@@ -176,6 +176,52 @@ public class GitHubProvider : IForgeProvider
         }
     }
 
+    /// <summary>
+    /// Phase 8.5 — list repositories the configured PAT can see.
+    /// Walks <c>GET /user/repos</c> (which covers personal + org repos visible
+    /// to the token) up to 100 entries. Falls back to the configured single
+    /// repo when the call fails so the picker still has at least one entry.
+    /// </summary>
+    public async Task<IReadOnlyList<DiscoverableRepo>> ListRepositoriesAsync(CancellationToken ct = default)
+    {
+        if (!this.IsConfigured) return Array.Empty<DiscoverableRepo>();
+        try
+        {
+            var client = this.NewClient();
+            var resp = await client.GetAsync("user/repos?per_page=100&sort=pushed", ct);
+            this.health.RecordResponse(resp);
+            if (!resp.IsSuccessStatusCode) return Array.Empty<DiscoverableRepo>();
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            var list = new List<DiscoverableRepo>();
+            foreach (var r in doc.RootElement.EnumerateArray())
+            {
+                var fullName = r.GetProperty("full_name").GetString() ?? string.Empty;
+                if (string.IsNullOrEmpty(fullName)) continue;
+                var slash = fullName.IndexOf('/');
+                if (slash <= 0) continue;
+                var owner = fullName[..slash];
+                var name = fullName[(slash + 1)..];
+                var clone = r.TryGetProperty("clone_url", out var c) ? c.GetString() ?? string.Empty : string.Empty;
+                var defaultBranch = r.TryGetProperty("default_branch", out var db) ? db.GetString() ?? "main" : "main";
+                if (string.IsNullOrEmpty(clone)) continue;
+                list.Add(new DiscoverableRepo(
+                    Kind: "github",
+                    DisplayName: fullName,
+                    RemoteUrl: clone,
+                    DefaultBranch: defaultBranch,
+                    GhOwner: owner,
+                    GhRepo: name));
+            }
+            return list;
+        }
+        catch (Exception ex)
+        {
+            this.health.RecordError(ex);
+            this.logger.LogWarning(ex, "GitHub ListRepositoriesAsync failed");
+            return Array.Empty<DiscoverableRepo>();
+        }
+    }
+
     public async Task<ProviderHealth> TestConnectionAsync(CancellationToken ct = default)
     {
         if (!this.IsConfigured)

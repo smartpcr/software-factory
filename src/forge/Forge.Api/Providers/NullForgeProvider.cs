@@ -68,4 +68,7 @@ public class NullForgeProvider : IForgeProvider
 
     public Task<BuildStatus?> CancelBuildAsync(string branch, ProviderCallContext ctx, CancellationToken ct = default) =>
         throw Unconfigured();
+
+    public Task<IReadOnlyList<DiscoverableRepo>> ListRepositoriesAsync(CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<DiscoverableRepo>>(Array.Empty<DiscoverableRepo>());
 }

@@ -65,6 +65,10 @@ builder.Services.AddSignalR();
 builder.Services.Configure<GitWorktreeOptions>(builder.Configuration.GetSection(GitWorktreeOptions.SectionName));
 builder.Services.AddSingleton<IGitWorktreeService, GitWorktreeService>();
 
+// Phase 8.10 — repo auto-clone service.
+builder.Services.Configure<RepoCloneOptions>(builder.Configuration.GetSection(RepoCloneOptions.SectionName));
+builder.Services.AddSingleton<IRepoCloneService, RepoCloneService>();
+
 // Phase 5 — provider abstraction + ADO/GitHub implementations + sync.
 builder.Services.Configure<AdoOptions>(builder.Configuration.GetSection(AdoOptions.SectionName));
 builder.Services.Configure<GitHubOptions>(builder.Configuration.GetSection(GitHubOptions.SectionName));
@@ -99,6 +103,8 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
     await db.Database.EnsureCreatedAsync();
+    // Phase 8.2 — additive schema upgrade for existing dev DBs that pre-date Phase 8.
+    await Phase8Migration.ApplyAsync(db);
     await ForgeSeed.EnsureSeededAsync(db);
 }
 
@@ -134,6 +140,7 @@ app.MapProvidersEndpoints();
 app.MapWebhooksEndpoints();
 app.MapAuditEndpoints();
 app.MapHumanGateEndpoints();
+app.MapProductsEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 

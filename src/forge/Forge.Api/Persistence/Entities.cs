@@ -37,6 +37,9 @@ public class CardRow
 
     public int Sort { get; set; }
 
+    /// <summary>Phase 8.2 — repo this card belongs to. Backfilled by <see cref="ForgeSeed"/> to the default repo.</summary>
+    public string? RepoId { get; set; }
+
     public string Epic { get; set; } = string.Empty;
 
     public string Col { get; set; } = string.Empty;
@@ -93,6 +96,9 @@ public class WorkstreamRow
     public string Id { get; set; } = string.Empty;
 
     public int Sort { get; set; }
+
+    /// <summary>Phase 8.2 — repo this workstream belongs to. Backfilled by <see cref="ForgeSeed"/> to the default repo.</summary>
+    public string? RepoId { get; set; }
 
     public string Name { get; set; } = string.Empty;
 
@@ -153,6 +159,9 @@ public class PrRow
     public string Id { get; set; } = string.Empty;
 
     public int Sort { get; set; }
+
+    /// <summary>Phase 8.2 — repo this PR belongs to. Backfilled by <see cref="ForgeSeed"/> to the default repo.</summary>
+    public string? RepoId { get; set; }
 
     public string Col { get; set; } = string.Empty;
 
@@ -276,4 +285,54 @@ public class OverviewAgentRow
     public string Status { get; set; } = string.Empty;
 
     public string Task { get; set; } = string.Empty;
+}
+
+/// <summary>Phase 8 — top-level product row. Owns one or more <see cref="RepoRow"/>.</summary>
+public class ProductRow
+{
+    public string Id { get; set; } = string.Empty;
+
+    public int Sort { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+
+    public string Slug { get; set; } = string.Empty;
+
+    public string Description { get; set; } = string.Empty;
+
+    public string? OwnerUserId { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// Phase 8 — repo row. <see cref="Kind"/> is fixed at "ado" or "github" (Q4: never both).
+/// <see cref="RemoteUrl"/> is unique across ALL products (Q5: a remote belongs to exactly one product).
+/// <see cref="CloneRoot"/> is unique across ALL products (Q2: two products can't share a worktree root).
+/// </summary>
+public class RepoRow
+{
+    public string Id { get; set; } = string.Empty;
+
+    public int Sort { get; set; }
+
+    public string ProductId { get; set; } = string.Empty;
+
+    public string Kind { get; set; } = string.Empty;
+
+    public string RemoteUrl { get; set; } = string.Empty;
+
+    public string DisplayName { get; set; } = string.Empty;
+
+    public string DefaultBranch { get; set; } = "main";
+
+    public string CloneRoot { get; set; } = string.Empty;
+
+    public string? AdoOrg { get; set; }
+
+    public string? AdoProject { get; set; }
+
+    public string? GhOwner { get; set; }
+
+    public string? GhRepo { get; set; }
 }

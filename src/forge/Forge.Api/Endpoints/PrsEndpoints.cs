@@ -47,10 +47,17 @@ public static class PrsEndpoints
         providers.FirstOrDefault(p => p.Kind == preferred && p.IsConfigured)
         ?? providers.FirstOrDefault(p => p.IsConfigured);
 
-    // GET /api/prs — list with cached state.
-    private static async Task<IResult> GetAll(ForgeDbContext db)
+    // GET /api/prs — list with cached state, optionally scoped to a product (Phase 8.9).
+    private static async Task<IResult> GetAll(HttpContext ctx, ForgeDbContext db)
     {
-        var rows = await db.Prs.AsNoTracking().OrderBy(p => p.Sort).ToListAsync();
+        var scope = await ProductScope.ResolveAsync(ctx, db);
+        var q = db.Prs.AsNoTracking().AsQueryable();
+        if (!scope.IsAll)
+        {
+            var ids = scope.RepoIds!;
+            q = q.Where(p => p.RepoId != null && ids.Contains(p.RepoId));
+        }
+        var rows = await q.OrderBy(p => p.Sort).ToListAsync();
         return Results.Ok(rows.Select(PrMapper.ToContract).ToList());
     }
 

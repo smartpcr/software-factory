@@ -40,6 +40,18 @@ export function SideBar() {
             <span className="label">Overview</span>
             <span className="tooltip">Overview</span>
           </NavLink>
+          <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/products">
+            <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <rect x="2" y="2" width="5" height="5" stroke="currentColor" strokeWidth="1.4" fill="none" />
+              <rect x="9" y="2" width="5" height="5" stroke="currentColor" strokeWidth="1.4" fill="none" />
+              <rect x="5.5" y="9" width="5" height="5" stroke="currentColor" strokeWidth="1.4" fill="none" />
+            </svg>
+            <div className="label-block">
+              <span className="label">Products</span>
+              <span className="sub">Repos &amp; scope</span>
+            </div>
+            <span className="tooltip">Products</span>
+          </NavLink>
           <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/plan">
             <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="3" height="12" stroke="currentColor" strokeWidth="1.4" /><rect x="6.5" y="2" width="3" height="7" stroke="currentColor" strokeWidth="1.4" /><rect x="11" y="2" width="3" height="9" stroke="currentColor" strokeWidth="1.4" /></svg>
             <div className="label-block">

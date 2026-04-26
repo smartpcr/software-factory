@@ -73,6 +73,8 @@ export interface Workstream {
   barStart: number;
   barEnd: number;
   planned?: boolean;
+  /** Phase 8.11 — repo this workstream belongs to. Null on legacy seed rows. */
+  repoId?: string | null;
 }
 
 export interface WsEvent {
@@ -211,3 +213,50 @@ export interface TimelineResponse {
 export type TimelineZoom = 'day' | 'week' | 'sprint';
 export type TimelineLane = 'workstream' | 'epic';
 export type TimelineFilter = 'all' | 'active' | 'merging' | 'planning';
+
+// --- Products & repos (Phase 8) ------------------------------------------
+
+export type RepoKind = 'ado' | 'github';
+
+export interface Product {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  ownerUserId: string | null;
+  createdAt: string;
+}
+
+export interface Repo {
+  id: string;
+  productId: string;
+  kind: RepoKind;
+  remoteUrl: string;
+  displayName: string;
+  defaultBranch: string;
+  cloneRoot: string;
+  adoOrg?: string | null;
+  adoProject?: string | null;
+  ghOwner?: string | null;
+  ghRepo?: string | null;
+}
+
+export interface DiscoverableRepo {
+  kind: RepoKind;
+  displayName: string;
+  remoteUrl: string;
+  defaultBranch: string;
+  adoOrg?: string | null;
+  adoProject?: string | null;
+  ghOwner?: string | null;
+  ghRepo?: string | null;
+}
+
+/** Stats roll-up shown on the /products grid card. */
+export interface ProductStats {
+  productId: string;
+  repoCount: number;
+  activeWorkstreams: number;
+  openPrs: number;
+  lastActivity: string | null;
+}

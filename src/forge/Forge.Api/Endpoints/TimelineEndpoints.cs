@@ -26,6 +26,7 @@ public static class TimelineEndpoints
     public static WebApplication MapTimelineEndpoints(this WebApplication app)
     {
         app.MapGet("/api/timeline", async (
+            HttpContext ctx,
             ForgeDbContext db,
             ILoggerFactory loggerFactory,
             double? from,
@@ -39,7 +40,15 @@ public static class TimelineEndpoints
                 return Results.Problem(title: "to must be > from", statusCode: 400);
             }
 
-            var workstreams = await db.Workstreams.AsNoTracking().OrderBy(w => w.Sort).ToListAsync();
+            // Phase 8.9 — scope to active product.
+            var scope = await ProductScope.ResolveAsync(ctx, db);
+            var wsQ = db.Workstreams.AsNoTracking().AsQueryable();
+            if (!scope.IsAll)
+            {
+                var ids = scope.RepoIds!;
+                wsQ = wsQ.Where(w => w.RepoId != null && ids.Contains(w.RepoId));
+            }
+            var workstreams = await wsQ.OrderBy(w => w.Sort).ToListAsync();
             var epics = await db.Epics.AsNoTracking().OrderBy(e => e.Sort).ToListAsync();
             var allEvents = await db.WsEvents.AsNoTracking().OrderBy(e => e.Sort).ToListAsync();
 

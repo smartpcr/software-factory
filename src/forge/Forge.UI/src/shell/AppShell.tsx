@@ -15,6 +15,7 @@ const breadcrumbs: Record<string, { section: string; current: string }> = {
   '/timeline':    { section: 'Timeline',       current: 'Feature & branch flow' },
   '/workstreams': { section: 'Workstreams',    current: 'Parallel workstreams' },
   '/prs':         { section: 'Pull Requests',  current: 'Pull request flow' },
+  '/products':    { section: 'Products',       current: 'Products & repos' },
 };
 
 export function AppShell() {

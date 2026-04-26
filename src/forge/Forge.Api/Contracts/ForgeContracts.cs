@@ -81,7 +81,9 @@ public sealed record Workstream(
     string Summary,
     double BarStart,
     double BarEnd,
-    bool Planned = false);
+    bool Planned = false,
+    /// <summary>Phase 8.11 — repo this workstream belongs to. Null on legacy rows that pre-date Phase 8.</summary>
+    string? RepoId = null);
 
 /// <summary>
 /// Workstream timeline event (PR / merge / review / block marker).
@@ -187,3 +189,83 @@ public sealed record ForgeState(
     IReadOnlyList<WsStat> WsStats,
     IReadOnlyList<OverviewActivity> OverviewActivity,
     IReadOnlyList<OverviewAgent> OverviewAgents);
+
+// -- Phase 8 — products & repos -------------------------------------------
+
+/// <summary>
+/// Product — a top-level grouping that owns one or more <see cref="Repo"/> rows.
+/// Resolved-decision Q5: a repo belongs to exactly one product (strict 1:N).
+/// </summary>
+public sealed record Product(
+    string Id,
+    string Name,
+    string Slug,
+    string Description,
+    string? OwnerUserId,
+    DateTimeOffset CreatedAt);
+
+/// <summary>
+/// Repo — a single git repository attached to a product. A repo's provider is
+/// fixed at attach time (resolved-decision Q4): ADO or GitHub, never both.
+/// Sprint / iteration concepts follow that provider for this repo.
+/// </summary>
+public sealed record Repo(
+    string Id,
+    string ProductId,
+    string Kind,
+    string RemoteUrl,
+    string DisplayName,
+    string DefaultBranch,
+    string CloneRoot,
+    string? AdoOrg = null,
+    string? AdoProject = null,
+    string? GhOwner = null,
+    string? GhRepo = null);
+
+/// <summary>
+/// POST /api/products body.
+/// </summary>
+public sealed record CreateProductRequest(
+    string Id,
+    string Name,
+    string? Slug = null,
+    string? Description = null,
+    string? OwnerUserId = null);
+
+/// <summary>
+/// PATCH /api/products/{id} body.
+/// </summary>
+public sealed record UpdateProductRequest(
+    string? Name = null,
+    string? Description = null,
+    string? OwnerUserId = null);
+
+/// <summary>
+/// POST /api/products/{id}/repos body.
+/// </summary>
+public sealed record CreateRepoRequest(
+    string Id,
+    string Kind,
+    string RemoteUrl,
+    string DisplayName,
+    string CloneRoot,
+    string? DefaultBranch = null,
+    string? AdoOrg = null,
+    string? AdoProject = null,
+    string? GhOwner = null,
+    string? GhRepo = null);
+
+/// <summary>
+/// One row in the server-driven repo picker (Phase 8.5). Returned by
+/// <c>GET /api/providers/{kind}/repos?org=…</c> so the UI never asks the
+/// operator to type a remote URL by hand.
+/// </summary>
+public sealed record DiscoverableRepo(
+    string Kind,
+    string DisplayName,
+    string RemoteUrl,
+    string DefaultBranch,
+    string? AdoOrg = null,
+    string? AdoProject = null,
+    string? GhOwner = null,
+    string? GhRepo = null);

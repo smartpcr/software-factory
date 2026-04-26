@@ -22,7 +22,17 @@ public static class ProvidersEndpoints
         var grp = app.MapGroup("/api/providers").WithTags("Providers");
         grp.MapGet("/", List).WithName("ListProviders");
         grp.MapGet("/{kind}/test", Test).WithName("TestProvider");
+        grp.MapGet("/{kind}/repos", ListRepos).WithName("ListProviderRepos");
         return app;
+    }
+
+    // GET /api/providers/{kind}/repos — Phase 8.5 server-driven add-repo picker.
+    private static async Task<IResult> ListRepos(string kind, [FromServices] IEnumerable<IForgeProvider> providers, CancellationToken ct)
+    {
+        var p = providers.FirstOrDefault(x => x.Kind == kind);
+        if (p is null) return Results.Problem(title: $"Unknown provider {kind}", statusCode: 404);
+        var repos = await p.ListRepositoriesAsync(ct);
+        return Results.Ok(repos);
     }
 
     private static async Task<IResult> List([FromServices] IEnumerable<IForgeProvider> providers, CancellationToken ct)

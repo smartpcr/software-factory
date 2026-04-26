@@ -40,9 +40,16 @@ public static class CardsEndpoints
     }
 
     // GET /api/cards
-    private static async Task<IResult> GetAll(ForgeDbContext db)
+    private static async Task<IResult> GetAll(HttpContext ctx, ForgeDbContext db)
     {
-        var rows = await db.Cards.AsNoTracking().OrderBy(c => c.Sort).ToListAsync();
+        var scope = await ProductScope.ResolveAsync(ctx, db);
+        var q = db.Cards.AsNoTracking().AsQueryable();
+        if (!scope.IsAll)
+        {
+            var ids = scope.RepoIds!;
+            q = q.Where(c => c.RepoId != null && ids.Contains(c.RepoId));
+        }
+        var rows = await q.OrderBy(c => c.Sort).ToListAsync();
         return Results.Ok(rows.Select(CardMapper.ToContract).ToList());
     }
 

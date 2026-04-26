@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { Workstream } from '@/types';
 import { useStateStore } from '@/state/useStateStore';
 import { useWorkstreamsStore, filterWorkstreams, type WorkstreamFilter } from '@/state/useWorkstreamsStore';
@@ -38,6 +38,8 @@ export function WorkstreamsView() {
 
   const allCards = useBoardStore((s) => s.cards);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const repoFilter = searchParams.get('repo');
 
   const [modalOpen, setModalOpen] = useState(false);
 
@@ -46,7 +48,13 @@ export function WorkstreamsView() {
   // Phase 3.10 — when the user clicks a card on the board with a `branch`,
   // the board store sets selectedId; if that card's branch matches a ws,
   // surface a soft highlight here.
-  const filtered = useMemo(() => filterWorkstreams(workstreams, filter), [workstreams, filter]);
+  // Phase 8.11 — when ?repo=… is set, scope the visible workstreams to that
+  // repo only (used by the products view's repo-row deep-link).
+  const filtered = useMemo(() => {
+    let next = filterWorkstreams(workstreams, filter);
+    if (repoFilter) next = next.filter((w) => w.repoId === repoFilter);
+    return next;
+  }, [workstreams, filter, repoFilter]);
   const counts = useMemo(() => ({
     all:       workstreams.length,
     active:    workstreams.filter((w) => w.status === 'active' || w.status === 'review').length,

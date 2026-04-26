@@ -15,8 +15,18 @@ using Microsoft.EntityFrameworkCore;
 /// </summary>
 public static class ForgeSeed
 {
+    public const string DefaultProductId = "atlas";
+
+    public const string DefaultRepoId = "atlas-platform";
+
     public static async Task EnsureSeededAsync(ForgeDbContext db)
     {
+        // Phase 8.3 — products / repos seed runs independently of the prototype
+        // sample data so older DBs that already have epics still get a default
+        // product + repo, and existing cards/workstreams/prs get repo_id backfilled.
+        await EnsureDefaultProductAndRepoAsync(db);
+        await BackfillRepoIdAsync(db);
+
         if (await db.Epics.AnyAsync())
         {
             return;
@@ -167,6 +177,82 @@ public static class ForgeSeed
         for (var i = 0; i < overviewAgents.Length; i++) { overviewAgents[i].Sort = i; }
         db.OverviewAgents.AddRange(overviewAgents);
 
+        // Phase 8.3 — pin every freshly-seeded row to the default repo.
+        foreach (var c in cards) c.RepoId = DefaultRepoId;
+        foreach (var w in workstreams) w.RepoId = DefaultRepoId;
+        foreach (var p in prs) p.RepoId = DefaultRepoId;
+
         await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Idempotent: creates the default <c>atlas</c> product and the
+    /// <c>atlas-platform</c> repo if they don't yet exist. Used both by the
+    /// boot path and by Phase 8.3 backfill against pre-existing dev DBs.
+    /// </summary>
+    private static async Task EnsureDefaultProductAndRepoAsync(ForgeDbContext db)
+    {
+        var changed = false;
+
+        if (!await db.Products.AnyAsync(p => p.Id == DefaultProductId))
+        {
+            db.Products.Add(new ProductRow
+            {
+                Id = DefaultProductId,
+                Sort = 0,
+                Name = "Atlas",
+                Slug = "atlas",
+                Description = "Default product. Backfilled from the prototype's single-repo seed.",
+                OwnerUserId = null,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+            changed = true;
+        }
+
+        if (!await db.Repos.AnyAsync(r => r.Id == DefaultRepoId))
+        {
+            db.Repos.Add(new RepoRow
+            {
+                Id = DefaultRepoId,
+                Sort = 0,
+                ProductId = DefaultProductId,
+                Kind = "ado",
+                RemoteUrl = "https://dev.azure.com/atlas/atlas-platform/_git/atlas-platform",
+                DisplayName = "atlas-platform",
+                DefaultBranch = "main",
+                CloneRoot = @"C:\forge\atlas\atlas-platform",
+                AdoOrg = "atlas",
+                AdoProject = "atlas-platform",
+            });
+            changed = true;
+        }
+
+        if (changed) await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Idempotent: any cards / workstreams / prs that don't yet have a
+    /// <c>RepoId</c> are pinned to the default repo. Phase 8.2's migration
+    /// adds the column nullable; Phase 8.3 fills it in.
+    /// </summary>
+    private static async Task BackfillRepoIdAsync(ForgeDbContext db)
+    {
+        var changed = false;
+        await foreach (var c in db.Cards.Where(c => c.RepoId == null).AsAsyncEnumerable())
+        {
+            c.RepoId = DefaultRepoId;
+            changed = true;
+        }
+        await foreach (var w in db.Workstreams.Where(w => w.RepoId == null).AsAsyncEnumerable())
+        {
+            w.RepoId = DefaultRepoId;
+            changed = true;
+        }
+        await foreach (var p in db.Prs.Where(p => p.RepoId == null).AsAsyncEnumerable())
+        {
+            p.RepoId = DefaultRepoId;
+            changed = true;
+        }
+        if (changed) await db.SaveChangesAsync();
     }
 }

@@ -71,6 +71,15 @@ public interface IForgeProvider
 
     /// <summary>Cancels a running build for a branch.</summary>
     Task<BuildStatus?> CancelBuildAsync(string branch, ProviderCallContext ctx, CancellationToken ct = default);
+
+    /// <summary>
+    /// Phase 8.5 — server-driven repo picker. Returns repositories the
+    /// currently-configured account can see, so the "Add repo" UI doesn't
+    /// ask the operator to type a remote URL by hand. Implementations may
+    /// return an empty list when the provider is not configured or the
+    /// underlying API call fails.
+    /// </summary>
+    Task<IReadOnlyList<DiscoverableRepo>> ListRepositoriesAsync(CancellationToken ct = default);
 }
 
 // -- Phase 6 request DTOs --------------------------------------------------
