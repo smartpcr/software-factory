@@ -30,6 +30,12 @@ export default defineConfig({
       url: 'http://localhost:5180/api/health',
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
+      env: {
+        // Phase 6.8 — disable the auto-merge watcher under Playwright so the
+        // persisted seed stays stable across runs (otherwise PR #229 gets
+        // auto-merged and the prs-fidelity baselines drift).
+        Forge__Sync__AutoMergeEnabled: 'false',
+      },
     },
     {
       command: 'npm run dev',

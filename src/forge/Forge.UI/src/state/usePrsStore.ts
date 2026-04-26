@@ -21,6 +21,10 @@ interface PrsState {
   toggleAutoMerge: (id: string, next?: boolean) => Promise<void>;
   rerun: (id: string) => Promise<void>;
   cancel: (id: string) => Promise<void>;
+  approve: (id: string) => Promise<void>;
+  requestChanges: (id: string, body: string) => Promise<void>;
+  comment: (id: string, body: string) => Promise<void>;
+  merge: (id: string) => Promise<void>;
 }
 
 export const usePrsStore = create<PrsState>((set, get) => ({
@@ -91,6 +95,45 @@ export const usePrsStore = create<PrsState>((set, get) => ({
       useToastStore.getState().show(`${id} build cancelled`, 'success');
     } catch (err) {
       useToastStore.getState().show(err instanceof Error ? err.message : 'Cancel failed', 'danger');
+    }
+  },
+
+  approve: async (id) => {
+    try {
+      const pr = await forgeApi.approvePr(id);
+      get().upsertFromRealtime(pr);
+      useToastStore.getState().show(`${id} approved`, 'success');
+    } catch (err) {
+      useToastStore.getState().show(err instanceof Error ? err.message : 'Approve failed', 'danger');
+    }
+  },
+
+  requestChanges: async (id, body) => {
+    try {
+      const pr = await forgeApi.requestChangesOnPr(id, body);
+      get().upsertFromRealtime(pr);
+      useToastStore.getState().show(`${id} changes requested`, 'info');
+    } catch (err) {
+      useToastStore.getState().show(err instanceof Error ? err.message : 'Request-changes failed', 'danger');
+    }
+  },
+
+  comment: async (id, body) => {
+    try {
+      await forgeApi.commentOnPr(id, body);
+      useToastStore.getState().show(`Commented on ${id}`, 'success');
+    } catch (err) {
+      useToastStore.getState().show(err instanceof Error ? err.message : 'Comment failed', 'danger');
+    }
+  },
+
+  merge: async (id) => {
+    try {
+      const pr = await forgeApi.mergePr(id);
+      get().upsertFromRealtime(pr);
+      useToastStore.getState().show(`${id} merged`, 'success');
+    } catch (err) {
+      useToastStore.getState().show(err instanceof Error ? err.message : 'Merge failed', 'danger');
     }
   },
 }));

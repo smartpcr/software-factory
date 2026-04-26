@@ -6,9 +6,11 @@
 
 namespace Forge.Api.Endpoints;
 
+using Forge.Api.Auth;
 using Forge.Api.Contracts;
 using Forge.Api.Domain;
 using Forge.Api.Persistence;
+using Forge.Api.Providers;
 using Forge.Api.Realtime;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -31,6 +33,7 @@ public static class CardsEndpoints
         grp.MapPost("/", Create).WithName("CreateCard");
         grp.MapPatch("/{id}", Patch).WithName("PatchCard");
         grp.MapPost("/{id}/move", Move).WithName("MoveCard");
+        grp.MapPost("/{id}/comment", Comment).WithName("CommentOnCard");
 
         return app;
     }
@@ -50,30 +53,107 @@ public static class CardsEndpoints
     }
 
     // POST /api/cards
-    public sealed record CreateCardRequest(Card Card);
+    //
+    // Phase 6.1: when `PostTo` is set, the server creates the work item /
+    // issue on the named provider FIRST, takes its returned id (e.g. "#42"),
+    // and uses that as the row id. Failing-creates-on-provider abort with 502
+    // so the caller can decide whether to retry.
+    public sealed record CreateCardRequest(Card Card, string? PostTo = null, string? Description = null);
 
     private static async Task<IResult> Create(
+        HttpContext ctx,
         [FromBody] CreateCardRequest req,
         ForgeDbContext db,
-        IHubContext<ForgeHub> hub)
+        IHubContext<ForgeHub> hub,
+        IUserContext user,
+        IEnumerable<IForgeProvider> providers)
     {
         if (req?.Card is null)
         {
             return Results.Problem(title: "Card is required", statusCode: 400);
         }
-        if (await db.Cards.AnyAsync(c => c.Id == req.Card.Id))
+
+        var card = req.Card;
+        if (!string.IsNullOrEmpty(req.PostTo))
         {
-            return Results.Problem(title: $"Card {req.Card.Id} already exists", statusCode: 409);
+            var auth = ForgeUser.RequireWriter(ctx);
+            if (auth is not null) return auth;
+
+            var provider = providers.FirstOrDefault(p => p.Kind == req.PostTo);
+            if (provider is null) return Results.Problem(title: $"Unknown provider {req.PostTo}", statusCode: 400);
+            if (!provider.IsConfigured) return Results.Problem(title: $"Provider {req.PostTo} not configured", statusCode: 400);
+            try
+            {
+                var created = await provider.CreateWorkItemAsync(
+                    new NewWorkItemRequest(
+                        Title: card.Title,
+                        Type: card.Type,
+                        AreaPath: card.Epic,
+                        StoryPoints: card.Pts == 0 ? null : card.Pts,
+                        Description: req.Description,
+                        Tags: card.Tags),
+                    user.ForProvider(provider.Kind));
+                // Use the provider-assigned id so future PATCH calls round-trip.
+                card = card with { Id = created.Id, Epic = created.Epic, Type = created.Type };
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(title: $"Provider {req.PostTo} create failed", detail: ex.Message, statusCode: 502);
+            }
+        }
+
+        if (await db.Cards.AnyAsync(c => c.Id == card.Id))
+        {
+            return Results.Problem(title: $"Card {card.Id} already exists", statusCode: 409);
         }
 
         var maxSort = await db.Cards.Select(c => (int?)c.Sort).MaxAsync() ?? -1;
-        var row = CardMapper.ApplyContract(new CardRow { Id = req.Card.Id, Sort = maxSort + 1 }, req.Card);
+        var row = CardMapper.ApplyContract(new CardRow { Id = card.Id, Sort = maxSort + 1 }, card);
         db.Cards.Add(row);
         await db.SaveChangesAsync();
 
-        var card = CardMapper.ToContract(row);
-        await hub.Clients.All.SendAsync("card.changed", new { kind = "created", card });
-        return Results.Created($"/api/cards/{row.Id}", card);
+        var resultCard = CardMapper.ToContract(row);
+        await hub.Clients.All.SendAsync("card.changed", new { kind = "created", card = resultCard });
+        return Results.Created($"/api/cards/{row.Id}", resultCard);
+    }
+
+    // POST /api/cards/{id}/comment — posts to the linked provider's WI/issue.
+    public sealed record CommentRequest(string Body, string Provider = "github");
+
+    private static async Task<IResult> Comment(
+        HttpContext ctx,
+        string id,
+        [FromBody] CommentRequest req,
+        IUserContext user,
+        IEnumerable<IForgeProvider> providers,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+        if (string.IsNullOrWhiteSpace(req?.Body))
+        {
+            return Results.Problem(title: "Body is required", statusCode: 400);
+        }
+        if (!await db.Cards.AnyAsync(c => c.Id == id))
+        {
+            return NotFound(id);
+        }
+
+        var provider = providers.FirstOrDefault(p => p.Kind == req.Provider);
+        if (provider is null) return Results.Problem(title: $"Unknown provider {req.Provider}", statusCode: 400);
+        if (!provider.IsConfigured) return Results.Problem(title: $"Provider {req.Provider} not configured", statusCode: 400);
+        try
+        {
+            await provider.CommentOnWorkItemAsync(id, req.Body, user.ForProvider(provider.Kind));
+        }
+        catch (Exception ex)
+        {
+            return Results.Problem(title: "Provider comment failed", detail: ex.Message, statusCode: 502);
+        }
+
+        await hub.Clients.All.SendAsync("card.commented", new { id, by = user.UserId, provider = req.Provider });
+        return Results.Ok(new { ok = true });
     }
 
     // PATCH /api/cards/{id}.
@@ -92,6 +172,9 @@ public static class CardsEndpoints
         IReadOnlyList<string>? Tags = null,
         string? Type = null,
         string? AutoNext = null,
+        string? Col = null,
+        string? PostTo = null,
+        string? AssigneeUniqueName = null,
         string? IfMatchRemoteRevision = null);
 
     private static async Task<IResult> Patch(
@@ -99,7 +182,9 @@ public static class CardsEndpoints
         [FromBody] PatchCardRequest req,
         HttpContext ctx,
         ForgeDbContext db,
-        IHubContext<ForgeHub> hub)
+        IHubContext<ForgeHub> hub,
+        IUserContext user,
+        IEnumerable<IForgeProvider> providers)
     {
         var row = await db.Cards.FirstOrDefaultAsync(c => c.Id == id);
         if (row is null) return NotFound(id);
@@ -119,12 +204,40 @@ public static class CardsEndpoints
             }, statusCode: 409);
         }
 
+        // Phase 6.2 — optional provider propagation. The local row is the source
+        // of truth; provider failure aborts so the caller can decide to retry.
+        if (!string.IsNullOrEmpty(req.PostTo))
+        {
+            var auth = ForgeUser.RequireWriter(ctx);
+            if (auth is not null) return auth;
+
+            var provider = providers.FirstOrDefault(p => p.Kind == req.PostTo);
+            if (provider is null) return Results.Problem(title: $"Unknown provider {req.PostTo}", statusCode: 400);
+            if (!provider.IsConfigured) return Results.Problem(title: $"Provider {req.PostTo} not configured", statusCode: 400);
+
+            var update = new UpdateWorkItemRequest(
+                Title: req.Title,
+                State: req.Col,
+                AssigneeUniqueName: req.AssigneeUniqueName,
+                StoryPoints: req.Pts,
+                Tags: req.Tags);
+            try
+            {
+                await provider.UpdateWorkItemAsync(id, update, user.ForProvider(provider.Kind));
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(title: $"Provider {req.PostTo} update failed", detail: ex.Message, statusCode: 502);
+            }
+        }
+
         if (req.Title != null)    row.Title = req.Title;
         if (req.Pts.HasValue)     row.Pts = req.Pts.Value;
         if (req.Priority != null) row.Priority = req.Priority;
         if (req.Type != null)     row.Type = req.Type;
         if (req.Tags != null)     row.TagsJson = CardMapper.Serialize(req.Tags);
         if (req.AutoNext != null) row.AutoNext = req.AutoNext;
+        if (req.Col != null)      row.Col = req.Col;
         if (req.AgentNull == true) row.AgentJson = null;
         else if (req.Agent != null) row.AgentJson = CardMapper.Serialize(req.Agent);
 

@@ -1,6 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { forgeApi, type PrDetailsResponse } from '@/api/forgeApi';
 import { usePrsStore } from '@/state/usePrsStore';
+import { usePrLogStore } from '@/state/usePrLogStore';
+
+const EMPTY_LOG: readonly string[] = [];
 
 // Phase 4.5 — PR detail panel. Reuses the prototype's .detail-panel
 // chrome (CSS already in place from Phase 1). Adds a build-log tail
@@ -12,9 +15,23 @@ export function PrDetailPanel() {
   const toggleAutoMerge = usePrsStore((s) => s.toggleAutoMerge);
   const rerun = usePrsStore((s) => s.rerun);
   const cancel = usePrsStore((s) => s.cancel);
+  const approve = usePrsStore((s) => s.approve);
+  const requestChanges = usePrsStore((s) => s.requestChanges);
+  const comment = usePrsStore((s) => s.comment);
+  const merge = usePrsStore((s) => s.merge);
+
+  // Selector MUST return a stable reference — otherwise Zustand's
+  // useSyncExternalStore re-renders forever (the "fresh []" trap).
+  const allLogs = usePrLogStore((s) => s.lines);
+  const clearLog = usePrLogStore((s) => s.clear);
+  const liveLog = useMemo<readonly string[]>(
+    () => (selectedId ? allLogs[selectedId] ?? EMPTY_LOG : EMPTY_LOG),
+    [selectedId, allLogs],
+  );
 
   const [details, setDetails] = useState<PrDetailsResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [composer, setComposer] = useState('');
 
   useEffect(() => {
     if (!selectedId) { setDetails(null); return; }
@@ -24,6 +41,10 @@ export function PrDetailPanel() {
       .catch(() => { setDetails(null); })
       .finally(() => setLoading(false));
   }, [selectedId]);
+
+  useEffect(() => {
+    if (selectedId) clearLog(selectedId);
+  }, [selectedId, clearLog]);
 
   const open = !!selectedId && !!pr;
 
@@ -117,7 +138,14 @@ export function PrDetailPanel() {
             </div>
 
             <div className="detail-section">
-              <div className="detail-section-title">Build log</div>
+              <div className="detail-section-title">
+                <span>Build log</span>
+                {liveLog.length > 0 && (
+                  <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--success)', fontSize: 10 }}>
+                    live · {liveLog.length}
+                  </span>
+                )}
+              </div>
               <pre
                 style={{
                   fontFamily: 'var(--font-mono)',
@@ -130,12 +158,60 @@ export function PrDetailPanel() {
                   color: 'var(--text-secondary)',
                 }}
               >
-                {(details?.buildLogTail ?? []).join('\n')}
+                {[...(details?.buildLogTail ?? []), ...liveLog].join('\n')}
               </pre>
+            </div>
+
+            <div className="detail-section">
+              <div className="detail-section-title">Comment / review</div>
+              <textarea
+                value={composer}
+                onChange={(e) => setComposer(e.target.value)}
+                rows={3}
+                placeholder="Comment, or describe requested changes…"
+                style={{
+                  width: '100%',
+                  padding: 8,
+                  fontFamily: 'inherit',
+                  fontSize: 11.5,
+                  background: 'var(--bg-surface)',
+                  color: 'var(--text-primary)',
+                  border: '1px solid var(--border-strong)',
+                  borderRadius: 'var(--radius-sm)',
+                  resize: 'vertical',
+                }}
+              />
+              <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                <button
+                  className="btn btn-secondary"
+                  disabled={!composer.trim()}
+                  onClick={() => { void comment(pr.id, composer); setComposer(''); }}
+                >
+                  Comment
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  disabled={!composer.trim()}
+                  onClick={() => { void requestChanges(pr.id, composer); setComposer(''); }}
+                >
+                  Request changes
+                </button>
+              </div>
             </div>
           </div>
 
           <div className="detail-actions">
+            <button
+              className="btn btn-primary"
+              style={{ background: 'var(--success)' }}
+              onClick={() => void approve(pr.id)}
+              data-testid="pr-approve"
+            >
+              Approve
+            </button>
+            <button className="btn btn-secondary" onClick={() => void merge(pr.id)} data-testid="pr-merge">
+              Merge
+            </button>
             <button className="btn btn-secondary" onClick={() => void rerun(pr.id)}>Re-run build</button>
             <button className="btn btn-secondary" onClick={() => void cancel(pr.id)}>Cancel build</button>
             <button

@@ -151,6 +151,13 @@
 .card:active { cursor: grabbing; }
 .card.dragging { opacity: 0.4; transform: rotate(-1deg); }
 .card.just-dropped { animation: drop-flash 600ms ease-out; }
+.drag-overlay { pointer-events: none; cursor: grabbing; }
+.drag-overlay .card {
+  opacity: 0.85;
+  transform: rotate(-2deg) scale(1.02);
+  box-shadow: var(--shadow-drag, 0 12px 32px rgba(0, 0, 0, 0.35));
+  border-color: var(--accent);
+}
 @keyframes drop-flash {
   0% { box-shadow: 0 0 0 2px var(--accent), var(--shadow-md); }
   100% { box-shadow: 0 0 0 0 transparent; }

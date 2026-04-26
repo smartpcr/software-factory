@@ -75,6 +75,16 @@ export function SideBar() {
             <span className="badge alert">2</span>
             <span className="tooltip">Pull Requests</span>
           </NavLink>
+          <NavLink className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`} to="/audit">
+            <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <rect x="2.5" y="2.5" width="11" height="11" stroke="currentColor" strokeWidth="1.3" fill="none" />
+              <line x1="5" y1="6" x2="11" y2="6" stroke="currentColor" strokeWidth="1.2" />
+              <line x1="5" y1="9" x2="11" y2="9" stroke="currentColor" strokeWidth="1.2" />
+              <line x1="5" y1="12" x2="9" y2="12" stroke="currentColor" strokeWidth="1.2" />
+            </svg>
+            <span className="label">Audit</span>
+            <span className="tooltip">Audit log</span>
+          </NavLink>
         </div>
 
         <div className="nav-section">

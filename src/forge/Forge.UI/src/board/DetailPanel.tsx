@@ -1,7 +1,10 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Card as CardModel } from '@/types';
 import { useBoardStore } from '@/state/useBoardStore';
 import { useWorkstreamsStore } from '@/state/useWorkstreamsStore';
+import { useToastStore } from '@/state/useToastStore';
+import { forgeApi } from '@/api/forgeApi';
 
 // Verbatim port of the prototype's <aside class="detail-panel"> static
 // markup (lines 2899-2934) and renderDetailBody / renderDetailActions
@@ -217,6 +220,8 @@ export function DetailPanel() {
                 ))}
               </ul>
             </div>
+
+            <CardCommentComposer cardId={safe.id} />
           </div>
 
           <div className="detail-actions" id="detail-actions">
@@ -225,5 +230,67 @@ export function DetailPanel() {
         </>
       )}
     </aside>
+  );
+}
+
+// Phase 6.3 — comment composer that posts to the linked WI/issue.
+function CardCommentComposer({ cardId }: { cardId: string }) {
+  const [body, setBody] = useState('');
+  const [provider, setProvider] = useState<'github' | 'ado'>('github');
+  const [busy, setBusy] = useState(false);
+
+  async function send() {
+    if (!body.trim()) return;
+    setBusy(true);
+    try {
+      await forgeApi.commentOnCard(cardId, body, provider);
+      useToastStore.getState().show(`Comment posted to ${provider}`, 'success');
+      setBody('');
+    } catch (err) {
+      useToastStore.getState().show(err instanceof Error ? err.message : 'Comment failed', 'danger');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="detail-section">
+      <div className="detail-section-title">Comment</div>
+      <textarea
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        rows={3}
+        placeholder="Reply to the linked work item / issue…"
+        style={{
+          width: '100%',
+          padding: 8,
+          fontFamily: 'inherit',
+          fontSize: 11.5,
+          background: 'var(--bg-surface)',
+          color: 'var(--text-primary)',
+          border: '1px solid var(--border-strong)',
+          borderRadius: 'var(--radius-sm)',
+          resize: 'vertical',
+        }}
+      />
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
+        <select
+          value={provider}
+          onChange={(e) => setProvider(e.target.value as 'github' | 'ado')}
+          style={{ fontSize: 11, padding: '4px 6px' }}
+          title="Provider"
+        >
+          <option value="github">GitHub</option>
+          <option value="ado">Azure DevOps</option>
+        </select>
+        <button
+          className="btn btn-secondary"
+          onClick={() => void send()}
+          disabled={busy || !body.trim()}
+        >
+          {busy ? 'Posting…' : 'Comment'}
+        </button>
+      </div>
+    </div>
   );
 }

@@ -92,11 +92,17 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       useToastStore.getState().show(policy.toast ?? `${cardId} → ${toCol}`, 'success');
       return { kind: 'moved' };
     } catch (err) {
-      // Rollback.
-      set({ cards: snapshot });
-      const msg = err instanceof ForgeApiError ? `Move rejected (${err.status})` : 'Move failed';
-      useToastStore.getState().show(msg, 'danger');
-      return { kind: 'blocked', reason: msg };
+      // A real server response (4xx/5xx) is a hard reject — roll back.
+      if (err instanceof ForgeApiError) {
+        set({ cards: snapshot });
+        useToastStore.getState().show(`Move rejected (${err.status})`, 'danger');
+        return { kind: 'blocked', reason: `Move rejected (${err.status})` };
+      }
+      // Network failure (API offline) — keep the optimistic move so the board
+      // stays usable in dev / sample-only mode. The same fallback the read
+      // path uses when /api/state is unreachable.
+      useToastStore.getState().show(`${policy.toast ?? `${cardId} → ${toCol}`} (offline)`, 'info');
+      return { kind: 'moved' };
     }
   },
 

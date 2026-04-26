@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { DndContext, PointerSensor, useSensor, useSensors, type DragEndEvent, type DragStartEvent } from '@dnd-kit/core';
+import { DndContext, DragOverlay, PointerSensor, useSensor, useSensors, type DragEndEvent, type DragStartEvent } from '@dnd-kit/core';
 import { useHotkeys } from 'react-hotkeys-hook';
 import type { ColumnId } from '@/types';
 import { useBoardStore, computeBurndown } from '@/state/useBoardStore';
@@ -11,6 +11,7 @@ import { DetailPanel } from '@/board/DetailPanel';
 import { CardModal } from '@/board/CardModal';
 import { Toaster } from '@/board/Toaster';
 import { ConfirmModal } from '@/board/ConfirmModal';
+import { Card as BoardCard } from '@/board/Card';
 
 const COLUMN_KEYS: ColumnId[] = ['backlog', 'design', 'build', 'review', 'done'];
 
@@ -29,6 +30,12 @@ export function PlanView() {
   // dnd-kit pointer sensor with a small activation distance so clicks on
   // cards still open the detail panel.
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+
+  const draggingId = useBoardStore((s) => s.draggingId);
+  const draggingCard = useMemo(
+    () => (draggingId ? cards.find((c) => c.id === draggingId) ?? null : null),
+    [draggingId, cards],
+  );
 
   function onDragStart(e: DragStartEvent) {
     setDragging(String(e.active.id));
@@ -111,6 +118,13 @@ export function PlanView() {
       <div className="board-wrap">
         <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd}>
           <Board />
+          <DragOverlay dropAnimation={null}>
+            {draggingCard ? (
+              <div className="drag-overlay">
+                <BoardCard card={draggingCard} />
+              </div>
+            ) : null}
+          </DragOverlay>
         </DndContext>
       </div>
 

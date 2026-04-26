@@ -36,6 +36,10 @@ public class ForgeDbContext : DbContext
 
     public DbSet<OverviewAgentRow> OverviewAgents => this.Set<OverviewAgentRow>();
 
+    public DbSet<AuditRow> Audit => this.Set<AuditRow>();
+
+    public DbSet<IdempotencyRow> Idempotency => this.Set<IdempotencyRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         mb.Entity<EpicRow>().ToTable("epics").HasKey(x => x.Id);
@@ -47,5 +51,7 @@ public class ForgeDbContext : DbContext
         mb.Entity<WsStatRow>().ToTable("ws_stats").HasKey(x => x.Id);
         mb.Entity<OverviewActivityRow>().ToTable("overview_activity").HasKey(x => x.Id);
         mb.Entity<OverviewAgentRow>().ToTable("overview_agents").HasKey(x => x.Id);
+        mb.Entity<AuditRow>().ToTable("forge_actions").HasKey(x => x.Id);
+        mb.Entity<IdempotencyRow>().ToTable("idempotency").HasKey(x => x.Key);
     }
 }

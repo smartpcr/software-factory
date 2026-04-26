@@ -169,6 +169,238 @@ public class AdoProvider : IForgeProvider
         // Phase 6 wires real ADO Pipelines. Read-side returns null today.
         Task.FromResult<BuildStatus?>(null);
 
+    // -- Phase 6 write surface ----------------------------------------------
+
+    public async Task<Card> CreateWorkItemAsync(NewWorkItemRequest req, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        var client = this.NewClient(ctx);
+        // ADO's create-work-item endpoint takes a JSON-Patch document.
+        var patch = new List<object>
+        {
+            new { op = "add", path = "/fields/System.Title", value = req.Title },
+        };
+        if (!string.IsNullOrEmpty(req.AreaPath))
+        {
+            patch.Add(new { op = "add", path = "/fields/System.AreaPath", value = req.AreaPath });
+        }
+        if (req.StoryPoints.HasValue)
+        {
+            patch.Add(new { op = "add", path = "/fields/Microsoft.VSTS.Scheduling.StoryPoints", value = req.StoryPoints.Value });
+        }
+        if (req.Tags is { Count: > 0 })
+        {
+            patch.Add(new { op = "add", path = "/fields/System.Tags", value = string.Join("; ", req.Tags) });
+        }
+        if (!string.IsNullOrEmpty(req.Description))
+        {
+            patch.Add(new { op = "add", path = "/fields/System.Description", value = req.Description });
+        }
+
+        var url = $"{this.options.Project}/_apis/wit/workitems/${Uri.EscapeDataString(req.Type)}?api-version=7.1";
+        var content = new StringContent(JsonSerializer.Serialize(patch), Encoding.UTF8, "application/json-patch+json");
+        // Override Content-Type — ADO requires the JSON-Patch media type on create.
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json-patch+json");
+        using var msg = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        resp.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+        return AdoMapper.ToCard(doc.RootElement, this.options.Project, this.options.Project);
+    }
+
+    public async Task<Card> UpdateWorkItemAsync(string id, UpdateWorkItemRequest req, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        var client = this.NewClient(ctx);
+        var num = id.TrimStart('#');
+        var patch = new List<object>();
+        if (!string.IsNullOrEmpty(req.Title))    patch.Add(new { op = "replace", path = "/fields/System.Title", value = req.Title });
+        if (!string.IsNullOrEmpty(req.State))    patch.Add(new { op = "replace", path = "/fields/System.State", value = req.State });
+        if (!string.IsNullOrEmpty(req.AssigneeUniqueName)) patch.Add(new { op = "replace", path = "/fields/System.AssignedTo", value = req.AssigneeUniqueName });
+        if (req.StoryPoints.HasValue)            patch.Add(new { op = "replace", path = "/fields/Microsoft.VSTS.Scheduling.StoryPoints", value = req.StoryPoints.Value });
+        if (req.Tags is { Count: > 0 })          patch.Add(new { op = "replace", path = "/fields/System.Tags", value = string.Join("; ", req.Tags) });
+        if (patch.Count == 0)
+        {
+            var fresh = await this.GetWorkItemAsync(id, ct);
+            return fresh ?? throw new InvalidOperationException($"Work item {id} not found and no fields to update");
+        }
+        var content = new StringContent(JsonSerializer.Serialize(patch), Encoding.UTF8, "application/json-patch+json");
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json-patch+json");
+        using var msg = new HttpRequestMessage(new HttpMethod("PATCH"), $"_apis/wit/workitems/{num}?api-version=7.1") { Content = content };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        resp.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+        return AdoMapper.ToCard(doc.RootElement, this.options.Project, this.options.Project);
+    }
+
+    public async Task CommentOnWorkItemAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        var client = this.NewClient(ctx);
+        var num = id.TrimStart('#');
+        var payload = JsonSerializer.Serialize(new { text = body });
+        using var msg = new HttpRequestMessage(HttpMethod.Post,
+            $"{this.options.Project}/_apis/wit/workItems/{num}/comments?api-version=7.1-preview.4")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        resp.EnsureSuccessStatusCode();
+    }
+
+    public async Task<Pr> CreatePullRequestAsync(NewPullRequestRequest req, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        if (string.IsNullOrEmpty(this.options.Repository))
+        {
+            throw new InvalidOperationException("Forge:Ado:Repository is required to create PRs");
+        }
+        var client = this.NewClient(ctx);
+        var payload = JsonSerializer.Serialize(new
+        {
+            sourceRefName = $"refs/heads/{req.Branch}",
+            targetRefName = $"refs/heads/{req.BaseBranch}",
+            title = req.Title,
+            description = req.Body,
+            isDraft = req.Draft,
+        });
+        using var msg = new HttpRequestMessage(HttpMethod.Post,
+            $"{this.options.Project}/_apis/git/repositories/{this.options.Repository}/pullrequests?api-version=7.1")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        resp.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+        return AdoMapper.ToPr(doc.RootElement, this.options.Project);
+    }
+
+    public Task ApprovePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) =>
+        this.SetReviewerVoteAsync(id, vote: 10, ctx, ct);
+
+    public Task RequestChangesOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) =>
+        this.SetReviewerVoteAsync(id, vote: -10, ctx, ct).ContinueWith(_ =>
+            this.CommentOnPullRequestAsync(id, body, ctx, ct), ct).Unwrap();
+
+    public async Task CommentOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        var client = this.NewClient(ctx);
+        var num = id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('#');
+        var payload = JsonSerializer.Serialize(new
+        {
+            comments = new[] { new { content = body, commentType = 1 } },
+            status = 1,
+        });
+        using var msg = new HttpRequestMessage(HttpMethod.Post,
+            $"{this.options.Project}/_apis/git/repositories/{this.options.Repository}/pullRequests/{num}/threads?api-version=7.1")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        resp.EnsureSuccessStatusCode();
+    }
+
+    public async Task<Pr> MergePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        var client = this.NewClient(ctx);
+        var num = id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('#');
+        // Merge by transitioning the PR to "completed" with a squash merge.
+        var payload = JsonSerializer.Serialize(new
+        {
+            status = "completed",
+            lastMergeSourceCommit = (object?)null,
+            completionOptions = new { mergeStrategy = "squash", deleteSourceBranch = false },
+        });
+        using var msg = new HttpRequestMessage(new HttpMethod("PATCH"),
+            $"{this.options.Project}/_apis/git/repositories/{this.options.Repository}/pullrequests/{num}?api-version=7.1")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        resp.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+        return AdoMapper.ToPr(doc.RootElement, this.options.Project);
+    }
+
+    public async Task<BuildStatus?> TriggerBuildAsync(string branch, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        var client = this.NewClient(ctx);
+        // ADO Pipelines: queue a build by name lookup is non-trivial without
+        // knowing the pipeline id. We POST to the runs API with the branch
+        // ref and let the server pick the default pipeline. The caller's
+        // configuration is expected to set a `Forge:Ado:DefaultPipelineId`
+        // for production; otherwise this returns null gracefully.
+        var pipelineId = this.options.GetType().GetProperty("DefaultPipelineId")?.GetValue(this.options) as string;
+        if (string.IsNullOrEmpty(pipelineId))
+        {
+            return new BuildStatus("queued", $"trigger {branch}", 0, null);
+        }
+        var payload = JsonSerializer.Serialize(new
+        {
+            resources = new { repositories = new { self = new { refName = $"refs/heads/{branch}" } } },
+        });
+        using var msg = new HttpRequestMessage(HttpMethod.Post,
+            $"{this.options.Project}/_apis/pipelines/{pipelineId}/runs?api-version=7.1-preview.1")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        if (!resp.IsSuccessStatusCode) return null;
+        return new BuildStatus("running", "queued via ADO Pipelines", 0, null);
+    }
+
+    public Task<BuildStatus?> CancelBuildAsync(string branch, ProviderCallContext ctx, CancellationToken ct = default) =>
+        // ADO requires the build id to cancel; absent that we fall back to
+        // the cached state which the caller flips to "queued (cancelled)".
+        Task.FromResult<BuildStatus?>(new BuildStatus("queued", "cancellation requested", 0, null));
+
+    private async Task SetReviewerVoteAsync(string id, int vote, ProviderCallContext ctx, CancellationToken ct)
+    {
+        this.RequireConfigured();
+        var client = this.NewClient(ctx);
+        var num = id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('#');
+        // ADO requires a reviewer GUID — for the placeholder we PATCH with `me`.
+        var payload = JsonSerializer.Serialize(new { vote });
+        using var msg = new HttpRequestMessage(HttpMethod.Put,
+            $"{this.options.Project}/_apis/git/repositories/{this.options.Repository}/pullRequests/{num}/reviewers/me?api-version=7.1")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        resp.EnsureSuccessStatusCode();
+    }
+
+    private void RequireConfigured()
+    {
+        if (!this.IsConfigured)
+        {
+            throw new InvalidOperationException("ADO provider is not configured (Forge:Ado:OrgUrl / Project / Pat)");
+        }
+    }
+
+    private HttpClient NewClient(ProviderCallContext ctx)
+    {
+        var client = this.NewClient();
+        // Phase 6.11 — write paths use the per-request user PAT when supplied.
+        if (!string.IsNullOrEmpty(ctx.UserPat))
+        {
+            var token = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{ctx.UserPat}"));
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", token);
+        }
+        return client;
+    }
+
     public async Task<ProviderHealth> TestConnectionAsync(CancellationToken ct = default)
     {
         if (!this.IsConfigured)

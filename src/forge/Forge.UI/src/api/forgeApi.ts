@@ -11,6 +11,24 @@ export interface ProviderHealth {
   rateLimitLimit: number | null;
 }
 
+export interface AuditEntry {
+  id: number;
+  at: string;
+  user: string;
+  method: string;
+  path: string;
+  status: number;
+  idempotencyKey: string | null;
+  requestBodySnippet: string | null;
+}
+
+export interface HumanGateRules {
+  branchSubstrings: string[];
+  titleSubstrings: string[];
+  labels: string[];
+  pathGlobs: string[];
+}
+
 const baseUrl = import.meta.env.VITE_FORGE_API_URL ?? '';
 
 interface ProblemDetails {
@@ -104,12 +122,78 @@ export const forgeApi = {
     }
   },
 
-  /** POST /api/cards. */
-  async createCard(card: Card): Promise<Card> {
+  /** POST /api/cards. Phase 6.1: optional `postTo` posts to ADO/GitHub. */
+  async createCard(card: Card, postTo?: 'ado' | 'github', description?: string): Promise<Card> {
     return fetchJson<Card>('/api/cards', {
       method: 'POST',
-      body: JSON.stringify({ card }),
+      body: JSON.stringify({ card, postTo, description }),
+      headers: postTo ? { 'X-Forge-User': writerHeader() } : {},
     });
+  },
+
+  /** POST /api/cards/{id}/comment. */
+  async commentOnCard(id: string, body: string, provider: 'ado' | 'github' = 'github'): Promise<void> {
+    await fetchJson<unknown>(`/api/cards/${encodeURIComponent(id)}/comment`, {
+      method: 'POST',
+      body: JSON.stringify({ body, provider }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/prs/{id}/approve. */
+  async approvePr(id: string): Promise<Pr> {
+    return fetchJson<Pr>(`/api/prs/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/prs/{id}/changes. */
+  async requestChangesOnPr(id: string, body: string): Promise<Pr> {
+    return fetchJson<Pr>(`/api/prs/${encodeURIComponent(id)}/changes`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/prs/{id}/comment. */
+  async commentOnPr(id: string, body: string): Promise<void> {
+    await fetchJson<unknown>(`/api/prs/${encodeURIComponent(id)}/comment`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/prs/{id}/merge. */
+  async mergePr(id: string): Promise<Pr> {
+    return fetchJson<Pr>(`/api/prs/${encodeURIComponent(id)}/merge`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/workstreams/{id}/pr — Phase 6.4. */
+  async openWorkstreamPr(
+    id: string,
+    req: { title: string; body: string; provider?: 'ado' | 'github'; draft?: boolean },
+  ): Promise<Pr> {
+    return fetchJson<Pr>(`/api/workstreams/${encodeURIComponent(id)}/pr`, {
+      method: 'POST',
+      body: JSON.stringify({ provider: 'github', ...req }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** GET /api/audit. */
+  async listAudit(take = 200): Promise<AuditEntry[]> {
+    return fetchJson<AuditEntry[]>(`/api/audit?take=${take}`);
+  },
+
+  /** GET /api/human-gate/rules. */
+  async getHumanGateRules(): Promise<HumanGateRules> {
+    return fetchJson<HumanGateRules>('/api/human-gate/rules');
   },
 
   /** PATCH /api/cards/{id}. */

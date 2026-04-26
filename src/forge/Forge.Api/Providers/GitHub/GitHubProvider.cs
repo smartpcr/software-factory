@@ -198,6 +198,216 @@ public class GitHubProvider : IForgeProvider
         }
     }
 
+    // -- Phase 6 write surface ----------------------------------------------
+
+    public async Task<Card> CreateWorkItemAsync(NewWorkItemRequest req, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        var client = this.NewClient(ctx);
+        var labels = req.Tags ?? Array.Empty<string>();
+        // Map our `type` to a label so the round-trip via IssueToCard preserves it.
+        var typeLabel = req.Type.ToLowerInvariant() switch
+        {
+            "bug" => "bug",
+            "task" => "task",
+            _ => "story",
+        };
+        var allLabels = labels.Append(typeLabel).Distinct().ToArray();
+        var payload = JsonSerializer.Serialize(new
+        {
+            title = req.Title,
+            body = req.Description,
+            labels = allLabels,
+        });
+        using var msg = new HttpRequestMessage(HttpMethod.Post, $"repos/{this.options.Repo}/issues")
+        {
+            Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        resp.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+        return GitHubMapper.IssueToCard(doc.RootElement, this.options.Repo);
+    }
+
+    public async Task<Card> UpdateWorkItemAsync(string id, UpdateWorkItemRequest req, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        var client = this.NewClient(ctx);
+        var num = id.TrimStart('#');
+        var fields = new Dictionary<string, object?>();
+        if (!string.IsNullOrEmpty(req.Title))   fields["title"] = req.Title;
+        if (!string.IsNullOrEmpty(req.State))   fields["state"] = req.State.ToLowerInvariant() == "done" ? "closed" : "open";
+        if (req.Tags is not null)               fields["labels"] = req.Tags;
+        if (!string.IsNullOrEmpty(req.AssigneeUniqueName)) fields["assignees"] = new[] { req.AssigneeUniqueName };
+        if (fields.Count == 0)
+        {
+            var fresh = await this.GetWorkItemAsync(id, ct);
+            return fresh ?? throw new InvalidOperationException($"Issue {id} not found");
+        }
+        var payload = JsonSerializer.Serialize(fields);
+        using var msg = new HttpRequestMessage(new HttpMethod("PATCH"), $"repos/{this.options.Repo}/issues/{num}")
+        {
+            Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        resp.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+        return GitHubMapper.IssueToCard(doc.RootElement, this.options.Repo);
+    }
+
+    public async Task CommentOnWorkItemAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        var client = this.NewClient(ctx);
+        var num = id.TrimStart('#');
+        var payload = JsonSerializer.Serialize(new { body });
+        using var msg = new HttpRequestMessage(HttpMethod.Post, $"repos/{this.options.Repo}/issues/{num}/comments")
+        {
+            Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        resp.EnsureSuccessStatusCode();
+    }
+
+    public async Task<Pr> CreatePullRequestAsync(NewPullRequestRequest req, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        var client = this.NewClient(ctx);
+        var payload = JsonSerializer.Serialize(new
+        {
+            title = req.Title,
+            body = req.Body,
+            head = req.Branch,
+            @base = req.BaseBranch,
+            draft = req.Draft,
+        });
+        using var msg = new HttpRequestMessage(HttpMethod.Post, $"repos/{this.options.Repo}/pulls")
+        {
+            Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        resp.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+        return GitHubMapper.PrToPr(doc.RootElement, this.options.Repo);
+    }
+
+    public Task ApprovePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) =>
+        this.PostReviewAsync(id, "APPROVE", body: null, ctx, ct);
+
+    public Task RequestChangesOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) =>
+        this.PostReviewAsync(id, "REQUEST_CHANGES", body, ctx, ct);
+
+    public async Task CommentOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        var client = this.NewClient(ctx);
+        var num = id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('#');
+        var payload = JsonSerializer.Serialize(new { body });
+        // GitHub treats comments on issue threads of PRs the same as issue comments.
+        using var msg = new HttpRequestMessage(HttpMethod.Post, $"repos/{this.options.Repo}/issues/{num}/comments")
+        {
+            Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        resp.EnsureSuccessStatusCode();
+    }
+
+    public async Task<Pr> MergePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        var client = this.NewClient(ctx);
+        var num = id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('#');
+        var payload = JsonSerializer.Serialize(new { merge_method = "squash" });
+        using var msg = new HttpRequestMessage(HttpMethod.Put, $"repos/{this.options.Repo}/pulls/{num}/merge")
+        {
+            Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        resp.EnsureSuccessStatusCode();
+        var fresh = await this.GetPullRequestAsync(id, ct);
+        return fresh ?? throw new InvalidOperationException($"PR {id} not found after merge");
+    }
+
+    public async Task<BuildStatus?> TriggerBuildAsync(string branch, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        var client = this.NewClient(ctx);
+        // `workflow_dispatch` requires a workflow filename — we POST to the
+        // generic dispatches endpoint with branch ref. Without a configured
+        // workflow we return a "queued" stub so callers see optimistic state.
+        var payload = JsonSerializer.Serialize(new { @ref = branch });
+        using var msg = new HttpRequestMessage(HttpMethod.Post, $"repos/{this.options.Repo}/dispatches")
+        {
+            Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        if (!resp.IsSuccessStatusCode) return null;
+        return new BuildStatus("queued", $"dispatch on {branch}", 0, null);
+    }
+
+    public async Task<BuildStatus?> CancelBuildAsync(string branch, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        var client = this.NewClient(ctx);
+        // Find the most-recent in-progress run for the branch and cancel it.
+        var listResp = await client.GetAsync(
+            $"repos/{this.options.Repo}/actions/runs?branch={Uri.EscapeDataString(branch)}&status=in_progress&per_page=1", ct);
+        this.health.RecordResponse(listResp);
+        if (!listResp.IsSuccessStatusCode) return null;
+        using var doc = JsonDocument.Parse(await listResp.Content.ReadAsStringAsync(ct));
+        if (!doc.RootElement.TryGetProperty("workflow_runs", out var runs) || runs.GetArrayLength() == 0)
+        {
+            return new BuildStatus("queued", "no running build to cancel", 0, null);
+        }
+        var runId = runs[0].GetProperty("id").GetInt64();
+        using var cancelMsg = new HttpRequestMessage(HttpMethod.Post,
+            $"repos/{this.options.Repo}/actions/runs/{runId}/cancel");
+        var cancelResp = await client.SendAsync(cancelMsg, ct);
+        this.health.RecordResponse(cancelResp);
+        cancelResp.EnsureSuccessStatusCode();
+        return new BuildStatus("queued", $"cancel requested for run {runId}", 0, null);
+    }
+
+    private async Task PostReviewAsync(string id, string @event, string? body, ProviderCallContext ctx, CancellationToken ct)
+    {
+        this.RequireConfigured();
+        var client = this.NewClient(ctx);
+        var num = id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('#');
+        var payload = JsonSerializer.Serialize(new { body, @event });
+        using var msg = new HttpRequestMessage(HttpMethod.Post, $"repos/{this.options.Repo}/pulls/{num}/reviews")
+        {
+            Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        resp.EnsureSuccessStatusCode();
+    }
+
+    private void RequireConfigured()
+    {
+        if (!this.IsConfigured)
+        {
+            throw new InvalidOperationException("GitHub provider is not configured (Forge:GitHub:Repo / Pat)");
+        }
+    }
+
+    private HttpClient NewClient(ProviderCallContext ctx)
+    {
+        var client = this.NewClient();
+        if (!string.IsNullOrEmpty(ctx.UserPat))
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("token", ctx.UserPat);
+        }
+        return client;
+    }
+
     private HttpClient NewClient()
     {
         var client = this.clientFactory.CreateClient(ClientName);

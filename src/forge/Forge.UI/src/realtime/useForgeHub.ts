@@ -3,6 +3,7 @@ import { HubConnectionBuilder, LogLevel, type HubConnection } from '@microsoft/s
 import type { Card, Pr } from '@/types';
 import { useBoardStore } from '@/state/useBoardStore';
 import { usePrsStore } from '@/state/usePrsStore';
+import { usePrLogStore } from '@/state/usePrLogStore';
 import { useToastStore } from '@/state/useToastStore';
 
 const baseUrl = import.meta.env.VITE_FORGE_API_URL ?? '';
@@ -43,6 +44,12 @@ async function ensureConnected() {
         } else if (payload.kind === 'build.cancel') {
           useToastStore.getState().show(`${payload.pr.id} build cancelled`, 'info');
         }
+      }
+    });
+    // Phase 6.7 — stream build-log lines into the PR log store.
+    connection.on('pr.log', (payload: { id?: string; line?: string }) => {
+      if (payload?.id && typeof payload.line === 'string') {
+        usePrLogStore.getState().append(payload.id, payload.line);
       }
     });
   }

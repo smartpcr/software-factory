@@ -4,7 +4,10 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using Forge.Api.Auth;
+using Forge.Api.Domain;
 using Forge.Api.Endpoints;
+using Forge.Api.Hosting;
 using Forge.Api.Persistence;
 using Forge.Api.Providers;
 using Forge.Api.Providers.Ado;
@@ -75,6 +78,14 @@ builder.Services.AddScoped<ProviderCache>();
 builder.Services.AddSingleton<ProviderSyncService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProviderSyncService>());
 
+// Phase 6 — write-side: human-gate, auto-merge watcher, audit + idempotency, user context.
+builder.Services.Configure<HumanGateOptions>(builder.Configuration.GetSection(HumanGateOptions.SectionName));
+builder.Services.AddSingleton<IHumanGateEvaluator, HumanGateEvaluator>();
+builder.Services.AddSingleton<AutoMergeWatcher>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoMergeWatcher>());
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<IUserContext, HttpUserContext>();
+
 // Problem details (RFC-7807).
 builder.Services.AddProblemDetails();
 
@@ -90,6 +101,12 @@ using (var scope = app.Services.CreateScope())
 
 app.UseExceptionHandler();
 app.UseStatusCodePages();
+
+// Phase 6.12 — replay cached responses on duplicate Idempotency-Key (writes only).
+// Phase 6.10 — audit every write to forge_actions.
+// Order matters: idempotency wraps audit so replays are NOT re-audited.
+app.UseMiddleware<IdempotencyMiddleware>();
+app.UseMiddleware<AuditMiddleware>();
 
 // Always serve the OpenAPI document so `npm run gen:api` works against any env.
 // Path is /openapi.json (mapped via RouteTemplate). UseSwaggerUI stays dev-only.
@@ -109,6 +126,8 @@ app.MapWorkstreamsEndpoints();
 app.MapPrsEndpoints();
 app.MapProvidersEndpoints();
 app.MapWebhooksEndpoints();
+app.MapAuditEndpoints();
+app.MapHumanGateEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 

@@ -39,6 +39,72 @@ public interface IForgeProvider
 
     /// <summary>Quick "can we talk to the API and authenticate?" probe used by /settings.</summary>
     Task<ProviderHealth> TestConnectionAsync(CancellationToken ct = default);
+
+    // -- Phase 6 write surface ----------------------------------------------
+
+    /// <summary>Creates a remote work item / issue. Returns the mapped <see cref="Card"/> with the new id.</summary>
+    Task<Card> CreateWorkItemAsync(NewWorkItemRequest req, ProviderCallContext ctx, CancellationToken ct = default);
+
+    /// <summary>Patches a remote work item. Returns the refreshed mapped card.</summary>
+    Task<Card> UpdateWorkItemAsync(string id, UpdateWorkItemRequest req, ProviderCallContext ctx, CancellationToken ct = default);
+
+    /// <summary>Posts a comment to the work item / issue (markdown body).</summary>
+    Task CommentOnWorkItemAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default);
+
+    /// <summary>Opens a PR from req.Branch into req.BaseBranch. Returns the mapped PR.</summary>
+    Task<Pr> CreatePullRequestAsync(NewPullRequestRequest req, ProviderCallContext ctx, CancellationToken ct = default);
+
+    /// <summary>Approves a PR.</summary>
+    Task ApprovePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default);
+
+    /// <summary>Requests changes on a PR.</summary>
+    Task RequestChangesOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default);
+
+    /// <summary>Posts a comment to a PR.</summary>
+    Task CommentOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default);
+
+    /// <summary>Merges a PR. Returns the merged-state PR.</summary>
+    Task<Pr> MergePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default);
+
+    /// <summary>Triggers a build for a branch. Returns the queued build status.</summary>
+    Task<BuildStatus?> TriggerBuildAsync(string branch, ProviderCallContext ctx, CancellationToken ct = default);
+
+    /// <summary>Cancels a running build for a branch.</summary>
+    Task<BuildStatus?> CancelBuildAsync(string branch, ProviderCallContext ctx, CancellationToken ct = default);
+}
+
+// -- Phase 6 request DTOs --------------------------------------------------
+
+public sealed record NewWorkItemRequest(
+    string Title,
+    string Type,
+    string? AreaPath = null,
+    int? StoryPoints = null,
+    string? Description = null,
+    IReadOnlyList<string>? Tags = null);
+
+public sealed record UpdateWorkItemRequest(
+    string? Title = null,
+    string? State = null,
+    string? AssigneeUniqueName = null,
+    int? StoryPoints = null,
+    IReadOnlyList<string>? Tags = null);
+
+public sealed record NewPullRequestRequest(
+    string Branch,
+    string BaseBranch,
+    string Title,
+    string Body,
+    bool Draft = false);
+
+/// <summary>
+/// Phase 6.11 — passes the per-request user PAT to provider write paths.
+/// When <see cref="UserPat"/> is non-null, the provider authenticates as
+/// the user; otherwise it falls back to the server PAT (read-only).
+/// </summary>
+public sealed record ProviderCallContext(string? UserId, string? UserPat, string? IdempotencyKey)
+{
+    public static readonly ProviderCallContext Anonymous = new(null, null, null);
 }
 
 /// <summary>Outcome of <see cref="IForgeProvider.TestConnectionAsync"/> + ambient health snapshot.</summary>

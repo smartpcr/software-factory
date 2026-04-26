@@ -788,10 +788,9 @@ namespace ExecutionEngine.Engine
                     if (context.Status == WorkflowExecutionStatus.Failed)
                     {
                         this.logger.LogInformation("Workflow marked as failed, cancelling in-flight tasks and terminating");
-                        // Cancel all in-flight tasks
                         foreach (var (key, (_, taskCts)) in inflightTasks)
                         {
-                            taskCts.Cancel();
+                            try { taskCts.Cancel(); } catch (ObjectDisposedException) { /* already done */ }
                         }
 
                         break;

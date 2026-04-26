@@ -32,6 +32,8 @@ export function CardModal({ open, onClose, initial }: CardModalProps) {
   const [pts, setPts] = useState(3);
   const [priority, setPriority] = useState<Priority>('med');
   const [tags, setTags] = useState('');
+  const [postTo, setPostTo] = useState<'' | 'ado' | 'github'>('');
+  const [description, setDescription] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -44,6 +46,8 @@ export function CardModal({ open, onClose, initial }: CardModalProps) {
     setPts(initial?.pts ?? 3);
     setPriority(initial?.priority ?? 'med');
     setTags((initial?.tags ?? []).join(', '));
+    setPostTo('');
+    setDescription('');
   }, [open, initial, epics]);
 
   async function submit() {
@@ -60,9 +64,11 @@ export function CardModal({ open, onClose, initial }: CardModalProps) {
           epic, col, type, title, tags: tagArr,
           pts, priority, agent: null, cost: 0,
         };
-        const created = await forgeApi.createCard(newCard);
+        const provider = postTo === '' ? undefined : postTo;
+        const created = await forgeApi.createCard(newCard, provider, description || undefined);
         upsert(created);
-        useToastStore.getState().show(`${created.id} created`, 'success');
+        const where = provider ? ` on ${provider}` : '';
+        useToastStore.getState().show(`${created.id} created${where}`, 'success');
       }
       onClose();
     } catch (err) {
@@ -115,6 +121,28 @@ export function CardModal({ open, onClose, initial }: CardModalProps) {
               <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="auth, infra" />
             </Field>
           </div>
+          {!initial && (
+            <>
+              <Field label="Post to provider (Phase 6.1)">
+                <select value={postTo} onChange={(e) => setPostTo(e.target.value as '' | 'ado' | 'github')}>
+                  <option value="">Local only</option>
+                  <option value="ado">Azure DevOps</option>
+                  <option value="github">GitHub</option>
+                </select>
+              </Field>
+              {postTo !== '' && (
+                <Field label="Description (markdown)">
+                  <textarea
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    rows={4}
+                    placeholder="Optional body for the new work item / issue."
+                    style={{ resize: 'vertical', width: '100%' }}
+                  />
+                </Field>
+              )}
+            </>
+          )}
         </div>
         <div className="modal-actions">
           <button className="btn btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>

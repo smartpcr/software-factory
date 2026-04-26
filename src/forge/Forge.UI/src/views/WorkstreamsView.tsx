@@ -11,6 +11,7 @@ import { WorkstreamCard } from '@/workstreams/WorkstreamCard';
 import { NewWorkstreamCta } from '@/workstreams/NewWorkstreamCta';
 import { NewWorkstreamModal } from '@/workstreams/NewWorkstreamModal';
 import { Toaster } from '@/board/Toaster';
+import { forgeApi } from '@/api/forgeApi';
 
 const FILTER_CHIPS: Array<{ key: WorkstreamFilter; label: string; pulse?: boolean }> = [
   { key: 'all',       label: 'All' },
@@ -65,6 +66,25 @@ export function WorkstreamsView() {
       return;
     }
     useToastStore.getState().show(`Focused ${ws.name}`, 'success');
+  }
+
+  // Phase 6.4 — open a PR from this workstream via the configured provider.
+  async function onOpenPr(ws: Workstream) {
+    const title = window.prompt('PR title', `${ws.name}: ${ws.summary.split('.')[0]}`);
+    if (!title) return;
+    const provider = window.confirm('Use GitHub? (Cancel = ADO)') ? 'github' : 'ado';
+    try {
+      const pr = await forgeApi.openWorkstreamPr(ws.id, {
+        title,
+        body: `${ws.summary}\n\nLinked: ${ws.cards.join(', ')}`,
+        provider,
+        draft: false,
+      });
+      useToastStore.getState().show(`${pr.id} opened on ${provider}`, 'success');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Open PR failed';
+      useToastStore.getState().show(msg, 'danger');
+    }
   }
 
   return (
@@ -142,6 +162,7 @@ export function WorkstreamsView() {
                 onOpen={onOpen}
                 onSync={(w) => void syncOne(w.id)}
                 onIde={(w) => useToastStore.getState().show(`Open ${w.name} in IDE — Phase R`, 'info')}
+                onOpenPr={(w) => void onOpenPr(w)}
               />
             </div>
           ))}

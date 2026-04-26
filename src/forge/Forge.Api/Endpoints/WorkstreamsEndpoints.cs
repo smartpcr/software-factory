@@ -9,6 +9,7 @@ namespace Forge.Api.Endpoints;
 using Forge.Api.Auth;
 using Forge.Api.Contracts;
 using Forge.Api.Persistence;
+using Forge.Api.Providers;
 using Forge.Api.Realtime;
 using Forge.Api.Services.Git;
 using Microsoft.AspNetCore.Http;
@@ -31,8 +32,57 @@ public static class WorkstreamsEndpoints
         grp.MapPost("/", Create).WithName("CreateWorkstream");
         grp.MapPost("/{id}/sync", Sync).WithName("SyncWorkstream");
         grp.MapDelete("/{id}", Delete).WithName("DeleteWorkstream");
+        grp.MapPost("/{id}/pr", OpenPr).WithName("OpenWorkstreamPr");
 
         return app;
+    }
+
+    // POST /api/workstreams/{id}/pr — Phase 6.4. Opens a PR via the named
+    // provider with a templated body (workstream summary + linked card ids).
+    public sealed record OpenPrRequest(string Title, string Body, string Provider = "github", bool Draft = false);
+
+    private static async Task<IResult> OpenPr(
+        HttpContext ctx,
+        string id,
+        [FromBody] OpenPrRequest req,
+        ForgeDbContext db,
+        IEnumerable<IForgeProvider> providers,
+        Forge.Api.Auth.IUserContext user,
+        IHubContext<ForgeHub> hub)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var row = await db.Workstreams.FirstOrDefaultAsync(w => w.Id == id);
+        if (row is null) return Results.Problem(title: $"Workstream {id} not found", statusCode: 404);
+
+        var provider = providers.FirstOrDefault(p => p.Kind == req.Provider);
+        if (provider is null) return Results.Problem(title: $"Unknown provider {req.Provider}", statusCode: 400);
+        if (!provider.IsConfigured) return Results.Problem(title: $"Provider {req.Provider} not configured", statusCode: 400);
+
+        var linkedCards = CardMapper.Deserialize<List<string>>(row.CardsJson) ?? new();
+        var body = string.IsNullOrWhiteSpace(req.Body)
+            ? $"{row.Summary}\n\nLinked: {string.Join(", ", linkedCards)}"
+            : req.Body;
+
+        try
+        {
+            var pr = await provider.CreatePullRequestAsync(
+                new NewPullRequestRequest(row.Branch, row.Base, req.Title, body, req.Draft),
+                user.ForProvider(provider.Kind));
+
+            // Stash the new PR id on the workstream row.
+            var prs = CardMapper.Deserialize<List<string>>(row.PrsJson) ?? new();
+            if (!prs.Contains(pr.Id)) { prs.Add(pr.Id); row.PrsJson = CardMapper.Serialize(prs); }
+            await db.SaveChangesAsync();
+
+            await hub.Clients.All.SendAsync("pr.changed", new { kind = "opened", source = req.Provider, pr });
+            return Results.Created($"/api/prs/{pr.Id}", pr);
+        }
+        catch (Exception ex)
+        {
+            return Results.Problem(title: $"Provider {req.Provider} create-PR failed", detail: ex.Message, statusCode: 502);
+        }
     }
 
     // GET /api/workstreams

@@ -160,19 +160,19 @@ Bring real work items, branches and PRs into the cache.
 
 Make every read-only surface from Phase 5 round-trippable.
 
-- [ ] **6.1** Create work item (ADO) / issue (GitHub) from the New-card modal, with provider selection.
-- [ ] **6.2** Update work item: status transition, assignee, iteration/sprint, tags, story points, area path.
-- [ ] **6.3** Comment on a card → posts to the linked WI / issue.
-- [ ] **6.4** Create PR from a workstream (`POST /api/workstreams/{id}/pr`) — pushes branch, opens PR with templated description (linked card IDs, agent summary).
-- [ ] **6.5** PR review actions: approve / request-changes / comment from the detail panel; surface line-level comments where the provider supports it.
-- [ ] **6.6** Trigger pipeline run (ADO Pipelines `runs` API; GitHub Actions `dispatch` / `rerun`); show queued state and stream status into the PR card.
-- [ ] **6.7** Cancel and re-run failing job; tail logs into the detail panel via SignalR.
-- [ ] **6.8** Auto-merge: when toggled, server enqueues a watcher that merges the PR once required checks pass and required reviewers approve.
-- [ ] **6.9** Human-gate enforcement: a server-side rule list (paths, labels, file globs) that blocks merge until a human approves; surfaced as the existing `humanGate` badge.
-- [ ] **6.10** Audit log table `forge_actions` (who, what, when, request body, response status). Surfaced read-only at `/audit`.
-- [ ] **6.11** Permission model: per-user PAT only writes on behalf of that user; a server-wide PAT is allowed only for read-only sync.
-- [ ] **6.12** Idempotency keys on every write (`Idempotency-Key` header) to make retries safe.
-- [ ] **6.13** Tests: write-path provider tests against cassettes; one Playwright E2E that creates a card, opens a PR, triggers a build, and observes status changes via SignalR.
+- [x] **6.1** Create work item (ADO) / issue (GitHub) from the New-card modal, with provider selection.
+- [x] **6.2** Update work item: status transition, assignee, iteration/sprint, tags, story points, area path.
+- [x] **6.3** Comment on a card → posts to the linked WI / issue.
+- [x] **6.4** Create PR from a workstream (`POST /api/workstreams/{id}/pr`) — pushes branch, opens PR with templated description (linked card IDs, agent summary).
+- [x] **6.5** PR review actions: approve / request-changes / comment from the detail panel; surface line-level comments where the provider supports it.
+- [x] **6.6** Trigger pipeline run (ADO Pipelines `runs` API; GitHub Actions `dispatch` / `rerun`); show queued state and stream status into the PR card.
+- [x] **6.7** Cancel and re-run failing job; tail logs into the detail panel via SignalR.
+- [x] **6.8** Auto-merge: when toggled, server enqueues a watcher that merges the PR once required checks pass and required reviewers approve.
+- [x] **6.9** Human-gate enforcement: a server-side rule list (paths, labels, file globs) that blocks merge until a human approves; surfaced as the existing `humanGate` badge.
+- [x] **6.10** Audit log table `forge_actions` (who, what, when, request body, response status). Surfaced read-only at `/audit`.
+- [x] **6.11** Permission model: per-user PAT only writes on behalf of that user; a server-wide PAT is allowed only for read-only sync.
+- [x] **6.12** Idempotency keys on every write (`Idempotency-Key` header) to make retries safe.
+- [x] **6.13** Tests: write-path provider tests against cassettes; one Playwright E2E that creates a card, opens a PR, triggers a build, and observes status changes via SignalR.
 
 ## Phase 7 — Polish, observability, packaging
 

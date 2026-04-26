@@ -229,6 +229,40 @@ public class OverviewActivityRow
     public string Msg { get; set; } = string.Empty;
 }
 
+/// <summary>Phase 6.10 — single row per write action recorded by AuditMiddleware.</summary>
+public class AuditRow
+{
+    public long Id { get; set; }
+
+    public DateTimeOffset At { get; set; }
+
+    public string User { get; set; } = string.Empty;
+
+    public string Method { get; set; } = string.Empty;
+
+    public string Path { get; set; } = string.Empty;
+
+    public int Status { get; set; }
+
+    public string? IdempotencyKey { get; set; }
+
+    public string? RequestBodySnippet { get; set; }
+}
+
+/// <summary>Phase 6.12 — cached response for an Idempotency-Key.</summary>
+public class IdempotencyRow
+{
+    public string Key { get; set; } = string.Empty;
+
+    public DateTimeOffset At { get; set; }
+
+    public int Status { get; set; }
+
+    public string ContentType { get; set; } = "application/json";
+
+    public string Body { get; set; } = string.Empty;
+}
+
 public class OverviewAgentRow
 {
     public string Id { get; set; } = string.Empty;

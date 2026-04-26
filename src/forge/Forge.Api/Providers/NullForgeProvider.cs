@@ -35,4 +35,37 @@ public class NullForgeProvider : IForgeProvider
 
     public Task<ProviderHealth> TestConnectionAsync(CancellationToken ct = default) =>
         Task.FromResult(new ProviderHealth(this.Kind, false, "no provider configured", null, 0, null, null));
+
+    private static InvalidOperationException Unconfigured() =>
+        new("No provider is configured — set Forge:Ado:* or Forge:GitHub:* secrets.");
+
+    public Task<Card> CreateWorkItemAsync(NewWorkItemRequest req, ProviderCallContext ctx, CancellationToken ct = default) =>
+        throw Unconfigured();
+
+    public Task<Card> UpdateWorkItemAsync(string id, UpdateWorkItemRequest req, ProviderCallContext ctx, CancellationToken ct = default) =>
+        throw Unconfigured();
+
+    public Task CommentOnWorkItemAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) =>
+        throw Unconfigured();
+
+    public Task<Pr> CreatePullRequestAsync(NewPullRequestRequest req, ProviderCallContext ctx, CancellationToken ct = default) =>
+        throw Unconfigured();
+
+    public Task ApprovePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) =>
+        throw Unconfigured();
+
+    public Task RequestChangesOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) =>
+        throw Unconfigured();
+
+    public Task CommentOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) =>
+        throw Unconfigured();
+
+    public Task<Pr> MergePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) =>
+        throw Unconfigured();
+
+    public Task<BuildStatus?> TriggerBuildAsync(string branch, ProviderCallContext ctx, CancellationToken ct = default) =>
+        throw Unconfigured();
+
+    public Task<BuildStatus?> CancelBuildAsync(string branch, ProviderCallContext ctx, CancellationToken ct = default) =>
+        throw Unconfigured();
 }

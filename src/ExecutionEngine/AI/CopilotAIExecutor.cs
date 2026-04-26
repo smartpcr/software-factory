@@ -248,7 +248,25 @@ public class CopilotAIExecutor : IAIExecutor
                         }
                         else
                         {
-                            request.OnOutputLine?.Invoke($"   {status} done");
+                            // Show result summary for successful tools
+                            var resultSummary = "";
+                            if (toolComplete.Data.Result != null)
+                            {
+                                try
+                                {
+                                    var resultJson = System.Text.Json.JsonSerializer.Serialize(toolComplete.Data.Result);
+                                    resultSummary = resultJson.Length > 200 ? resultJson[..197] + "…" : resultJson;
+                                }
+                                catch
+                                {
+                                    var resultStr = toolComplete.Data.Result.ToString() ?? "";
+                                    resultSummary = resultStr.Length > 200 ? resultStr[..197] + "…" : resultStr;
+                                }
+                            }
+
+                            request.OnOutputLine?.Invoke(string.IsNullOrEmpty(resultSummary)
+                                ? $"   {status} done"
+                                : $"   {status} {resultSummary}");
                             // Any successful tool call clears the streak and recovery.
                             lastFailureFingerprint = string.Empty;
                             consecutiveFailureCount = 0;
