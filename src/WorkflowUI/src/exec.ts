@@ -21,6 +21,8 @@ let clearLogsFn: ClearLogsFn;
 let runFinishedFn: RunFinishedFn | null = null;
 let hubConnection: signalR.HubConnection | null = null;
 let currentRunId: string | null = null;
+let pollTimer: ReturnType<typeof setTimeout> | null = null;
+let signalRConnected = false;
 
 function getConnection(): signalR.HubConnection {
   if (!hubConnection) {
@@ -252,12 +254,14 @@ function findNodeById(nodeId?: string) {
 
 async function attachRun(runId: string) {
   currentRunId = runId;
+  signalRConnected = false;
   try {
     const conn = getConnection();
     if (conn.state === signalR.HubConnectionState.Disconnected) {
       await conn.start();
     }
     await conn.invoke('AttachRun', runId);
+    signalRConnected = true;
     // Replay buffered events that happened before we attached
     const replay = await conn.invoke('Replay', runId, 0) as { events?: RunEvent[]; notFound?: boolean };
     if (replay?.events) {
@@ -266,17 +270,20 @@ async function attachRun(runId: string) {
       }
     }
   } catch (err) {
+    signalRConnected = false;
     logFn('warn', null, 'SignalR connection failed — using polling fallback');
   }
 }
 
 function detachRun() {
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
   if (currentRunId && hubConnection) {
     try {
       hubConnection.invoke('DetachRun', currentRunId);
     } catch { /* ignore */ }
   }
   currentRunId = null;
+  signalRConnected = false;
   runFinishedFn?.();
 }
 
@@ -365,22 +372,25 @@ export const Exec = {
       this.setStatus('running');
       logFn('info', null, `Run started (ID: ${result.runId})`);
 
-      // Try SignalR for live updates (non-blocking)
-      attachRun(result.runId).catch(() => {});
+      // SignalR is the primary path for live event streaming
+      await attachRun(result.runId);
 
-      // Poll for completion as fallback (SignalR may miss fast executions)
-      this.pollRunStatus(result.runId);
+      // Only poll as fallback if SignalR connection failed
+      if (!signalRConnected) {
+        this.pollRunStatus(result.runId);
+      }
     } catch (err) {
       logFn('error', null, `Failed to start: ${(err as Error).message}`);
       this.setStatus('failed');
     }
   },
 
-  /** Poll run status until terminal state */
+  /** Poll run status until terminal state (fallback when SignalR unavailable) */
   async pollRunStatus(runId: string) {
     const poll = async () => {
+      if (!currentRunId || currentRunId !== runId) return; // run changed or detached
       try {
-        const res = await fetch(`/api/runs/${runId}`);
+        const res = await fetch(`/api/runs/${runId}/status`);
         if (!res.ok) return;
         const data = await res.json();
         const status = data.status?.toLowerCase();
@@ -400,13 +410,11 @@ export const Exec = {
             });
             Nodes.render();
             this.setStatus('failed');
-            const errMsg = data.error || 'Unknown error';
-            logFn('error', null, `✗ Workflow failed: ${errMsg}`);
+            logFn('error', null, '✗ Workflow failed');
             detachRun();
           }
         } else if (status === 'cancelled') {
           if (this.state === 'running') {
-            // Mark running nodes as cancelled, leave not-started nodes as-is
             State.nodes.forEach(n => {
               if (n.status === 'running') n.status = 'cancelled';
             });
@@ -417,15 +425,15 @@ export const Exec = {
           }
         } else {
           // Still running — poll again
-          setTimeout(poll, 5000);
+          pollTimer = setTimeout(poll, 5000);
         }
       } catch {
         // Server unavailable, try again
-        setTimeout(poll, 5000);
+        pollTimer = setTimeout(poll, 5000);
       }
     };
-    // Start polling after a short delay to give SignalR a chance
-    setTimeout(poll, 1000);
+    // Start polling after a short delay
+    pollTimer = setTimeout(poll, 3000);
   },
 
   async cancel() {

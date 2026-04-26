@@ -87,6 +87,24 @@ public static class RunEndpoints
         })
         .WithName("CancelRun");
 
+        group.MapGet("/{runId:guid}/status", (
+            Guid runId,
+            RunManager runManager) =>
+        {
+            var run = runManager.GetRun(runId);
+            if (run == null)
+            {
+                return Results.NotFound(new { message = $"Run '{runId}' not found." });
+            }
+
+            return Results.Ok(new
+            {
+                run.RunId,
+                run.Status,
+            });
+        })
+        .WithName("GetRunStatus");
+
         group.MapGet("/{runId:guid}", (
             Guid runId,
             RunManager runManager,
