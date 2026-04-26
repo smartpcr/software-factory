@@ -9,7 +9,6 @@ import type {
   Epic,
   ForgeState,
   OverviewActivity,
-  OverviewAgent,
   Pr,
   Workstream,
   WsEvent,
@@ -114,16 +113,11 @@ export const overviewActivity: OverviewActivity[] = [
   { time: '09:38', who: 'E-04 Forge',  msg: 'created branch <span class="ref">ws/tenant-admin-ui</span> off main' },
 ];
 
-export const overviewAgents: OverviewAgent[] = [
-  { id: 'A1', name: 'Atlas',   role: 'arch', status: 'working', task: '#820 OTel propagation' },
-  { id: 'A2', name: 'Mercer',  role: 'arch', status: 'working', task: '#822 log schema design' },
-  { id: 'E4', name: 'Forge',   role: 'eng',  status: 'working', task: '#234 OIDC rotation (build)' },
-  { id: 'E7', name: 'Rivet',   role: 'eng',  status: 'working', task: '#237 retry/jitter' },
-  { id: 'E9', name: 'Anvil',   role: 'eng',  status: 'queued',  task: 'awaiting #822 schema' },
-  { id: 'R3', name: 'Cortex',  role: 'rev',  status: 'working', task: 'PR #240 review' },
-  { id: 'R5', name: 'Lattice', role: 'rev',  status: 'idle',    task: '—' },
-  { id: 'Q2', name: 'Probe',   role: 'qa',   status: 'idle',    task: '—' },
-];
+// Agent crew themed after characters from the Ne Zha movie. Image assets
+// live under src/assets/crews/ and are imported via Vite in src/crew.ts
+// so they're hashed + bundled like any other static asset.
+import { crew } from './crew';
+export const overviewAgents = crew;
 
 export const sampleState: ForgeState = {
   epics,

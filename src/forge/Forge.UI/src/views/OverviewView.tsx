@@ -13,7 +13,10 @@ export function OverviewView() {
   const workstreams = apiState?.workstreams ?? sampleState.workstreams;
   const prs = apiState?.prs ?? sampleState.prs;
   const overviewActivity = apiState?.overviewActivity ?? sampleState.overviewActivity;
-  const overviewAgents = apiState?.overviewAgents ?? sampleState.overviewAgents;
+  // Crew is presentation-only seed — always source from the local crew so
+  // the bundled avatars + capability chips render even when the API has its
+  // own (older) agent list cached.
+  const overviewAgents = sampleState.overviewAgents;
   const navigate = useNavigate();
 
   const burndown = useMemo(() => computeBurndown(cards), [cards]);
@@ -137,16 +140,38 @@ function ActivityRow({ a }: { a: OverviewActivity }) {
 function AgentRow({ a }: { a: OverviewAgent }) {
   const dotCls = a.status === 'idle' ? 'idle' : a.status === 'queued' ? 'queued' : '';
   return (
-    <div className="agent-row">
-      <span className={`agent-chip ${a.role}`} style={{ borderColor: 'var(--bg-sunken)' }}>{a.id}</span>
-      <span className="name">{a.name}</span>
-      <span className="role-tag">{a.role}</span>
-      <span style={{
-        fontSize: 11, color: 'var(--text-tertiary)', marginRight: 8, fontFamily: 'var(--font-mono)',
-        maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-      }}>
-        {a.task}
-      </span>
+    <div className="agent-row" title={a.bio ?? a.name}>
+      {a.avatar ? (
+        <img
+          src={a.avatar}
+          alt={a.name}
+          className={`agent-avatar ${a.role}`}
+          onError={(e) => {
+            const img = e.currentTarget;
+            const fallback = document.createElement('span');
+            fallback.className = `agent-chip ${a.role}`;
+            fallback.style.borderColor = 'var(--bg-sunken)';
+            fallback.textContent = a.id;
+            img.replaceWith(fallback);
+          }}
+        />
+      ) : (
+        <span className={`agent-chip ${a.role}`} style={{ borderColor: 'var(--bg-sunken)' }}>{a.id}</span>
+      )}
+      <div className="agent-id-block">
+        <div className="agent-id-row">
+          <span className="name">{a.name}</span>
+          <span className="role-tag">{a.role}</span>
+        </div>
+        {a.capabilities && a.capabilities.length > 0 && (
+          <div className="agent-caps">
+            {a.capabilities.slice(0, 4).map((c) => (
+              <span className="agent-cap" key={c}>{c}</span>
+            ))}
+          </div>
+        )}
+      </div>
+      <span className="agent-task" title={a.task}>{a.task}</span>
       <span className={`activity-dot ${dotCls}`} />
     </div>
   );

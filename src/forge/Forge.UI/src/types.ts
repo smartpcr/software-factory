@@ -154,6 +154,12 @@ export interface OverviewAgent {
   role: Role;
   status: 'working' | 'queued' | 'idle';
   task: string;
+  /** Optional avatar URL — usually a Vite-imported asset from src/assets/crews. */
+  avatar?: string;
+  /** Short skill chips shown next to the name. Keep each ≤ 24 chars, ≤ 4 entries. */
+  capabilities?: string[];
+  /** One-sentence persona / why this agent matches its role. */
+  bio?: string;
 }
 
 export interface ForgeState {

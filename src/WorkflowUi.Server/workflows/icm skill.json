@@ -10,7 +10,6 @@
   "defaultVariables": {
     "queryLoopCount": 0,
     "incidentFolder": "",
-    "maxQueryScore": 0,
     "repoMdFile": "E:\\work\\hub\\docs\\wiki\\repos.md",
     "rootRepoFolder": "E:\\work",
     "issueListFile": "",
@@ -23,7 +22,8 @@
     "mitigationStepsFile": "",
     "rcaFile": "",
     "incidentId": 0,
-    "agentFolder": "E:\\work\\hub\\docs\\wiki"
+    "agentFolder": "E:\\work\\hub\\docs\\wiki",
+    "queryScore": 0
   },
   "metadata": {},
   "nodes": [
@@ -300,7 +300,7 @@
       "nodeName": "While",
       "description": "",
       "configuration": {
-        "conditionExpression": "{queryLoopCount} < 20 && {maxQueryScore} < 90",
+        "conditionExpression": "{queryLoopCount} < 20 && {queryScore} < 90",
         "maxIterations": 1000
       },
       "joinType": "Any",
@@ -459,12 +459,13 @@
       "description": "",
       "configuration": {
         "variableMappings": {
-          "maxQueryScore": "Math.Max({score}, {maxQueryScore})",
+          "queryScore": "Math.Max({queryScore}, {maxQueryScore})",
           "queryLoopCount": "{queryLoopCount} + 1"
         },
         "variableOps": {
           "maxQueryScore": "expr",
-          "queryLoopCount": "expr"
+          "queryLoopCount": "expr",
+          "queryScore": "expr"
         }
       },
       "joinType": "Any",

@@ -90,7 +90,44 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
 }
-.agent-row .name { flex: 1; font-size: 12px; font-weight: 500; }
+.agent-row .name { font-size: 12px; font-weight: 500; }
+.agent-id-block { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.agent-id-row { display: flex; align-items: center; gap: 8px; }
+.agent-task {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-right: 8px;
+  font-family: var(--font-mono);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.agent-caps { display: flex; flex-wrap: wrap; gap: 4px; }
+.agent-cap {
+  font-size: 9.5px;
+  font-family: var(--font-mono);
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--text-tertiary);
+  border: 1px solid var(--border);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.agent-avatar {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--bg-sunken);
+  background: var(--bg-sunken);
+  flex-shrink: 0;
+}
+.agent-avatar.arch { box-shadow: 0 0 0 1px var(--info); }
+.agent-avatar.eng  { box-shadow: 0 0 0 1px var(--success); }
+.agent-avatar.rev  { box-shadow: 0 0 0 1px var(--warning); }
+.agent-avatar.qa   { box-shadow: 0 0 0 1px var(--accent); }
 .agent-row .role-tag {
   font-family: var(--font-mono);
   font-size: 9px;
