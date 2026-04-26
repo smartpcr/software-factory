@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useThemeStore } from '@/state/useThemeStore';
 import { useProductsStore } from '@/state/useProductsStore';
-import { useCurrentUser, useCurrentUserStore } from '@/state/useCurrentUserStore';
+import { useCurrentUser, useCurrentUserStore, useHasRole } from '@/state/useCurrentUserStore';
 import { ProductIcon } from '@/products/ProductIcon';
 import { UserMenu } from '@/shell/UserMenu';
+import { forgeApi } from '@/api/forgeApi';
+import type { SalaryTodaySummary } from '@/types';
 
 interface TopBarProps {
   section: string;
@@ -29,6 +31,23 @@ export function TopBar({ section, current }: TopBarProps) {
 
   useEffect(() => { void loadProducts(); }, [loadProducts]);
   useEffect(() => { void loadMe(); }, [loadMe]);
+
+  // Phase 11.9 — TopBar salary chip (PO only). Refresh every 60 s so the
+  // operator sees spend tick up live without hammering the API.
+  const isPO = useHasRole('product-owner');
+  const [salary, setSalary] = useState<SalaryTodaySummary | null>(null);
+  useEffect(() => {
+    if (!isPO) return;
+    let cancelled = false;
+    const tick = () => {
+      forgeApi.getSalaryTodayTotal()
+        .then((s) => { if (!cancelled) setSalary(s); })
+        .catch(() => { /* keep last value */ });
+    };
+    tick();
+    const id = window.setInterval(tick, 60_000);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, [isPO]);
 
   function toggleMenu() {
     if (avatarRef.current) setMenuAnchor(avatarRef.current.getBoundingClientRect());
@@ -91,6 +110,35 @@ export function TopBar({ section, current }: TopBarProps) {
         <span>Search anything</span>
         <span className="kbd">⌘K</span>
       </div>
+
+      {isPO && salary && (
+        <div
+          className="topbar-salary-chip"
+          title={`Total spend today across all crews. ${salary.activeAgents} active invocation${salary.activeAgents === 1 ? '' : 's'}.`}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '4px 10px',
+            borderRadius: 999,
+            border: '1px solid var(--border-strong)',
+            color: 'var(--text-secondary)',
+            fontSize: 11.5,
+            fontFamily: 'var(--font-mono, monospace)',
+            background: 'var(--bg-elevated, transparent)',
+          }}
+        >
+          <span style={{ color: 'var(--accent)', fontWeight: 600 }}>${salary.totalUsd.toFixed(2)}</span>
+          <span style={{ opacity: 0.7 }}>today</span>
+          {salary.activeAgents > 0 && (
+            <span style={{
+              width: 6, height: 6, borderRadius: 999,
+              background: 'var(--accent)',
+              boxShadow: '0 0 0 2px var(--accent-soft, transparent)',
+            }} />
+          )}
+        </div>
+      )}
 
       <button className="icon-btn" id="theme-toggle" title="Toggle theme" onClick={toggle}>
         <svg id="moon-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ display: theme === 'dark' ? 'block' : 'none' }}>

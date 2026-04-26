@@ -334,6 +334,20 @@ public class UserSettingsRow
 
     public bool NotificationsEnabled { get; set; } = true;
 
+    /// <summary>
+    /// Phase 9.11 — preferred Microsoft account for ADO sign-in. Used as
+    /// MSAL's <c>WithLoginHint</c> on interactive sign-in and to pick the
+    /// matching cached account when multiple are present.
+    /// </summary>
+    public string? PreferredAdoAccount { get; set; }
+
+    /// <summary>
+    /// Phase 9.11 — preferred GitHub login (gh username) for sign-in. When
+    /// set, <c>gh auth switch</c> activates this account; <c>gh auth token --user</c>
+    /// reads its token. Empty → use whatever <c>gh</c> reports as the active account.
+    /// </summary>
+    public string? PreferredGitHubAccount { get; set; }
+
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
@@ -362,6 +376,64 @@ public class CrewRow
     public decimal ModelInputPricePerMTok { get; set; }
 
     public decimal ModelOutputPricePerMTok { get; set; }
+
+    /// <summary>Phase 11.10 — soft daily cap on this crew's total spend. Null = no cap.</summary>
+    public decimal? DailyBudgetUsd { get; set; }
+
+    /// <summary>Phase 11.10 — hard cap per single invocation. Null = no cap (only daily applies).</summary>
+    public decimal? MaxTaskBudgetUsd { get; set; }
+}
+
+/// <summary>
+/// Phase 11.3 — first-class agent record. Each agent belongs to exactly one
+/// crew (Q3 implication). <see cref="SoulPath"/> overrides the default
+/// <c>%LOCALAPPDATA%\Forge\agents\{id}\soul.md</c> location.
+/// </summary>
+public class AgentRow
+{
+    public string Id { get; set; } = string.Empty;
+
+    public int Sort { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>One of: arch, eng, rev, qa, human, product-owner, tech-lead.</summary>
+    public string Role { get; set; } = string.Empty;
+
+    public string? CrewId { get; set; }
+
+    /// <summary>Override path for soul.md. Null = default location.</summary>
+    public string? SoulPath { get; set; }
+
+    public string CapabilitiesJson { get; set; } = "[]";
+
+    /// <summary>One of: idle, working, blocked, paused.</summary>
+    public string State { get; set; } = "idle";
+}
+
+/// <summary>
+/// Phase 11.8 — append-only history of agent crew + model assignments.
+/// Each reassign writes one row so historical salary attribution stays correct
+/// even after an agent moves crews or a crew swaps models.
+/// </summary>
+public class AgentHistoryRow
+{
+    public long Id { get; set; }
+
+    public DateTimeOffset At { get; set; } = DateTimeOffset.UtcNow;
+
+    public string AgentId { get; set; } = string.Empty;
+
+    public string? FromCrewId { get; set; }
+
+    public string? ToCrewId { get; set; }
+
+    public string? FromModel { get; set; }
+
+    public string? ToModel { get; set; }
+
+    /// <summary>X-Forge-User who triggered the move.</summary>
+    public string? Actor { get; set; }
 }
 
 /// <summary>
@@ -390,6 +462,40 @@ public class UserRow
     public DateTimeOffset? LastSeenAt { get; set; }
 }
 
+
+/// <summary>
+/// Phase 11.4 — cost ledger. One row per agent invocation; the runner writes
+/// it on finish (or partial-finish on cancel). Salary roll-ups (today / sprint
+/// / month) read this table grouped by <see cref="CrewId"/>; per-card cost reads
+/// it grouped by <see cref="TaskId"/>. <see cref="Status"/> is one of
+/// <c>running</c>, <c>finished</c>, <c>failed</c>, <c>cancelled</c>.
+/// </summary>
+public class AgentUsageRow
+{
+    public long Id { get; set; }
+
+    public string AgentId { get; set; } = string.Empty;
+
+    public string CrewId { get; set; } = string.Empty;
+
+    /// <summary>The card / task this invocation was started for. Empty for ad-hoc invocations.</summary>
+    public string TaskId { get; set; } = string.Empty;
+
+    public string Model { get; set; } = string.Empty;
+
+    public long InputTokens { get; set; }
+
+    public long OutputTokens { get; set; }
+
+    /// <summary>Computed at write time = input × inputPricePerMTok / 1e6 + output × outputPricePerMTok / 1e6.</summary>
+    public decimal CostUsd { get; set; }
+
+    public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public DateTimeOffset? EndedAt { get; set; }
+
+    public string Status { get; set; } = "running";
+}
 
 /// <summary>
 /// Phase 8 — repo row. <see cref="Kind"/> is fixed at "ado" or "github" (Q4: never both).

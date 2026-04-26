@@ -50,6 +50,12 @@ public class ForgeDbContext : DbContext
 
     public DbSet<CrewRow> Crews => this.Set<CrewRow>();
 
+    public DbSet<AgentUsageRow> AgentUsage => this.Set<AgentUsageRow>();
+
+    public DbSet<AgentRow> Agents => this.Set<AgentRow>();
+
+    public DbSet<AgentHistoryRow> AgentHistory => this.Set<AgentHistoryRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         mb.Entity<EpicRow>().ToTable("epics").HasKey(x => x.Id);
@@ -92,5 +98,25 @@ public class ForgeDbContext : DbContext
         // SQLite stores decimal as TEXT; explicit conversion keeps EF happy.
         mb.Entity<CrewRow>().Property(x => x.ModelInputPricePerMTok).HasConversion<double>();
         mb.Entity<CrewRow>().Property(x => x.ModelOutputPricePerMTok).HasConversion<double>();
+
+        // Phase 11.4 — agent invocation cost ledger.
+        mb.Entity<AgentUsageRow>().ToTable("agent_usage").HasKey(x => x.Id);
+        mb.Entity<AgentUsageRow>().Property(x => x.CostUsd).HasConversion<double>();
+        // Salary roll-ups group by crew and walk by time.
+        mb.Entity<AgentUsageRow>().HasIndex(x => new { x.CrewId, x.StartedAt });
+        // Per-card cost lookup.
+        mb.Entity<AgentUsageRow>().HasIndex(x => x.TaskId);
+
+        // Phase 11.3 — first-class agent records.
+        mb.Entity<AgentRow>().ToTable("agents").HasKey(x => x.Id);
+        mb.Entity<AgentRow>().HasIndex(x => x.CrewId);
+
+        // Phase 11.8 — agent_history audit table.
+        mb.Entity<AgentHistoryRow>().ToTable("agent_history").HasKey(x => x.Id);
+        mb.Entity<AgentHistoryRow>().HasIndex(x => new { x.AgentId, x.At });
+
+        // Phase 11.10 — crew budgets denormalised onto the crew row.
+        mb.Entity<CrewRow>().Property(x => x.DailyBudgetUsd).HasConversion<double?>();
+        mb.Entity<CrewRow>().Property(x => x.MaxTaskBudgetUsd).HasConversion<double?>();
     }
 }

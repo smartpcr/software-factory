@@ -31,6 +31,9 @@ public static class ForgeSeed
         // pick up the four crews on next boot.
         await EnsureSeedCrewsAsync(db);
 
+        // Phase 11.3 — first-class agent rows. Idempotent.
+        await EnsureSeedAgentsAsync(db);
+
         if (await db.Epics.AnyAsync())
         {
             return;
@@ -245,6 +248,45 @@ public static class ForgeSeed
     /// Pricing is denormalised onto the crew so historical salary lookups
     /// stay reproducible across price changes (Phase 11.2 cost ledger).
     /// </summary>
+    /// <summary>
+    /// Phase 11.3 — seed first-class <see cref="AgentRow"/>s mirroring the
+    /// prototype's overview agents, mapping each to the right crew by id
+    /// prefix (E* → engineering, R* → review, A* → architecture, Q* → qa).
+    /// Idempotent on agent id.
+    /// </summary>
+    private static async Task EnsureSeedAgentsAsync(ForgeDbContext db)
+    {
+        var existing = await db.Agents.Select(a => a.Id).ToListAsync();
+        var seed = new (string Id, string Name, string Role, string Crew)[]
+        {
+            ("A1", "Atlas",      "arch", "crew-arch"),
+            ("A2", "Mercer",     "arch", "crew-arch"),
+            ("E4", "Forge",      "eng",  "crew-eng"),
+            ("E7", "Rivet",      "eng",  "crew-eng"),
+            ("E9", "Anvil",      "eng",  "crew-eng"),
+            ("R3", "Cortex",     "rev",  "crew-rev"),
+            ("R5", "Lattice",    "rev",  "crew-rev"),
+            ("Q2", "Probe",      "qa",   "crew-qa"),
+            ("XD", "Xiaodong",   "product-owner", null!),
+        };
+        var sort = 0;
+        foreach (var s in seed)
+        {
+            if (existing.Contains(s.Id)) { sort++; continue; }
+            db.Agents.Add(new AgentRow
+            {
+                Id = s.Id,
+                Sort = sort++,
+                Name = s.Name,
+                Role = s.Role,
+                CrewId = s.Crew,
+                CapabilitiesJson = "[]",
+                State = "idle",
+            });
+        }
+        await db.SaveChangesAsync();
+    }
+
     private static async Task EnsureSeedCrewsAsync(ForgeDbContext db)
     {
         var existing = await db.Crews.Select(c => c.Id).ToListAsync();

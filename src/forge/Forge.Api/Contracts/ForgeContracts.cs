@@ -306,6 +306,8 @@ public sealed record UserSettings(
     string? BrowserPreference,
     string? Theme,
     bool NotificationsEnabled,
+    string? PreferredAdoAccount,
+    string? PreferredGitHubAccount,
     DateTimeOffset UpdatedAt);
 
 public sealed record UpdateUserSettingsRequest(
@@ -316,7 +318,9 @@ public sealed record UpdateUserSettingsRequest(
     string? DefaultRepoId = null,
     string? BrowserPreference = null,
     string? Theme = null,
-    bool? NotificationsEnabled = null);
+    bool? NotificationsEnabled = null,
+    string? PreferredAdoAccount = null,
+    string? PreferredGitHubAccount = null);
 
 public sealed record Crew(
     string Id,
@@ -326,7 +330,9 @@ public sealed record Crew(
     string? Lead,
     string Model,
     decimal ModelInputPricePerMTok,
-    decimal ModelOutputPricePerMTok);
+    decimal ModelOutputPricePerMTok,
+    decimal? DailyBudgetUsd = null,
+    decimal? MaxTaskBudgetUsd = null);
 
 public sealed record UpdateRepoRequest(
     string? DisplayName = null,
@@ -336,3 +342,81 @@ public sealed record UpdateRepoRequest(
     string? AdoProject = null,
     string? GhOwner = null,
     string? GhRepo = null);
+
+/// <summary>
+/// Phase 11.3 — agent listing payload.
+/// </summary>
+public sealed record AgentDetail(
+    string Id,
+    string Name,
+    string Role,
+    string? CrewId,
+    string? SoulPath,
+    IReadOnlyList<string> Capabilities,
+    string State);
+
+/// <summary>Phase 11.3 — soul.md PUT body.</summary>
+public sealed record SoulWriteRequest(string Contents);
+
+/// <summary>Phase 11.3 — soul.md GET response.</summary>
+public sealed record SoulPayload(
+    string AgentId,
+    string Path,
+    string Contents,
+    IReadOnlyList<string> Capabilities,
+    bool Exists);
+
+/// <summary>Phase 11.8 — reassign body.</summary>
+public sealed record ReassignAgentRequest(string CrewId);
+
+/// <summary>Phase 11.8 — agent_history listing entry.</summary>
+public sealed record AgentHistoryEntry(
+    long Id,
+    DateTimeOffset At,
+    string AgentId,
+    string? FromCrewId,
+    string? ToCrewId,
+    string? FromModel,
+    string? ToModel,
+    string? Actor);
+
+/// <summary>Phase 11.10 — crew budget snapshot.</summary>
+public sealed record CrewBudget(
+    string CrewId,
+    decimal? DailyBudgetUsd,
+    decimal? MaxTaskBudgetUsd,
+    decimal SpentTodayUsd,
+    decimal? RemainingUsd);
+
+/// <summary>
+/// Phase 11.9 — crew salary roll-up. <see cref="Sprint"/> is the current ISO
+/// week-bucket (Monday → Sunday) as a v0.1 simplification; real iteration
+/// lookup against the linked repo's provider is a Phase R upgrade.
+/// <see cref="Sparkline"/> is 14 daily totals (oldest first → today).
+/// </summary>
+public sealed record CrewSalary(
+    string CrewId,
+    decimal Today,
+    decimal Sprint,
+    decimal Month,
+    IReadOnlyList<decimal> Sparkline);
+
+/// <summary>Phase 11.9 — TopBar chip payload: total spend today across all crews.</summary>
+public sealed record SalaryTodaySummary(decimal TotalUsd, int ActiveAgents);
+
+/// <summary>
+/// Phase 11.2 — model registry entry. Pricing is denormalised onto each
+/// <see cref="Crew"/> at assignment time so historical salary lookups are
+/// reproducible after a price change here.
+/// </summary>
+public sealed record ModelInfo(
+    string Id,
+    string Vendor,
+    string Family,
+    string DisplayName,
+    int ContextWindow,
+    decimal InputPricePerMTok,
+    decimal OutputPricePerMTok,
+    bool SupportsTools,
+    bool SupportsStreaming,
+    string Status);

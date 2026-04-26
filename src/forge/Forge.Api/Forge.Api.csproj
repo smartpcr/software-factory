@@ -16,4 +16,13 @@
     <PackageReference Include="Microsoft.Identity.Client.Extensions.Msal" />
   </ItemGroup>
 
+  <!-- Phase 11.2 — model registry seed. The Web SDK auto-includes the JSON;
+       we just promote it from "do nothing" to "copy to output" so operators
+       can edit the file in place after publish without a recompile. -->
+  <ItemGroup>
+    <Content Update="Agents\Models\models.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

@@ -61,9 +61,11 @@ public static class MeSettingsEndpoints
         if (req.DefaultGitHubOwner is not null) row.DefaultGitHubOwner = NullIfEmpty(req.DefaultGitHubOwner);
         if (req.DefaultProductId is not null)   row.DefaultProductId   = NullIfEmpty(req.DefaultProductId);
         if (req.DefaultRepoId is not null)      row.DefaultRepoId      = NullIfEmpty(req.DefaultRepoId);
-        if (req.BrowserPreference is not null)  row.BrowserPreference  = NullIfEmpty(req.BrowserPreference);
-        if (req.Theme is not null)              row.Theme              = NullIfEmpty(req.Theme);
-        if (req.NotificationsEnabled is bool b) row.NotificationsEnabled = b;
+        if (req.BrowserPreference is not null)      row.BrowserPreference      = NullIfEmpty(req.BrowserPreference);
+        if (req.Theme is not null)                  row.Theme                  = NullIfEmpty(req.Theme);
+        if (req.NotificationsEnabled is bool b)     row.NotificationsEnabled   = b;
+        if (req.PreferredAdoAccount is not null)    row.PreferredAdoAccount    = NullIfEmpty(req.PreferredAdoAccount);
+        if (req.PreferredGitHubAccount is not null) row.PreferredGitHubAccount = NullIfEmpty(req.PreferredGitHubAccount);
         row.UpdatedAt = DateTimeOffset.UtcNow;
 
         await db.SaveChangesAsync(ct);
@@ -96,6 +98,8 @@ public static class MeSettingsEndpoints
         r.BrowserPreference,
         r.Theme,
         r.NotificationsEnabled,
+        r.PreferredAdoAccount,
+        r.PreferredGitHubAccount,
         r.UpdatedAt);
 
     private static string? NullIfEmpty(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();

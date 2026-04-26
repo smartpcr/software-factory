@@ -309,4 +309,24 @@ export interface Crew {
   model: string;
   modelInputPricePerMTok: number;
   modelOutputPricePerMTok: number;
+  /** Phase 11.10 — soft daily cap on crew spend. */
+  dailyBudgetUsd?: number | null;
+  /** Phase 11.10 — hard cap per single invocation. */
+  maxTaskBudgetUsd?: number | null;
+}
+
+/** Phase 11.9 — salary roll-up payload. */
+export interface CrewSalary {
+  crewId: string;
+  today: number;
+  sprint: number;
+  month: number;
+  /** 14 daily totals, oldest first → today. */
+  sparkline: number[];
+}
+
+/** Phase 11.9 — TopBar chip payload. */
+export interface SalaryTodaySummary {
+  totalUsd: number;
+  activeAgents: number;
 }

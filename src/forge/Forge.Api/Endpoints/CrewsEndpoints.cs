@@ -28,7 +28,93 @@ public static class CrewsEndpoints
         grp.MapPost("/", Create).WithName("CreateCrew");
         grp.MapPatch("/{id}", Patch).WithName("PatchCrew");
         grp.MapDelete("/{id}", Delete).WithName("DeleteCrew");
+        grp.MapGet("/{id}/budget", GetBudget).WithName("GetCrewBudget");
+        grp.MapGet("/{id}/salary", GetSalary).WithName("GetCrewSalary");
+        grp.MapGet("/salary/today", GetSalaryTodayTotal).WithName("GetSalaryTodayTotal");
         return app;
+    }
+
+    private static async Task<IResult> GetSalary(string id, ForgeDbContext db, CancellationToken ct)
+    {
+        var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
+        if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
+
+        var rows = await db.AgentUsage.AsNoTracking()
+            .Where(r => r.CrewId == id)
+            .Select(r => new { r.StartedAt, r.CostUsd })
+            .ToListAsync(ct);
+
+        var now = DateTimeOffset.UtcNow;
+        var startOfDay = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
+        var startOfMonth = new DateTimeOffset(new DateTime(now.UtcDateTime.Year, now.UtcDateTime.Month, 1), TimeSpan.Zero);
+
+        // ISO sprint = the current Monday (0-indexed week start).
+        var dayOfWeek = (int)now.UtcDateTime.DayOfWeek;
+        var daysSinceMonday = (dayOfWeek + 6) % 7; // Sunday=0 → 6, Monday=1 → 0
+        var startOfSprint = startOfDay.AddDays(-daysSinceMonday);
+
+        decimal Sum(DateTimeOffset bound) => rows.Where(r => r.StartedAt >= bound).Sum(r => r.CostUsd);
+
+        // 14-day sparkline, oldest → today.
+        var sparkline = new decimal[14];
+        for (var i = 0; i < 14; i++)
+        {
+            var dayStart = startOfDay.AddDays(-(13 - i));
+            var dayEnd = dayStart.AddDays(1);
+            sparkline[i] = rows.Where(r => r.StartedAt >= dayStart && r.StartedAt < dayEnd).Sum(r => r.CostUsd);
+        }
+
+        return Results.Ok(new Forge.Api.Contracts.CrewSalary(
+            CrewId: id,
+            Today: Round(Sum(startOfDay)),
+            Sprint: Round(Sum(startOfSprint)),
+            Month: Round(Sum(startOfMonth)),
+            Sparkline: sparkline.Select(Round).ToList()));
+    }
+
+    private static async Task<IResult> GetSalaryTodayTotal(ForgeDbContext db, CancellationToken ct)
+    {
+        var startOfDay = new DateTimeOffset(DateTimeOffset.UtcNow.UtcDateTime.Date, TimeSpan.Zero);
+        var rows = await db.AgentUsage.AsNoTracking()
+            .Select(r => new { r.StartedAt, r.CostUsd, r.Status })
+            .ToListAsync(ct);
+        var todays = rows.Where(r => r.StartedAt >= startOfDay).ToList();
+        var total = todays.Sum(r => r.CostUsd);
+        var active = todays.Count(r => r.Status == "running");
+        return Results.Ok(new Forge.Api.Contracts.SalaryTodaySummary(Round(total), active));
+    }
+
+    private static decimal Round(decimal v) => Math.Round(v, 6);
+
+    private static async Task<IResult> GetBudget(string id, ForgeDbContext db, CancellationToken ct)
+    {
+        var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
+        if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
+        var spent = await TodaysSpendAsync(db, id, ct);
+        var remaining = crew.DailyBudgetUsd is decimal cap ? cap - spent : (decimal?)null;
+        return Results.Ok(new Forge.Api.Contracts.CrewBudget(
+            CrewId: id,
+            DailyBudgetUsd: crew.DailyBudgetUsd,
+            MaxTaskBudgetUsd: crew.MaxTaskBudgetUsd,
+            SpentTodayUsd: Math.Round(spent, 6),
+            RemainingUsd: remaining is decimal r ? Math.Round(r, 6) : null));
+    }
+
+    /// <summary>
+    /// Sum today's <see cref="AgentUsageRow.CostUsd"/> for a crew. The date
+    /// filter and the sum both run in memory because (a) SQLite EF cannot
+    /// translate <c>DateTimeOffset</c> comparisons, and (b) <c>CostUsd</c>
+    /// uses a decimal→double value converter that doesn't push through SUM.
+    /// Volume is bounded (one crew × one day), so this is cheap.
+    /// </summary>
+    public static async Task<decimal> TodaysSpendAsync(ForgeDbContext db, string crewId, CancellationToken ct)
+    {
+        var startOfDay = new DateTimeOffset(DateTimeOffset.UtcNow.UtcDateTime.Date, TimeSpan.Zero);
+        var rows = await db.AgentUsage.AsNoTracking()
+            .Where(r => r.CrewId == crewId)
+            .Select(r => new { r.StartedAt, r.CostUsd })
+            .ToListAsync(ct);
+        return rows.Where(r => r.StartedAt >= startOfDay).Sum(r => r.CostUsd);
     }
 
     private static async Task<IResult> List(ForgeDbContext db, string? productId, CancellationToken ct)
@@ -55,7 +141,9 @@ public static class CrewsEndpoints
         string? Lead,
         string? Model,
         decimal? ModelInputPricePerMTok,
-        decimal? ModelOutputPricePerMTok);
+        decimal? ModelOutputPricePerMTok,
+        decimal? DailyBudgetUsd = null,
+        decimal? MaxTaskBudgetUsd = null);
 
     private static async Task<IResult> Create(
         HttpContext ctx,
@@ -87,6 +175,8 @@ public static class CrewsEndpoints
             Model = string.IsNullOrWhiteSpace(req.Model) ? "claude-opus-4-7" : req.Model,
             ModelInputPricePerMTok = req.ModelInputPricePerMTok ?? 15m,
             ModelOutputPricePerMTok = req.ModelOutputPricePerMTok ?? 75m,
+            DailyBudgetUsd = req.DailyBudgetUsd,
+            MaxTaskBudgetUsd = req.MaxTaskBudgetUsd,
         };
         db.Crews.Add(row);
         await db.SaveChangesAsync(ct);
@@ -99,7 +189,9 @@ public static class CrewsEndpoints
         string? Lead = null,
         string? Model = null,
         decimal? ModelInputPricePerMTok = null,
-        decimal? ModelOutputPricePerMTok = null);
+        decimal? ModelOutputPricePerMTok = null,
+        decimal? DailyBudgetUsd = null,
+        decimal? MaxTaskBudgetUsd = null);
 
     private static async Task<IResult> Patch(
         HttpContext ctx,
@@ -120,6 +212,8 @@ public static class CrewsEndpoints
         if (req.Model is not null) row.Model = req.Model;
         if (req.ModelInputPricePerMTok is decimal i) row.ModelInputPricePerMTok = i;
         if (req.ModelOutputPricePerMTok is decimal o) row.ModelOutputPricePerMTok = o;
+        if (req.DailyBudgetUsd is decimal db1) row.DailyBudgetUsd = db1;
+        if (req.MaxTaskBudgetUsd is decimal mt) row.MaxTaskBudgetUsd = mt;
 
         await db.SaveChangesAsync(ct);
         return Results.Ok(MapCrew(row));
@@ -139,5 +233,7 @@ public static class CrewsEndpoints
 
     private static Crew MapCrew(CrewRow r) => new(
         r.Id, r.Name, r.ProductId, r.Summary, r.Lead, r.Model,
-        r.ModelInputPricePerMTok, r.ModelOutputPricePerMTok);
+        r.ModelInputPricePerMTok, r.ModelOutputPricePerMTok,
+        r.DailyBudgetUsd, r.MaxTaskBudgetUsd);
 }
+

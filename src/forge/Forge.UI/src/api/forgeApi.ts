@@ -2,6 +2,7 @@ import type {
   Card,
   ColumnId,
   Crew,
+  CrewSalary,
   CurrentUser,
   DiscoverableRepo,
   ForgeState,
@@ -9,6 +10,7 @@ import type {
   Product,
   ProductStats,
   Repo,
+  SalaryTodaySummary,
   TimelineResponse,
   UserSettings,
   Workstream,
@@ -435,6 +437,16 @@ export const forgeApi = {
   async listCrews(productId?: string): Promise<Crew[]> {
     const qs = productId ? `?productId=${encodeURIComponent(productId)}` : '';
     return fetchJson<Crew[]>(`/api/crews${qs}`);
+  },
+
+  /** GET /api/crews/{id}/salary — Phase 11.9 salary roll-up. */
+  async getCrewSalary(id: string): Promise<CrewSalary> {
+    return fetchJson<CrewSalary>(`/api/crews/${encodeURIComponent(id)}/salary`);
+  },
+
+  /** GET /api/crews/salary/today — Phase 11.9 TopBar chip total. */
+  async getSalaryTodayTotal(): Promise<SalaryTodaySummary> {
+    return fetchJson<SalaryTodaySummary>('/api/crews/salary/today');
   },
 
   // ----- Phase 8 — products & repos --------------------------------------

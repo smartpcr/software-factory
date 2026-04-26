@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using Forge.Api.Agents;
 using Forge.Api.Auth;
 using Forge.Api.Domain;
 using Forge.Api.Endpoints;
@@ -101,6 +102,18 @@ builder.Services.AddSingleton<IBrowserLauncher, BrowserLauncher>();
 builder.Services.AddSingleton<IAuthService, AdoAuthService>();
 builder.Services.AddSingleton<IAuthService, GitHubAuthService>();
 
+// Phase 11 — agent runtime. ClaudeAgentRunner handles both the local-stub
+// model (offline / tests) and the real Anthropic API path with streaming SSE
+// and prompt-caching for the soul.md prefix. Tool calls go through the
+// sandboxed AgentToolHost (Phase 11.6).
+builder.Services.AddSingleton<IModelRegistry, ModelRegistry>();
+builder.Services.AddSingleton<IAgentToolHost, AgentToolHost>();
+builder.Services.Configure<AgentRunnerOptions>(builder.Configuration.GetSection(AgentRunnerOptions.SectionName));
+builder.Services.Configure<SoulOptions>(builder.Configuration.GetSection(SoulOptions.SectionName));
+builder.Services.AddSingleton<ISoulService, SoulService>();
+builder.Services.AddHttpClient(ClaudeAgentRunner.ClientName);
+builder.Services.AddSingleton<IAgentRunner, ClaudeAgentRunner>();
+
 // Problem details (RFC-7807). In Development, surface exception messages so
 // failing endpoint calls don't return opaque 500s.
 builder.Services.AddProblemDetails(options =>
@@ -129,6 +142,8 @@ using (var scope = app.Services.CreateScope())
     await db.Database.EnsureCreatedAsync();
     // Phase 8.2 — additive schema upgrade for existing dev DBs that pre-date Phase 8.
     await Phase8Migration.ApplyAsync(db);
+    // Phase 11.4 — agent_usage cost ledger.
+    await Phase11Migration.ApplyAsync(db);
     await ForgeSeed.EnsureSeededAsync(db);
 }
 
@@ -169,6 +184,8 @@ app.MapAuthEndpoints();
 app.MapMeEndpoints();
 app.MapMeSettingsEndpoints();
 app.MapCrewsEndpoints();
+app.MapModelsEndpoints();
+app.MapAgentsEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 

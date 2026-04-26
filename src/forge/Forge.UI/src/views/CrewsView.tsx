@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { Crew } from '@/types';
+import type { Crew, CrewSalary } from '@/types';
 import { forgeApi } from '@/api/forgeApi';
 import { useStateStore } from '@/state/useStateStore';
 import { sampleState } from '@/sampleData';
@@ -16,8 +16,21 @@ export function CrewsView() {
   const cards = apiState?.cards ?? sampleState.cards;
 
   const [crews, setCrews] = useState<Crew[]>([]);
+  const [salaries, setSalaries] = useState<Record<string, CrewSalary>>({});
   useEffect(() => {
-    forgeApi.listCrews().then(setCrews).catch(() => setCrews([]));
+    let cancelled = false;
+    forgeApi.listCrews().then(async (cs) => {
+      if (cancelled) return;
+      setCrews(cs);
+      const entries = await Promise.all(
+        cs.map((c) => forgeApi.getCrewSalary(c.id).then((s) => [c.id, s] as const).catch(() => null)),
+      );
+      if (cancelled) return;
+      const map: Record<string, CrewSalary> = {};
+      for (const e of entries) if (e) map[e[0]] = e[1];
+      setSalaries(map);
+    }).catch(() => setCrews([]));
+    return () => { cancelled = true; };
   }, []);
 
   if (!isPO) {
@@ -97,18 +110,17 @@ export function CrewsView() {
                 </div>
 
                 <div className="ws-card-section">
+                  <div className="ws-card-section-title">Salary</div>
+                  <SalaryStrip salary={salaries[c.id]} budget={c.dailyBudgetUsd ?? null} />
+                </div>
+
+                <div className="ws-card-section">
                   <div className="ws-card-section-title">Pricing</div>
                   <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', display: 'grid', gap: 2, fontFamily: 'var(--font-mono, monospace)' }}>
                     <div>input · ${Number(c.modelInputPricePerMTok).toFixed(2)} / MTok</div>
                     <div>output · ${Number(c.modelOutputPricePerMTok).toFixed(2)} / MTok</div>
                   </div>
                 </div>
-
-                <footer className="ws-card-foot" style={{ paddingTop: 8 }}>
-                  <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>
-                    Live salary readout lands in Phase 11 (cost ledger).
-                  </span>
-                </footer>
               </article>
             );
           })}
@@ -122,6 +134,63 @@ export function CrewsView() {
         )}
       </div>
     </section>
+  );
+}
+
+// Phase 11.9 — per-crew salary strip + 14-day sparkline.
+function SalaryStrip({ salary, budget }: { salary: CrewSalary | undefined; budget: number | null }) {
+  if (!salary) {
+    return (
+      <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>—</div>
+    );
+  }
+  const overBudget = budget != null && salary.today >= budget;
+  return (
+    <div style={{ display: 'grid', gap: 6 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, fontFamily: 'var(--font-mono, monospace)' }}>
+        <SalaryFig label="today"  value={salary.today}  highlight={overBudget} budget={budget} />
+        <SalaryFig label="sprint" value={salary.sprint} />
+        <SalaryFig label="month"  value={salary.month}  />
+      </div>
+      <Sparkline values={salary.sparkline} />
+    </div>
+  );
+}
+
+function SalaryFig({ label, value, highlight, budget }: { label: string; value: number; highlight?: boolean; budget?: number | null }) {
+  const color = highlight ? 'var(--danger, #ef4444)' : 'var(--text-primary)';
+  return (
+    <div>
+      <div style={{ fontSize: 13, fontWeight: 600, color }}>${value.toFixed(2)}</div>
+      <div style={{ fontSize: 10, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
+        {label}
+        {label === 'today' && budget != null && (
+          <span style={{ marginLeft: 4, opacity: 0.7 }}>/ ${budget.toFixed(2)}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Sparkline({ values }: { values: number[] }) {
+  if (values.length === 0) return null;
+  const max = Math.max(...values, 0.0001);
+  const w = 140, h = 22;
+  const stepX = values.length > 1 ? w / (values.length - 1) : w;
+  const points = values
+    .map((v, i) => `${(i * stepX).toFixed(2)},${(h - (v / max) * (h - 2) - 1).toFixed(2)}`)
+    .join(' ');
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} aria-label="14-day spend sparkline">
+      <polyline
+        fill="none"
+        stroke="var(--accent)"
+        strokeWidth="1.25"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+        points={points}
+      />
+    </svg>
   );
 }
 
