@@ -567,8 +567,8 @@ export const Inspector = {
       <div class="ins-section">
         <div class="ins-section-title">Connection</div>
         <div class="ins-field">
-          <label class="ins-field-label">Source port</label>
-          <input readonly value="${escapeHtml(edge.sourcePort + (edge.sourcePortName ? ':' + edge.sourcePortName : ''))}" />
+          <label class="ins-field-label">Source</label>
+          <input readonly value="${escapeHtml((src?.nodeName || '?') + ' (' + edge.sourcePort + (edge.sourcePortName ? ':' + edge.sourcePortName : '') + ')')}" />
         </div>
         <div class="ins-field">
           <label class="ins-field-label">Target</label>
