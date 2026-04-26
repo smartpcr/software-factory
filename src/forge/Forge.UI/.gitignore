@@ -1,0 +1,7 @@
+node_modules
+dist
+dist-ssr
+*.local
+.vite
+src/api/generated/*.ts
+!src/api/generated/.gitkeep
