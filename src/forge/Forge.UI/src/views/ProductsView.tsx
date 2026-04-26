@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useProductsStore } from '@/state/useProductsStore';
+import { useToastStore } from '@/state/useToastStore';
 import { NewProductModal } from '@/products/NewProductModal';
 import { AddRepoModal } from '@/products/AddRepoModal';
 import { ProductIcon } from '@/products/ProductIcon';
+import { RepoIcon } from '@/products/RepoIcon';
+import { forgeApi } from '@/api/forgeApi';
 import type { Product, Repo } from '@/types';
 
 // Phase 8.7 — products page. New first-class surface; exempt from the
@@ -117,6 +120,69 @@ interface ProductCardProps {
 
 function ProductCard({ product, repos, stats, isActive, onActivate, onAttach }: ProductCardProps) {
   const navigate = useNavigate();
+  const patchProduct = useProductsStore((s) => s.patchProduct);
+  const deleteProduct = useProductsStore((s) => s.deleteProduct);
+  const loadReposFor = useProductsStore((s) => s.loadReposFor);
+  const loadStatsFor = useProductsStore((s) => s.loadStatsFor);
+  const toast = useToastStore((s) => s.show);
+
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [draftName, setDraftName] = useState(product.name);
+  const [draftDescription, setDraftDescription] = useState(product.description ?? '');
+
+  function startEdit() {
+    setDraftName(product.name);
+    setDraftDescription(product.description ?? '');
+    setEditing(true);
+  }
+
+  async function saveEdit() {
+    if (!draftName.trim()) {
+      toast('Name is required', 'danger');
+      return;
+    }
+    setBusy(true);
+    try {
+      await patchProduct(product.id, { name: draftName.trim(), description: draftDescription });
+      toast(`Updated ${draftName.trim()}`, 'success');
+      setEditing(false);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Update failed', 'danger');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmDelete() {
+    const repoCount = repos.length;
+    const prompt = repoCount > 0
+      ? `Delete "${product.name}" and detach its ${repoCount} repo${repoCount === 1 ? '' : 's'}? This cannot be undone.`
+      : `Delete "${product.name}"? This cannot be undone.`;
+    if (!window.confirm(prompt)) return;
+    setBusy(true);
+    try {
+      await deleteProduct(product.id, repoCount > 0);
+      toast(`Deleted ${product.name}`, 'info');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Delete failed', 'danger');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function detachRepo(r: Repo) {
+    if (!window.confirm(`Detach "${r.displayName}" from ${product.name}?`)) return;
+    try {
+      await forgeApi.deleteRepo(r.id, true);
+      toast(`Detached ${r.displayName}`, 'info');
+      void loadReposFor(product.id);
+      void loadStatsFor(product.id);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Detach failed', 'danger');
+    }
+  }
+
   return (
     <article
       className="ws-card"
@@ -125,14 +191,55 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach }: 
       <header className="ws-card-head" style={{ alignItems: 'center', gap: 12 }}>
         <ProductIcon product={product} size={44} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="ws-card-title">{product.name}</div>
-          <div className="ws-card-sub">{product.description || `Slug: ${product.slug}`}</div>
+          {editing ? (
+            <>
+              <input
+                className="input"
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                disabled={busy}
+                style={{ width: '100%', marginBottom: 4 }}
+                placeholder="Name"
+                autoFocus
+              />
+              <input
+                className="input"
+                value={draftDescription}
+                onChange={(e) => setDraftDescription(e.target.value)}
+                disabled={busy}
+                style={{ width: '100%' }}
+                placeholder="Description"
+              />
+            </>
+          ) : (
+            <>
+              <div className="ws-card-title">{product.name}</div>
+              <div className="ws-card-sub">{product.description || `Slug: ${product.slug}`}</div>
+            </>
+          )}
         </div>
-        {!isActive && (
-          <button className="btn btn-secondary" onClick={onActivate} title="Set active product">
-            Activate
-          </button>
-        )}
+        <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+          {editing ? (
+            <>
+              <button className="btn btn-primary" onClick={() => void saveEdit()} disabled={busy}>Save</button>
+              <button className="btn btn-secondary" onClick={() => setEditing(false)} disabled={busy}>Cancel</button>
+            </>
+          ) : (
+            <>
+              {!isActive && (
+                <button className="btn btn-secondary" onClick={onActivate} title="Set active product" disabled={busy}>
+                  Activate
+                </button>
+              )}
+              <button className="btn btn-ghost" onClick={startEdit} title="Edit product" disabled={busy}>
+                Edit
+              </button>
+              <button className="btn btn-ghost" onClick={() => void confirmDelete()} title="Delete product" disabled={busy} style={{ color: 'var(--danger, #ef4444)' }}>
+                Delete
+              </button>
+            </>
+          )}
+        </div>
       </header>
 
       <div className="ws-card-stats">
@@ -146,17 +253,47 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach }: 
           <div className="ws-card-empty">No repos attached. <button className="link" onClick={onAttach}>Attach a repo</button></div>
         )}
         {repos.map((r) => (
-          <button
-            key={r.id}
-            className="repo-row"
-            style={{ width: '100%', textAlign: 'left', cursor: 'pointer' }}
-            onClick={() => navigate(`/workstreams?repo=${encodeURIComponent(r.id)}`)}
-            title={`Click to open workstreams for ${r.displayName}`}
-          >
-            <span className="dot"></span>
-            <span className="name">{r.displayName}</span>
-            <span className="src">{r.kind === 'ado' ? 'ADO' : 'GH'}</span>
-          </button>
+          <div key={r.id} className="repo-row" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => navigate(`/workstreams?repo=${encodeURIComponent(r.id)}`)}
+              title={`Open workstreams for ${r.displayName} (${r.kind === 'ado' ? 'Azure DevOps' : 'GitHub'})`}
+              style={{
+                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                background: 'transparent',
+                border: 'none',
+                color: 'inherit',
+                font: 'inherit',
+                textAlign: 'left',
+                cursor: 'pointer',
+                padding: 0,
+                minWidth: 0,
+              }}
+            >
+              <RepoIcon kind={r.kind} size={16} />
+              <span className="name" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {r.displayName}
+              </span>
+              <span className="src" style={{ marginLeft: 'auto' }}>
+                {r.kind === 'ado' ? 'ADO' : 'GH'}
+              </span>
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => void detachRepo(r)}
+              title={`Detach ${r.displayName}`}
+              aria-label={`Detach ${r.displayName}`}
+              style={{ width: 22, height: 22, color: 'var(--text-tertiary)' }}
+            >
+              <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+                <path d="M3 3 L 9 9 M 9 3 L 3 9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
         ))}
       </div>
 

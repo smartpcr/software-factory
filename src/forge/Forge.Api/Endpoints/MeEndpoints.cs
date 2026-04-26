@@ -30,15 +30,86 @@ public static class MeEndpoints
         app.MapGet("/api/me", GetMe)
             .WithTags("Me")
             .WithName("GetMe");
+        app.MapPut("/api/me/role", PutRole)
+            .WithTags("Me")
+            .WithName("PutMyRole");
         return app;
     }
 
+    /// <summary>Allowed role values, matched against the role list documented on UserRow.</summary>
+    private static readonly HashSet<string> AllowedRoles = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "human", "eng", "rev", "qa", "arch", "tech-lead", "product-owner",
+    };
+
+    private static async Task<IResult> PutRole(
+        HttpContext ctx,
+        SetRoleRequest req,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        if (string.IsNullOrWhiteSpace(req.Role) || !AllowedRoles.Contains(req.Role))
+        {
+            return Results.Problem(title: $"Unsupported role '{req.Role}'", statusCode: 400);
+        }
+
+        // Resolve "me" from the X-Forge-User header. Fall back to the lone
+        // bootstrap user if the header doesn't match any row (single-user dev).
+        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var me = string.IsNullOrEmpty(caller)
+            ? null
+            : await db.Users.FirstOrDefaultAsync(
+                u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller, ct);
+        me ??= await db.Users.OrderBy(u => u.CreatedAt).FirstOrDefaultAsync(ct);
+        if (me is null)
+        {
+            return Results.Problem(title: "No user identity yet — sign in first", statusCode: 401);
+        }
+
+        if (string.IsNullOrEmpty(req.ProductId))
+        {
+            // Empty productId → set the user's global default role.
+            me.Role = req.Role;
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(new { scope = "global", userId = me.Id, role = me.Role });
+        }
+
+        // Per-product upsert.
+        var productExists = await db.Products.AsNoTracking().AnyAsync(p => p.Id == req.ProductId, ct);
+        if (!productExists)
+        {
+            return Results.Problem(title: $"Unknown product {req.ProductId}", statusCode: 404);
+        }
+
+        var row = await db.UserProductRoles
+            .FirstOrDefaultAsync(r => r.UserId == me.Id && r.ProductId == req.ProductId, ct);
+        if (row is null)
+        {
+            row = new UserProductRoleRow { UserId = me.Id, ProductId = req.ProductId };
+            db.UserProductRoles.Add(row);
+        }
+        row.Role = req.Role;
+        row.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+
+        return Results.Ok(new { scope = "product", userId = me.Id, productId = req.ProductId, role = row.Role });
+    }
+
+    public sealed record SetRoleRequest(string? ProductId, string Role);
+
     private static async Task<IResult> GetMe(
+        HttpContext ctx,
         ForgeDbContext db,
         IEnumerable<IAuthService> authServices,
         IOptions<ForgeAuthOptions> authOptions,
         CancellationToken ct)
     {
+        // Phase 9.12 — when scoped to a product, the role returned reflects
+        // that product's override (if any) so the UI shows the right gate.
+        var productId = ctx.Request.Headers["X-Forge-Product-Id"].FirstOrDefault();
         var ado = await StatusFor(authServices, "ado", ct);
         var github = await StatusFor(authServices, "github", ct);
 
@@ -105,6 +176,18 @@ public static class MeEndpoints
             if (updated) await db.SaveChangesAsync(ct);
         }
 
+        // Phase 9.12 — product-scoped role override. Falls back to the user's
+        // global role when no override exists for the current product.
+        var effectiveRole = row?.Role ?? "human";
+        if (row is not null && !string.IsNullOrEmpty(productId) && productId != "all")
+        {
+            var override_ = await db.UserProductRoles.AsNoTracking()
+                .Where(r => r.UserId == row.Id && r.ProductId == productId)
+                .Select(r => r.Role)
+                .FirstOrDefaultAsync(ct);
+            if (!string.IsNullOrEmpty(override_)) effectiveRole = override_;
+        }
+
         var user = new CurrentUser(
             Id: row?.Id ?? $"anon-{primary.Kind}",
             DisplayName: row?.DisplayName ?? displayName,
@@ -112,7 +195,7 @@ public static class MeEndpoints
             Login: row?.Login ?? (github.Connected ? github.UserName : null),
             Initials: ComputeInitials(row?.DisplayName ?? displayName),
             AvatarUrl: row?.AvatarUrl,
-            Role: row?.Role ?? "human",
+            Role: effectiveRole,
             Providers: new CurrentUserProviders(
                 Ado: ToContract(ado),
                 GitHub: ToContract(github)));

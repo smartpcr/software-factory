@@ -400,6 +400,19 @@ export const forgeApi = {
     return fetchJson<CurrentUser>('/api/me');
   },
 
+  /**
+   * PUT /api/me/role — set my role for a product (or globally when
+   * productId is null/empty). Server validates the role against the
+   * known list (human, eng, rev, qa, arch, tech-lead, product-owner).
+   */
+  async setMyRole(role: string, productId: string | null = null): Promise<void> {
+    await fetchJson<unknown>('/api/me/role', {
+      method: 'PUT',
+      body: JSON.stringify({ productId: productId ?? '', role }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   // -- Phase 10 — preferences + crews ------------------------------------
 
   /** GET /api/me/settings. */
@@ -482,6 +495,27 @@ export const forgeApi = {
     return fetchJson<Product>('/api/products', {
       method: 'POST',
       body: JSON.stringify(req),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** PATCH /api/products/{id}. */
+  async patchProduct(id: string, req: {
+    name?: string;
+    description?: string;
+    ownerUserId?: string | null;
+  }): Promise<Product> {
+    return fetchJson<Product>(`/api/products/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(req),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** DELETE /api/products/{id}?force=true to also detach attached repos. */
+  async deleteProduct(id: string, force = false): Promise<void> {
+    await fetchJson<void>(`/api/products/${encodeURIComponent(id)}?force=${force}`, {
+      method: 'DELETE',
       headers: { 'X-Forge-User': writerHeader() },
     });
   },

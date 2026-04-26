@@ -6,331 +6,373 @@
 
 namespace Forge.Api.Auth;
 
-using System.Net;
-using System.Net.Http.Json;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json;
+using System.Text.RegularExpressions;
+using Forge.Api.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 /// <summary>
-/// Phase 9.3 — GitHub OAuth Authorization Code + PKCE.
+/// Phase 9.11 — GitHub auth via the GitHub CLI (<c>gh</c>).
 ///
-/// Flow:
-///   1) Generate code_verifier (random 64 bytes, base64url) + code_challenge (S256).
-///   2) Spin up a one-shot HttpListener on http://127.0.0.1:53682/forge/oauth/github/callback.
-///   3) Launch the browser to GitHub /authorize with code_challenge + state.
-///   4) Wait for the callback (3 min cap). Validate state. Reply with a "you can close this" page.
-///   5) Exchange code at /login/oauth/access_token with code_verifier.
-///   6) Persist the access token in DPAPI-protected blob at %LOCALAPPDATA%\Forge\github-token.bin.
+/// Why <c>gh</c> rather than a Forge-owned OAuth App: this lets the operator
+/// sign in with whichever GitHub account is already configured on the
+/// machine, with zero client-id / app-registration steps. The browser
+/// sign-in flow is whatever <c>gh auth login --web</c> does (handing off to
+/// github.com's device-less OAuth path), and the token Forge uses is the
+/// same one <c>gh</c> stores in the OS credential keyring.
 ///
-/// Device-code flow is explicitly NOT used (Q7). The OAuth App must have PKCE
-/// enabled and a client_id configured via Forge:Auth:GitHubClientId. Until the
-/// operator registers an app, sign-in returns a helpful error and the existing
-/// PAT path keeps working.
+/// Per-user setting <c>PreferredGitHubAccount</c> selects which gh-known
+/// account to make active. Empty → use whatever <c>gh</c> reports as active.
 /// </summary>
-public class GitHubAuthService : IAuthService
+public partial class GitHubAuthService : IAuthService
 {
-    public const string AuthHost = "https://github.com";
+    private static readonly TimeSpan TokenCacheTtl = TimeSpan.FromMinutes(5);
 
-    public const string ApiHost = "https://api.github.com";
-
-    public const int CallbackPort = 53682;
-
-    public const string CallbackPath = "/forge/oauth/github/callback";
-
-    private static readonly string TokenPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Forge",
-        "github-token.bin");
-
-    private static readonly byte[] DpapiEntropy = Encoding.UTF8.GetBytes("forge-github-token-v1");
-
-    private readonly ForgeAuthOptions options;
-    private readonly IBrowserLauncher browser;
-    private readonly IHttpClientFactory httpFactory;
+    private readonly IServiceScopeFactory scopeFactory;
     private readonly ILogger<GitHubAuthService> logger;
 
     private readonly object cacheGate = new();
-    private TokenRecord? cached;
+    private string? cachedToken;
+    private DateTimeOffset cachedAt = DateTimeOffset.MinValue;
 
-    public GitHubAuthService(
-        IOptions<ForgeAuthOptions> options,
-        IBrowserLauncher browser,
-        IHttpClientFactory httpFactory,
-        ILogger<GitHubAuthService> logger)
+    public GitHubAuthService(IServiceScopeFactory scopeFactory, ILogger<GitHubAuthService> logger)
     {
-        this.options = options.Value;
-        this.browser = browser;
-        this.httpFactory = httpFactory;
+        this.scopeFactory = scopeFactory;
         this.logger = logger;
-        this.cached = LoadFromDisk();
     }
 
     public string Kind => "github";
 
-    public Task<AuthStatus> StatusAsync(CancellationToken ct = default)
+    public async Task<AuthStatus> StatusAsync(CancellationToken ct = default)
     {
-        var rec = this.GetCached();
-        if (rec is null)
+        if (!IsGhInstalled())
         {
-            return Task.FromResult(new AuthStatus(this.Kind, false, null, null, null));
+            return new AuthStatus(this.Kind, false, null, null, null,
+                "GitHub CLI (gh) is not installed. Install: winget install GitHub.cli");
         }
-        return Task.FromResult(new AuthStatus(this.Kind, true, rec.Login, rec.Login, rec.ExpiresAt));
+
+        var preferred = await this.GetPreferredAccountAsync(ct);
+        var login = await this.ResolveActiveLoginAsync(preferred, ct);
+        if (login is null)
+        {
+            return new AuthStatus(this.Kind, false, null, null, null);
+        }
+
+        return new AuthStatus(this.Kind, true, login, login, null);
     }
 
     public async Task<AuthStatus> SignInAsync(CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(this.options.GitHubClientId))
-        {
-            return new AuthStatus(
-                this.Kind, false, null, null, null,
-                "GitHub OAuth client id missing — register an OAuth App with PKCE enabled, then set Forge:Auth:GitHubClientId.");
-        }
-
-        var verifier = GenerateCodeVerifier();
-        var challenge = ComputeCodeChallenge(verifier);
-        var state = GenerateRandomString(24);
-        var redirectUri = $"http://127.0.0.1:{CallbackPort}{CallbackPath}";
-
-        // The HttpListener runs ONCE for this sign-in. We don't keep it bound
-        // long-term so port 53682 is only held while a sign-in is in progress.
-        using var listener = new HttpListener();
-        listener.Prefixes.Add($"http://127.0.0.1:{CallbackPort}{CallbackPath}/");
-        try
-        {
-            listener.Start();
-        }
-        catch (HttpListenerException ex)
+        if (!IsGhInstalled())
         {
             return new AuthStatus(this.Kind, false, null, null, null,
-                $"Could not bind localhost callback ({ex.Message}). Make sure no other Forge sign-in is in progress.");
+                "GitHub CLI (gh) is not installed. Run: winget install GitHub.cli");
         }
 
-        var scopes = string.IsNullOrWhiteSpace(this.options.GitHubScopes) ? "repo read:user read:org" : this.options.GitHubScopes;
-        var authorizeUrl =
-            $"{AuthHost}/login/oauth/authorize" +
-            $"?client_id={Uri.EscapeDataString(this.options.GitHubClientId)}" +
-            $"&redirect_uri={Uri.EscapeDataString(redirectUri)}" +
-            $"&scope={Uri.EscapeDataString(scopes)}" +
-            $"&state={Uri.EscapeDataString(state)}" +
-            $"&code_challenge={Uri.EscapeDataString(challenge)}" +
-            "&code_challenge_method=S256";
+        var preferred = await this.GetPreferredAccountAsync(ct);
 
-        if (!this.browser.Launch(authorizeUrl))
+        // 0) Already logged in to the preferred account? Just activate it and return.
+        var existingLogin = await this.ResolveActiveLoginAsync(preferred, ct);
+        if (existingLogin is not null)
         {
-            listener.Stop();
-            return new AuthStatus(this.Kind, false, null, null, null, "Could not launch a browser for GitHub sign-in.");
+            this.InvalidateCache();
+            this.logger.LogInformation("GitHub sign-in: {Login} already authenticated via gh", existingLogin);
+            return new AuthStatus(this.Kind, true, existingLogin, existingLogin, null);
         }
 
-        // 3 minutes is plenty for a normal consent flow; cap so we don't orphan the listener.
-        using var ctsTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        ctsTimeout.CancelAfter(TimeSpan.FromMinutes(3));
-
-        HttpListenerContext context;
+        // 1) Spawn an interactive console so the user sees the gh CLI prompts
+        // and can paste the one-time code into the browser. We do not capture
+        // its stdout — gh's UX is what completes the flow. The window stays
+        // open after gh exits so the user can read any final messages.
         try
         {
-            var getCtx = listener.GetContextAsync();
-            var done = await Task.WhenAny(getCtx, Task.Delay(Timeout.Infinite, ctsTimeout.Token));
-            if (done != getCtx)
-            {
-                listener.Stop();
-                return new AuthStatus(this.Kind, false, null, null, null, "GitHub sign-in timed out.");
-            }
-            context = await getCtx;
+            LaunchInteractiveGhLogin();
         }
         catch (Exception ex)
         {
-            return new AuthStatus(this.Kind, false, null, null, null, $"Callback listener failed: {ex.Message}");
+            return new AuthStatus(this.Kind, false, null, null, null, $"Could not launch gh CLI: {ex.Message}");
         }
 
-        var code = context.Request.QueryString["code"];
-        var returnedState = context.Request.QueryString["state"];
-        var oauthError = context.Request.QueryString["error"];
+        // 2) Poll for completion. 5-minute cap matches the AuthEndpoints upper bound.
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromMinutes(5));
+        while (!cts.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
 
-        await WriteCloseTabPageAsync(context.Response, oauthError, code is not null);
-
-        listener.Stop();
-
-        if (!string.IsNullOrEmpty(oauthError))
-        {
-            return new AuthStatus(this.Kind, false, null, null, null, $"GitHub returned error: {oauthError}");
-        }
-        if (string.IsNullOrEmpty(code))
-        {
-            return new AuthStatus(this.Kind, false, null, null, null, "GitHub callback missing code parameter.");
-        }
-        if (!CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(returnedState ?? string.Empty),
-            Encoding.UTF8.GetBytes(state)))
-        {
-            return new AuthStatus(this.Kind, false, null, null, null, "OAuth state mismatch — request rejected.");
-        }
-
-        // Exchange code for token.
-        var http = this.httpFactory.CreateClient();
-        var form = new Dictionary<string, string>
-        {
-            ["client_id"] = this.options.GitHubClientId,
-            ["code"] = code,
-            ["redirect_uri"] = redirectUri,
-            ["code_verifier"] = verifier,
-        };
-        var req = new HttpRequestMessage(HttpMethod.Post, $"{AuthHost}/login/oauth/access_token")
-        {
-            Content = new FormUrlEncodedContent(form),
-        };
-        req.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
-        var resp = await http.SendAsync(req, ct);
-        if (!resp.IsSuccessStatusCode)
-        {
-            return new AuthStatus(this.Kind, false, null, null, null, $"Token exchange failed: HTTP {(int)resp.StatusCode}");
-        }
-        var body = await resp.Content.ReadFromJsonAsync<TokenResponse>(cancellationToken: ct);
-        if (body?.access_token is null)
-        {
-            return new AuthStatus(this.Kind, false, null, null, null, $"Token exchange returned no access_token{(body?.error is null ? "" : $" ({body.error})")}.");
+            var login = await this.ResolveActiveLoginAsync(preferred, ct);
+            if (login is not null)
+            {
+                this.InvalidateCache();
+                this.logger.LogInformation("GitHub sign-in succeeded as {Login}", login);
+                return new AuthStatus(this.Kind, true, login, login, null);
+            }
         }
 
-        // Look up the login name for nicer UX.
-        var login = await FetchLoginAsync(http, body.access_token, ct);
-        var record = new TokenRecord(
-            AccessToken: body.access_token,
-            Login: login,
-            ExpiresAt: body.expires_in is { } seconds ? DateTimeOffset.UtcNow.AddSeconds(seconds) : (DateTimeOffset?)null);
-
-        this.SaveCache(record);
-        return new AuthStatus(this.Kind, true, record.Login, record.Login, record.ExpiresAt);
+        return new AuthStatus(this.Kind, false, null, null, null,
+            "GitHub sign-in didn't complete in time. Re-run when ready.");
     }
 
-    public Task SignOutAsync(CancellationToken ct = default)
+    public async Task SignOutAsync(CancellationToken ct = default)
     {
-        this.SaveCache(null);
-        return Task.CompletedTask;
+        if (!IsGhInstalled())
+        {
+            return;
+        }
+
+        var preferred = await this.GetPreferredAccountAsync(ct);
+        // gh auth logout requires --user when multiple accounts exist; fall
+        // back to no-user if a preferred isn't set.
+        var args = string.IsNullOrEmpty(preferred)
+            ? "auth logout --hostname github.com"
+            : $"auth logout --hostname github.com --user {preferred}";
+        var (_, _, exit) = await RunGhAsync(args, captureOutput: true, ct);
+        if (exit != 0)
+        {
+            this.logger.LogDebug("gh auth logout exited {Exit}", exit);
+        }
+        this.InvalidateCache();
     }
 
-    public Task<string?> GetAccessTokenAsync(CancellationToken ct = default)
+    public async Task<string?> GetAccessTokenAsync(CancellationToken ct = default)
     {
-        var rec = this.GetCached();
-        return Task.FromResult<string?>(rec?.AccessToken);
+        if (!IsGhInstalled()) return null;
+
+        // Memory cache — gh shell-out is ~100ms.
+        lock (this.cacheGate)
+        {
+            if (this.cachedToken is not null && DateTimeOffset.UtcNow - this.cachedAt < TokenCacheTtl)
+            {
+                return this.cachedToken;
+            }
+        }
+
+        var preferred = await this.GetPreferredAccountAsync(ct);
+        var args = string.IsNullOrEmpty(preferred)
+            ? "auth token --hostname github.com"
+            : $"auth token --hostname github.com --user {preferred}";
+        var (stdout, _, exit) = await RunGhAsync(args, captureOutput: true, ct);
+        if (exit != 0)
+        {
+            return null;
+        }
+
+        var token = stdout.Trim();
+        if (string.IsNullOrEmpty(token)) return null;
+
+        // Resolve login lazily so callers that only need the token don't pay
+        // for a second shell-out.
+        lock (this.cacheGate)
+        {
+            this.cachedToken = token;
+            this.cachedAt = DateTimeOffset.UtcNow;
+        }
+        return token;
     }
 
     // -- helpers --------------------------------------------------------------
 
-    private TokenRecord? GetCached()
+    private async Task<string?> GetPreferredAccountAsync(CancellationToken ct)
     {
-        lock (this.cacheGate)
-        {
-            return this.cached;
-        }
-    }
-
-    private void SaveCache(TokenRecord? rec)
-    {
-        lock (this.cacheGate)
-        {
-            this.cached = rec;
-            try { PersistToDisk(rec); }
-            catch (Exception ex) { this.logger.LogWarning(ex, "GitHub token persistence failed"); }
-        }
-    }
-
-    private static TokenRecord? LoadFromDisk()
-    {
-        if (!File.Exists(TokenPath)) return null;
         try
         {
-            var blob = File.ReadAllBytes(TokenPath);
-            var json = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-                ? ProtectedData.Unprotect(blob, DpapiEntropy, DataProtectionScope.CurrentUser)
-                : blob;
-            return JsonSerializer.Deserialize<TokenRecord>(json);
+            using var scope = this.scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var row = await db.UserSettings.AsNoTracking()
+                .OrderBy(x => x.UserId)
+                .FirstOrDefaultAsync(ct);
+            var preferred = row?.PreferredGitHubAccount?.Trim();
+            return string.IsNullOrEmpty(preferred) ? null : preferred;
         }
-        catch
+        catch (Exception ex)
         {
+            this.logger.LogDebug(ex, "Could not read PreferredGitHubAccount; falling back to gh active account");
             return null;
         }
     }
 
-    private static void PersistToDisk(TokenRecord? rec)
+    /// <summary>
+    /// Determines the currently-active gh login for github.com, optionally
+    /// switching to <paramref name="preferred"/> first. Returns null if no
+    /// account is logged in.
+    /// </summary>
+    private async Task<string?> ResolveActiveLoginAsync(string? preferred, CancellationToken ct)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(TokenPath)!);
-        if (rec is null)
+        // If a preferred account is configured, try to make it active. Switch
+        // is a no-op if it's already active; it errors if the account isn't
+        // in the keyring at all (in which case we fall back to whatever's
+        // active so the user still sees something useful).
+        if (!string.IsNullOrEmpty(preferred))
         {
-            if (File.Exists(TokenPath)) File.Delete(TokenPath);
+            var (_, _, switchExit) = await RunGhAsync(
+                $"auth switch --hostname github.com --user {preferred}", captureOutput: true, ct);
+            if (switchExit == 0)
+            {
+                return preferred;
+            }
+            // Switch failed — preferred account is not yet logged in. Surface
+            // whatever is active (if any) so the caller can still operate.
+        }
+
+        var (statusOut, statusErr, statusExit) = await RunGhAsync(
+            "auth status --hostname github.com", captureOutput: true, ct);
+        if (statusExit != 0 && string.IsNullOrEmpty(statusOut) && string.IsNullOrEmpty(statusErr))
+        {
+            return null;
+        }
+
+        // gh writes status to stderr; older versions wrote to stdout. Search both.
+        return ParseActiveLogin(statusOut + "\n" + statusErr);
+    }
+
+    /// <summary>
+    /// Parses the output of <c>gh auth status</c> for the "Active account"
+    /// login. The format we match (gh 2.x):
+    /// <code>
+    /// github.com
+    ///   ✓ Logged in to github.com account &lt;login&gt; (keyring)
+    ///   - Active account: true
+    /// </code>
+    /// We pick the login on the most recent "Logged in" line whose immediate
+    /// "Active account: true" follows.
+    /// </summary>
+    internal static string? ParseActiveLogin(string text)
+    {
+        // Strip ANSI escape sequences gh writes when stderr is redirected.
+        text = AnsiEscape().Replace(text, string.Empty);
+
+        // Walk lines; remember the most recent Logged-in login, commit it as
+        // active when we hit "Active account: true".
+        string? pendingLogin = null;
+        foreach (var raw in text.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r').Trim();
+            var loggedIn = LoggedInLine().Match(line);
+            if (loggedIn.Success)
+            {
+                pendingLogin = loggedIn.Groups[1].Value;
+                continue;
+            }
+            if (line.StartsWith("- Active account: true", StringComparison.OrdinalIgnoreCase) && pendingLogin is not null)
+            {
+                return pendingLogin;
+            }
+            if (line.StartsWith("- Active account: false", StringComparison.OrdinalIgnoreCase))
+            {
+                pendingLogin = null;
+            }
+        }
+        return null;
+    }
+
+    private static bool IsGhInstalled()
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "gh",
+                Arguments = "--version",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using var p = Process.Start(psi);
+            if (p is null) return false;
+            p.WaitForExit(2000);
+            return p.HasExited && p.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static async Task<(string Stdout, string Stderr, int ExitCode)> RunGhAsync(
+        string arguments, bool captureOutput, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "gh",
+            Arguments = arguments,
+            RedirectStandardOutput = captureOutput,
+            RedirectStandardError = captureOutput,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+
+        using var process = Process.Start(psi);
+        if (process is null)
+        {
+            return (string.Empty, string.Empty, -1);
+        }
+
+        var stdoutTask = captureOutput ? process.StandardOutput.ReadToEndAsync() : Task.FromResult(string.Empty);
+        var stderrTask = captureOutput ? process.StandardError.ReadToEndAsync() : Task.FromResult(string.Empty);
+
+        await process.WaitForExitAsync(ct);
+        var stdout = await stdoutTask;
+        var stderr = await stderrTask;
+        return (stdout, stderr, process.ExitCode);
+    }
+
+    /// <summary>
+    /// Spawns <c>gh auth login -h github.com --git-protocol https --web</c>
+    /// in a separate visible console window so the operator sees the device
+    /// code prompt and can complete the flow. We don't pipe stdio because gh
+    /// expects an interactive TTY for the prompts.
+    /// </summary>
+    private static void LaunchInteractiveGhLogin()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            // cmd /c start … opens a new console window; cmd /k keeps it open
+            // after gh exits so the user can read the final "Logged in as …" line.
+            var psi = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = "/c start \"Forge — GitHub sign-in\" cmd /k gh auth login --hostname github.com --git-protocol https --web",
+                UseShellExecute = false,
+                CreateNoWindow = false,
+            };
+            using var _ = Process.Start(psi);
             return;
         }
-        var json = JsonSerializer.SerializeToUtf8Bytes(rec);
-        var blob = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? ProtectedData.Protect(json, DpapiEntropy, DataProtectionScope.CurrentUser)
-            : json;
-        File.WriteAllBytes(TokenPath, blob);
-    }
 
-    private static string GenerateCodeVerifier()
-    {
-        // RFC 7636 §4.1 — code_verifier is 43..128 chars, unreserved.
-        var bytes = RandomNumberGenerator.GetBytes(64);
-        return Base64UrlEncode(bytes);
-    }
-
-    private static string ComputeCodeChallenge(string verifier)
-    {
-        var bytes = SHA256.HashData(Encoding.ASCII.GetBytes(verifier));
-        return Base64UrlEncode(bytes);
-    }
-
-    private static string GenerateRandomString(int byteCount)
-    {
-        return Base64UrlEncode(RandomNumberGenerator.GetBytes(byteCount));
-    }
-
-    private static string Base64UrlEncode(byte[] bytes) =>
-        Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-
-    private static async Task<string?> FetchLoginAsync(HttpClient http, string accessToken, CancellationToken ct)
-    {
-        try
+        // Non-Windows: best effort — run gh inline. The host process must
+        // have a TTY for this to actually work.
+        var inline = new ProcessStartInfo
         {
-            var req = new HttpRequestMessage(HttpMethod.Get, $"{ApiHost}/user");
-            req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
-            req.Headers.UserAgent.ParseAdd("forge-api/0.1");
-            req.Headers.Accept.ParseAdd("application/vnd.github+json");
-            var resp = await http.SendAsync(req, ct);
-            if (!resp.IsSuccessStatusCode) return null;
-            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-            return doc.RootElement.TryGetProperty("login", out var l) ? l.GetString() : null;
-        }
-        catch
+            FileName = "gh",
+            Arguments = "auth login --hostname github.com --git-protocol https --web",
+            UseShellExecute = true,
+        };
+        using var __ = Process.Start(inline);
+    }
+
+    private void InvalidateCache()
+    {
+        lock (this.cacheGate)
         {
-            return null;
+            this.cachedToken = null;
+            this.cachedAt = DateTimeOffset.MinValue;
         }
     }
 
-    private static async Task WriteCloseTabPageAsync(HttpListenerResponse response, string? error, bool ok)
-    {
-        var body = error is null && ok
-            ? "<html><body style=\"font-family:system-ui;text-align:center;padding-top:80px\"><h2>Forge — signed in</h2><p>You can close this tab.</p></body></html>"
-            : $"<html><body style=\"font-family:system-ui;text-align:center;padding-top:80px\"><h2>Forge — sign-in failed</h2><p>{System.Net.WebUtility.HtmlEncode(error ?? "missing code")}</p></body></html>";
-        var bytes = Encoding.UTF8.GetBytes(body);
-        response.ContentType = "text/html; charset=utf-8";
-        response.ContentLength64 = bytes.Length;
-        await response.OutputStream.WriteAsync(bytes);
-        response.OutputStream.Close();
-    }
+    [GeneratedRegex(@"Logged in to github\.com account ([\w.\-]+)", RegexOptions.IgnoreCase)]
+    private static partial Regex LoggedInLine();
 
-    private sealed record TokenRecord(string AccessToken, string? Login, DateTimeOffset? ExpiresAt);
-
-#pragma warning disable IDE1006 // GitHub uses snake_case in the JSON body.
-    private sealed class TokenResponse
-    {
-        public string? access_token { get; set; }
-        public string? token_type { get; set; }
-        public int? expires_in { get; set; }
-        public string? scope { get; set; }
-        public string? error { get; set; }
-    }
-#pragma warning restore IDE1006
+    [GeneratedRegex(@"\x1B\[[0-9;]*[A-Za-z]")]
+    private static partial Regex AnsiEscape();
 }

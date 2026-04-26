@@ -39,28 +39,40 @@ public static class RequireRole
     }
 
     /// <summary>
-    /// Sync helper — looks up the calling user's role. Returns null when no
-    /// signed-in users exist yet (default = open).
+    /// Sync helper — looks up the calling user's role, honoring the
+    /// per-product override when X-Forge-Product-Id is present. Returns
+    /// null when no signed-in users exist yet (default = open).
     /// </summary>
     public static string? ResolveRole(HttpContext ctx, ForgeDbContext db)
     {
-        // Sync EF call inside a request handler; SQLite is fast enough that
-        // this is fine for a per-request lookup.
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
         if (string.IsNullOrWhiteSpace(caller)) return null;
 
         // Match by email (e.g. "lingxd@gmail.com") or login or display name
         // because the X-Forge-User header isn't tied to a specific column today.
-        var row = db.Users
+        var user = db.Users
             .AsNoTracking()
             .Where(u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller)
-            .Select(u => new { u.Role })
+            .Select(u => new { u.Id, u.Role })
             .FirstOrDefault();
-        if (row is not null) return row.Role;
+        if (user is null)
+        {
+            // Bootstrap: if no users yet, treat as open (single-user dev).
+            if (!db.Users.AsNoTracking().Any()) return null;
+            return "human";
+        }
 
-        // Bootstrap: if no users yet, treat as open (single-user dev).
-        if (!db.Users.AsNoTracking().Any()) return null;
-        return "human";
+        // Phase 9.12 — product-scoped override.
+        var productId = ctx.Request.Headers["X-Forge-Product-Id"].FirstOrDefault();
+        if (!string.IsNullOrEmpty(productId) && productId != "all")
+        {
+            var over = db.UserProductRoles.AsNoTracking()
+                .Where(r => r.UserId == user.Id && r.ProductId == productId)
+                .Select(r => r.Role)
+                .FirstOrDefault();
+            if (!string.IsNullOrEmpty(over)) return over;
+        }
+        return user.Role;
     }
 
     /// <summary>Async sibling of <see cref="ResolveRole"/> for handlers that already do async DB work.</summary>
@@ -68,13 +80,26 @@ public static class RequireRole
     {
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
         if (string.IsNullOrWhiteSpace(caller)) return null;
-        var role = await db.Users
+        var user = await db.Users
             .AsNoTracking()
             .Where(u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller)
-            .Select(u => u.Role)
+            .Select(u => new { u.Id, u.Role })
             .FirstOrDefaultAsync(ct);
-        if (role is not null) return role;
-        if (!await db.Users.AsNoTracking().AnyAsync(ct)) return null;
-        return "human";
+        if (user is null)
+        {
+            if (!await db.Users.AsNoTracking().AnyAsync(ct)) return null;
+            return "human";
+        }
+
+        var productId = ctx.Request.Headers["X-Forge-Product-Id"].FirstOrDefault();
+        if (!string.IsNullOrEmpty(productId) && productId != "all")
+        {
+            var over = await db.UserProductRoles.AsNoTracking()
+                .Where(r => r.UserId == user.Id && r.ProductId == productId)
+                .Select(r => r.Role)
+                .FirstOrDefaultAsync(ct);
+            if (!string.IsNullOrEmpty(over)) return over;
+        }
+        return user.Role;
     }
 }

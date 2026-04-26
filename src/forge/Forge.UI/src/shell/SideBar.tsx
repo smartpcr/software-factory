@@ -1,9 +1,10 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useSidebarStore } from '@/state/useSidebarStore';
 import { useProductsStore } from '@/state/useProductsStore';
 import { useCurrentUser, useHasRole } from '@/state/useCurrentUserStore';
 import { ProductIcon } from '@/products/ProductIcon';
+import { UserMenu } from '@/shell/UserMenu';
 
 // Verbatim port of the prototype's <aside class="sidebar">. The only
 // React-required changes: NavLink in place of <a data-view>, className
@@ -31,6 +32,18 @@ export function SideBar() {
 
   const repoCount = activeProduct ? (reposByProduct[activeProduct.id]?.length ?? 0) : 0;
   const roleLabel = formatRole(me.role);
+
+  // Phase 9 — sidebar foot user widget opens UserMenu (same popover the TopBar
+  // avatar uses). Important when no provider is connected — the placeholder
+  // "Sign in" label was previously a non-interactive string.
+  const userRef = useRef<HTMLButtonElement | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuAnchor, setMenuAnchor] = useState<DOMRect | null>(null);
+  const isUnsigned = !me.id;
+  function openMenu() {
+    if (userRef.current) setMenuAnchor(userRef.current.getBoundingClientRect());
+    setMenuOpen(true);
+  }
 
   return (
     <aside className="sidebar">
@@ -213,7 +226,26 @@ export function SideBar() {
 
       <div className="sidebar-foot">
         <div className="sidebar-foot-row">
-          <div className="sidebar-user">
+          <button
+            ref={userRef}
+            type="button"
+            className="sidebar-user"
+            onClick={openMenu}
+            title={isUnsigned ? 'Click to sign in' : (me.email ?? me.displayName)}
+            style={{
+              flex: 1,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              minWidth: 0,
+              border: 'none',
+              background: 'transparent',
+              padding: 0,
+              cursor: 'pointer',
+              color: 'inherit',
+              textAlign: 'left',
+            }}
+          >
             <div
               className="avatar"
               style={
@@ -221,7 +253,6 @@ export function SideBar() {
                   ? { margin: 0, backgroundImage: `url(${me.avatarUrl})`, backgroundSize: 'cover' }
                   : { margin: 0 }
               }
-              title={me.email ?? me.displayName}
             >
               {me.avatarUrl ? '' : me.initials}
             </div>
@@ -229,12 +260,13 @@ export function SideBar() {
               <div className="name">{me.displayName}</div>
               <div className="role">{roleLabel}{activeProduct ? ` · ${activeProduct.name}` : ''}</div>
             </div>
-          </div>
+          </button>
           <NavLink to="/settings" className="icon-btn" title="Settings" style={{ width: 26, height: 26, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="1.6" stroke="currentColor" strokeWidth="1.2" /><path d="M7 1 v 1.6 M 7 11.4 v 1.6 M 1 7 h 1.6 M 11.4 7 h 1.6" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" /></svg>
           </NavLink>
         </div>
       </div>
+      <UserMenu open={menuOpen} onClose={() => setMenuOpen(false)} anchor={menuAnchor} />
     </aside>
   );
 }

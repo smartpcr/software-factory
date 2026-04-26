@@ -48,6 +48,8 @@ public class ForgeDbContext : DbContext
 
     public DbSet<UserSettingsRow> UserSettings => this.Set<UserSettingsRow>();
 
+    public DbSet<UserProductRoleRow> UserProductRoles => this.Set<UserProductRoleRow>();
+
     public DbSet<CrewRow> Crews => this.Set<CrewRow>();
 
     public DbSet<AgentUsageRow> AgentUsage => this.Set<AgentUsageRow>();
@@ -92,6 +94,13 @@ public class ForgeDbContext : DbContext
 
         // Phase 10.1 — per-user preferences.
         mb.Entity<UserSettingsRow>().ToTable("user_settings").HasKey(x => x.UserId);
+
+        // Phase 9.12 — per-user / per-product role override.
+        mb.Entity<UserProductRoleRow>()
+            .ToTable("user_product_roles")
+            .HasKey(x => new { x.UserId, x.ProductId });
+        mb.Entity<UserProductRoleRow>().HasIndex(x => x.UserId);
+        mb.Entity<UserProductRoleRow>().HasIndex(x => x.ProductId);
 
         // Phase 10.6 — crew rows.
         mb.Entity<CrewRow>().ToTable("crews").HasKey(x => x.Id);

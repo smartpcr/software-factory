@@ -117,13 +117,15 @@ function ProviderRow({
               <div style={{ minWidth: 0, fontSize: 11.5, color: 'var(--text-secondary)' }}>
                 {auth?.error
                   ? <>Last attempt: <strong>{auth.error}</strong></>
-                  : <>Sign in opens a Microsoft account picker (WAM / browser popup). Forge stores only an encrypted refresh token.</>}
+                  : kind === 'ado'
+                    ? <>Opens the Microsoft account picker in your browser. Forge stores only an encrypted refresh token.</>
+                    : <>Delegates to the GitHub CLI (<code style={{ fontFamily: 'var(--font-mono)' }}>gh auth login --web</code>) — no client id, no app registration.</>}
               </div>
               <button
                 className="ws-action primary"
                 onClick={onSignIn}
                 disabled={signingIn}
-                title="Opens the Microsoft account picker"
+                title={kind === 'ado' ? 'Opens the Microsoft account picker' : 'Opens a console window running gh auth login'}
               >
                 {signingIn ? 'Signing in…' : `Sign in to ${label}`}
               </button>
@@ -185,6 +187,8 @@ function DefaultsPanel({ kind, settings, onSave }: DefaultsPanelProps) {
   const [orgUrl, setOrgUrl] = useState(settings?.defaultAdoOrgUrl ?? '');
   const [project, setProject] = useState(settings?.defaultAdoProject ?? '');
   const [owner, setOwner] = useState(settings?.defaultGitHubOwner ?? '');
+  const [preferredAdo, setPreferredAdo] = useState(settings?.preferredAdoAccount ?? '');
+  const [preferredGh, setPreferredGh] = useState(settings?.preferredGitHubAccount ?? '');
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
 
@@ -194,21 +198,26 @@ function DefaultsPanel({ kind, settings, onSave }: DefaultsPanelProps) {
     if (kind === 'ado') {
       setOrgUrl(settings.defaultAdoOrgUrl ?? '');
       setProject(settings.defaultAdoProject ?? '');
+      setPreferredAdo(settings.preferredAdoAccount ?? '');
     } else {
       setOwner(settings.defaultGitHubOwner ?? '');
+      setPreferredGh(settings.preferredGitHubAccount ?? '');
     }
   }, [kind, settings]);
 
   const dirty = kind === 'ado'
-    ? orgUrl !== (settings?.defaultAdoOrgUrl ?? '') || project !== (settings?.defaultAdoProject ?? '')
-    : owner !== (settings?.defaultGitHubOwner ?? '');
+    ? orgUrl !== (settings?.defaultAdoOrgUrl ?? '') ||
+      project !== (settings?.defaultAdoProject ?? '') ||
+      preferredAdo !== (settings?.preferredAdoAccount ?? '')
+    : owner !== (settings?.defaultGitHubOwner ?? '') ||
+      preferredGh !== (settings?.preferredGitHubAccount ?? '');
 
   async function save() {
     setSaving(true);
     try {
       const patch: Partial<UserSettings> = kind === 'ado'
-        ? { defaultAdoOrgUrl: orgUrl, defaultAdoProject: project }
-        : { defaultGitHubOwner: owner };
+        ? { defaultAdoOrgUrl: orgUrl, defaultAdoProject: project, preferredAdoAccount: preferredAdo }
+        : { defaultGitHubOwner: owner, preferredGitHubAccount: preferredGh };
       await onSave(patch);
       setSavedAt(new Date());
     } finally {
@@ -239,17 +248,37 @@ function DefaultsPanel({ kind, settings, onSave }: DefaultsPanelProps) {
               style={inputStyle}
             />
           </FieldLabel>
+          <FieldLabel label="Preferred account" hint="Microsoft account email used for sign-in. Empty = first cached account.">
+            <input
+              value={preferredAdo}
+              onChange={(e) => setPreferredAdo(e.target.value)}
+              placeholder="xiaodoli@microsoft.com"
+              spellCheck={false}
+              style={inputStyle}
+            />
+          </FieldLabel>
         </>
       ) : (
-        <FieldLabel label="Owner / org" hint="GitHub username or org for default scope.">
-          <input
-            value={owner}
-            onChange={(e) => setOwner(e.target.value)}
-            placeholder="microsoft"
-            spellCheck={false}
-            style={inputStyle}
-          />
-        </FieldLabel>
+        <>
+          <FieldLabel label="Owner / org" hint="GitHub username or org for default scope.">
+            <input
+              value={owner}
+              onChange={(e) => setOwner(e.target.value)}
+              placeholder="microsoft"
+              spellCheck={false}
+              style={inputStyle}
+            />
+          </FieldLabel>
+          <FieldLabel label="Preferred account" hint="GitHub login (gh username). Empty = whichever account gh reports as active.">
+            <input
+              value={preferredGh}
+              onChange={(e) => setPreferredGh(e.target.value)}
+              placeholder="xiaodoli"
+              spellCheck={false}
+              style={inputStyle}
+            />
+          </FieldLabel>
+        </>
       )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <button
@@ -299,8 +328,8 @@ interface ProviderEntry {
 }
 
 const PROVIDERS: ProviderEntry[] = [
-  { kind: 'ado',    label: 'Azure DevOps', description: 'Work items + repos + pipelines',  authSupported: true  },
-  { kind: 'github', label: 'GitHub',       description: 'Issues + pull requests + Actions', authSupported: false },
+  { kind: 'ado',    label: 'Azure DevOps', description: 'Work items + repos + pipelines',  authSupported: true },
+  { kind: 'github', label: 'GitHub',       description: 'Issues + pull requests + Actions', authSupported: true },
 ];
 
 export function SettingsView() {

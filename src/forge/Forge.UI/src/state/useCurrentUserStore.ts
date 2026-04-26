@@ -55,13 +55,15 @@ export function useCurrentUser(): CurrentUser {
 }
 
 /**
- * Phase 10.10 — UI role gate. Returns true when the current user's role is
- * one of the listed roles. In single-user dev (no signed-in user yet) we
- * return true so the operator isn't locked out of localhost development.
+ * Phase 10.10 — UI role gate. Returns true only when the loaded user's role
+ * matches. Truly unsigned users (loaded but no provider connected → id === '')
+ * are gated out so the role-restricted UI surfaces stay hidden until sign-in
+ * completes. Pre-load (loaded === false) also returns false, so gated UI
+ * doesn't flash on first render and then disappear once /api/me resolves.
  */
 export function useHasRole(...roles: string[]): boolean {
   const user = useCurrentUserStore((s) => s.user);
-  // Pre-load placeholder: no user yet — pass-through.
-  if (!user || user.id === '') return true;
+  const loaded = useCurrentUserStore((s) => s.loaded);
+  if (!loaded || !user || user.id === '') return false;
   return roles.includes(user.role);
 }

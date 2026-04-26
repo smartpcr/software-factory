@@ -6,10 +6,13 @@
 
 namespace Forge.Api.Auth;
 
-using Microsoft.Identity.Client;
-using Microsoft.Identity.Client.Extensions.Msal;
+using Forge.Api.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.Identity.Client;
+using Microsoft.Identity.Client.Extensions.Msal;
 
 /// <summary>
 /// Phase 9.2 — Azure DevOps interactive sign-in via MSAL.
@@ -52,12 +55,14 @@ public class AdoAuthService : IAuthService
     private const string CacheFileName = "msal-cache.bin";
 
     private readonly ForgeAuthOptions options;
+    private readonly IServiceScopeFactory scopeFactory;
     private readonly ILogger<AdoAuthService> logger;
     private readonly Lazy<Task<IPublicClientApplication>> appFactory;
 
-    public AdoAuthService(IOptions<ForgeAuthOptions> options, ILogger<AdoAuthService> logger)
+    public AdoAuthService(IOptions<ForgeAuthOptions> options, IServiceScopeFactory scopeFactory, ILogger<AdoAuthService> logger)
     {
         this.options = options.Value;
+        this.scopeFactory = scopeFactory;
         this.logger = logger;
         this.appFactory = new Lazy<Task<IPublicClientApplication>>(this.BuildAppAsync, isThreadSafe: true);
     }
@@ -69,7 +74,8 @@ public class AdoAuthService : IAuthService
         try
         {
             var app = await this.appFactory.Value;
-            var account = (await app.GetAccountsAsync()).FirstOrDefault();
+            var preferred = await this.GetPreferredAccountAsync(ct);
+            var account = await this.PickAccountAsync(app, preferred);
             if (account is null)
             {
                 return new AuthStatus(this.Kind, Connected: false, Account: null, UserName: null, ExpiresAt: null);
@@ -102,11 +108,12 @@ public class AdoAuthService : IAuthService
     public async Task<AuthStatus> SignInAsync(CancellationToken ct = default)
     {
         var app = await this.appFactory.Value;
+        var preferred = await this.GetPreferredAccountAsync(ct);
 
-        // 1) Try silent first against any cached account.
+        // 1) Try silent first against the preferred (or first) cached account.
         try
         {
-            var account = (await app.GetAccountsAsync()).FirstOrDefault();
+            var account = await this.PickAccountAsync(app, preferred);
             if (account is not null)
             {
                 var silent = await app.AcquireTokenSilent(DefaultScopes, account).ExecuteAsync(ct);
@@ -132,7 +139,12 @@ public class AdoAuthService : IAuthService
             var builder = app
                 .AcquireTokenInteractive(DefaultScopes)
                 .WithUseEmbeddedWebView(false);
-            this.logger.LogInformation("ADO interactive sign-in starting (system browser)…");
+            if (!string.IsNullOrEmpty(preferred))
+            {
+                builder = builder.WithLoginHint(preferred);
+            }
+            this.logger.LogInformation("ADO interactive sign-in starting (system browser){Hint}…",
+                string.IsNullOrEmpty(preferred) ? string.Empty : $" with login_hint={preferred}");
             var result = await builder.ExecuteAsync(ct);
             this.logger.LogInformation("ADO interactive sign-in succeeded as {User}", result.Account.Username);
             return new AuthStatus(this.Kind, true, result.Account.Username, result.Account.Username, result.ExpiresOn);
@@ -167,7 +179,8 @@ public class AdoAuthService : IAuthService
         try
         {
             var app = await this.appFactory.Value;
-            var account = (await app.GetAccountsAsync()).FirstOrDefault();
+            var preferred = await this.GetPreferredAccountAsync(ct);
+            var account = await this.PickAccountAsync(app, preferred);
             if (account is null) return null;
             var result = await app.AcquireTokenSilent(DefaultScopes, account).ExecuteAsync(ct);
             return result.AccessToken;
@@ -185,6 +198,45 @@ public class AdoAuthService : IAuthService
     }
 
     // -- helpers ----------------------------------------------------------
+
+    /// <summary>
+    /// Reads <see cref="UserSettingsRow.PreferredAdoAccount"/> from the
+    /// single-user settings row. Returns null if no preference is stored.
+    /// </summary>
+    private async Task<string?> GetPreferredAccountAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var scope = this.scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var row = await db.UserSettings.AsNoTracking()
+                .OrderBy(x => x.UserId)
+                .FirstOrDefaultAsync(ct);
+            var preferred = row?.PreferredAdoAccount?.Trim();
+            return string.IsNullOrEmpty(preferred) ? null : preferred;
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogDebug(ex, "Could not read PreferredAdoAccount; falling back to first cached account");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Picks the cached MSAL account matching <paramref name="preferred"/>
+    /// (case-insensitive, by Username = email). Falls back to the first
+    /// cached account if no match.
+    /// </summary>
+    private async Task<IAccount?> PickAccountAsync(IPublicClientApplication app, string? preferred)
+    {
+        var accounts = await app.GetAccountsAsync();
+        if (!string.IsNullOrEmpty(preferred))
+        {
+            var match = accounts.FirstOrDefault(a => string.Equals(a.Username, preferred, StringComparison.OrdinalIgnoreCase));
+            if (match is not null) return match;
+        }
+        return accounts.FirstOrDefault();
+    }
 
     private async Task<IPublicClientApplication> BuildAppAsync()
     {

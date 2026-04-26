@@ -462,6 +462,25 @@ public class UserRow
     public DateTimeOffset? LastSeenAt { get; set; }
 }
 
+/// <summary>
+/// Phase 9.12 — per-product role override. A user has a global
+/// <see cref="UserRow.Role"/> (their default), plus optional per-product
+/// roles that override the default when scoped to that product. The same
+/// person can be product-owner on one product and an engineer on another.
+/// Composite key: (UserId, ProductId).
+/// </summary>
+public class UserProductRoleRow
+{
+    public string UserId { get; set; } = string.Empty;
+
+    public string ProductId { get; set; } = string.Empty;
+
+    /// <summary>One of: human, eng, rev, qa, arch, tech-lead, product-owner.</summary>
+    public string Role { get; set; } = "human";
+
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
 
 /// <summary>
 /// Phase 11.4 — cost ledger. One row per agent invocation; the runner writes

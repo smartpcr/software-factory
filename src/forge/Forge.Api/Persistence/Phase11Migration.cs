@@ -77,6 +77,19 @@ public static class Phase11Migration
         // Phase 9.11 — per-user preferred sign-in accounts.
         await EnsureColumnAsync(conn, "user_settings", "PreferredAdoAccount", "TEXT NULL", ct);
         await EnsureColumnAsync(conn, "user_settings", "PreferredGitHubAccount", "TEXT NULL", ct);
+
+        // Phase 9.12 — per-user / per-product role override.
+        await ExecAsync(conn, """
+            CREATE TABLE IF NOT EXISTS user_product_roles (
+                UserId TEXT NOT NULL,
+                ProductId TEXT NOT NULL,
+                Role TEXT NOT NULL DEFAULT 'human',
+                UpdatedAt TEXT NOT NULL,
+                PRIMARY KEY (UserId, ProductId)
+            );
+            """, ct);
+        await ExecAsync(conn, "CREATE INDEX IF NOT EXISTS IX_user_product_roles_UserId ON user_product_roles(UserId);", ct);
+        await ExecAsync(conn, "CREATE INDEX IF NOT EXISTS IX_user_product_roles_ProductId ON user_product_roles(ProductId);", ct);
     }
 
     private static async Task<bool> ColumnExistsAsync(SqliteConnection conn, string table, string column, CancellationToken ct)

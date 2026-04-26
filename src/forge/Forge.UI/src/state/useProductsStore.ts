@@ -13,6 +13,8 @@ interface ProductsState {
   loadReposFor: (productId: string) => Promise<void>;
   loadStatsFor: (productId: string) => Promise<void>;
   setActive: (id: string | null) => void;
+  patchProduct: (id: string, req: { name?: string; description?: string }) => Promise<void>;
+  deleteProduct: (id: string, force?: boolean) => Promise<void>;
 }
 
 export const useProductsStore = create<ProductsState>((set, get) => ({
@@ -64,5 +66,28 @@ export const useProductsStore = create<ProductsState>((set, get) => ({
     // Hard reload so every store re-fetches under the new scope. Cheap and
     // avoids subtle bugs where one cache is from product A and another from B.
     if (typeof window !== 'undefined') window.location.reload();
+  },
+
+  async patchProduct(id, req) {
+    const updated = await forgeApi.patchProduct(id, req);
+    set((s) => ({
+      products: s.products.map((p) => (p.id === id ? updated : p)),
+    }));
+  },
+
+  async deleteProduct(id, force = false) {
+    await forgeApi.deleteProduct(id, force);
+    set((s) => {
+      const products = s.products.filter((p) => p.id !== id);
+      const next = { ...s.reposByProduct };
+      delete next[id];
+      const stats = { ...s.statsByProduct };
+      delete stats[id];
+      const activeProductId = s.activeProductId === id
+        ? products[0]?.id ?? null
+        : s.activeProductId;
+      if (s.activeProductId === id) setActiveProductId(activeProductId);
+      return { products, reposByProduct: next, statsByProduct: stats, activeProductId };
+    });
   },
 }));

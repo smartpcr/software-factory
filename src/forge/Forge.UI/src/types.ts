@@ -296,6 +296,10 @@ export interface UserSettings {
   browserPreference: string | null;
   theme: string | null;
   notificationsEnabled: boolean;
+  /** Phase 9.11 — preferred Microsoft account for ADO sign-in (email). */
+  preferredAdoAccount: string | null;
+  /** Phase 9.11 — preferred GitHub login (gh username) for sign-in. */
+  preferredGitHubAccount: string | null;
   updatedAt: string;
 }
 

@@ -9,6 +9,7 @@ namespace Forge.Api.Providers.GitHub;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using Forge.Api.Auth;
 using Forge.Api.Contracts;
 using Forge.Api.Providers.Ado;
 using Microsoft.Extensions.Logging;
@@ -25,21 +26,51 @@ public class GitHubProvider : IForgeProvider
 
     private readonly IHttpClientFactory clientFactory;
     private readonly GitHubOptions options;
+    private readonly IAuthService? ghAuth;
     private readonly ILogger<GitHubProvider> logger;
     private readonly ProviderHealthState health = new("github");
 
-    public GitHubProvider(IHttpClientFactory clientFactory, IOptions<GitHubOptions> options, ILogger<GitHubProvider> logger)
+    public GitHubProvider(
+        IHttpClientFactory clientFactory,
+        IOptions<GitHubOptions> options,
+        IEnumerable<IAuthService> authServices,
+        ILogger<GitHubProvider> logger)
     {
         this.clientFactory = clientFactory;
         this.options = options.Value;
+        this.ghAuth = authServices.FirstOrDefault(s => s.Kind == "github");
         this.logger = logger;
     }
 
     public string Kind => "github";
 
+    /// <summary>
+    /// Repo-scoped operations require both a configured repo and an
+    /// authenticated client. With the gh-CLI auth path the PAT is resolved
+    /// dynamically per-call, so callers should generally rely on
+    /// <see cref="HasAuthAsync"/> for the "do we have a token" question
+    /// and only check this flag when a specific <c>options.Repo</c> matters.
+    /// </summary>
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(this.options.Repo) &&
         !string.IsNullOrWhiteSpace(this.options.Pat);
+
+    /// <summary>True when we can produce a bearer token (PAT or gh CLI).</summary>
+    private async Task<bool> HasAuthAsync(CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(this.options.Pat)) return true;
+        if (this.ghAuth is null) return false;
+        var token = await this.ghAuth.GetAccessTokenAsync(ct);
+        return !string.IsNullOrEmpty(token);
+    }
+
+    /// <summary>Resolves the bearer token: PAT first, gh CLI fallback.</summary>
+    private async Task<string?> ResolveTokenAsync(CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(this.options.Pat)) return this.options.Pat;
+        if (this.ghAuth is null) return null;
+        return await this.ghAuth.GetAccessTokenAsync(ct);
+    }
 
     public async Task<IReadOnlyList<Card>> ListWorkItemsAsync(CancellationToken ct = default)
     {
@@ -184,10 +215,12 @@ public class GitHubProvider : IForgeProvider
     /// </summary>
     public async Task<IReadOnlyList<DiscoverableRepo>> ListRepositoriesAsync(CancellationToken ct = default)
     {
-        if (!this.IsConfigured) return Array.Empty<DiscoverableRepo>();
+        // Repo discovery works with just a token — no need for a configured
+        // default repo. This is the path the UI's "Discover" button uses.
+        var client = await this.NewClientAsync(ct);
+        if (client is null) return Array.Empty<DiscoverableRepo>();
         try
         {
-            var client = this.NewClient();
             var resp = await client.GetAsync("user/repos?per_page=100&sort=pushed", ct);
             this.health.RecordResponse(resp);
             if (!resp.IsSuccessStatusCode) return Array.Empty<DiscoverableRepo>();
@@ -224,18 +257,42 @@ public class GitHubProvider : IForgeProvider
 
     public async Task<ProviderHealth> TestConnectionAsync(CancellationToken ct = default)
     {
-        if (!this.IsConfigured)
+        // Three-state probe:
+        //   1) repo + token  → probe /repos/{owner/repo} (most informative)
+        //   2) token only    → probe /user (verifies the token works)
+        //   3) no token      → "not connected — sign in via gh or set Forge:GitHub:Pat"
+        var client = await this.NewClientAsync(ct);
+        if (client is null)
         {
-            return new ProviderHealth(this.Kind, false, "missing Repo/Pat", null, 0, null, null);
+            return new ProviderHealth(this.Kind, false,
+                "no token — sign in via gh CLI or set Forge:GitHub:Pat", null, 0, null, null);
         }
+
         try
         {
-            var client = this.NewClient();
-            var resp = await client.GetAsync($"repos/{this.options.Repo}", ct);
-            this.health.RecordResponse(resp);
-            return resp.IsSuccessStatusCode
-                ? this.health.Snapshot(true, $"connected to {this.options.Repo}")
-                : this.health.Snapshot(false, $"HTTP {(int)resp.StatusCode}");
+            if (!string.IsNullOrWhiteSpace(this.options.Repo))
+            {
+                var resp = await client.GetAsync($"repos/{this.options.Repo}", ct);
+                this.health.RecordResponse(resp);
+                return resp.IsSuccessStatusCode
+                    ? this.health.Snapshot(true, $"connected to {this.options.Repo}")
+                    : this.health.Snapshot(false, $"HTTP {(int)resp.StatusCode}");
+            }
+
+            // Token-only: probe /user. Surfaces the resolved login back to the
+            // health card so the operator sees which account the token belongs to.
+            var userResp = await client.GetAsync("user", ct);
+            this.health.RecordResponse(userResp);
+            if (!userResp.IsSuccessStatusCode)
+            {
+                return this.health.Snapshot(false, $"HTTP {(int)userResp.StatusCode}");
+            }
+            using var doc = JsonDocument.Parse(await userResp.Content.ReadAsStringAsync(ct));
+            var login = doc.RootElement.TryGetProperty("login", out var l) ? l.GetString() : null;
+            return this.health.Snapshot(true,
+                login is null
+                    ? "connected (no default repo set)"
+                    : $"connected as {login} (set a default repo to enable sync)");
         }
         catch (Exception ex)
         {
@@ -446,6 +503,9 @@ public class GitHubProvider : IForgeProvider
 
     private HttpClient NewClient(ProviderCallContext ctx)
     {
+        // Per-call user PAT wins (e.g. write actions where the calling user's
+        // token must be used for attribution). Otherwise the shared singleton
+        // client carries whatever token NewClient() configured.
         var client = this.NewClient();
         if (!string.IsNullOrEmpty(ctx.UserPat))
         {
@@ -454,7 +514,7 @@ public class GitHubProvider : IForgeProvider
         return client;
     }
 
-    private HttpClient NewClient()
+    private HttpClient NewClient(string? token = null)
     {
         var client = this.clientFactory.CreateClient(ClientName);
         if (client.BaseAddress is null)
@@ -464,8 +524,12 @@ public class GitHubProvider : IForgeProvider
                 : this.options.ApiBase.TrimEnd('/');
             client.BaseAddress = new Uri(apiBase + "/");
         }
-        client.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("token", this.options.Pat);
+        var effective = token ?? this.options.Pat;
+        if (!string.IsNullOrEmpty(effective))
+        {
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("token", effective);
+        }
         client.DefaultRequestHeaders.Accept.Clear();
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         if (!client.DefaultRequestHeaders.UserAgent.Any())
@@ -473,5 +537,18 @@ public class GitHubProvider : IForgeProvider
             client.DefaultRequestHeaders.UserAgent.ParseAdd(DefaultUserAgent);
         }
         return client;
+    }
+
+    /// <summary>
+    /// Builds a client with the resolved bearer token (PAT, then gh CLI
+    /// fallback). Returns null when no token is available — callers that
+    /// previously short-circuited on <see cref="IsConfigured"/> should
+    /// short-circuit on this null.
+    /// </summary>
+    private async Task<HttpClient?> NewClientAsync(CancellationToken ct)
+    {
+        var token = await this.ResolveTokenAsync(ct);
+        if (string.IsNullOrEmpty(token)) return null;
+        return this.NewClient(token);
     }
 }

@@ -1,9 +1,20 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCurrentUser, useCurrentUserStore } from '@/state/useCurrentUserStore';
+import { useProductsStore } from '@/state/useProductsStore';
 import { useToastStore } from '@/state/useToastStore';
 import { forgeApi } from '@/api/forgeApi';
 import type { CurrentUserProvider } from '@/types';
+
+const ROLE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'product-owner', label: 'Product owner' },
+  { value: 'tech-lead',     label: 'Tech lead' },
+  { value: 'arch',          label: 'Architect' },
+  { value: 'eng',           label: 'Engineer' },
+  { value: 'rev',           label: 'Reviewer' },
+  { value: 'qa',            label: 'QA' },
+  { value: 'human',         label: 'Human (default)' },
+];
 
 interface Props {
   open: boolean;
@@ -18,9 +29,33 @@ interface Props {
 export function UserMenu({ open, onClose, anchor }: Props) {
   const me = useCurrentUser();
   const refresh = useCurrentUserStore((s) => s.refresh);
+  const products = useProductsStore((s) => s.products);
+  const activeProductId = useProductsStore((s) => s.activeProductId);
   const ref = useRef<HTMLDivElement | null>(null);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
+  const [roleSaving, setRoleSaving] = useState(false);
   const navigate = useNavigate();
+
+  const activeProduct = useMemo(
+    () => products.find((p) => p.id === activeProductId) ?? null,
+    [products, activeProductId],
+  );
+
+  async function changeRole(role: string) {
+    if (role === me.role) return;
+    setRoleSaving(true);
+    try {
+      await forgeApi.setMyRole(role, activeProductId);
+      await refresh();
+      const scope = activeProduct ? activeProduct.name : 'all products';
+      useToastStore.getState().show(`Role on ${scope}: ${role}`, 'success');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Role change failed';
+      useToastStore.getState().show(msg, 'danger');
+    } finally {
+      setRoleSaving(false);
+    }
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -39,8 +74,19 @@ export function UserMenu({ open, onClose, anchor }: Props) {
 
   if (!open) return null;
 
-  const top = (anchor?.bottom ?? 56) + 6;
-  const right = window.innerWidth - (anchor?.right ?? window.innerWidth);
+  // Auto-flip vertical + horizontal so the popover stays in the viewport.
+  // Approximate menu size so the math works before we have a real rect.
+  const MENU_W = 320;
+  const MENU_H = 280;
+  const r = anchor;
+  const placeAbove = r ? (window.innerHeight - r.bottom < MENU_H + 12) : false;
+  const placeLeftAligned = r ? (r.right < MENU_W) : false;
+  const top = placeAbove
+    ? Math.max(8, (r?.top ?? 8) - MENU_H - 6)
+    : (r?.bottom ?? 56) + 6;
+  const right = placeLeftAligned
+    ? Math.max(8, window.innerWidth - (r?.left ?? 0) - MENU_W)
+    : window.innerWidth - (r?.right ?? window.innerWidth);
 
   async function reauth(kind: 'ado' | 'github') {
     setBusy((m) => ({ ...m, [kind]: true }));
@@ -114,6 +160,67 @@ export function UserMenu({ open, onClose, anchor }: Props) {
           </div>
         </div>
       </div>
+
+      {me.id !== '' && (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+          <div style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 9.5,
+            color: 'var(--text-tertiary)',
+            textTransform: 'uppercase',
+            letterSpacing: 0.1,
+            marginBottom: 6,
+          }}>
+            My role on {activeProduct ? <strong style={{ color: 'var(--text-secondary)' }}>{activeProduct.name}</strong> : 'all products'}
+          </div>
+          <select
+            value={me.role}
+            onChange={(e) => void changeRole(e.target.value)}
+            disabled={roleSaving}
+            style={{
+              width: '100%',
+              padding: '7px 8px',
+              fontSize: 12.5,
+              fontFamily: 'inherit',
+              color: 'var(--text-primary)',
+              background: 'var(--bg-surface)',
+              border: '1px solid var(--border-strong)',
+              borderRadius: 'var(--radius-sm, 6px)',
+              outline: 'none',
+              cursor: roleSaving ? 'wait' : 'pointer',
+            }}
+          >
+            {ROLE_OPTIONS.map((r) => (
+              <option key={r.value} value={r.value}>{r.label}</option>
+            ))}
+          </select>
+          <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)', marginTop: 4, lineHeight: 1.4 }}>
+            {activeProduct
+              ? <>Role override applies only on <strong>{activeProduct.name}</strong>. Switch products to set a different role elsewhere.</>
+              : <>Sets your default role across products. Per-product overrides take precedence when set.</>}
+          </div>
+        </div>
+      )}
+
+      {!me.providers.ado.connected && !me.providers.github.connected && (
+        <div
+          role="note"
+          style={{
+            marginTop: 10,
+            padding: '8px 10px',
+            borderRadius: 'var(--radius-sm, 6px)',
+            border: '1px dashed var(--border-strong)',
+            background: 'var(--bg-elevated, transparent)',
+            color: 'var(--text-secondary)',
+            fontSize: 11.5,
+            lineHeight: 1.45,
+          }}
+        >
+          Sign in to a provider to start using Forge. <strong>Azure DevOps</strong> uses
+          your Windows account (WAM); <strong>GitHub</strong> uses the <code>gh</code> CLI.
+          Both can be set up below.
+        </div>
+      )}
 
       <div style={{ marginTop: 10 }}>
         <ProviderRow
