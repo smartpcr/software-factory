@@ -1,4 +1,4 @@
-import type { Card, ColumnId, ForgeState } from '@/types';
+import type { Card, ColumnId, ForgeState, TimelineResponse } from '@/types';
 import { sampleState } from '@/sampleData';
 
 const baseUrl = import.meta.env.VITE_FORGE_API_URL ?? '';
@@ -103,4 +103,47 @@ export const forgeApi = {
       body: JSON.stringify({ toCol, force }),
     });
   },
+
+  /** GET /api/timeline?from=…&to=… . */
+  async getTimeline(from = -10, to = 5): Promise<TimelineResponse> {
+    if (useLocalSeed()) {
+      return buildLocalTimeline(from, to);
+    }
+    try {
+      return await fetchJson<TimelineResponse>(`/api/timeline?from=${from}&to=${to}`);
+    } catch (err) {
+      if (import.meta.env.DEV) {
+        console.warn('[forge] /api/timeline failed, using local sample data', err);
+        return buildLocalTimeline(from, to);
+      }
+      throw err;
+    }
+  },
 };
+
+function buildLocalTimeline(from: number, to: number): TimelineResponse {
+  const epicColor = new Map(sampleState.epics.map((e) => [e.id, e.color]));
+  const bars = sampleState.workstreams
+    .filter((w) => !(w.barEnd < from || w.barStart > to))
+    .map((w) => ({
+      workstreamId: w.id,
+      name: w.name,
+      branch: w.branch,
+      epic: w.epic,
+      epicColor: epicColor.get(w.epic) ?? w.epic,
+      status: w.status,
+      barStart: w.barStart,
+      barEnd: w.barEnd,
+      planned: !!w.planned,
+      summary: w.summary,
+      agents: w.agents,
+      ahead: w.ahead,
+      behind: w.behind,
+      conflicts: w.conflicts,
+      lastActive: w.lastActive,
+    }));
+  const markers = sampleState.wsEvents
+    .filter((e) => e.day >= from && e.day <= to)
+    .map((e) => ({ workstreamId: e.ws, day: e.day, kind: e.kind, label: e.label }));
+  return { from, to, bars, markers };
+}

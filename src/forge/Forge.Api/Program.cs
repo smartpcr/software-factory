@@ -83,6 +83,7 @@ if (app.Environment.IsDevelopment())
 app.MapHealthEndpoints();
 app.MapStateEndpoints();
 app.MapCardsEndpoints();
+app.MapTimelineEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 

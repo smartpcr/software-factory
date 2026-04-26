@@ -90,19 +90,19 @@ Make the board fully interactive against the local cache. No external sync yet �
 
 Visualises the same data as a horizontal timeline with epic and workstream lanes.
 
-- [ ] **2.1** Render time axis with Day / Week / Sprint zoom toggles.
-- [ ] **2.2** Render epic lanes (group rows) with collapse/expand.
-- [ ] **2.3** Render branch bars (`barStart` / `barEnd` from workstreams) with status color (active / merging / review / planning).
-- [ ] **2.4** Overlay event markers: PR opened, merged, review, conflict, block (`wsEvents`).
-- [ ] **2.5** Vertical "now" line and a `Now` button that scrolls to it.
-- [ ] **2.6** "Forecast" toggle that extends planned bars (`planned: true`) with a hatched style.
-- [ ] **2.7** Click a bar → opens the workstream detail (Phase 3).
-- [ ] **2.8** Hover tooltip with branch name, ahead/behind, last-active, agents.
-- [ ] **2.9** Filter chips: All / Active / Merging / Planning, plus lane toggle (Workstream vs Epic).
-- [ ] **2.10** API `GET /api/timeline?from=…&to=…` returning normalized bars + events.
-- [ ] **2.11** Telemetry: count timeline opens, time-on-view; structured logs `forge.timeline.*`.
-- [ ] **2.12** Playwright: zoom toggle changes pixel density, "Now" scrolls to today.
-- [ ] **2.13** **Fidelity check** — screenshot diff of `/timeline` against the prototype across all three zoom levels (Day / Week / Sprint), light + dark, with the sample data. Diff must be 0.
+- [x] **2.1** Render time axis with Day / Week / Sprint zoom toggles.
+- [x] **2.2** Render epic lanes (group rows) with collapse/expand.
+- [x] **2.3** Render branch bars (`barStart` / `barEnd` from workstreams) with status color (active / merging / review / planning).
+- [x] **2.4** Overlay event markers: PR opened, merged, review, conflict, block (`wsEvents`).
+- [x] **2.5** Vertical "now" line and a `Now` button that scrolls to it.
+- [x] **2.6** "Forecast" toggle that extends planned bars (`planned: true`) with a hatched style.
+- [x] **2.7** Click a bar → opens the workstream detail (Phase 3).
+- [x] **2.8** Hover tooltip with branch name, ahead/behind, last-active, agents.
+- [x] **2.9** Filter chips: All / Active / Merging / Planning, plus lane toggle (Workstream vs Epic).
+- [x] **2.10** API `GET /api/timeline?from=…&to=…` returning normalized bars + events.
+- [x] **2.11** Telemetry: count timeline opens, time-on-view; structured logs `forge.timeline.*`.
+- [x] **2.12** Playwright: zoom toggle changes pixel density, "Now" scrolls to today.
+- [x] **2.13** **Fidelity check** — screenshot diff of `/timeline` against the prototype across all three zoom levels (Day / Week / Sprint), light + dark, with the sample data. Diff must be 0.
 
 ## Phase 3 — Workstreams
 

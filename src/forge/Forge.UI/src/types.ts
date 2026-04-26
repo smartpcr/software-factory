@@ -167,3 +167,41 @@ export interface ForgeState {
   overviewActivity: OverviewActivity[];
   overviewAgents: OverviewAgent[];
 }
+
+// --- Timeline (Phase 2) ---------------------------------------------------
+
+export interface TimelineBar {
+  workstreamId: string;
+  name: string;
+  branch: string;
+  epic: string;
+  epicColor: string;
+  status: WorkstreamStatus;
+  barStart: number;
+  barEnd: number;
+  planned: boolean;
+  summary: string;
+  agents: string[];
+  ahead: number;
+  behind: number;
+  conflicts: number;
+  lastActive: number;
+}
+
+export interface TimelineMarker {
+  workstreamId: string;
+  day: number;
+  kind: WsEvent['kind'];
+  label: string;
+}
+
+export interface TimelineResponse {
+  from: number;
+  to: number;
+  bars: TimelineBar[];
+  markers: TimelineMarker[];
+}
+
+export type TimelineZoom = 'day' | 'week' | 'sprint';
+export type TimelineLane = 'workstream' | 'epic';
+export type TimelineFilter = 'all' | 'active' | 'merging' | 'planning';
