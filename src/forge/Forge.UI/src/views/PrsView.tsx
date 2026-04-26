@@ -60,12 +60,22 @@ export function PrsView() {
       <PrFilterBar prs={prs} />
 
       <div className="pr-board-wrap">
-        <PrBoard
-          prs={filtered}
-          onOpen={(pr) => setSelected(pr.id)}
-          onApprove={(pr) => void toggleAutoMerge(pr.id, true)}
-          onRequestChanges={(pr) => setSelected(pr.id)}
-        />
+        {prs.length === 0 ? (
+          <div className="empty-state">
+            <div className="title">No pull requests yet</div>
+            <div className="sub">
+              Open one from a workstream (Workstreams → PR), or wait for the configured
+              provider to sync existing PRs in.
+            </div>
+          </div>
+        ) : (
+          <PrBoard
+            prs={filtered}
+            onOpen={(pr) => setSelected(pr.id)}
+            onApprove={(pr) => void toggleAutoMerge(pr.id, true)}
+            onRequestChanges={(pr) => setSelected(pr.id)}
+          />
+        )}
       </div>
 
       <PrDetailPanel />

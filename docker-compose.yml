@@ -1,0 +1,49 @@
+# Phase 7.7 — local stack:
+#   * forge-api    (.NET 8 minimal API, SQLite at /data/forge.db)
+#   * forge-ui     (nginx serving the Vite bundle on :5181)
+#   * forge-proxy  (Caddy 2, terminates :8080 → /api to api, / to ui)
+# Start with: docker compose up --build
+# Tear down with: docker compose down (use --volumes to delete /data).
+
+services:
+  forge-api:
+    build:
+      context: .
+      dockerfile: src/forge/Forge.Api/Dockerfile
+    image: forge-api:local
+    env_file: ./forge.env
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Forge__Db__Path: /data/forge.db
+    volumes:
+      - forge-data:/data
+    expose:
+      - "5180"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --spider http://localhost:5180/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  forge-ui:
+    build:
+      context: .
+      dockerfile: src/forge/Forge.UI/Dockerfile
+    image: forge-ui:local
+    expose:
+      - "5181"
+    depends_on:
+      - forge-api
+
+  forge-proxy:
+    image: caddy:2-alpine
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - forge-api
+      - forge-ui
+
+volumes:
+  forge-data:

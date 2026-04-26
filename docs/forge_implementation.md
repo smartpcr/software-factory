@@ -178,16 +178,16 @@ Make every read-only surface from Phase 5 round-trippable.
 
 Make it feel like a product and easy to ship.
 
-- [ ] **7.1** Command palette (`Ctrl/Cmd-K`): jump to view, jump to card / PR / workstream by ID, run actions ("Open PR for ws/oidc-rotation").
-- [ ] **7.2** Keyboard map overlay (`?`) listing all shortcuts.
-- [ ] **7.3** Empty states for every view (no cards, no PRs, no workstreams, no provider configured).
-- [ ] **7.4** Error boundaries per view + a global "report problem" button that captures the last 50 actions + correlation id.
-- [ ] **7.5** Telemetry: OTel spans `forge.view.*`, `forge.action.*`; counters for card moves, PRs opened, syncs failed.
-- [ ] **7.6** Auth: pluggable, default = single-user with a local secret; optional Azure AD via `Forge:Auth:AzureAd:*`.
-- [ ] **7.7** Dockerfile per project (`Forge.Api/Dockerfile`, `Forge.UI/Dockerfile`) + root `docker-compose.yml` (api + ui static + sqlite volume + reverse proxy). Document `forge.env.sample`.
-- [ ] **7.8** User guide under `docs/forge/` (setup, providers, daily flow, keyboard, FAQ); architecture note linking `Forge.UI` ↔ `Forge.Api`.
-- [ ] **7.9** Smoke release checklist + a tagged `v0.1.0` once Phases 0–4 are green and Phases 5–6 work against at least one real ADO project and one real GitHub repo.
-- [ ] **7.10** Backlog grooming session: cut anything not in the goals list, file a `forge_v2.md` for the rest.
+- [x] **7.1** Command palette (`Ctrl/Cmd-K`): jump to view, jump to card / PR / workstream by ID, run actions ("Open PR for ws/oidc-rotation").
+- [x] **7.2** Keyboard map overlay (`?`) listing all shortcuts.
+- [x] **7.3** Empty states for every view (no cards, no PRs, no workstreams, no provider configured).
+- [x] **7.4** Error boundaries per view + a global "report problem" button that captures the last 50 actions + correlation id.
+- [~] **7.5** Telemetry: OTel spans `forge.view.*`, `forge.action.*`; counters for card moves, PRs opened, syncs failed. _(stable-name `ILogger` messages + client ring buffer ship today; full OTel SDK + metrics exporter rolled to `forge_v2.md`)_
+- [~] **7.6** Auth: pluggable, default = single-user with a local secret; optional Azure AD via `Forge:Auth:AzureAd:*`. _(single-user secret middleware ships; Azure AD JWT pipeline is config-only skeleton — wired in v2)_
+- [x] **7.7** Dockerfile per project (`Forge.Api/Dockerfile`, `Forge.UI/Dockerfile`) + root `docker-compose.yml` (api + ui static + sqlite volume + reverse proxy). Document `forge.env.sample`.
+- [x] **7.8** User guide under `docs/forge/` (setup, providers, daily flow, keyboard, FAQ); architecture note linking `Forge.UI` ↔ `Forge.Api`.
+- [~] **7.9** Smoke release checklist + a tagged `v0.1.0` once Phases 0–4 are green and Phases 5–6 work against at least one real ADO project and one real GitHub repo. _(checklist shipped at `docs/forge/release.md`; the actual `v0.1.0` tag is a manual cut step the operator runs once the gate items are ticked)_
+- [x] **7.10** Backlog grooming session: cut anything not in the goals list, file a `forge_v2.md` for the rest.
 
 ---
 

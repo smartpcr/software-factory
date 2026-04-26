@@ -86,3 +86,82 @@
   margin-bottom: 8px;
 }
 .empty-state .sub { font-size: 12px; max-width: 360px; line-height: 1.5; }
+.empty-state .actions { display: flex; gap: 8px; margin-top: 16px; }
+
+/* ============================================
+   COMMAND PALETTE (Phase 7.1)
+   ============================================ */
+.command-palette {
+  width: min(620px, 92vw);
+  max-height: 70vh;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.cmd-input {
+  width: 100%;
+  padding: 16px 18px;
+  background: transparent;
+  border: none;
+  outline: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-family: inherit;
+}
+.cmd-list { overflow-y: auto; padding: 6px 0; }
+.cmd-empty { padding: 20px; color: var(--text-tertiary); font-size: 12px; text-align: center; }
+.cmd-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.cmd-item.active { background: var(--bg-sunken); }
+.cmd-group {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--text-tertiary);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.cmd-group.view { color: var(--info); }
+.cmd-group.card { color: var(--success); }
+.cmd-group.pr { color: var(--warning); }
+.cmd-group.workstream { color: var(--accent); }
+.cmd-group.action { color: var(--text-secondary); }
+.cmd-label { flex: 1; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmd-hint {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+/* ============================================
+   KEYBOARD MAP OVERLAY (Phase 7.2)
+   ============================================ */
+.keymap-modal {
+  width: min(540px, 92vw);
+  padding: 22px;
+}
+.keymap-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; margin-top: 12px; }
+.keymap-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; }
+.keymap-keys { display: flex; gap: 4px; }
+kbd {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
+}

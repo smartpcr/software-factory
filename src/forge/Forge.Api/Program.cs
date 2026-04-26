@@ -86,6 +86,9 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoMergeWatcher>(
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IUserContext, HttpUserContext>();
 
+// Phase 7.6 — pluggable auth (default = single-user with optional shared secret).
+builder.Services.Configure<ForgeAuthOptions>(builder.Configuration.GetSection(ForgeAuthOptions.SectionName));
+
 // Problem details (RFC-7807).
 builder.Services.AddProblemDetails();
 
@@ -102,6 +105,9 @@ using (var scope = app.Services.CreateScope())
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 
+// Phase 7.6 — auth gate runs before idempotency/audit so unauthorized writes
+// never enter the cache and never produce an audit row.
+app.UseMiddleware<ForgeSecretMiddleware>();
 // Phase 6.12 — replay cached responses on duplicate Idempotency-Key (writes only).
 // Phase 6.10 — audit every write to forge_actions.
 // Order matters: idempotency wraps audit so replays are NOT re-audited.

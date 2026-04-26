@@ -3,6 +3,7 @@ import type { Card, ColumnId } from '@/types';
 import { checkDragPolicy } from '@/board/policy';
 import { sampleState } from '@/sampleData';
 import { forgeApi, ForgeApiError } from '@/api/forgeApi';
+import { logAction } from '@/telemetry';
 import { useToastStore } from './useToastStore';
 
 export type BoardFilter = 'all' | 'needs-approval' | 'ai-working' | 'blocked' | 'my-watch';
@@ -89,6 +90,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
 
     try {
       await forgeApi.moveCard(cardId, toCol, force);
+      logAction('forge.action.card.move', { cardId, fromCol: card.col, toCol });
       useToastStore.getState().show(policy.toast ?? `${cardId} → ${toCol}`, 'success');
       return { kind: 'moved' };
     } catch (err) {

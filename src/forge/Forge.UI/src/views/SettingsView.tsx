@@ -187,6 +187,24 @@ export function SettingsView() {
         </div>
       </div>
 
+      {Object.values(byKind).every((h) => !h?.ok) && Object.keys(byKind).length > 0 && (
+        <div
+          style={{
+            margin: '0 24px 14px',
+            padding: 12,
+            borderRadius: 'var(--radius-sm)',
+            background: 'var(--warning-bg)',
+            color: 'var(--warning)',
+            fontSize: 12,
+            lineHeight: 1.5,
+          }}
+        >
+          No provider is connected yet. Set the configuration keys below in user-secrets
+          (dev) or environment variables (prod), then click <strong>Test connection</strong>.
+          Until a provider is configured the board, PR view and timeline run on cached / sample data.
+        </div>
+      )}
+
       {loadError && (
         <div
           style={{

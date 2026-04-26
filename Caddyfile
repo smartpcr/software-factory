@@ -1,0 +1,17 @@
+# Phase 7.7 — Caddy reverse proxy. Routes:
+#   /api/*  → forge-api:5180  (REST + OpenAPI)
+#   /hubs/* → forge-api:5180  (SignalR; explicit so websocket upgrades work)
+#   *       → forge-ui:5181   (the SPA bundle)
+
+:8080 {
+    encode gzip zstd
+
+    @api path /api/* /hubs/*
+    handle @api {
+        reverse_proxy forge-api:5180
+    }
+
+    handle {
+        reverse_proxy forge-ui:5181
+    }
+}

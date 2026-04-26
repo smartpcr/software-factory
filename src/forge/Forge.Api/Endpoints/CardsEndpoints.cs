@@ -16,6 +16,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// Phase 1 — CRUD + move endpoints for cards.
@@ -256,8 +257,10 @@ public static class CardsEndpoints
         string id,
         [FromBody] MoveCardRequest req,
         ForgeDbContext db,
-        IHubContext<ForgeHub> hub)
+        IHubContext<ForgeHub> hub,
+        ILoggerFactory loggerFactory)
     {
+        var logger = loggerFactory.CreateLogger("Forge.Action.Card");
         var row = await db.Cards.FirstOrDefaultAsync(c => c.Id == id);
         if (row is null) return NotFound(id);
         if (string.IsNullOrEmpty(req?.ToCol))
@@ -270,6 +273,7 @@ public static class CardsEndpoints
 
         if (!policy.Allow)
         {
+            logger.LogInformation("forge.action.card.move.blocked id={Id} from={From} to={To}", id, row.Col, req.ToCol);
             return Results.Problem(
                 title: "Move blocked by policy",
                 detail: policy.Title ?? "Move not allowed",
@@ -277,17 +281,17 @@ public static class CardsEndpoints
         }
         if (policy.Confirm && !req.Force)
         {
-            // Surface the policy back to the client so it can show the modal,
-            // then re-call this endpoint with Force=true.
             return Results.Json(
                 new MoveCardResponse(card, policy),
                 statusCode: 422);
         }
 
+        var fromCol = row.Col;
         row.Col = req.ToCol;
         await db.SaveChangesAsync();
 
         var moved = CardMapper.ToContract(row);
+        logger.LogInformation("forge.action.card.move id={Id} from={From} to={To}", id, fromCol, req.ToCol);
         await hub.Clients.All.SendAsync("card.changed", new { kind = "moved", card = moved });
         return Results.Ok(new MoveCardResponse(moved, policy));
     }

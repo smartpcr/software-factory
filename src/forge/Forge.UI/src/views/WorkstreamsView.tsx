@@ -147,6 +147,19 @@ export function WorkstreamsView() {
       <StatsStrip stats={wsStats} />
 
       <div className="workstream-grid-wrap">
+        {workstreams.length === 0 && (
+          <div className="empty-state">
+            <div className="title">No workstreams yet</div>
+            <div className="sub">
+              Spawn one from an epic on the board, or use “New workstream” above to create
+              an empty one with its own branch + worktree.
+            </div>
+            <div className="actions">
+              <button className="btn btn-primary" onClick={() => setModalOpen(true)}>New workstream</button>
+              <button className="btn btn-secondary" onClick={() => void syncFromEpics()}>Sync from epics</button>
+            </div>
+          </div>
+        )}
         <div className="workstream-grid" id="workstream-grid">
           {filtered.map((ws) => (
             <div

@@ -116,16 +116,29 @@ export function PlanView() {
       <FilterBar />
 
       <div className="board-wrap">
-        <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd}>
-          <Board />
-          <DragOverlay dropAnimation={null}>
-            {draggingCard ? (
-              <div className="drag-overlay">
-                <BoardCard card={draggingCard} />
-              </div>
-            ) : null}
-          </DragOverlay>
-        </DndContext>
+        {cards.length === 0 ? (
+          <div className="empty-state">
+            <div className="title">No cards in this sprint</div>
+            <div className="sub">
+              Press <kbd>n</kbd> to add a new card, or sync from a provider to import
+              your backlog.
+            </div>
+            <div className="actions">
+              <button className="btn btn-primary" onClick={() => setModalOpen(true)}>New card</button>
+            </div>
+          </div>
+        ) : (
+          <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd}>
+            <Board />
+            <DragOverlay dropAnimation={null}>
+              {draggingCard ? (
+                <div className="drag-overlay">
+                  <BoardCard card={draggingCard} />
+                </div>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
+        )}
       </div>
 
       <DetailPanel />
