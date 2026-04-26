@@ -5,6 +5,7 @@ import { useProductsStore } from '@/state/useProductsStore';
 import { useCurrentUser, useHasRole } from '@/state/useCurrentUserStore';
 import { ProductIcon } from '@/products/ProductIcon';
 import { UserMenu } from '@/shell/UserMenu';
+import { SAMPLE_WORK_ITEMS } from '@/workitems/sampleWorkItems';
 
 // Verbatim port of the prototype's <aside class="sidebar">. The only
 // React-required changes: NavLink in place of <a data-view>, className
@@ -30,8 +31,20 @@ export function SideBar() {
     if (activeProduct) void loadRepos(activeProduct.id);
   }, [activeProduct, loadRepos]);
 
-  const repoCount = activeProduct ? (reposByProduct[activeProduct.id]?.length ?? 0) : 0;
+  const activeProductRepos = useMemo(
+    () => (activeProduct ? reposByProduct[activeProduct.id] ?? [] : []),
+    [activeProduct, reposByProduct],
+  );
+  const repoCount = activeProductRepos.length;
   const roleLabel = formatRole(me.role);
+
+  // Phase 12 — sidebar badge counts active+proposed work items. Reads from
+  // the sample registry today; once 12.3 lands the source becomes the live
+  // /api/work-items count via SignalR `workitem.changed`.
+  const workItemActiveCount = useMemo(
+    () => SAMPLE_WORK_ITEMS.filter((i) => i.state === 'active' || i.state === 'proposed').length,
+    [],
+  );
 
   // Phase 9 — sidebar foot user widget opens UserMenu (same popover the TopBar
   // avatar uses). Important when no provider is connected — the placeholder
@@ -109,6 +122,15 @@ export function SideBar() {
             </div>
             <span className="badge">38</span>
             <span className="tooltip">Plan & Design</span>
+          </NavLink>
+          <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/work-items">
+            <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="2.5" width="9" height="2.2" rx="0.6" stroke="currentColor" strokeWidth="1.3" /><rect x="2" y="6.9" width="12" height="2.2" rx="0.6" stroke="currentColor" strokeWidth="1.3" /><rect x="2" y="11.3" width="6.5" height="2.2" rx="0.6" stroke="currentColor" strokeWidth="1.3" /></svg>
+            <div className="label-block">
+              <span className="label">Work items</span>
+              <span className="sub">2 epics · 4 features · 17 stories/tasks</span>
+            </div>
+            <span className="badge">{workItemActiveCount}</span>
+            <span className="tooltip">Work items</span>
           </NavLink>
           <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/timeline">
             <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><line x1="2" y1="4" x2="11" y2="4" stroke="currentColor" strokeWidth="1.4" /><line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" strokeWidth="1.4" /><line x1="2" y1="12" x2="9" y2="12" stroke="currentColor" strokeWidth="1.4" /><circle cx="11" cy="4" r="1.3" fill="currentColor" /><circle cx="14" cy="8" r="1.3" fill="currentColor" /><circle cx="9" cy="12" r="1.3" fill="currentColor" /></svg>
@@ -192,22 +214,23 @@ export function SideBar() {
         </div>
 
         <div className="nav-section">
-          <div className="nav-section-title"><span>Repositories</span><button className="add-btn" title="Connect repo">+</button></div>
-          <div className="repo-row active">
-            <span className="dot"></span>
-            <span className="name">atlas-platform</span>
-            <span className="src">ADO</span>
+          <div className="nav-section-title">
+            <span>Repositories{activeProduct ? ` · ${activeProduct.name}` : ''}</span>
+            <NavLink to="/products" className="add-btn" title="Connect repo">+</NavLink>
           </div>
-          <div className="repo-row">
-            <span className="dot"></span>
-            <span className="name">forge-runtime</span>
-            <span className="src">GH</span>
-          </div>
-          <div className="repo-row">
-            <span className="dot"></span>
-            <span className="name">tenant-svc</span>
-            <span className="src">ADO</span>
-          </div>
+          {activeProductRepos.length === 0 ? (
+            <div className="repo-row" style={{ color: 'var(--text-tertiary)', cursor: 'default' }}>
+              <span className="name" style={{ fontStyle: 'italic' }}>No repos yet</span>
+            </div>
+          ) : (
+            activeProductRepos.map((r, i) => (
+              <div key={r.id} className={`repo-row${i === 0 ? ' active' : ''}`} title={r.remoteUrl}>
+                <span className="dot"></span>
+                <span className="name">{r.displayName}</span>
+                <span className="src">{r.kind === 'ado' ? 'ADO' : 'GH'}</span>
+              </div>
+            ))
+          )}
         </div>
 
         <div style={{ padding: '0 12px' }}>

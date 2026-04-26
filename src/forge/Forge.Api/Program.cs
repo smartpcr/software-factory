@@ -144,6 +144,8 @@ using (var scope = app.Services.CreateScope())
     await Phase8Migration.ApplyAsync(db);
     // Phase 11.4 — agent_usage cost ledger.
     await Phase11Migration.ApplyAsync(db);
+    // Phase 12.2 — work_items + work_item_links.
+    await Phase12Migration.ApplyAsync(db);
     await ForgeSeed.EnsureSeededAsync(db);
 }
 
@@ -186,6 +188,7 @@ app.MapMeSettingsEndpoints();
 app.MapCrewsEndpoints();
 app.MapModelsEndpoints();
 app.MapAgentsEndpoints();
+app.MapWorkItemsEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 

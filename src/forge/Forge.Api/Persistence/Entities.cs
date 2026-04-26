@@ -547,3 +547,84 @@ public class RepoRow
 
     public string? GhRepo { get; set; }
 }
+
+/// <summary>
+/// Phase 12.1 — first-class work item record. Replaces the lightweight
+/// <see cref="CardRow"/> projection for the WIT workspace; the existing
+/// /api/cards endpoint becomes a view over <c>work_items</c> WHERE
+/// <c>iterationRef = activeSprint AND state IN (proposed, active, resolved)</c>.
+/// Two parallel three-level ladders are encoded by <see cref="Track"/>:
+///   * dev:    epic → feature → task | bug
+///   * design: phase → stage → step
+/// </summary>
+public class WorkItemRow
+{
+    public string Id { get; set; } = string.Empty;
+
+    public string? RepoId { get; set; }
+
+    /// <summary>One of: ado, github, local.</summary>
+    public string Provider { get; set; } = "local";
+
+    /// <summary>ADO work item id or GitHub issue number. Null for local-only.</summary>
+    public int? ProviderRef { get; set; }
+
+    /// <summary>One of: dev, design.</summary>
+    public string Track { get; set; } = "dev";
+
+    /// <summary>One of: epic, feature, task, bug, phase, stage, step.</summary>
+    public string Type { get; set; } = string.Empty;
+
+    /// <summary>One of: proposed, active, resolved, closed.</summary>
+    public string State { get; set; } = "proposed";
+
+    public string Title { get; set; } = string.Empty;
+
+    public string DescriptionMd { get; set; } = string.Empty;
+
+    /// <summary>Self-FK; cycle prevention enforced at the API layer.</summary>
+    public string? ParentId { get; set; }
+
+    /// <summary>Optional product feature / functional area reference (Q12.1).</summary>
+    public string? FeatureRef { get; set; }
+
+    /// <summary>"{repoId}:{providerSprintId}" — namespaced per Q4.</summary>
+    public string IterationRef { get; set; } = string.Empty;
+
+    public string AreaPath { get; set; } = string.Empty;
+
+    /// <summary>JSON of <c>{ kind, id, displayName }</c>; null when unassigned.</summary>
+    public string? AssignedToJson { get; set; }
+
+    public int Points { get; set; }
+
+    public string Priority { get; set; } = "med";
+
+    public string TagsJson { get; set; } = "[]";
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>Phase 5.10 — opaque marker advanced on every server write.</summary>
+    public string? RemoteRevision { get; set; }
+}
+
+/// <summary>
+/// Phase 12.2 — non-hierarchy links between work items. The primary parent
+/// stays denormalised on <see cref="WorkItemRow.ParentId"/>; this table
+/// captures sibling / blocks / duplicates / related cross-references.
+/// </summary>
+public class WorkItemLinkRow
+{
+    public long Id { get; set; }
+
+    public string FromId { get; set; } = string.Empty;
+
+    public string ToId { get; set; } = string.Empty;
+
+    /// <summary>One of: related, blocks, blocked-by, duplicates.</summary>
+    public string Kind { get; set; } = "related";
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}

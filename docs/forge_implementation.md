@@ -365,6 +365,121 @@ Make the agent labels real. Forge spawns and supervises the model that backs eac
 
 ---
 
+## Phase 12 — Work Item Tracking (WIT)
+
+> Promote the implicit Phase-1 "card" model into a first-class **work item** system that round-trips with ADO Boards and GitHub Issues, supports the full hierarchy (`epic → feature → user-story → task | bug`), and gives the operator multiple views over the same data: **Board**, **Timeline**, **Tree**, **List**.
+
+Context — what's already in scope vs. what this phase adds:
+- Phase 1 ships a sprint board (one slice of work items, one product, no parent/child).
+- Phase 2 ships a timeline (over workstreams / branches, **not** items).
+- Phase 5 syncs work items into the cache (read).
+- Phase 6 writes a subset of work items back (create / update / status transitions).
+- **Phase 12 adds the dedicated workspace** that lets the operator browse / sort / filter / create / re-parent / move-iterations across **all** work items (not just the active sprint), in any of the four canonical views, with full provider round-trip and bulk operations.
+
+### Resolved decisions
+
+- **Q12.1 Hierarchy + tracks** — two parallel three-level ladders, each tagged with a `track` field so the UI can render the right vocabulary and the API can validate parenthood per ladder:
+  - **Dev track**: `epic → feature → task | bug` (task and bug are sibling leaves, not nested).
+  - **Design track**: `phase → stage → step`.
+  - Both top-level containers (`epic`, `phase`) carry an optional `featureRef` pointing at a product feature / functional area / story id, so a single product feature can have both a development epic **and** a design phase under it. The user-story tier is intentionally absent from the primary ladder; legacy ADO "User Story" / GitHub story-issue records map to `feature` on import (preserving the original id in `providerRef`). Cycle prevention is enforced at the API layer; a child's rank must exceed its parent's rank within the same track. Cross-track linking is permitted only at the top level (epic ↔ phase pinned to the same `featureRef`). v0.1 explicitly does not support deeper nesting; revisit if operators demand sub-task threading.
+- **Q12.2 Provider parity** — full read/write parity with **ADO Boards + GitHub Issues**, equal first-class. ADO uses **WIQL** queries scoped by `System.AreaPath` + `System.IterationPath`; GitHub uses **GraphQL Issues + Projects v2** with milestone as iteration source. Sub-issue support on GitHub uses the new sub-issues feature when available, falling back to a `parent: #N` body convention.
+- **Q12.3 State model** — normalised to **four states** across providers: `proposed | active | resolved | closed`. Mappings:
+  - **ADO** → `New / Approved / Committed` ⇒ `proposed`; `Active` ⇒ `active`; `Resolved` ⇒ `resolved`; `Closed / Removed` ⇒ `closed`.
+  - **GitHub** → `open` + state-reason `not_planned` ⇒ `proposed`; `open` (no reason) ⇒ `active`; `closed` + reason `completed` ⇒ `resolved`; `closed` + reason `not_planned` ⇒ `closed`.
+- **Q12.4 Iteration source** — follows **Q4** (Phase 8): ADO repos use ADO iteration paths; GitHub repos use GitHub milestones. **No local Forge iteration.** Cross-repo iteration roll-up is a Phase R / `forge_v2.md` candidate.
+- **Q12.5 Identity for assignment** — `assignedTo` carries either an **`agent`** (Forge agent id, e.g. `E4`) **or** a **`human`** (UPN / GitHub login). Phase 9 user identity is the source of truth; agents are resolved against the `agents` table.
+- **Q12.6 Mode persistence** — selected view-mode persists per user in `localStorage` as `forge.wit.mode`; iteration / area / type filters persist as `forge.wit.filters`. Per-product, so switching products resets the filter chips.
+- **Q12.7 Conflict policy** — same as Phase 5.9 cards: last-writer-wins by default, surfaced as a "remote changed since" badge with discard / overwrite choice.
+
+### Implementation steps
+
+- [ ] **12.1** Domain model — `WorkItemRow`:
+  ```
+  Id (string, primary key — same shape as Card.Id)
+  RepoId (FK → repos)
+  Provider ("ado" | "github" | "local")
+  ProviderRef (provider's work item id / issue number — null for local-only)
+  Type ("epic" | "feature" | "user-story" | "task" | "bug")
+  State ("proposed" | "active" | "resolved" | "closed")
+  Title
+  DescriptionMd (markdown body)
+  ParentId (nullable, FK → work_items, enforced acyclic)
+  IterationRef (string — namespaced by repo: "{repoId}:{providerSprintId}")
+  AreaPath (string)
+  AssignedToJson ({ kind: "agent"|"human", id, displayName })
+  Points (int)
+  Priority ("low"|"med"|"high")
+  TagsJson (string[])
+  CreatedAt, UpdatedAt (DateTimeOffset)
+  RemoteRevision (opaque marker — same as cards.RemoteRevision)
+  ```
+  TS mirror in `src/forge/Forge.UI/src/types.ts` (`WorkItem`, `WorkItemType`, `WorkItemState`, `WorkItemAssignee`).
+- [ ] **12.2** Migration — `Phase12Migration.cs`:
+  - `work_items` table (the columns above).
+  - `work_item_links` table (`{ id, parentId, childId, kind: "subtask"|"related"|"duplicate", createdAt }`) for cross-product / non-hierarchy links; the primary parent stays denormalised on `work_items.ParentId`.
+  - **Backfill**: every existing `Card` becomes a `WorkItem` with `Type` derived from `Card.Type` (story / task / bug → user-story / task / bug), `State` derived from `Card.Col` (backlog → proposed; design / build → active; review → resolved; done → closed), `IterationRef` set to the active sprint, `ParentId` set by epic→feature lookup where unambiguous.
+  - **Cards become a projection**: the existing `cards` endpoints continue to serve the active-sprint slice, computed from `work_items` (where `iterationRef = activeSprint AND state IN (proposed, active, resolved)`).
+- [ ] **12.3** Endpoints — `Forge.Api/Endpoints/WorkItemsEndpoints.cs`:
+  - `GET /api/work-items` — paginated list, filterable by `repoId`, `iterationRef`, `state[]`, `type[]`, `parentId`, `assignedTo`, `tag`, `q` (full-text). Default page size 100, max 500.
+  - `GET /api/work-items/{id}` — single item with linked children + parents resolved.
+  - `POST /api/work-items` — create (server fills id, createdAt, updatedAt; pushes to provider when `provider != "local"`).
+  - `PATCH /api/work-items/{id}` — partial update; honours `If-Match: revision` for the Phase 5.9 conflict policy.
+  - `DELETE /api/work-items/{id}` — soft-delete (sets `state = closed`); hard delete only with `?force=true` and PO role.
+  - `POST /api/work-items/{id}/move` — body `{ state? | iterationRef? }`; emits SignalR `workitem.changed`.
+  - `POST /api/work-items/{id}/parent` — body `{ parentId | null }`; cycle check; emits `workitem.linked`.
+  - `POST /api/work-items/sync/{repoId}` — force a one-shot sync (PO + writer roles only; rate-limited to 1/minute per repo).
+  - `POST /api/work-items/bulk` — body `{ ids[], op: "move"|"reassign"|"tag"|"delete", payload }`. Idempotency-Key required.
+- [ ] **12.4** Provider sync extensions:
+  - **ADO** — extend `AdoProvider.ListWorkItems` to accept `(areaPath, iterationPath, types[])` filters; emit a single batched WIQL query, then `_apis/wit/workitems?ids=…&fields=…&$expand=relations` for hierarchy. Map `System.Parent` → `ParentId`.
+  - **GitHub** — extend `GitHubProvider.ListIssues` to use the GraphQL `repository.issues` connection with `labels: ["epic"|"feature"]` filtering and `subIssues` field where available. Fall back to parsing `Parent: #N` from issue body.
+  - Both providers report `RemoteRevision` so the conflict policy works uniformly.
+- [ ] **12.5** Sidebar nav entry — new `Work items` link between **Plan & Design** and **Timeline**, with a live count badge (`active + proposed` items in the active product). The badge re-renders on the SignalR `workitem.changed` event.
+- [ ] **12.6** `/work-items` route with view-mode toggle:
+  - **Board** — columns by state (`proposed | active | resolved | closed`), swimlanes by `type` or `assignedTo` (toggleable). Drag-and-drop changes `state`.
+  - **Timeline** — Gantt-style, rows grouped by epic, x-axis = current + next 2 iterations (configurable). Bars span an item's iteration; click → detail panel.
+  - **Tree** — indented hierarchy `epic → feature → story → task/bug`. Expand / collapse per node. Right-click → reparent. Cycle attempts blocked at the API.
+  - **List** — dense table with sort + multi-select. Columns: type icon, id, title, state pill, iteration, assignee, points, priority, tags. Shift-click + lasso for range select.
+  - Mode persists in `localStorage.forge.wit.mode` (Q12.6).
+- [ ] **12.7** Detail panel (right rail, re-uses `WorkstreamDetailPanel` layout):
+  - Title (inline-editable), state pill, iteration combo, assignee picker, points stepper, priority chip, tags input, area path text.
+  - Description (markdown editor with preview).
+  - Children list (with mini progress bar).
+  - Parent breadcrumb (clickable to focus parent).
+  - Linked PRs + branches (re-uses Phase 3 cross-link).
+  - Comments thread (round-trips via provider).
+  - History (state transitions + assignment changes from `agent_history`-style audit).
+- [ ] **12.8** Bulk operations:
+  - Multi-select via shift-click + drag-lasso on Board / List modes.
+  - Bulk action bar appears at the bottom: change-state | change-iteration | reassign | tag | delete.
+  - All bulk writes use a single `Idempotency-Key` so a retry doesn't duplicate.
+- [ ] **12.9** Filter bar:
+  - Chips: `All / Mine / Active / Blocked / Watching` (mirrors Phase 1.3 chips).
+  - Selects: `Type`, `State`, `Iteration`, `Area`, `Assignee`, `Tag`, `Repo`, `Provider`.
+  - Search input → server-side `q=` (FTS over title + description).
+  - Filters persist in `localStorage.forge.wit.filters` (per-product).
+- [ ] **12.10** Sync UX:
+  - Per-repo "Sync now" button on the filter bar; surfaces last-sync timestamp + error if any.
+  - Auto-poll every 60 s (re-uses Phase 5.7 `ProviderSyncService`).
+  - Conflict pill on items where `RemoteRevision` advanced since the local edit; click opens a discard / overwrite modal (Phase 5.9 contract).
+  - Local-only items (no `ProviderRef`) get a "Push to provider" button that creates the upstream issue / WI on demand.
+- [ ] **12.11** Tests:
+  - Domain mappers (ADO state ↔ Forge state, GitHub state-reason ↔ Forge state).
+  - Hierarchy invariants: cycle rejection, depth ≤ 5, parent-must-be-of-higher-type-rank.
+  - Endpoint contract tests — every endpoint above (filter combos, pagination, idempotency on bulk).
+  - Sync round-trip via `StubHttpMessageHandler` for ADO + GitHub cassettes.
+  - Playwright E2E happy-path: create item → assign → move iteration → reparent → push to provider → assert remote write was called with the right payload.
+- [ ] **12.12** **Fidelity**: new view; exempt from `forge-board.html` screenshot diff. Must use existing forge tokens. Document any new tokens in `docs/forge/design-tokens.md` (`--state-proposed`, `--state-active`, `--state-resolved`, `--state-closed` are anticipated).
+
+### Out of scope (explicitly deferred)
+
+- **Cross-repo / cross-product roll-up timeline** — Phase R / `forge_v2.md` candidate per Q4.
+- **Custom work item types** (e.g. ADO-tenant-defined "Feature Request") — v0.1 ships the Q12.3 fixed five-type set; mapping for unknown types falls back to `task`.
+- **Inline saved queries** (a la ADO Queries / GitHub Issue Search) — Phase R polish.
+- **Burndown / velocity charts** — derived from sprint slice; Phase R / `forge_v2.md`.
+- **Email notifications on assignment** — provider already does this; Forge does not duplicate.
+
+---
+
 ## Phase R — Post-implementation refactor (deferred)
 
 > **Do not start until every checkbox in Phases 0–7 is ticked and all fidelity checks are green.** This phase exists only to record the deferred design debt so reviewers know it is acknowledged, not forgotten.

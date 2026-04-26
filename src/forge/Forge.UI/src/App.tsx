@@ -13,6 +13,7 @@ import { PoliciesView } from '@/views/PoliciesView';
 import { CostView } from '@/views/CostView';
 import { ProductsView } from '@/views/ProductsView';
 import { CrewsView } from '@/views/CrewsView';
+import { WorkItemsView } from '@/views/WorkItemsView';
 import { useStateStore } from '@/state/useStateStore';
 
 export function App() {
@@ -29,6 +30,7 @@ export function App() {
         <Route element={<AppShell />}>
           <Route path="/" element={<OverviewView />} />
           <Route path="/plan" element={<PlanView />} />
+          <Route path="/work-items" element={<WorkItemsView />} />
           <Route path="/timeline" element={<TimelineView />} />
           <Route path="/workstreams" element={<WorkstreamsView />} />
           <Route path="/prs" element={<PrsView />} />

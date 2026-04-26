@@ -14,6 +14,11 @@ body {
 }
 button { font: inherit; cursor: pointer; border: none; background: none; color: inherit; }
 input, select { font: inherit; border: none; background: none; color: inherit; outline: none; }
+/* Native <select> popups detach from the document and don't inherit the page
+ * theme — without an explicit color/background, dark theme renders white-on-
+ * white. Setting these on `option` ensures the popup respects the active
+ * forge tokens in Chrome/Edge/Firefox. (Safari uses native macOS styling.) */
+option { background-color: var(--bg-elevated); color: var(--text-primary); }
 a { color: inherit; text-decoration: none; }
 ::selection { background: var(--accent); color: var(--bg-base); }
 ::-webkit-scrollbar { width: 8px; height: 8px; }

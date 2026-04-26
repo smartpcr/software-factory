@@ -58,6 +58,10 @@ public class ForgeDbContext : DbContext
 
     public DbSet<AgentHistoryRow> AgentHistory => this.Set<AgentHistoryRow>();
 
+    public DbSet<WorkItemRow> WorkItems => this.Set<WorkItemRow>();
+
+    public DbSet<WorkItemLinkRow> WorkItemLinks => this.Set<WorkItemLinkRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         mb.Entity<EpicRow>().ToTable("epics").HasKey(x => x.Id);
@@ -127,5 +131,17 @@ public class ForgeDbContext : DbContext
         // Phase 11.10 — crew budgets denormalised onto the crew row.
         mb.Entity<CrewRow>().Property(x => x.DailyBudgetUsd).HasConversion<double?>();
         mb.Entity<CrewRow>().Property(x => x.MaxTaskBudgetUsd).HasConversion<double?>();
+
+        // Phase 12.1 — work_items + work_item_links.
+        mb.Entity<WorkItemRow>().ToTable("work_items").HasKey(x => x.Id);
+        // Filter / sort indexes — every list view hits at least one of these.
+        mb.Entity<WorkItemRow>().HasIndex(x => x.ParentId);
+        mb.Entity<WorkItemRow>().HasIndex(x => x.IterationRef);
+        mb.Entity<WorkItemRow>().HasIndex(x => new { x.RepoId, x.Type });
+        mb.Entity<WorkItemRow>().HasIndex(x => new { x.Provider, x.ProviderRef });
+
+        mb.Entity<WorkItemLinkRow>().ToTable("work_item_links").HasKey(x => x.Id);
+        mb.Entity<WorkItemLinkRow>().HasIndex(x => x.FromId);
+        mb.Entity<WorkItemLinkRow>().HasIndex(x => x.ToId);
     }
 }

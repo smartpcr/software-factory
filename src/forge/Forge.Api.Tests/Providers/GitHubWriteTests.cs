@@ -7,6 +7,7 @@
 namespace Forge.Api.Tests.Providers;
 
 using System.Net.Http;
+using Forge.Api.Auth;
 using Forge.Api.Providers;
 using Forge.Api.Providers.GitHub;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -21,7 +22,9 @@ public class GitHubWriteTests
         var stub = new StubHttpMessageHandler();
         var factory = new SingleNamedHttpClientFactory(GitHubProvider.ClientName, stub);
         var opts = Options.Create(new GitHubOptions { Repo = "ms/forge", Pat = "server-pat" });
-        return (new GitHubProvider(factory, opts, NullLogger<GitHubProvider>.Instance), stub);
+        // gh-CLI auth path now takes IEnumerable<IAuthService>; tests don't
+        // exercise the gh CLI shell-out, so passing an empty list is fine.
+        return (new GitHubProvider(factory, opts, Array.Empty<IAuthService>(), NullLogger<GitHubProvider>.Instance), stub);
     }
 
     [Fact]

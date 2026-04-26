@@ -34,10 +34,24 @@ public static class ForgeSeed
         // Phase 11.3 — first-class agent rows. Idempotent.
         await EnsureSeedAgentsAsync(db);
 
-        if (await db.Epics.AnyAsync())
+        if (!await db.Epics.AnyAsync())
         {
-            return;
+            await SeedPrototypeDataAsync(db);
         }
+
+        // Phase 12.2 — backfill work_items from existing cards. Idempotent.
+        // Runs after the prototype-data seed so first-boot picks up the 23
+        // default cards; subsequent boots no-op because every id already
+        // exists in work_items.
+        await BackfillWorkItemsFromCardsAsync(db);
+    }
+
+    /// <summary>
+    /// Original Phase-0 prototype seed extracted into its own method so the
+    /// Phase 12 backfill can run reliably after it on first boot.
+    /// </summary>
+    private static async Task SeedPrototypeDataAsync(ForgeDbContext db)
+    {
 
         var serializerOpts = new JsonSerializerOptions
         {
@@ -327,5 +341,74 @@ public static class ForgeSeed
             changed = true;
         }
         if (changed) await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Phase 12.2 — every existing <see cref="CardRow"/> gets mirrored as a
+    /// <see cref="WorkItemRow"/> the first time we boot after the migration.
+    /// Idempotent on work item id; we use the card id as-is so cross-links
+    /// from the existing cards endpoint stay coherent. Subsequent edits flow
+    /// through /api/work-items; a follow-up batch rewires /api/cards as a
+    /// projection over <c>work_items</c>.
+    /// </summary>
+    private static async Task BackfillWorkItemsFromCardsAsync(ForgeDbContext db)
+    {
+        var existingIds = await db.WorkItems.Select(w => w.Id).ToListAsync();
+        var existing = new HashSet<string>(existingIds);
+        var cards = await db.Cards.AsNoTracking().ToListAsync();
+        var added = 0;
+        foreach (var c in cards)
+        {
+            if (existing.Contains(c.Id)) continue;
+
+            // Card.Type is one of: story | task | bug. Map onto the dev-track
+            // work-item types per Q12.1 (revised). Cards never carry epics or
+            // features today, but if a card's title says "Epic:" we promote it.
+            var type = c.Type switch
+            {
+                "story"  => "feature",
+                "task"   => "task",
+                "bug"    => "bug",
+                _        => "task",
+            };
+
+            // Card.Col → State. backlog/design → proposed; build → active;
+            // review → resolved; done → closed.
+            var state = c.Col switch
+            {
+                "backlog" => "proposed",
+                "design"  => "proposed",
+                "build"   => "active",
+                "review"  => "resolved",
+                "done"    => "closed",
+                _         => "active",
+            };
+
+            db.WorkItems.Add(new WorkItemRow
+            {
+                Id = c.Id,
+                RepoId = c.RepoId,
+                Provider = "local",
+                ProviderRef = null,
+                Track = "dev",
+                Type = type,
+                State = state,
+                Title = c.Title,
+                DescriptionMd = string.Empty,
+                ParentId = c.Epic, // best-effort: epic id is the closest parent today
+                FeatureRef = null,
+                IterationRef = string.Empty,
+                AreaPath = string.Empty,
+                AssignedToJson = c.AgentJson, // shape already matches
+                Points = c.Pts,
+                Priority = c.Priority,
+                TagsJson = c.TagsJson,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+                RemoteRevision = c.RemoteRevision,
+            });
+            added++;
+        }
+        if (added > 0) await db.SaveChangesAsync();
     }
 }

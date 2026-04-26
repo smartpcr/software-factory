@@ -1,0 +1,436 @@
+// -----------------------------------------------------------------------
+// <copyright file="WorkItemsEndpoints.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+
+namespace Forge.Api.Endpoints;
+
+using System.Text.Json;
+using Forge.Api.Auth;
+using Forge.Api.Contracts;
+using Forge.Api.Domain;
+using Forge.Api.Persistence;
+using Forge.Api.Realtime;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
+using Microsoft.EntityFrameworkCore;
+
+/// <summary>
+/// Phase 12.3 — Work Item Tracking CRUD + move + reparent. Local-only here;
+/// provider sync (push to ADO / GitHub) lands with Phase 12.4 in Batch B.
+/// </summary>
+public static class WorkItemsEndpoints
+{
+    private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
+
+    public static WebApplication MapWorkItemsEndpoints(this WebApplication app)
+    {
+        var grp = app.MapGroup("/api/work-items").WithTags("WorkItems");
+
+        grp.MapGet("/", List).WithName("ListWorkItems");
+        grp.MapGet("/{id}", Get).WithName("GetWorkItem");
+        grp.MapPost("/", Create).WithName("CreateWorkItem");
+        grp.MapPatch("/{id}", Patch).WithName("PatchWorkItem");
+        grp.MapDelete("/{id}", Delete).WithName("DeleteWorkItem");
+        grp.MapPost("/{id}/move", Move).WithName("MoveWorkItem");
+        grp.MapPost("/{id}/parent", Reparent).WithName("ReparentWorkItem");
+
+        return app;
+    }
+
+    // ----- LIST -----------------------------------------------------------
+
+    private static async Task<IResult> List(
+        HttpContext ctx,
+        ForgeDbContext db,
+        string? repoId,
+        string? iterationRef,
+        string? state,
+        string? type,
+        string? track,
+        string? parentId,
+        string? assignedTo,
+        string? tag,
+        string? q,
+        int? page,
+        int? pageSize,
+        CancellationToken ct)
+    {
+        var query = db.WorkItems.AsNoTracking().AsQueryable();
+        if (!string.IsNullOrWhiteSpace(repoId))       query = query.Where(w => w.RepoId == repoId);
+        if (!string.IsNullOrWhiteSpace(iterationRef)) query = query.Where(w => w.IterationRef == iterationRef);
+        if (!string.IsNullOrWhiteSpace(parentId))     query = query.Where(w => w.ParentId == parentId);
+        if (!string.IsNullOrWhiteSpace(track))        query = query.Where(w => w.Track == track);
+
+        // Repeated query keys (?state=active&state=proposed) come through as
+        // a single comma-joined string from minimal-API binding; split on ','.
+        // Use List<string> so EF picks the IEnumerable.Contains overload it
+        // can translate (string[] resolves to a ReadOnlySpan-based overload
+        // on .NET 8 that the SQLite provider rejects).
+        if (!string.IsNullOrWhiteSpace(state))
+        {
+            var states = state.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            query = query.Where(w => states.Contains(w.State));
+        }
+        if (!string.IsNullOrWhiteSpace(type))
+        {
+            var types = type.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            query = query.Where(w => types.Contains(w.Type));
+        }
+
+        // Materialise and finish filtering in memory for the JSON-string columns
+        // and the assignedTo lookup; the indexed columns above already cut the
+        // working set down. SQLite EF can't translate `JsonContains`-style
+        // predicates anyway.
+        var rows = await query.OrderBy(w => w.Id).Take(pageSize is int ps ? Math.Clamp(ps, 1, 500) * Math.Max(1, page ?? 1) : 500).ToListAsync(ct);
+
+        if (!string.IsNullOrWhiteSpace(assignedTo))
+        {
+            rows = rows.Where(r => MatchesAssignee(r.AssignedToJson, assignedTo)).ToList();
+        }
+        if (!string.IsNullOrWhiteSpace(tag))
+        {
+            rows = rows.Where(r => MatchesTag(r.TagsJson, tag)).ToList();
+        }
+        if (!string.IsNullOrWhiteSpace(q))
+        {
+            var needle = q.ToLowerInvariant();
+            rows = rows.Where(r =>
+                r.Title.Contains(needle, StringComparison.OrdinalIgnoreCase) ||
+                r.DescriptionMd.Contains(needle, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
+        // Page slice (in memory; volume is bounded by pageSize cap above).
+        var p = Math.Max(1, page ?? 1);
+        var size = Math.Clamp(pageSize ?? 100, 1, 500);
+        var paged = rows.Skip((p - 1) * size).Take(size).ToList();
+
+        return Results.Ok(paged.Select(MapWorkItem).ToList());
+    }
+
+    // ----- GET ------------------------------------------------------------
+
+    private static async Task<IResult> Get(string id, ForgeDbContext db, CancellationToken ct)
+    {
+        var row = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == id, ct);
+        return row is null
+            ? Results.Problem(title: $"Work item {id} not found", statusCode: 404)
+            : Results.Ok(MapWorkItem(row));
+    }
+
+    // ----- CREATE ---------------------------------------------------------
+
+    private static async Task<IResult> Create(
+        HttpContext ctx,
+        [FromBody] CreateWorkItemRequest req,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        if (req is null || string.IsNullOrWhiteSpace(req.Id) || string.IsNullOrWhiteSpace(req.Title))
+        {
+            return Results.Problem(title: "id and title are required", statusCode: 400);
+        }
+        if (!WorkItemRules.AllTypes.Contains(req.Type))
+        {
+            return Results.Problem(title: $"Unknown type '{req.Type}'", statusCode: 400);
+        }
+        if (!WorkItemRules.AllTracks.Contains(req.Track))
+        {
+            return Results.Problem(title: $"Unknown track '{req.Track}'", statusCode: 400);
+        }
+        if (WorkItemRules.TrackOf(req.Type) != req.Track)
+        {
+            return Results.Problem(
+                title: $"Type '{req.Type}' belongs to track '{WorkItemRules.TrackOf(req.Type)}', not '{req.Track}'.",
+                statusCode: 400);
+        }
+        if (await db.WorkItems.AnyAsync(w => w.Id == req.Id, ct))
+        {
+            return Results.Problem(title: $"Work item {req.Id} already exists", statusCode: 409);
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var row = new WorkItemRow
+        {
+            Id = req.Id,
+            RepoId = req.RepoId,
+            Provider = string.IsNullOrWhiteSpace(req.Provider) ? "local" : req.Provider!,
+            ProviderRef = req.ProviderRef,
+            Track = req.Track,
+            Type = req.Type,
+            State = string.IsNullOrWhiteSpace(req.State) ? "proposed" : req.State!,
+            Title = req.Title,
+            DescriptionMd = req.DescriptionMd ?? string.Empty,
+            ParentId = string.IsNullOrWhiteSpace(req.ParentId) ? null : req.ParentId,
+            FeatureRef = req.FeatureRef,
+            IterationRef = req.IterationRef ?? string.Empty,
+            AreaPath = req.AreaPath ?? string.Empty,
+            AssignedToJson = req.AssignedTo is null ? null : JsonSerializer.Serialize(req.AssignedTo, JsonOpts),
+            Points = req.Points ?? 0,
+            Priority = req.Priority ?? "med",
+            TagsJson = JsonSerializer.Serialize(req.Tags ?? Array.Empty<string>(), JsonOpts),
+            CreatedAt = now,
+            UpdatedAt = now,
+            RemoteRevision = NewRevision(),
+        };
+
+        // Validate the parent invariants before committing.
+        if (row.ParentId is not null)
+        {
+            var parent = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(p => p.Id == row.ParentId, ct);
+            if (parent is null) return Results.Problem(title: $"Parent {row.ParentId} not found", statusCode: 400);
+            var err = WorkItemRules.ValidateParent(row, parent);
+            if (err is not null) return Results.Problem(title: err, statusCode: 400);
+        }
+        if (!WorkItemRules.AllStates.Contains(row.State))
+        {
+            return Results.Problem(title: $"Unknown state '{row.State}'", statusCode: 400);
+        }
+
+        db.WorkItems.Add(row);
+        await db.SaveChangesAsync(ct);
+
+        await hub.Clients.All.SendAsync("workitem.changed", new { kind = "created", workItem = MapWorkItem(row) }, ct);
+        return Results.Created($"/api/work-items/{row.Id}", MapWorkItem(row));
+    }
+
+    // ----- PATCH ----------------------------------------------------------
+
+    private static async Task<IResult> Patch(
+        HttpContext ctx,
+        string id,
+        [FromBody] PatchWorkItemRequest req,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var row = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id, ct);
+        if (row is null) return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
+
+        // Phase 5.9 conflict policy: caller may pin via If-Match; on mismatch
+        // we 409 with currentRevision + X-Forge-Overwrite to override.
+        var ifMatch = ctx.Request.Headers["If-Match"].FirstOrDefault();
+        var allowOverwrite = ctx.Request.Headers["X-Forge-Overwrite"].FirstOrDefault() == "true";
+        if (!string.IsNullOrEmpty(ifMatch) && !allowOverwrite && ifMatch != row.RemoteRevision)
+        {
+            return Results.Json(
+                new { error = "remote_changed", currentRevision = row.RemoteRevision },
+                statusCode: 409);
+        }
+
+        if (req.Title is not null) row.Title = req.Title;
+        if (req.DescriptionMd is not null) row.DescriptionMd = req.DescriptionMd;
+        if (req.State is not null)
+        {
+            if (!WorkItemRules.AllStates.Contains(req.State))
+                return Results.Problem(title: $"Unknown state '{req.State}'", statusCode: 400);
+            row.State = req.State;
+        }
+        if (req.IterationRef is not null) row.IterationRef = req.IterationRef;
+        if (req.AreaPath is not null) row.AreaPath = req.AreaPath;
+        if (req.AssignedTo is not null)
+        {
+            row.AssignedToJson = JsonSerializer.Serialize(req.AssignedTo, JsonOpts);
+        }
+        if (req.ClearAssignedTo == true) row.AssignedToJson = null;
+        if (req.Points is int p)
+        {
+            if (p < 0) return Results.Problem(title: "Points must be ≥ 0", statusCode: 400);
+            row.Points = p;
+        }
+        if (req.Priority is not null)
+        {
+            if (!WorkItemRules.AllPriorities.Contains(req.Priority))
+                return Results.Problem(title: $"Unknown priority '{req.Priority}'", statusCode: 400);
+            row.Priority = req.Priority;
+        }
+        if (req.Tags is not null) row.TagsJson = JsonSerializer.Serialize(req.Tags, JsonOpts);
+        if (req.FeatureRef is not null) row.FeatureRef = req.FeatureRef;
+        if (req.ClearFeatureRef == true) row.FeatureRef = null;
+
+        row.UpdatedAt = DateTimeOffset.UtcNow;
+        row.RemoteRevision = NewRevision();
+        await db.SaveChangesAsync(ct);
+
+        await hub.Clients.All.SendAsync("workitem.changed", new { kind = "updated", workItem = MapWorkItem(row) }, ct);
+        return Results.Ok(MapWorkItem(row));
+    }
+
+    // ----- DELETE ---------------------------------------------------------
+
+    private static async Task<IResult> Delete(
+        HttpContext ctx,
+        string id,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub,
+        bool? force,
+        CancellationToken ct)
+    {
+        var row = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id, ct);
+        if (row is null) return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
+
+        if (force == true)
+        {
+            // Hard delete — gated to PO.
+            var gate = RequireRole.Check(ctx, db, RequireRole.ProductOwner);
+            if (gate is not null) return gate;
+
+            db.WorkItems.Remove(row);
+            // Cascade removes the children's parent ref (we don't recursively
+            // delete; the operator can re-parent or hard-delete those too).
+            var children = await db.WorkItems.Where(w => w.ParentId == id).ToListAsync(ct);
+            foreach (var c in children)
+            {
+                c.ParentId = null;
+                c.UpdatedAt = DateTimeOffset.UtcNow;
+                c.RemoteRevision = NewRevision();
+            }
+            // Drop any links pointing to or from this item.
+            var links = await db.WorkItemLinks.Where(l => l.FromId == id || l.ToId == id).ToListAsync(ct);
+            db.WorkItemLinks.RemoveRange(links);
+
+            await db.SaveChangesAsync(ct);
+            await hub.Clients.All.SendAsync("workitem.changed", new { kind = "deleted", id }, ct);
+            return Results.NoContent();
+        }
+
+        // Default = soft-delete: flip to closed.
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        row.State = "closed";
+        row.UpdatedAt = DateTimeOffset.UtcNow;
+        row.RemoteRevision = NewRevision();
+        await db.SaveChangesAsync(ct);
+        await hub.Clients.All.SendAsync("workitem.changed", new { kind = "closed", workItem = MapWorkItem(row) }, ct);
+        return Results.Ok(MapWorkItem(row));
+    }
+
+    // ----- MOVE -----------------------------------------------------------
+
+    private static async Task<IResult> Move(
+        HttpContext ctx,
+        string id,
+        [FromBody] MoveWorkItemRequest req,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var row = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id, ct);
+        if (row is null) return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
+        if (req is null) return Results.Problem(title: "body is required", statusCode: 400);
+
+        if (req.State is not null)
+        {
+            if (!WorkItemRules.AllStates.Contains(req.State))
+                return Results.Problem(title: $"Unknown state '{req.State}'", statusCode: 400);
+            row.State = req.State;
+        }
+        if (req.IterationRef is not null) row.IterationRef = req.IterationRef;
+
+        row.UpdatedAt = DateTimeOffset.UtcNow;
+        row.RemoteRevision = NewRevision();
+        await db.SaveChangesAsync(ct);
+        await hub.Clients.All.SendAsync("workitem.changed", new { kind = "moved", workItem = MapWorkItem(row) }, ct);
+        return Results.Ok(MapWorkItem(row));
+    }
+
+    // ----- REPARENT -------------------------------------------------------
+
+    private static async Task<IResult> Reparent(
+        HttpContext ctx,
+        string id,
+        [FromBody] ReparentWorkItemRequest req,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var row = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id, ct);
+        if (row is null) return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
+
+        WorkItemRow? newParent = null;
+        if (!string.IsNullOrEmpty(req?.ParentId))
+        {
+            newParent = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(p => p.Id == req.ParentId, ct);
+            if (newParent is null) return Results.Problem(title: $"Parent {req.ParentId} not found", statusCode: 404);
+        }
+
+        // Cycle check.
+        var cycleAt = await WorkItemRules.DetectCycleAsync(db, row.Id, newParent?.Id, ct);
+        if (cycleAt is not null)
+        {
+            return Results.Problem(
+                title: $"Reparent would create a cycle through '{cycleAt}'",
+                statusCode: 409);
+        }
+
+        // Rank + cross-track validation.
+        var validateError = WorkItemRules.ValidateParent(row, newParent);
+        if (validateError is not null) return Results.Problem(title: validateError, statusCode: 400);
+
+        row.ParentId = newParent?.Id;
+        row.UpdatedAt = DateTimeOffset.UtcNow;
+        row.RemoteRevision = NewRevision();
+        await db.SaveChangesAsync(ct);
+
+        await hub.Clients.All.SendAsync("workitem.linked", new { id = row.Id, parentId = row.ParentId }, ct);
+        return Results.Ok(MapWorkItem(row));
+    }
+
+    // ----- helpers --------------------------------------------------------
+
+    private static string NewRevision() => Guid.NewGuid().ToString("N");
+
+    private static WorkItem MapWorkItem(WorkItemRow r)
+    {
+        var assignee = r.AssignedToJson is null
+            ? null
+            : JsonSerializer.Deserialize<WorkItemAssignee>(r.AssignedToJson, JsonOpts);
+        var tags = string.IsNullOrWhiteSpace(r.TagsJson)
+            ? new List<string>()
+            : (JsonSerializer.Deserialize<List<string>>(r.TagsJson, JsonOpts) ?? new List<string>());
+        return new WorkItem(
+            r.Id, r.RepoId, r.Provider, r.ProviderRef, r.Track, r.Type, r.State,
+            r.Title, r.DescriptionMd, r.ParentId, r.FeatureRef, r.IterationRef, r.AreaPath,
+            assignee, r.Points, r.Priority, tags, r.CreatedAt, r.UpdatedAt, r.RemoteRevision);
+    }
+
+    private static bool MatchesAssignee(string? json, string filter)
+    {
+        if (string.IsNullOrEmpty(json)) return false;
+        try
+        {
+            var a = JsonSerializer.Deserialize<WorkItemAssignee>(json, JsonOpts);
+            if (a is null) return false;
+            return string.Equals(a.Id, filter, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(a.DisplayName, filter, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
+    private static bool MatchesTag(string? json, string tag)
+    {
+        if (string.IsNullOrEmpty(json)) return false;
+        try
+        {
+            var tags = JsonSerializer.Deserialize<List<string>>(json, JsonOpts);
+            return tags is not null && tags.Any(t => string.Equals(t, tag, StringComparison.OrdinalIgnoreCase));
+        }
+        catch { return false; }
+    }
+}

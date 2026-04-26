@@ -404,6 +404,85 @@ public sealed record CrewSalary(
 /// <summary>Phase 11.9 — TopBar chip payload: total spend today across all crews.</summary>
 public sealed record SalaryTodaySummary(decimal TotalUsd, int ActiveAgents);
 
+// -- Phase 12 — Work Item Tracking ---------------------------------------
+
+/// <summary>
+/// Phase 12 — assignee on a <see cref="WorkItem"/>. <see cref="Kind"/> is
+/// either "agent" or "human"; the rest mirrors the UI shape one-to-one.
+/// </summary>
+public sealed record WorkItemAssignee(
+    string Kind,
+    string Id,
+    string DisplayName,
+    string Initials);
+
+/// <summary>
+/// Phase 12.1 — work item record. Two parallel three-level ladders are
+/// distinguished by <see cref="Track"/> ("dev" or "design"). See Phase 12
+/// Q12.1 for the type / state matrix and parent-rank invariants.
+/// </summary>
+public sealed record WorkItem(
+    string Id,
+    string? RepoId,
+    string Provider,
+    int? ProviderRef,
+    string Track,
+    string Type,
+    string State,
+    string Title,
+    string DescriptionMd,
+    string? ParentId,
+    string? FeatureRef,
+    string IterationRef,
+    string AreaPath,
+    WorkItemAssignee? AssignedTo,
+    int Points,
+    string Priority,
+    IReadOnlyList<string> Tags,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    string? RemoteRevision);
+
+public sealed record CreateWorkItemRequest(
+    string Id,
+    string Track,
+    string Type,
+    string Title,
+    string? RepoId = null,
+    string? Provider = null,
+    int? ProviderRef = null,
+    string? State = null,
+    string? DescriptionMd = null,
+    string? ParentId = null,
+    string? FeatureRef = null,
+    string? IterationRef = null,
+    string? AreaPath = null,
+    WorkItemAssignee? AssignedTo = null,
+    int? Points = null,
+    string? Priority = null,
+    IReadOnlyList<string>? Tags = null);
+
+public sealed record PatchWorkItemRequest(
+    string? Title = null,
+    string? DescriptionMd = null,
+    string? State = null,
+    string? IterationRef = null,
+    string? AreaPath = null,
+    WorkItemAssignee? AssignedTo = null,
+    bool? ClearAssignedTo = null,
+    int? Points = null,
+    string? Priority = null,
+    IReadOnlyList<string>? Tags = null,
+    string? FeatureRef = null,
+    bool? ClearFeatureRef = null);
+
+public sealed record MoveWorkItemRequest(
+    string? State = null,
+    string? IterationRef = null);
+
+public sealed record ReparentWorkItemRequest(
+    string? ParentId);
+
 /// <summary>
 /// Phase 11.2 — model registry entry. Pricing is denormalised onto each
 /// <see cref="Crew"/> at assignment time so historical salary lookups are
