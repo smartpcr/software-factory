@@ -416,7 +416,10 @@
         "inputBindings": "{\"incidentFolder\":\"incidentFolder\",\"incidentId\":\"field:\"}",
         "outputKey": "result",
         "confidence": 70,
-        "maxTokens": 4096
+        "maxTokens": 4096,
+        "timeoutMinutes": 15,
+        "timeoutRetries": 2,
+        "continueOnTimeoutExhausted": true
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -444,7 +447,9 @@
         "outputKey": "result",
         "confidence": 70,
         "maxTokens": 4096,
-        "timeoutMinutes": 15
+        "timeoutMinutes": 15,
+        "timeoutRetries": 2,
+        "continueOnTimeoutExhausted": true
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -496,8 +501,10 @@
         "outputKey": "result",
         "confidence": 70,
         "maxTokens": 4096,
-        "timeoutMinutes": 25,
-        "workingDirectory": "agentFolder"
+        "timeoutMinutes": 15,
+        "workingDirectory": "agentFolder",
+        "continueOnTimeoutExhausted": true,
+        "timeoutRetries": 2
       },
       "joinType": "Any",
       "priority": "Normal",

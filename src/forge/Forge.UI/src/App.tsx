@@ -8,6 +8,9 @@ import { WorkstreamsView } from '@/views/WorkstreamsView';
 import { PrsView } from '@/views/PrsView';
 import { SettingsView } from '@/views/SettingsView';
 import { AuditView } from '@/views/AuditView';
+import { SwarmView } from '@/views/SwarmView';
+import { PoliciesView } from '@/views/PoliciesView';
+import { CostView } from '@/views/CostView';
 import { useStateStore } from '@/state/useStateStore';
 
 export function App() {
@@ -27,6 +30,9 @@ export function App() {
           <Route path="/timeline" element={<TimelineView />} />
           <Route path="/workstreams" element={<WorkstreamsView />} />
           <Route path="/prs" element={<PrsView />} />
+          <Route path="/swarm" element={<SwarmView />} />
+          <Route path="/policies" element={<PoliciesView />} />
+          <Route path="/cost" element={<CostView />} />
           <Route path="/settings" element={<SettingsView />} />
           <Route path="/audit" element={<AuditView />} />
           <Route path="*" element={<Navigate to="/plan" replace />} />

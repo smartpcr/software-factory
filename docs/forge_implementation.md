@@ -9,6 +9,10 @@
 4. PR view (implementation, critical review, build).
 5. Sync work items from ADO / GitHub and operate on them locally.
 6. Create / update work items, create / review PRs, trigger and inspect pipelines.
+7. Organise work by **product**, with one product owning one or more **repos** (mix of ADO and GitHub allowed). Manage products and repos as first-class entities.
+8. Sign in as the **current Windows user** to ADO and GitHub — prefer an Edge browser popup on Windows (WAM broker / WebView2) and fall back to the user's default browser. No hand-pasted PATs.
+9. Configurable, per-user **defaults**: default ADO account + project, default GitHub account/org, default product + repo. Pre-filled into every "create" flow, overridable per action.
+10. Surface the real signed-in user in the UI (replacing the hard-coded `XD / Xiaodong Li / Tech lead` placeholder) and give the operator a **Product Owner** role with a supervisory view across all crews.
 
 ## Hard constraint — fidelity to the prototype
 
@@ -33,6 +37,101 @@ A short, separately-tracked **Phase R — Refactor** placeholder appears at the 
 - **Persistence** — local SQLite cache (so the UI stays responsive when ADO/GitHub are slow or offline) under `src/forge/Forge.Api/Persistence/`.
 - **Provider layer** — `IForgeProvider` abstraction in `Forge.Api` with `AdoProvider` and `GitHubProvider` implementations. PATs in user-secrets (dev) → DPAPI / Key Vault (later).
 - **Naming** — namespace `Forge.Api.*` and `Forge.UI` package name `@forge/ui`; CSS scope `.forge-*`; route prefix `/api/*` (the API only serves forge — no need to re-prefix). Default ports: API `5180`, UI dev server `5181`.
+
+## Resolved decisions
+
+Decisions confirmed by the operator. Each one closes an entry in "Open questions" below; later phases must respect them.
+
+- **Provider parity (Q1)** — ADO and GitHub are **equal first-class providers**. No primary / secondary tier.
+  - **Implications**: Phase 5 ships both `AdoProvider` and `GitHubProvider` together (no "ADO first, GitHub later"); auth UX in Phase 9 surfaces both sign-in buttons side-by-side with the same prominence; webhook intake in Phase 5.8 supports ADO Service Hooks and GitHub webhooks at the same milestone; provider config in `/settings` lists them in alphabetical order; Phase 8.5 "Add repo" picker lets the user choose either provider per-repo, and a single product can mix repos from both.
+- **Worktree location (Q2)** — worktrees live **under each repo**, in a fixed subdirectory: `{repo.cloneRoot}\.worktree\{workstreamName}`. Example: for the `update` repo cloned at `E:\work\hci\update`, the workstream `idp-failover` worktree is at `E:\work\hci\update\.worktree\idp-failover`.
+  - **Implications**:
+    - Phase 3.7 `IGitWorktreeService` derives the worktree path from the workstream's repo (`Repo.CloneRoot` + `.worktree` + `Workstream.Name`); it MUST refuse any path that escapes that prefix (no `..`, no symlinks out of the repo).
+    - Phase 8.1 `Repo` record must carry `cloneRoot` (already specified) — the only field needed; there is no separate global "worktrees root" config.
+    - First-time setup for a repo writes a `.worktree/` entry into the repo's local `.git/info/exclude` (NOT `.gitignore`, which would dirty the main checkout) so the host worktree never reports the sibling worktrees as untracked.
+    - Workstream's stored `worktree` shape simplifies from the prototype's `[root, name]` tuple to a single relative segment (`name`); the absolute path is computed at read time from the linked repo. Sample data and the Phase 3 detail panel must be updated to match.
+    - Auto-clone (Phase 8.10): when `cloneRoot` is empty, `git clone` runs first; the `.worktree` subdir is created lazily on first `git worktree add`.
+    - Multiple Forge products that point at the same `cloneRoot` are forbidden (would race on `.worktree/`); Phase 8.6 validation rejects this.
+- **Agents are real (Q3)** — Agents are **real, supervised crew members**, not labels surfaced from work-item metadata. Each agent has a role + capability assignment and a `soul.md` (persona / system prompt / capability brief). Each **crew** is assigned a single model (e.g. `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`); all agents in a crew run on that model. **Crew salary** = the sum of model-priced token spend across that crew's agents over a period (input tokens × input price + output tokens × output price).
+  - **Implications**:
+    - **New Phase 11 — Agent runtime & crew economy** (added below) covers the runner, model registry, soul.md authoring, and the cost ledger. It is **in scope for v0.1**, not deferred.
+    - Phase 6.6 (pipeline runs) is left as-is for CI; agent invocations are a separate axis owned by `IAgentRunner` in Phase 11. Cross-link added: pipeline status streams + agent token streams both flow through SignalR `forge.stream.*` channels.
+    - `Agent` record (currently `{ id, role, name }` in `types.ts`) gains `crewId`, `soulPath`, `capabilities: string[]`, `state: 'idle' | 'working' | 'blocked' | 'paused'`. Existing seed agents (`E4 Forge`, `E7 Rivet`, `R3 Cortex`, `XD Xiaodong`, `A1`, `A2`, `E9`) keep their ids and gain reasonable defaults during migration.
+    - `Crew` record (Phase 10.6) gains `model: string`, `modelInputPricePerMTok: decimal`, `modelOutputPricePerMTok: decimal`, `lead: agentId`. Pricing is denormalized onto the crew so historical salary lookups don't depend on fetching today's price.
+    - **soul.md storage**: `%LOCALAPPDATA%\Forge\agents\{agentId}\soul.md` by default; the path is stored on the Agent record so operators can relocate (e.g. into a versioned `soul/` folder inside a product repo). Editable from filesystem or `/settings/agents` (Phase 11.3).
+    - **Cost ledger** `agent_usage(id, agentId, crewId, taskId, model, inputTokens, outputTokens, costUsd, startedAt, endedAt)` is the source of truth for cost. Phase 1 card.cost becomes a derived sum over usage rows where `taskId = card.id`; the prototype's hard-coded `cost: 0.31` values stay as fallback fixtures only when the runner is offline.
+    - Phase 10.7 `/crews` dashboard goes from "metrics" to **live**: salary today / this sprint / this month, tokens burned (in/out split), active tasks, blocked tasks, last-active per agent, model in use, cost-per-card P50/P90.
+    - The Product Owner role gains agent-level controls: pause / resume an agent, reassign an agent to another crew, swap a crew's model (with a "this changes salary" confirmation), open / edit soul.md in-place.
+    - Telemetry: every runner invocation emits `forge.agent.invocation.{started,token,finished,failed}` events for the OTel pipeline (Phase 7.5).
+- **Repo provider exclusivity & sprint source (Q4)** — A `Repo` belongs to **exactly one provider**: ADO or GitHub, never both (no mirrored remotes treated as one). All sprint / branch / iteration concepts for a repo follow that repo's provider — ADO repos use ADO iteration paths, GitHub repos use GitHub milestones. **There is no local Forge sprint.**
+  - **Implications**:
+    - Phase 8.1 `Repo.kind` is enforced as enum-of-one at write time; an attempt to attach the same remote URL under both providers is rejected with a 409.
+    - The Sprint pill (Phase 1.11, currently `[x]` against hard-coded data) is rebuilt to read the **currently scoped repo's** iteration / milestone via the provider:
+      - ADO → `_apis/work/teamsettings/iterations?$timeframe=current` for the repo's project + team.
+      - GitHub → `/repos/{owner}/{repo}/milestones?state=open&sort=due_on` (the soonest open milestone).
+    - If the user is in a multi-repo product view (Phase 8.8 product switcher with no single active repo), the Sprint pill renders as "Mixed sprints — pick a repo" with a click-through that opens the repo selector. No aggregation, no fake unified sprint.
+    - `Card.sprint` (when imported from a provider) is the provider's iteration / milestone identifier, namespaced by repo so two repos on the same product can run different cadences without collision: `card.sprintRef = "{repoId}:{providerSprintId}"`.
+    - Burn-down arithmetic (Phase 1.11) sums points within `card.sprintRef = activeRepo.currentSprintRef`. No cross-repo burn-down at v0.1.
+    - Phase 5 mappers: ADO mapper writes `sprintRef` from `System.IterationPath`; GitHub mapper writes it from the issue / PR's `milestone.id`. Local sprint inference (e.g. "due in 14 days" → bucket) is explicitly NOT done.
+    - `forge_v2.md` candidate: optional cross-product roll-up dashboard that lists each active sprint across all repos side-by-side — out of scope for v0.1.
+- **Product ↔ repo cardinality (Q5)** — Strictly **1:N**. A `Repo` belongs to exactly one `Product`. A repo cannot be shared between two products; if a repo is genuinely shared infrastructure, it is modeled as its own product that other products consume.
+  - **Implications**:
+    - Phase 8.1 `repos.product_id` is **NOT NULL** with a `UNIQUE(remoteUrl)` constraint at the DB layer — the same remote URL cannot be attached to two different products.
+    - Phase 8.4 `POST /api/products/{id}/repos` rejects with 409 if the remote URL is already attached anywhere; error response includes the existing `productId` so the UI can offer "open existing product" as a recovery action.
+    - Phase 8.7 `/products` view is a clean tree (`Product → Repos → Workstreams`), not a graph; no "linked from product X" badges needed.
+    - "Shared infra" pattern is documented in `docs/forge/products.md`: create a `Platform` (or similar) product, attach the shared repo there, and other products reference its workstreams / PRs read-only via the Phase 8.11 cross-link mechanism.
+    - Backfill migration (Phase 8.3) is simpler: every existing repo lands in exactly one product (the default `Atlas`); no fan-out logic.
+- **Repo cloning policy (Q6)** — **Auto-clone, silently.** When a workstream is created against a repo whose `cloneRoot` is empty (or missing), Forge runs `git clone` automatically with no confirmation prompt. No "are you sure" modal, no operator-pre-clone requirement.
+  - **Implications**:
+    - Phase 8.10 default `Forge:Repo:AutoClone=true`; the config flag still exists as an off-switch for headless / CI installs but is **not** flipped during normal operator use.
+    - First-time clone progress streams via SignalR (`forge.repo.clone.{started,progress,finished,failed}`) so the UI can render an inline progress strip on the workstream card and on `/products` while the clone runs.
+    - Auth: the clone uses the signed-in user's provider token (Phase 9) over HTTPS — never SSH at v0.1, never anonymous, never a separate credential helper. If the user is not signed in to the matching provider, the clone fails fast with a "sign in to {provider} first" toast that links to `/settings`.
+    - Disk-space pre-check (Phase 8.6) runs before kicking off the clone; warning becomes a hard error if free space < 500 MB.
+    - Idempotency: if `cloneRoot` already exists and is a valid git repo for the same remote, no-op; if it exists but points at a different remote, refuse with a 409.
+    - Non-fatal failures (auth, network, disk) leave `cloneRoot` clean (best-effort `rm -rf` of the partial clone) so the next attempt starts from scratch — no half-cloned state for the operator to debug.
+    - Telemetry: `forge.repo.clone.duration_ms` histogram; failures tagged with provider + reason class for the `/audit` view.
+- **Auth flow selection (Q7)** — **WAM is the first choice** on every supported Windows host. **Device-code flow is disabled** entirely — never offered, never fallback. When WAM is unavailable (older Windows, macOS, Linux), fall back to **auth-code + PKCE** in a system browser.
+  - **Implications**:
+    - Phase 9.2 ADO sign-in initialization order: detect WAM availability first (`PublicClientApplicationBuilder.WithBroker(true)` + runtime check); on WAM-capable hosts, ALL interactive sign-ins go through WAM. On non-WAM hosts, fall through to auth-code + PKCE; the Edge-first launcher (Phase 9.4) still picks the browser.
+    - Identity service has a hard rule: `if (FlowKind == DeviceCode) throw new NotSupportedException(...)`. The MSAL `AcquireTokenWithDeviceCode` API is never called and is added to a banned-API list in CI (Roslyn analyzer or grep step in `Forge.Api.Tests`).
+    - GitHub sign-in (Phase 9.3) stays auth-code + PKCE only — device-code is removed even as a documented option.
+    - Headless / CI scenarios that genuinely cannot do interactive auth use a **PAT in user-secrets** (the existing Phase 5 path), not device code. This is the only non-interactive auth path.
+    - User-menu (Phase 9.10) shows the active flow next to each provider's status pill (`WAM` / `Browser`) so operators can see at a glance which path was used; useful for debugging silent renewal failures.
+    - Phase 9.12 tests: WAM-available branch verifies `WithBroker(true)` is honored; non-WAM branch verifies system-browser auth-code; a third test asserts the device-code refusal throws and emits a structured log so the analyzer rule has a runtime backstop.
+    - Removes the v2 question of "do we ship device-code for restricted-network users" — the answer is no; restricted-network users get a PAT.
+- **GitHub auth model (Q8)** — **OAuth app**, not a GitHub App. Tokens act as the signed-in user; no installation step, no app identity. Tracked as a Phase R / `forge_v2.md` upgrade if multi-tenant bot writes ever become a need.
+  - **Implications**:
+    - Phase 9.3 stays as written: Authorization Code + PKCE, localhost callback, scopes `repo`, `read:user`, `read:org`. No `installation_id`, no JWT-signed app-token exchange.
+    - Webhook intake (Phase 5.8) is configured **per repo** (the user installs the webhook on each repo Forge attaches), not centrally per app. The Phase 8.5 "Add repo" picker calls `POST /repos/{owner}/{repo}/hooks` immediately after attach so the operator never has to click into GitHub UI.
+    - Writes (PR comments, status updates, branch pushes) appear under the operator's GitHub identity — visible in commit history, PR audit, and notifications. This is intentional: matches the "act as me" model from Q1.
+    - No support for "Forge as a bot user" at v0.1; if bot writes are required (e.g. a service account commits release notes), the operator runs Forge under a dedicated GitHub account they own.
+    - Token rotation: OAuth tokens don't expire by default but can be revoked by the user. Phase 9 handles 401 by silently re-prompting auth-code; a short-circuit "re-authenticate" button surfaces in `/settings` when a 401 is observed.
+    - `forge_v2.md` candidate: GitHub App migration with installation tokens, fine-grained per-repo permissions, single webhook endpoint, and bot-identity writes. Out of scope for v0.1.
+- **Crew hierarchy (Q9)** — **Flat.** `Crew` has no `parentCrewId`; `/crews` is a flat list, not a tree. Nesting is deferred — revisit only if the operator grows past ~10 crews and grouping demonstrably helps.
+  - **Implications**:
+    - Phase 10.6 `Crew` schema stays as specified — no `parentCrewId`, no recursive FK.
+    - `/crews` view (Phase 10.7) renders one row per crew, sortable by salary / activity / name. No expand/collapse arrows.
+    - Salary roll-up is one level only: per-crew on `/crews`, per-product on `/products`. No "department total" intermediate level.
+    - Phase 11 cost ledger queries stay simple — `GROUP BY crewId`, never recursive CTE.
+    - `forge_v2.md` candidate: nested crews with parent FK, recursive salary roll-up, tree view on `/crews`. Out of scope for v0.1.
+- **Cross-org sign-in (Q10)** — **Multi-org from day one.** A single Windows user can be signed into multiple ADO organizations and multiple GitHub orgs simultaneously; Forge picks the right token per request based on the target repo's owning org.
+  - **Implications**:
+    - Phase 9.5 token storage keys on `(provider, accountId)` (not `provider` alone), where `accountId` = ADO tenant + UPN, or GitHub login + chosen org. The DPAPI blob is a map of these tuples to encrypted token records.
+    - `GET /api/me` (Phase 9.6) `providers` field becomes an array per provider: `providers: { ado: [{accountId, tenant, upn, expiresAt}, …], github: [{accountId, login, orgs: [...], expiresAt}, …] }`. UI renders one chip per signed-in account.
+    - Token resolution at request time: the API derives the target `(provider, accountId)` from the operating repo (`Repo.adoOrg` / `Repo.ghOwner`); if no token matches, returns 401 with a `signInHint: { provider, accountId }` body so the UI can prompt the right "Sign in to {org}" CTA.
+    - User-menu (Phase 9.10) shows a grouped list: "ADO accounts" with one row per `(tenant, upn)`, "GitHub accounts" with one row per login. Each row has its own "Re-authenticate" / "Sign out" actions; signing out one account does not sign out others.
+    - Add-repo picker (Phase 8.5) shows a per-account dropdown so the operator can attach a repo from any signed-in account. Attempting to attach from an unsigned account triggers an inline sign-in flow scoped to that org.
+    - Webhook receiver (Phase 5.8): event signature verification picks the right secret per `(provider, accountId)` since each ADO org / GitHub repo has its own shared secret.
+    - Phase 10.1 `forge_user_settings` defaults (default ADO org/project, default GitHub owner) become the **active** account when a request would otherwise be ambiguous (e.g. cross-product searches); operator overrides per action.
+    - Audit log (Phase 6.10) records the acting `accountId` so multi-account writes are debuggable.
+- **Role escalation (Q11)** — **Any Product Owner can promote or demote any other user**, no second-PO sign-off required. Single safety rail: the system always keeps **≥ 1 Product Owner** — the last PO cannot demote themselves and cannot be demoted by another last-PO operation.
+  - **Implications**:
+    - Phase 10.9 role-gating middleware adds a single invariant check on `PATCH /api/users/{id}/role`: if the change would result in zero `product-owner` rows, refuse with 409 + `error: "last_product_owner"`.
+    - UI: in the `/settings/users` panel the "Role" combobox for the current sole PO disables "Demote" and shows a tooltip ("You are the last Product Owner — promote someone else first"). For all other users, promote / demote are immediate without a confirm dialog.
+    - Audit log (Phase 6.10) records every role change with `actorUserId`, `targetUserId`, `from`, `to` so the trail is visible at `/audit` even though no second-actor consent is required.
+    - SignalR `user.role.changed` event so the affected user's open tabs update their `/crews` access immediately (sidebar entry vanishes / appears, gated buttons enable / disable in place).
+    - First-run rule (Phase 9.9) is unchanged: the first sign-in becomes PO; later sign-ins default to `human` and are promoted by any existing PO.
+    - `forge_v2.md` candidate: optional 2-step demotion ("approve demotion within 24h") for shared / paranoid installs — not needed at v0.1.
 
 ## Phase legend
 Each phase is meant to land as a small batch of PRs. Steps are checkbox items so progress is visible inline.
@@ -146,7 +245,7 @@ Bring real work items, branches and PRs into the cache.
 - [x] **5.1** Add `IForgeProvider` interface in `Forge.Api/Providers/` (`ListWorkItems`, `ListPullRequests`, `ListBuilds`, `GetWorkItem`, `GetPr`, …).
 - [x] **5.2** Implement `AdoProvider` using `Microsoft.TeamFoundationServer.Client` / REST; PAT in user-secrets `Forge:Ado:Pat`. _(REST via HttpClient, not the TFS client lib — keeps deps small)_
 - [x] **5.3** Implement `GitHubProvider` using Octokit; PAT or fine-grained token in `Forge:GitHub:Pat`. _(REST via HttpClient, not Octokit — same reason)_
-- [~] **5.4** Provider config UI page `/settings` (React): org/project (ADO), owner/repo (GitHub), PAT entry, "test connection". _(read + Test connection live; PAT entry intentionally NOT in the UI to avoid storing secrets in SQLite without an encryption story — config flows through user-secrets / env)_
+- [~] **5.4** Provider config UI page `/settings` (React): org/project (ADO), owner/repo (GitHub), PAT entry, "test connection". _(read + Test connection live; PAT entry intentionally NOT in the UI to avoid storing secrets in SQLite without an encryption story — config flows through user-secrets / env. **Superseded by Phase 9** — interactive sign-in replaces PAT entry as the primary auth path; PAT remains only as a headless / CI fallback.)_
 - [x] **5.5** Map ADO work item → `Card`: state → column, area path → epic, tags → tags, story points → pts, assigned-to → agent (human role).
 - [x] **5.6** Map GitHub issue + PR → `Card` / `Pr` (issue type by labels, PR draft status preserved).
 - [~] **5.7** Background sync: `IHostedService` polling on configurable interval (default 60s), with jitter + ETag/If-None-Match where supported. _(polling + jitter shipped; ETag/If-None-Match is Phase R)_
@@ -183,11 +282,86 @@ Make it feel like a product and easy to ship.
 - [x] **7.3** Empty states for every view (no cards, no PRs, no workstreams, no provider configured).
 - [x] **7.4** Error boundaries per view + a global "report problem" button that captures the last 50 actions + correlation id.
 - [~] **7.5** Telemetry: OTel spans `forge.view.*`, `forge.action.*`; counters for card moves, PRs opened, syncs failed. _(stable-name `ILogger` messages + client ring buffer ship today; full OTel SDK + metrics exporter rolled to `forge_v2.md`)_
-- [~] **7.6** Auth: pluggable, default = single-user with a local secret; optional Azure AD via `Forge:Auth:AzureAd:*`. _(single-user secret middleware ships; Azure AD JWT pipeline is config-only skeleton — wired in v2)_
+- [~] **7.6** Auth: pluggable, default = single-user with a local secret; optional Azure AD via `Forge:Auth:AzureAd:*`. _(single-user secret middleware ships; Azure AD JWT pipeline is config-only skeleton — wired in v2. **Phase 9** lands the real interactive sign-in flow on top of this scaffold and replaces the local-secret default on Windows.)_
 - [x] **7.7** Dockerfile per project (`Forge.Api/Dockerfile`, `Forge.UI/Dockerfile`) + root `docker-compose.yml` (api + ui static + sqlite volume + reverse proxy). Document `forge.env.sample`.
 - [x] **7.8** User guide under `docs/forge/` (setup, providers, daily flow, keyboard, FAQ); architecture note linking `Forge.UI` ↔ `Forge.Api`.
 - [~] **7.9** Smoke release checklist + a tagged `v0.1.0` once Phases 0–4 are green and Phases 5–6 work against at least one real ADO project and one real GitHub repo. _(checklist shipped at `docs/forge/release.md`; the actual `v0.1.0` tag is a manual cut step the operator runs once the gate items are ticked)_
 - [x] **7.10** Backlog grooming session: cut anything not in the goals list, file a `forge_v2.md` for the rest.
+
+---
+
+## Phase 8 — Products & repository management
+
+Promote the implicit "one product, one repo" assumption to a real first-class hierarchy so the same Forge install can drive multiple products, each owning a mix of ADO and GitHub repos.
+
+- [ ] **8.1** Domain records: `Product { id, name, slug, description, ownerUserId, createdAt }` and `Repo { id, productId, kind: 'ado' | 'github', remoteUrl, displayName, defaultBranch, cloneRoot, adoOrg?, adoProject?, ghOwner?, ghRepo? }`. Mirror as TS types in `src/forge/Forge.UI/src/types.ts` and C# records under `Forge.Api/Contracts/`.
+- [ ] **8.2** EF Core migration: `products`, `repos` tables; FK `repos.product_id`. Add `repo_id` (nullable in migration, NOT NULL after backfill) to `workstreams`, `cards`, `prs` so every existing artifact belongs to a repo. **Migration must be idempotent** and re-runnable in dev.
+- [ ] **8.3** Backfill migration: create a default `Atlas` product owning a default repo derived from the existing single-repo config; assign all pre-existing cards / workstreams / PRs to it.
+- [ ] **8.4** API endpoints in `Forge.Api/Endpoints/ProductsEndpoints.cs` and `ReposEndpoints.cs`: `GET/POST /api/products`, `GET/PATCH/DELETE /api/products/{id}`, `GET/POST /api/products/{id}/repos`, `DELETE /api/repos/{id}` (with safety prompt + confirm-by-name).
+- [ ] **8.5** "Add repo" picker (server-driven): for ADO, lists repos in the configured project via `_apis/git/repositories`; for GitHub, lists repos for the signed-in user/org via `/user/repos` or `/orgs/{org}/repos`. **Discoverable** — the user picks from a list, not free-text URL entry.
+- [ ] **8.6** Validation: remote URL parses to a known provider shape; clone root is on a writable disk; warn (don't block) if disk free space < 5 GB.
+- [ ] **8.7** New `/products` view (sidebar entry between "Workstreams" and "Settings"): grid of product cards with repo count, active workstream count, open PR count, last activity. Click a product → drill into its repos with the same metrics per repo.
+- [ ] **8.8** TopBar product switcher (replaces the existing static "Atlas Sprint 14" pill with a `<select>` populated from `/api/products`); selection persists in `localStorage` as `forge.activeProductId` and scopes every other view (Plan, Timeline, Workstreams, PRs) to the selected product.
+- [ ] **8.9** All existing endpoints accept an optional `productId` (or read the active product from a header `X-Forge-Product-Id`); responses are filtered server-side. Default = active product; explicit `all` value shows cross-product when the role allows it (Phase 10).
+- [ ] **8.10** Auto-clone hook: when a workstream is created against a repo whose `cloneRoot` is empty, `IGitWorktreeService` runs `git clone` on first use (configurable to require manual pre-clone via `Forge:Repo:AutoClone=false`).
+- [ ] **8.11** Cross-link parity: clicking a repo on `/products` deep-links to `/workstreams?repo={id}`; clicking a workstream surfaces its repo name + remote URL in the detail panel.
+- [ ] **8.12** Tests: products / repos endpoint contract; backfill migration unit test against a snapshot DB; UI test for the product switcher scoping the board.
+- [ ] **8.13** **Fidelity note**: the prototype has no products page or product switcher. `/products` and the new switcher are **forge-design-token-clean** (use the existing CSS variables from `theme.css`) but **exempt from the `forge-board.html` screenshot-diff check**. Phase R may revisit.
+
+## Phase 9 — Sign-in & current user (Edge popup, real identity)
+
+Replace the hard-coded `XD / Xiaodong Li / Tech lead` placeholder with the real authenticated user, and use the Windows user's existing identity to consent into ADO and GitHub.
+
+- [ ] **9.1** Server-side `IIdentityService` in `Forge.Api/Auth/`: `SignInAsync(provider)`, `SignOutAsync(provider)`, `GetCurrentUserAsync()`, `GetTokenAsync(provider, scopes)`. Each provider implementation is independent; sign-in to one does not imply sign-in to the other.
+- [ ] **9.2** **ADO sign-in** — MSAL.NET (`Microsoft.Identity.Client`) with the **WAM broker** enabled (`WithBroker(true)`). On Windows, this picks up the signed-in Windows account silently when the org allows it; otherwise it surfaces the standard system consent UI. App registration: tenant + client id under `Forge:Auth:Ado:*`. Scope: `499b84ac-1321-427f-aa17-267ca6975798/.default` (Azure DevOps).
+- [ ] **9.3** **GitHub sign-in** — OAuth Authorization Code with PKCE (no client secret stored). Server hosts a localhost callback (`http://127.0.0.1:53682/forge/oauth/github/callback`); after redirect, server exchanges the code for a token. App configuration under `Forge:Auth:GitHub:*` (client id only). Scopes: `repo`, `read:user`, `read:org`.
+- [ ] **9.4** **Edge-first browser launch** on Windows: identity service spawns the consent URL via, in order, `msedge.exe --app={url}` (popup-style chromeless window) → `msedge.exe {url}` → `Process.Start({ UseShellExecute=true, FileName=url })` (system default). Behavior is configurable via `Forge:Auth:BrowserPreference=edge|default`. Non-Windows: always system default.
+- [ ] **9.5** **Token storage**: DPAPI-encrypted (`ProtectedData.Protect` with `CurrentUser` scope) blob at `%LOCALAPPDATA%\Forge\tokens.dat`. Refresh tokens used silently before access-token expiry. **Never** in SQLite plaintext, never in user-secrets in production. macOS / Linux fallback uses the OS keychain via `Microsoft.Identity.Client.Extensions.Msal`.
+- [ ] **9.6** `GET /api/me` returns `{ id, displayName, email, login, avatarUrl, initials, role, providers: { ado: { connected, account, expiresAt } | null, github: { connected, login, expiresAt } | null } }`. New React hook `useCurrentUser()` exposes this with SignalR-driven invalidation when sign-in state changes.
+- [ ] **9.7** Replace the hard-coded placeholder strings:
+  - `src/forge/Forge.UI/src/shell/TopBar.tsx:60` — `<div className="avatar" title="Xiaodong">XD</div>` reads from `useCurrentUser()`; initials fall back to first-letters of `displayName`; tooltip = full display name + email.
+  - `src/forge/Forge.UI/src/shell/SideBar.tsx:154-157` — `XD` / `Xiaodong Li` / `Tech lead · Atlas` all read from `useCurrentUser()` (avatar URL preferred over initials when present).
+  - When no provider is signed in, show a "Sign in" CTA in both spots instead of a name.
+- [ ] **9.8** Extend `Role` (`src/forge/Forge.UI/src/types.ts:4`) to include `'product-owner' | 'tech-lead'` alongside the existing `'arch' | 'eng' | 'rev' | 'qa' | 'human'`. Server enforces role transitions; UI renders the role label after the `·` (e.g. `Product Owner · Atlas`).
+- [ ] **9.9** **First-run rule**: the first user to sign in to a fresh DB is auto-assigned `product-owner` (the operator). Subsequent sign-ins default to `human` and must be promoted by a Product Owner. Bootstrap mapping for the current operator: `lingxd@gmail.com` → `product-owner` (recorded as a seed for dev convenience; not hard-coded in prod).
+- [ ] **9.10** User-menu popover (anchored on the TopBar avatar): shows display name, email, signed-in providers with status pills, "Re-authenticate ADO", "Re-authenticate GitHub", "Sign out", "Switch account".
+- [ ] **9.11** Migrate the seed `agent: { id: 'XD', role: 'human', name: 'Xiaodong' }` references in `sampleData.ts` to `{ id: 'XD', role: 'product-owner', name: 'Xiaodong' }` so the prototype data stays valid under the new role enum.
+- [ ] **9.12** Tests: identity service contract test with a fake MSAL token broker; GitHub OAuth callback unit test; UI test asserts the real signed-in user replaces `XD` in TopBar + SideBar; mock Edge launch verifies the `msedge.exe --app=` invocation and the fallback chain; expired-token refresh test.
+- [ ] **9.13** Security review checklist: token-at-rest format, scope minimization (read-only by default; write scopes requested only when a write action is invoked), opt-in telemetry of sign-in events, DPAPI key rotation handling, behavior when the Windows account changes.
+
+## Phase 10 — Defaults, preferences & Product Owner supervisory view
+
+Make Phases 8 + 9 ergonomic by letting the user pin defaults, and give the Product Owner a real supervisory dashboard over the agent crews they oversee.
+
+- [ ] **10.1** Per-user preferences table `forge_user_settings` (PK = `user_id`): `defaultAdoOrg`, `defaultAdoProject`, `defaultGithubOwner`, `defaultProductId`, `defaultRepoId`, `browserPreference`, `theme`, `notificationsEnabled`. Mirror as TS in `src/forge/Forge.UI/src/types.ts`.
+- [ ] **10.2** `GET /api/me/settings` and `PATCH /api/me/settings` (idempotent partial update). Validation: referenced `productId` / `repoId` must exist and the user must have access.
+- [ ] **10.3** "Defaults" panel on `/settings`: combo-boxes for default ADO org + project (populated from `/api/providers/ado/orgs` and `_apis/projects` once signed in), default GitHub owner (populated from `/user/orgs` + `/user`), default product, default repo. Each row has an "Apply everywhere" checkbox that copies the value to the relevant create-flow defaults.
+- [ ] **10.4** Pre-fill new-card modal, new-workstream modal, "Create PR from workstream", and the `/products` "Add repo" picker from these defaults. The user can override per action; overrides do **not** mutate the saved default unless an "Update default" toggle is ticked.
+- [ ] **10.5** Server-side default resolution: when an API request omits `productId` / `repoId` / `adoProject` / etc., the server falls back to the caller's saved defaults before erroring; the response includes a `defaultsApplied: [...]` array so the UI can surface which fields were auto-filled.
+- [ ] **10.6** **Crew model**: a `Crew { id, name, productId, lead, summary, model, modelInputPricePerMTok, modelOutputPricePerMTok }` record (model + pricing per the Q3 resolution); each `Agent` gets a single `crewId` (one crew per agent — many-to-many is overkill at v0.1). Seed crews from the prototype's agent prefixes — `E*` → "Engineering", `R*` → "Review", `A*` → "Architecture", `Q*` → "QA" — so the first run has data without operator setup. Default model assignments: `Engineering` → `claude-opus-4-7`, `Review` → `claude-sonnet-4-6`, `Architecture` → `claude-opus-4-7`, `QA` → `claude-haiku-4-5` (operator overrides via `/settings/crews`).
+- [ ] **10.7** `/crews` view (sidebar entry, visible only when current user role = `product-owner`): one row per crew with live metrics — members, cards in flight, blockers, **salary today / sprint / month** (live from the cost ledger in Phase 11.4), tokens burned (in / out split), 24h cost, last-active timestamp, open PR count, model name pill. Click a crew → drill into its agents and recent activity (re-uses the workstream detail panel layout); from there, PO can pause / resume agents, edit soul.md, or swap the crew's model.
+- [ ] **10.8** Cross-product / cross-crew action audit: every write performed by a Product Owner against a crew or product they don't own is recorded in `forge_actions` (Phase 6.10) with a `supervising = true` flag and surfaced as a separate filter on `/audit`.
+- [ ] **10.9** Role-gating middleware: `[RequireRole("product-owner")]` attribute (or minimal-API filter equivalent) protects `/api/crews/*` writes and `/products/*` admin endpoints. Read endpoints stay open to all signed-in roles.
+- [ ] **10.10** UI gating: hooks `useHasRole('product-owner')` hide `/crews` from the sidebar and disable supervisory action buttons for non-PO users (the buttons render but are disabled with a tooltip explaining the gate, rather than vanishing — discoverable).
+- [ ] **10.11** Tests: defaults round-trip endpoint test; defaults pre-fill UI test for the new-card and new-workstream modals; role-gating endpoint test (non-PO returns 403); crew aggregation unit test; cross-product audit recording test.
+- [ ] **10.12** **Fidelity note**: same as Phase 8 — `/crews`, the user-menu popover, the Defaults panel, and the role-aware sidebar are exempt from the `forge-board.html` screenshot diff but must use existing forge tokens. Document any new tokens in `docs/forge/design-tokens.md`.
+
+## Phase 11 — Agent runtime & crew economy
+
+Make the agent labels real. Forge spawns and supervises the model that backs each crew, every invocation goes through the cost ledger, and crew salary becomes a live readout instead of a prototype hard-code. Per the Q3 resolution this phase is **in scope for v0.1** — agents are first-class.
+
+- [ ] **11.1** `IAgentRunner` interface in `Forge.Api/Agents/`: `StartAsync(taskId, agentId, prompt, context, ct)` returns an `AgentInvocation` handle exposing a `Stream<AgentEvent>` (token deltas, status, tool calls), `CancelAsync(invocationId)`, `PauseAsync(agentId)`, `ResumeAsync(agentId)`, `GetStateAsync(agentId)`. One invocation = one task; long-running agents are modeled as a sequence of invocations, not a single process.
+- [ ] **11.2** **Model registry** seeded from a static `models.json` shipped with the API: `{ id, vendor, family, displayName, contextWindow, inputPricePerMTok, outputPricePerMTok, supportsTools, supportsStreaming, status: 'live' | 'deprecated' }`. Default seed includes the current Claude family (`claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`) plus a `local-stub` model for offline dev. Exposed via `GET /api/models`. Pricing is denormalized onto each `Crew` row at assignment time so historical salary is reproducible after a price change.
+- [ ] **11.3** **soul.md authoring**: file-system source of truth at `%LOCALAPPDATA%\Forge\agents\{agentId}\soul.md` (path overridable per agent). `/settings/agents` gains an in-app editor (CodeMirror, markdown preview side-by-side) that reads + writes the file with file-watcher-driven invalidation so external edits hot-reload. soul.md is the system prompt at runtime; capabilities (`tools`, `mcp_servers`, `ado_scopes`) declared in YAML front-matter at the top.
+- [ ] **11.4** **Cost ledger** table `agent_usage(id, agentId, crewId, taskId, model, inputTokens, outputTokens, costUsd, startedAt, endedAt, status)` written by the runner on every invocation finish (or partial-finish on cancel). Indexed by `(crewId, startedAt)` and `(taskId)`. SQL views: `crew_salary_today`, `crew_salary_sprint`, `crew_salary_month`. Card cost in Phase 1 becomes `SUM(costUsd) WHERE taskId = card.id`, replacing the prototype's hard-coded values once the runner is live.
+- [ ] **11.5** **Concrete runner**: `ClaudeAgentRunner` (Anthropic SDK) — uses prompt caching for the soul.md prefix (5-min TTL), streaming responses via SSE, retry-with-backoff on 529 / 503. Per-invocation isolation: each runs in its own scoped `HttpClient`; no shared state across agents. Vendor abstraction is thin so a future `OpenAIAgentRunner` slots in without touching callers.
+- [ ] **11.6** **Sandboxing**: agents run inside the Forge.Api host as Tasks, NOT subprocess; tool execution (file edits, git, shell) is gated through an `IAgentToolHost` that enforces (a) the workstream's worktree path as the only writable root, (b) per-tool allowlist from soul.md front-matter, (c) hard wall-clock + token budgets per invocation. Subprocess isolation is a Phase R upgrade.
+- [ ] **11.7** **Live status streaming**: SignalR channel `agent.{agentId}` broadcasts `started | token | tool-call | tool-result | finished | failed | paused`. UI hooks: card live-progress bar (Phase 1.2) reads the active invocation; `/crews` row updates in place; PR detail panel build-log tail (Phase 4.5) gains an "Agent activity" tab.
+- [ ] **11.8** **Pause / resume / reassign**: PO actions on `/crews` and the agent detail panel. Pause halts the agent's task pickup loop and surfaces a `paused` pill; resume resumes from queue; reassign moves an agent to another crew (model + pricing change recorded in `agent_history`).
+- [ ] **11.9** **Salary readouts**: `/crews` cards show salary today / sprint / month with a sparkline; `/products` rolls up across crews; TopBar gains a small `$X.XX today` chip (PO only). Numbers are USD with the model's pricing — currency conversion is out of scope for v0.1.
+- [ ] **11.10** **Budgets & alerts**: per-crew daily and per-task hard caps (in `Crew.dailyBudgetUsd`, `Crew.maxTaskUsd`); the runner refuses to start an invocation that would exceed the cap and emits a `forge.agent.budget_exceeded` event. PO sees an inline banner on `/crews` until acknowledged.
+- [ ] **11.11** **Tests**: `IAgentRunner` contract test with a fake LLM (deterministic token stream); cost-ledger arithmetic test (input + output sums match); soul.md hot-reload test; budget-cap refusal test; one Playwright E2E that triggers an agent on a card, observes streaming tokens, and confirms cost lands on the card and the crew salary readout.
+- [ ] **11.12** **Fidelity**: not in prototype — exempt from screenshot diff. New UI surfaces (soul.md editor, agent detail panel, salary chip) must use existing forge tokens; document new tokens in `docs/forge/design-tokens.md`.
 
 ---
 
@@ -208,9 +382,3 @@ Anything else that surfaces during Phases 0–7 goes into a `Refactor backlog` s
 
 ---
 
-## Open questions to resolve before Phase 5
-
-- Which is the primary provider — ADO, GitHub, or both equally? Drives auth + webhook ordering.
-- Where do worktrees live? Single root configurable per user, or per-workstream? (Phase 3.7 needs the answer.)
-- Are agents (`A1`, `E4`, …) real running processes or only labels surfaced from work-item metadata? If real, Phase 6.6 needs an `IAgentRunner` too.
-- Sprint / iteration source of truth: ADO iteration paths, GitHub milestones, or local? Affects burn-down and the sprint pill in Phase 1.11.

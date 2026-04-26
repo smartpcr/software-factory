@@ -89,30 +89,30 @@ export function SideBar() {
 
         <div className="nav-section">
           <div className="nav-section-title"><span>Agents</span><button className="add-btn" title="New agent">+</button></div>
-          <a className="nav-item has-sub">
+          <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/swarm">
             <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="1.4" fill="currentColor" /><circle cx="3.5" cy="4.5" r="1.1" fill="currentColor" /><circle cx="12.5" cy="4.5" r="1.1" fill="currentColor" /><circle cx="3.5" cy="11.5" r="1.1" fill="currentColor" /><circle cx="12.5" cy="11.5" r="1.1" fill="currentColor" /></svg>
             <div className="label-block">
               <span className="label">Swarm</span>
               <span className="sub">6 working · 3 idle</span>
             </div>
             <span className="tooltip">Swarm</span>
-          </a>
-          <a className="nav-item has-sub">
+          </NavLink>
+          <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/policies">
             <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1 L13 3 V 8 C 13 11 11 13 8 14 C 5 13 3 11 3 8 V 3 Z" stroke="currentColor" strokeWidth="1.3" fill="none" /></svg>
             <div className="label-block">
               <span className="label">Policies</span>
               <span className="sub">12 rules · 2 gates</span>
             </div>
             <span className="tooltip">Policies</span>
-          </a>
-          <a className="nav-item has-sub">
+          </NavLink>
+          <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/cost">
             <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2 V 14 M 5 5 H 10 a 2 2 0 0 1 0 4 H 5 a 2 2 0 0 0 0 4 H 11" stroke="currentColor" strokeWidth="1.3" fill="none" strokeLinecap="round" /></svg>
             <div className="label-block">
               <span className="label">Costs</span>
               <span className="sub">$4.81 today · $32 wk</span>
             </div>
             <span className="tooltip">Costs</span>
-          </a>
+          </NavLink>
         </div>
 
         <div className="nav-section">

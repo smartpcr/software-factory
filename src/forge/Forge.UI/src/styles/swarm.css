@@ -1,0 +1,327 @@
+/* ============================================
+   SWARM VIEW
+   ============================================ */
+.swarm-wrap {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  gap: 18px;
+  padding: 0 28px 28px;
+  overflow: hidden;
+  min-height: 0;
+}
+.swarm-main {
+  overflow-y: auto;
+  padding-right: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.swarm-rail {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-bottom: 12px;
+}
+
+.swarm-role-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.swarm-role-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 0 2px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.swarm-role-head .name {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.swarm-role-head .meta {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.swarm-role-head .swarm-role-pill {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+}
+.swarm-role-pill.arch  { color: var(--epic-026); border-color: var(--epic-026); background: rgba(124, 58, 237, 0.06); }
+.swarm-role-pill.eng   { color: var(--accent);   border-color: var(--border-accent); background: var(--accent-bg); }
+.swarm-role-pill.rev   { color: var(--info);     border-color: var(--info-border);   background: var(--info-bg); }
+.swarm-role-pill.qa    { color: var(--success);  border-color: var(--success-border);background: var(--success-bg); }
+.swarm-role-pill.human { color: var(--warning);  border-color: var(--warning-border);background: var(--warning-bg); }
+
+.swarm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.swarm-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 12px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 160ms, box-shadow 160ms, transform 160ms;
+}
+.swarm-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+.swarm-card[data-status='working']::after {
+  content: '';
+  position: absolute;
+  top: 10px; right: 10px;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 18%, transparent);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.swarm-card[data-status='queued']::after {
+  content: '';
+  position: absolute;
+  top: 10px; right: 10px;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+.swarm-card[data-status='idle']::after {
+  content: '';
+  position: absolute;
+  top: 10px; right: 10px;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+
+.swarm-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.swarm-card-avatar,
+.swarm-card-mono {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-sunken);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  object-fit: cover;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+.swarm-card-name-block { min-width: 0; flex: 1; }
+.swarm-card-name {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+.swarm-card-id {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 2px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.swarm-card-id .role { color: var(--text-secondary); font-weight: 600; }
+
+.swarm-card-task {
+  background: var(--bg-sunken);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  position: relative;
+  overflow: hidden;
+}
+.swarm-card-task .label {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-tertiary);
+  display: block;
+  margin-bottom: 3px;
+}
+.swarm-card-task[data-empty='true'] {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.swarm-card-progress {
+  height: 3px;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 6px;
+}
+.swarm-card-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 60%, transparent));
+  transition: width 400ms ease-out;
+}
+
+.swarm-card-caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.swarm-card-cap {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: var(--bg-sunken);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.swarm-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  letter-spacing: 0.04em;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  margin-top: 2px;
+}
+.swarm-card-foot .num {
+  font-size: 12px;
+  color: var(--text-primary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.swarm-rail-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px;
+}
+.swarm-rail-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.swarm-rail-card-title {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+.swarm-rail-card-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.swarm-tape {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 11px;
+}
+.swarm-tape-row {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--border);
+}
+.swarm-tape-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.swarm-tape-time {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.swarm-tape-msg { color: var(--text-secondary); line-height: 1.4; }
+.swarm-tape-msg .who { color: var(--text-primary); font-weight: 600; }
+.swarm-tape-msg .ref { color: var(--accent); font-family: var(--font-mono); font-size: 10.5px; }
+
+.swarm-cap-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.swarm-cap-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+}
+.swarm-cap-row .name { color: var(--text-secondary); }
+.swarm-cap-row .bar {
+  height: 4px;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  position: relative;
+  margin-top: 3px;
+}
+.swarm-cap-row .bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+}
+.swarm-cap-row .num {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1100px) {
+  .swarm-wrap { grid-template-columns: 1fr; }
+  .swarm-rail { order: -1; }
+}

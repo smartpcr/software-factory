@@ -1,0 +1,347 @@
+/* ============================================
+   COST VIEW
+   ============================================ */
+.cost-wrap {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 18px;
+  padding: 0 28px 28px;
+  overflow: hidden;
+  min-height: 0;
+}
+.cost-main {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-right: 4px;
+  min-height: 0;
+}
+.cost-rail {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-bottom: 12px;
+  min-height: 0;
+}
+
+.cost-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+}
+.cost-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.cost-card-title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+.cost-card-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+/* --- 7-day stacked bar chart ---------------------------------- */
+.cost-chart {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  gap: 12px;
+  align-items: stretch;
+}
+.cost-chart-yaxis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-tertiary);
+  text-align: right;
+  padding-bottom: 22px;
+}
+.cost-chart-bars {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 10px;
+  align-items: end;
+  position: relative;
+  min-height: 200px;
+}
+.cost-chart-grid {
+  position: absolute;
+  inset: 0 0 22px 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  pointer-events: none;
+}
+.cost-chart-grid > div {
+  border-top: 1px dashed var(--border);
+  height: 0;
+}
+.cost-chart-col {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: end;
+  position: relative;
+  z-index: 1;
+}
+.cost-chart-col .label {
+  text-align: center;
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  line-height: 14px;
+  height: 14px;
+}
+.cost-chart-stack {
+  display: flex;
+  flex-direction: column-reverse;
+  background: var(--bg-sunken);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.cost-chart-stack .seg {
+  flex-shrink: 0;
+  position: relative;
+  transition: filter 120ms;
+}
+.cost-chart-stack .seg:hover {
+  filter: brightness(1.15);
+}
+.cost-chart-col[data-today='true'] .cost-chart-stack {
+  outline: 1.5px solid var(--accent);
+  outline-offset: -1.5px;
+  box-shadow: 0 0 0 4px var(--accent-glow);
+}
+.cost-chart-col .cost-total {
+  position: absolute;
+  top: -16px;
+  left: 0; right: 0;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.cost-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+.cost-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.cost-legend-item .swatch {
+  width: 10px; height: 10px;
+  border-radius: 2px;
+}
+.cost-legend-item .num {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Agent burn table ----------------------------------------- */
+.burn-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 11.5px;
+}
+.burn-table th {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+  text-align: left;
+  padding: 6px 10px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.burn-table th.num,
+.burn-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+}
+.burn-table tr:hover td { background: var(--bg-sunken); }
+.burn-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  transition: background 120ms;
+}
+.burn-table td.name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.burn-table td.name .role-tag {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  background: var(--bg-sunken);
+  color: var(--text-tertiary);
+  padding: 1px 5px;
+  border-radius: 2px;
+  border: 1px solid var(--border);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.burn-table td.cost { color: var(--text-primary); font-weight: 600; }
+.burn-table td.spark svg { display: block; }
+.burn-table td.share { color: var(--text-tertiary); }
+.burn-table td.share .bar {
+  display: inline-block;
+  vertical-align: middle;
+  height: 4px;
+  background: var(--bg-sunken);
+  border-radius: 999px;
+  overflow: hidden;
+  width: 80px;
+  margin-right: 6px;
+  border: 1px solid var(--border);
+}
+.burn-table td.share .bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+/* --- Top-N expensive cards ------------------------------------ */
+.cost-rank-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cost-rank-row {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: border-color 160ms, transform 160ms;
+}
+.cost-rank-row:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+.cost-rank-row .pos {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-weight: 600;
+  text-align: center;
+}
+.cost-rank-row .body { min-width: 0; }
+.cost-rank-row .body .id {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  margin-right: 5px;
+}
+.cost-rank-row .body .title {
+  color: var(--text-primary);
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: middle;
+}
+.cost-rank-row .cost {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Right-rail budget gauge ---------------------------------- */
+.budget-gauge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.budget-gauge svg { display: block; }
+.budget-gauge .val {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin-top: -54px;
+  margin-bottom: 22px;
+}
+.budget-gauge .sub {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.budget-alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.budget-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.budget-alert.warn   { background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning-border); }
+.budget-alert.danger { background: var(--danger-bg);  color: var(--danger);  border: 1px solid var(--danger-border); }
+.budget-alert.info   { background: var(--info-bg);    color: var(--info);    border: 1px solid var(--info-border); }
+.budget-alert .dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  margin-top: 5px;
+  flex-shrink: 0;
+}
+.budget-alert .body { color: var(--text-primary); }
+.budget-alert .body strong { color: currentColor; }
+
+@media (max-width: 1100px) {
+  .cost-wrap { grid-template-columns: 1fr; }
+  .cost-rail { order: -1; }
+}
