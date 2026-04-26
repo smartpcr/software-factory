@@ -421,13 +421,25 @@ function renderAI(ctx: InspectorContext): NodeInspectorResult {
         <label class="ins-field-label">Confidence <span class="confidence-value" style="opacity:.5">${c.confidence ?? 70}%</span></label>
         <input type="range" min="0" max="100" value="${c.confidence ?? 70}" data-config-key="confidence" data-node-id="${id}" oninput="this.closest('.ins-field').querySelector('.confidence-value').textContent=this.value+'%'" />
       </div>
-      <div style="flex:1">
+      <div style="flex:0 0 80px">
         <label class="ins-field-label">Max tokens</label>
         <input type="number" step="1024" min="4096" max="32768" value="${c.maxTokens || 4096}" data-config-key="maxTokens" data-node-id="${id}" />
       </div>
-      <div style="flex:0 0 70px">
+      <div style="flex:0 0 60px">
         <label class="ins-field-label">Timeout</label>
-        <input type="number" step="1" min="1" max="60" value="${c.timeoutMinutes || 5}" data-config-key="timeoutMinutes" data-node-id="${id}" style="width:100%" title="Minutes before idle timeout" />
+        <input type="number" step="1" min="1" max="60" value="${c.timeoutMinutes || 5}" data-config-key="timeoutMinutes" data-node-id="${id}" style="width:100%" title="Minutes per attempt" />
+      </div>
+    </div>
+    <div class="ins-field" style="display:flex; gap:8px; align-items:center;">
+      <div style="flex:0 0 90px">
+        <label class="ins-field-label">Timeout retries</label>
+        <input type="number" step="1" min="0" max="5" value="${c.timeoutRetries || 0}" data-config-key="timeoutRetries" data-node-id="${id}" title="Retries on timeout only. 0 = no retry." />
+      </div>
+      <div style="flex:1; padding-top:12px;">
+        <label class="ins-field-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input type="checkbox" ${c.continueOnTimeoutExhausted ? 'checked' : ''} data-config-key="continueOnTimeoutExhausted" data-node-id="${id}" />
+          Don't fail when retries exhausted
+        </label>
       </div>
     </div>
     ${(() => {

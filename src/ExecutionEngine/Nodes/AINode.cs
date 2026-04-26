@@ -273,13 +273,52 @@ public class AINode : ExecutableNodeBase
                 : null,
         };
 
-        var result = await executor.ExecuteAsync(execRequest, cancellationToken);
+        var maxAttempts = 1 + Math.Max(0, aiDef.TimeoutRetries);
+        AIExecutionResult result = null!;
 
-        // Log execution summary
-        if (aiLogger != null)
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
-            aiLogger.EmitLine(workflowContext.InstanceId, this.NodeId,
-                $"📊 {(result.Success ? "OK" : "FAIL")} | {result.InputTokens}in/{result.OutputTokens}out | {result.Duration.TotalSeconds:0.0}s | {result.ModelUsed}");
+            if (attempt > 0)
+            {
+                aiLogger?.EmitLine(workflowContext.InstanceId, this.NodeId,
+                    $"🔄 Timeout retry {attempt}/{aiDef.TimeoutRetries}");
+            }
+
+            result = await executor.ExecuteAsync(execRequest, cancellationToken);
+
+            // Log execution summary
+            if (aiLogger != null)
+            {
+                aiLogger.EmitLine(workflowContext.InstanceId, this.NodeId,
+                    $"📊 {(result.Success ? "OK" : "FAIL")} | {result.InputTokens}in/{result.OutputTokens}out | {result.Duration.TotalSeconds:0.0}s | {result.ModelUsed}");
+            }
+
+            // Only retry on timeout errors, not other failures
+            var isTimeout = !result.Success && result.Error != null &&
+                (result.Error.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
+                 result.Error.Contains("timed out", StringComparison.OrdinalIgnoreCase));
+
+            if (result.Success || !isTimeout || attempt >= maxAttempts - 1)
+            {
+                // Success, non-timeout error, or last attempt — stop retrying
+                if (!result.Success && isTimeout && aiDef.ContinueOnTimeoutExhausted)
+                {
+                    // Max retries exhausted but configured to continue with partial results
+                    aiLogger?.EmitLine(workflowContext.InstanceId, this.NodeId,
+                        $"⚠ Timeout retries exhausted ({maxAttempts}), continuing with partial results");
+                    result = new AIExecutionResult
+                    {
+                        Success = true,
+                        Content = result.Content,
+                        Duration = result.Duration,
+                        ModelUsed = result.ModelUsed,
+                        InputTokens = result.InputTokens,
+                        OutputTokens = result.OutputTokens,
+                    };
+                }
+
+                break;
+            }
         }
 
         // Write results to output

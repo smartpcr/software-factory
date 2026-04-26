@@ -85,6 +85,18 @@ public class AINodeDefinition : NodeDefinition
     public int TimeoutMinutes { get; set; } = 5;
 
     /// <summary>
+    /// Gets or sets the max retries on timeout errors only. 0 = no retry (default).
+    /// Each retry gets a fresh timeout budget.
+    /// </summary>
+    public int TimeoutRetries { get; set; } = 0;
+
+    /// <summary>
+    /// Gets or sets whether to fail the node when max timeout retries are exceeded.
+    /// When false (default), the node fails. When true, it completes with partial results.
+    /// </summary>
+    public bool ContinueOnTimeoutExhausted { get; set; } = false;
+
+    /// <summary>
     /// Gets or sets the working directory for skill/agent execution.
     /// Supports binding expressions (e.g. <c>{incidentFolder}</c>).
     /// </summary>

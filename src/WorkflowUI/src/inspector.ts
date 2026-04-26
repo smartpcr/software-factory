@@ -457,7 +457,7 @@ export const Inspector = {
         <div class="ins-runtime-row"><span class="ins-runtime-key">End</span><span class="ins-runtime-val">${fmtTime(run.endTime)}</span></div>
         <div class="ins-runtime-row"><span class="ins-runtime-key">Duration</span><span class="ins-runtime-val">${fmtDuration(run.duration)}</span></div>
       </div>
-      ${varsHtml ? `<div class="ins-runtime-data-section"><div class="ins-runtime-data-label">Final Variables</div>${varsHtml}</div>` : ''}
+      ${varsHtml ? `<details class="ins-runtime-data-section"><summary class="ins-runtime-data-label">Final Variables <span class="ins-runtime-count">${Object.keys(run.globalVariables || {}).length}</span></summary>${varsHtml}</details>` : ''}
     </div>`;
   },
 
@@ -482,13 +482,13 @@ export const Inspector = {
       if (!data || typeof data !== 'object') return '';
       const entries = Object.entries(data as Record<string, unknown>);
       if (entries.length === 0) return '';
-      return `<div class="ins-runtime-data-section">
-        <div class="ins-runtime-data-label">${escapeHtml(label)}</div>
+      return `<details class="ins-runtime-data-section">
+        <summary class="ins-runtime-data-label">${escapeHtml(label)} <span class="ins-runtime-count">${entries.length}</span></summary>
         ${entries.map(([k, v]) => {
           const valStr = typeof v === 'object' ? JSON.stringify(v) : String(v ?? '');
           return `<div class="ins-runtime-row"><span class="ins-runtime-key">${escapeHtml(k)}</span><span class="ins-runtime-val">${escapeHtml(valStr)}</span></div>`;
         }).join('')}
-      </div>`;
+      </details>`;
     };
     return `
     <div class="ins-section">

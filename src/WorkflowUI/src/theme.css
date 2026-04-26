@@ -1371,6 +1371,33 @@
     color: var(--text-3);
     font-weight: 600;
     margin-bottom: 3px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .ins-runtime-data-label:hover { color: var(--text-1); }
+  .ins-runtime-count {
+    display: inline-block;
+    min-width: 14px;
+    padding: 0 4px;
+    margin-left: 4px;
+    font-size: 8px;
+    line-height: 14px;
+    text-align: center;
+    border-radius: 7px;
+    background: var(--bg-3);
+    color: var(--text-3);
+    vertical-align: middle;
+    letter-spacing: 0;
+  }
+  details.ins-runtime-data-section > summary { list-style: none; }
+  details.ins-runtime-data-section > summary::before {
+    content: '▸';
+    display: inline-block;
+    margin-right: 4px;
+    transition: transform 0.15s;
+  }
+  details[open].ins-runtime-data-section > summary::before {
+    transform: rotate(90deg);
   }
 
   /* Monaco editor container */

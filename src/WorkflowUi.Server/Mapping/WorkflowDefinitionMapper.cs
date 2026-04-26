@@ -187,6 +187,8 @@ public static class WorkflowDefinitionMapper
                 Confidence = GetInt(el, config, "confidence", 70),
                 MaxTokens = GetInt(el, config, "maxTokens", 4096),
                 TimeoutMinutes = GetInt(el, config, "timeoutMinutes", 5),
+                TimeoutRetries = GetInt(el, config, "timeoutRetries", 0),
+                ContinueOnTimeoutExhausted = GetBool(el, config, "continueOnTimeoutExhausted", false),
                 WorkingDirectory = GetString(el, config, "workingDirectory"),
                 InputBindings = GetStringDictionary(el, config, "inputBindings") ?? [],
             },
@@ -319,6 +321,23 @@ public static class WorkflowDefinitionMapper
         if (el.TryGetProperty(name, out var v2) && v2.ValueKind == JsonValueKind.Number)
         {
             return v2.GetInt32();
+        }
+
+        return defaultValue;
+    }
+
+    internal static bool GetBool(JsonElement el, JsonElement config, string name, bool defaultValue)
+    {
+        if (config.ValueKind == JsonValueKind.Object && config.TryGetProperty(name, out var v))
+        {
+            if (v.ValueKind == JsonValueKind.True) return true;
+            if (v.ValueKind == JsonValueKind.False) return false;
+        }
+
+        if (el.TryGetProperty(name, out var v2))
+        {
+            if (v2.ValueKind == JsonValueKind.True) return true;
+            if (v2.ValueKind == JsonValueKind.False) return false;
         }
 
         return defaultValue;

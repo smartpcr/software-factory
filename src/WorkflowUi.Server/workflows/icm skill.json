@@ -387,7 +387,9 @@
         "confidence": 70,
         "maxTokens": 4096,
         "workingDirectory": "agentFolder",
-        "timeoutMinutes": 25
+        "timeoutMinutes": 15,
+        "timeoutRetries": 2,
+        "continueOnTimeoutExhausted": true
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -515,24 +517,6 @@
         "message": ""
       },
       "joinType": "Any",
-      "priority": "Normal",
-      "maxConcurrentExecutions": 0,
-      "retryPolicy": null,
-      "circuitBreakerPolicy": null,
-      "compensationNodeId": null,
-      "fallbackNodeId": null
-    },
-    {
-      "nodeId": "n_1poikic",
-      "runtimeType": "Log",
-      "nodeName": "Log",
-      "description": "",
-      "configuration": {
-        "level": "Error",
-        "messageTemplate": "{errorMessage}",
-        "parameterBindings": "System.Collections.Generic.Dictionary`2[System.String,System.String]"
-      },
-      "joinType": "All",
       "priority": "Normal",
       "maxConcurrentExecutions": 0,
       "retryPolicy": null,
@@ -697,17 +681,6 @@
       "metadata": null
     },
     {
-      "sourceNodeId": "n_9vbg16i",
-      "targetNodeId": "n_1poikic",
-      "sourcePort": "error",
-      "targetPort": "in",
-      "triggerMessageType": "Fail",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
       "sourceNodeId": "n_48s864k",
       "targetNodeId": "n_nuxfxwv",
       "sourcePort": "LoopBody",
@@ -732,6 +705,17 @@
     {
       "sourceNodeId": "n_n2nl85d",
       "targetNodeId": "n_9vbg16i",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_9vbg16i",
+      "targetNodeId": "n_g43ds2j",
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",
