@@ -751,6 +751,17 @@
       "isEnabled": true,
       "priority": 0,
       "metadata": null
+    },
+    {
+      "sourceNodeId": "n_48s864k",
+      "targetNodeId": "n_nuxfxwv",
+      "sourcePort": "LoopBody",
+      "targetPort": "in",
+      "triggerMessageType": "Next",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
     }
   ]
 }

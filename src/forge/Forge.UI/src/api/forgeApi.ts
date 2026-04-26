@@ -1,4 +1,4 @@
-import type { Card, ColumnId, ForgeState, TimelineResponse } from '@/types';
+import type { Card, ColumnId, ForgeState, TimelineResponse, Workstream } from '@/types';
 import { sampleState } from '@/sampleData';
 
 const baseUrl = import.meta.env.VITE_FORGE_API_URL ?? '';
@@ -26,14 +26,21 @@ function useLocalSeed(): boolean {
   return new URLSearchParams(window.location.search).get('seed') === 'local';
 }
 
+/** Phase-3 placeholder for the auth identity. Phase 5 replaces this. */
+function writerHeader(): string {
+  if (typeof window === 'undefined') return 'forge-ui';
+  return window.localStorage.getItem('forge.user') ?? 'forge-ui';
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const { headers: extraHeaders, ...rest } = init ?? {};
   const res = await fetch(`${baseUrl}${path}`, {
+    ...rest,
     headers: {
       Accept: 'application/json',
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(init?.headers ?? {}),
+      ...(extraHeaders ?? {}),
     },
-    ...init,
   });
   if (!res.ok) {
     let problem: ProblemDetails | null = null;
@@ -101,6 +108,52 @@ export const forgeApi = {
     return fetchJson<MoveCardResponse>(`/api/cards/${encodeURIComponent(id)}/move`, {
       method: 'POST',
       body: JSON.stringify({ toCol, force }),
+    });
+  },
+
+  /** GET /api/workstreams. */
+  async getWorkstreams(): Promise<Workstream[]> {
+    if (useLocalSeed()) return sampleState.workstreams;
+    try {
+      return await fetchJson<Workstream[]>('/api/workstreams');
+    } catch (err) {
+      if (import.meta.env.DEV) {
+        console.warn('[forge] /api/workstreams failed, using local sample data', err);
+        return sampleState.workstreams;
+      }
+      throw err;
+    }
+  },
+
+  /** POST /api/workstreams. */
+  async createWorkstream(req: {
+    id: string;
+    name: string;
+    branch: string;
+    base: string;
+    epic: string;
+    worktreePath?: string | null;
+  }): Promise<Workstream> {
+    return fetchJson<Workstream>('/api/workstreams', {
+      method: 'POST',
+      body: JSON.stringify(req),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/workstreams/{id}/sync. */
+  async syncWorkstream(id: string): Promise<Workstream> {
+    return fetchJson<Workstream>(`/api/workstreams/${encodeURIComponent(id)}/sync`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** DELETE /api/workstreams/{id}?force=true. */
+  async deleteWorkstream(id: string, force = false): Promise<void> {
+    await fetchJson<void>(`/api/workstreams/${encodeURIComponent(id)}?force=${force}`, {
+      method: 'DELETE',
+      headers: { 'X-Forge-User': writerHeader() },
     });
   },
 

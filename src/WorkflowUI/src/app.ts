@@ -463,6 +463,16 @@ export const App = {
       if (n.runtimeType.toLowerCase() === 'group') {
         Inspector.validateGroupNode(n);
       }
+      // While/ForEach must have a LoopBody connection
+      const rt = n.runtimeType.toLowerCase();
+      if (rt === 'while' || rt === 'foreach') {
+        const hasLoopBody = [...State.edges.values()].some(e =>
+          e.sourceNodeId === n.nodeId && e.sourcePort === 'LoopBody');
+        if (!hasLoopBody) {
+          n.validationErrors = (n.validationErrors || []).concat(
+            'No child node connected to LoopBody port. Connect a node to the LoopBody slot to provide the loop body.');
+        }
+      }
     });
     Nodes.render();
 
@@ -546,10 +556,29 @@ export const App = {
       return acc;
     };
     const toDelete = new Set(collect(id));
+
+    // Before deleting edges, check if any While/ForEach LoopBody connections need re-wiring
+    const loopBodyRewires: { parentId: string; newTargetId: string }[] = [];
+    [...State.edges.values()].forEach(e => {
+      if (toDelete.has(e.targetNodeId) && e.sourcePort === 'LoopBody') {
+        // Find the deleted node's downstream target (the next node in the chain)
+        [...State.edges.values()].forEach(downstream => {
+          if (downstream.sourceNodeId === e.targetNodeId && downstream.sourcePort === 'out' && !toDelete.has(downstream.targetNodeId)) {
+            loopBodyRewires.push({ parentId: e.sourceNodeId, newTargetId: downstream.targetNodeId });
+          }
+        });
+      }
+    });
+
     toDelete.forEach(nid => State.nodes.delete(nid));
     [...State.edges.entries()].forEach(([eid, e]) => {
       if (toDelete.has(e.sourceNodeId) || toDelete.has(e.targetNodeId)) State.edges.delete(eid);
     });
+
+    // Re-wire LoopBody connections to the next child
+    for (const rewire of loopBodyRewires) {
+      this.createEdge({ sourceNodeId: rewire.parentId, sourcePort: 'LoopBody', sourcePortName: 'LoopBody', targetNodeId: rewire.newTargetId, targetPort: 'in' });
+    }
     this.markDirty();
     this.select(null);
     this.renderAll();

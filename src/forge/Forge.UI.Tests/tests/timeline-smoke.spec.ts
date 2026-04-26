@@ -46,8 +46,11 @@ test.describe('/timeline', () => {
 
   test('filter chip narrows visible bars', async ({ page }) => {
     await page.goto('/timeline');
+    // Wait for the API hydration before counting — bars are async.
+    await page.locator('main.main .timeline-bar').first().waitFor({ state: 'visible' });
     const total = await page.locator('main.main .timeline-bar').count();
     await page.locator('.timeline-toolbar .filter-chip:has-text("Merging")').click();
+    await page.locator('main.main .timeline-bar').first().waitFor({ state: 'visible' });
     const merging = await page.locator('main.main .timeline-bar').count();
     expect(merging).toBeLessThan(total);
     expect(merging).toBeGreaterThan(0);

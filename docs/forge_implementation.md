@@ -108,19 +108,19 @@ Visualises the same data as a horizontal timeline with epic and workstream lanes
 
 A workstream = epic + branch + worktree + agents + active PRs. Operate on them as first-class entities.
 
-- [ ] **3.1** Stats strip (active count, open PRs, merged today, 24h cost).
-- [ ] **3.2** Workstream grid card: branch, base, ahead/behind, conflicts, last-active, summary, agents, linked PRs / cards.
-- [ ] **3.3** Filter chips: All / Active / Merging / Conflicts / Idle.
-- [ ] **3.4** "Sync from epics" button: re-derive workstreams from cards in Build/Review.
-- [ ] **3.5** "New workstream" modal (epic, name, base branch, worktree path).
-- [ ] **3.6** API endpoints in `Forge.Api/Endpoints/WorkstreamsEndpoints.cs`: `GET /api/workstreams`, `POST /api/workstreams`, `POST /api/workstreams/{id}/sync`, `DELETE` (with safety prompt).
-- [ ] **3.7** Local git worktree wrapper service `IGitWorktreeService` in `Forge.Api/Services/Git/` (`git worktree add/list/remove`); guard against operating outside the configured root.
-- [ ] **3.8** Compute ahead/behind/conflicts via `git rev-list --count base...branch` and `git merge-tree`.
-- [ ] **3.9** Conflict surface: badge on card + "Open conflict" action that opens the file path returned by `git diff --name-only --diff-filter=U`.
-- [ ] **3.10** Cross-link: clicking a card on the board with a `branch` jumps to the matching workstream; vice versa from workstream → cards.
-- [ ] **3.11** Permission gate: writes (`POST/DELETE`) require an authenticated user (placeholder until Phase 5 auth).
-- [ ] **3.12** Tests: `IGitWorktreeService` unit tests against a temp repo; endpoint integration tests; Playwright "create workstream" flow.
-- [ ] **3.13** **Fidelity check** — screenshot diff of `/workstreams` against the prototype: stats strip, full grid, each filter chip active, and the new-workstream modal open. Diff must be 0.
+- [x] **3.1** Stats strip (active count, open PRs, merged today, 24h cost).
+- [x] **3.2** Workstream grid card: branch, base, ahead/behind, conflicts, last-active, summary, agents, linked PRs / cards.
+- [x] **3.3** Filter chips: All / Active / Merging / Conflicts / Idle.
+- [x] **3.4** "Sync from epics" button: re-derive workstreams from cards in Build/Review.
+- [x] **3.5** "New workstream" modal (epic, name, base branch, worktree path).
+- [x] **3.6** API endpoints in `Forge.Api/Endpoints/WorkstreamsEndpoints.cs`: `GET /api/workstreams`, `POST /api/workstreams`, `POST /api/workstreams/{id}/sync`, `DELETE` (with safety prompt).
+- [x] **3.7** Local git worktree wrapper service `IGitWorktreeService` in `Forge.Api/Services/Git/` (`git worktree add/list/remove`); guard against operating outside the configured root.
+- [x] **3.8** Compute ahead/behind/conflicts via `git rev-list --count base...branch` and `git merge-tree`.
+- [x] **3.9** Conflict surface: badge on card + "Open conflict" action that opens the file path returned by `git diff --name-only --diff-filter=U`.
+- [x] **3.10** Cross-link: clicking a card on the board with a `branch` jumps to the matching workstream; vice versa from workstream → cards.
+- [x] **3.11** Permission gate: writes (`POST/DELETE`) require an authenticated user (placeholder until Phase 5 auth).
+- [x] **3.12** Tests: `IGitWorktreeService` unit tests against a temp repo; endpoint integration tests; Playwright "create workstream" flow.
+- [x] **3.13** **Fidelity check** — screenshot diff of `/workstreams` against the prototype: stats strip, full grid, each filter chip active, and the new-workstream modal open. Diff must be 0.
 
 ## Phase 4 — Pull Requests view
 

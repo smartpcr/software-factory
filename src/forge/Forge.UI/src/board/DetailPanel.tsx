@@ -1,5 +1,7 @@
+import { useNavigate } from 'react-router-dom';
 import type { Card as CardModel } from '@/types';
 import { useBoardStore } from '@/state/useBoardStore';
+import { useWorkstreamsStore } from '@/state/useWorkstreamsStore';
 
 // Verbatim port of the prototype's <aside class="detail-panel"> static
 // markup (lines 2899-2934) and renderDetailBody / renderDetailActions
@@ -87,6 +89,10 @@ export function DetailPanel() {
   const selectedId = useBoardStore((s) => s.selectedId);
   const card = useBoardStore((s) => s.cards.find((c) => c.id === s.selectedId)) ?? null;
   const setSelected = useBoardStore((s) => s.setSelected);
+  const workstreams = useWorkstreamsStore((s) => s.workstreams);
+  const focusWs = useWorkstreamsStore((s) => s.setFocused);
+  const navigate = useNavigate();
+  const linkedWs = card?.branch ? workstreams.find((w) => w.branch === card.branch) : undefined;
 
   const open = !!selectedId && !!card;
   const safe = card;
@@ -132,7 +138,27 @@ export function DetailPanel() {
 
           <div className="detail-body" id="detail-body">
             <div className="detail-meta">
-              <div className="detail-meta-cell"><div className="detail-meta-label">Branch</div><div className="detail-meta-val mono">{safe.branch ?? '—'}</div></div>
+              <div className="detail-meta-cell">
+                <div className="detail-meta-label">Branch</div>
+                <div className="detail-meta-val mono">
+                  {safe.branch ? (
+                    linkedWs ? (
+                      <a
+                        href="#/workstreams"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          focusWs(linkedWs.id);
+                          navigate('/workstreams');
+                        }}
+                        style={{ color: 'var(--accent)', textDecoration: 'none' }}
+                        title="Jump to workstream"
+                      >
+                        {safe.branch} →
+                      </a>
+                    ) : safe.branch
+                  ) : '—'}
+                </div>
+              </div>
               <div className="detail-meta-cell"><div className="detail-meta-label">Cost so far</div><div className="detail-meta-val mono">${safe.cost.toFixed(2)}</div></div>
               <div className="detail-meta-cell"><div className="detail-meta-label">Priority</div><div className="detail-meta-val">{safe.priority}</div></div>
               <div className="detail-meta-cell"><div className="detail-meta-label">Source</div><div className="detail-meta-val mono" style={{ color: 'var(--text-tertiary)' }}>ADO ↗</div></div>

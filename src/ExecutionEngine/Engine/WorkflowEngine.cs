@@ -784,6 +784,13 @@ namespace ExecutionEngine.Engine
                         break;
                     }
 
+                    // Early exit: workflow marked as failed by HandleNodeFailureAsync
+                    if (context.Status == WorkflowExecutionStatus.Failed && inflightTasks.IsEmpty)
+                    {
+                        this.logger.LogInformation("Workflow marked as failed, terminating main loop");
+                        break;
+                    }
+
                     // If we didn't dispatch anything this iteration but tasks are still in
                     // flight, sleep briefly and re-check rather than busy-wait.
                     if (!messageProcessed)
@@ -1331,6 +1338,9 @@ namespace ExecutionEngine.Engine
             {
                 this.logger.LogInformation("Unhandled node failure (no error handler): {NodeId}. Failing workflow.", nodeId);
                 context.Variables["__error"] = $"Unhandled failure in node '{nodeDef?.NodeName ?? nodeId}': {errorMessage}";
+
+                // Mark workflow as failed so the main loop terminates
+                context.Status = WorkflowExecutionStatus.Failed;
 
                 // Cancel all pending/running nodes to stop the workflow
                 foreach (var tracked in this.nodeExecutionTracking.Values)

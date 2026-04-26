@@ -7,6 +7,7 @@
 using Forge.Api.Endpoints;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
+using Forge.Api.Services.Git;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -54,6 +55,10 @@ builder.Services.AddSwaggerGen(options =>
 // SignalR.
 builder.Services.AddSignalR();
 
+// Git worktree service.
+builder.Services.Configure<GitWorktreeOptions>(builder.Configuration.GetSection(GitWorktreeOptions.SectionName));
+builder.Services.AddSingleton<IGitWorktreeService, GitWorktreeService>();
+
 // Problem details (RFC-7807).
 builder.Services.AddProblemDetails();
 
@@ -84,6 +89,7 @@ app.MapHealthEndpoints();
 app.MapStateEndpoints();
 app.MapCardsEndpoints();
 app.MapTimelineEndpoints();
+app.MapWorkstreamsEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 
