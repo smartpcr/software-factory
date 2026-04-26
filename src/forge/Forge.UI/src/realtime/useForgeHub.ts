@@ -1,7 +1,9 @@
 import { useEffect } from 'react';
 import { HubConnectionBuilder, LogLevel, type HubConnection } from '@microsoft/signalr';
-import type { Card } from '@/types';
+import type { Card, Pr } from '@/types';
 import { useBoardStore } from '@/state/useBoardStore';
+import { usePrsStore } from '@/state/usePrsStore';
+import { useToastStore } from '@/state/useToastStore';
 
 const baseUrl = import.meta.env.VITE_FORGE_API_URL ?? '';
 const hubUrl = `${baseUrl}/hubs/forge`;
@@ -12,6 +14,11 @@ let starting: Promise<void> | null = null;
 interface CardChangedPayload {
   kind: 'created' | 'updated' | 'moved';
   card: Card;
+}
+
+interface PrChangedPayload {
+  kind: 'autoMerge' | 'build.rerun' | 'build.cancel' | 'updated';
+  pr: Pr;
 }
 
 async function ensureConnected() {
@@ -26,6 +33,16 @@ async function ensureConnected() {
     connection.on('card.changed', (payload: CardChangedPayload) => {
       if (payload?.card) {
         useBoardStore.getState().upsertFromRealtime(payload.card);
+      }
+    });
+    connection.on('pr.changed', (payload: PrChangedPayload) => {
+      if (payload?.pr) {
+        usePrsStore.getState().upsertFromRealtime(payload.pr);
+        if (payload.kind === 'build.rerun') {
+          useToastStore.getState().show(`${payload.pr.id} build re-queued`, 'info');
+        } else if (payload.kind === 'build.cancel') {
+          useToastStore.getState().show(`${payload.pr.id} build cancelled`, 'info');
+        }
       }
     });
   }

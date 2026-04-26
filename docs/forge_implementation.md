@@ -126,18 +126,18 @@ A workstream = epic + branch + worktree + agents + active PRs. Operate on them a
 
 PR board (Implementation → Build → Review → Merged) with build, review and gate state.
 
-- [ ] **4.1** Four-column PR board with `pr.col` mapping (`implementation | build | review | merged`).
-- [ ] **4.2** PR card: title, author, branch, additions/deletions, files, age, build status, review verdict, conflict + human-gate badges.
-- [ ] **4.3** Build status renderer (running with %, passing, failing, queued) with a tiny progress strip.
-- [ ] **4.4** Review verdict pill (approved / changes / pending) with one-line agent summary.
-- [ ] **4.5** PR detail panel: full description, diff stats, reviewer list, build log tail (last 50 lines), human-gate reason.
-- [ ] **4.6** Filters: All open / Need approval / Failing / Conflicts / My reviews; selects for workstream / author.
-- [ ] **4.7** API `GET /api/prs` aggregates from cache + provider; `GET /api/prs/{id}` with details.
-- [ ] **4.8** Auto-merge toggle (per PR) — flag stored locally; actual merge happens via provider in Phase 6.
-- [ ] **4.9** Re-run / cancel build buttons (UI only this phase; server stub returns 202 + plans Phase 6 hookup).
-- [ ] **4.10** Toast on PR state transition via SignalR `pr.changed`.
-- [ ] **4.11** Playwright: failing PR shows the `failing` chip; clicking opens the detail panel; auto-merge toggle persists across reloads.
-- [ ] **4.12** **Fidelity check** — screenshot diff of `/prs` against the prototype: every PR card variant from the seed data (running build, queued, passing, failing, conflict, human-gate, auto-merge armed). Diff must be 0.
+- [~] **4.1** Four-column PR board with `pr.col` mapping (`implementation | build | review | merged`). _(prototype has 3 cols — kept 3 per fidelity constraint; spec ↔ prototype contradiction needs resolution)_
+- [x] **4.2** PR card: title, author, branch, additions/deletions, files, age, build status, review verdict, conflict + human-gate badges.
+- [x] **4.3** Build status renderer (running with %, passing, failing, queued) with a tiny progress strip.
+- [x] **4.4** Review verdict pill (approved / changes / pending) with one-line agent summary.
+- [~] **4.5** PR detail panel: full description, diff stats, reviewer list, build log tail (last 50 lines), human-gate reason. _(description + build-log are server-side stubs; real values arrive in Phase 5/6 from ADO/GitHub)_
+- [~] **4.6** Filters: All open / Need approval / Failing / Conflicts / My reviews; selects for workstream / author. _(chips fully wired; Workstream/Author selects + search input are decorative — match the prototype but spec implies functional)_
+- [~] **4.7** API `GET /api/prs` aggregates from cache + provider; `GET /api/prs/{id}` with details. _(cache-only today; provider aggregation lands with Phase 5)_
+- [x] **4.8** Auto-merge toggle (per PR) — flag stored locally; actual merge happens via provider in Phase 6.
+- [~] **4.9** Re-run / cancel build buttons (UI only this phase; server stub returns 202 + plans Phase 6 hookup). _(complete-by-spec; the stubs flip cached state but no real CI is invoked)_
+- [x] **4.10** Toast on PR state transition via SignalR `pr.changed`.
+- [x] **4.11** Playwright: failing PR shows the `failing` chip; clicking opens the detail panel; auto-merge toggle persists across reloads.
+- [x] **4.12** **Fidelity check** — screenshot diff of `/prs` against the prototype: every PR card variant from the seed data (running build, queued, passing, failing, conflict, human-gate, auto-merge armed). Diff must be 0.
 
 ## Phase 5 — ADO / GitHub providers (read path)
 

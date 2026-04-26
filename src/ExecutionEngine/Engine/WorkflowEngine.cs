@@ -785,9 +785,15 @@ namespace ExecutionEngine.Engine
                     }
 
                     // Early exit: workflow marked as failed by HandleNodeFailureAsync
-                    if (context.Status == WorkflowExecutionStatus.Failed && inflightTasks.IsEmpty)
+                    if (context.Status == WorkflowExecutionStatus.Failed)
                     {
-                        this.logger.LogInformation("Workflow marked as failed, terminating main loop");
+                        this.logger.LogInformation("Workflow marked as failed, cancelling in-flight tasks and terminating");
+                        // Cancel all in-flight tasks
+                        foreach (var (key, (_, taskCts)) in inflightTasks)
+                        {
+                            taskCts.Cancel();
+                        }
+
                         break;
                     }
 

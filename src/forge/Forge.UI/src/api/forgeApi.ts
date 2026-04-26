@@ -1,4 +1,4 @@
-import type { Card, ColumnId, ForgeState, TimelineResponse, Workstream } from '@/types';
+import type { Card, ColumnId, ForgeState, Pr, TimelineResponse, Workstream } from '@/types';
 import { sampleState } from '@/sampleData';
 
 const baseUrl = import.meta.env.VITE_FORGE_API_URL ?? '';
@@ -69,6 +69,13 @@ export interface MoveCardResponse {
     warn?: string | null;
     confirm?: boolean;
   };
+}
+
+export interface PrDetailsResponse {
+  pr: Pr;
+  description: string;
+  buildLogTail: string[];
+  reviewers: string[];
 }
 
 export const forgeApi = {
@@ -153,6 +160,50 @@ export const forgeApi = {
   async deleteWorkstream(id: string, force = false): Promise<void> {
     await fetchJson<void>(`/api/workstreams/${encodeURIComponent(id)}?force=${force}`, {
       method: 'DELETE',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** GET /api/prs. */
+  async getPrs(): Promise<Pr[]> {
+    if (useLocalSeed()) return sampleState.prs;
+    try {
+      return await fetchJson<Pr[]>('/api/prs');
+    } catch (err) {
+      if (import.meta.env.DEV) {
+        console.warn('[forge] /api/prs failed, using local sample data', err);
+        return sampleState.prs;
+      }
+      throw err;
+    }
+  },
+
+  /** GET /api/prs/{id}/details. */
+  async getPrDetails(id: string): Promise<PrDetailsResponse> {
+    return fetchJson<PrDetailsResponse>(`/api/prs/${encodeURIComponent(id)}/details`);
+  },
+
+  /** POST /api/prs/{id}/auto-merge. */
+  async setAutoMerge(id: string, autoMerge: boolean): Promise<Pr> {
+    return fetchJson<Pr>(`/api/prs/${encodeURIComponent(id)}/auto-merge`, {
+      method: 'POST',
+      body: JSON.stringify({ autoMerge }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/prs/{id}/build/rerun. */
+  async rerunBuild(id: string): Promise<Pr> {
+    return fetchJson<Pr>(`/api/prs/${encodeURIComponent(id)}/build/rerun`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/prs/{id}/build/cancel. */
+  async cancelBuild(id: string): Promise<Pr> {
+    return fetchJson<Pr>(`/api/prs/${encodeURIComponent(id)}/build/cancel`, {
+      method: 'POST',
       headers: { 'X-Forge-User': writerHeader() },
     });
   },

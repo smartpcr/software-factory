@@ -90,6 +90,7 @@ app.MapStateEndpoints();
 app.MapCardsEndpoints();
 app.MapTimelineEndpoints();
 app.MapWorkstreamsEndpoints();
+app.MapPrsEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 

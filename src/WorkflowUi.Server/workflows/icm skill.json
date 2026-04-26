@@ -386,7 +386,7 @@
         "confidence": 70,
         "maxTokens": 4096,
         "workingDirectory": "agentFolder",
-        "timeoutMinutes": 15
+        "timeoutMinutes": 25
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -676,6 +676,17 @@
       "metadata": null
     },
     {
+      "sourceNodeId": "n_48s864k",
+      "targetNodeId": "n_nuxfxwv",
+      "sourcePort": "LoopBody",
+      "targetPort": "in",
+      "triggerMessageType": "Next",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
       "sourceNodeId": "n_nuxfxwv",
       "targetNodeId": "n_n2nl85d",
       "sourcePort": "out",
@@ -747,17 +758,6 @@
       "sourcePort": "out",
       "targetPort": "in",
       "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
-      "sourceNodeId": "n_48s864k",
-      "targetNodeId": "n_nuxfxwv",
-      "sourcePort": "LoopBody",
-      "targetPort": "in",
-      "triggerMessageType": "Next",
       "condition": null,
       "isEnabled": true,
       "priority": 0,
