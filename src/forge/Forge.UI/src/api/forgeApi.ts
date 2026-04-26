@@ -1,6 +1,8 @@
 import type {
   Card,
   ColumnId,
+  Crew,
+  CurrentUser,
   DiscoverableRepo,
   ForgeState,
   Pr,
@@ -8,6 +10,7 @@ import type {
   ProductStats,
   Repo,
   TimelineResponse,
+  UserSettings,
   Workstream,
 } from '@/types';
 import { sampleState } from '@/sampleData';
@@ -388,6 +391,50 @@ export const forgeApi = {
       method: 'POST',
       headers: { 'X-Forge-User': writerHeader() },
     });
+  },
+
+  /** GET /api/me — aggregated identity + per-provider auth state. */
+  async getMe(): Promise<CurrentUser> {
+    return fetchJson<CurrentUser>('/api/me');
+  },
+
+  // -- Phase 10 — preferences + crews ------------------------------------
+
+  /** GET /api/me/settings. */
+  async getMySettings(): Promise<UserSettings> {
+    return fetchJson<UserSettings>('/api/me/settings');
+  },
+
+  /** PATCH /api/me/settings. */
+  async patchMySettings(req: Partial<UserSettings>): Promise<UserSettings> {
+    return fetchJson<UserSettings>('/api/me/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(req),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** PATCH /api/repos/{id} — per-repo override editor. */
+  async patchRepo(id: string, req: {
+    displayName?: string;
+    cloneRoot?: string;
+    defaultBranch?: string;
+    adoOrg?: string | null;
+    adoProject?: string | null;
+    ghOwner?: string | null;
+    ghRepo?: string | null;
+  }): Promise<Repo> {
+    return fetchJson<Repo>(`/api/repos/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(req),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** GET /api/crews. */
+  async listCrews(productId?: string): Promise<Crew[]> {
+    const qs = productId ? `?productId=${encodeURIComponent(productId)}` : '';
+    return fetchJson<Crew[]>(`/api/crews${qs}`);
   },
 
   // ----- Phase 8 — products & repos --------------------------------------

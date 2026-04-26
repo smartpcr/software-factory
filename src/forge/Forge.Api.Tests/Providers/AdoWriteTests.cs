@@ -27,7 +27,7 @@ public class AdoWriteTests
             Repository = "atlas-platform",
             Pat = "pat",
         });
-        return (new AdoProvider(factory, opts, NullLogger<AdoProvider>.Instance), stub);
+        return (new AdoProvider(factory, opts, NullLogger<AdoProvider>.Instance, Array.Empty<Forge.Api.Auth.IAuthService>()), stub);
     }
 
     [Fact]

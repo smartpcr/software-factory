@@ -12,6 +12,7 @@ import { SwarmView } from '@/views/SwarmView';
 import { PoliciesView } from '@/views/PoliciesView';
 import { CostView } from '@/views/CostView';
 import { ProductsView } from '@/views/ProductsView';
+import { CrewsView } from '@/views/CrewsView';
 import { useStateStore } from '@/state/useStateStore';
 
 export function App() {
@@ -35,6 +36,7 @@ export function App() {
           <Route path="/policies" element={<PoliciesView />} />
           <Route path="/cost" element={<CostView />} />
           <Route path="/products" element={<ProductsView />} />
+          <Route path="/crews" element={<CrewsView />} />
           <Route path="/settings" element={<SettingsView />} />
           <Route path="/audit" element={<AuditView />} />
           <Route path="*" element={<Navigate to="/plan" replace />} />

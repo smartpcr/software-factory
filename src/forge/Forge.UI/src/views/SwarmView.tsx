@@ -52,20 +52,24 @@ const CAP_HEAT: Array<{ cap: string; count: number; max: number }> = [
 ];
 
 const ROLE_LABEL: Record<Role, string> = {
-  arch:  'Architects',
-  eng:   'Engineers',
-  rev:   'Reviewers',
-  qa:    'QA / Verifiers',
-  human: 'Humans',
+  arch:            'Architects',
+  eng:             'Engineers',
+  rev:             'Reviewers',
+  qa:              'QA / Verifiers',
+  human:           'Humans',
+  'tech-lead':     'Tech leads',
+  'product-owner': 'Product owners',
 };
 const ROLE_BLURB: Record<Role, string> = {
-  arch:  'Frame the problem · own the ADRs · keep blast radii small',
-  eng:   'Cut PRs · ship features · keep the test suite green',
-  rev:   'Read every diff · catch what the engineers missed',
-  qa:    'Fuzz, soak, watch the dials · break things so users don\'t',
-  human: 'Approve gates · arbitrate on close calls',
+  arch:            'Frame the problem · own the ADRs · keep blast radii small',
+  eng:             'Cut PRs · ship features · keep the test suite green',
+  rev:             'Read every diff · catch what the engineers missed',
+  qa:              'Fuzz, soak, watch the dials · break things so users don\'t',
+  human:           'Approve gates · arbitrate on close calls',
+  'tech-lead':     'Set technical direction · unblock the crew',
+  'product-owner': 'Own the roadmap · supervise crews · make trade-offs',
 };
-const ROLE_ORDER: Role[] = ['arch', 'eng', 'rev', 'qa', 'human'];
+const ROLE_ORDER: Role[] = ['product-owner', 'tech-lead', 'arch', 'eng', 'rev', 'qa', 'human'];
 
 type StatusFilter = 'all' | 'working' | 'queued' | 'idle';
 type RoleFilter = 'all' | Role;

@@ -1,7 +1,9 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useThemeStore } from '@/state/useThemeStore';
 import { useProductsStore } from '@/state/useProductsStore';
+import { useCurrentUser, useCurrentUserStore } from '@/state/useCurrentUserStore';
 import { ProductIcon } from '@/products/ProductIcon';
+import { UserMenu } from '@/shell/UserMenu';
 
 interface TopBarProps {
   section: string;
@@ -19,8 +21,19 @@ export function TopBar({ section, current }: TopBarProps) {
   const activeProductId = useProductsStore((s) => s.activeProductId);
   const loadProducts = useProductsStore((s) => s.load);
   const setActive = useProductsStore((s) => s.setActive);
+  const me = useCurrentUser();
+  const loadMe = useCurrentUserStore((s) => s.load);
+  const avatarRef = useRef<HTMLDivElement | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuAnchor, setMenuAnchor] = useState<DOMRect | null>(null);
 
   useEffect(() => { void loadProducts(); }, [loadProducts]);
+  useEffect(() => { void loadMe(); }, [loadMe]);
+
+  function toggleMenu() {
+    if (avatarRef.current) setMenuAnchor(avatarRef.current.getBoundingClientRect());
+    setMenuOpen((o) => !o);
+  }
 
   return (
     <header className="topbar">
@@ -96,7 +109,19 @@ export function TopBar({ section, current }: TopBarProps) {
         <span className="badge-dot"></span>
       </button>
 
-      <div className="avatar" title="Xiaodong">XD</div>
+      <div
+        ref={avatarRef}
+        className="avatar"
+        title={`${me.displayName}${me.email ? ' · ' + me.email : ''}`}
+        onClick={toggleMenu}
+        style={{
+          cursor: 'pointer',
+          ...(me.avatarUrl ? { backgroundImage: `url(${me.avatarUrl})`, backgroundSize: 'cover' } : {}),
+        }}
+      >
+        {me.avatarUrl ? '' : me.initials}
+      </div>
+      <UserMenu open={menuOpen} onClose={() => setMenuOpen(false)} anchor={menuAnchor} />
     </header>
   );
 }

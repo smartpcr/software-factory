@@ -44,6 +44,12 @@ public class ForgeDbContext : DbContext
 
     public DbSet<RepoRow> Repos => this.Set<RepoRow>();
 
+    public DbSet<UserRow> Users => this.Set<UserRow>();
+
+    public DbSet<UserSettingsRow> UserSettings => this.Set<UserSettingsRow>();
+
+    public DbSet<CrewRow> Crews => this.Set<CrewRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         mb.Entity<EpicRow>().ToTable("epics").HasKey(x => x.Id);
@@ -73,5 +79,18 @@ public class ForgeDbContext : DbContext
             .WithMany()
             .HasForeignKey(x => x.ProductId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        // Phase 9.6 — identified users.
+        mb.Entity<UserRow>().ToTable("users").HasKey(x => x.Id);
+        mb.Entity<UserRow>().HasIndex(x => x.Email).IsUnique();
+
+        // Phase 10.1 — per-user preferences.
+        mb.Entity<UserSettingsRow>().ToTable("user_settings").HasKey(x => x.UserId);
+
+        // Phase 10.6 — crew rows.
+        mb.Entity<CrewRow>().ToTable("crews").HasKey(x => x.Id);
+        // SQLite stores decimal as TEXT; explicit conversion keeps EF happy.
+        mb.Entity<CrewRow>().Property(x => x.ModelInputPricePerMTok).HasConversion<double>();
+        mb.Entity<CrewRow>().Property(x => x.ModelOutputPricePerMTok).HasConversion<double>();
     }
 }

@@ -2,6 +2,7 @@ import { useEffect, useMemo } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useSidebarStore } from '@/state/useSidebarStore';
 import { useProductsStore } from '@/state/useProductsStore';
+import { useCurrentUser, useHasRole } from '@/state/useCurrentUserStore';
 import { ProductIcon } from '@/products/ProductIcon';
 
 // Verbatim port of the prototype's <aside class="sidebar">. The only
@@ -14,6 +15,8 @@ export function SideBar() {
   const reposByProduct = useProductsStore((s) => s.reposByProduct);
   const loadProducts = useProductsStore((s) => s.load);
   const loadRepos = useProductsStore((s) => s.loadReposFor);
+  const me = useCurrentUser();
+  const isPO = useHasRole('product-owner');
 
   useEffect(() => { void loadProducts(); }, [loadProducts]);
 
@@ -27,6 +30,7 @@ export function SideBar() {
   }, [activeProduct, loadRepos]);
 
   const repoCount = activeProduct ? (reposByProduct[activeProduct.id]?.length ?? 0) : 0;
+  const roleLabel = formatRole(me.role);
 
   return (
     <aside className="sidebar">
@@ -133,6 +137,21 @@ export function SideBar() {
 
         <div className="nav-section">
           <div className="nav-section-title"><span>Agents</span><button className="add-btn" title="New agent">+</button></div>
+          {isPO && (
+            <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/crews">
+              <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <circle cx="5" cy="5" r="2" stroke="currentColor" strokeWidth="1.3" />
+                <circle cx="11" cy="5" r="2" stroke="currentColor" strokeWidth="1.3" />
+                <path d="M2 13c0-2 1.5-3 3-3s3 1 3 3" stroke="currentColor" strokeWidth="1.3" fill="none" />
+                <path d="M8 13c0-2 1.5-3 3-3s3 1 3 3" stroke="currentColor" strokeWidth="1.3" fill="none" />
+              </svg>
+              <div className="label-block">
+                <span className="label">Crews</span>
+                <span className="sub">Supervisory · PO only</span>
+              </div>
+              <span className="tooltip">Crews</span>
+            </NavLink>
+          )}
           <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/swarm">
             <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="1.4" fill="currentColor" /><circle cx="3.5" cy="4.5" r="1.1" fill="currentColor" /><circle cx="12.5" cy="4.5" r="1.1" fill="currentColor" /><circle cx="3.5" cy="11.5" r="1.1" fill="currentColor" /><circle cx="12.5" cy="11.5" r="1.1" fill="currentColor" /></svg>
             <div className="label-block">
@@ -195,17 +214,39 @@ export function SideBar() {
       <div className="sidebar-foot">
         <div className="sidebar-foot-row">
           <div className="sidebar-user">
-            <div className="avatar" style={{ margin: 0 }}>XD</div>
+            <div
+              className="avatar"
+              style={
+                me.avatarUrl
+                  ? { margin: 0, backgroundImage: `url(${me.avatarUrl})`, backgroundSize: 'cover' }
+                  : { margin: 0 }
+              }
+              title={me.email ?? me.displayName}
+            >
+              {me.avatarUrl ? '' : me.initials}
+            </div>
             <div style={{ minWidth: 0, flex: 1 }}>
-              <div className="name">Xiaodong Li</div>
-              <div className="role">Tech lead · Atlas</div>
+              <div className="name">{me.displayName}</div>
+              <div className="role">{roleLabel}{activeProduct ? ` · ${activeProduct.name}` : ''}</div>
             </div>
           </div>
-          <button className="icon-btn" title="Settings" style={{ width: 26, height: 26 }}>
+          <NavLink to="/settings" className="icon-btn" title="Settings" style={{ width: 26, height: 26, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="1.6" stroke="currentColor" strokeWidth="1.2" /><path d="M7 1 v 1.6 M 7 11.4 v 1.6 M 1 7 h 1.6 M 11.4 7 h 1.6" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" /></svg>
-          </button>
+          </NavLink>
         </div>
       </div>
     </aside>
   );
+}
+
+function formatRole(role: string): string {
+  switch (role) {
+    case 'product-owner': return 'Product Owner';
+    case 'tech-lead': return 'Tech lead';
+    case 'arch': return 'Architect';
+    case 'eng': return 'Engineer';
+    case 'rev': return 'Reviewer';
+    case 'qa': return 'QA';
+    default: return role;
+  }
 }

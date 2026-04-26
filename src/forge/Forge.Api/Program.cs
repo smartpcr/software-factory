@@ -75,6 +75,9 @@ builder.Services.Configure<GitHubOptions>(builder.Configuration.GetSection(GitHu
 builder.Services.Configure<ProviderSyncOptions>(builder.Configuration.GetSection(ProviderSyncOptions.SectionName));
 builder.Services.AddHttpClient(AdoProvider.ClientName);
 builder.Services.AddHttpClient(GitHubProvider.ClientName);
+// Phase 10 — ADO config resolver (user-settings → appsettings).
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<IAdoConfigResolver, AdoConfigResolver>();
 builder.Services.AddSingleton<IForgeProvider, AdoProvider>();
 builder.Services.AddSingleton<IForgeProvider, GitHubProvider>();
 builder.Services.AddSingleton<WebhookActivity>();
@@ -94,10 +97,28 @@ builder.Services.AddScoped<IUserContext, HttpUserContext>();
 builder.Services.Configure<ForgeAuthOptions>(builder.Configuration.GetSection(ForgeAuthOptions.SectionName));
 
 // Phase 9 — interactive MSAL sign-in for ADO (WAM-first, DPAPI token cache).
+builder.Services.AddSingleton<IBrowserLauncher, BrowserLauncher>();
 builder.Services.AddSingleton<IAuthService, AdoAuthService>();
+builder.Services.AddSingleton<IAuthService, GitHubAuthService>();
 
-// Problem details (RFC-7807).
-builder.Services.AddProblemDetails();
+// Problem details (RFC-7807). In Development, surface exception messages so
+// failing endpoint calls don't return opaque 500s.
+builder.Services.AddProblemDetails(options =>
+{
+    options.CustomizeProblemDetails = ctx =>
+    {
+        if (ctx.HttpContext.RequestServices.GetService<IHostEnvironment>()?.IsDevelopment() == true)
+        {
+            var ex = ctx.HttpContext.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>()?.Error;
+            if (ex is not null)
+            {
+                ctx.ProblemDetails.Detail = ex.Message;
+                ctx.ProblemDetails.Extensions["exceptionType"] = ex.GetType().FullName;
+                ctx.ProblemDetails.Extensions["stackTrace"] = ex.StackTrace;
+            }
+        }
+    };
+});
 
 var app = builder.Build();
 
@@ -145,6 +166,9 @@ app.MapAuditEndpoints();
 app.MapHumanGateEndpoints();
 app.MapProductsEndpoints();
 app.MapAuthEndpoints();
+app.MapMeEndpoints();
+app.MapMeSettingsEndpoints();
+app.MapCrewsEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 

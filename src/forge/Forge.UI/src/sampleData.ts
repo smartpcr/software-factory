@@ -31,7 +31,7 @@ export const cards: Card[] = [
   { id: '#234', epic: 'EPIC-024', col: 'build', type: 'story', title: 'OIDC token rotation handler with key rollover', tags: ['auth'], pts: 5, priority: 'high', agent: { id: 'E4', role: 'eng', name: 'Forge' }, cost: 0.42, live: true, progress: 64, autoNext: 'Open PR when tests pass', branch: 'ws/oidc-rotation' },
   { id: '#241', epic: 'EPIC-024', col: 'build', type: 'story', title: 'Per-tenant rate limit policy with sliding window', tags: ['auth'], pts: 5, priority: 'med', agent: { id: 'E7', role: 'eng', name: 'Rivet' }, cost: 0.31, live: true, progress: 28, branch: 'ws/rate-limits' },
   { id: '#243', epic: 'EPIC-024', col: 'build', type: 'task', title: 'Tenant admin UI scaffolding', tags: ['ui','auth'], pts: 3, priority: 'low', agent: { id: 'E4', role: 'eng', name: 'Forge' }, cost: 0.08, live: true, progress: 8, branch: 'ws/tenant-admin-ui' },
-  { id: 'PR #240', epic: 'EPIC-024', col: 'review', type: 'story', title: 'Add IdP failover to Microsoft Entra', tags: ['security','auth'], pts: 8, priority: 'high', agent: { id: 'XD', role: 'human', name: 'Xiaodong' }, humanGate: true, gateReason: '/security/ path requires human approval', cost: 0.51, branch: 'ws/idp-failover' },
+  { id: 'PR #240', epic: 'EPIC-024', col: 'review', type: 'story', title: 'Add IdP failover to Microsoft Entra', tags: ['security','auth'], pts: 8, priority: 'high', agent: { id: 'XD', role: 'product-owner', name: 'Xiaodong' }, humanGate: true, gateReason: '/security/ path requires human approval', cost: 0.51, branch: 'ws/idp-failover' },
   { id: 'PR #229', epic: 'EPIC-024', col: 'review', type: 'story', title: 'Token store refactor — extract to auth-core', tags: ['auth'], pts: 5, priority: 'med', agent: { id: 'R3', role: 'rev', name: 'Cortex' }, cost: 0.34, autoNext: 'Auto-merge when CI passes' },
 
   { id: '#821', epic: 'EPIC-021', col: 'backlog', type: 'task', title: 'Document OTel collector deployment', tags: ['infra'], pts: 2, priority: 'low', agent: null, cost: 0 },
@@ -41,7 +41,7 @@ export const cards: Card[] = [
   { id: 'PR #228', epic: 'EPIC-021', col: 'done', type: 'story', title: 'Log rotation cap on CSV', tags: ['infra'], pts: 3, priority: 'med', agent: { id: 'E4', role: 'eng', name: 'Forge' }, cost: 0.14, doneAt: '47m ago' },
   { id: 'PR #225', epic: 'EPIC-021', col: 'done', type: 'bug', title: 'Connection pool exhaustion fix', tags: ['bug','infra'], pts: 2, priority: 'high', agent: { id: 'E7', role: 'eng', name: 'Rivet' }, cost: 0.09, doneAt: '3h ago' },
 
-  { id: 'PR #237b', epic: 'EPIC-022', col: 'review', type: 'story', title: 'DLQ routing for failed webhook events', tags: ['infra'], pts: 5, priority: 'med', agent: { id: 'XD', role: 'human', name: 'Xiaodong' }, humanGate: true, gateReason: 'Schema migration in /db/migrations/', cost: 0.41 },
+  { id: 'PR #237b', epic: 'EPIC-022', col: 'review', type: 'story', title: 'DLQ routing for failed webhook events', tags: ['infra'], pts: 5, priority: 'med', agent: { id: 'XD', role: 'product-owner', name: 'Xiaodong' }, humanGate: true, gateReason: 'Schema migration in /db/migrations/', cost: 0.41 },
   { id: 'PR #226', epic: 'EPIC-022', col: 'done', type: 'task', title: 'Dashboard metrics card refactor', tags: ['ui'], pts: 2, priority: 'low', agent: { id: 'E7', role: 'eng', name: 'Rivet' }, cost: 0.06, doneAt: '12m ago' },
 
   { id: '#828', epic: 'EPIC-026', col: 'backlog', type: 'task', title: 'CAU node ordering for 6-node clusters', tags: ['infra'], pts: 5, priority: 'med', agent: null, cost: 0 },

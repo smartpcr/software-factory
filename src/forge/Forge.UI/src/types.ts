@@ -1,7 +1,7 @@
 // Forge UI — shared types. Mirror of Forge.Api/Contracts/ForgeContracts.cs.
 // Keep field names + casing in sync; the API serialises with camelCase.
 
-export type Role = 'arch' | 'eng' | 'rev' | 'qa' | 'human';
+export type Role = 'arch' | 'eng' | 'rev' | 'qa' | 'human' | 'tech-lead' | 'product-owner';
 export type CardType = 'story' | 'task' | 'bug';
 export type ColumnId = 'backlog' | 'design' | 'build' | 'review' | 'done';
 export type Priority = 'low' | 'med' | 'high';
@@ -259,4 +259,54 @@ export interface ProductStats {
   activeWorkstreams: number;
   openPrs: number;
   lastActivity: string | null;
+}
+
+// --- Identity (Phase 9) ---------------------------------------------------
+
+export interface CurrentUserProvider {
+  connected: boolean;
+  account: string | null;
+  expiresAt: string | null;
+  error: string | null;
+}
+
+export interface CurrentUser {
+  /** Stable id derived from the first connected provider's account. Empty when no provider is connected. */
+  id: string;
+  displayName: string;
+  email: string | null;
+  login: string | null;
+  initials: string;
+  avatarUrl: string | null;
+  role: Role;
+  providers: {
+    ado: CurrentUserProvider;
+    github: CurrentUserProvider;
+  };
+}
+
+/** Phase 10.1 — per-user preferences. */
+export interface UserSettings {
+  userId: string;
+  defaultAdoOrgUrl: string | null;
+  defaultAdoProject: string | null;
+  defaultGitHubOwner: string | null;
+  defaultProductId: string | null;
+  defaultRepoId: string | null;
+  browserPreference: string | null;
+  theme: string | null;
+  notificationsEnabled: boolean;
+  updatedAt: string;
+}
+
+/** Phase 10.6 — crew. */
+export interface Crew {
+  id: string;
+  name: string;
+  productId: string | null;
+  summary: string;
+  lead: string | null;
+  model: string;
+  modelInputPricePerMTok: number;
+  modelOutputPricePerMTok: number;
 }

@@ -46,6 +46,18 @@ public class ForgeAuthOptions
 
     /// <summary>Phase 9.2 — override the AAD authority. Defaults to https://login.microsoftonline.com/common.</summary>
     public string AdoAuthority { get; set; } = string.Empty;
+
+    /// <summary>Phase 9.3 — GitHub OAuth client id (operator-registered OAuth App with PKCE enabled).</summary>
+    public string GitHubClientId { get; set; } = string.Empty;
+
+    /// <summary>Phase 9.3 — space- or comma-separated scopes. Default: repo + read:user + read:org.</summary>
+    public string GitHubScopes { get; set; } = "repo read:user read:org";
+
+    /// <summary>Phase 9.4 — "edge" (default) or "default". Non-Windows always uses the OS default browser.</summary>
+    public string BrowserPreference { get; set; } = "edge";
+
+    /// <summary>Phase 9.9 — first-run bootstrap email; this user is auto-promoted to product-owner on first sign-in if no PO exists.</summary>
+    public string BootstrapPoEmail { get; set; } = "lingxd@gmail.com";
 }
 
 /// <summary>Verifies the X-Forge-Secret header against <c>Forge:Auth:Secret</c>.</summary>

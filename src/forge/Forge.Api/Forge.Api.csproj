@@ -11,9 +11,8 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" />
     <PackageReference Include="Swashbuckle.AspNetCore" />
-    <!-- Phase 9 — MSAL interactive sign-in (WAM-first), DPAPI-backed token cache. -->
+    <!-- Phase 9 — MSAL interactive sign-in (system browser), DPAPI-backed token cache. -->
     <PackageReference Include="Microsoft.Identity.Client" />
-    <PackageReference Include="Microsoft.Identity.Client.Broker" />
     <PackageReference Include="Microsoft.Identity.Client.Extensions.Msal" />
   </ItemGroup>
 

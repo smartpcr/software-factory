@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { forgeApi, type AuthStatus, type ProviderHealth } from '@/api/forgeApi';
+import { useCurrentUserStore } from '@/state/useCurrentUserStore';
+import type { UserSettings } from '@/types';
 
 // Phase 5.4 + 5.11 — provider configuration + health.
 // Phase-5 server reads its options from configuration (user-secrets / env).
@@ -13,10 +15,11 @@ interface ProviderRowProps {
   kind: string;
   label: string;
   description: string;
-  configKeys: string[];
   health: ProviderHealth | undefined;
   auth?: AuthStatus | undefined;
   authSupported?: boolean;
+  settings: UserSettings | null;
+  onSaveDefaults: (req: Partial<UserSettings>) => Promise<void>;
   busy: boolean;
   syncing: boolean;
   signingIn: boolean;
@@ -38,7 +41,8 @@ function relTime(iso: string | null): string {
 }
 
 function ProviderRow({
-  kind, label, description, configKeys, health, auth, authSupported = false,
+  kind, label, description, health, auth, authSupported = false,
+  settings, onSaveDefaults,
   busy, syncing, signingIn, onTest, onSync, onSignIn, onSignOut,
 }: ProviderRowProps) {
   const ok = health?.ok ?? false;
@@ -128,22 +132,26 @@ function ProviderRow({
         </div>
       )}
 
-      <div className="ws-card-section">
-        <div className="ws-card-section-title">
-          {authSupported ? 'Optional configuration' : 'Configuration keys'}
-        </div>
-        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11.5, color: 'var(--text-secondary)' }}>
-          {configKeys.map((k) => (
-            <li key={k} style={{ fontFamily: 'var(--font-mono)' }}>{k}</li>
-          ))}
-        </ul>
-      </div>
+      {kind === 'ado' && (
+        <DefaultsPanel
+          kind="ado"
+          settings={settings}
+          onSave={onSaveDefaults}
+        />
+      )}
+      {kind === 'github' && (
+        <DefaultsPanel
+          kind="github"
+          settings={settings}
+          onSave={onSaveDefaults}
+        />
+      )}
 
       <div className="ws-card-foot">
         <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
           {authSupported
-            ? <>Sign in above (preferred), or set the keys for a headless / CI flow.</>
-            : <>Set the keys above in user-secrets / env, then click <strong>Test connection</strong>.</>}
+            ? <>Sign in above (preferred). Defaults flow into every "create" action.</>
+            : <>Defaults flow into every create / sync action. Configure provider PAT in env / user-secrets for now.</>}
         </div>
         <div className="ws-card-actions">
           <button className="ws-action" onClick={onTest} disabled={busy || syncing}>
@@ -167,40 +175,132 @@ function ProviderRow({
   );
 }
 
+interface DefaultsPanelProps {
+  kind: 'ado' | 'github';
+  settings: UserSettings | null;
+  onSave: (req: Partial<UserSettings>) => Promise<void>;
+}
+
+function DefaultsPanel({ kind, settings, onSave }: DefaultsPanelProps) {
+  const [orgUrl, setOrgUrl] = useState(settings?.defaultAdoOrgUrl ?? '');
+  const [project, setProject] = useState(settings?.defaultAdoProject ?? '');
+  const [owner, setOwner] = useState(settings?.defaultGitHubOwner ?? '');
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<Date | null>(null);
+
+  // Re-prime the inputs when /api/me/settings finally loads.
+  useEffect(() => {
+    if (!settings) return;
+    if (kind === 'ado') {
+      setOrgUrl(settings.defaultAdoOrgUrl ?? '');
+      setProject(settings.defaultAdoProject ?? '');
+    } else {
+      setOwner(settings.defaultGitHubOwner ?? '');
+    }
+  }, [kind, settings]);
+
+  const dirty = kind === 'ado'
+    ? orgUrl !== (settings?.defaultAdoOrgUrl ?? '') || project !== (settings?.defaultAdoProject ?? '')
+    : owner !== (settings?.defaultGitHubOwner ?? '');
+
+  async function save() {
+    setSaving(true);
+    try {
+      const patch: Partial<UserSettings> = kind === 'ado'
+        ? { defaultAdoOrgUrl: orgUrl, defaultAdoProject: project }
+        : { defaultGitHubOwner: owner };
+      await onSave(patch);
+      setSavedAt(new Date());
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="ws-card-section" style={{ display: 'grid', gap: 8 }}>
+      <div className="ws-card-section-title">Default {kind === 'ado' ? 'ADO' : 'GitHub'} target</div>
+      {kind === 'ado' ? (
+        <>
+          <FieldLabel label="Org URL" hint="e.g. https://msazure.visualstudio.com or https://dev.azure.com/contoso">
+            <input
+              value={orgUrl}
+              onChange={(e) => setOrgUrl(e.target.value)}
+              placeholder="https://dev.azure.com/contoso"
+              spellCheck={false}
+              style={inputStyle}
+            />
+          </FieldLabel>
+          <FieldLabel label="Project" hint="Project name within the org.">
+            <input
+              value={project}
+              onChange={(e) => setProject(e.target.value)}
+              placeholder="One"
+              spellCheck={false}
+              style={inputStyle}
+            />
+          </FieldLabel>
+        </>
+      ) : (
+        <FieldLabel label="Owner / org" hint="GitHub username or org for default scope.">
+          <input
+            value={owner}
+            onChange={(e) => setOwner(e.target.value)}
+            placeholder="microsoft"
+            spellCheck={false}
+            style={inputStyle}
+          />
+        </FieldLabel>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <button
+          className="ws-action primary"
+          onClick={() => void save()}
+          disabled={!dirty || saving}
+        >
+          {saving ? 'Saving…' : 'Save default'}
+        </button>
+        {savedAt && !dirty && (
+          <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+            Saved · {savedAt.toLocaleTimeString()}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FieldLabel({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <label style={{ display: 'grid', gap: 4 }}>
+      <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2, textTransform: 'uppercase', color: 'var(--text-secondary)' }}>{label}</span>
+      {children}
+      {hint && <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>{hint}</span>}
+    </label>
+  );
+}
+
+const inputStyle: React.CSSProperties = {
+  width: '100%',
+  padding: '7px 10px',
+  fontSize: 12.5,
+  fontFamily: 'inherit',
+  color: 'var(--text-primary)',
+  background: 'var(--bg-surface)',
+  border: '1px solid var(--border-strong)',
+  borderRadius: 'var(--radius-sm)',
+  outline: 'none',
+};
+
 interface ProviderEntry {
   kind: 'ado' | 'github';
   label: string;
   description: string;
-  configKeys: string[];
   authSupported: boolean;
 }
 
 const PROVIDERS: ProviderEntry[] = [
-  {
-    kind: 'ado',
-    label: 'Azure DevOps',
-    description: 'Work items + repos + pipelines',
-    authSupported: true,
-    configKeys: [
-      'Forge:Ado:OrgUrl       e.g. https://dev.azure.com/contoso',
-      'Forge:Ado:Project',
-      'Forge:Ado:Repository',
-      'Forge:Ado:Pat               (optional — only needed for headless / CI runs)',
-      'Forge:Ado:WebhookSecret  (X-Forge-Hook-Secret)',
-    ],
-  },
-  {
-    kind: 'github',
-    label: 'GitHub',
-    description: 'Issues + pull requests + Actions',
-    // Phase 9.3 — GitHub interactive sign-in lands next; PAT for now.
-    authSupported: false,
-    configKeys: [
-      'Forge:GitHub:Repo       e.g. microsoft/forge',
-      'Forge:GitHub:Pat',
-      'Forge:GitHub:WebhookSecret  (X-Hub-Signature-256)',
-    ],
-  },
+  { kind: 'ado',    label: 'Azure DevOps', description: 'Work items + repos + pipelines',  authSupported: true  },
+  { kind: 'github', label: 'GitHub',       description: 'Issues + pull requests + Actions', authSupported: false },
 ];
 
 export function SettingsView() {
@@ -211,10 +311,30 @@ export function SettingsView() {
   const [signingIn, setSigningIn] = useState<Record<string, boolean>>({});
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [settings, setSettings] = useState<UserSettings | null>(null);
 
   useEffect(() => {
     void load();
+    void loadSettings();
   }, []);
+
+  async function loadSettings() {
+    try {
+      const s = await forgeApi.getMySettings();
+      setSettings(s);
+    } catch {
+      // ignore — defaults panel renders empty fields
+    }
+  }
+
+  async function saveDefaults(patch: Partial<UserSettings>) {
+    const next = await forgeApi.patchMySettings(patch);
+    setSettings(next);
+    // Probe ADO immediately when org/project changed so the connection light updates.
+    if ('defaultAdoOrgUrl' in patch || 'defaultAdoProject' in patch) {
+      await test('ado');
+    }
+  }
 
   async function load() {
     try {
@@ -246,6 +366,8 @@ export function SettingsView() {
       setSyncMsg(`Signed in to ${kind} as ${status.userName ?? status.account ?? 'unknown'}`);
       // Refresh provider health so connected/last-sync update.
       await test(kind);
+      // Phase 9.7 — propagate identity change to TopBar / SideBar without page reload.
+      void useCurrentUserStore.getState().refresh();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setSyncMsg(`Sign-in failed: ${msg}`);
@@ -267,6 +389,7 @@ export function SettingsView() {
         [kind]: { kind, connected: false, account: null, userName: null, expiresAt: null, error: null },
       }));
       setSyncMsg(`Signed out of ${kind}`);
+      void useCurrentUserStore.getState().refresh();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setSyncMsg(`Sign-out failed: ${msg}`);
@@ -388,10 +511,11 @@ export function SettingsView() {
               kind={p.kind}
               label={p.label}
               description={p.description}
-              configKeys={p.configKeys}
               authSupported={p.authSupported}
               health={byKind[p.kind]}
               auth={authByKind[p.kind]}
+              settings={settings}
+              onSaveDefaults={saveDefaults}
               busy={!!busy[p.kind]}
               syncing={!!syncing[p.kind]}
               signingIn={!!signingIn[p.kind]}

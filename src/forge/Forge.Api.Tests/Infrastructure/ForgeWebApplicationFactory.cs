@@ -30,6 +30,10 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
                 // doesn't make sense in CI / unit tests. Workstream-create
                 // tests assume the auto-clone path is a no-op.
                 ["Forge:Repo:AutoClone"] = "false",
+                // Surface unhandled exception detail in tests so 500 responses
+                // include the actual stack trace in the body.
+                ["DetailedErrors"] = "true",
+                ["Logging:LogLevel:Default"] = "Error",
             });
         });
     }

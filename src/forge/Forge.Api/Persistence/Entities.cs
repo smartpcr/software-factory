@@ -238,7 +238,7 @@ public class OverviewActivityRow
     public string Msg { get; set; } = string.Empty;
 }
 
-/// <summary>Phase 6.10 — single row per write action recorded by AuditMiddleware.</summary>
+/// <summary>Phase 6.10 + 10.8 — single row per write action recorded by AuditMiddleware.</summary>
 public class AuditRow
 {
     public long Id { get; set; }
@@ -256,6 +256,9 @@ public class AuditRow
     public string? IdempotencyKey { get; set; }
 
     public string? RequestBodySnippet { get; set; }
+
+    /// <summary>Phase 10.8 — true when a PO acts against a product / crew they don't own.</summary>
+    public bool Supervising { get; set; }
 }
 
 /// <summary>Phase 6.12 — cached response for an Idempotency-Key.</summary>
@@ -304,6 +307,89 @@ public class ProductRow
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
+
+/// <summary>
+/// Phase 10.1 — per-user preferences. PK is <see cref="UserId"/> = the
+/// owning user's id. In single-user mode the singleton row keys on
+/// <c>"default"</c> until a real signed-in identity exists; once Phase 9
+/// creates a UserRow the settings get re-keyed on first save.
+/// </summary>
+public class UserSettingsRow
+{
+    public string UserId { get; set; } = "default";
+
+    public string? DefaultAdoOrgUrl { get; set; }
+
+    public string? DefaultAdoProject { get; set; }
+
+    public string? DefaultGitHubOwner { get; set; }
+
+    public string? DefaultProductId { get; set; }
+
+    public string? DefaultRepoId { get; set; }
+
+    public string? BrowserPreference { get; set; }
+
+    public string? Theme { get; set; }
+
+    public bool NotificationsEnabled { get; set; } = true;
+
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// Phase 10.6 — crew row. One model per crew, denormalised pricing so historical
+/// salary lookups are reproducible across price changes. Crew membership lives
+/// on the agent (each agent has one crew) per the Q3 resolution.
+/// </summary>
+public class CrewRow
+{
+    public string Id { get; set; } = string.Empty;
+
+    public int Sort { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+
+    public string? ProductId { get; set; }
+
+    public string Summary { get; set; } = string.Empty;
+
+    /// <summary>Agent id of the crew lead.</summary>
+    public string? Lead { get; set; }
+
+    public string Model { get; set; } = "claude-opus-4-7";
+
+    public decimal ModelInputPricePerMTok { get; set; }
+
+    public decimal ModelOutputPricePerMTok { get; set; }
+}
+
+/// <summary>
+/// Phase 9.6 — identified user. Forge keeps one row per signed-in identity
+/// across providers. The first user to register on a fresh DB is auto-promoted
+/// to <c>product-owner</c> per Phase 9.9; subsequent users default to <c>human</c>
+/// and must be promoted by an existing PO.
+/// </summary>
+public class UserRow
+{
+    public string Id { get; set; } = string.Empty;
+
+    public string DisplayName { get; set; } = string.Empty;
+
+    public string? Email { get; set; }
+
+    public string? Login { get; set; }
+
+    public string? AvatarUrl { get; set; }
+
+    /// <summary>One of: human, eng, rev, qa, arch, tech-lead, product-owner.</summary>
+    public string Role { get; set; } = "human";
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public DateTimeOffset? LastSeenAt { get; set; }
+}
+
 
 /// <summary>
 /// Phase 8 — repo row. <see cref="Kind"/> is fixed at "ado" or "github" (Q4: never both).

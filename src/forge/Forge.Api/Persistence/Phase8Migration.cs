@@ -58,6 +58,55 @@ public static class Phase8Migration
             """, ct);
         await ExecAsync(conn, "CREATE UNIQUE INDEX IF NOT EXISTS IX_repos_RemoteUrl ON repos(RemoteUrl);", ct);
         await ExecAsync(conn, "CREATE UNIQUE INDEX IF NOT EXISTS IX_repos_CloneRoot ON repos(CloneRoot);", ct);
+
+        // Phase 9.6 — users table.
+        await ExecAsync(conn, """
+            CREATE TABLE IF NOT EXISTS users (
+                Id TEXT NOT NULL PRIMARY KEY,
+                DisplayName TEXT NOT NULL,
+                Email TEXT NULL,
+                Login TEXT NULL,
+                AvatarUrl TEXT NULL,
+                Role TEXT NOT NULL DEFAULT 'human',
+                CreatedAt TEXT NOT NULL,
+                LastSeenAt TEXT NULL
+            );
+            """, ct);
+        await ExecAsync(conn, "CREATE UNIQUE INDEX IF NOT EXISTS IX_users_Email ON users(Email) WHERE Email IS NOT NULL;", ct);
+
+        // Phase 10.1 — per-user preferences.
+        await ExecAsync(conn, """
+            CREATE TABLE IF NOT EXISTS user_settings (
+                UserId TEXT NOT NULL PRIMARY KEY,
+                DefaultAdoOrgUrl TEXT NULL,
+                DefaultAdoProject TEXT NULL,
+                DefaultGitHubOwner TEXT NULL,
+                DefaultProductId TEXT NULL,
+                DefaultRepoId TEXT NULL,
+                BrowserPreference TEXT NULL,
+                Theme TEXT NULL,
+                NotificationsEnabled INTEGER NOT NULL DEFAULT 1,
+                UpdatedAt TEXT NOT NULL
+            );
+            """, ct);
+
+        // Phase 10.6 — crews.
+        await ExecAsync(conn, """
+            CREATE TABLE IF NOT EXISTS crews (
+                Id TEXT NOT NULL PRIMARY KEY,
+                Sort INTEGER NOT NULL DEFAULT 0,
+                Name TEXT NOT NULL,
+                ProductId TEXT NULL,
+                Summary TEXT NOT NULL DEFAULT '',
+                Lead TEXT NULL,
+                Model TEXT NOT NULL DEFAULT 'claude-opus-4-7',
+                ModelInputPricePerMTok REAL NOT NULL DEFAULT 0,
+                ModelOutputPricePerMTok REAL NOT NULL DEFAULT 0
+            );
+            """, ct);
+
+        // Phase 10.8 — supervising flag on the audit row.
+        await EnsureColumnAsync(conn, "forge_actions", "Supervising", "INTEGER NOT NULL DEFAULT 0", ct);
     }
 
     private static async Task<bool> ColumnExistsAsync(SqliteConnection conn, string table, string column, CancellationToken ct)

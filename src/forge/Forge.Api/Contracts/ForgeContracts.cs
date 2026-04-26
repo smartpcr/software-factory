@@ -269,3 +269,70 @@ public sealed record DiscoverableRepo(
     string? AdoProject = null,
     string? GhOwner = null,
     string? GhRepo = null);
+
+// -- Phase 9 — current-user identity --------------------------------------
+
+/// <summary>Per-provider connection state surfaced on <c>GET /api/me</c>.</summary>
+public sealed record CurrentUserProvider(
+    bool Connected,
+    string? Account,
+    DateTimeOffset? ExpiresAt,
+    string? Error);
+
+/// <summary>Aggregated identity for the operator currently using Forge.</summary>
+public sealed record CurrentUser(
+    string Id,
+    string DisplayName,
+    string? Email,
+    string? Login,
+    string Initials,
+    string? AvatarUrl,
+    string Role,
+    CurrentUserProviders Providers);
+
+public sealed record CurrentUserProviders(
+    CurrentUserProvider Ado,
+    [property: System.Text.Json.Serialization.JsonPropertyName("github")] CurrentUserProvider GitHub);
+
+// -- Phase 10 — preferences + crews --------------------------------------
+
+public sealed record UserSettings(
+    string UserId,
+    string? DefaultAdoOrgUrl,
+    string? DefaultAdoProject,
+    string? DefaultGitHubOwner,
+    string? DefaultProductId,
+    string? DefaultRepoId,
+    string? BrowserPreference,
+    string? Theme,
+    bool NotificationsEnabled,
+    DateTimeOffset UpdatedAt);
+
+public sealed record UpdateUserSettingsRequest(
+    string? DefaultAdoOrgUrl = null,
+    string? DefaultAdoProject = null,
+    string? DefaultGitHubOwner = null,
+    string? DefaultProductId = null,
+    string? DefaultRepoId = null,
+    string? BrowserPreference = null,
+    string? Theme = null,
+    bool? NotificationsEnabled = null);
+
+public sealed record Crew(
+    string Id,
+    string Name,
+    string? ProductId,
+    string Summary,
+    string? Lead,
+    string Model,
+    decimal ModelInputPricePerMTok,
+    decimal ModelOutputPricePerMTok);
+
+public sealed record UpdateRepoRequest(
+    string? DisplayName = null,
+    string? CloneRoot = null,
+    string? DefaultBranch = null,
+    string? AdoOrg = null,
+    string? AdoProject = null,
+    string? GhOwner = null,
+    string? GhRepo = null);

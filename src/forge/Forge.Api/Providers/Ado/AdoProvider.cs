@@ -28,12 +28,14 @@ public class AdoProvider : IForgeProvider
     private readonly ILogger<AdoProvider> logger;
     private readonly ProviderHealthState health = new("ado");
     private readonly IAuthService? authService;
+    private readonly IAdoConfigResolver? configResolver;
 
     public AdoProvider(
         IHttpClientFactory clientFactory,
         IOptions<AdoOptions> options,
         ILogger<AdoProvider> logger,
-        IEnumerable<IAuthService> authServices)
+        IEnumerable<IAuthService> authServices,
+        IAdoConfigResolver? configResolver = null)
     {
         this.clientFactory = clientFactory;
         this.options = options.Value;
@@ -42,14 +44,34 @@ public class AdoProvider : IForgeProvider
         // when an account is signed in. Optional: AdoProvider works fine
         // without an auth service (legacy PAT-only deployments).
         this.authService = authServices.FirstOrDefault(a => a.Kind == "ado");
+        // Phase 10 — config resolver pulls OrgUrl/Project from user settings
+        // first, falling back to AdoOptions. Optional so unit tests can
+        // construct AdoProvider directly without DB scaffolding.
+        this.configResolver = configResolver;
     }
 
     public string Kind => "ado";
 
     public bool IsConfigured =>
-        !string.IsNullOrWhiteSpace(this.options.OrgUrl) &&
-        !string.IsNullOrWhiteSpace(this.options.Project) &&
-        (!string.IsNullOrWhiteSpace(this.options.Pat) || this.authService is not null);
+        !string.IsNullOrWhiteSpace(this.EffectiveOrgUrl)
+        && !string.IsNullOrWhiteSpace(this.EffectiveProject)
+        && (!string.IsNullOrWhiteSpace(this.options.Pat) || this.authService is not null);
+
+    private (string OrgUrl, string Project) ResolveConfig()
+    {
+        if (this.configResolver is null)
+        {
+            // Fall back to the bound options DIRECTLY — never go through the
+            // EffectiveOrgUrl / EffectiveProject getters here or we recurse.
+            return (this.options.OrgUrl, this.options.Project);
+        }
+        var effective = this.configResolver.ResolveAsync().GetAwaiter().GetResult();
+        return (effective.OrgUrl, effective.Project);
+    }
+
+    private string EffectiveProject => this.ResolveConfig().Project;
+
+    private string EffectiveOrgUrl => this.ResolveConfig().OrgUrl;
 
     public async Task<IReadOnlyList<Card>> ListWorkItemsAsync(CancellationToken ct = default)
     {
@@ -64,7 +86,7 @@ public class AdoProvider : IForgeProvider
                 : this.options.WorkItemQuery!;
             var wiqlBody = new { query = wiql };
             var wiqlReq = new HttpRequestMessage(HttpMethod.Post,
-                $"{this.options.Project}/_apis/wit/wiql?api-version=7.1")
+                $"{this.EffectiveProject}/_apis/wit/wiql?api-version=7.1")
             {
                 Content = new StringContent(JsonSerializer.Serialize(wiqlBody), Encoding.UTF8, "application/json"),
             };
@@ -90,7 +112,7 @@ public class AdoProvider : IForgeProvider
             var cards = new List<Card>();
             foreach (var wi in doc.RootElement.GetProperty("value").EnumerateArray())
             {
-                cards.Add(AdoMapper.ToCard(wi, this.options.Project, this.options.Project));
+                cards.Add(AdoMapper.ToCard(wi, this.EffectiveProject, this.EffectiveProject));
             }
             this.health.MarkSync();
             return cards;
@@ -115,7 +137,7 @@ public class AdoProvider : IForgeProvider
             if (resp.StatusCode == HttpStatusCode.NotFound) return null;
             resp.EnsureSuccessStatusCode();
             using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-            return AdoMapper.ToCard(doc.RootElement, this.options.Project, this.options.Project);
+            return AdoMapper.ToCard(doc.RootElement, this.EffectiveProject, this.EffectiveProject);
         }
         catch (Exception ex)
         {
@@ -132,14 +154,14 @@ public class AdoProvider : IForgeProvider
         {
             var client = this.NewClient();
             var resp = await client.GetAsync(
-                $"{this.options.Project}/_apis/git/repositories/{this.options.Repository}/pullrequests?searchCriteria.status=active&api-version=7.1", ct);
+                $"{this.EffectiveProject}/_apis/git/repositories/{this.options.Repository}/pullrequests?searchCriteria.status=active&api-version=7.1", ct);
             this.health.RecordResponse(resp);
             resp.EnsureSuccessStatusCode();
             using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
             var prs = new List<Pr>();
             foreach (var pr in doc.RootElement.GetProperty("value").EnumerateArray())
             {
-                prs.Add(AdoMapper.ToPr(pr, this.options.Project));
+                prs.Add(AdoMapper.ToPr(pr, this.EffectiveProject));
             }
             this.health.MarkSync();
             return prs;
@@ -160,12 +182,12 @@ public class AdoProvider : IForgeProvider
         {
             var client = this.NewClient();
             var resp = await client.GetAsync(
-                $"{this.options.Project}/_apis/git/repositories/{this.options.Repository}/pullrequests/{numeric}?api-version=7.1", ct);
+                $"{this.EffectiveProject}/_apis/git/repositories/{this.options.Repository}/pullrequests/{numeric}?api-version=7.1", ct);
             this.health.RecordResponse(resp);
             if (resp.StatusCode == HttpStatusCode.NotFound) return null;
             resp.EnsureSuccessStatusCode();
             using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-            return AdoMapper.ToPr(doc.RootElement, this.options.Project);
+            return AdoMapper.ToPr(doc.RootElement, this.EffectiveProject);
         }
         catch (Exception ex)
         {
@@ -207,7 +229,7 @@ public class AdoProvider : IForgeProvider
             patch.Add(new { op = "add", path = "/fields/System.Description", value = req.Description });
         }
 
-        var url = $"{this.options.Project}/_apis/wit/workitems/${Uri.EscapeDataString(req.Type)}?api-version=7.1";
+        var url = $"{this.EffectiveProject}/_apis/wit/workitems/${Uri.EscapeDataString(req.Type)}?api-version=7.1";
         var content = new StringContent(JsonSerializer.Serialize(patch), Encoding.UTF8, "application/json-patch+json");
         // Override Content-Type — ADO requires the JSON-Patch media type on create.
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json-patch+json");
@@ -216,7 +238,7 @@ public class AdoProvider : IForgeProvider
         this.health.RecordResponse(resp);
         resp.EnsureSuccessStatusCode();
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-        return AdoMapper.ToCard(doc.RootElement, this.options.Project, this.options.Project);
+        return AdoMapper.ToCard(doc.RootElement, this.EffectiveProject, this.EffectiveProject);
     }
 
     public async Task<Card> UpdateWorkItemAsync(string id, UpdateWorkItemRequest req, ProviderCallContext ctx, CancellationToken ct = default)
@@ -242,7 +264,7 @@ public class AdoProvider : IForgeProvider
         this.health.RecordResponse(resp);
         resp.EnsureSuccessStatusCode();
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-        return AdoMapper.ToCard(doc.RootElement, this.options.Project, this.options.Project);
+        return AdoMapper.ToCard(doc.RootElement, this.EffectiveProject, this.EffectiveProject);
     }
 
     public async Task CommentOnWorkItemAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default)
@@ -252,7 +274,7 @@ public class AdoProvider : IForgeProvider
         var num = id.TrimStart('#');
         var payload = JsonSerializer.Serialize(new { text = body });
         using var msg = new HttpRequestMessage(HttpMethod.Post,
-            $"{this.options.Project}/_apis/wit/workItems/{num}/comments?api-version=7.1-preview.4")
+            $"{this.EffectiveProject}/_apis/wit/workItems/{num}/comments?api-version=7.1-preview.4")
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json"),
         };
@@ -278,7 +300,7 @@ public class AdoProvider : IForgeProvider
             isDraft = req.Draft,
         });
         using var msg = new HttpRequestMessage(HttpMethod.Post,
-            $"{this.options.Project}/_apis/git/repositories/{this.options.Repository}/pullrequests?api-version=7.1")
+            $"{this.EffectiveProject}/_apis/git/repositories/{this.options.Repository}/pullrequests?api-version=7.1")
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json"),
         };
@@ -286,7 +308,7 @@ public class AdoProvider : IForgeProvider
         this.health.RecordResponse(resp);
         resp.EnsureSuccessStatusCode();
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-        return AdoMapper.ToPr(doc.RootElement, this.options.Project);
+        return AdoMapper.ToPr(doc.RootElement, this.EffectiveProject);
     }
 
     public Task ApprovePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) =>
@@ -307,7 +329,7 @@ public class AdoProvider : IForgeProvider
             status = 1,
         });
         using var msg = new HttpRequestMessage(HttpMethod.Post,
-            $"{this.options.Project}/_apis/git/repositories/{this.options.Repository}/pullRequests/{num}/threads?api-version=7.1")
+            $"{this.EffectiveProject}/_apis/git/repositories/{this.options.Repository}/pullRequests/{num}/threads?api-version=7.1")
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json"),
         };
@@ -329,7 +351,7 @@ public class AdoProvider : IForgeProvider
             completionOptions = new { mergeStrategy = "squash", deleteSourceBranch = false },
         });
         using var msg = new HttpRequestMessage(new HttpMethod("PATCH"),
-            $"{this.options.Project}/_apis/git/repositories/{this.options.Repository}/pullrequests/{num}?api-version=7.1")
+            $"{this.EffectiveProject}/_apis/git/repositories/{this.options.Repository}/pullrequests/{num}?api-version=7.1")
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json"),
         };
@@ -337,7 +359,7 @@ public class AdoProvider : IForgeProvider
         this.health.RecordResponse(resp);
         resp.EnsureSuccessStatusCode();
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-        return AdoMapper.ToPr(doc.RootElement, this.options.Project);
+        return AdoMapper.ToPr(doc.RootElement, this.EffectiveProject);
     }
 
     public async Task<BuildStatus?> TriggerBuildAsync(string branch, ProviderCallContext ctx, CancellationToken ct = default)
@@ -359,7 +381,7 @@ public class AdoProvider : IForgeProvider
             resources = new { repositories = new { self = new { refName = $"refs/heads/{branch}" } } },
         });
         using var msg = new HttpRequestMessage(HttpMethod.Post,
-            $"{this.options.Project}/_apis/pipelines/{pipelineId}/runs?api-version=7.1-preview.1")
+            $"{this.EffectiveProject}/_apis/pipelines/{pipelineId}/runs?api-version=7.1-preview.1")
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json"),
         };
@@ -382,7 +404,7 @@ public class AdoProvider : IForgeProvider
         // ADO requires a reviewer GUID — for the placeholder we PATCH with `me`.
         var payload = JsonSerializer.Serialize(new { vote });
         using var msg = new HttpRequestMessage(HttpMethod.Put,
-            $"{this.options.Project}/_apis/git/repositories/{this.options.Repository}/pullRequests/{num}/reviewers/me?api-version=7.1")
+            $"{this.EffectiveProject}/_apis/git/repositories/{this.options.Repository}/pullRequests/{num}/reviewers/me?api-version=7.1")
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json"),
         };
@@ -423,11 +445,11 @@ public class AdoProvider : IForgeProvider
         try
         {
             var client = this.NewClient();
-            var resp = await client.GetAsync($"{this.options.Project}/_apis/git/repositories?api-version=7.1", ct);
+            var resp = await client.GetAsync($"{this.EffectiveProject}/_apis/git/repositories?api-version=7.1", ct);
             this.health.RecordResponse(resp);
             if (!resp.IsSuccessStatusCode) return Array.Empty<DiscoverableRepo>();
             using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-            var orgName = TrimOrgFromUrl(this.options.OrgUrl);
+            var orgName = TrimOrgFromUrl(this.EffectiveOrgUrl);
             var list = new List<DiscoverableRepo>();
             foreach (var r in doc.RootElement.GetProperty("value").EnumerateArray())
             {
@@ -443,7 +465,7 @@ public class AdoProvider : IForgeProvider
                     RemoteUrl: remoteUrl,
                     DefaultBranch: defaultBranch,
                     AdoOrg: orgName,
-                    AdoProject: this.options.Project));
+                    AdoProject: this.EffectiveProject));
             }
             return list;
         }
@@ -482,10 +504,10 @@ public class AdoProvider : IForgeProvider
         try
         {
             var client = this.NewClient();
-            var resp = await client.GetAsync($"_apis/projects/{this.options.Project}?api-version=7.1", ct);
+            var resp = await client.GetAsync($"_apis/projects/{this.EffectiveProject}?api-version=7.1", ct);
             this.health.RecordResponse(resp);
             return resp.IsSuccessStatusCode
-                ? this.health.Snapshot(true, $"connected to {this.options.OrgUrl} / {this.options.Project}")
+                ? this.health.Snapshot(true, $"connected to {this.EffectiveOrgUrl} / {this.EffectiveProject}")
                 : this.health.Snapshot(false, $"HTTP {(int)resp.StatusCode}");
         }
         catch (Exception ex)
@@ -506,9 +528,13 @@ public class AdoProvider : IForgeProvider
     private async Task<HttpClient> NewClientAsync(CancellationToken ct)
     {
         var client = this.clientFactory.CreateClient(ClientName);
-        if (client.BaseAddress is null && !string.IsNullOrWhiteSpace(this.options.OrgUrl))
+        // Phase 10 — base URL follows the resolved config (user settings → appsettings).
+        var (orgUrl, _) = this.ResolveConfig();
+        if (!string.IsNullOrWhiteSpace(orgUrl))
         {
-            client.BaseAddress = new Uri(this.options.OrgUrl.TrimEnd('/') + "/");
+            // Re-create the BaseAddress every call — cheap and lets the user
+            // change org without restarting.
+            client.BaseAddress = new Uri(orgUrl.TrimEnd('/') + "/");
         }
 
         // Phase 9 — MSAL bearer first, PAT only as fallback for headless runs.

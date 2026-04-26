@@ -41,10 +41,54 @@ public static class ProductsEndpoints
         var repos = app.MapGroup("/api/repos").WithTags("Repos");
         repos.MapGet("/", ListAllRepos).WithName("ListAllRepos");
         repos.MapGet("/{id}", GetRepo).WithName("GetRepo");
+        repos.MapPatch("/{id}", PatchRepo).WithName("PatchRepo");
         repos.MapDelete("/{id}", DeleteRepo).WithName("DeleteRepo");
 
         return app;
     }
+
+    // PATCH /api/repos/{id} — Phase 10 per-repo override editor.
+    private static async Task<IResult> PatchRepo(
+        HttpContext ctx,
+        string id,
+        [FromBody] UpdateRepoRequest req,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var row = await db.Repos.FirstOrDefaultAsync(r => r.Id == id);
+        if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+
+        if (req.DisplayName is not null) row.DisplayName = req.DisplayName.Trim();
+        if (req.CloneRoot is not null)
+        {
+            var clean = req.CloneRoot.Trim();
+            if (!Path.IsPathFullyQualified(clean))
+            {
+                return Results.Problem(title: "cloneRoot must be an absolute path", statusCode: 400);
+            }
+            // Q2 — same clone root cannot host two repos.
+            if (await db.Repos.AnyAsync(r => r.CloneRoot == clean && r.Id != id))
+            {
+                return Results.Problem(title: "Clone root already in use", statusCode: 409);
+            }
+            row.CloneRoot = clean;
+        }
+        if (req.DefaultBranch is not null) row.DefaultBranch = string.IsNullOrWhiteSpace(req.DefaultBranch) ? "main" : req.DefaultBranch.Trim();
+        if (req.AdoOrg is not null)     row.AdoOrg     = NullIfEmpty(req.AdoOrg);
+        if (req.AdoProject is not null) row.AdoProject = NullIfEmpty(req.AdoProject);
+        if (req.GhOwner is not null)    row.GhOwner    = NullIfEmpty(req.GhOwner);
+        if (req.GhRepo is not null)     row.GhRepo     = NullIfEmpty(req.GhRepo);
+
+        await db.SaveChangesAsync();
+        var repo = MapRepo(row);
+        await hub.Clients.All.SendAsync("repo.changed", new { kind = "patched", repo });
+        return Results.Ok(repo);
+    }
+
+    private static string? NullIfEmpty(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
     // ----- /api/products ---------------------------------------------------
 

@@ -27,6 +27,10 @@ public static class ForgeSeed
         await EnsureDefaultProductAndRepoAsync(db);
         await BackfillRepoIdAsync(db);
 
+        // Phase 10.6 — crew seed runs independently too so existing DBs
+        // pick up the four crews on next boot.
+        await EnsureSeedCrewsAsync(db);
+
         if (await db.Epics.AnyAsync())
         {
             return;
@@ -63,7 +67,8 @@ public static class ForgeSeed
         var e9Anvil  = new { id = "E9", role = "eng",   name = "Anvil" };
         var r3Cortex = new { id = "R3", role = "rev",   name = "Cortex" };
         var r5Lattice = new { id = "R5", role = "rev",  name = "Lattice" };
-        var xdHuman  = new { id = "XD", role = "human", name = "Xiaodong" };
+        // Phase 9.11 — XD is the operator (product owner) under the new Role enum.
+        var xdHuman  = new { id = "XD", role = "product-owner", name = "Xiaodong" };
 
         var cards = new[]
         {
@@ -228,6 +233,32 @@ public static class ForgeSeed
         }
 
         if (changed) await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Idempotent: ensure the four prototype-derived crews exist. Per the
+    /// Phase 10.6 spec, default model assignments are:
+    ///   Engineering → claude-opus-4-7
+    ///   Review → claude-sonnet-4-6
+    ///   Architecture → claude-opus-4-7
+    ///   QA → claude-haiku-4-5
+    /// Pricing is denormalised onto the crew so historical salary lookups
+    /// stay reproducible across price changes (Phase 11.2 cost ledger).
+    /// </summary>
+    private static async Task EnsureSeedCrewsAsync(ForgeDbContext db)
+    {
+        var existing = await db.Crews.Select(c => c.Id).ToListAsync();
+        if (existing.Count >= 4) return;
+
+        var crews = new[]
+        {
+            new CrewRow { Id = "crew-eng",  Sort = 0, Name = "Engineering",  ProductId = DefaultProductId, Summary = "Cuts PRs, ships features, keeps tests green.",        Lead = "E4", Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m },
+            new CrewRow { Id = "crew-rev",  Sort = 1, Name = "Review",       ProductId = DefaultProductId, Summary = "Reads every diff, catches what engineers missed.",   Lead = "R3", Model = "claude-sonnet-4-6",       ModelInputPricePerMTok = 3m,  ModelOutputPricePerMTok = 15m },
+            new CrewRow { Id = "crew-arch", Sort = 2, Name = "Architecture", ProductId = DefaultProductId, Summary = "Frames problems, owns ADRs, keeps blast radii small.", Lead = "A1", Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m },
+            new CrewRow { Id = "crew-qa",   Sort = 3, Name = "QA",           ProductId = DefaultProductId, Summary = "Fuzzes, soaks, watches the dials.",                   Lead = "Q2", Model = "claude-haiku-4-5-20251001", ModelInputPricePerMTok = 1m,  ModelOutputPricePerMTok = 5m },
+        };
+        foreach (var c in crews.Where(c => !existing.Contains(c.Id))) db.Crews.Add(c);
+        await db.SaveChangesAsync();
     }
 
     /// <summary>

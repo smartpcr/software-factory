@@ -360,6 +360,8 @@ public class AINode : ExecutableNodeBase
             {
                 try
                 {
+                    aiLogger?.EmitLine(workflowContext.InstanceId, this.NodeId,
+                        "📤 Extracting outputs via LLM summary...");
                     var extracted = await this.ExtractOutputsWithLlmAsync(
                         result.Content, agentDef.Outputs, workflowContext, cancellationToken);
                     foreach (var kvp in extracted)
@@ -368,15 +370,16 @@ public class AINode : ExecutableNodeBase
                         extractedOutputCount++;
                     }
 
-                    if (extractedOutputCount > 0)
-                    {
-                        aiLogger?.EmitLine(workflowContext.InstanceId, this.NodeId,
-                            $"📤 Extracted {extractedOutputCount} outputs via summary");
-                    }
+                    aiLogger?.EmitLine(workflowContext.InstanceId, this.NodeId,
+                        extractedOutputCount > 0
+                            ? $"📤 Extracted {extractedOutputCount} outputs: {string.Join(", ", extracted.Keys)}"
+                            : "📤 No outputs found in response");
                 }
                 catch (Exception ex)
                 {
-                    logger.LogWarning(ex, "LLM output extraction failed, skipping");
+                    logger.LogWarning(ex, "LLM output extraction failed");
+                    aiLogger?.EmitLine(workflowContext.InstanceId, this.NodeId,
+                        $"📤 Extraction failed: {ex.Message}");
                 }
             }
 
@@ -512,8 +515,18 @@ public class AINode : ExecutableNodeBase
     {
         var result = new Dictionary<string, string>();
 
-        // Truncate response for the extraction prompt
-        var truncated = agentResponse.Length > 8000 ? agentResponse[..8000] + "\n[... truncated ...]" : agentResponse;
+        // Include start and end of response (values often appear at the end)
+        string truncated;
+        if (agentResponse.Length > 12000)
+        {
+            var head = agentResponse[..6000];
+            var tail = agentResponse.Substring(agentResponse.Length - 6000);
+            truncated = head + "\n[... middle truncated ...]\n" + tail;
+        }
+        else
+        {
+            truncated = agentResponse;
+        }
 
         // Build the extraction prompt
         var sb = new System.Text.StringBuilder();

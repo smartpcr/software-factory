@@ -6,9 +6,7 @@
 
 namespace Forge.Api.Auth;
 
-using System.Runtime.InteropServices;
 using Microsoft.Identity.Client;
-using Microsoft.Identity.Client.Broker;
 using Microsoft.Identity.Client.Extensions.Msal;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -17,10 +15,13 @@ using Microsoft.Extensions.Options;
 /// Phase 9.2 — Azure DevOps interactive sign-in via MSAL.
 ///
 /// Uses the well-known Azure CLI public client id so operators don't need to
-/// register an Azure AD app to use Forge. WAM broker is the first choice on
-/// Windows (picks up the signed-in account silently when the org allows
-/// silent issuance). On non-WAM hosts, falls back to system-browser
-/// authorization-code + PKCE. Device-code flow is explicitly banned per Q7.
+/// register an Azure AD app to use Forge. The flow is system-browser
+/// authorization-code: Forge calls <c>AcquireTokenInteractive</c>, MSAL spins
+/// up a one-shot localhost listener and shells out to the OS default browser
+/// (Edge by default on Windows). Device-code flow is explicitly banned per Q7;
+/// WAM broker isn't a fit here because the API runs as a console host with
+/// no parent window — see Phase 9 follow-up for re-introducing WAM once the
+/// host can publish a window handle reliably.
 ///
 /// Token cache is DPAPI-protected on Windows via MSAL's
 /// <see cref="MsalCacheHelper"/>. The cache file lives at
@@ -121,19 +122,19 @@ public class AdoAuthService : IAuthService
             this.logger.LogDebug(ex, "Silent acquisition failed; falling back to interactive");
         }
 
-        // 2) Interactive. WAM-first on Windows; system browser elsewhere.
+        // 2) Interactive — system browser. Forge runs as a console host with
+        // no parent window, so WAM is unreliable from this process; we use the
+        // system-browser auth-code flow (MSAL spins up its own localhost listener)
+        // and the BrowserLauncher's Edge-first behaviour just falls into place
+        // because the browser open call goes through OS shell-execute.
         try
         {
-            var builder = app.AcquireTokenInteractive(DefaultScopes);
-            // Hint: prefer the signed-in Windows account silently when possible.
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            {
-                builder = builder.WithUseEmbeddedWebView(false);
-                // Best-effort: pin the WAM popup to the foreground process window
-                // so it doesn't open behind everything. WAM uses a PInvoke handle.
-                builder = builder.WithParentActivityOrWindow(GetForegroundWindowOrFallback);
-            }
+            var builder = app
+                .AcquireTokenInteractive(DefaultScopes)
+                .WithUseEmbeddedWebView(false);
+            this.logger.LogInformation("ADO interactive sign-in starting (system browser)…");
             var result = await builder.ExecuteAsync(ct);
+            this.logger.LogInformation("ADO interactive sign-in succeeded as {User}", result.Account.Username);
             return new AuthStatus(this.Kind, true, result.Account.Username, result.Account.Username, result.ExpiresOn);
         }
         catch (OperationCanceledException)
@@ -144,6 +145,11 @@ public class AdoAuthService : IAuthService
         {
             this.logger.LogWarning(ex, "AdoAuthService interactive sign-in failed");
             return new AuthStatus(this.Kind, false, null, null, null, $"{ex.ErrorCode}: {ex.Message}");
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogError(ex, "AdoAuthService.SignInAsync hit an unexpected error");
+            return new AuthStatus(this.Kind, false, null, null, null, ex.Message);
         }
     }
 
@@ -185,20 +191,14 @@ public class AdoAuthService : IAuthService
         var clientId = string.IsNullOrWhiteSpace(this.options.AdoClientId) ? AzureCliClientId : this.options.AdoClientId;
         var authority = string.IsNullOrWhiteSpace(this.options.AdoAuthority) ? Authority : this.options.AdoAuthority;
 
+        // System-browser auth-code flow. The Azure CLI public client id is
+        // registered with `http://localhost` as a valid redirect URI, so MSAL
+        // can spin up its own one-shot listener on a free port and complete
+        // the flow without any window-handle gymnastics.
         var builder = PublicClientApplicationBuilder
             .Create(clientId)
             .WithAuthority(authority)
-            // Match the redirect URI the Azure CLI client id is registered with.
-            .WithDefaultRedirectUri();
-
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            // Q7 — WAM is the first choice on Windows.
-            builder = builder.WithBroker(new BrokerOptions(BrokerOptions.OperatingSystems.Windows)
-            {
-                Title = "Forge — sign in to Azure DevOps",
-            });
-        }
+            .WithRedirectUri("http://localhost");
 
         var app = builder.Build();
 
@@ -218,19 +218,4 @@ public class AdoAuthService : IAuthService
         return app;
     }
 
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetForegroundWindow();
-
-    private static IntPtr GetForegroundWindowOrFallback()
-    {
-        try
-        {
-            var fg = GetForegroundWindow();
-            return fg != IntPtr.Zero ? fg : new IntPtr(-1); // -1 = HWND_DESKTOP fallback
-        }
-        catch
-        {
-            return new IntPtr(-1);
-        }
-    }
 }
