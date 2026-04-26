@@ -1,11 +1,32 @@
+import { useEffect, useMemo } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useSidebarStore } from '@/state/useSidebarStore';
+import { useProductsStore } from '@/state/useProductsStore';
+import { ProductIcon } from '@/products/ProductIcon';
 
 // Verbatim port of the prototype's <aside class="sidebar">. The only
 // React-required changes: NavLink in place of <a data-view>, className
 // replacing class, and onClick handlers on the collapse and add buttons.
 export function SideBar() {
   const toggle = useSidebarStore((s) => s.toggle);
+  const products = useProductsStore((s) => s.products);
+  const activeProductId = useProductsStore((s) => s.activeProductId);
+  const reposByProduct = useProductsStore((s) => s.reposByProduct);
+  const loadProducts = useProductsStore((s) => s.load);
+  const loadRepos = useProductsStore((s) => s.loadReposFor);
+
+  useEffect(() => { void loadProducts(); }, [loadProducts]);
+
+  const activeProduct = useMemo(
+    () => products.find((p) => p.id === activeProductId) ?? products[0] ?? null,
+    [products, activeProductId],
+  );
+
+  useEffect(() => {
+    if (activeProduct) void loadRepos(activeProduct.id);
+  }, [activeProduct, loadRepos]);
+
+  const repoCount = activeProduct ? (reposByProduct[activeProduct.id]?.length ?? 0) : 0;
 
   return (
     <aside className="sidebar">
@@ -20,18 +41,29 @@ export function SideBar() {
 
       <div className="sidebar-body">
 
-        <div className="repo-card" title="Switch repository">
-          <div className="repo-card-row">
-            <span className="repo-card-dot"></span>
-            <span className="repo-card-name">atlas-platform</span>
-            <span className="repo-card-source">ADO</span>
+        <NavLink
+          to="/products"
+          className="repo-card"
+          title={activeProduct ? `${activeProduct.name} — switch product` : 'Manage products'}
+          style={{ textDecoration: 'none', color: 'inherit', display: 'block' }}
+        >
+          <div className="repo-card-row" style={{ alignItems: 'center', gap: 8 }}>
+            {activeProduct
+              ? <ProductIcon product={activeProduct} size={22} />
+              : <span className="repo-card-dot" />}
+            <span className="repo-card-name" style={{ flex: 1, minWidth: 0 }}>
+              {activeProduct?.name ?? 'No product'}
+            </span>
+            <span className="repo-card-source">{products.length > 1 ? 'Switch' : 'Product'}</span>
           </div>
           <div className="repo-card-meta">
-            <span>main · 8 wstrm</span>
-            <span className="sync">synced 12m ago</span>
+            <span>{repoCount} repo{repoCount === 1 ? '' : 's'}</span>
+            <span className="sync">{products.length} product{products.length === 1 ? '' : 's'}</span>
           </div>
+        </NavLink>
+        <div className="repo-collapsed-icon" title={activeProduct?.name ?? 'product'}>
+          {activeProduct ? <ProductIcon product={activeProduct} size={20} /> : 'A'}
         </div>
-        <div className="repo-collapsed-icon" title="atlas-platform">A</div>
 
         <div className="nav-section">
           <div className="nav-section-title"><span>Work</span></div>

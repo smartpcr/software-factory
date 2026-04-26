@@ -40,6 +40,12 @@ public class ForgeAuthOptions
         public string ClientId { get; set; } = string.Empty;
         public string Audience { get; set; } = string.Empty;
     }
+
+    /// <summary>Phase 9.2 — override the MSAL public-client id used for ADO sign-in. Defaults to the Azure CLI client id.</summary>
+    public string AdoClientId { get; set; } = string.Empty;
+
+    /// <summary>Phase 9.2 — override the AAD authority. Defaults to https://login.microsoftonline.com/common.</summary>
+    public string AdoAuthority { get; set; } = string.Empty;
 }
 
 /// <summary>Verifies the X-Forge-Secret header against <c>Forge:Auth:Secret</c>.</summary>

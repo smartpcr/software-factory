@@ -10,6 +10,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Forge.Api.Auth;
 using Forge.Api.Contracts;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -26,12 +27,21 @@ public class AdoProvider : IForgeProvider
     private readonly AdoOptions options;
     private readonly ILogger<AdoProvider> logger;
     private readonly ProviderHealthState health = new("ado");
+    private readonly IAuthService? authService;
 
-    public AdoProvider(IHttpClientFactory clientFactory, IOptions<AdoOptions> options, ILogger<AdoProvider> logger)
+    public AdoProvider(
+        IHttpClientFactory clientFactory,
+        IOptions<AdoOptions> options,
+        ILogger<AdoProvider> logger,
+        IEnumerable<IAuthService> authServices)
     {
         this.clientFactory = clientFactory;
         this.options = options.Value;
         this.logger = logger;
+        // Phase 9 — MSAL bearer-token auth takes precedence over the PAT
+        // when an account is signed in. Optional: AdoProvider works fine
+        // without an auth service (legacy PAT-only deployments).
+        this.authService = authServices.FirstOrDefault(a => a.Kind == "ado");
     }
 
     public string Kind => "ado";
@@ -39,7 +49,7 @@ public class AdoProvider : IForgeProvider
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(this.options.OrgUrl) &&
         !string.IsNullOrWhiteSpace(this.options.Project) &&
-        !string.IsNullOrWhiteSpace(this.options.Pat);
+        (!string.IsNullOrWhiteSpace(this.options.Pat) || this.authService is not null);
 
     public async Task<IReadOnlyList<Card>> ListWorkItemsAsync(CancellationToken ct = default)
     {
@@ -487,14 +497,39 @@ public class AdoProvider : IForgeProvider
 
     private HttpClient NewClient()
     {
+        // Sync entry point used by the existing call sites. Phase 9 prefers
+        // <see cref="NewClientAsync"/>; this helper preserves the legacy
+        // PAT-Basic flow for code paths that haven't migrated yet.
+        return this.NewClientAsync(CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    private async Task<HttpClient> NewClientAsync(CancellationToken ct)
+    {
         var client = this.clientFactory.CreateClient(ClientName);
         if (client.BaseAddress is null && !string.IsNullOrWhiteSpace(this.options.OrgUrl))
         {
             client.BaseAddress = new Uri(this.options.OrgUrl.TrimEnd('/') + "/");
         }
-        // Basic auth with empty username + PAT as password — ADO convention.
-        var token = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{this.options.Pat}"));
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", token);
+
+        // Phase 9 — MSAL bearer first, PAT only as fallback for headless runs.
+        string? bearer = null;
+        if (this.authService is not null)
+        {
+            try { bearer = await this.authService.GetAccessTokenAsync(ct); }
+            catch (Exception ex) { this.logger.LogDebug(ex, "MSAL silent token failed; falling back to PAT"); }
+        }
+
+        if (bearer is not null)
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
+        }
+        else if (!string.IsNullOrWhiteSpace(this.options.Pat))
+        {
+            // Basic auth with empty username + PAT as password — ADO convention.
+            var token = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{this.options.Pat}"));
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", token);
+        }
+
         client.DefaultRequestHeaders.Accept.Clear();
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         return client;

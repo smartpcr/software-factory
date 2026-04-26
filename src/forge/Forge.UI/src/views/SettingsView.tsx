@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { forgeApi, type ProviderHealth } from '@/api/forgeApi';
+import { forgeApi, type AuthStatus, type ProviderHealth } from '@/api/forgeApi';
 
 // Phase 5.4 + 5.11 — provider configuration + health.
 // Phase-5 server reads its options from configuration (user-secrets / env).
@@ -15,8 +15,15 @@ interface ProviderRowProps {
   description: string;
   configKeys: string[];
   health: ProviderHealth | undefined;
+  auth?: AuthStatus | undefined;
+  authSupported?: boolean;
   busy: boolean;
+  syncing: boolean;
+  signingIn: boolean;
   onTest: () => void;
+  onSync: () => void;
+  onSignIn: () => void;
+  onSignOut: () => void;
 }
 
 function relTime(iso: string | null): string {
@@ -30,7 +37,10 @@ function relTime(iso: string | null): string {
   return `${Math.round(diffMs / 86_400_000)}d ago`;
 }
 
-function ProviderRow({ kind, label, description, configKeys, health, busy, onTest }: ProviderRowProps) {
+function ProviderRow({
+  kind, label, description, configKeys, health, auth, authSupported = false,
+  busy, syncing, signingIn, onTest, onSync, onSignIn, onSignOut,
+}: ProviderRowProps) {
   const ok = health?.ok ?? false;
   const dotColor = ok ? 'var(--success)' : 'var(--danger)';
   return (
@@ -79,8 +89,49 @@ function ProviderRow({ kind, label, description, configKeys, health, busy, onTes
         </div>
       </div>
 
+      {authSupported && (
+        <div className="ws-card-section">
+          <div className="ws-card-section-title">Sign-in</div>
+          {auth?.connected ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-primary)', fontWeight: 500 }}>
+                  Signed in as <span style={{ fontFamily: 'var(--font-mono)' }}>{auth.userName ?? auth.account}</span>
+                </div>
+                {auth.expiresAt && (
+                  <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                    Token valid until {new Date(auth.expiresAt).toLocaleString()}
+                  </div>
+                )}
+              </div>
+              <button className="ws-action" onClick={onSignOut} disabled={signingIn}>
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <div style={{ minWidth: 0, fontSize: 11.5, color: 'var(--text-secondary)' }}>
+                {auth?.error
+                  ? <>Last attempt: <strong>{auth.error}</strong></>
+                  : <>Sign in opens a Microsoft account picker (WAM / browser popup). Forge stores only an encrypted refresh token.</>}
+              </div>
+              <button
+                className="ws-action primary"
+                onClick={onSignIn}
+                disabled={signingIn}
+                title="Opens the Microsoft account picker"
+              >
+                {signingIn ? 'Signing in…' : `Sign in to ${label}`}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="ws-card-section">
-        <div className="ws-card-section-title">Configuration keys</div>
+        <div className="ws-card-section-title">
+          {authSupported ? 'Optional configuration' : 'Configuration keys'}
+        </div>
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11.5, color: 'var(--text-secondary)' }}>
           {configKeys.map((k) => (
             <li key={k} style={{ fontFamily: 'var(--font-mono)' }}>{k}</li>
@@ -90,11 +141,25 @@ function ProviderRow({ kind, label, description, configKeys, health, busy, onTes
 
       <div className="ws-card-foot">
         <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
-          Set the keys above in user-secrets / env, then click <strong>Test connection</strong>.
+          {authSupported
+            ? <>Sign in above (preferred), or set the keys for a headless / CI flow.</>
+            : <>Set the keys above in user-secrets / env, then click <strong>Test connection</strong>.</>}
         </div>
         <div className="ws-card-actions">
-          <button className="ws-action primary" onClick={onTest} disabled={busy}>
+          <button className="ws-action" onClick={onTest} disabled={busy || syncing}>
             {busy ? 'Testing…' : 'Test connection'}
+          </button>
+          <button
+            className="ws-action primary"
+            onClick={onSync}
+            disabled={busy || syncing || !health?.ok}
+            title={
+              !health?.ok
+                ? 'Connect the provider first'
+                : 'Pull work items + PRs now (bypasses the 60s background poll)'
+            }
+          >
+            {syncing ? 'Syncing…' : 'Sync now'}
           </button>
         </div>
       </div>
@@ -102,16 +167,25 @@ function ProviderRow({ kind, label, description, configKeys, health, busy, onTes
   );
 }
 
-const PROVIDERS: Array<{ kind: string; label: string; description: string; configKeys: string[] }> = [
+interface ProviderEntry {
+  kind: 'ado' | 'github';
+  label: string;
+  description: string;
+  configKeys: string[];
+  authSupported: boolean;
+}
+
+const PROVIDERS: ProviderEntry[] = [
   {
     kind: 'ado',
     label: 'Azure DevOps',
     description: 'Work items + repos + pipelines',
+    authSupported: true,
     configKeys: [
       'Forge:Ado:OrgUrl       e.g. https://dev.azure.com/contoso',
       'Forge:Ado:Project',
       'Forge:Ado:Repository',
-      'Forge:Ado:Pat',
+      'Forge:Ado:Pat               (optional — only needed for headless / CI runs)',
       'Forge:Ado:WebhookSecret  (X-Forge-Hook-Secret)',
     ],
   },
@@ -119,6 +193,8 @@ const PROVIDERS: Array<{ kind: string; label: string; description: string; confi
     kind: 'github',
     label: 'GitHub',
     description: 'Issues + pull requests + Actions',
+    // Phase 9.3 — GitHub interactive sign-in lands next; PAT for now.
+    authSupported: false,
     configKeys: [
       'Forge:GitHub:Repo       e.g. microsoft/forge',
       'Forge:GitHub:Pat',
@@ -129,7 +205,11 @@ const PROVIDERS: Array<{ kind: string; label: string; description: string; confi
 
 export function SettingsView() {
   const [byKind, setByKind] = useState<Record<string, ProviderHealth>>({});
+  const [authByKind, setAuthByKind] = useState<Record<string, AuthStatus>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
+  const [syncing, setSyncing] = useState<Record<string, boolean>>({});
+  const [signingIn, setSigningIn] = useState<Record<string, boolean>>({});
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -145,6 +225,68 @@ export function SettingsView() {
       setLoadError(null);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err));
+    }
+    // Auth status is independent — fetch in parallel for every provider that supports it.
+    for (const p of PROVIDERS.filter((x) => x.authSupported)) {
+      try {
+        const status = await forgeApi.authStatus(p.kind);
+        setAuthByKind((m) => ({ ...m, [p.kind]: status }));
+      } catch {
+        // Endpoint not available yet (older API) — keep undefined and the row hides the auth section.
+      }
+    }
+  }
+
+  async function signIn(kind: 'ado' | 'github') {
+    setSigningIn((m) => ({ ...m, [kind]: true }));
+    setSyncMsg(null);
+    try {
+      const status = await forgeApi.signIn(kind);
+      setAuthByKind((m) => ({ ...m, [kind]: status }));
+      setSyncMsg(`Signed in to ${kind} as ${status.userName ?? status.account ?? 'unknown'}`);
+      // Refresh provider health so connected/last-sync update.
+      await test(kind);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setSyncMsg(`Sign-in failed: ${msg}`);
+      setAuthByKind((m) => ({
+        ...m,
+        [kind]: { kind, connected: false, account: null, userName: null, expiresAt: null, error: msg },
+      }));
+    } finally {
+      setSigningIn((m) => ({ ...m, [kind]: false }));
+    }
+  }
+
+  async function signOut(kind: 'ado' | 'github') {
+    setSigningIn((m) => ({ ...m, [kind]: true }));
+    try {
+      await forgeApi.signOut(kind);
+      setAuthByKind((m) => ({
+        ...m,
+        [kind]: { kind, connected: false, account: null, userName: null, expiresAt: null, error: null },
+      }));
+      setSyncMsg(`Signed out of ${kind}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setSyncMsg(`Sign-out failed: ${msg}`);
+    } finally {
+      setSigningIn((m) => ({ ...m, [kind]: false }));
+    }
+  }
+
+  async function sync(kind: string) {
+    setSyncing((m) => ({ ...m, [kind]: true }));
+    setSyncMsg(null);
+    try {
+      const h = await forgeApi.syncProviderNow(kind);
+      setByKind((map) => ({ ...map, [kind]: h }));
+      setSyncMsg(`Synced ${kind} · ${new Date().toLocaleTimeString()}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setSyncMsg(`Sync failed: ${msg}`);
+    } finally {
+      setSyncing((m) => ({ ...m, [kind]: false }));
     }
   }
 
@@ -220,6 +362,21 @@ export function SettingsView() {
         </div>
       )}
 
+      {syncMsg && (
+        <div
+          style={{
+            margin: '0 24px 14px',
+            padding: 10,
+            borderRadius: 'var(--radius-sm)',
+            background: syncMsg.startsWith('Sync failed') ? 'var(--danger-bg)' : 'var(--success-bg, var(--bg-surface-2))',
+            color: syncMsg.startsWith('Sync failed') ? 'var(--danger)' : 'var(--text-primary)',
+            fontSize: 11.5,
+          }}
+        >
+          {syncMsg}
+        </div>
+      )}
+
       <div
         className="workstream-grid-wrap"
         style={{ paddingTop: 0 }}
@@ -232,9 +389,16 @@ export function SettingsView() {
               label={p.label}
               description={p.description}
               configKeys={p.configKeys}
+              authSupported={p.authSupported}
               health={byKind[p.kind]}
+              auth={authByKind[p.kind]}
               busy={!!busy[p.kind]}
+              syncing={!!syncing[p.kind]}
+              signingIn={!!signingIn[p.kind]}
               onTest={() => void test(p.kind)}
+              onSync={() => void sync(p.kind)}
+              onSignIn={() => void signIn(p.kind)}
+              onSignOut={() => void signOut(p.kind)}
             />
           ))}
         </div>

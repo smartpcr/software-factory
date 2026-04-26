@@ -3,6 +3,99 @@ import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
 import type { DiscoverableRepo, RepoKind } from '@/types';
 
+// Phase 8.5 — parse a pasted clone URL into a DiscoverableRepo so the same
+// step-2 form handles both discovered and hand-typed repos.
+//
+// Recognised shapes:
+//   https://dev.azure.com/{org}/{project}/_git/{repo}
+//   https://{org}.visualstudio.com/{project}/_git/{repo}
+//   https://github.com/{owner}/{repo}[.git]
+function parseRepoUrl(raw: string): { ok: true; repo: DiscoverableRepo } | { ok: false; reason: string } {
+  const input = raw.trim();
+  if (!input) return { ok: false, reason: 'Paste a URL' };
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch {
+    return { ok: false, reason: 'Not a valid URL' };
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    return { ok: false, reason: 'Only http(s) URLs are supported' };
+  }
+  const host = url.hostname.toLowerCase();
+  const segs = url.pathname.split('/').filter(Boolean);
+
+  // ADO — dev.azure.com/{org}/{project}/_git/{repo}
+  if (host === 'dev.azure.com' || host.endsWith('.dev.azure.com')) {
+    const gitIdx = segs.indexOf('_git');
+    if (gitIdx < 2 || gitIdx === segs.length - 1) {
+      return { ok: false, reason: 'ADO URLs must look like dev.azure.com/{org}/{project}/_git/{repo}' };
+    }
+    const org = segs[0];
+    const project = segs.slice(1, gitIdx).join('/');
+    const repo = segs[gitIdx + 1].replace(/\.git$/, '');
+    return {
+      ok: true,
+      repo: {
+        kind: 'ado',
+        displayName: repo,
+        remoteUrl: stripTrailingGit(input),
+        defaultBranch: 'main',
+        adoOrg: org,
+        adoProject: project,
+      },
+    };
+  }
+
+  // ADO legacy — {org}.visualstudio.com/{project}/_git/{repo}
+  if (host.endsWith('.visualstudio.com')) {
+    const gitIdx = segs.indexOf('_git');
+    if (gitIdx < 1 || gitIdx === segs.length - 1) {
+      return { ok: false, reason: 'visualstudio.com URLs must look like {org}.visualstudio.com/{project}/_git/{repo}' };
+    }
+    const org = host.split('.')[0];
+    const project = segs.slice(0, gitIdx).join('/');
+    const repo = segs[gitIdx + 1].replace(/\.git$/, '');
+    return {
+      ok: true,
+      repo: {
+        kind: 'ado',
+        displayName: repo,
+        remoteUrl: stripTrailingGit(input),
+        defaultBranch: 'main',
+        adoOrg: org,
+        adoProject: project,
+      },
+    };
+  }
+
+  // GitHub — github.com/{owner}/{repo}[.git]
+  if (host === 'github.com' || host === 'www.github.com') {
+    if (segs.length < 2) {
+      return { ok: false, reason: 'GitHub URLs must look like github.com/{owner}/{repo}' };
+    }
+    const owner = segs[0];
+    const repo = segs[1].replace(/\.git$/, '');
+    return {
+      ok: true,
+      repo: {
+        kind: 'github',
+        displayName: `${owner}/${repo}`,
+        remoteUrl: `https://github.com/${owner}/${repo}.git`,
+        defaultBranch: 'main',
+        ghOwner: owner,
+        ghRepo: repo,
+      },
+    };
+  }
+
+  return { ok: false, reason: `Unrecognised host '${host}'. Supported: dev.azure.com, *.visualstudio.com, github.com.` };
+}
+
+function stripTrailingGit(url: string): string {
+  return url.replace(/\.git$/, '').replace(/\/+$/, '');
+}
+
 interface Props {
   productId: string;
   open: boolean;
@@ -30,12 +123,18 @@ export function AddRepoModal({ productId, open, onClose, onAttached }: Props) {
   const [err, setErr] = useState<string | null>(null);
   const cloneInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Direct-URL entry (Phase 8.5 — for repos the picker can't enumerate).
+  const [pasteUrl, setPasteUrl] = useState('');
+  const [pasteErr, setPasteErr] = useState<string | null>(null);
+
   // Reset on open / kind switch.
   useEffect(() => {
     if (!open) return;
     setChosen(null);
     setSearch('');
     setErr(null);
+    setPasteUrl('');
+    setPasteErr(null);
   }, [open, kind]);
 
   // Re-fetch the discoverable list when the kind tab changes.
@@ -80,6 +179,20 @@ export function AddRepoModal({ productId, open, onClose, onAttached }: Props) {
       (d) => d.displayName.toLowerCase().includes(q) || d.remoteUrl.toLowerCase().includes(q),
     );
   }, [discovered, search]);
+
+  function onUseUrl() {
+    const parsed = parseRepoUrl(pasteUrl);
+    if (!parsed.ok) {
+      setPasteErr(parsed.reason);
+      return;
+    }
+    setPasteErr(null);
+    // Switch the kind tab to match what we parsed, in case the user pasted a
+    // GitHub URL while the ADO tab was active. The tab is informational at
+    // step 2; the chosen DiscoverableRepo carries the truth.
+    if (parsed.repo.kind !== kind) setKind(parsed.repo.kind);
+    setChosen(parsed.repo);
+  }
 
   async function attach() {
     if (!chosen) return;
@@ -205,6 +318,36 @@ export function AddRepoModal({ productId, open, onClose, onAttached }: Props) {
                 </button>
               ))}
             </div>
+
+            <div style={dividerStyle} aria-hidden>
+              <span style={hairlineStyle} />
+              <span style={dividerLabel}>or paste a clone URL</span>
+              <span style={hairlineStyle} />
+            </div>
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                value={pasteUrl}
+                onChange={(e) => { setPasteUrl(e.target.value); setPasteErr(null); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onUseUrl(); } }}
+                placeholder="https://msazure.visualstudio.com/One/_git/ASZ-UpdateService"
+                spellCheck={false}
+                style={{ ...inputStyle, fontFamily: 'var(--font-mono, monospace)', fontSize: 12, flex: 1 }}
+              />
+              <button
+                className="btn btn-secondary"
+                onClick={onUseUrl}
+                disabled={!pasteUrl.trim()}
+                style={{ whiteSpace: 'nowrap' }}
+              >
+                Use URL →
+              </button>
+            </div>
+            {pasteErr && (
+              <div role="alert" style={{ ...errStyle, marginTop: 8 }}>
+                <span style={{ marginRight: 6 }}>⚠</span>{pasteErr}
+              </div>
+            )}
           </>
         )}
 
@@ -365,6 +508,32 @@ function Empty({ title, sub }: { title: string; sub?: string }) {
     </div>
   );
 }
+
+const dividerStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  margin: '0 0 10px',
+  fontSize: 11,
+  fontWeight: 600,
+  letterSpacing: 0.4,
+  textTransform: 'uppercase',
+  color: 'var(--text-tertiary)',
+};
+
+const dividerLabel: React.CSSProperties = {
+  position: 'relative',
+  whiteSpace: 'nowrap',
+};
+
+// Render two horizontal hairlines flanking the label by abusing flex auto.
+// (Pure CSS approach: the two ::before/::after pseudo-elements would be
+// cleaner, but inline styles can't do those — drawn with sibling spans below.)
+const hairlineStyle: React.CSSProperties = {
+  flex: 1,
+  height: 1,
+  background: 'var(--border)',
+};
 
 const listWrap: React.CSSProperties = {
   flex: 1,

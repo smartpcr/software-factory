@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useProductsStore } from '@/state/useProductsStore';
 import { NewProductModal } from '@/products/NewProductModal';
 import { AddRepoModal } from '@/products/AddRepoModal';
+import { ProductIcon } from '@/products/ProductIcon';
 import type { Product, Repo } from '@/types';
 
 // Phase 8.7 — products page. New first-class surface; exempt from the
@@ -121,8 +122,9 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach }: 
       className="ws-card"
       style={isActive ? { outline: '2px solid var(--accent)', borderRadius: 'var(--radius-lg)' } : undefined}
     >
-      <header className="ws-card-head">
-        <div>
+      <header className="ws-card-head" style={{ alignItems: 'center', gap: 12 }}>
+        <ProductIcon product={product} size={44} />
+        <div style={{ flex: 1, minWidth: 0 }}>
           <div className="ws-card-title">{product.name}</div>
           <div className="ws-card-sub">{product.description || `Slug: ${product.slug}`}</div>
         </div>

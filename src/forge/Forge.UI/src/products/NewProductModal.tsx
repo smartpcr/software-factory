@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
+import { ProductIcon } from '@/products/ProductIcon';
 import type { Product } from '@/types';
 
 interface Props {
@@ -102,22 +103,17 @@ export function NewProductModal({ open, onClose, onCreated }: Props) {
         onKeyDown={onKeyDownForm}
         style={{ width: 480 }}
       >
-        <div className="modal-icon" style={{
-          background: 'var(--accent-soft, var(--bg-surface-2))',
-          borderColor: 'var(--accent)',
-          color: 'var(--accent)',
-        }}>
-          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-            <rect x="2" y="2" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.4" />
-            <rect x="10" y="2" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.4" />
-            <rect x="6" y="10" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.4" />
-          </svg>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14 }}>
+          <PreviewIcon name={name} slug={slug} />
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <h3 className="modal-title" id="new-product-title" style={{ margin: 0 }}>
+              {name.trim() || 'New product'}
+            </h3>
+            <p className="modal-text" style={{ margin: '4px 0 0' }}>
+              A product groups one or more repos. Forge scopes every view to the active product.
+            </p>
+          </div>
         </div>
-        <h3 className="modal-title" id="new-product-title">New product</h3>
-        <p className="modal-text">
-          A product groups one or more repos. Forge scopes every view (Plan, Timeline,
-          Workstreams, PRs) to the active product.
-        </p>
 
         <div style={{ display: 'grid', gap: 12, marginBottom: 18 }}>
           <FieldGroup label="Name" hint="Display name shown in the TopBar switcher.">
@@ -197,6 +193,21 @@ export function NewProductModal({ open, onClose, onCreated }: Props) {
       </div>
     </>
   );
+}
+
+function PreviewIcon({ name, slug }: { name: string; slug: string }) {
+  // Live preview of the auto-generated icon. Falls back to a placeholder
+  // until the user types something so the modal doesn't render an empty
+  // monogram on first open.
+  const product = useMemo(
+    () => ({
+      id: slug || 'new-product',
+      slug: slug || 'new-product',
+      name: name.trim() || 'New Product',
+    }),
+    [name, slug],
+  );
+  return <ProductIcon product={product} size={48} />;
 }
 
 function FieldGroup({

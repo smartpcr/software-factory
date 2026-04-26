@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Endpoints;
 
+using Forge.Api.Auth;
 using Forge.Api.Providers;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -23,7 +24,37 @@ public static class ProvidersEndpoints
         grp.MapGet("/", List).WithName("ListProviders");
         grp.MapGet("/{kind}/test", Test).WithName("TestProvider");
         grp.MapGet("/{kind}/repos", ListRepos).WithName("ListProviderRepos");
+        grp.MapPost("/{kind}/sync", SyncNow).WithName("SyncProviderNow");
         return app;
+    }
+
+    // POST /api/providers/{kind}/sync — manual trigger for a full upsert run.
+    // Mirrors what `ProviderSyncService` does on the 60s background poll, but
+    // bypasses the polling cadence so the operator can pull on demand.
+    private static async Task<IResult> SyncNow(
+        HttpContext ctx,
+        string kind,
+        [FromServices] IEnumerable<IForgeProvider> providers,
+        [FromServices] ProviderSyncService sync,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var p = providers.FirstOrDefault(x => x.Kind == kind);
+        if (p is null) return Results.Problem(title: $"Unknown provider {kind}", statusCode: 404);
+        if (!p.IsConfigured)
+        {
+            return Results.Problem(
+                title: $"Provider {kind} is not configured",
+                detail: $"Set Forge:{(kind == "ado" ? "Ado" : "GitHub")}:* secrets and try again.",
+                statusCode: 400);
+        }
+
+        await sync.RunOneAsync(p, ct);
+        // Return the freshly-updated health snapshot so the UI can render
+        // last-sync / error-count / rate-limit without a second round-trip.
+        return Results.Ok(await p.TestConnectionAsync(ct));
     }
 
     // GET /api/providers/{kind}/repos — Phase 8.5 server-driven add-repo picker.

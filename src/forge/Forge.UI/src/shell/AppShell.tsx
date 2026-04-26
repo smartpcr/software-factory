@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { TopBar } from './TopBar';
 import { SideBar } from './SideBar';
@@ -6,6 +6,8 @@ import { CommandPalette } from './CommandPalette';
 import { KeyboardMap } from './KeyboardMap';
 import { ErrorBoundary } from './ErrorBoundary';
 import { useSidebarStore } from '@/state/useSidebarStore';
+import { useProductsStore } from '@/state/useProductsStore';
+import { useProductFavicon } from '@/products/useProductFavicon';
 import { logView } from '@/telemetry';
 
 // Maps each route to the breadcrumb labels the prototype shows in the topbar.
@@ -22,6 +24,15 @@ export function AppShell() {
   const collapsed = useSidebarStore((s) => s.collapsed);
   const { pathname } = useLocation();
   const crumbs = breadcrumbs[pathname] ?? { section: 'Forge', current: '' };
+
+  // Phase 8 — drive the favicon + window title from the active product.
+  const products = useProductsStore((s) => s.products);
+  const activeProductId = useProductsStore((s) => s.activeProductId);
+  const activeProduct = useMemo(
+    () => products.find((p) => p.id === activeProductId) ?? products[0] ?? null,
+    [products, activeProductId],
+  );
+  useProductFavicon(activeProduct);
 
   useEffect(() => { logView(pathname); }, [pathname]);
 

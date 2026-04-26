@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useThemeStore } from '@/state/useThemeStore';
 import { useProductsStore } from '@/state/useProductsStore';
+import { ProductIcon } from '@/products/ProductIcon';
 
 interface TopBarProps {
   section: string;
@@ -36,25 +37,31 @@ export function TopBar({ section, current }: TopBarProps) {
           <span id="bc-section">{section}</span>
           <span className="sep">/</span>
           {products.length > 0 ? (
-            <select
-              className="topbar-product-switch current"
-              id="bc-current"
-              value={activeProductId ?? products[0]?.id ?? ''}
-              onChange={(e) => setActive(e.target.value)}
-              title="Active product — every view is scoped to this"
-              style={{
-                background: 'transparent',
-                color: 'inherit',
-                border: 'none',
-                font: 'inherit',
-                cursor: 'pointer',
-                padding: 0,
-              }}
-            >
-              {products.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              {(() => {
+                const active = products.find((p) => p.id === activeProductId) ?? products[0];
+                return active ? <ProductIcon product={active} size={20} /> : null;
+              })()}
+              <select
+                className="topbar-product-switch current"
+                id="bc-current"
+                value={activeProductId ?? products[0]?.id ?? ''}
+                onChange={(e) => setActive(e.target.value)}
+                title="Active product — every view is scoped to this"
+                style={{
+                  background: 'transparent',
+                  color: 'inherit',
+                  border: 'none',
+                  font: 'inherit',
+                  cursor: 'pointer',
+                  padding: 0,
+                }}
+              >
+                {products.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </span>
           ) : (
             <span className="current" id="bc-current">{current}</span>
           )}

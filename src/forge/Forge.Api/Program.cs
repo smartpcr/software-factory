@@ -93,6 +93,9 @@ builder.Services.AddScoped<IUserContext, HttpUserContext>();
 // Phase 7.6 — pluggable auth (default = single-user with optional shared secret).
 builder.Services.Configure<ForgeAuthOptions>(builder.Configuration.GetSection(ForgeAuthOptions.SectionName));
 
+// Phase 9 — interactive MSAL sign-in for ADO (WAM-first, DPAPI token cache).
+builder.Services.AddSingleton<IAuthService, AdoAuthService>();
+
 // Problem details (RFC-7807).
 builder.Services.AddProblemDetails();
 
@@ -141,6 +144,7 @@ app.MapWebhooksEndpoints();
 app.MapAuditEndpoints();
 app.MapHumanGateEndpoints();
 app.MapProductsEndpoints();
+app.MapAuthEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 

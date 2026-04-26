@@ -22,6 +22,16 @@ export interface ProviderHealth {
   rateLimitLimit: number | null;
 }
 
+/** Phase 9 — interactive sign-in state for a provider. */
+export interface AuthStatus {
+  kind: string;
+  connected: boolean;
+  account: string | null;
+  userName: string | null;
+  expiresAt: string | null;
+  error: string | null;
+}
+
 export interface AuditEntry {
   id: number;
   at: string;
@@ -347,6 +357,37 @@ export const forgeApi = {
   /** GET /api/providers/{kind}/test — live probe. */
   async testProvider(kind: string): Promise<ProviderHealth> {
     return fetchJson<ProviderHealth>(`/api/providers/${encodeURIComponent(kind)}/test`);
+  },
+
+  /** POST /api/providers/{kind}/sync — manual upsert run. Returns refreshed health. */
+  async syncProviderNow(kind: string): Promise<ProviderHealth> {
+    return fetchJson<ProviderHealth>(`/api/providers/${encodeURIComponent(kind)}/sync`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  // -- Phase 9 — interactive sign-in --------------------------------------
+
+  /** GET /api/auth/{kind}/status. */
+  async authStatus(kind: 'ado' | 'github'): Promise<AuthStatus> {
+    return fetchJson<AuthStatus>(`/api/auth/${kind}/status`);
+  },
+
+  /** POST /api/auth/{kind}/sign-in — opens WAM/browser popup, blocks until done. */
+  async signIn(kind: 'ado' | 'github'): Promise<AuthStatus> {
+    return fetchJson<AuthStatus>(`/api/auth/${kind}/sign-in`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/auth/{kind}/sign-out — drops the cached account. */
+  async signOut(kind: 'ado' | 'github'): Promise<void> {
+    await fetchJson<void>(`/api/auth/${kind}/sign-out`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
   },
 
   // ----- Phase 8 — products & repos --------------------------------------
