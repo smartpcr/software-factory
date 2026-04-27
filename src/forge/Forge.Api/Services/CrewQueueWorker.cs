@@ -220,6 +220,12 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 var evalCrewJson = evaluatorCrew is not null ? $"\"{evaluatorCrew.Id}\"" : "null";
                 wi.AssignedToJson =
                     $"{{\"crewId\":\"{crewId}\",\"agentId\":\"{picked}\",\"generatorAgentId\":\"{picked}\",\"evaluatorAgentId\":{evalAgentJson},\"evaluatorCrewId\":{evalCrewJson},\"by\":\"queue-worker\"}}";
+
+                // Auto-link work item to a workstream so the Workstreams view
+                // shows the "● N live" badge. Find a workstream for this repo
+                // whose cards don't already include this work item.
+                await this.AutoLinkToWorkstreamAsync(db, wi, ct);
+
                 await db.SaveChangesAsync(ct);
             }
             DwellMs.Record((DateTimeOffset.UtcNow - row.EnqueuedAt).TotalMilliseconds);
@@ -437,6 +443,52 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         catch (Exception ex)
         {
             this.logger.LogDebug(ex, "Failed to complete queue row for {Wi}", workItemId);
+        }
+    }
+
+    /// <summary>
+    /// Auto-link a work item to an active workstream that shares the same repo.
+    /// If the work item is already in a workstream's cards, this is a no-op.
+    /// </summary>
+    private async Task AutoLinkToWorkstreamAsync(ForgeDbContext db, WorkItemRow wi, CancellationToken ct)
+    {
+        try
+        {
+            // Check if any workstream already lists this work item.
+            var allWs = await db.Workstreams.ToListAsync(ct);
+            foreach (var ws in allWs)
+            {
+                var cards = System.Text.Json.JsonSerializer.Deserialize<List<string>>(ws.CardsJson) ?? new();
+                if (cards.Contains(wi.Id)) return; // already linked
+            }
+
+            // Find a workstream for the same repo (prefer active ones).
+            WorkstreamRow? target = null;
+            if (!string.IsNullOrEmpty(wi.RepoId))
+            {
+                target = allWs
+                    .Where(ws => ws.RepoId == wi.RepoId && ws.Status == "active")
+                    .OrderByDescending(ws => ws.LastActive)
+                    .FirstOrDefault();
+            }
+            // Fallback: any active workstream in the product.
+            target ??= allWs
+                .Where(ws => ws.Status == "active")
+                .OrderByDescending(ws => ws.LastActive)
+                .FirstOrDefault();
+
+            if (target is null) return;
+
+            // Add the work item ID to the workstream's cards.
+            var tracked = await db.Workstreams.FirstOrDefaultAsync(ws => ws.Id == target.Id, ct);
+            if (tracked is null) return;
+            var existingCards = System.Text.Json.JsonSerializer.Deserialize<List<string>>(tracked.CardsJson) ?? new();
+            existingCards.Add(wi.Id);
+            tracked.CardsJson = System.Text.Json.JsonSerializer.Serialize(existingCards);
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogDebug(ex, "Auto-link to workstream failed for {Wi}", wi.Id);
         }
     }
 
