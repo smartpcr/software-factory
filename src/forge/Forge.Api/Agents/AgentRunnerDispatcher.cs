@@ -422,11 +422,27 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             yield break;
         }
 
+        // Pin the child to a Windows JobObject so that if Forge.Api dies
+        // unclean (crash, taskkill /F) the OS reaps this process tree too.
+        // The explicit Kill calls below remain the primary cleanup path; the
+        // job is a backstop for the case where neither the ct.Register nor
+        // the finally runs.
+        ChildProcessTracker.AddProcess(process);
+
+        // Hard wall-clock timeout. The SDK path already enforces this; CLI
+        // mode used to run unbounded, which is what let hung copilot.exe
+        // sessions sit until manually killed and accumulate as orphans.
+        var budget = this.options.Value.WallClockBudget;
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (budget > TimeSpan.Zero) timeoutCts.CancelAfter(budget);
+        var effectiveCt = timeoutCts.Token;
+        var timedOut = false;
+
         var output = new StringBuilder();
         Task<string>? stderrTask = null;
         try
         {
-            using var ctReg = ct.Register(() =>
+            using var ctReg = effectiveCt.Register(() =>
             {
                 try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
                 catch { /* already exited */ }
@@ -435,11 +451,21 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             await process.StandardInput.WriteAsync(stdinPrompt);
             process.StandardInput.Close();
 
-            stderrTask = process.StandardError.ReadToEndAsync(ct);
+            stderrTask = process.StandardError.ReadToEndAsync(effectiveCt);
 
-            string? line;
-            while ((line = await process.StandardOutput.ReadLineAsync(ct)) is not null)
+            while (true)
             {
+                string? line;
+                try
+                {
+                    line = await process.StandardOutput.ReadLineAsync(effectiveCt);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested && timeoutCts.IsCancellationRequested)
+                {
+                    timedOut = true;
+                    break;
+                }
+                if (line is null) break;
                 output.AppendLine(line);
                 if (line.Length > 0)
                 {
@@ -447,7 +473,17 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                 }
             }
 
-            await process.WaitForExitAsync(ct);
+            if (!timedOut)
+            {
+                try
+                {
+                    await process.WaitForExitAsync(effectiveCt);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested && timeoutCts.IsCancellationRequested)
+                {
+                    timedOut = true;
+                }
+            }
         }
         finally
         {
@@ -455,9 +491,20 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             catch { /* best-effort cleanup */ }
         }
 
-        var stderr = stderrTask is null ? string.Empty : await stderrTask;
-        var exitCode = process.ExitCode;
+        string stderr;
+        try { stderr = stderrTask is null ? string.Empty : await stderrTask; }
+        catch (OperationCanceledException) { stderr = string.Empty; }
+        var exitCode = process.HasExited ? process.ExitCode : -1;
         process.Dispose();
+
+        if (timedOut)
+        {
+            yield return new AgentEvent(
+                AgentEventKind.Failed,
+                DateTimeOffset.UtcNow,
+                Error: $"{Path.GetFileName(psi.FileName)} hard timeout: exceeded {budget.TotalMinutes:0}m budget");
+            yield break;
+        }
 
         if (exitCode != 0)
         {

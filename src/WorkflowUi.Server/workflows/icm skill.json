@@ -249,7 +249,8 @@
         "confidence": 70,
         "maxTokens": 32000,
         "timeoutMinutes": 20,
-        "workingDirectory": "global.incidentFolder"
+        "workingDirectory": "global.incidentFolder",
+        "maxTurns": 60
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -336,7 +337,8 @@
         "workingDirectory": "global.incidentFolder",
         "timeoutMinutes": 20,
         "timeoutRetries": 0,
-        "continueOnTimeoutExhausted": true
+        "continueOnTimeoutExhausted": true,
+        "maxTurns": 60
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -459,7 +461,8 @@
         "timeoutMinutes": 15,
         "timeoutRetries": 2,
         "continueOnTimeoutExhausted": true,
-        "workingDirectory": "global.incidentFolder"
+        "workingDirectory": "global.incidentFolder",
+        "maxTurns": 80
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -514,7 +517,8 @@
         "timeoutMinutes": 15,
         "workingDirectory": "global.incidentFolder",
         "continueOnTimeoutExhausted": true,
-        "timeoutRetries": 2
+        "timeoutRetries": 2,
+        "maxTurns": 60
       },
       "joinType": "Any",
       "priority": "Normal",

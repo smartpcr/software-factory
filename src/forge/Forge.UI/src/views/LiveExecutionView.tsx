@@ -32,6 +32,21 @@ export function LiveExecutionView(): JSX.Element {
   const [busy, setBusy]     = useState(false);
   const navigate = useNavigate();
 
+  const [copied, setCopied] = useState(false);
+
+  function copyLogs() {
+    const lines = filtered.map((evt) => {
+      const time = new Date(evt.at).toLocaleTimeString();
+      const kind = evt.kind.replace('task.', '');
+      const text = renderPayload(evt);
+      return `${time}  ${kind}  ${text}`;
+    });
+    void navigator.clipboard.writeText(lines.join('\n')).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
   if (!workItemId) {
     return <div className="live-exec__empty">Pick a work item to watch.</div>;
   }
@@ -195,8 +210,17 @@ export function LiveExecutionView(): JSX.Element {
               {f.label}
             </button>
           ))}
+          <button
+            type="button"
+            className="live-exec__copy-btn"
+            onClick={copyLogs}
+            disabled={filtered.length === 0}
+            title="Copy visible logs to clipboard"
+          >
+            {copied ? '✓ Copied' : '⎘ Copy logs'}
+          </button>
         </nav>
-        <div className="live-exec__transcript">
+        <div className="live-exec__transcript" style={{ userSelect: 'text' }}>
           {filtered.length === 0 ? (
             <div className="live-exec__empty">
               {entry?.loading ? 'Loading…' : 'No events yet.'}

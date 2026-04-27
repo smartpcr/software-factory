@@ -429,6 +429,10 @@ function renderAI(ctx: InspectorContext): NodeInspectorResult {
         <label class="ins-field-label">Timeout</label>
         <input type="number" step="1" min="1" max="60" value="${c.timeoutMinutes || 5}" data-config-key="timeoutMinutes" data-node-id="${id}" style="width:100%" title="Minutes per attempt" />
       </div>
+      <div style="flex:0 0 70px">
+        <label class="ins-field-label">Max turns</label>
+        <input type="number" step="5" min="0" max="200" value="${c.maxTurns ?? ''}" data-config-key="maxTurns" data-node-id="${id}" style="width:100%" title="Max agentic turns (tool call rounds). 0 = unlimited. Blank = default (30)." />
+      </div>
     </div>
     <div class="ins-field" style="display:flex; gap:8px; align-items:center;">
       <div style="flex:0 0 90px">

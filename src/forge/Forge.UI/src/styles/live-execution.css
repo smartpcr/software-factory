@@ -139,6 +139,25 @@
   border-color: var(--border-accent);
   color: var(--accent);
 }
+.live-exec__copy-btn {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.live-exec__copy-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.live-exec__copy-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 .live-exec__transcript {
   flex: 1;
   overflow-y: auto;
@@ -148,6 +167,7 @@
   gap: 6px;
   font-size: 13px;
   line-height: 1.5;
+  user-select: text;
 }
 
 /* event line: small left rule colored by kind */
@@ -190,6 +210,8 @@
   color: var(--text-primary);
   white-space: pre-wrap;
   word-break: break-word;
+  user-select: text;
+  cursor: text;
 }
 
 /* iteration boundary band */
