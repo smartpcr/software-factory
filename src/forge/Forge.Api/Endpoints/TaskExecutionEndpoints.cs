@@ -146,6 +146,13 @@ public static class TaskExecutionEndpoints
             {
                 evaluatorCrewId = crew.PairedWithCrewId;
             }
+            // Resolve evaluator agent from the evaluator crew's lead when
+            // not yet known (pre-first-iteration or AssignedToJson cleared).
+            if (string.IsNullOrEmpty(evaluatorAgentId) && !string.IsNullOrEmpty(evaluatorCrewId))
+            {
+                var evalCrew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == evaluatorCrewId, ct);
+                evaluatorAgentId = crew?.DefaultEvaluatorAgentId ?? evalCrew?.Lead;
+            }
             if (crew is not null)
             {
                 var since = DateTimeOffset.UtcNow.AddHours(-24);
