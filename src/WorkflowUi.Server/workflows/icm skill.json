@@ -479,11 +479,10 @@
       "description": "",
       "configuration": {
         "variableMappings": {
-          "queryScore": "Math.Max({queryScore}, {maxQueryScore})",
+          "queryScore": "Math.Max(\n    int.TryParse(Convert.ToString({queryScore}), out int _q) ? _q : 0,\n    int.TryParse(\n        System.Text.RegularExpressions.Regex.Match(\n            Convert.ToString({result}),\n            @\"maxQueryScore[\\s:`]*(\\d+)\"\n        ).Groups[1].Value,\n        out int _m\n    ) ? _m : 0\n)",
           "queryLoopCount": "{queryLoopCount} + 1"
         },
         "variableOps": {
-          "maxQueryScore": "expr",
           "queryLoopCount": "expr",
           "queryScore": "expr"
         }

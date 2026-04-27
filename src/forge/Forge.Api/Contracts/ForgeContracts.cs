@@ -902,7 +902,9 @@ public sealed record WorktreeSnapshot(
 public sealed record TaskExecutionSnapshot(
     string WorkItemId,
     string? GeneratorCrewId,
+    string? GeneratorCrewName,
     string? EvaluatorCrewId,
+    string? EvaluatorCrewName,
     string? GeneratorAgentId,
     string? EvaluatorAgentId,
     int CurrentIteration,

@@ -47,6 +47,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
     private readonly IHttpClientFactory http;
     private readonly IModelRegistry models;
     private readonly IOptions<AgentRunnerOptions> options;
+    private readonly CopilotServerManager copilotServer;
     private readonly ILogger<AgentRunnerDispatcher> log;
 
     private readonly ConcurrentDictionary<string, AgentState> agentStates = new();
@@ -56,11 +57,13 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         IHttpClientFactory http,
         IModelRegistry models,
         IOptions<AgentRunnerOptions> options,
+        CopilotServerManager copilotServer,
         ILogger<AgentRunnerDispatcher> log)
     {
         this.http = http;
         this.models = models;
         this.options = options;
+        this.copilotServer = copilotServer;
         this.log = log;
     }
 
@@ -543,12 +546,19 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         int turnCount = 0;
         var maxTurns = this.options.Value.MaxTurns;
 
-        var clientOptions = new CopilotClientOptions
-        {
-            CliArgs = this.options.Value.CopilotCliExtraArgs,
-            CliPath = ResolveCli(this.options.Value.CopilotCliPath, "copilot"),
-            Cwd = string.IsNullOrEmpty(context.WorktreePath) ? null : context.WorktreePath,
-        };
+        // Hard wall-clock timeout — mirrors the CLI path (line 435-438).
+        // Without this, a hung SDK session can sit indefinitely, leaking a
+        // copilot.exe child process and blocking subsequent invocations.
+        var budget = this.options.Value.WallClockBudget;
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (budget > TimeSpan.Zero) timeoutCts.CancelAfter(budget);
+        var effectiveCt = timeoutCts.Token;
+        var timedOut = false;
+
+        // Connect to the shared Copilot server instead of spawning a new
+        // copilot.exe per invocation. The server manager handles lifecycle,
+        // health checks, and restart.
+        var clientOptions = await this.copilotServer.GetClientOptionsAsync(effectiveCt);
 
         // Stage results into a channel so the SDK's event subscription (which
         // is not async-iter-friendly) feeds an IAsyncEnumerable cleanly.
@@ -560,12 +570,15 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         CopilotClient? client = null;
         try
         {
-            client = new CopilotClient(clientOptions);
             var sessionConfig = new SessionConfig
             {
                 Model = context.Model,
                 OnPermissionRequest = PermissionHandler.ApproveAll,
             };
+            if (!string.IsNullOrEmpty(context.WorktreePath))
+            {
+                sessionConfig.WorkingDirectory = context.WorktreePath;
+            }
             if (!string.IsNullOrEmpty(context.SoulMd))
             {
                 sessionConfig.SystemMessage = new SystemMessageConfig
@@ -575,9 +588,28 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                 };
             }
 
-            session = await client.CreateSessionAsync(sessionConfig, ct);
+            // Retry once on connection/launch failures. With the shared server
+            // this mainly covers transient connection errors or server restarts.
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                try
+                {
+                    client = new CopilotClient(clientOptions);
+                    session = await client.CreateSessionAsync(sessionConfig, effectiveCt);
+                    break;
+                }
+                catch (Exception ex) when (attempt == 0 && IsProcessLaunchError(ex))
+                {
+                    this.log.LogWarning(ex,
+                        "Copilot SDK connection failed (attempt 1), retrying after delay");
+                    try { if (client is not null) await client.DisposeAsync(); } catch { }
+                    client = null;
+                    session = null;
+                    await Task.Delay(2000, effectiveCt);
+                }
+            }
 
-            subscription = session.On(evt =>
+            subscription = session!.On(evt =>
             {
                 try
                 {
@@ -630,8 +662,9 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                             done.TrySetResult();
                             break;
 
-                        case SessionErrorEvent:
-                            failReason = "Copilot session error";
+                        case SessionErrorEvent err:
+                            failReason = $"Copilot session error: {err.Data?.Message ?? "(no details)"}";
+                            this.log.LogWarning("Copilot SDK SessionErrorEvent: {Msg}", err.Data?.Message);
                             done.TrySetResult();
                             break;
                     }
@@ -642,29 +675,33 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                 }
             });
 
-            await session.SendAsync(new MessageOptions { Prompt = prompt }, ct);
+            await session.SendAsync(new MessageOptions { Prompt = prompt }, effectiveCt);
 
             // Drain the channel while the session pumps events. Exit when the
-            // SDK signals idle/error OR cancellation fires.
-            var hardDeadline = DateTime.UtcNow + this.options.Value.WallClockBudget;
+            // SDK signals idle/error, cancellation fires, or the wall-clock
+            // budget expires (effectiveCt incorporates CancelAfter).
             _ = Task.Run(async () =>
             {
-                try { await done.Task.WaitAsync(ct); }
+                try { await done.Task.WaitAsync(effectiveCt); }
                 catch { /* fall through to completer */ }
                 queue.Writer.TryComplete();
-            }, ct);
+            }, CancellationToken.None);
 
-            while (await queue.Reader.WaitToReadAsync(ct))
+            while (true)
             {
+                try
+                {
+                    if (!await queue.Reader.WaitToReadAsync(effectiveCt)) break;
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested && timeoutCts.IsCancellationRequested)
+                {
+                    timedOut = true;
+                    break;
+                }
+
                 while (queue.Reader.TryRead(out var ev))
                 {
                     yield return ev;
-                }
-                if (DateTime.UtcNow >= hardDeadline)
-                {
-                    failReason ??= $"Hard timeout: exceeded {this.options.Value.WallClockBudget.TotalMinutes:0}m budget";
-                    queue.Writer.TryComplete();
-                    break;
                 }
             }
         }
@@ -679,6 +716,15 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             {
                 try { await client.DisposeAsync(); } catch { /* best-effort */ }
             }
+        }
+
+        if (timedOut)
+        {
+            yield return new AgentEvent(
+                AgentEventKind.Failed,
+                DateTimeOffset.UtcNow,
+                Error: $"Copilot SDK hard timeout: exceeded {budget.TotalMinutes:0}m budget");
+            yield break;
         }
 
         if (failReason is not null)
@@ -781,5 +827,33 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             "claude-haiku-4-5-20251001"  => "claude-haiku-4.5",
             _ => model,
         };
+    }
+
+    /// <summary>
+    /// Determines if an exception is a process-launch failure (Win32 / IO /
+    /// socket errors from spawning copilot.exe). These are retryable because
+    /// the underlying cause is typically transient resource contention (stale
+    /// orphan processes locking the binary handle, or socket exhaustion).
+    /// Auth, model, and protocol errors are NOT matched here and propagate.
+    /// </summary>
+    private static bool IsProcessLaunchError(Exception ex)
+    {
+        // Flatten to innermost for wrapped SDK exceptions.
+        var inner = ex;
+        while (inner.InnerException is not null) inner = inner.InnerException;
+
+        // Win32Exception from Process.Start (ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, etc.)
+        if (inner is System.ComponentModel.Win32Exception) return true;
+
+        // IOException from pipe/socket setup during child process spawn.
+        if (inner is IOException) return true;
+
+        // Message-based fallback: the .NET runtime wraps some launch failures
+        // with this specific phrasing.
+        var msg = ex.Message;
+        if (msg.Contains("start process", StringComparison.OrdinalIgnoreCase)) return true;
+        if (msg.Contains("ENOTCONN", StringComparison.OrdinalIgnoreCase)) return true;
+
+        return false;
     }
 }

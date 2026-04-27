@@ -249,6 +249,50 @@
 .live-exec__score-chip.stalled-budget { background: var(--text-tertiary); }
 .live-exec__score-chip.paused-eod { background: var(--info); }
 
+/* ── Prompt block — expandable system/user prompt ─────────────────────── */
+
+.live-exec__prompt-block {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 6px 0;
+  background: var(--bg-surface);
+}
+.live-exec__prompt-block .live-exec__line {
+  border-radius: 8px;
+}
+.live-exec__prompt-block .live-exec__line::before {
+  background: var(--info);
+}
+.live-exec__prompt-detail {
+  padding: 4px 12px 10px 28px;
+  border-top: 1px solid var(--border);
+}
+.live-exec__prompt-section {
+  margin-top: 6px;
+}
+.live-exec__prompt-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+  margin-bottom: 2px;
+}
+.live-exec__prompt-pre {
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  background: var(--bg-inset, var(--bg-canvas));
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+  color: var(--text-primary);
+  user-select: text;
+}
+
 /* ── Right rail — tabs + tab content ───────────────────────────────────── */
 
 .live-exec__rail {

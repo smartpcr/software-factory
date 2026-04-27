@@ -388,8 +388,80 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 worktreePath = Path.GetTempPath();
             }
 
-            // Subscribe the worktree feed so the Live Execution view receives
-            // file-change events while the agent is running.
+            // Worktree feed subscription and prompt emission happen AFTER the
+            // worktree is created so they reflect the final working directory.
+
+            // ── Phase 18 — full delivery pipeline ────────────────────────────
+            // 1) Create git worktree so agent doesn't commit on the base branch.
+            // 2) Run generator ↔ evaluator loop via DeliverableLoop.
+            // 3) On pass, create PR and transition work item to "resolved".
+
+            // (1) Worktree setup — create a dedicated branch + directory for
+            //     this work item. The agent's cwd becomes the NEW worktree
+            //     path, not the repo clone root (which is the main branch).
+            var worktreeService = scope.ServiceProvider.GetRequiredService<Git.IGitWorktreeService>();
+            var worktreeOptions = scope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<Git.GitWorktreeOptions>>().Value;
+            var branchName = $"ws/{workItemId}";
+            var baseBranch = "main";
+            if (!string.IsNullOrEmpty(wi?.RepoId))
+            {
+                var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+                if (!string.IsNullOrEmpty(repo?.DefaultBranch))
+                    baseBranch = repo.DefaultBranch;
+            }
+
+            // Compute a new path under WorktreeRoot for this worktree.
+            // e.g. C:\forge\atlas\wt\ws-WI-37204296
+            // When WorktreeRoot is not configured, derive it from the repo clone
+            // root so the agent always works on a branch, never on main.
+            var wtRoot = worktreeOptions.WorktreeRoot;
+            if (string.IsNullOrEmpty(wtRoot) && !string.IsNullOrEmpty(worktreePath) && worktreePath != Path.GetTempPath())
+            {
+                // Derive a 'wt' sibling directory next to the clone root.
+                var parent = Path.GetDirectoryName(worktreePath);
+                if (!string.IsNullOrEmpty(parent))
+                {
+                    wtRoot = Path.Combine(parent, "wt");
+                    Directory.CreateDirectory(wtRoot);
+                }
+            }
+
+            var sanitizedId = workItemId.Replace("/", "-").Replace("\\", "-");
+            var worktreeDir = !string.IsNullOrEmpty(wtRoot)
+                ? Path.Combine(wtRoot, $"ws-{sanitizedId}")
+                : "";
+
+            if (!string.IsNullOrEmpty(worktreeDir))
+            {
+                try
+                {
+                    var existing = await worktreeService.ListAsync(ct);
+                    var match = existing.FirstOrDefault(w => w.Branch.EndsWith(branchName));
+                    if (match is not null)
+                    {
+                        // Worktree already exists — reuse its path.
+                        worktreePath = match.Path;
+                        this.logger.LogInformation(
+                            "Reusing existing worktree: path={Path} branch={Branch}",
+                            worktreePath, branchName);
+                    }
+                    else
+                    {
+                        await worktreeService.CreateAsync(worktreeDir, branchName, baseBranch, ct);
+                        worktreePath = worktreeDir;
+                        this.logger.LogInformation(
+                            "Created worktree: path={Path} branch={Branch} base={Base}",
+                            worktreePath, branchName, baseBranch);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    this.logger.LogWarning(ex,
+                        "Worktree creation failed for wi={Wi}, continuing with existing path", workItemId);
+                }
+            }
+
+            // Subscribe the worktree feed now that the final path is known.
             if (!string.IsNullOrEmpty(worktreePath))
             {
                 this.worktreeFeed.Subscribe(workItemId, workstreamId, worktreePath);
@@ -403,9 +475,25 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 : $"Work item: {title}\n\n{desc}";
 
             this.logger.LogInformation(
-                "Starting agent invocation: wi={Wi} agent={Agent} crew={Crew} model={Model} backend={Backend} mode={Mode}",
-                workItemId, agentId, crewId, model, backend, invokeMode);
+                "Starting agent invocation: wi={Wi} agent={Agent} crew={Crew} model={Model} backend={Backend} mode={Mode} worktree={Worktree}",
+                workItemId, agentId, crewId, model, backend, invokeMode, worktreePath);
 
+            // Emit the system + user prompts so the live execution view shows
+            // what the agent is being asked to do.
+            await this.taskChannel.EmitAsync(workItemId, "task.prompt", new
+            {
+                agentId,
+                crewId,
+                systemPrompt = string.IsNullOrEmpty(soulMd) ? null : soulMd,
+                userPrompt = prompt,
+                model,
+                backend = backendStr,
+                invokeMode = invokeModeStr,
+                worktreePath,
+                branch = branchName,
+            }, crewId: crewId, ct: ct);
+
+            // Rebuild context with the (possibly updated) worktree path.
             var context = new AgentContext(
                 CrewId: crewId,
                 Model: model,
@@ -416,46 +504,218 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 Backend: backend,
                 InvokeMode: invokeMode);
 
-            var invocation = await runner.StartAsync(workItemId, agentId, prompt, context, ct);
-
-            // Consume the event stream and emit to the transcript channel.
-            // Event names are normalised to the task.* contract that the UI expects.
-            await foreach (var evt in invocation.Events.WithCancellation(ct))
+            // (2) Resolve evaluator crew + agent for the gen-eval loop.
+            CrewRow? evalCrew = null;
+            string? evaluatorAgentId = null;
+            string? evaluatorCrewId = null;
+            if (!string.IsNullOrEmpty(crew.PairedWithCrewId))
             {
-                var kind = evt.Kind switch
-                {
-                    AgentEventKind.Token => "task.token",
-                    AgentEventKind.ToolCall => "task.tool-call",
-                    AgentEventKind.ToolResult => "task.tool-result",
-                    AgentEventKind.Finished => "task.finished",
-                    AgentEventKind.Failed => "task.failed",
-                    _ => $"task.{evt.Kind.ToString().ToLowerInvariant()}",
-                };
-                await this.taskChannel.EmitAsync(workItemId, kind, new
-                {
-                    invocationId = invocation.InvocationId,
-                    agentId,
-                    crewId,
-                    text = evt.Text,
-                    toolName = evt.ToolName,
-                    toolPayload = evt.ToolPayload,
-                    error = evt.Error,
-                    inputTokens = evt.InputTokens,
-                    outputTokens = evt.OutputTokens,
-                }, crewId: crewId, ct: ct);
+                evalCrew = await db.Crews.AsNoTracking()
+                    .FirstOrDefaultAsync(c => c.Id == crew.PairedWithCrewId, ct);
+                evaluatorCrewId = evalCrew?.Id;
+                evaluatorAgentId = crew.DefaultEvaluatorAgentId ?? evalCrew?.Lead;
             }
 
+            // (3) Run the deliverable loop (generator ↔ evaluator iterations).
+            var loop = scope.ServiceProvider.GetRequiredService<IDeliverableLoop>();
+
+            // Generator delegate: invokes the agent runner and collects output.
+            async Task<GeneratorRunOutput> GeneratorDelegate(int iter, string evalNotes, CancellationToken iterCt)
+            {
+                var iterPrompt = iter == 1
+                    ? prompt
+                    : $"{prompt}\n\n---\n\nEvaluator feedback from iteration {iter - 1}:\n{evalNotes}";
+
+                var invocation = await runner.StartAsync(workItemId, agentId, iterPrompt, context, iterCt);
+                var output = new System.Text.StringBuilder();
+                decimal cost = 0m;
+
+                await foreach (var evt in invocation.Events.WithCancellation(iterCt))
+                {
+                    var kind = evt.Kind switch
+                    {
+                        AgentEventKind.Token => "task.token",
+                        AgentEventKind.ToolCall => "task.tool-call",
+                        AgentEventKind.ToolResult => "task.tool-result",
+                        AgentEventKind.Finished => "task.finished",
+                        AgentEventKind.Failed => "task.failed",
+                        _ => $"task.{evt.Kind.ToString().ToLowerInvariant()}",
+                    };
+                    await this.taskChannel.EmitAsync(workItemId, kind, new
+                    {
+                        invocationId = invocation.InvocationId,
+                        agentId,
+                        crewId,
+                        text = evt.Text,
+                        toolName = evt.ToolName,
+                        toolPayload = evt.ToolPayload,
+                        error = evt.Error,
+                        inputTokens = evt.InputTokens,
+                        outputTokens = evt.OutputTokens,
+                    }, crewId: crewId, ct: iterCt);
+
+                    if (!string.IsNullOrEmpty(evt.Text)) output.Append(evt.Text);
+                    if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;
+                }
+
+                return new GeneratorRunOutput(output.ToString(), cost);
+            }
+
+            // Evaluator delegate: invokes the evaluator agent for critical review.
+            async Task<EvaluatorRunOutput> EvaluatorDelegate(int iter, string genOutput, CancellationToken iterCt)
+            {
+                if (string.IsNullOrEmpty(evaluatorAgentId) || evalCrew is null)
+                {
+                    // No evaluator configured — auto-pass with perfect score.
+                    return new EvaluatorRunOutput(
+                        "{\"score\": 95, \"verdict\": \"pass\", \"notes\": \"No evaluator configured; auto-pass.\"}",
+                        0m);
+                }
+
+                var evalAgent = await db.Agents.AsNoTracking()
+                    .FirstOrDefaultAsync(a => a.Id == evaluatorAgentId, iterCt);
+                var evalModel = !string.IsNullOrEmpty(evalAgent?.EvaluatorModel)
+                    ? evalAgent!.EvaluatorModel
+                    : evalCrew.Model;
+                var evalSoul = "";
+                if (!string.IsNullOrEmpty(evalAgent?.SoulPath))
+                {
+                    try { evalSoul = await File.ReadAllTextAsync(evalAgent.SoulPath, iterCt); }
+                    catch { /* best effort */ }
+                }
+
+                var evalBackendStr = !string.IsNullOrEmpty(evalAgent?.Backend) ? evalAgent!.Backend : evalCrew.Backend;
+                var evalBackend = string.Equals(evalBackendStr, "claude", StringComparison.OrdinalIgnoreCase)
+                    ? AgentBackend.Claude : AgentBackend.Copilot;
+
+                var evalContext = new AgentContext(
+                    CrewId: evaluatorCrewId!,
+                    Model: evalModel,
+                    SoulMd: evalSoul,
+                    WorktreePath: worktreePath,
+                    AllowedTools: Array.Empty<string>(),
+                    MaxTaskBudgetUsd: evalCrew.MaxTaskBudgetUsd,
+                    Backend: evalBackend,
+                    InvokeMode: AgentInvokeMode.Sdk);
+
+                var evalPrompt = $"You are a critical code reviewer. Review the following work output from iteration {iter}.\n\n"
+                    + $"Provide a JSON response with: score (0-100), verdict (pass/iterate/reject), and notes.\n"
+                    + $"Score >= 90 means pass. Score 70-89 means iterate with feedback. Score < 70 means reject.\n\n"
+                    + $"Work output:\n{genOutput.Substring(0, Math.Min(genOutput.Length, 50000))}";
+
+                var invocation = await runner.StartAsync(workItemId, evaluatorAgentId, evalPrompt, evalContext, iterCt);
+                var evalOutput = new System.Text.StringBuilder();
+                decimal evalCost = 0m;
+
+                await foreach (var evt in invocation.Events.WithCancellation(iterCt))
+                {
+                    var kind = evt.Kind switch
+                    {
+                        AgentEventKind.Token => "task.token",
+                        AgentEventKind.ToolCall => "task.tool-call",
+                        AgentEventKind.ToolResult => "task.tool-result",
+                        AgentEventKind.Finished => "task.finished",
+                        AgentEventKind.Failed => "task.failed",
+                        _ => $"task.{evt.Kind.ToString().ToLowerInvariant()}",
+                    };
+                    await this.taskChannel.EmitAsync(workItemId, kind, new
+                    {
+                        invocationId = invocation.InvocationId,
+                        agentId = evaluatorAgentId,
+                        crewId = evaluatorCrewId,
+                        text = evt.Text,
+                        toolName = evt.ToolName,
+                        toolPayload = evt.ToolPayload,
+                        error = evt.Error,
+                        inputTokens = evt.InputTokens,
+                        outputTokens = evt.OutputTokens,
+                    }, crewId: evaluatorCrewId!, ct: iterCt);
+
+                    if (!string.IsNullOrEmpty(evt.Text)) evalOutput.Append(evt.Text);
+                    if (evt.CostUsd.HasValue) evalCost += evt.CostUsd.Value;
+                }
+
+                return new EvaluatorRunOutput(evalOutput.ToString(), evalCost);
+            }
+
+            var loopRequest = new DeliverableLoopRequest(
+                WorkItemId: workItemId,
+                CrewId: crewId,
+                GeneratorAgentId: agentId,
+                EvaluatorAgentId: evaluatorAgentId ?? agentId,
+                Generator: GeneratorDelegate,
+                Evaluator: EvaluatorDelegate,
+                MaxTaskBudgetUsd: crew.MaxTaskBudgetUsd,
+                EvaluatorCrewId: evaluatorCrewId);
+
+            var result = await loop.RunAsync(loopRequest, ct);
+
             this.logger.LogInformation(
-                "Agent invocation completed: wi={Wi} agent={Agent} crew={Crew} invocation={Inv}",
-                workItemId, agentId, crewId, invocation.InvocationId);
+                "Deliverable loop completed: wi={Wi} verdict={Verdict} score={Score} iters={Iters} cost={Cost}",
+                workItemId, result.FinalVerdict, result.FinalScore, result.Iterations, result.TotalCostUsd);
+
+            // (4) On pass, create PR from worktree branch → base.
+            if (result.FinalVerdict == "pass")
+            {
+                try
+                {
+                    var provider = scope.ServiceProvider.GetRequiredService<Forge.Api.Providers.IForgeProvider>();
+
+                    var prTitle = wi?.Title ?? workItemId;
+                    var prBody = $"Auto-generated by Forge agent {agentId} (crew {crewId}).\n\n"
+                        + $"**Score:** {result.FinalScore} | **Iterations:** {result.Iterations} | **Cost:** ${result.TotalCostUsd:F2}";
+
+                    var pr = await provider.CreatePullRequestAsync(
+                        new Forge.Api.Providers.NewPullRequestRequest(branchName, baseBranch, prTitle, prBody),
+                        Forge.Api.Providers.ProviderCallContext.Anonymous, ct);
+
+                    await this.taskChannel.EmitAsync(workItemId, "task.pr-opened", new
+                    {
+                        prId = pr.Id,
+                        prTitle = pr.Title,
+                        branch = branchName,
+                        baseBranch,
+                    }, crewId: crewId, ct: ct);
+
+                    this.logger.LogInformation(
+                        "PR created: wi={Wi} pr={Pr} branch={Branch}", workItemId, pr.Id, branchName);
+                }
+                catch (Exception ex)
+                {
+                    this.logger.LogWarning(ex, "PR creation failed for wi={Wi}", workItemId);
+                    await this.taskChannel.EmitAsync(workItemId, "task.pr-failed", new
+                    {
+                        error = ex.Message,
+                        branch = branchName,
+                    }, crewId: crewId, ct: ct);
+                }
+
+                // (5) Transition work item to "resolved".
+                try
+                {
+                    var wiRow = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+                    if (wiRow is not null)
+                    {
+                        wiRow.State = "resolved";
+                        wiRow.UpdatedAt = DateTimeOffset.UtcNow;
+                        await db.SaveChangesAsync(ct);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    this.logger.LogDebug(ex, "Work item state transition failed for wi={Wi}", workItemId);
+                }
+            }
 
             // Transition queue row: picked-up → completed.
             await this.CompleteQueueRowAsync(workItemId, ct);
             await this.taskChannel.EmitAsync(workItemId, "task.completed", new
             {
-                invocationId = invocation.InvocationId,
                 agentId,
                 crewId,
+                verdict = result.FinalVerdict,
+                score = result.FinalScore,
+                iterations = result.Iterations,
             }, crewId: crewId, ct: ct);
         }
         catch (OperationCanceledException) { /* shutdown */ }
@@ -507,8 +767,18 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     }
 
     /// <summary>
-    /// Auto-link a work item to an active workstream that shares the same repo.
-    /// If the work item is already in a workstream's cards, this is a no-op.
+    /// Auto-link a work item to an active workstream that shares the same repo,
+    /// falling back to any active workstream in the same product. The fallback
+    /// MUST stay inside the work item's product — without that fence, picked
+    /// items from product A leak into a workstream owned by product B and
+    /// vanish from A's Workstreams view (observed: asz-updateservice items
+    /// dumped into atlas-platform's ws-retry-jitter).
+    /// If no in-product target exists we mint a new active workstream for the
+    /// work item's repo so the live pick is immediately visible in the
+    /// Workstreams view of its own product.
+    /// If the work item has no RepoId (or its repo is unknown) we can't
+    /// determine the product and skip — auto-creating a "homeless" workstream
+    /// would be worse than the empty view.
     /// </summary>
     private async Task AutoLinkToWorkstreamAsync(ForgeDbContext db, WorkItemRow wi, CancellationToken ct)
     {
@@ -522,34 +792,116 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 if (cards.Contains(wi.Id)) return; // already linked
             }
 
-            // Find a workstream for the same repo (prefer active ones).
-            WorkstreamRow? target = null;
-            if (!string.IsNullOrEmpty(wi.RepoId))
-            {
-                target = allWs
-                    .Where(ws => ws.RepoId == wi.RepoId && ws.Status == "active")
-                    .OrderByDescending(ws => ws.LastActive)
-                    .FirstOrDefault();
-            }
-            // Fallback: any active workstream in the product.
+            if (string.IsNullOrEmpty(wi.RepoId)) return;
+
+            var wiRepo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+            if (wiRepo is null || string.IsNullOrEmpty(wiRepo.ProductId)) return;
+
+            var sameProductRepoIds = await db.Repos.AsNoTracking()
+                .Where(r => r.ProductId == wiRepo.ProductId)
+                .Select(r => r.Id)
+                .ToListAsync(ct);
+            var productRepoSet = new HashSet<string>(sameProductRepoIds, StringComparer.Ordinal);
+
+            // Prefer an active workstream on the same repo, then any active
+            // workstream in the same product. Cross-product targets are off limits.
+            var target = allWs
+                .Where(ws => ws.RepoId == wi.RepoId && ws.Status == "active")
+                .OrderByDescending(ws => ws.LastActive)
+                .FirstOrDefault();
             target ??= allWs
-                .Where(ws => ws.Status == "active")
+                .Where(ws => ws.Status == "active" && ws.RepoId != null && productRepoSet.Contains(ws.RepoId))
                 .OrderByDescending(ws => ws.LastActive)
                 .FirstOrDefault();
 
-            if (target is null) return;
+            if (target is null)
+            {
+                target = await CreateAutoWorkstreamAsync(db, wi, wiRepo, allWs, ct);
+                if (target is null) return;
+                allWs.Add(target);
+            }
 
-            // Add the work item ID to the workstream's cards.
-            var tracked = await db.Workstreams.FirstOrDefaultAsync(ws => ws.Id == target.Id, ct);
-            if (tracked is null) return;
-            var existingCards = System.Text.Json.JsonSerializer.Deserialize<List<string>>(tracked.CardsJson) ?? new();
-            existingCards.Add(wi.Id);
-            tracked.CardsJson = System.Text.Json.JsonSerializer.Serialize(existingCards);
+            // `target` came either from db.Workstreams.ToListAsync (already
+            // tracked) or from CreateAutoWorkstreamAsync via db.Add (also
+            // tracked). Mutate it directly — re-querying via FirstOrDefault
+            // would miss the newly-added, not-yet-saved row.
+            var existingCards = System.Text.Json.JsonSerializer.Deserialize<List<string>>(target.CardsJson) ?? new();
+            if (!existingCards.Contains(wi.Id))
+            {
+                existingCards.Add(wi.Id);
+                target.CardsJson = System.Text.Json.JsonSerializer.Serialize(existingCards);
+            }
         }
         catch (Exception ex)
         {
             this.logger.LogDebug(ex, "Auto-link to workstream failed for {Wi}", wi.Id);
         }
+    }
+
+    /// <summary>
+    /// Mint a new active workstream for the work item's repo when no in-product
+    /// target exists. Emits <c>workstream.changed</c> so the UI picks it up
+    /// without waiting for the 15s poll. Returns the persisted row, or null on
+    /// failure (id collision after retry, save error, etc.).
+    /// </summary>
+    private async Task<WorkstreamRow?> CreateAutoWorkstreamAsync(
+        ForgeDbContext db,
+        WorkItemRow wi,
+        RepoRow repo,
+        List<WorkstreamRow> allWs,
+        CancellationToken ct)
+    {
+        var existingIds = new HashSet<string>(allWs.Select(w => w.Id), StringComparer.OrdinalIgnoreCase);
+        var baseId = $"ws-{repo.Id}";
+        var id = baseId;
+        if (existingIds.Contains(id))
+        {
+            id = $"{baseId}-{Guid.NewGuid().ToString("N")[..6]}";
+            if (existingIds.Contains(id)) return null;
+        }
+
+        var maxSort = allWs.Count == 0 ? -1 : allWs.Max(w => w.Sort);
+        var defaultBranch = string.IsNullOrWhiteSpace(repo.DefaultBranch) ? "main" : repo.DefaultBranch;
+        var displayName = string.IsNullOrWhiteSpace(repo.DisplayName) ? repo.Id : repo.DisplayName;
+        var row = new WorkstreamRow
+        {
+            Id = id,
+            Sort = maxSort + 1,
+            RepoId = repo.Id,
+            Name = displayName,
+            Branch = defaultBranch,
+            Base = defaultBranch,
+            Epic = string.Empty,
+            Status = "active",
+            WorktreeJson = "[]",
+            Created = 0,
+            LastActive = 0,
+            AgentsJson = "[]",
+            PrsJson = "[]",
+            CardsJson = "[]",
+            Commits = 0,
+            Ahead = 0,
+            Behind = 0,
+            Conflicts = 0,
+            Summary = $"Auto-created on first pick of {wi.Id}.",
+            BarStart = 0,
+            BarEnd = 5,
+            Planned = false,
+        };
+        db.Workstreams.Add(row);
+
+        try
+        {
+            await this.hub.Clients.All.SendAsync(
+                "workstream.changed",
+                new { kind = "auto-created", workstream = new { id = row.Id, name = row.Name, repoId = row.RepoId, status = row.Status } },
+                ct);
+        }
+        catch
+        {
+            // Best-effort fan-out; the 15s UI poll will pick it up on the next refresh.
+        }
+        return row;
     }
 
     // ── Sweep 3 — strain detection ────────────────────────────────────────

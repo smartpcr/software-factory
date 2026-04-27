@@ -10,14 +10,22 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 /// <summary>
-/// Windows JobObject wrapper that pins every spawned CLI child (copilot.exe,
-/// claude.exe, gemini.exe, ...) to the Forge.Api process lifetime via
-/// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE. When Forge.Api exits — clean shutdown,
-/// crash, or `taskkill /F` — the OS reaps every process in the job. This is
-/// the only mechanism that survives an unclean dispatcher death; without it,
-/// hung agent invocations leak as orphans, eventually pinning the binary file
-/// handle and breaking subsequent Process.Start calls (observed: 22 stale
-/// copilot.exe processes after a hung exploration run).
+/// Windows JobObject wrapper that pins every descendant of Forge.Api to the
+/// Forge.Api process lifetime via JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE. When
+/// Forge.Api exits — clean shutdown, crash, or `taskkill /F` — the OS reaps
+/// every process in the job. This is the only mechanism that survives an
+/// unclean dispatcher death; without it, hung agent invocations leak as
+/// orphans, eventually pinning the binary file handle and breaking
+/// subsequent Process.Start calls (observed: 22 stale copilot.exe processes
+/// after a hung exploration run).
+/// <para>
+/// At init we assign Forge.Api itself to the job, so every child it spawns
+/// (and every grandchild) automatically inherits the job — including the
+/// copilot.exe that the in-process Copilot SDK launches internally, which
+/// our explicit AddProcess path never sees. Explicit AddProcess calls remain
+/// as a belt-and-suspenders safety net for systems where the self-assign
+/// failed (already in a non-nestable parent job, etc.).
+/// </para>
 /// </summary>
 internal static class ChildProcessTracker
 {
@@ -26,11 +34,21 @@ internal static class ChildProcessTracker
     private static bool initialized;
 
     /// <summary>
+    /// Initialise the tracker eagerly at process startup. Safe to call
+    /// multiple times — subsequent calls are no-ops. Calling this from
+    /// Program.cs before any agent runs ensures children spawned by the
+    /// Copilot SDK during its own start-up are inside the job.
+    /// </summary>
+    public static void Initialize() => EnsureJob();
+
+    /// <summary>
     /// Adds <paramref name="process"/> to the Forge.Api JobObject. No-op on
     /// non-Windows hosts and on processes that have already exited. Failure
     /// is silent — the caller's own cancellation/finally path still kills
     /// the child explicitly; the job is an additional safety net for the
-    /// case where the parent dies before that path runs.
+    /// case where the parent dies before that path runs. Usually redundant
+    /// once self-assign succeeds (the child inherits via the parent), but
+    /// kept for defence in depth.
     /// </summary>
     public static void AddProcess(Process process)
     {
@@ -60,6 +78,7 @@ internal static class ChildProcessTracker
         {
             if (initialized) return;
             initialized = true;
+            if (!OperatingSystem.IsWindows()) return;
             try
             {
                 var name = $"forge-api-children-{Environment.ProcessId}";
@@ -85,6 +104,21 @@ internal static class ChildProcessTracker
                 finally
                 {
                     Marshal.FreeHGlobal(ptr);
+                }
+
+                // Self-assign so descendants inherit. On Win8+ this works
+                // even when Forge.Api is already in a parent job (nested
+                // jobs); on older OSes or restricted parent jobs it fails
+                // with ACCESS_DENIED — silent fallback to per-child Add.
+                try
+                {
+                    using var self = Process.GetCurrentProcess();
+                    AssignProcessToJobObject(jobHandle, self.Handle);
+                }
+                catch
+                {
+                    // Already-jobbed by an ancestor with a non-nestable job.
+                    // AddProcess() still works for the children we spawn ourselves.
                 }
             }
             catch

@@ -16,6 +16,14 @@ using Microsoft.Extensions.Configuration;
 public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
 {
     private readonly string dbPath = Path.Combine(Path.GetTempPath(), $"forge-test-{Guid.NewGuid():N}.db");
+    private readonly Dictionary<string, string?> extraConfig;
+
+    public ForgeWebApplicationFactory() : this(null) { }
+
+    public ForgeWebApplicationFactory(Dictionary<string, string?>? extraConfig)
+    {
+        this.extraConfig = extraConfig ?? new();
+    }
 
     /// <inheritdoc/>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -23,7 +31,7 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
         builder.UseEnvironment("Development");
         builder.ConfigureAppConfiguration((_, config) =>
         {
-            config.AddInMemoryCollection(new Dictionary<string, string?>
+            var settings = new Dictionary<string, string?>
             {
                 ["Forge:Db:Path"] = this.dbPath,
                 // Phase 8.10 — auto-clone shells out to `git clone`, which
@@ -34,7 +42,12 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
                 // include the actual stack trace in the body.
                 ["DetailedErrors"] = "true",
                 ["Logging:LogLevel:Default"] = "Error",
-            });
+            };
+            foreach (var kv in this.extraConfig)
+            {
+                settings[kv.Key] = kv.Value;
+            }
+            config.AddInMemoryCollection(settings);
         });
     }
 

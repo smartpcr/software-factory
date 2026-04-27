@@ -138,11 +138,14 @@ public static class TaskExecutionEndpoints
         decimal? dailyBudget = null;
         decimal? spendToday = null;
         decimal? maxTaskBudget = null;
+        string? generatorCrewName = null;
+        string? evaluatorCrewName = null;
         if (!string.IsNullOrEmpty(generatorCrewId))
         {
             var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == generatorCrewId, ct);
             dailyBudget = crew?.DailyBudgetUsd;
             maxTaskBudget = crew?.MaxTaskBudgetUsd;
+            generatorCrewName = crew?.Name;
             if (string.IsNullOrEmpty(evaluatorCrewId) && !string.IsNullOrEmpty(crew?.PairedWithCrewId))
             {
                 evaluatorCrewId = crew.PairedWithCrewId;
@@ -153,6 +156,7 @@ public static class TaskExecutionEndpoints
             {
                 var evalCrew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == evaluatorCrewId, ct);
                 evaluatorAgentId = crew?.DefaultEvaluatorAgentId ?? evalCrew?.Lead;
+                evaluatorCrewName = evalCrew?.Name;
             }
             if (crew is not null)
             {
@@ -195,7 +199,9 @@ public static class TaskExecutionEndpoints
         var snap = new TaskExecutionSnapshot(
             WorkItemId: id,
             GeneratorCrewId: generatorCrewId,
+            GeneratorCrewName: generatorCrewName,
             EvaluatorCrewId: evaluatorCrewId,
+            EvaluatorCrewName: evaluatorCrewName,
             GeneratorAgentId: generatorAgentId,
             EvaluatorAgentId: evaluatorAgentId,
             CurrentIteration: currentIter,

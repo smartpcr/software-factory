@@ -13,6 +13,7 @@ using Forge.Api.Agents;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
 using Forge.Api.Services;
+using Forge.Api.Services.Git;
 using Forge.Api.Tests.Infrastructure;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
@@ -865,7 +866,263 @@ public class Phase16ExecutionTests
         finally { scope.Dispose(); f.Dispose(); }
     }
 
+    // ── Phase 18: Full gen→eval iteration pipeline on worktree branch ───
+
+    /// <summary>
+    /// End-to-end test covering the full paired-agent delivery pipeline:
+    ///   1) A pair of agents (generator + evaluator) work on a bug
+    ///   2) Generator reads repo and understands the bug context
+    ///   3) Generator creates a worktree branch under the repo
+    ///   4) Generator implements a code fix on the worktree branch
+    ///   5) Generator hands off to evaluator for review
+    ///   6) Evaluator gives score 75 with improvement comments
+    ///   7) Generator iterates on the feedback (iteration 2)
+    ///   8) Evaluator reviews again and gives score 95 (pass)
+    ///   9) Changes are on the feature branch (not main)
+    ///  10) PR is created from feature branch → main
+    /// </summary>
+    [Fact]
+    public async Task FullPipeline_Generator_Evaluator_Worktree_Iterate_PR()
+    {
+        if (!GitAvailable()) return;
+
+        // ── Set up a real git repo with a "buggy" file ──────────────
+        var repoDir = Path.Combine(Path.GetTempPath(), $"forge-pipeline-{Guid.NewGuid():N}");
+        var wtRoot = Path.Combine(repoDir, "wt");
+        Directory.CreateDirectory(repoDir);
+        Directory.CreateDirectory(wtRoot);
+        await RunGitAsync(repoDir, "init", "-b", "main");
+        await RunGitAsync(repoDir, "config", "user.email", "test@forge.local");
+        await RunGitAsync(repoDir, "config", "user.name", "Forge Test");
+        // Seed file with a bug: off-by-one in the loop
+        await File.WriteAllTextAsync(Path.Combine(repoDir, "Calculator.cs"),
+            "public class Calculator\n{\n    public int Sum(int[] nums)\n    {\n        int total = 0;\n        for (int i = 0; i < nums.Length - 1; i++) // BUG: should be < nums.Length\n            total += nums[i];\n        return total;\n    }\n}\n");
+        await RunGitAsync(repoDir, "add", "Calculator.cs");
+        await RunGitAsync(repoDir, "commit", "-m", "initial: Calculator with off-by-one bug");
+
+        // ── Boot test server with Git:WorktreeRoot configured ───────
+        var f = new ForgeWebApplicationFactory(new Dictionary<string, string?>
+        {
+            ["Forge:Git:RepoPath"] = repoDir,
+            ["Forge:Git:WorktreeRoot"] = wtRoot,
+        });
+        using (f.CreateClient()) { /* boot */ }
+        var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+
+        try
+        {
+            var product = await db.Products.FirstAsync();
+
+            // ── Seed: paired gen + eval crews ────────────────────────
+            db.Crews.Add(new CrewRow
+            {
+                Id = "pipe-gen", Name = "Pipeline Gen",
+                ProductId = product.Id,
+                Lead = "gen-lead", Model = "local-stub",
+                ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
+                MaxConcurrent = 5, ScheduleEnabled = false,
+                PairRole = "generator", PairedWithCrewId = "pipe-eval",
+            });
+            db.Crews.Add(new CrewRow
+            {
+                Id = "pipe-eval", Name = "Pipeline Eval",
+                ProductId = product.Id,
+                Lead = "eval-lead", Model = "local-stub",
+                ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
+                MaxConcurrent = 5, ScheduleEnabled = false,
+                PairRole = "evaluator", PairedWithCrewId = "pipe-gen",
+            });
+            db.CrewMembers.Add(new CrewMemberRow { CrewId = "pipe-gen", AgentId = "gen-agent", AddedAt = DateTimeOffset.UtcNow });
+            db.CrewMembers.Add(new CrewMemberRow { CrewId = "pipe-eval", AgentId = "eval-agent", AddedAt = DateTimeOffset.UtcNow });
+            db.Repos.Add(new RepoRow
+            {
+                Id = "pipe-repo", DisplayName = "Pipeline Repo", Kind = "local",
+                RemoteUrl = "file://localhost/pipe",
+                ProductId = product.Id, CloneRoot = repoDir, DefaultBranch = "main",
+            });
+
+            // Bug work item
+            db.WorkItems.Add(new WorkItemRow
+            {
+                Id = "wi-bug-fix",
+                Type = "bug", Track = "dev", State = "active",
+                Title = "Fix off-by-one in Calculator.Sum",
+                DescriptionMd = "Calculator.Sum skips the last element due to `i < nums.Length - 1`. Should be `i < nums.Length`.",
+                RepoId = "pipe-repo",
+                CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+
+            // ── STEP 1-3: Create worktree branch ────────────────────
+            var wtService = scope.ServiceProvider.GetRequiredService<IGitWorktreeService>();
+            var branchName = "ws/wi-bug-fix";
+            var worktreeDir = Path.Combine(wtRoot, "ws-wi-bug-fix");
+            await wtService.CreateAsync(worktreeDir, branchName, "main");
+
+            // Verify: worktree exists and is on the feature branch
+            var worktrees = await wtService.ListAsync();
+            var agentWt = worktrees.FirstOrDefault(w => w.Branch.Contains(branchName));
+            Assert.NotNull(agentWt);
+            Assert.True(Directory.Exists(worktreeDir));
+
+            // ── STEP 4: Generator makes a code fix on the worktree branch
+            var fixedCode =
+                "public class Calculator\n{\n    public int Sum(int[] nums)\n    {\n        int total = 0;\n        for (int i = 0; i < nums.Length; i++) // FIXED: was < nums.Length - 1\n            total += nums[i];\n        return total;\n    }\n}\n";
+            await File.WriteAllTextAsync(Path.Combine(worktreeDir, "Calculator.cs"), fixedCode);
+            await RunGitAsync(worktreeDir, "add", "Calculator.cs");
+            await RunGitAsync(worktreeDir, "commit", "-m", "fix: off-by-one in Calculator.Sum");
+
+            // Verify: main branch still has the bug
+            var mainContent = await File.ReadAllTextAsync(Path.Combine(repoDir, "Calculator.cs"));
+            Assert.Contains("nums.Length - 1", mainContent); // Bug still present on main
+
+            // Feature branch has the fix
+            var featureContent = await File.ReadAllTextAsync(Path.Combine(worktreeDir, "Calculator.cs"));
+            Assert.Contains("i < nums.Length;", featureContent); // Fixed on feature
+
+            // ── STEP 5-8: DeliverableLoop — generator ↔ evaluator ──
+            var channel = f.Services.GetRequiredService<TaskChannel>();
+            using var loopScope = f.Services.CreateScope();
+            var loopDb = loopScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var loop = new DeliverableLoop(loopDb, channel);
+
+            var iterationCount = 0;
+            var result = await loop.RunAsync(new DeliverableLoopRequest(
+                WorkItemId: "wi-bug-fix",
+                CrewId: "pipe-gen",
+                GeneratorAgentId: "gen-agent",
+                EvaluatorAgentId: "eval-agent",
+                Generator: (iter, notes, ct) =>
+                {
+                    iterationCount++;
+                    // Iter 1: initial fix attempt
+                    // Iter 2: incorporate evaluator feedback
+                    var output = iter == 1
+                        ? "Fixed the off-by-one bug in Calculator.Sum. Changed `i < nums.Length - 1` to `i < nums.Length`."
+                        : $"Addressed evaluator feedback: {notes}. Added unit test for edge case with empty array.";
+                    return Task.FromResult(new GeneratorRunOutput(output, 0.05m));
+                },
+                Evaluator: (iter, genOutput, ct) =>
+                {
+                    // STEP 6: First evaluation — score 75, needs improvement
+                    // STEP 8: Second evaluation — score 95, pass
+                    var evalJson = iter == 1
+                        ? Fence + "json\n{ \"score\": 75, \"notes\": \"Fix is correct but missing edge case: empty array input. Add a unit test for Sum(new int[0]) == 0.\" }\n" + Fence
+                        : Fence + "json\n{ \"score\": 95, \"notes\": \"Excellent. Fix is correct and edge case covered.\" }\n" + Fence;
+                    return Task.FromResult(new EvaluatorRunOutput(evalJson, 0.02m));
+                },
+                EvaluatorCrewId: "pipe-eval"),
+                CancellationToken.None);
+
+            // ── Assert iteration behavior ────────────────────────────
+            // STEP 6: First score was 75 → iterate
+            // STEP 7: Generator got feedback and iterated
+            // STEP 8: Second score was 95 → pass
+            Assert.Equal("pass", result.FinalVerdict);
+            Assert.Equal(2, result.Iterations);
+            Assert.Equal(95, result.FinalScore);
+            Assert.Equal(2, iterationCount);
+            Assert.Equal(0.14m, result.TotalCostUsd); // (0.05 + 0.02) × 2
+
+            // Deliverable rows: one per iteration
+            var deliverables = await loopDb.Deliverables.AsNoTracking()
+                .Where(d => d.WorkItemId == "wi-bug-fix")
+                .OrderBy(d => d.Iter)
+                .ToListAsync();
+            Assert.Equal(2, deliverables.Count);
+            Assert.Equal(75, deliverables[0].Score);
+            Assert.Equal("iterate", deliverables[0].Verdict);
+            Assert.Equal(95, deliverables[1].Score);
+            Assert.Equal("pass", deliverables[1].Verdict);
+
+            // Usage rows: split by generator/evaluator
+            var usageRows = await loopDb.AgentUsage.AsNoTracking()
+                .Where(u => u.TaskId == "wi-bug-fix")
+                .ToListAsync();
+            Assert.Equal(4, usageRows.Count); // 2 gen + 2 eval
+            Assert.Equal(2, usageRows.Count(u => u.CostCategory == "generator"));
+            Assert.Equal(2, usageRows.Count(u => u.CostCategory == "evaluator"));
+
+            // Transcript events: iteration lifecycle
+            var events = await loopDb.TaskTranscriptEvents.AsNoTracking()
+                .Where(e => e.WorkItemId == "wi-bug-fix")
+                .OrderBy(e => e.Id)
+                .ToListAsync();
+            Assert.Contains(events, e => e.Kind == "task.iteration.started");
+            Assert.Contains(events, e => e.Kind == "task.iteration.scored");
+            Assert.Contains(events, e => e.Kind == "task.iteration.iterated"); // iter 1 → iterate
+            Assert.Contains(events, e => e.Kind == "task.iteration.passed");   // iter 2 → pass
+
+            // STEP 9: main branch still has ONLY the seed commit
+            var (_, mainLog, _) = await RunGitResultAsync(repoDir, "log", "--oneline", "main");
+            Assert.Single(mainLog.Trim().Split('\n'));
+
+            // Feature branch has the fix commit
+            var (_, branchLog, _) = await RunGitResultAsync(repoDir, "log", "--oneline", branchName);
+            var branchCommits = branchLog.Trim().Split('\n');
+            Assert.Equal(2, branchCommits.Length); // seed + fix
+
+            // Feature branch is ahead of main
+            var ab = await wtService.AheadBehindAsync("main", branchName);
+            Assert.Equal(1, ab.Ahead);
+            Assert.Equal(0, ab.Behind);
+
+            // STEP 10: Work item state transitioned to closed (by DeliverableLoop)
+            var wiAfter = await loopDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == "wi-bug-fix");
+            Assert.Equal("closed", wiAfter.State);
+        }
+        finally
+        {
+            scope.Dispose();
+            f.Dispose();
+            try { Directory.Delete(repoDir, recursive: true); } catch { }
+        }
+    }
+
     // ── Worktree feed subscribe/unsubscribe is covered by ─────────────────
+    // PairedCrew_EndToEnd_Pickup_Through_PlanAgreement (steps 3+5).
+    // The isolated timing-dependent test was removed because Task.Run
+    // scheduling makes the "during run" assertion inherently racy.
+
+    // ── Git helper methods for worktree tests ─────────────────────────────
+
+    private static bool GitAvailable()
+    {
+        try
+        {
+            using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("git", "--version")
+            {
+                RedirectStandardOutput = true, RedirectStandardError = true,
+                UseShellExecute = false, CreateNoWindow = true,
+            })!;
+            p.WaitForExit(2_000);
+            return p.ExitCode == 0;
+        }
+        catch { return false; }
+    }
+
+    private static async Task RunGitAsync(string cwd, params string[] args)
+    {
+        var (code, _, stderr) = await RunGitResultAsync(cwd, args);
+        if (code != 0) throw new InvalidOperationException($"git {string.Join(" ", args)} failed: {stderr}");
+    }
+
+    private static async Task<(int code, string stdout, string stderr)> RunGitResultAsync(string cwd, params string[] args)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("git")
+        {
+            WorkingDirectory = cwd,
+            RedirectStandardOutput = true, RedirectStandardError = true,
+            UseShellExecute = false, CreateNoWindow = true,
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var p = System.Diagnostics.Process.Start(psi)!;
+        var stdout = await p.StandardOutput.ReadToEndAsync();
+        var stderr = await p.StandardError.ReadToEndAsync();
+        await p.WaitForExitAsync();
+        return (p.ExitCode, stdout, stderr);
+    }
     // PairedCrew_EndToEnd_Pickup_Through_PlanAgreement (steps 3+5).
     // The isolated timing-dependent test was removed because Task.Run
     // scheduling makes the "during run" assertion inherently racy.

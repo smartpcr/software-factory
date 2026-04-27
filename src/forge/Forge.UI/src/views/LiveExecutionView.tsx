@@ -146,12 +146,14 @@ export function LiveExecutionView(): JSX.Element {
           <PairSide
             role="generator"
             crewId={snapshot?.generatorCrewId}
+            crewName={snapshot?.generatorCrewName}
             agentId={snapshot?.generatorAgentId}
           />
           <span className="live-exec__pair-conn">↔ paired</span>
           <PairSide
             role="evaluator"
             crewId={snapshot?.evaluatorCrewId}
+            crewName={snapshot?.evaluatorCrewName}
             agentId={snapshot?.evaluatorAgentId}
           />
         </div>
@@ -252,10 +254,12 @@ export function LiveExecutionView(): JSX.Element {
 
 // ── Sub-components ────────────────────────────────────────────────────────
 
-function PairSide(props: { role: 'generator' | 'evaluator'; crewId?: string | null; agentId?: string | null }): JSX.Element {
-  const { role, crewId, agentId } = props;
+function PairSide(props: { role: 'generator' | 'evaluator'; crewId?: string | null; crewName?: string | null; agentId?: string | null }): JSX.Element {
+  const { role, crewId, crewName, agentId } = props;
   const portrait = agentId ? avatarFor(agentId, agentId) : null;
   const tip = agentId ? agentTooltip(agentId, agentId, role) : '';
+  const displayName = crewName || crewId || '—';
+  const crewTip = crewName && crewId ? `${crewId}` : '';
   return (
     <div className="live-exec__pair-side" data-role={role}>
       {portrait ? (
@@ -270,7 +274,7 @@ function PairSide(props: { role: 'generator' | 'evaluator'; crewId?: string | nu
         <span className="live-exec__pair-mono">{agentId ?? '—'}</span>
       )}
       <span style={{ textTransform: 'capitalize', color: 'var(--text-tertiary)', fontSize: 10 }}>{role}</span>
-      <strong>{crewId ?? '—'}</strong>
+      <strong title={crewTip}>{displayName}</strong>
     </div>
   );
 }
@@ -309,6 +313,9 @@ function TranscriptLine(props: { evt: TaskTranscriptEvent; generatorCrewId?: str
       </div>
     );
   }
+  if (evt.kind === 'task.prompt') {
+    return <PromptLine evt={evt} />;
+  }
   const side = evt.crewId === generatorCrewId ? 'generator'
              : evt.crewId === evaluatorCrewId ? 'evaluator'
              : null;
@@ -322,6 +329,46 @@ function TranscriptLine(props: { evt: TaskTranscriptEvent; generatorCrewId?: str
   );
 }
 
+function PromptLine(props: { evt: TaskTranscriptEvent }): JSX.Element {
+  const { evt } = props;
+  const p = evt.payload as Record<string, unknown> | null;
+  const systemPrompt = (p?.systemPrompt as string) ?? '';
+  const userPrompt = (p?.userPrompt as string) ?? '';
+  const model = (p?.model as string) ?? '';
+  const backend = (p?.backend as string) ?? '';
+  const mode = (p?.invokeMode as string) ?? '';
+  const worktree = (p?.worktreePath as string) ?? '';
+  const meta = new Date(evt.at).toLocaleTimeString();
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="live-exec__prompt-block" data-kind="task.prompt">
+      <div className="live-exec__line" data-kind="task.prompt" onClick={() => setExpanded(!expanded)} style={{ cursor: 'pointer' }}>
+        <span className="live-exec__line-meta">{meta}</span>
+        <span className="live-exec__line-kind">prompt</span>
+        <span className="live-exec__line-text">
+          {expanded ? '▾' : '▸'} [{backend}/{mode} · {model}]
+          {worktree ? ` cwd: ${worktree}` : ''}
+        </span>
+      </div>
+      {expanded && (
+        <div className="live-exec__prompt-detail">
+          {systemPrompt && (
+            <div className="live-exec__prompt-section">
+              <div className="live-exec__prompt-label">System prompt (soul.md)</div>
+              <pre className="live-exec__prompt-pre">{systemPrompt}</pre>
+            </div>
+          )}
+          <div className="live-exec__prompt-section">
+            <div className="live-exec__prompt-label">User prompt</div>
+            <pre className="live-exec__prompt-pre">{userPrompt}</pre>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function renderPayload(evt: TaskTranscriptEvent): string {
   const p = evt.payload as Record<string, unknown> | null;
   if (!p) return '';
@@ -330,6 +377,12 @@ function renderPayload(evt: TaskTranscriptEvent): string {
   if ('text'  in p && typeof p.text  === 'string') return p.text;
   if (evt.kind === 'task.delegated') {
     return `→ crew ${(p.generatorCrewId as string) ?? '?'}${p.evaluatorCrewId ? ` ↔ ${p.evaluatorCrewId}` : ''} (lead: ${(p.leadId as string) ?? '?'})`;
+  }
+  if (evt.kind === 'task.prompt') {
+    const model = (p.model as string) ?? '';
+    const backend = (p.backend as string) ?? '';
+    const mode = (p.invokeMode as string) ?? '';
+    return `[${backend}/${mode} · ${model}]`;
   }
   if (evt.kind === 'task.tool-call') {
     const name = (p.toolName as string) ?? (p.tool as string) ?? '?';

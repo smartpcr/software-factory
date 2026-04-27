@@ -215,6 +215,9 @@ public class AgentSalaryAndLedgerTests
             new InlineHttpFactory(),
             localRegistry,
             Options.Create(new AgentRunnerOptions()),
+            new CopilotServerManager(
+                Options.Create(new AgentRunnerOptions()),
+                NullLogger<CopilotServerManager>.Instance),
             NullLogger<AgentRunnerDispatcher>.Instance);
 
         var ctx = new AgentContext(

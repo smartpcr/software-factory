@@ -49,7 +49,9 @@ export interface DeliverableShape {
 export interface TaskExecutionSnapshot {
   workItemId: string;
   generatorCrewId?: string | null;
+  generatorCrewName?: string | null;
   evaluatorCrewId?: string | null;
+  evaluatorCrewName?: string | null;
   generatorAgentId?: string | null;
   evaluatorAgentId?: string | null;
   currentIteration: number;

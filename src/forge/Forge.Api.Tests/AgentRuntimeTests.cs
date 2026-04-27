@@ -17,6 +17,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 /// <summary>
@@ -285,7 +286,10 @@ public class AgentRuntimeTests
         var registry = new TestModelRegistry();
         var opts = Options.Create(new AgentRunnerOptions());
         var log = NullLogger<AgentRunnerDispatcher>.Instance;
-        return new AgentRunnerDispatcher(http, registry, opts, log);
+        var copilotServer = new CopilotServerManager(
+            Options.Create(new AgentRunnerOptions()),
+            NullLogger<CopilotServerManager>.Instance);
+        return new AgentRunnerDispatcher(http, registry, opts, copilotServer, log);
     }
 
     private sealed class StubHttpFactory : IHttpClientFactory

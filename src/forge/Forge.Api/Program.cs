@@ -17,6 +17,12 @@ using Forge.Api.Realtime;
 using Forge.Api.Services.Git;
 using Microsoft.EntityFrameworkCore;
 
+// Pin every descendant of this process to a Windows JobObject with
+// KILL_ON_JOB_CLOSE before any agent code runs. If Forge.Api dies unclean,
+// the OS reaps every child copilot.exe / claude.exe / git.exe with us, so
+// they can't pile up as orphans across restarts.
+ChildProcessTracker.Initialize();
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.UseUrls("http://localhost:5180");
@@ -141,6 +147,8 @@ builder.Services.Configure<AgentRunnerOptions>(builder.Configuration.GetSection(
 builder.Services.Configure<SoulOptions>(builder.Configuration.GetSection(SoulOptions.SectionName));
 builder.Services.AddSingleton<ISoulService, SoulService>();
 builder.Services.AddHttpClient(AgentRunnerDispatcher.ClientName);
+builder.Services.AddSingleton<CopilotServerManager>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<CopilotServerManager>());
 builder.Services.AddSingleton<IAgentRunner, AgentRunnerDispatcher>();
 
 // Problem details (RFC-7807). In Development, surface exception messages so
