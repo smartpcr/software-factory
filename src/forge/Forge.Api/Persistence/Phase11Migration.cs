@@ -134,6 +134,12 @@ public static class Phase11Migration
         await EnsureColumnAsync(conn, "crews",        "DefaultEvaluatorAgentId", "TEXT NULL", ct);
         await EnsureColumnAsync(conn, "crews",        "EvaluatorModel",          "TEXT NULL", ct);
 
+        // Phase 13e — per-agent runtime overrides. Null = inherit crew default.
+        await EnsureColumnAsync(conn, "agents", "Backend",        "TEXT NULL", ct);
+        await EnsureColumnAsync(conn, "agents", "InvokeMode",     "TEXT NULL", ct);
+        await EnsureColumnAsync(conn, "agents", "GeneratorModel", "TEXT NULL", ct);
+        await EnsureColumnAsync(conn, "agents", "EvaluatorModel", "TEXT NULL", ct);
+
         // Phase 13.7 — domain-expert index.
         await ExecAsync(conn, """
             CREATE TABLE IF NOT EXISTS domain_experts (

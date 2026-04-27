@@ -364,6 +364,24 @@ export interface AgentDetail {
   soulPath: string | null;
   capabilities: string[];
   state: string;
+  /** Phase 13e — per-agent backend override. Null = inherit crew. */
+  backend?: string | null;
+  /** Phase 13e — per-agent invoke-mode override. Null = inherit crew. */
+  invokeMode?: string | null;
+  /** Phase 13e — model when this agent runs as the pair's generator. */
+  generatorModel?: string | null;
+  /** Phase 13e — model when this agent runs as the pair's evaluator. */
+  evaluatorModel?: string | null;
+}
+
+/** Phase 13.7 — domain-expert index entry (built-in team caps + sha256 docs). */
+export interface DomainExpert {
+  contentId: string;
+  repoId: string;
+  path: string;
+  topic: string;
+  summary: string;
+  indexedAt: string;
 }
 
 /** Phase 11.3 — soul.md GET payload. */

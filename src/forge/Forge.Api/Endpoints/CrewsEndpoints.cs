@@ -9,6 +9,7 @@ namespace Forge.Api.Endpoints;
 using Forge.Api.Auth;
 using Forge.Api.Contracts;
 using Forge.Api.Persistence;
+using Forge.Api.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -48,7 +49,29 @@ public static class CrewsEndpoints
         grp.MapPost("/{id}/code", CodeStub).WithName("RunCrewCode");
         // Phase 13c — auto-assign unassigned agents to their team's crew.
         grp.MapPost("/auto-assign", AutoAssign).WithName("AutoAssignAgents");
+        // Phase 13d — domain-expert index (also reachable as a top-level route).
+        app.MapGet("/api/domain-experts", ListDomainExperts).WithTags("Crews").WithName("ListDomainExperts");
         return app;
+    }
+
+    /// <summary>
+    /// Phase 13d — list every <see cref="DomainExpertRow"/> the server knows
+    /// about. Used by the capability picker in the UI to resolve content-ids
+    /// (sha256:… or team:…) into human-readable topic labels. Optionally
+    /// filtered by repo or team-prefix; default returns everything.
+    /// </summary>
+    private static async Task<IResult> ListDomainExperts(
+        ForgeDbContext db,
+        string? repoId,
+        string? prefix,
+        CancellationToken ct)
+    {
+        var q = db.DomainExperts.AsNoTracking().AsQueryable();
+        if (!string.IsNullOrWhiteSpace(repoId)) q = q.Where(e => e.RepoId == repoId);
+        if (!string.IsNullOrWhiteSpace(prefix)) q = q.Where(e => e.ContentId.StartsWith(prefix));
+        var rows = await q.OrderBy(e => e.Topic).ToListAsync(ct);
+        return Results.Ok(rows.Select(e => new Forge.Api.Contracts.DomainExpert(
+            e.ContentId, e.RepoId, e.Path, e.Topic, e.Summary, e.IndexedAt)).ToList());
     }
 
     private static async Task<IResult> GetSalary(string id, ForgeDbContext db, CancellationToken ct)
@@ -825,8 +848,118 @@ public static class CrewsEndpoints
             }
         }
 
+        // Step 5 — seed canonical team capabilities. Each team gets a
+        // pre-defined skill list (Phase 13 spec): Architecture = plan/design,
+        // Engineering = coding/tests/PR, Review = PR + spec review, QA =
+        // E2E / functional / stress / benchmark / BDD. Each entry is materialised
+        // as a <see cref="DomainExpertRow"/> with a stable team-scoped
+        // ContentId (e.g. <c>team:engineering:coding</c>) so the existing
+        // capability picker + soul.md prompt-cache prefix work unchanged.
+        await EnsureTeamCapabilitiesAsync(db, caller, ct);
+
         if (actions.Count > 0) await db.SaveChangesAsync(ct);
         return actions;
+    }
+
+    /// <summary>
+    /// Phase 13d — canonical capabilities per team. Each tuple is
+    /// <c>(content-id-suffix, display topic, summary)</c>; the full ContentId
+    /// is built as <c>team:&lt;team-lower&gt;:&lt;suffix&gt;</c>. Idempotent —
+    /// writes only the rows that don't already exist (UNIQUE on ContentId).
+    /// </summary>
+    private static readonly Dictionary<string, (string Slug, string Topic, string Summary)[]> TeamCapabilities = new()
+    {
+        ["Architecture"] = new[]
+        {
+            ("plan",   "plan",   "Decompose features into phase → stage → step trees with explicit deliverables."),
+            ("design", "design", "ADRs, system diagrams, blast-radius analysis, interface contracts."),
+        },
+        ["Engineering"] = new[]
+        {
+            ("coding", "coding", "Implement step-sized work items end-to-end against the workstream's worktree."),
+            ("tests",  "tests",  "Unit + integration coverage above the human-gate policy threshold."),
+            ("pr",     "PR",     "Author the PR, address review feedback, ride CI to green."),
+        },
+        ["Review"] = new[]
+        {
+            ("pr-review",   "PR review",   "Read the diff for correctness, taste, and missed cases. Block merge on changes."),
+            ("spec-review", "spec review", "Read the planning MD before the WIT tree commits. Catch under-specified steps."),
+        },
+        ["QA"] = new[]
+        {
+            ("e2e-tests",        "E2E tests",                  "Drive the system end-to-end against staged environments."),
+            ("functional-tests", "functional tests",           "Verify behaviour matches spec — happy path + edge cases."),
+            ("stress-tests",     "stress tests",               "Sustained load + spikes — find where the system breaks."),
+            ("benchmark",        "benchmark",                  "Measure latency, throughput, footprint. Track regressions across releases."),
+            ("bdd",              "BDD (Reqnroll/Gherkin/k6)",  "End-user spec authored as BDD — Reqnroll feature files, Gherkin scenarios, k6 scripts."),
+        },
+    };
+
+    /// <summary>
+    /// Phase 13d — ensure every crew's team has its canonical capabilities
+    /// seeded into <see cref="ForgeDbContext.DomainExperts"/> and appended
+    /// to <see cref="CrewRow.CapabilitiesJson"/> when missing. Each call is
+    /// idempotent: existing DomainExpert rows are reused (UNIQUE constraint
+    /// on ContentId), and capabilities already in the JSON array are skipped.
+    /// </summary>
+    public static async Task EnsureTeamCapabilitiesAsync(
+        ForgeDbContext db,
+        string? caller,
+        CancellationToken ct)
+    {
+        // 1) Materialise one DomainExpertRow per (team, capability).
+        var existingByContentId = (await db.DomainExperts.AsNoTracking()
+                .Select(e => e.ContentId)
+                .ToListAsync(ct))
+            .ToHashSet();
+        foreach (var (team, caps) in TeamCapabilities)
+        {
+            foreach (var cap in caps)
+            {
+                var contentId = $"team:{team.ToLowerInvariant()}:{cap.Slug}";
+                if (existingByContentId.Contains(contentId)) continue;
+                db.DomainExperts.Add(new DomainExpertRow
+                {
+                    ContentId = contentId,
+                    RepoId = "*",   // sentinel: built-in, not tied to a repo
+                    Path = string.Empty,
+                    Topic = cap.Topic,
+                    Summary = cap.Summary,
+                });
+                existingByContentId.Add(contentId);
+            }
+        }
+        await db.SaveChangesAsync(ct); // commit before crew-side update so the FK-by-content-id is satisfied
+
+        // 2) Append the team's capabilities onto every matching crew's
+        // CapabilitiesJson. Skip when already present (preserves operator-added
+        // sha256 capabilities that may already be in the array).
+        var crews = await db.Crews.ToListAsync(ct);
+        var changed = false;
+        foreach (var crew in crews)
+        {
+            var team = TeamFromCrewName(crew.Name);
+            if (team is null || !TeamCapabilities.TryGetValue(team, out var caps)) continue;
+
+            var current = ParseCapsJson(crew.CapabilitiesJson);
+            var currentSet = new HashSet<string>(current, StringComparer.OrdinalIgnoreCase);
+            var added = false;
+            foreach (var cap in caps)
+            {
+                var contentId = $"team:{team.ToLowerInvariant()}:{cap.Slug}";
+                if (currentSet.Contains(contentId)) continue;
+                current.Add(contentId);
+                currentSet.Add(contentId);
+                db.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id, Kind = "capability-add", ToValue = contentId, ByUserId = caller ?? "auto-assign" });
+                added = true;
+            }
+            if (added)
+            {
+                crew.CapabilitiesJson = SerialiseCaps(current);
+                changed = true;
+            }
+        }
+        if (changed) await db.SaveChangesAsync(ct);
     }
 
     private static string? TeamFromAgentRole(string role) => role?.ToLowerInvariant() switch
@@ -952,6 +1085,13 @@ public static class CrewsEndpoints
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
+
+        // Phase 14.2 — schedule gate. Must fire before any other check so
+        // off-shift dispatches refuse cleanly even when the rest of the
+        // pipeline is stubbed.
+        var sched = await ApplyScheduleGateAsync(ctx, db, crew, kind: "plan", ct);
+        if (sched is not null) return sched;
+
         if (string.Equals(crew.InvokeMode, "cli", StringComparison.OrdinalIgnoreCase))
         {
             return Results.Problem(
@@ -974,6 +1114,11 @@ public static class CrewsEndpoints
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
+
+        // Phase 14.2 — schedule gate (see PlanStub).
+        var sched = await ApplyScheduleGateAsync(ctx, db, crew, kind: "code", ct);
+        if (sched is not null) return sched;
+
         if (string.Equals(crew.InvokeMode, "cli", StringComparison.OrdinalIgnoreCase))
         {
             return Results.Problem(
@@ -986,6 +1131,74 @@ public static class CrewsEndpoints
             title: "Phase 13.5 — coding pipeline not implemented yet",
             detail: "Self-review pass + git-commit/push/open-pr tools authored against the lead's preferred account land in a follow-up.",
             statusCode: 501);
+    }
+
+    /// <summary>
+    /// Phase 14.2 — runs <see cref="ScheduleGate"/> against the crew and
+    /// returns a 409 result if off-shift, or null if the dispatch should
+    /// proceed. Honors <c>?override=true</c> when the caller is the crew
+    /// lead or a product-scoped PO; the override path writes a
+    /// <c>dispatch-after-hours</c> row in <c>crew_history</c>.
+    /// </summary>
+    /// <param name="kind">Either <c>plan</c> or <c>code</c>; recorded in the audit row.</param>
+    private static async Task<IResult?> ApplyScheduleGateAsync(
+        HttpContext ctx,
+        ForgeDbContext db,
+        CrewRow crew,
+        string kind,
+        CancellationToken ct)
+    {
+        var verdict = ScheduleGate.Evaluate(crew, DateTimeOffset.UtcNow);
+        if (verdict.Verdict != ScheduleGate.Verdict.OffShift) return null;
+
+        // Off shift. Allow override only with ?override=true AND lead/PO.
+        var wantsOverride = ctx.Request.Query.TryGetValue("override", out var v)
+            && (string.Equals(v.ToString(), "true", StringComparison.OrdinalIgnoreCase) || v.ToString() == "1");
+
+        if (!wantsOverride)
+        {
+            return Results.Problem(
+                type: "crew.off_shift",
+                title: "Crew is off shift",
+                detail: $"Crew '{crew.Id}' is outside its 9-9-6 window in {verdict.Tz.Id}. Local now: {verdict.LocalNow:u}; next on-shift: {verdict.NextTransitionLocal:u}. Pass ?override=true (lead or product-owner only) to dispatch anyway.",
+                statusCode: 409);
+        }
+
+        // Override requested — require lead OR product-scoped PO.
+        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        var role = RequireRole.ResolveRoleForProduct(ctx, db, crew.ProductId);
+        var isPo = role is null || string.Equals(role, RequireRole.ProductOwner, StringComparison.OrdinalIgnoreCase);
+        if (role is not null)
+        {
+            var callerUser = string.IsNullOrEmpty(caller) ? null
+                : await db.Users.AsNoTracking()
+                    .Where(u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller)
+                    .Select(u => new { u.Id })
+                    .FirstOrDefaultAsync(ct);
+            var callerAgentId = callerUser is null ? null
+                : await db.Agents.AsNoTracking().Where(a => a.Id == callerUser.Id).Select(a => (string?)a.Id).FirstOrDefaultAsync(ct);
+            var isLead = !string.IsNullOrEmpty(crew.Lead) && crew.Lead == callerAgentId;
+            if (!isLead && !isPo)
+            {
+                return Results.Problem(
+                    type: "crew.off_shift.override_forbidden",
+                    title: "Forbidden — only the crew lead or product-owner can override the schedule",
+                    statusCode: 403);
+            }
+        }
+
+        // Audit the bypass and let the request proceed.
+        db.CrewHistory.Add(new CrewHistoryRow
+        {
+            At = DateTimeOffset.UtcNow,
+            CrewId = crew.Id,
+            Kind = "dispatch-after-hours",
+            FromValue = kind,
+            ToValue = $"local={verdict.LocalNow:u}; tz={verdict.Tz.Id}",
+            ByUserId = string.IsNullOrEmpty(caller) ? null : caller,
+        });
+        await db.SaveChangesAsync(ct);
+        return null;
     }
 
     // ── helpers ────────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ import { useSidebarStore } from '@/state/useSidebarStore';
 import { useProductsStore } from '@/state/useProductsStore';
 import { useProductFavicon } from '@/products/useProductFavicon';
 import { logView } from '@/telemetry';
+import { GlobalAgentEditor } from '@/agents/AgentEditModal';
 
 // Maps each route to the breadcrumb labels the prototype shows in the topbar.
 const breadcrumbs: Record<string, { section: string; current: string }> = {
@@ -47,6 +48,8 @@ export function AppShell() {
       </main>
       <CommandPalette />
       <KeyboardMap />
+      {/* Phase 13f — global agent-edit popup, opened from anywhere via openAgent(id). */}
+      <GlobalAgentEditor />
     </div>
   );
 }

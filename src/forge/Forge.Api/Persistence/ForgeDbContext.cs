@@ -68,6 +68,10 @@ public class ForgeDbContext : DbContext
 
     public DbSet<WorkItemLinkRow> WorkItemLinks => this.Set<WorkItemLinkRow>();
 
+    public DbSet<DeliverableRow> Deliverables => this.Set<DeliverableRow>();
+
+    public DbSet<AgentLevelHistoryRow> AgentLevelHistory => this.Set<AgentLevelHistoryRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         mb.Entity<EpicRow>().ToTable("epics").HasKey(x => x.Id);
@@ -168,5 +172,25 @@ public class ForgeDbContext : DbContext
         mb.Entity<WorkItemLinkRow>().ToTable("work_item_links").HasKey(x => x.Id);
         mb.Entity<WorkItemLinkRow>().HasIndex(x => x.FromId);
         mb.Entity<WorkItemLinkRow>().HasIndex(x => x.ToId);
+
+        // Phase 14.1 — agent level + payroll columns on agents.
+        mb.Entity<AgentRow>().Property(x => x.HourlyUsd).HasConversion<double>();
+
+        // Phase 14.1 — crew schedule columns.
+        // (Timezone + ScheduleEnabled are flat string/bool; no conversion needed.)
+
+        // Phase 14.1 — deliverables (one row per work-item × iteration).
+        mb.Entity<DeliverableRow>().ToTable("deliverables").HasKey(x => x.Id);
+        mb.Entity<DeliverableRow>().Property(x => x.GenCostUsd).HasConversion<double>();
+        mb.Entity<DeliverableRow>().Property(x => x.EvalCostUsd).HasConversion<double>();
+        mb.Entity<DeliverableRow>().HasIndex(x => x.WorkItemId);
+        mb.Entity<DeliverableRow>().HasIndex(x => new { x.CrewId, x.CreatedAt });
+        mb.Entity<DeliverableRow>().HasIndex(x => new { x.GeneratorAgentId, x.CreatedAt });
+        mb.Entity<DeliverableRow>().HasIndex(x => new { x.EvaluatorAgentId, x.CreatedAt });
+
+        // Phase 14.1 — agent_level_history (one row per promotion/demotion).
+        mb.Entity<AgentLevelHistoryRow>().ToTable("agent_level_history").HasKey(x => x.Id);
+        mb.Entity<AgentLevelHistoryRow>().Property(x => x.WindowAvg).HasConversion<double>();
+        mb.Entity<AgentLevelHistoryRow>().HasIndex(x => new { x.AgentId, x.CreatedAt });
     }
 }

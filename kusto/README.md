@@ -58,3 +58,25 @@ _No queries._
 **Execution skipped** -- 2026-04-26
 
 No query `.md` files were found under `kusto/telemetry/`, `kusto/diagnostics/`, or `kusto/hub/`. The `execute-incident-queries` step had nothing to execute. No calls were made to `invoke-kusto.ps1` and no blobs were uploaded to the pipeline.
+
+---
+
+## Query Results Summary
+
+| Issue | Evidence | Queries | Max Score |
+|-------|----------|---------|-----------|
+| _(none)_ | No queries were executed — `formulate-kusto-queries` produced no output for this repository | - | - |
+
+No ISS-N issues were identified because no `code_issues.md` exists for this repository. This repository is an ETW processing tool, not a service that emits telemetry incident data.
+
+---
+
+## Loop Status
+
+**Iteration:** 1
+**Max Score:** 0
+**Status:** CONTINUE (threshold: 80)
+**Queries:** 0 total (0 Telemetry, 0 Diagnostics, 0 Hub)
+**Top Query:** _(none)_
+
+> **Blocking issue:** The upstream `formulate-kusto-queries` step produced no queries. Analysis cannot proceed until query formulation is re-run with a valid incident folder containing `code_issues.md` and `etw_events.md`.

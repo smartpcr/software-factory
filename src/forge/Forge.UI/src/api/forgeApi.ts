@@ -7,6 +7,7 @@ import type {
   CrewSalary,
   CurrentUser,
   DiscoverableRepo,
+  DomainExpert,
   ForgeState,
   ModelInfo,
   Pr,
@@ -629,6 +630,11 @@ export const forgeApi = {
     return fetchJson<AgentDetail[]>('/api/agents');
   },
 
+  /** GET /api/agents/{id} — Phase 11.3 single-agent fetch. */
+  async getAgent(agentId: string): Promise<AgentDetail> {
+    return fetchJson<AgentDetail>(`/api/agents/${encodeURIComponent(agentId)}`);
+  },
+
   /** GET /api/models — Phase 11.2 model registry. */
   async listModels(): Promise<ModelInfo[]> {
     return fetchJson<ModelInfo[]>('/api/models');
@@ -648,8 +654,19 @@ export const forgeApi = {
     });
   },
 
-  /** PATCH /api/agents/{id} — Phase 13b agent edit (name / role / soulPath). */
-  async patchAgent(agentId: string, patch: { name?: string; role?: string; soulPath?: string }): Promise<AgentDetail> {
+  /**
+   * PATCH /api/agents/{id} — Phase 13b/e agent edit. Empty-string clears
+   * an override field (reverts to crew inheritance); null leaves it alone.
+   */
+  async patchAgent(agentId: string, patch: {
+    name?: string;
+    role?: string;
+    soulPath?: string;
+    backend?: string;
+    invokeMode?: string;
+    generatorModel?: string;
+    evaluatorModel?: string;
+  }): Promise<AgentDetail> {
     return fetchJson<AgentDetail>(`/api/agents/${encodeURIComponent(agentId)}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
@@ -671,6 +688,12 @@ export const forgeApi = {
       method: 'POST',
       headers: { 'X-Forge-User': writerHeader() },
     });
+  },
+
+  /** GET /api/domain-experts — Phase 13d capability catalogue. */
+  async listDomainExperts(prefix?: string): Promise<DomainExpert[]> {
+    const qs = prefix ? `?prefix=${encodeURIComponent(prefix)}` : '';
+    return fetchJson<DomainExpert[]>(`/api/domain-experts${qs}`);
   },
 
   /** GET /api/crews/salary/today — Phase 11.9 TopBar chip total. */

@@ -416,13 +416,26 @@ public sealed record AgentDetail(
     string? CrewId,
     string? SoulPath,
     IReadOnlyList<string> Capabilities,
-    string State);
+    string State,
+    // Phase 13e — per-agent runtime overrides (null = inherit crew).
+    string? Backend = null,
+    string? InvokeMode = null,
+    string? GeneratorModel = null,
+    string? EvaluatorModel = null);
 
-/// <summary>Phase 13b — PATCH body for /api/agents/{id}.</summary>
+/// <summary>
+/// Phase 13b/e — PATCH body for /api/agents/{id}. Empty-string on any
+/// override field clears it (reverts to crew inheritance); a non-empty
+/// value pins this agent to that override.
+/// </summary>
 public sealed record PatchAgentRequest(
     string? Name = null,
     string? Role = null,
-    string? SoulPath = null);
+    string? SoulPath = null,
+    string? Backend = null,
+    string? InvokeMode = null,
+    string? GeneratorModel = null,
+    string? EvaluatorModel = null);
 
 /// <summary>Phase 13b — POST /api/crews/auto-assign result.</summary>
 public sealed record AutoAssignResult(
@@ -579,3 +592,79 @@ public sealed record ModelInfo(
     bool SupportsTools,
     bool SupportsStreaming,
     string Status);
+
+/// <summary>
+/// Phase 14 — one row per (work-item × iteration). Score + verdict are
+/// authoritative per <see cref="Forge.Api.ScoringConstants"/>; judge fields
+/// are only set after a Phase 14.5 dispute.
+/// </summary>
+public sealed record Deliverable(
+    long Id,
+    string WorkItemId,
+    string CrewId,
+    string GeneratorAgentId,
+    string EvaluatorAgentId,
+    int Iter,
+    int Score,
+    IReadOnlyDictionary<string, int> Dims,
+    string Verdict,
+    string Notes,
+    decimal GenCostUsd,
+    decimal EvalCostUsd,
+    string? JudgeAgentId,
+    int? JudgeScore,
+    string? JudgeNotes,
+    DateTimeOffset CreatedAt);
+
+/// <summary>
+/// Phase 14.5 — dispute body. <c>JudgeScore</c> is the judge agent's
+/// re-score of the deliverable; ≥ 90 flips the linked work item to
+/// <c>closed</c> retroactively.
+/// </summary>
+public sealed record DeliverableDisputeRequest(
+    string JudgeAgentId,
+    int JudgeScore,
+    string? JudgeNotes);
+
+/// <summary>
+/// Phase 14.8 — per-crew HR payroll snapshot. Distinct from the
+/// existing token-spend rollup (Q14.7 renames the old payload to
+/// <c>CrewSpend</c>); same field shape so the UI can render both
+/// side-by-side.
+/// </summary>
+public sealed record CrewPayroll(
+    string CrewId,
+    decimal Today,
+    decimal Sprint,
+    decimal Month,
+    /// <summary>14 daily totals, oldest first → today.</summary>
+    IReadOnlyList<decimal> Sparkline);
+
+/// <summary>Phase 14.8 — one row in the per-member payroll grid.</summary>
+public sealed record CrewPayrollMember(
+    string AgentId,
+    int Level,
+    decimal HourlyUsd,
+    int OnShiftHoursToday,
+    decimal TodayUsd);
+
+/// <summary>
+/// Phase 14.7 — outcome of a single promotion run. <c>Decisions</c> is
+/// every agent visited (including no-ops + insufficient-data) so the UI
+/// can render a full audit table.
+/// </summary>
+public sealed record PromotionRunResponse(
+    int AgentsScanned,
+    int Promoted,
+    int Demoted,
+    DateTimeOffset At,
+    IReadOnlyList<PromotionDecision> Decisions);
+
+/// <summary>Phase 14.7 — one decision row in <see cref="PromotionRunResponse"/>.</summary>
+public sealed record PromotionDecision(
+    string AgentId,
+    int OldLevel,
+    int NewLevel,
+    decimal RollingAvg,
+    string Reason,
+    int WindowSize);

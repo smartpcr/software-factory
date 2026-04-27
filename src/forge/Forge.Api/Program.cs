@@ -93,6 +93,10 @@ builder.Services.AddSingleton<WorkItemSyncService>();
 // Phase 6 — write-side: human-gate, auto-merge watcher, audit + idempotency, user context.
 builder.Services.Configure<HumanGateOptions>(builder.Configuration.GetSection(HumanGateOptions.SectionName));
 builder.Services.AddSingleton<IHumanGateEvaluator, HumanGateEvaluator>();
+// Phase 14.4 — generator↔evaluator iteration orchestrator.
+builder.Services.AddScoped<Forge.Api.Services.IDeliverableLoop, Forge.Api.Services.DeliverableLoop>();
+// Phase 14.7 — promotion / demotion runner (called from the admin endpoint).
+builder.Services.AddScoped<Forge.Api.Services.IPromotionRunner, Forge.Api.Services.PromotionRunner>();
 builder.Services.AddSingleton<AutoMergeWatcher>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoMergeWatcher>());
 builder.Services.AddHttpContextAccessor();
@@ -151,6 +155,8 @@ using (var scope = app.Services.CreateScope())
     await Phase11Migration.ApplyAsync(db);
     // Phase 12.2 — work_items + work_item_links.
     await Phase12Migration.ApplyAsync(db);
+    // Phase 14.1 — agent level/hourly + crew schedule + deliverables/level_history tables.
+    await Phase14Migration.ApplyAsync(db);
     await ForgeSeed.EnsureSeededAsync(db);
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.
@@ -197,6 +203,12 @@ app.MapCrewsEndpoints();
 app.MapModelsEndpoints();
 app.MapAgentsEndpoints();
 app.MapWorkItemsEndpoints();
+// Phase 14.5 — deliverable read + dispute endpoints.
+app.MapDeliverablesEndpoints();
+// Phase 14.7 — promotion run + level-history.
+app.MapPromotionEndpoints();
+// Phase 14.8 — HR payroll + /spend deprecation alias.
+app.MapPayrollEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 

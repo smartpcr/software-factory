@@ -1235,15 +1235,15 @@ namespace ExecutionEngine.Engine
                 }
                 else // JoinType.All
                 {
-                    // ALL: Check if all upstreams have sent a message
-                    string? sourceNodeId = null;
-
-                    if (signal is NodeCompleteMessage completeMsg)
-                        sourceNodeId = completeMsg.NodeId;
-                    else if (signal is NodeFailMessage failMsg)
-                        sourceNodeId = failMsg.NodeId;
-                    else if (signal is NodeNextMessage nextMsg)
-                        sourceNodeId = nextMsg.NodeId;
+                    // ALL: Use the signal message for source identification, then lease+consume
+                    // only when not all upstreams are ready (to prevent infinite re-processing).
+                    string? sourceNodeId = signal switch
+                    {
+                        NodeCompleteMessage cm => cm.NodeId,
+                        NodeFailMessage fm => fm.NodeId,
+                        NodeNextMessage nm => nm.NodeId,
+                        _ => null,
+                    };
 
                     if (!string.IsNullOrEmpty(sourceNodeId))
                     {
@@ -1283,6 +1283,17 @@ namespace ExecutionEngine.Engine
                         if (shouldExecute)
                         {
                             await this.ExecuteNodeAsync(nodeDef.NodeId, workflowDefinition, context, cancellationToken);
+                        }
+                        else
+                        {
+                            // Not all upstreams ready — consume the message from queue
+                            // so it's not re-peeked and re-processed in infinite loop
+                            var queue = (NodeMessageQueue)context.NodeQueues[nodeDef.NodeId];
+                            var joinLease = await queue.LeaseAsync(cancellationToken);
+                            if (joinLease != null)
+                            {
+                                await queue.CompleteAsync(joinLease, cancellationToken);
+                            }
                         }
                     }
                 }

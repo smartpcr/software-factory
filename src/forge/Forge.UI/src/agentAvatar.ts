@@ -145,6 +145,7 @@ export function agentTooltip(
   id: string,
   name?: string | null,
   role?: string | null,
+  soulPath?: string | null,
 ): string {
   const r = role ?? roleFromId(id);
   const model = MODEL_BY_ROLE[r] ?? 'unknown';
@@ -154,8 +155,10 @@ export function agentTooltip(
   const meta = entry?.role_label
     ? `${entry.role_label} · ${model}`
     : `${r} · ${model}`;
-  if (!caps || caps.length === 0) return `${head}\n${meta}`;
-  return `${head}\n${meta}\n${caps.join(' · ')}`;
+  const lines = [head, meta];
+  if (caps && caps.length > 0) lines.push(caps.join(' · '));
+  if (soulPath) lines.push(`soul: ${soulPath}`);
+  return lines.join('\n');
 }
 
 /** Exposed so the new CrewsView can iterate every member. */

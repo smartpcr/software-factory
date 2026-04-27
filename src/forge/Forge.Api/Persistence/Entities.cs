@@ -6,6 +6,8 @@
 
 namespace Forge.Api.Persistence;
 
+using Forge.Api;
+
 /// <summary>
 /// Persistence entities for the Forge cache. Phase-0 keeps wide JSON columns
 /// for the "shape" fields (tags, crew, agent, build, review, etc.) so the
@@ -425,6 +427,18 @@ public class CrewRow
     /// Null = use the same as <see cref="Model"/> (warns in the UI).
     /// </summary>
     public string? EvaluatorModel { get; set; }
+
+    /// <summary>
+    /// Phase 14.1 — IANA timezone the crew works in (drives the 9-9-6
+    /// schedule gate). Default <c>America/Los_Angeles</c>.
+    /// </summary>
+    public string Timezone { get; set; } = ScoringConstants.DefaultTimezone;
+
+    /// <summary>
+    /// Phase 14.1 — when false, the schedule gate is bypassed for this crew
+    /// (e.g. CI fixtures, off-hours sweep crews). Defaults to true.
+    /// </summary>
+    public bool ScheduleEnabled { get; set; } = true;
 }
 
 /// <summary>
@@ -523,6 +537,40 @@ public class AgentRow
 
     /// <summary>One of: idle, working, blocked, paused.</summary>
     public string State { get; set; } = "idle";
+
+    /// <summary>
+    /// Phase 13e — per-agent runtime overrides. Each is nullable; null
+    /// means "inherit the crew's value". When set, this agent runs against
+    /// the override even if the crew's default differs. Used to give a
+    /// generator + evaluator inside the same crew their own model + backend
+    /// pairing (e.g. evaluator on Copilot/sonnet while generator stays on
+    /// Claude/opus).
+    /// </summary>
+    public string? Backend { get; set; }
+
+    public string? InvokeMode { get; set; }
+
+    /// <summary>Model when this agent acts as the pair's generator.</summary>
+    public string? GeneratorModel { get; set; }
+
+    /// <summary>Model when this agent acts as the pair's evaluator.</summary>
+    public string? EvaluatorModel { get; set; }
+
+    /// <summary>
+    /// Phase 14.1 — agent level (0..10). Drives <see cref="HourlyUsd"/> and
+    /// promotion eligibility. Backfilled to 0 on migration.
+    /// </summary>
+    public int Level { get; set; }
+
+    /// <summary>Phase 14.1 — last time <see cref="Level"/> changed; null if never promoted/demoted.</summary>
+    public DateTimeOffset? LevelUpdatedAt { get; set; }
+
+    /// <summary>
+    /// Phase 14.1 — derived: <c>base + level * step</c>. Persisted so a
+    /// historical payroll roll-up doesn't need to know the formula version
+    /// at the time of the row.
+    /// </summary>
+    public decimal HourlyUsd { get; set; } = ScoringConstants.HourlyBaseUsd;
 }
 
 /// <summary>
@@ -548,6 +596,79 @@ public class AgentHistoryRow
 
     /// <summary>X-Forge-User who triggered the move.</summary>
     public string? Actor { get; set; }
+}
+
+/// <summary>
+/// Phase 14.1 — one row per deliverable iteration. A "deliverable" is a
+/// single (work-item × iteration) attempt: the generator runs, the
+/// evaluator scores, and the result is persisted here. Sub-90 verdicts
+/// re-iterate up to <see cref="ScoringConstants.MaxIterations"/> times,
+/// each iteration getting its own row.
+/// </summary>
+public class DeliverableRow
+{
+    public long Id { get; set; }
+
+    public string WorkItemId { get; set; } = string.Empty;
+
+    public string CrewId { get; set; } = string.Empty;
+
+    public string GeneratorAgentId { get; set; } = string.Empty;
+
+    public string EvaluatorAgentId { get; set; } = string.Empty;
+
+    /// <summary>1-based iteration counter, capped at <see cref="ScoringConstants.MaxIterations"/>.</summary>
+    public int Iter { get; set; } = 1;
+
+    /// <summary>0..100. Derived verdict: ≥90 pass, 70..89 iterate, &lt;70 reject.</summary>
+    public int Score { get; set; }
+
+    /// <summary>JSON object mapping each rubric dimension to its 0..weight points.</summary>
+    public string DimsJson { get; set; } = "{}";
+
+    /// <summary>One of: <c>pass | iterate | reject | stalled | stalled-budget | paused-eod</c>.</summary>
+    public string Verdict { get; set; } = "iterate";
+
+    /// <summary>Evaluator's free-form notes (≤ 800 chars by spec, not enforced at the row level).</summary>
+    public string Notes { get; set; } = string.Empty;
+
+    public decimal GenCostUsd { get; set; }
+
+    public decimal EvalCostUsd { get; set; }
+
+    /// <summary>Phase 14.5 dispute path — set if a judge re-scored this row.</summary>
+    public string? JudgeAgentId { get; set; }
+
+    public int? JudgeScore { get; set; }
+
+    public string? JudgeNotes { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// Phase 14.1 — append-only level history. One row per promotion/demotion;
+/// the nightly <c>PromotionJob</c> writes here when it bumps an agent's
+/// level. Backfill on migration writes no rows (existing agents enter at
+/// level 0 with no history).
+/// </summary>
+public class AgentLevelHistoryRow
+{
+    public long Id { get; set; }
+
+    public string AgentId { get; set; } = string.Empty;
+
+    public int OldLevel { get; set; }
+
+    public int NewLevel { get; set; }
+
+    /// <summary>Trailing-window average score that triggered the change.</summary>
+    public decimal WindowAvg { get; set; }
+
+    /// <summary>One of: <c>promote | demote | grandfathered</c>.</summary>
+    public string Reason { get; set; } = "promote";
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
 /// <summary>

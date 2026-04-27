@@ -5,6 +5,7 @@ import { useBoardStore, computeBurndown } from '@/state/useBoardStore';
 import { sampleState } from '@/sampleData';
 import type { OverviewActivity, OverviewAgent } from '@/types';
 import { agentTooltip, avatarFor } from '@/agentAvatar';
+import { useAgentEditorStore } from '@/state/useAgentEditorStore';
 
 // Verbatim port of the prototype's renderOverview (lines 4094-4170).
 export function OverviewView() {
@@ -144,8 +145,19 @@ function AgentRow({ a }: { a: OverviewAgent }) {
   // Server-side overview agents (A1/A2/E4/…) lack a bundled `avatar`; fall
   // back to the global lookup keyed by id so the row gets a portrait.
   const portrait = a.avatar ?? avatarFor(a.id, a.name);
+  // Phase 13f — clicking anywhere on the row opens the global agent-edit
+  // popup so the operator can drill in without leaving Overview.
+  const openAgent = useAgentEditorStore((s) => s.openAgent);
   return (
-    <div className="agent-row" title={a.bio ?? a.name}>
+    <div
+      className="agent-row"
+      title={a.bio ?? a.name}
+      onClick={() => openAgent(a.id)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAgent(a.id); } }}
+      style={{ cursor: 'pointer' }}
+    >
       {portrait ? (
         <img
           src={portrait}

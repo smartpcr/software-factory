@@ -103,6 +103,9 @@ public class Phase13CrewsTests
         c.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
 
         await Make(c, "cli1", invokeMode: "cli");
+        // Phase 14.2 — disable schedule so this test stays deterministic
+        // regardless of wall-clock; it's about CLI-mode refusal, not scheduling.
+        await DisableSchedule(f, "cli1");
         var plan = await c.PostAsJsonAsync("/api/crews/cli1/plan", new { workItemId = "wi-1" }, JsonOpts);
         Assert.Equal(HttpStatusCode.BadRequest, plan.StatusCode);
         var code = await c.PostAsJsonAsync("/api/crews/cli1/code", new { stepWorkItemId = "wi-1" }, JsonOpts);
@@ -119,8 +122,20 @@ public class Phase13CrewsTests
         c.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
 
         await Make(c, "sdk1");
+        // Phase 14.2 — disable schedule so we deterministically reach the 501 stub.
+        await DisableSchedule(f, "sdk1");
         var plan = await c.PostAsJsonAsync("/api/crews/sdk1/plan", new { workItemId = "wi-1" }, JsonOpts);
         Assert.Equal(HttpStatusCode.NotImplemented, plan.StatusCode);
+    }
+
+    /// <summary>Phase 14.2 — turn off the schedule gate on a crew row for tests that don't care about 9-9-6.</summary>
+    private static async Task DisableSchedule(ForgeWebApplicationFactory f, string crewId)
+    {
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var row = await db.Crews.FirstAsync(x => x.Id == crewId);
+        row.ScheduleEnabled = false;
+        await db.SaveChangesAsync();
     }
 
     [Fact]

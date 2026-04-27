@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { AgentDetail, Crew, CrewHistoryEntry, CrewSalary, ModelInfo, SoulPayload } from '@/types';
+import type { AgentDetail, Crew, CrewHistoryEntry, CrewSalary, DomainExpert, ModelInfo } from '@/types';
 import { forgeApi } from '@/api/forgeApi';
 import { useHasRole } from '@/state/useCurrentUserStore';
+import { useAgentEditorStore } from '@/state/useAgentEditorStore';
 import { avatarFor, agentTooltip } from '@/agentAvatar';
 import { AGENT_ALLOCATION, type Team } from '@/agentAllocation';
 
@@ -70,8 +71,9 @@ export function CrewsView() {
   const [error, setError] = useState<string | null>(null);
   const [autoAssignBusy, setAutoAssignBusy] = useState(false);
   const [autoAssignMsg, setAutoAssignMsg] = useState<string | null>(null);
-  // Phase 13b — per-agent edit modal opened from the catalog.
-  const [editAgentId, setEditAgentId] = useState<string | null>(null);
+  // Phase 13f — agent edit popup is now mounted globally at AppShell;
+  // we just call openAgent(id) from any click site here.
+  const openAgent = useAgentEditorStore((s) => s.openAgent);
 
   async function runAutoAssign() {
     setAutoAssignBusy(true); setError(null); setAutoAssignMsg(null);
@@ -234,7 +236,7 @@ export function CrewsView() {
                     canEdit={isPO}
                     onChange={applyCrewUpdate}
                     onError={setError}
-                    onEditAgent={setEditAgentId}
+                    onEditAgent={openAgent}
                   />
                 )}
                 {tab === 'pair' && (
@@ -245,6 +247,7 @@ export function CrewsView() {
                     canEdit={isPO}
                     onChange={applyCrewUpdate}
                     onError={setError}
+                    onEditAgent={openAgent}
                   />
                 )}
                 {tab === 'capabilities' && (
@@ -267,18 +270,6 @@ export function CrewsView() {
         </main>
       </div>
 
-      {editAgentId && (
-        <AgentEditModal
-          agentId={editAgentId}
-          agents={agents}
-          canEdit={isPO}
-          onClose={() => setEditAgentId(null)}
-          onSaved={(next) => {
-            setAgents((cur) => cur.map((a) => a.id === next.id ? next : a));
-          }}
-          onError={setError}
-        />
-      )}
     </section>
   );
 }
@@ -297,7 +288,8 @@ function RosterTab({ crew, allAgents, canEdit, onChange, onError, onEditAgent }:
   const [busy, setBusy] = useState<string | null>(null);
   // Phase 11.3 — soul.md editor. State holds the agent id currently being
   // edited; the modal owns the contents + save lifecycle.
-  const [soulFor, setSoulFor] = useState<string | null>(null);
+  // Phase 13f — soul.md editing now lives inside the global AgentEditModal
+  // (opened via onEditAgent). No separate soul-only modal needed here.
   // Cross-team move confirmation. Held in state so the modal can render
   // outside the row that triggered it.
   const [pendingMove, setPendingMove] = useState<{
@@ -372,13 +364,14 @@ function RosterTab({ crew, allAgents, canEdit, onChange, onError, onEditAgent }:
         <SectionHead label="Current roster" right={`${(crew.roster?.length ?? 0)} member${(crew.roster?.length ?? 0) === 1 ? '' : 's'}`} />
         {crew.lead && (
           <div style={memberRowStyle(true)}>
-            <AgentChip id={crew.lead} agents={allAgents} />
-            <span style={leadCrownStyle}>★ lead</span>
             <button
-              onClick={() => setSoulFor(crew.lead!)}
-              style={soulBtnStyle}
-              title="Edit soul.md (system prompt)"
-            >✎ soul</button>
+              onClick={() => onEditAgent(crew.lead!)}
+              style={chipClickStyle}
+              title="Click to edit agent (name, role, runtime, soul.md)"
+            >
+              <AgentChip id={crew.lead} agents={allAgents} />
+            </button>
+            <span style={leadCrownStyle}>★ lead</span>
           </div>
         )}
         {(crew.roster ?? []).length === 0 && !crew.lead && (
@@ -386,7 +379,13 @@ function RosterTab({ crew, allAgents, canEdit, onChange, onError, onEditAgent }:
         )}
         {(crew.roster ?? []).map((m) => (
           <div key={m.agentId} style={memberRowStyle(m.agentId === crew.lead)}>
-            <AgentChip id={m.agentId} agents={allAgents} />
+            <button
+              onClick={() => onEditAgent(m.agentId)}
+              style={chipClickStyle}
+              title="Click to edit agent"
+            >
+              <AgentChip id={m.agentId} agents={allAgents} />
+            </button>
             <select
               value={m.role}
               disabled={!canEdit || busy === m.agentId}
@@ -397,11 +396,6 @@ function RosterTab({ crew, allAgents, canEdit, onChange, onError, onEditAgent }:
               {ROLE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
               {!ROLE_OPTIONS.includes(m.role) && <option value={m.role}>{m.role}</option>}
             </select>
-            <button
-              onClick={() => setSoulFor(m.agentId)}
-              style={soulBtnStyle}
-              title="Edit soul.md (system prompt)"
-            >✎ soul</button>
             <button
               disabled={!canEdit || busy === m.agentId}
               onClick={() => void remove(m.agentId)}
@@ -471,15 +465,6 @@ function RosterTab({ crew, allAgents, canEdit, onChange, onError, onEditAgent }:
             setPendingMove(null);
             await performAdd(id);
           }}
-        />
-      )}
-      {soulFor && (
-        <AgentSoulEditor
-          agentId={soulFor}
-          agents={allAgents}
-          canEdit={canEdit}
-          onClose={() => setSoulFor(null)}
-          onError={onError}
         />
       )}
     </div>
@@ -562,386 +547,18 @@ const modalBtnPrimaryStyle: React.CSSProperties = {
   padding: '6px 14px', fontSize: 12, cursor: 'pointer', fontWeight: 600,
 };
 
-// ═══════════════════════════ AGENT SOUL EDITOR ════════════════════════════
-
-/**
- * Phase 11.3 — soul.md editor modal. Loads the file via
- * <c>GET /api/agents/{id}/soul</c>, lets the operator edit, saves via PUT.
- * The system prompt for every invocation of this agent is the soul.md
- * contents, so changes take effect on the next <c>StartAsync</c> call.
- *
- * Capabilities are parsed from the YAML front-matter <c>capabilities:</c>
- * list and shown read-only at the top — they're authored inline in the
- * markdown source rather than via a separate field, so the prompt cache
- * prefix stays content-addressable (Q13.3).
- */
-function AgentSoulEditor({ agentId, agents, canEdit, onClose, onError }: {
-  agentId: string;
-  agents: AgentDetail[];
-  canEdit: boolean;
-  onClose: () => void;
-  onError: (msg: string | null) => void;
-}) {
-  const agent = agents.find((a) => a.id === agentId);
-  const [soul, setSoul] = useState<SoulPayload | null>(null);
-  const [contents, setContents] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [savedAt, setSavedAt] = useState<Date | null>(null);
-
-  // ESC closes; click-outside closes; Cmd/Ctrl-S saves.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
-      if ((e.key === 's' || e.key === 'S') && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        if (canEdit && !saving && soul && contents !== soul.contents) void save();
-      }
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- save closure stable enough for this short-lived modal
-  }, [onClose, canEdit, saving, soul, contents]);
-
-  // Initial load.
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    forgeApi.getAgentSoul(agentId)
-      .then((p) => {
-        if (cancelled) return;
-        setSoul(p);
-        setContents(p.contents);
-        setLoading(false);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        onError(err instanceof Error ? err.message : String(err));
-        setLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [agentId, onError]);
-
-  async function save() {
-    if (!canEdit || !soul) return;
-    setSaving(true); onError(null);
-    try {
-      const next = await forgeApi.putAgentSoul(agentId, contents);
-      setSoul(next);
-      setContents(next.contents);
-      setSavedAt(new Date());
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const dirty = soul !== null && contents !== soul.contents;
-
-  return (
-    <div
-      style={modalOverlayStyle}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="soul-title"
-    >
-      <div style={soulCardStyle}>
-        <header style={soulHeadStyle}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 10, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.12 }}>
-              soul.md · agent system prompt
-            </div>
-            <h3 id="soul-title" style={{ margin: '4px 0 4px', fontSize: 17, fontWeight: 600 }}>
-              {agentId}
-              {agent && <span style={{ color: 'var(--text-secondary)', fontWeight: 400 }}> · {agent.name}</span>}
-              {!soul?.exists && !loading && (
-                <span style={{ marginLeft: 8, fontSize: 10, padding: '2px 6px', borderRadius: 999, background: 'var(--warning-bg, rgba(245, 158, 11, 0.10))', color: 'var(--warning, rgb(180, 112, 0))', fontFamily: 'var(--font-mono, monospace)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
-                  new file
-                </span>
-              )}
-            </h3>
-            {soul?.path && (
-              <div style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 10.5, color: 'var(--text-tertiary)', wordBreak: 'break-all' }}>
-                {soul.path}
-              </div>
-            )}
-          </div>
-          <button onClick={onClose} style={soulCloseBtnStyle} aria-label="Close">×</button>
-        </header>
-
-        {soul && soul.capabilities.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-            <span style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 9.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.12, alignSelf: 'center', marginRight: 4 }}>
-              capabilities ({soul.capabilities.length})
-            </span>
-            {soul.capabilities.map((c) => (
-              <span key={c} style={soulCapChipStyle}>{c}</span>
-            ))}
-          </div>
-        )}
-
-        <div style={{ padding: '8px 0 4px', flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          {loading ? (
-            <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-tertiary)', fontSize: 12 }}>Loading…</div>
-          ) : (
-            <textarea
-              value={contents}
-              onChange={(e) => setContents(e.target.value)}
-              disabled={!canEdit || saving}
-              spellCheck={false}
-              placeholder={soul?.exists ? '' : '---\ncapabilities:\n  - sha256:…\n---\n\n# Agent system prompt\n\n…'}
-              style={soulTextareaStyle}
-            />
-          )}
-        </div>
-
-        <footer style={soulFootStyle}>
-          <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>
-            {!canEdit && <em>read-only — PO required to save</em>}
-            {canEdit && savedAt && !dirty && <span>saved · {savedAt.toLocaleTimeString()}</span>}
-            {canEdit && dirty && <em style={{ color: 'var(--warning, rgb(180, 112, 0))' }}>unsaved changes</em>}
-            {canEdit && !savedAt && !dirty && <span>{contents.length.toLocaleString()} chars</span>}
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={onClose} style={modalBtnSecondaryStyle}>Close</button>
-            {canEdit && (
-              <button
-                onClick={() => void save()}
-                disabled={saving || !dirty}
-                style={{ ...modalBtnPrimaryStyle, opacity: saving || !dirty ? 0.55 : 1, cursor: saving || !dirty ? 'not-allowed' : 'pointer' }}
-                title="⌘/Ctrl-S"
-              >
-                {saving ? 'Saving…' : 'Save soul.md'}
-              </button>
-            )}
-          </div>
-        </footer>
-      </div>
-    </div>
-  );
-}
-
-const soulCardStyle: React.CSSProperties = {
-  width: 'min(880px, 100%)',
-  height: 'min(720px, 90vh)',
-  background: 'var(--bg-elevated, #1c1c1c)',
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-md, 8px)',
-  boxShadow: '0 10px 30px rgba(0,0,0,0.45)',
-  padding: 18,
-  color: 'var(--text-primary)',
-  display: 'flex', flexDirection: 'column',
-  minHeight: 0,
-};
-const soulHeadStyle: React.CSSProperties = {
-  display: 'flex', alignItems: 'flex-start', gap: 10,
-  paddingBottom: 8, borderBottom: '1px solid var(--border)',
-};
-const soulCloseBtnStyle: React.CSSProperties = {
-  background: 'transparent', border: 'none', color: 'var(--text-tertiary)',
-  cursor: 'pointer', fontSize: 22, lineHeight: 1, padding: '0 4px',
-};
-const soulCapChipStyle: React.CSSProperties = {
-  fontSize: 10, padding: '2px 6px', borderRadius: 999,
-  background: 'var(--accent-bg, rgba(245, 158, 11, 0.10))',
-  color: 'var(--accent, rgb(180, 112, 0))',
-  border: '1px solid var(--border-accent, rgba(245, 158, 11, 0.32))',
-  fontFamily: 'var(--font-mono, monospace)',
-};
-const soulTextareaStyle: React.CSSProperties = {
-  flex: 1,
-  width: '100%', minHeight: 0,
-  resize: 'none',
-  fontFamily: 'var(--font-mono, JetBrains Mono, monospace)',
-  fontSize: 12.5, lineHeight: 1.55,
-  padding: 10,
-  background: 'var(--bg-base, #0c0c0c)',
-  color: 'var(--text-primary)',
-  border: '1px solid var(--border-strong)',
-  borderRadius: 'var(--radius-sm)',
-  outline: 'none',
-};
-const soulFootStyle: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-  paddingTop: 10, borderTop: '1px solid var(--border)',
-};
-
-const soulBtnStyle: React.CSSProperties = {
-  background: 'transparent',
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-sm)',
-  color: 'var(--text-secondary)',
-  cursor: 'pointer',
-  fontSize: 10.5,
-  padding: '3px 7px',
-  fontFamily: 'var(--font-mono, monospace)',
-  whiteSpace: 'nowrap',
-};
-
-// ═══════════════════════════ AGENT EDIT MODAL ═════════════════════════════
-
-/**
- * Phase 13b — edit a single agent (name / role / soul.md path override).
- * Reuses the same modal chrome as the soul editor; the soul textarea lives
- * in <see cref="AgentSoulEditor"/> as a separate flow because the file is
- * large and the save lifecycle is independent.
- */
-function AgentEditModal({ agentId, agents, canEdit, onClose, onSaved, onError }: {
-  agentId: string;
-  agents: AgentDetail[];
-  canEdit: boolean;
-  onClose: () => void;
-  onSaved: (next: AgentDetail) => void;
-  onError: (msg: string | null) => void;
-}) {
-  const original = agents.find((a) => a.id === agentId);
-  const [name, setName] = useState(original?.name ?? '');
-  const [role, setRole] = useState(original?.role ?? '');
-  const [soulPath, setSoulPath] = useState(original?.soulPath ?? '');
-  const [saving, setSaving] = useState(false);
-  const [savedAt, setSavedAt] = useState<Date | null>(null);
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  if (!original) {
-    return (
-      <div style={modalOverlayStyle} onClick={onClose} role="dialog" aria-modal="true">
-        <div style={modalCardStyle}>
-          <p style={{ margin: 0, fontSize: 12.5 }}>Agent {agentId} not found.</p>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
-            <button onClick={onClose} style={modalBtnSecondaryStyle}>Close</button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const dirty = name !== original.name || role !== original.role || (soulPath ?? '') !== (original.soulPath ?? '');
-
-  async function save() {
-    if (!canEdit || !dirty) return;
-    setSaving(true); onError(null);
-    try {
-      const next = await forgeApi.patchAgent(agentId, { name, role, soulPath });
-      onSaved(next);
-      setSavedAt(new Date());
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div
-      style={modalOverlayStyle}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="agent-edit-title"
-    >
-      <div style={{ ...modalCardStyle, width: 'min(520px, 100%)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-          <AgentFace id={original.id} name={original.name} role={original.role} size={36} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 10, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.12 }}>
-              agent · {agentId}
-            </div>
-            <h3 id="agent-edit-title" style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>
-              {name || agentId}
-              <span style={agentStatePillStyle(original.state)}>{original.state}</span>
-            </h3>
-          </div>
-        </div>
-
-        <div style={{ display: 'grid', gap: 10 }}>
-          <div>
-            <SectionHead label="Name" />
-            <input
-              type="text" value={name} onChange={(e) => setName(e.target.value)}
-              disabled={!canEdit || saving}
-              style={searchInputStyle}
-            />
-          </div>
-          <div>
-            <SectionHead label="Role" />
-            <select
-              value={role} disabled={!canEdit || saving}
-              onChange={(e) => setRole(e.target.value)}
-              style={{ ...selectStyle, width: '100%' }}
-            >
-              {['arch', 'eng', 'rev', 'qa', 'human', 'product-owner', 'tech-lead'].map((r) => (
-                <option key={r} value={r}>{r}</option>
-              ))}
-              {!['arch', 'eng', 'rev', 'qa', 'human', 'product-owner', 'tech-lead'].includes(role) && (
-                <option value={role}>{role}</option>
-              )}
-            </select>
-            <div style={hintStyle}>Drives auto-assign team mapping (arch → Architecture, eng → Engineering, etc.).</div>
-          </div>
-          <div>
-            <SectionHead label="soul.md path override" />
-            <input
-              type="text" value={soulPath} onChange={(e) => setSoulPath(e.target.value)}
-              disabled={!canEdit || saving}
-              placeholder="empty = default %LOCALAPPDATA%\Forge\agents\{id}\soul.md"
-              style={{ ...searchInputStyle, fontFamily: 'var(--font-mono, monospace)' }}
-            />
-            <div style={hintStyle}>Set to override where soul.md lives on disk; empty falls back to the default location.</div>
-          </div>
-          <div style={{ display: 'flex', gap: 6, fontSize: 11, color: 'var(--text-tertiary)' }}>
-            <span>capabilities · {original.capabilities.length}</span>
-            {original.crewId && <><span>·</span><span>crew · {original.crewId}</span></>}
-          </div>
-        </div>
-
-        <footer style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
-          <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>
-            {!canEdit && <em>read-only — PO required</em>}
-            {canEdit && savedAt && !dirty && <span>saved · {savedAt.toLocaleTimeString()}</span>}
-            {canEdit && dirty && <em style={{ color: 'var(--warning, rgb(180, 112, 0))' }}>unsaved changes</em>}
-          </span>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={onClose} style={modalBtnSecondaryStyle}>Close</button>
-            {canEdit && (
-              <button
-                onClick={() => void save()}
-                disabled={saving || !dirty}
-                style={{ ...modalBtnPrimaryStyle, opacity: saving || !dirty ? 0.55 : 1, cursor: saving || !dirty ? 'not-allowed' : 'pointer' }}
-              >
-                {saving ? 'Saving…' : 'Save'}
-              </button>
-            )}
-          </div>
-        </footer>
-      </div>
-    </div>
-  );
-}
 
 // ═══════════════════════════ PAIR TAB ═════════════════════════════════════
 
-function PairTab({ crew, allAgents, models, canEdit, onChange, onError }: {
+function PairTab({ crew, allAgents, models, canEdit, onChange, onError, onEditAgent }: {
   crew: Crew;
   allAgents: AgentDetail[];
   models: ModelInfo[];
   canEdit: boolean;
   onChange: (next: Crew) => void;
   onError: (msg: string | null) => void;
+  onEditAgent: (agentId: string) => void;
 }) {
-  const candidates = useMemo(() => {
-    const ids = new Set<string>();
-    if (crew.lead) ids.add(crew.lead);
-    for (const m of crew.roster ?? []) ids.add(m.agentId);
-    return allAgents.filter((a) => ids.has(a.id));
-  }, [allAgents, crew.lead, crew.roster]);
-
   // Filter the model registry to entries that match the crew's backend
   // vendor — Copilot crews see Copilot variants (dotted ids like
   // claude-opus-4.7), Claude crews see Anthropic ids (claude-opus-4-7).
@@ -968,34 +585,10 @@ function PairTab({ crew, allAgents, models, canEdit, onChange, onError }: {
   return (
     <div style={{ display: 'grid', gap: 14, maxWidth: 720 }}>
       <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-        Every plan / coding task this crew runs uses these two agents by default.
-        The <strong>generator</strong> writes the spec or the diff; the <strong>evaluator</strong>
-        reviews before the WIT tree commits or the PR comes off draft. Any specific task
-        can override the pair via <code style={{ fontFamily: 'var(--font-mono, monospace)' }}>POST /api/crews/{'{id}'}/assign</code>.
-      </div>
-
-      <SectionHead label="Agents" />
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <PairPicker
-          label="Generator"
-          hint="Authors the spec / writes the code. Required — falls back to the lead when unset."
-          value={crew.defaultGeneratorAgentId ?? ''}
-          candidates={candidates}
-          canEdit={canEdit}
-          excludes={crew.defaultEvaluatorAgentId ?? null}
-          onChange={(v) => void patch({ defaultGeneratorAgentId: v })}
-          crew={crew}
-        />
-        <PairPicker
-          label="Evaluator"
-          hint="Reviews the diff / plan. Empty = single-agent mode (no pair-review pass)."
-          value={crew.defaultEvaluatorAgentId ?? ''}
-          candidates={candidates}
-          canEdit={canEdit}
-          excludes={crew.defaultGeneratorAgentId ?? null}
-          onChange={(v) => void patch({ defaultEvaluatorAgentId: v })}
-          crew={crew}
-        />
+        The team lead assigns each work item to a specific pair (or a solo agent), so this view
+        just shows how the crew's roster pairs up. The <strong>generator</strong> writes the spec
+        or the diff; the <strong>evaluator</strong> reviews before the WIT tree commits or the PR
+        comes off draft. Models below apply crew-wide.
       </div>
 
       <SectionHead label="Models" right={`${backendVendors.join(' / ')} — diff required`} />
@@ -1034,22 +627,167 @@ function PairTab({ crew, allAgents, models, canEdit, onChange, onError }: {
         </div>
       )}
 
-      <div style={pairSummaryStyle}>
-        <div style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 11, lineHeight: 1.6 }}>
-          <div>
-            <strong>{(crew.defaultGeneratorAgentId ?? crew.lead) ?? '(no generator)'}</strong>
-            {' '}on{' '}
-            <em>{generatorModel}</em>
-          </div>
-          <div style={{ marginLeft: 14, color: 'var(--text-tertiary)' }}>↓</div>
-          <div>
-            <strong>{crew.defaultEvaluatorAgentId ?? '(none — solo)'}</strong>
-            {evaluatorModel
-              ? <> on <em>{evaluatorModel}</em></>
-              : <> (no evaluator)</>}
-          </div>
-        </div>
+      <RosterPairsList
+        crew={crew}
+        allAgents={allAgents}
+        generatorModel={generatorModel}
+        evaluatorModel={evaluatorModel}
+        onEditAgent={onEditAgent}
+      />
+    </div>
+  );
+}
+
+// Auto-pair every roster member two-by-two so the team lead can see how the
+// crew lines up. We don't track a "default pair" — work is assigned per-task,
+// not per-crew. Strategy:
+//   1. Cross-pair generators (eng/arch/lead/coder) with evaluators
+//      (rev/qa/reviewer) 1-to-1 while both buckets have someone.
+//   2. Drain whichever bucket still has people by pairing them with each
+//      other (eng+eng or rev+rev — the second member acts as evaluator).
+//   3. Pair "other" roles among themselves the same way.
+//   4. If a single agent is left at the end, render them solo.
+function buildRosterPairs(crew: Crew, allAgents: AgentDetail[]): Array<{
+  generator: AgentDetail | null;
+  evaluator: AgentDetail | null;
+}> {
+  const byId = new Map(allAgents.map((a) => [a.id, a]));
+  const memberIds = new Set<string>();
+  if (crew.lead) memberIds.add(crew.lead);
+  for (const m of crew.roster ?? []) memberIds.add(m.agentId);
+  const members = [...memberIds].map((id) => byId.get(id)).filter((a): a is AgentDetail => !!a);
+
+  const isGen = (a: AgentDetail) => /^(eng|arch|lead|generator|coder)$/i.test(a.role);
+  const isEval = (a: AgentDetail) => /^(rev|qa|reviewer|evaluator)$/i.test(a.role);
+
+  const out: Array<{ generator: AgentDetail | null; evaluator: AgentDetail | null }> = [];
+  const generators = members.filter(isGen);
+  const evaluators = members.filter(isEval);
+  const others = members.filter((a) => !isGen(a) && !isEval(a));
+
+  while (generators.length > 0 && evaluators.length > 0) {
+    out.push({ generator: generators.shift()!, evaluator: evaluators.shift()! });
+  }
+  while (generators.length >= 2) {
+    out.push({ generator: generators.shift()!, evaluator: generators.shift()! });
+  }
+  while (evaluators.length >= 2) {
+    out.push({ generator: evaluators.shift()!, evaluator: evaluators.shift()! });
+  }
+  while (others.length >= 2) {
+    out.push({ generator: others.shift()!, evaluator: others.shift()! });
+  }
+  const leftover = [...generators, ...evaluators, ...others];
+  while (leftover.length >= 2) {
+    out.push({ generator: leftover.shift()!, evaluator: leftover.shift()! });
+  }
+  if (leftover.length === 1) {
+    out.push({ generator: leftover[0], evaluator: null });
+  }
+
+  return out;
+}
+
+function RosterPairsList({ crew, allAgents, generatorModel, evaluatorModel, onEditAgent }: {
+  crew: Crew;
+  allAgents: AgentDetail[];
+  generatorModel: string;
+  evaluatorModel: string;
+  onEditAgent: (agentId: string) => void;
+}) {
+  const pairs = useMemo(() => buildRosterPairs(crew, allAgents), [crew, allAgents]);
+  const memberCount = (crew.roster?.length ?? 0) + (crew.lead ? 1 : 0);
+  const unpaired = pairs.reduce((n, p) => n + (p.generator && p.evaluator ? 0 : 1), 0);
+
+  if (pairs.length === 0) {
+    return (
+      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+        No roster — add members in the Roster tab to auto-pair them here.
       </div>
+    );
+  }
+
+  return (
+    <div>
+      <SectionHead
+        label="Roster pairs"
+        right={`${memberCount} member${memberCount === 1 ? '' : 's'} → ${pairs.length} pair${pairs.length === 1 ? '' : 's'}${unpaired ? ` · ${unpaired} solo` : ''}`}
+      />
+      <div style={{ display: 'grid', gap: 4 }}>
+        {pairs.map((p, i) => (
+          <RosterPairRow
+            key={(p.generator?.id ?? '_') + ':' + (p.evaluator?.id ?? '_') + ':' + i}
+            generator={p.generator}
+            evaluator={p.evaluator}
+            generatorModel={generatorModel}
+            evaluatorModel={evaluatorModel}
+            onEditAgent={onEditAgent}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RosterPairRow({ generator, evaluator, generatorModel, evaluatorModel, onEditAgent }: {
+  generator: AgentDetail | null;
+  evaluator: AgentDetail | null;
+  generatorModel: string;
+  evaluatorModel: string;
+  onEditAgent: (agentId: string) => void;
+}) {
+  const rowStyle: React.CSSProperties = {
+    display: 'grid',
+    gridTemplateColumns: '1fr 18px 1fr',
+    alignItems: 'center',
+    gap: 8,
+    padding: '8px 10px',
+    borderRadius: 6,
+    border: '1px solid var(--border)',
+    background: 'var(--surface-1, transparent)',
+  };
+  return (
+    <div style={rowStyle}>
+      <RosterPairSide agent={generator} model={generatorModel} placeholder="(no generator)" onEditAgent={onEditAgent} />
+      <span aria-hidden style={{ color: 'var(--text-tertiary)', textAlign: 'center', fontSize: 12 }}>→</span>
+      <RosterPairSide agent={evaluator} model={evaluatorModel} placeholder="(solo)" onEditAgent={onEditAgent} />
+    </div>
+  );
+}
+
+function RosterPairSide({ agent, model, placeholder, onEditAgent }: {
+  agent: AgentDetail | null;
+  model: string;
+  placeholder: string;
+  onEditAgent: (agentId: string) => void;
+}) {
+  if (!agent) {
+    return <span style={{ fontSize: 11, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>{placeholder}</span>;
+  }
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+      <AgentFace
+        id={agent.id}
+        name={agent.name}
+        role={agent.role}
+        soulPath={agent.soulPath}
+        size={26}
+        onClick={() => onEditAgent(agent.id)}
+      />
+      <button
+        type="button"
+        onClick={() => onEditAgent(agent.id)}
+        style={{ flex: 1, minWidth: 0, background: 'transparent', border: 'none', color: 'inherit', textAlign: 'left', cursor: 'pointer', padding: 0 }}
+        title="Edit member"
+      >
+        <div style={{ fontWeight: 600, fontSize: 12.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {agent.name}
+          <span style={{ color: 'var(--text-tertiary)', fontWeight: 400, marginLeft: 6, fontFamily: 'var(--font-mono, monospace)', fontSize: 10 }}>{agent.id}</span>
+        </div>
+        <div style={{ fontSize: 10, color: 'var(--text-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {agent.role} · {model || 'inherit'}
+        </div>
+      </button>
     </div>
   );
 }
@@ -1089,38 +827,6 @@ function ModelPicker({ label, value, excludes, options, canEdit, allowEmpty, onC
   );
 }
 
-function PairPicker({ label, hint, value, candidates, canEdit, excludes, onChange, crew }: {
-  label: string;
-  hint: string;
-  value: string;
-  candidates: AgentDetail[];
-  canEdit: boolean;
-  excludes: string | null;
-  onChange: (next: string) => void;
-  crew: Crew;
-}) {
-  return (
-    <div>
-      <SectionHead label={label} />
-      <select
-        value={value}
-        disabled={!canEdit}
-        onChange={(e) => onChange(e.target.value)}
-        style={{ ...selectStyle, width: '100%' }}
-      >
-        <option value="">— {label === 'Generator' ? `inherit lead (${crew.lead ?? 'none'})` : 'no evaluator (solo runs)'} —</option>
-        {candidates.map((a) => (
-          <option key={a.id} value={a.id} disabled={a.id === excludes}>
-            {a.id} · {a.name} ({a.role})
-            {a.id === excludes ? ' — already in pair' : ''}
-          </option>
-        ))}
-      </select>
-      <div style={hintStyle}>{hint}</div>
-    </div>
-  );
-}
-
 // ══════════════════════════ CAPABILITIES TAB ══════════════════════════════
 
 function CapabilitiesTab({ crew, canEdit, onChange, onError }: {
@@ -1128,12 +834,51 @@ function CapabilitiesTab({ crew, canEdit, onChange, onError }: {
 }) {
   const [pending, setPending] = useState('');
   const [busy, setBusy] = useState(false);
+  const [picker, setPicker] = useState('');
+  const [catalogue, setCatalogue] = useState<DomainExpert[]>([]);
   const caps = crew.capabilities ?? [];
 
-  async function add() {
-    const id = pending.trim(); if (!id || !canEdit) return;
+  // Load the domain-expert catalogue (built-in team caps + sha256 docs).
+  useEffect(() => {
+    let cancelled = false;
+    forgeApi.listDomainExperts().then((rows) => { if (!cancelled) setCatalogue(rows); })
+      .catch((err) => { if (!cancelled) onError(err instanceof Error ? err.message : String(err)); });
+    return () => { cancelled = true; };
+  }, [onError]);
+
+  // Resolve a content-id to its topic label (falls back to a shortened id).
+  const labelFor = (cid: string) => {
+    const hit = catalogue.find((e) => e.contentId === cid);
+    return hit?.topic ?? shortId(cid);
+  };
+
+  // Eligible picker options = catalogue minus the ones already on the crew.
+  // Built-in team capabilities that match this crew's team are surfaced
+  // first; user-authored sha256 docs follow.
+  const eligible = useMemo(() => {
+    const have = new Set(caps);
+    const teamPrefix = (() => {
+      const n = crew.name.toLowerCase();
+      if (n.startsWith('arch')) return 'team:architecture:';
+      if (n.startsWith('eng'))  return 'team:engineering:';
+      if (n.startsWith('rev'))  return 'team:review:';
+      if (n.startsWith('qa'))   return 'team:qa:';
+      return null;
+    })();
+    return catalogue
+      .filter((e) => !have.has(e.contentId))
+      .sort((a, b) => {
+        const aTeam = teamPrefix && a.contentId.startsWith(teamPrefix) ? 0 : a.contentId.startsWith('team:') ? 1 : 2;
+        const bTeam = teamPrefix && b.contentId.startsWith(teamPrefix) ? 0 : b.contentId.startsWith('team:') ? 1 : 2;
+        if (aTeam !== bTeam) return aTeam - bTeam;
+        return a.topic.localeCompare(b.topic);
+      });
+  }, [catalogue, caps, crew.name]);
+
+  async function add(contentId: string) {
+    const id = contentId.trim(); if (!id || !canEdit) return;
     setBusy(true); onError(null);
-    try { onChange(await forgeApi.addCrewCapability(crew.id, id)); setPending(''); }
+    try { onChange(await forgeApi.addCrewCapability(crew.id, id)); setPending(''); setPicker(''); }
     catch (err) { onError(err instanceof Error ? err.message : String(err)); }
     finally { setBusy(false); }
   }
@@ -1146,36 +891,75 @@ function CapabilitiesTab({ crew, canEdit, onChange, onError }: {
   }
 
   return (
-    <div style={{ display: 'grid', gap: 12, maxWidth: 640 }}>
+    <div style={{ display: 'grid', gap: 12, maxWidth: 720 }}>
       <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-        Capabilities are content-addressed pointers (sha256:…) into the
+        Capabilities are content-addressed pointers into the
         <code style={{ fontFamily: 'var(--font-mono, monospace)', margin: '0 4px' }}>domain_experts</code>
-        index. They're appended to this crew's soul.md as YAML front-matter so
-        every invocation runs against the same prompt-cache prefix.
+        index. <strong>Built-in team caps</strong> (<code style={{ fontFamily: 'var(--font-mono, monospace)' }}>team:&hellip;</code>) are seeded
+        automatically per the Phase 13 spec; <strong>operator caps</strong> (<code style={{ fontFamily: 'var(--font-mono, monospace)' }}>sha256:&hellip;</code>) point at <code>domain-expert.md</code> files
+        committed under a workstream's repo. Both are appended to soul.md so the prompt cache prefix stays content-addressed.
       </div>
       <div>
         <SectionHead label="Active capabilities" right={`${caps.length}`} />
         {caps.length === 0 && (
-          <div style={{ padding: 8, fontSize: 11, color: 'var(--text-tertiary)' }}>None — add a content-id below.</div>
+          <div style={{ padding: 8, fontSize: 11, color: 'var(--text-tertiary)' }}>None — pick from the catalogue below.</div>
         )}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-          {caps.map((c) => (
-            <span key={c} style={capChipStyle}>
-              <span style={{ fontFamily: 'var(--font-mono, monospace)' }}>{shortId(c)}</span>
-              <button onClick={() => void remove(c)} disabled={!canEdit || busy} style={chipRemoveStyle}>×</button>
-            </span>
-          ))}
+          {caps.map((c) => {
+            const isTeam = c.startsWith('team:');
+            return (
+              <span key={c} style={capChipStyle} title={c}>
+                {isTeam && <span style={{ fontSize: 8.5, opacity: 0.7, marginRight: 4 }}>team</span>}
+                <span style={{ fontFamily: isTeam ? 'inherit' : 'var(--font-mono, monospace)' }}>{labelFor(c)}</span>
+                <button onClick={() => void remove(c)} disabled={!canEdit || busy} style={chipRemoveStyle}>×</button>
+              </span>
+            );
+          })}
         </div>
       </div>
+
+      {canEdit && eligible.length > 0 && (
+        <div>
+          <SectionHead label="Add from catalogue" right={`${eligible.length} available`} />
+          <div style={{ display: 'flex', gap: 6 }}>
+            <select
+              value={picker}
+              onChange={(e) => { const v = e.target.value; if (v) void add(v); else setPicker(''); }}
+              disabled={busy}
+              style={{ ...selectStyle, flex: 1 }}
+            >
+              <option value="">— pick a capability —</option>
+              {eligible.filter((e) => e.contentId.startsWith('team:')).length > 0 && (
+                <optgroup label="Built-in team capabilities">
+                  {eligible.filter((e) => e.contentId.startsWith('team:')).map((e) => (
+                    <option key={e.contentId} value={e.contentId}>
+                      {e.topic} — {e.summary.length > 70 ? e.summary.slice(0, 67) + '…' : e.summary}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {eligible.filter((e) => !e.contentId.startsWith('team:')).length > 0 && (
+                <optgroup label="Domain experts (sha256)">
+                  {eligible.filter((e) => !e.contentId.startsWith('team:')).map((e) => (
+                    <option key={e.contentId} value={e.contentId}>{e.topic} · {shortId(e.contentId)}</option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+          </div>
+          <div style={hintStyle}>One click adds it. The picker hides capabilities the crew already has.</div>
+        </div>
+      )}
+
       {canEdit && (
         <div style={{ display: 'flex', gap: 6 }}>
           <input
             type="text" value={pending}
             onChange={(e) => setPending(e.target.value)}
-            placeholder="sha256:abc123…"
+            placeholder="sha256:abc123… (advanced — paste a content-id directly)"
             style={{ ...searchInputStyle, fontFamily: 'var(--font-mono, monospace)' }}
           />
-          <button onClick={() => void add()} disabled={busy || !pending.trim()} style={primaryBtnStyle}>
+          <button onClick={() => void add(pending)} disabled={busy || !pending.trim()} style={primaryBtnStyle}>
             {busy ? '…' : 'Add'}
           </button>
         </div>
@@ -1476,22 +1260,39 @@ function AgentChip({ id, agents }: { id: string; agents: AgentDetail[] }) {
 }
 
 /** Avatar bubble — falls back to a role-colored mono initial when no portrait. */
-function AgentFace({ id, name, role, size = 22 }: { id: string; name?: string | null; role?: string | null; size?: number }) {
+function AgentFace({ id, name, role, soulPath, size = 22, onClick }: {
+  id: string;
+  name?: string | null;
+  role?: string | null;
+  soulPath?: string | null;
+  size?: number;
+  onClick?: () => void;
+}) {
   const url = avatarFor(id, name);
-  const tip = agentTooltip(id, name, role);
+  const tip = agentTooltip(id, name, role, soulPath);
+  const interactive = !!onClick;
+  const interactiveStyle: React.CSSProperties = interactive
+    ? { cursor: 'pointer' }
+    : {};
   if (url) {
     return (
       <img
         src={url}
         alt={name || id}
         title={tip}
+        onClick={onClick}
         className={`agent-chip-avatar ${role ?? ''}`}
-        style={{ width: size, height: size }}
+        style={{ width: size, height: size, ...interactiveStyle }}
       />
     );
   }
   return (
-    <span className={`agent-chip ${role ?? ''}`} title={tip} style={{ width: size, height: size, fontSize: size * 0.42 }}>
+    <span
+      className={`agent-chip ${role ?? ''}`}
+      title={tip}
+      onClick={onClick}
+      style={{ width: size, height: size, fontSize: size * 0.42, ...interactiveStyle }}
+    >
       {id}
     </span>
   );
@@ -1643,6 +1444,14 @@ const leadCrownStyle: React.CSSProperties = {
   fontSize: 10, fontFamily: 'var(--font-mono, monospace)',
   color: 'var(--accent)', whiteSpace: 'nowrap',
 };
+// Phase 13f — wraps an inline AgentChip / agent name so the row click opens
+// the global agent-edit popup. Reset button defaults so it visually looks
+// like the wrapped content.
+const chipClickStyle: React.CSSProperties = {
+  flex: 1, minWidth: 0, background: 'transparent', border: 'none',
+  color: 'inherit', textAlign: 'left', cursor: 'pointer',
+  padding: 0, font: 'inherit',
+};
 const roleSelectStyle: React.CSSProperties = {
   fontSize: 11, padding: '3px 6px', borderRadius: 'var(--radius-sm)',
   background: 'var(--bg-surface)', border: '1px solid var(--border-strong)',
@@ -1743,11 +1552,6 @@ const warningBoxStyle: React.CSSProperties = {
   border: '1px solid var(--warning-border, rgba(245, 158, 11, 0.32))',
   borderRadius: 'var(--radius-sm)', lineHeight: 1.5,
 };
-const pairSummaryStyle: React.CSSProperties = {
-  padding: 10, background: 'var(--bg-sunken)',
-  border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-};
-
 function runtimePillStyle(kind: 'model' | 'copilot' | 'claude' | 'sdk' | 'cli' | 'warn'): React.CSSProperties {
   const palette: Record<typeof kind, { bg: string; fg: string; border: string }> = {
     model:   { bg: 'var(--bg-sunken, #f5f3ee)',   fg: 'var(--text-secondary)', border: 'var(--border-strong, #d6d3cc)' },

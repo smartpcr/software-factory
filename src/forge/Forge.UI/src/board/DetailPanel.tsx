@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import type { Card as CardModel } from '@/types';
 import { useBoardStore } from '@/state/useBoardStore';
 import { avatarFor, agentTooltip } from '@/agentAvatar';
+import { useAgentEditorStore } from '@/state/useAgentEditorStore';
 import { useWorkstreamsStore } from '@/state/useWorkstreamsStore';
 import { useToastStore } from '@/state/useToastStore';
 import { forgeApi } from '@/api/forgeApi';
@@ -127,23 +128,48 @@ export function DetailPanel() {
               <span className="detail-status-pill">
                 <span className="label">Agent</span>
                 {safe.agent && (() => {
-                  const av = avatarFor(safe.agent.id, safe.agent.name);
-                  const tip = agentTooltip(safe.agent.id, safe.agent.name, safe.agent.role);
+                  const agent = safe.agent;
+                  const av = avatarFor(agent.id, agent.name);
+                  const tip = agentTooltip(agent.id, agent.name, agent.role) + ' · click to open agent';
+                  // Phase 13f — agent chip on the work-item panel opens the
+                  // global agent-edit popup so the operator can edit the
+                  // assignee without leaving the board.
+                  const open = () => useAgentEditorStore.getState().openAgent(agent.id);
+                  const sharedClick: React.HTMLAttributes<HTMLElement> = {
+                    role: 'button',
+                    tabIndex: 0,
+                    onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } },
+                  };
                   return av ? (
                     <img
                       src={av}
-                      alt={safe.agent.name || safe.agent.id}
-                      className={`agent-chip-avatar ${safe.agent.role}`}
-                      style={{ marginRight: 2 }}
+                      alt={agent.name || agent.id}
+                      className={`agent-chip-avatar ${agent.role}`}
+                      style={{ marginRight: 2, cursor: 'pointer' }}
                       title={tip}
+                      onClick={open}
+                      {...sharedClick}
                     />
                   ) : (
-                    <span className={`agent-chip ${safe.agent.role}`} style={{ marginRight: 2 }} title={tip}>
-                      {safe.agent.id}
+                    <span
+                      className={`agent-chip ${agent.role}`}
+                      style={{ marginRight: 2, cursor: 'pointer' }}
+                      title={tip}
+                      onClick={open}
+                      {...sharedClick}
+                    >
+                      {agent.id}
                     </span>
                   );
                 })()}
-                <span id="detail-agent">{safe.agent ? safe.agent.name : 'unassigned'}</span>
+                <span
+                  id="detail-agent"
+                  style={safe.agent ? { cursor: 'pointer', textDecoration: 'underline dotted', textUnderlineOffset: 2 } : undefined}
+                  title={safe.agent ? 'Click to open agent' : undefined}
+                  onClick={() => safe.agent && useAgentEditorStore.getState().openAgent(safe.agent.id)}
+                >
+                  {safe.agent ? safe.agent.name : 'unassigned'}
+                </span>
               </span>
               <span className="detail-status-pill">
                 <span className="label">Points</span>

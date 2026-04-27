@@ -58,7 +58,7 @@ public static class AgentsEndpoints
             : Results.Ok(MapAgent(row));
     }
 
-    /// <summary>Phase 13b — edit name / role / soulPath on an existing agent.</summary>
+    /// <summary>Phase 13b/e — edit name / role / soulPath + per-agent runtime overrides.</summary>
     private static async Task<IResult> PatchAgent(
         HttpContext ctx,
         string agentId,
@@ -77,9 +77,61 @@ public static class AgentsEndpoints
         // Empty string clears the soulPath override (revert to %LOCALAPPDATA% default).
         if (req.SoulPath is not null) row.SoulPath = string.IsNullOrWhiteSpace(req.SoulPath) ? null : req.SoulPath.Trim();
 
+        // Phase 13e — per-agent overrides. null = leave alone, "" = clear (inherit crew),
+        // non-empty = pin this agent to the override regardless of crew default.
+        if (req.Backend is not null)
+        {
+            var v = NormaliseBackend(req.Backend);
+            if (req.Backend != string.Empty && v is null) return Results.Problem(title: $"Unknown backend '{req.Backend}'", statusCode: 400);
+            row.Backend = req.Backend == string.Empty ? null : v;
+        }
+        if (req.InvokeMode is not null)
+        {
+            var v = NormaliseMode(req.InvokeMode);
+            if (req.InvokeMode != string.Empty && v is null) return Results.Problem(title: $"Unknown invoke mode '{req.InvokeMode}'", statusCode: 400);
+            row.InvokeMode = req.InvokeMode == string.Empty ? null : v;
+        }
+        if (req.GeneratorModel is not null)
+        {
+            row.GeneratorModel = string.IsNullOrWhiteSpace(req.GeneratorModel) ? null : req.GeneratorModel.Trim();
+        }
+        if (req.EvaluatorModel is not null)
+        {
+            row.EvaluatorModel = string.IsNullOrWhiteSpace(req.EvaluatorModel) ? null : req.EvaluatorModel.Trim();
+        }
+
+        // Same diff-model rule as on Crew: when an agent pins both halves,
+        // they must differ. Helps catch typos before they reach a runner.
+        if (!string.IsNullOrEmpty(row.GeneratorModel)
+            && !string.IsNullOrEmpty(row.EvaluatorModel)
+            && row.GeneratorModel == row.EvaluatorModel)
+        {
+            return Results.Problem(
+                type: "agent.pair_models_must_differ",
+                title: "Generator and evaluator model overrides must differ",
+                detail: $"generatorModel='{row.GeneratorModel}' equals evaluatorModel='{row.EvaluatorModel}'.",
+                statusCode: 400);
+        }
+
         await db.SaveChangesAsync(ct);
         return Results.Ok(MapAgent(row));
     }
+
+    private static string? NormaliseBackend(string? s) => s?.ToLowerInvariant() switch
+    {
+        "copilot" => "copilot",
+        "claude"  => "claude",
+        null or "" => null,
+        _ => null,
+    };
+
+    private static string? NormaliseMode(string? s) => s?.ToLowerInvariant() switch
+    {
+        "sdk" => "sdk",
+        "cli" => "cli",
+        null or "" => null,
+        _ => null,
+    };
 
     private static async Task<IResult> GetSoul(
         string agentId,
@@ -207,7 +259,8 @@ public static class AgentsEndpoints
             ? new List<string>()
             : (System.Text.Json.JsonSerializer.Deserialize<List<string>>(r.CapabilitiesJson) ?? new List<string>());
         return new Forge.Api.Contracts.AgentDetail(
-            r.Id, r.Name, r.Role, r.CrewId, r.SoulPath, caps, r.State);
+            r.Id, r.Name, r.Role, r.CrewId, r.SoulPath, caps, r.State,
+            r.Backend, r.InvokeMode, r.GeneratorModel, r.EvaluatorModel);
     }
 
     public sealed record StartInvocationRequest(
