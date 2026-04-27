@@ -624,6 +624,15 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                             }
                             break;
 
+                        case AssistantMessageEvent msg:
+                            var content = msg.Data.Content;
+                            if (!string.IsNullOrEmpty(content))
+                            {
+                                contentBuilder.Append(content);
+                                queue.Writer.TryWrite(new AgentEvent(AgentEventKind.Token, DateTimeOffset.UtcNow, Text: content));
+                            }
+                            break;
+
                         case ToolExecutionStartEvent tStart:
                             queue.Writer.TryWrite(new AgentEvent(
                                 AgentEventKind.ToolCall,
