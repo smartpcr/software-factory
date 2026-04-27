@@ -19,6 +19,8 @@ interface BoardState {
   epicFilter: string | null;
   agentFilter: string | null;
   priorityFilter: string | null;
+  /** Multi-select story filter. Empty = show all. */
+  storyFilter: string[];
   /** Phase-1 search input (substring match against title/branch/id). */
   searchTerm: string;
   /** Group by — currently visual-only (board still groups by epic). */
@@ -33,6 +35,7 @@ interface BoardState {
   setEpicFilter: (e: string | null) => void;
   setAgentFilter: (a: string | null) => void;
   setPriorityFilter: (p: string | null) => void;
+  setStoryFilter: (s: string[]) => void;
   setSearchTerm: (s: string) => void;
   setGroupBy: (g: BoardGroupBy) => void;
   /** Apply a card update from the SignalR hub. */
@@ -64,6 +67,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   epicFilter: null,
   agentFilter: null,
   priorityFilter: null,
+  storyFilter: [],
   searchTerm: '',
   groupBy: 'story',
   pendingMove: null,
@@ -75,6 +79,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   setEpicFilter: (e) => set({ epicFilter: e }),
   setAgentFilter: (a) => set({ agentFilter: a }),
   setPriorityFilter: (p) => set({ priorityFilter: p }),
+  setStoryFilter: (s) => set({ storyFilter: s }),
   setSearchTerm: (s) => set({ searchTerm: s }),
   setGroupBy: (g) => set({ groupBy: g }),
 
@@ -160,13 +165,13 @@ export interface BoardFilterState {
   epicFilter: string | null;
   agentFilter: string | null;
   priorityFilter: string | null;
+  storyFilter?: string[];
   searchTerm: string;
 }
 
 export function filterCards(cards: Card[], filter: BoardFilter | BoardFilterState): Card[] {
-  // Back-compat: legacy callers pass just the chip filter.
   const f: BoardFilterState = typeof filter === 'string'
-    ? { activeFilter: filter, epicFilter: null, agentFilter: null, priorityFilter: null, searchTerm: '' }
+    ? { activeFilter: filter, epicFilter: null, agentFilter: null, priorityFilter: null, storyFilter: [], searchTerm: '' }
     : filter;
 
   let out = cards;
@@ -186,6 +191,10 @@ export function filterCards(cards: Card[], filter: BoardFilter | BoardFilterStat
   if (f.epicFilter) out = out.filter((c) => c.epic === f.epicFilter);
   if (f.agentFilter) out = out.filter((c) => c.agent?.id === f.agentFilter);
   if (f.priorityFilter) out = out.filter((c) => c.priority === f.priorityFilter);
+  if (f.storyFilter && f.storyFilter.length > 0) {
+    const set = new Set(f.storyFilter);
+    out = out.filter((c) => set.has(c.epic));
+  }
 
   const q = f.searchTerm.trim().toLowerCase();
   if (q) {

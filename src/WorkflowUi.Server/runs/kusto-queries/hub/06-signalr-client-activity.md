@@ -1,8 +1,8 @@
 ---
 name: signalr_client_activity
 description: SignalR client attachment counts by run and hour
-database: hub
-cluster: (not configured — no metadata.md found)
+database: Hub
+cluster: https://aeoprodeastus.eastus.kusto.windows.net
 table: "['ETL-Microsoft-WorkflowUi-Server.ClientAttached']"
 schema_validated: false
 ---

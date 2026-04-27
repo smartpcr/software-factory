@@ -14,6 +14,7 @@ import { Toaster } from '@/board/Toaster';
 import { forgeApi } from '@/api/forgeApi';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 import { useQueueStore, useQueueChannel } from '@/realtime/useQueueStore';
+import { AGENT_ALLOCATION } from '@/agentAllocation';
 
 const FILTER_CHIPS: Array<{ key: WorkstreamFilter; label: string; pulse?: boolean }> = [
   { key: 'all',       label: 'All' },
@@ -50,8 +51,36 @@ export function WorkstreamsView() {
   const repoFilter = searchParams.get('repo');
 
   const [modalOpen, setModalOpen] = useState(false);
+  const [repoFilterLocal, setRepoFilterLocal] = useState('');
+  const [teamFilter, setTeamFilter] = useState('');
+  const [storyFilter, setStoryFilter] = useState('');
 
   useEffect(() => { void load(); }, [load]);
+
+  // Derive dropdown options from workstream data.
+  const repoOptions = useMemo(() => {
+    const ids = new Set(workstreams.map((w) => w.repoId).filter(Boolean) as string[]);
+    return [...ids].sort();
+  }, [workstreams]);
+
+  const teamOptions = useMemo(() => {
+    const teams = new Set<string>();
+    for (const ws of workstreams) {
+      for (const agentId of ws.agents) {
+        const entry = AGENT_ALLOCATION.find((a) => a.id === agentId);
+        if (entry) teams.add(entry.team);
+      }
+    }
+    return [...teams].sort();
+  }, [workstreams]);
+
+  const storyOptions = useMemo(() => {
+    const epicIds = new Set(workstreams.map((w) => w.epic).filter(Boolean));
+    return [...epicIds].map((id) => {
+      const e = epics.find((ep) => ep.id === id);
+      return { id, label: e ? `${e.id} — ${e.name}` : id };
+    }).sort((a, b) => a.id.localeCompare(b.id));
+  }, [workstreams, epics]);
 
   // Phase 3.10 — when the user clicks a card on the board with a `branch`,
   // the board store sets selectedId; if that card's branch matches a ws,
@@ -61,8 +90,14 @@ export function WorkstreamsView() {
   const filtered = useMemo(() => {
     let next = filterWorkstreams(workstreams, filter);
     if (repoFilter) next = next.filter((w) => w.repoId === repoFilter);
+    if (repoFilterLocal) next = next.filter((w) => w.repoId === repoFilterLocal);
+    if (storyFilter) next = next.filter((w) => w.epic === storyFilter);
+    if (teamFilter) {
+      const teamAgentIds = new Set(AGENT_ALLOCATION.filter((a) => a.team === teamFilter).map((a) => a.id));
+      next = next.filter((w) => w.agents.some((a) => teamAgentIds.has(a)));
+    }
     return next;
-  }, [workstreams, filter, repoFilter]);
+  }, [workstreams, filter, repoFilter, repoFilterLocal, teamFilter, storyFilter]);
   const counts = useMemo(() => ({
     all:       workstreams.length,
     active:    workstreams.filter((w) => w.status === 'active' || w.status === 'review').length,
@@ -149,8 +184,18 @@ export function WorkstreamsView() {
             </button>
           ))}
         </div>
-        <button className="filter-select"><span className="label">Epic</span><span>All 5</span><Chevron /></button>
-        <button className="filter-select"><span className="label">Agent</span><span>All</span><Chevron /></button>
+        <select className="filter-select" value={repoFilterLocal} onChange={(e) => setRepoFilterLocal(e.target.value)}>
+          <option value="">Repo: All</option>
+          {repoOptions.map((r) => <option key={r} value={r}>{r}</option>)}
+        </select>
+        <select className="filter-select" value={teamFilter} onChange={(e) => setTeamFilter(e.target.value)}>
+          <option value="">Team: All</option>
+          {teamOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <select className="filter-select" value={storyFilter} onChange={(e) => setStoryFilter(e.target.value)}>
+          <option value="">Story: All</option>
+          {storyOptions.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+        </select>
         <div className="filter-search">
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ color: 'var(--text-tertiary)' }}>
             <circle cx="5.5" cy="5.5" r="3.5" stroke="currentColor" strokeWidth="1.3" />
@@ -226,10 +271,4 @@ export function WorkstreamsView() {
   );
 }
 
-function Chevron() {
-  return (
-    <svg width="9" height="9" viewBox="0 0 9 9">
-      <path d="M2 3.5 L4.5 6 L7 3.5" stroke="currentColor" fill="none" strokeWidth="1.3" strokeLinecap="round" />
-    </svg>
-  );
-}
+

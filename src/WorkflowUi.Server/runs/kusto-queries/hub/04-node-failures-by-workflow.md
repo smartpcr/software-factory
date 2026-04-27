@@ -1,8 +1,8 @@
 ---
 name: node_failures_by_workflow
 description: Aggregate node failure counts per workflow run
-database: hub
-cluster: (not configured — no metadata.md found)
+database: Hub
+cluster: https://aeoprodeastus.eastus.kusto.windows.net
 table: "['ETL-Microsoft-WorkflowUi-Server.NodeFailed']"
 schema_validated: false
 ---

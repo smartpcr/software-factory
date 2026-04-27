@@ -493,6 +493,8 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         long inputTokens = 0;
         long outputTokens = 0;
         string? failReason = null;
+        int turnCount = 0;
+        var maxTurns = this.options.Value.MaxTurns;
 
         var clientOptions = new CopilotClientOptions
         {

@@ -1,8 +1,8 @@
 ---
 name: audit_trail_write_operations
 description: Audit trail for all mutating HTTP operations (POST/PUT/PATCH/DELETE)
-database: hub
-cluster: (not configured — no metadata.md found)
+database: Hub
+cluster: https://aeoprodeastus.eastus.kusto.windows.net
 table: "['ETL-Microsoft-WorkflowUi-Server.AuditEvent']"
 schema_validated: false
 ---

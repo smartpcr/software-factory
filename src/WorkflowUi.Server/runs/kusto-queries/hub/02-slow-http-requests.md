@@ -1,8 +1,8 @@
 ---
 name: slow_http_requests
 description: HTTP requests taking longer than 5 seconds
-database: hub
-cluster: (not configured — no metadata.md found)
+database: Hub
+cluster: https://aeoprodeastus.eastus.kusto.windows.net
 table: "['ETL-Microsoft-WorkflowUi-Server.RequestStop']"
 schema_validated: false
 ---

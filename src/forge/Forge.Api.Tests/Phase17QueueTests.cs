@@ -399,4 +399,128 @@ public class Phase17QueueTests
         }
         finally { scope.Dispose(); f.Dispose(); }
     }
+
+    // ── Auto-route tests ──────────────────────────────────────────────────
+
+    [Fact]
+    public async Task AutoRoute_Single_Crew_Skips_AwaitingRoute()
+    {
+        var (f, scope, db, queue) = await BootAsync();
+        try
+        {
+            // Seed a team ("Solo") with exactly one crew whose Name starts with
+            // the targetId → the ack fast-path auto-routes to queued.
+            var productId = (await db.Products.FirstAsync()).Id;
+            db.Crews.Add(new CrewRow
+            {
+                Id = "crew-solo", Name = "Solo", ProductId = productId,
+                Lead = "lead-solo", Model = "x",
+                ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
+                MaxConcurrent = 2, ScheduleEnabled = false,
+            });
+            db.WorkItems.Add(NewWorkItem("wi-auto-single"));
+            await db.SaveChangesAsync();
+
+            var row = await queue.EnqueueAsync("wi-auto-single", "team", "Solo", default);
+            Assert.Equal(TaskQueueStates.AwaitingAck, row.State);
+
+            var acked = await queue.AcknowledgeAsync(row.Id, "lead-solo", auto: false, default);
+            Assert.NotNull(acked);
+            Assert.Equal(TaskQueueStates.Queued, acked!.State);
+            Assert.Equal("crew-solo", acked.RoutedToCrewId);
+
+            var history = await queue.GetHistoryAsync(row.Id, default);
+            Assert.Contains(history, h => h.Kind == "routed");
+        }
+        finally { scope.Dispose(); f.Dispose(); }
+    }
+
+    [Fact]
+    public async Task AutoRoute_Multi_Crew_Prefers_Generator_Side()
+    {
+        var (f, scope, db, queue) = await BootAsync();
+        try
+        {
+            var productId = (await db.Products.FirstAsync()).Id;
+            db.Crews.Add(new CrewRow
+            {
+                Id = "crew-multi-gen", Name = "Multi", ProductId = productId,
+                Lead = "lead-multi", Model = "x",
+                ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
+                MaxConcurrent = 2, ScheduleEnabled = false,
+                PairRole = "generator", PairedWithCrewId = "crew-multi-eval",
+            });
+            db.Crews.Add(new CrewRow
+            {
+                Id = "crew-multi-eval", Name = "Multi (Night)", ProductId = productId,
+                Lead = null, Model = "x",
+                ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
+                MaxConcurrent = 2, ScheduleEnabled = false,
+                PairRole = "evaluator", PairedWithCrewId = "crew-multi-gen",
+            });
+            db.WorkItems.Add(NewWorkItem("wi-auto-multi"));
+            await db.SaveChangesAsync();
+
+            var row = await queue.EnqueueAsync("wi-auto-multi", "team", "Multi", default);
+            var acked = await queue.AcknowledgeAsync(row.Id, "lead-multi", auto: false, default);
+            Assert.NotNull(acked);
+
+            // Multi-crew: auto-route picks the generator-side crew.
+            Assert.Equal(TaskQueueStates.Queued, acked!.State);
+            Assert.Equal("crew-multi-gen", acked.RoutedToCrewId);
+        }
+        finally { scope.Dispose(); f.Dispose(); }
+    }
+
+    [Fact]
+    public async Task AutoRoute_No_Matching_Crew_Stays_At_AwaitingRoute()
+    {
+        var (f, scope, db, queue) = await BootAsync();
+        try
+        {
+            db.WorkItems.Add(NewWorkItem("wi-auto-none"));
+            await db.SaveChangesAsync();
+
+            // "Phantom" has no crew whose Name starts with it → stays at awaiting-route.
+            var row = await queue.EnqueueAsync("wi-auto-none", "team", "Phantom", default);
+            var acked = await queue.AcknowledgeAsync(row.Id, "lead-x", auto: false, default);
+            Assert.NotNull(acked);
+            Assert.Equal(TaskQueueStates.AwaitingRoute, acked!.State);
+            Assert.Null(acked.RoutedToCrewId);
+        }
+        finally { scope.Dispose(); f.Dispose(); }
+    }
+
+    [Fact]
+    public async Task AutoRoute_Via_AckTimeout_Also_Routes()
+    {
+        var (f, scope, db, queue) = await BootAsync();
+        try
+        {
+            var productId = (await db.Products.FirstAsync()).Id;
+            db.Crews.Add(new CrewRow
+            {
+                Id = "crew-timeout-auto", Name = "Timeout", ProductId = productId,
+                Lead = "lead-timeout", Model = "x",
+                ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
+                MaxConcurrent = 2, ScheduleEnabled = false,
+            });
+            db.WorkItems.Add(NewWorkItem("wi-auto-timeout"));
+            await db.SaveChangesAsync();
+
+            var row = await queue.EnqueueAsync("wi-auto-timeout", "team", "Timeout", default);
+
+            // Auto-ack (simulates the timeout path) should also auto-route.
+            var acked = await queue.AcknowledgeAsync(row.Id, byUserId: null, auto: true, default);
+            Assert.NotNull(acked);
+            Assert.True(acked!.AutoAcked);
+            Assert.Equal(TaskQueueStates.Queued, acked.State);
+            Assert.Equal("crew-timeout-auto", acked.RoutedToCrewId);
+
+            var history = await queue.GetHistoryAsync(row.Id, default);
+            Assert.Contains(history, h => h.Kind == "ack-timeout-auto");
+            Assert.Contains(history, h => h.Kind == "routed");
+        }
+        finally { scope.Dispose(); f.Dispose(); }
+    }
 }

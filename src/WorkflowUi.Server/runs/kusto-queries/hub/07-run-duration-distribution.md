@@ -1,8 +1,8 @@
 ---
 name: run_duration_distribution
 description: Completed workflow run durations over the past 7 days
-database: hub
-cluster: (not configured — no metadata.md found)
+database: Hub
+cluster: https://aeoprodeastus.eastus.kusto.windows.net
 table: "['ETL-Microsoft-WorkflowUi-Server.RunCompleted']"
 schema_validated: false
 ---

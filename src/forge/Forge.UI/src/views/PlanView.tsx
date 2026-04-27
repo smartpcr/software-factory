@@ -204,7 +204,7 @@ export function PlanView() {
 
       <FilterBar />
 
-      <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <div className="board-wrap" style={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
           {cards.length === 0 ? (
             <div className="empty-state">

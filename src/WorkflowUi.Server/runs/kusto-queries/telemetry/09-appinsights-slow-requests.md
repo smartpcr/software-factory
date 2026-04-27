@@ -1,8 +1,8 @@
 ---
 name: appinsights_slow_requests
 description: HTTP requests exceeding 5 seconds detected via ILogger traces
-database: telemetry
-cluster: (not configured — no metadata.md found)
+database: Telemetry
+cluster: https://aeoprodtelemetry.eastus.kusto.windows.net
 table: traces
 schema_validated: false
 ---

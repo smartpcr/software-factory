@@ -1,8 +1,8 @@
 ---
 name: failed_workflow_runs
 description: Failed workflow runs from ETW RunFailed events
-database: hub
-cluster: (not configured — no metadata.md found)
+database: Hub
+cluster: https://aeoprodeastus.eastus.kusto.windows.net
 table: "['ETL-Microsoft-WorkflowUi-Server.RunFailed']"
 schema_validated: false
 ---

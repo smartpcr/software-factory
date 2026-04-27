@@ -42,10 +42,11 @@ export function Board() {
   const epicFilter = useBoardStore((s) => s.epicFilter);
   const agentFilter = useBoardStore((s) => s.agentFilter);
   const priorityFilter = useBoardStore((s) => s.priorityFilter);
+  const storyFilter = useBoardStore((s) => s.storyFilter);
   const searchTerm = useBoardStore((s) => s.searchTerm);
   const filtered = useMemo(
-    () => filterCards(cards, { activeFilter, epicFilter, agentFilter, priorityFilter, searchTerm }),
-    [cards, activeFilter, epicFilter, agentFilter, priorityFilter, searchTerm],
+    () => filterCards(cards, { activeFilter, epicFilter, agentFilter, priorityFilter, storyFilter, searchTerm }),
+    [cards, activeFilter, epicFilter, agentFilter, priorityFilter, storyFilter, searchTerm],
   );
 
   // Compute swimlane groups based on groupBy.

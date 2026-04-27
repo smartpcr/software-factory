@@ -5,6 +5,7 @@ import { useToastStore } from '@/state/useToastStore';
 import { NewProductModal } from '@/products/NewProductModal';
 import { EditProductModal } from '@/products/EditProductModal';
 import { AddRepoModal } from '@/products/AddRepoModal';
+import { EditRepoModal } from '@/products/EditRepoModal';
 import { ProductIcon } from '@/products/ProductIcon';
 import { RepoIcon } from '@/products/RepoIcon';
 import { forgeApi } from '@/api/forgeApi';
@@ -28,6 +29,7 @@ export function ProductsView() {
   const [pickerOpen, setPickerOpen] = useState<string | null>(null);
   const [newProductOpen, setNewProductOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [editingRepo, setEditingRepo] = useState<Repo | null>(null);
   // Phase 15 — sprint manager modal scoped to a product.
   const [sprintMgr, setSprintMgr] = useState<{ productId: string; productName: string; tab?: 'iterations' | 'areas' | 'import' | 'prefixes' } | null>(null);
 
@@ -90,6 +92,7 @@ export function ProductsView() {
               onActivate={() => setActive(p.id)}
               onAttach={() => setPickerOpen(p.id)}
               onEdit={() => setEditingProduct(p)}
+              onEditRepo={(r) => setEditingRepo(r)}
               onManageSprints={(tab) => setSprintMgr({ productId: p.id, productName: p.name, tab })}
             />
           ))}
@@ -120,6 +123,18 @@ export function ProductsView() {
         />
       )}
 
+      {editingRepo && (
+        <EditRepoModal
+          open={true}
+          repo={editingRepo}
+          onClose={() => setEditingRepo(null)}
+          onSaved={(updated) => {
+            void loadReposFor(updated.productId);
+            void loadStatsFor(updated.productId);
+          }}
+        />
+      )}
+
       <AddRepoModal
         open={pickerOpen !== null}
         productId={pickerOpen ?? ''}
@@ -143,10 +158,11 @@ interface ProductCardProps {
   onActivate: () => void;
   onAttach: () => void;
   onEdit: () => void;
+  onEditRepo: (repo: Repo) => void;
   onManageSprints: (tab?: 'iterations' | 'areas' | 'import' | 'prefixes') => void;
 }
 
-function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, onEdit, onManageSprints }: ProductCardProps) {
+function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, onEdit, onEditRepo, onManageSprints }: ProductCardProps) {
   const navigate = useNavigate();
   const deleteProduct = useProductsStore((s) => s.deleteProduct);
   const loadReposFor = useProductsStore((s) => s.loadReposFor);
@@ -264,6 +280,18 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, on
               <span className="src" style={{ marginLeft: 'auto' }}>
                 {r.kind === 'ado' ? 'ADO' : 'GH'}
               </span>
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => onEditRepo(r)}
+              title={`Edit ${r.displayName} (path, branch, name)`}
+              aria-label={`Edit ${r.displayName}`}
+              style={{ width: 22, height: 22, color: 'var(--text-tertiary)' }}
+            >
+              <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+                <path d="M8 1.5 L10.5 4 L4 10.5 L1.5 10.5 L1.5 8 Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+              </svg>
             </button>
             <button
               type="button"

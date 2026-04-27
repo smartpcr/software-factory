@@ -1,8 +1,8 @@
 ---
 name: appinsights_failed_runs
 description: Failed workflow runs detected via ILogger traces in Application Insights
-database: telemetry
-cluster: (not configured — no metadata.md found)
+database: Telemetry
+cluster: https://aeoprodtelemetry.eastus.kusto.windows.net
 table: traces
 schema_validated: false
 ---

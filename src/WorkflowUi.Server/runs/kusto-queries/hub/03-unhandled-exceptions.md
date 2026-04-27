@@ -1,8 +1,8 @@
 ---
 name: unhandled_exceptions
 description: Unhandled exceptions caught by the global error handler
-database: hub
-cluster: (not configured — no metadata.md found)
+database: Hub
+cluster: https://aeoprodeastus.eastus.kusto.windows.net
 table: "['ETL-Microsoft-WorkflowUi-Server.UnhandledException']"
 schema_validated: false
 ---

@@ -77,6 +77,8 @@ export function CrewsView() {
   const [error, setError] = useState<string | null>(null);
   const [autoAssignBusy, setAutoAssignBusy] = useState(false);
   const [autoAssignMsg, setAutoAssignMsg] = useState<string | null>(null);
+  // Global day/night shift toggle — controls which half of the roster is shown.
+  const [viewShift, setViewShift] = useState<'day' | 'night'>('day');
   // Phase 13f — agent edit popup is now mounted globally at AppShell;
   // we just call openAgent(id) from any click site here.
   const openAgent = useAgentEditorStore((s) => s.openAgent);
@@ -98,7 +100,33 @@ export function CrewsView() {
     }
   }
 
-  const selected = useMemo(() => crews.find((c) => c.id === selectedId) ?? null, [crews, selectedId]);
+  // Group day/night crew pairs by team. Each team appears once in the left
+  // rail; the global shift toggle decides which underlying crew is active.
+  interface TeamEntry {
+    team: string;          // display label, e.g. "Engineering"
+    dayCrew: Crew;
+    nightCrew: Crew | null;
+  }
+  const teamEntries = useMemo<TeamEntry[]>(() => {
+    // Day crews are roots (no parentCrewId). Night crews point at their day parent.
+    const dayCrews = crews.filter((c) => !c.parentCrewId);
+    return dayCrews.map((day) => {
+      const night = crews.find((c) => c.parentCrewId === day.id) ?? null;
+      return { team: day.name, dayCrew: day, nightCrew: night };
+    });
+  }, [crews]);
+
+  // The crew currently shown in the detail panel — resolved from selection + shift.
+  const selected = useMemo(() => {
+    const entry = teamEntries.find((e) => e.dayCrew.id === selectedId || e.nightCrew?.id === selectedId);
+    if (!entry) return null;
+    return viewShift === 'night' && entry.nightCrew ? entry.nightCrew : entry.dayCrew;
+  }, [teamEntries, selectedId, viewShift]);
+
+  // Canonical team id for selection (always the day crew id).
+  function selectTeam(dayCrewId: string) {
+    setSelectedId(dayCrewId);
+  }
 
   // Initial load — crews, agents, models, salaries (parallel where possible).
   useEffect(() => {
@@ -170,7 +198,7 @@ export function CrewsView() {
           <div className="page-eyebrow">
             <span><span className="num">10</span>&nbsp;Crews</span>
             <span className="sep">/</span>
-            <span>{crews.length} crew{crews.length === 1 ? '' : 's'} · {agents.length} agent{agents.length === 1 ? '' : 's'}</span>
+            <span>{teamEntries.length} team{teamEntries.length === 1 ? '' : 's'} · {agents.length} agent{agents.length === 1 ? '' : 's'}</span>
             {!isPO && <><span className="sep">/</span><span style={{ color: 'var(--text-tertiary)' }}>read-only — PO required to mutate</span></>}
           </div>
           <h1 className="page-title">
@@ -204,21 +232,33 @@ export function CrewsView() {
         <aside style={crewListStyle}>
           <div style={crewListHeadStyle}>
             <span>All crews</span>
-            <span style={{ color: 'var(--text-tertiary)', fontWeight: 400 }}>{crews.length}</span>
+            <span
+              role="button"
+              tabIndex={0}
+              title={`${viewShift === 'day' ? 'Day' : 'Night'} shift — click to toggle`}
+              onClick={() => setViewShift((s) => s === 'day' ? 'night' : 'day')}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') setViewShift((s) => s === 'day' ? 'night' : 'day');
+              }}
+              style={shiftToggleStyle(viewShift)}
+            >
+              {viewShift === 'day' ? '☀' : '☾'}
+            </span>
           </div>
-          {crews.length === 0 && (
+          {teamEntries.length === 0 && (
             <div style={{ padding: 12, fontSize: 11, color: 'var(--text-tertiary)' }}>No crews seeded yet.</div>
           )}
-          {crews.map((c) => {
-            const sel = c.id === selectedId;
+          {teamEntries.map((entry) => {
+            const c = viewShift === 'night' && entry.nightCrew ? entry.nightCrew : entry.dayCrew;
+            const sel = selectedId === entry.dayCrew.id || selectedId === entry.nightCrew?.id;
             return (
               <button
-                key={c.id}
-                onClick={() => setSelectedId(c.id)}
-                style={crewListItemStyle(sel, c.depth ?? 0)}
+                key={entry.dayCrew.id}
+                onClick={() => selectTeam(entry.dayCrew.id)}
+                style={crewListItemStyle(sel, 0)}
               >
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={crewListNameStyle(sel)}>{c.name}</div>
+                  <div style={crewListNameStyle(sel)}>{entry.team}</div>
                   <div style={crewListMetaStyle}>
                     {(c.roster?.length ?? 0)} member{(c.roster?.length ?? 0) === 1 ? '' : 's'}
                     {' · '}
@@ -352,10 +392,6 @@ function RosterTab({ crew, allAgents, canEdit, onChange, onError, onEditAgent }:
 }) {
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
-  // Phase 11.3 — soul.md editor. State holds the agent id currently being
-  // edited; the modal owns the contents + save lifecycle.
-  // Phase 13f — soul.md editing now lives inside the global AgentEditModal
-  // (opened via onEditAgent). No separate soul-only modal needed here.
   // Cross-team move confirmation. Held in state so the modal can render
   // outside the row that triggered it.
   const [pendingMove, setPendingMove] = useState<{
@@ -390,13 +426,10 @@ function RosterTab({ crew, allAgents, canEdit, onChange, onError, onEditAgent }:
     if (!canEdit) return;
     const agent = allAgents.find((x) => x.id === agentId);
     const fromTeam = teamOfAgent(agentId, agent?.role);
-    // Same team (or unknown teams) → drop straight in. Different team →
-    // raise a confirm before mutating, since this also wipes the agent's
-    // previous crew membership server-side (Phase 13b move semantics).
     if (fromTeam && targetTeam && fromTeam !== targetTeam) {
       const fromCrewName = agent?.crewId
-        ? null  // resolved by the modal via the crew list lookup; we only
-        : null; // know it's `fromTeam` for messaging.
+        ? null
+        : null;
       setPendingMove({
         agentId,
         name: agent?.name ?? agentId,
@@ -625,18 +658,8 @@ function PairTab({ crew, allAgents, models, canEdit, onChange, onError, onEditAg
   onError: (msg: string | null) => void;
   onEditAgent: (agentId: string) => void;
 }) {
-  // Filter the model registry to entries that match the crew's backend
-  // vendor — Copilot crews see Copilot variants (dotted ids like
-  // claude-opus-4.7), Claude crews see Anthropic ids (claude-opus-4-7).
-  // The 'forge' vendor (local-stub) is always offered for tests.
-  const backendVendors = useMemo(() => {
-    const b = (crew.backend ?? 'copilot').toLowerCase();
-    return b === 'claude' ? ['anthropic', 'forge'] : ['copilot', 'forge'];
-  }, [crew.backend]);
-  const eligibleModels = useMemo(
-    () => models.filter((m) => backendVendors.includes(m.vendor) && m.status === 'live'),
-    [models, backendVendors],
-  );
+  // Show all models — same options as the Runtime tab.
+  const eligibleModels = models;
 
   async function patch(p: Partial<Crew>) {
     onError(null);
@@ -657,7 +680,7 @@ function PairTab({ crew, allAgents, models, canEdit, onChange, onError, onEditAg
         comes off draft. Models below apply crew-wide.
       </div>
 
-      <SectionHead label="Models" right={`${backendVendors.join(' / ')} — diff required`} />
+      <SectionHead label="Models" right="diff required" />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <ModelPicker
           label="Generator model"
@@ -868,6 +891,7 @@ function ModelPicker({ label, value, excludes, options, canEdit, allowEmpty, onC
   onChange: (next: string) => void;
   hint: string;
 }) {
+  const selected = options.find((m) => m.id === value);
   return (
     <div>
       <SectionHead label={label} />
@@ -883,11 +907,16 @@ function ModelPicker({ label, value, excludes, options, canEdit, allowEmpty, onC
         )}
         {options.map((m) => (
           <option key={m.id} value={m.id} disabled={m.id === excludes}>
-            {m.displayName} · {m.id} · ${m.inputPricePerMTok.toFixed(2)}/in ${m.outputPricePerMTok.toFixed(2)}/out
+            {m.vendor} · {m.displayName}
             {m.id === excludes ? ' — already in pair' : ''}
           </option>
         ))}
       </select>
+      {selected && (
+        <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)', marginTop: 4, fontFamily: 'var(--font-mono, monospace)' }}>
+          ${selected.inputPricePerMTok.toFixed(2)}/MTok in · ${selected.outputPricePerMTok.toFixed(2)}/MTok out
+        </div>
+      )}
       <div style={hintStyle}>{hint}</div>
     </div>
   );
@@ -1058,11 +1087,16 @@ function RuntimeTab({ crew, models, canEdit, onChange, onError }: {
           {!models.some((m) => m.id === crew.model) && <option value={crew.model}>{crew.model} (not in registry)</option>}
           {models.map((m) => (
             <option key={m.id} value={m.id}>
-              {m.displayName} · {m.id} · ${m.inputPricePerMTok.toFixed(2)}/in ${m.outputPricePerMTok.toFixed(2)}/out
+              {m.vendor} · {m.displayName}
               {m.status !== 'live' ? ` (${m.status})` : ''}
             </option>
           ))}
         </select>
+        {(() => { const sel = models.find((m) => m.id === crew.model); return sel ? (
+          <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)', marginTop: 4, fontFamily: 'var(--font-mono, monospace)' }}>
+            ${sel.inputPricePerMTok.toFixed(2)}/MTok in · ${sel.outputPricePerMTok.toFixed(2)}/MTok out
+          </div>
+        ) : null; })()}
         <div style={hintStyle}>
           Switching models writes a <code style={{ fontFamily: 'var(--font-mono, monospace)' }}>crew_history(kind=model)</code> row and
           forces a new prompt cache. Pricing carries over from the registry.
@@ -2024,6 +2058,28 @@ function runtimePillStyle(kind: 'model' | 'copilot' | 'claude' | 'sdk' | 'cli' |
     padding: '1px 6px', borderRadius: 999,
     background: p.bg, color: p.fg, border: `1px solid ${p.border}`,
     fontWeight: 600, letterSpacing: 0.3, whiteSpace: 'nowrap',
+  };
+}
+
+// ── Shift toggle pill (left rail) ──────────────────────────────────────
+function shiftToggleStyle(shift: 'day' | 'night'): React.CSSProperties {
+  const isDay = shift === 'day';
+  return {
+    fontSize: 13,
+    lineHeight: 1,
+    width: 26,
+    height: 26,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 999,
+    cursor: 'pointer',
+    flexShrink: 0,
+    border: `1px solid ${isDay ? 'rgb(255, 196, 90)' : 'rgb(178, 165, 255)'}`,
+    background: isDay
+      ? 'color-mix(in srgb, rgb(255, 196, 90) 14%, transparent)'
+      : 'color-mix(in srgb, rgb(178, 165, 255) 14%, transparent)',
+    color: isDay ? 'rgb(200, 150, 30)' : 'rgb(178, 165, 255)',
   };
 }
 

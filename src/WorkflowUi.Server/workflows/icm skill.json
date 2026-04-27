@@ -43,7 +43,8 @@
         "confidence": 70,
         "maxTokens": 4096,
         "inputBindings": "{\"incidentFolder\":\"incidentFolder\"}",
-        "timeoutMinutes": 10
+        "timeoutMinutes": 10,
+        "workingDirectory": "global.incidentFolder"
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -69,7 +70,7 @@
         "confidence": 90,
         "maxTokens": 32000,
         "inputBindings": "{\"incidentFolder\":\"incidentFolder\",\"summary.md\":\"summaryFile.md\",\"metadata.md\":\"metadataFile\",\"code_issues.md\":\"codeIssueFile\",\"etw_events.md\":\"etwEventsFile\",\"applicable_tsgs.md\":\"applicableTsgFile\",\"similar_incidents.md\":\"similar_incidents.md\",\"incident_folder\":\"incidentFolder\"}",
-        "workingDirectory": "agentFolder",
+        "workingDirectory": "global.incidentFolder",
         "timeoutMinutes": 15
       },
       "joinType": "All",
@@ -96,7 +97,8 @@
         "outputKey": "result",
         "confidence": 70,
         "maxTokens": 4096,
-        "inputBindings": "{\"incidentFolderPath\":\"incidentFolder\",\"incident_folder\":\"incidentFolder\",\"repos_catalog\":\"repoMdFile\"}"
+        "inputBindings": "{\"incidentFolderPath\":\"incidentFolder\",\"incident_folder\":\"incidentFolder\",\"repos_catalog\":\"repoMdFile\"}",
+        "workingDirectory": "global.incidentFolder"
       },
       "joinType": "All",
       "priority": "Normal",
@@ -142,7 +144,8 @@
         "outputKey": "result",
         "confidence": 70,
         "maxTokens": 4096,
-        "inputBindings": "{\"IncidentId\":\"body.incidentId\",\"Headless\":\"static:\",\"Limit\":\"static:\",\"OutputBase\":\"static:E:\\\\icms\"}"
+        "inputBindings": "{\"IncidentId\":\"body.incidentId\",\"Headless\":\"static:\",\"Limit\":\"static:\",\"OutputBase\":\"static:E:\\\\icms\"}",
+        "workingDirectory": "global.incidentFolder"
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -187,7 +190,7 @@
         "confidence": 70,
         "maxTokens": 4096,
         "inputBindings": "{\"issuesFile\":\"issueListFile\",\"reposMd\":\"repoMdFile\"}",
-        "workingDirectory": "agentFolder",
+        "workingDirectory": "global.incidentFolder",
         "timeoutMinutes": 10
       },
       "joinType": "Any",
@@ -216,7 +219,8 @@
         "outputKey": "result",
         "confidence": 70,
         "maxTokens": 4096,
-        "timeoutMinutes": 10
+        "timeoutMinutes": 10,
+        "workingDirectory": "global.incidentFolder"
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -245,7 +249,7 @@
         "confidence": 70,
         "maxTokens": 32000,
         "timeoutMinutes": 20,
-        "workingDirectory": "agentFolder"
+        "workingDirectory": "global.incidentFolder"
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -329,8 +333,10 @@
         "outputKey": "result",
         "confidence": 70,
         "maxTokens": 32000,
-        "workingDirectory": "agentFolder",
-        "timeoutMinutes": 20
+        "workingDirectory": "global.incidentFolder",
+        "timeoutMinutes": 20,
+        "timeoutRetries": 0,
+        "continueOnTimeoutExhausted": true
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -358,7 +364,9 @@
         "outputKey": "result",
         "confidence": 70,
         "maxTokens": 4096,
-        "timeoutMinutes": 10
+        "timeoutMinutes": 10,
+        "continueOnTimeoutExhausted": true,
+        "workingDirectory": "global.incidentFolder"
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -386,7 +394,7 @@
         "outputKey": "result",
         "confidence": 70,
         "maxTokens": 4096,
-        "workingDirectory": "agentFolder",
+        "workingDirectory": "global.incidentFolder",
         "timeoutMinutes": 15,
         "timeoutRetries": 2,
         "continueOnTimeoutExhausted": true
@@ -419,7 +427,8 @@
         "maxTokens": 4096,
         "timeoutMinutes": 15,
         "timeoutRetries": 2,
-        "continueOnTimeoutExhausted": true
+        "continueOnTimeoutExhausted": true,
+        "workingDirectory": "global.incidentFolder"
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -449,7 +458,8 @@
         "maxTokens": 4096,
         "timeoutMinutes": 15,
         "timeoutRetries": 2,
-        "continueOnTimeoutExhausted": true
+        "continueOnTimeoutExhausted": true,
+        "workingDirectory": "global.incidentFolder"
       },
       "joinType": "Any",
       "priority": "Normal",
@@ -502,7 +512,7 @@
         "confidence": 70,
         "maxTokens": 4096,
         "timeoutMinutes": 15,
-        "workingDirectory": "agentFolder",
+        "workingDirectory": "global.incidentFolder",
         "continueOnTimeoutExhausted": true,
         "timeoutRetries": 2
       },

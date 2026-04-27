@@ -1,8 +1,8 @@
 ---
 name: appinsights_audit_events
 description: Audit trail for write operations via ILogger traces
-database: telemetry
-cluster: (not configured — no metadata.md found)
+database: Telemetry
+cluster: https://aeoprodtelemetry.eastus.kusto.windows.net
 table: traces
 schema_validated: false
 ---

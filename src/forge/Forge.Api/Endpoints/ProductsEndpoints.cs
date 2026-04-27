@@ -11,6 +11,7 @@ using Forge.Api.Contracts;
 using Forge.Api.Domain;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
+using Forge.Api.Services.Git;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -42,6 +43,7 @@ public static class ProductsEndpoints
         repos.MapGet("/", ListAllRepos).WithName("ListAllRepos");
         repos.MapGet("/{id}", GetRepo).WithName("GetRepo");
         repos.MapPatch("/{id}", PatchRepo).WithName("PatchRepo");
+        repos.MapPost("/{id}/clone", CloneRepo).WithName("CloneRepo");
         repos.MapDelete("/{id}", DeleteRepo).WithName("DeleteRepo");
 
         return app;
@@ -86,6 +88,43 @@ public static class ProductsEndpoints
         var repo = MapRepo(row);
         await hub.Clients.All.SendAsync("repo.changed", new { kind = "patched", repo });
         return Results.Ok(repo);
+    }
+
+    // POST /api/repos/{id}/clone — ensure the repo's cloneRoot is checked out.
+    // Used by the Products view "Edit repo" modal so that updating the local
+    // path triggers an automatic clone when the directory is missing.
+    //
+    // If the cloneRoot directory already exists we trust the operator's choice
+    // and skip — no clone, no remote-URL match check. Workstream creation
+    // (WorkstreamsEndpoints.Create) still uses the stricter EnsureClonedAsync
+    // path that validates the existing checkout.
+    private static async Task<IResult> CloneRepo(
+        HttpContext ctx,
+        string id,
+        ForgeDbContext db,
+        IRepoCloneService cloneSvc,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+        if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+
+        if (Directory.Exists(row.CloneRoot))
+        {
+            return Results.Ok(new { outcome = "skipped", message = "cloneRoot already exists" });
+        }
+
+        var result = await cloneSvc.EnsureClonedAsync(row, ct);
+        return result.Outcome switch
+        {
+            RepoCloneOutcome.Cloned => Results.Ok(new { outcome = "cloned", message = result.Message }),
+            RepoCloneOutcome.Skipped => Results.Ok(new { outcome = "skipped", message = result.Message }),
+            RepoCloneOutcome.Mismatched => Results.Problem(title: "Repo cloneRoot mismatch", detail: result.Message, statusCode: 409),
+            RepoCloneOutcome.Failed => Results.Problem(title: "Clone failed", detail: result.Message, statusCode: 502),
+            _ => Results.Problem(title: "Unknown clone outcome", statusCode: 500),
+        };
     }
 
     private static string? NullIfEmpty(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
