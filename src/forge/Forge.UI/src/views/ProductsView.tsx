@@ -3,11 +3,14 @@ import { useNavigate } from 'react-router-dom';
 import { useProductsStore } from '@/state/useProductsStore';
 import { useToastStore } from '@/state/useToastStore';
 import { NewProductModal } from '@/products/NewProductModal';
+import { EditProductModal } from '@/products/EditProductModal';
 import { AddRepoModal } from '@/products/AddRepoModal';
 import { ProductIcon } from '@/products/ProductIcon';
 import { RepoIcon } from '@/products/RepoIcon';
 import { forgeApi } from '@/api/forgeApi';
 import type { Product, Repo } from '@/types';
+import { ProductSprintStrip } from '@/sprints/ProductSprintStrip';
+import { SprintManager } from '@/sprints/SprintManager';
 
 // Phase 8.7 — products page. New first-class surface; exempt from the
 // forge-board.html screenshot diff (Phase 8.13) but uses the existing forge
@@ -24,6 +27,9 @@ export function ProductsView() {
 
   const [pickerOpen, setPickerOpen] = useState<string | null>(null);
   const [newProductOpen, setNewProductOpen] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  // Phase 15 — sprint manager modal scoped to a product.
+  const [sprintMgr, setSprintMgr] = useState<{ productId: string; productName: string; tab?: 'iterations' | 'areas' | 'import' | 'prefixes' } | null>(null);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
@@ -83,16 +89,36 @@ export function ProductsView() {
               isActive={activeProductId === p.id}
               onActivate={() => setActive(p.id)}
               onAttach={() => setPickerOpen(p.id)}
+              onEdit={() => setEditingProduct(p)}
+              onManageSprints={(tab) => setSprintMgr({ productId: p.id, productName: p.name, tab })}
             />
           ))}
         </div>
       </div>
+
+      {sprintMgr && (
+        <SprintManager
+          open={true}
+          productId={sprintMgr.productId}
+          productName={sprintMgr.productName}
+          initialTab={sprintMgr.tab ?? 'iterations'}
+          onClose={() => setSprintMgr(null)}
+        />
+      )}
 
       <NewProductModal
         open={newProductOpen}
         onClose={() => setNewProductOpen(false)}
         onCreated={() => { void load(); }}
       />
+
+      {editingProduct && (
+        <EditProductModal
+          open={true}
+          product={editingProduct}
+          onClose={() => setEditingProduct(null)}
+        />
+      )}
 
       <AddRepoModal
         open={pickerOpen !== null}
@@ -116,43 +142,18 @@ interface ProductCardProps {
   isActive: boolean;
   onActivate: () => void;
   onAttach: () => void;
+  onEdit: () => void;
+  onManageSprints: (tab?: 'iterations' | 'areas' | 'import' | 'prefixes') => void;
 }
 
-function ProductCard({ product, repos, stats, isActive, onActivate, onAttach }: ProductCardProps) {
+function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, onEdit, onManageSprints }: ProductCardProps) {
   const navigate = useNavigate();
-  const patchProduct = useProductsStore((s) => s.patchProduct);
   const deleteProduct = useProductsStore((s) => s.deleteProduct);
   const loadReposFor = useProductsStore((s) => s.loadReposFor);
   const loadStatsFor = useProductsStore((s) => s.loadStatsFor);
   const toast = useToastStore((s) => s.show);
 
-  const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [draftName, setDraftName] = useState(product.name);
-  const [draftDescription, setDraftDescription] = useState(product.description ?? '');
-
-  function startEdit() {
-    setDraftName(product.name);
-    setDraftDescription(product.description ?? '');
-    setEditing(true);
-  }
-
-  async function saveEdit() {
-    if (!draftName.trim()) {
-      toast('Name is required', 'danger');
-      return;
-    }
-    setBusy(true);
-    try {
-      await patchProduct(product.id, { name: draftName.trim(), description: draftDescription });
-      toast(`Updated ${draftName.trim()}`, 'success');
-      setEditing(false);
-    } catch (err) {
-      toast(err instanceof Error ? err.message : 'Update failed', 'danger');
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function confirmDelete() {
     const repoCount = repos.length;
@@ -188,57 +189,40 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach }: 
       className="ws-card"
       style={isActive ? { outline: '2px solid var(--accent)', borderRadius: 'var(--radius-lg)' } : undefined}
     >
-      <header className="ws-card-head" style={{ alignItems: 'center', gap: 12 }}>
+      <header className="ws-card-head" style={{ alignItems: 'flex-start', gap: 12 }}>
         <ProductIcon product={product} size={44} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          {editing ? (
-            <>
-              <input
-                className="input"
-                value={draftName}
-                onChange={(e) => setDraftName(e.target.value)}
-                disabled={busy}
-                style={{ width: '100%', marginBottom: 4 }}
-                placeholder="Name"
-                autoFocus
-              />
-              <input
-                className="input"
-                value={draftDescription}
-                onChange={(e) => setDraftDescription(e.target.value)}
-                disabled={busy}
-                style={{ width: '100%' }}
-                placeholder="Description"
-              />
-            </>
+          <div className="ws-card-title">{product.name}</div>
+          {product.description ? (
+            <div style={{
+              fontSize: 12,
+              color: 'var(--text-tertiary)',
+              lineHeight: 1.4,
+              marginTop: 2,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+            }}>
+              {product.description}
+            </div>
           ) : (
-            <>
-              <div className="ws-card-title">{product.name}</div>
-              <div className="ws-card-sub">{product.description || `Slug: ${product.slug}`}</div>
-            </>
+            <div className="ws-card-sub">Slug: {product.slug}</div>
           )}
         </div>
         <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-          {editing ? (
-            <>
-              <button className="btn btn-primary" onClick={() => void saveEdit()} disabled={busy}>Save</button>
-              <button className="btn btn-secondary" onClick={() => setEditing(false)} disabled={busy}>Cancel</button>
-            </>
-          ) : (
-            <>
-              {!isActive && (
-                <button className="btn btn-secondary" onClick={onActivate} title="Set active product" disabled={busy}>
-                  Activate
-                </button>
-              )}
-              <button className="btn btn-ghost" onClick={startEdit} title="Edit product" disabled={busy}>
-                Edit
-              </button>
-              <button className="btn btn-ghost" onClick={() => void confirmDelete()} title="Delete product" disabled={busy} style={{ color: 'var(--danger, #ef4444)' }}>
-                Delete
-              </button>
-            </>
+          {!isActive && (
+            <button className="btn btn-secondary" onClick={onActivate} title="Set active product" disabled={busy}>
+              Activate
+            </button>
           )}
+          <button className="btn btn-ghost" onClick={onEdit} title="Edit product" disabled={busy}>
+            Edit
+          </button>
+          <button className="btn btn-ghost" onClick={() => void confirmDelete()} title="Delete product" disabled={busy} style={{ color: 'var(--danger, #ef4444)' }}>
+            Delete
+          </button>
         </div>
       </header>
 
@@ -297,8 +281,11 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach }: 
         ))}
       </div>
 
-      <footer className="ws-card-foot">
+      <ProductSprintStrip productId={product.id} onManage={() => onManageSprints('iterations')} />
+
+      <footer className="ws-card-foot" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button className="btn btn-secondary" onClick={onAttach}>+ Attach repo</button>
+        <button className="btn btn-secondary" onClick={() => onManageSprints('import')}>Import from ADO</button>
       </footer>
     </article>
   );

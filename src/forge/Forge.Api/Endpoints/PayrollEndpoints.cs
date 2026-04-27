@@ -117,11 +117,15 @@ public static class PayrollEndpoints
         var sprintStart = nowUtc.AddDays(-14);
         var monthStart  = nowUtc.AddDays(-30);
 
-        // Pull the 30d slice once and bucket in memory.
-        var rows = await db.AgentUsage.AsNoTracking()
-            .Where(u => u.CrewId == id && u.StartedAt >= monthStart)
+        // SQLite can't filter DateTimeOffset at the SQL layer; pull the
+        // crew's full set then bucket in memory. Volume per crew is
+        // bounded — usage stays small enough that the in-memory walk is
+        // cheaper than the round-trip cost of multiple queries.
+        var allRows = await db.AgentUsage.AsNoTracking()
+            .Where(u => u.CrewId == id)
             .Select(u => new { u.StartedAt, u.CostUsd })
             .ToListAsync(ct);
+        var rows = allRows.Where(r => r.StartedAt >= monthStart).ToList();
 
         var today  = rows.Where(r => r.StartedAt >= todayStartUtc).Sum(r => r.CostUsd);
         var sprint = rows.Where(r => r.StartedAt >= sprintStart).Sum(r => r.CostUsd);

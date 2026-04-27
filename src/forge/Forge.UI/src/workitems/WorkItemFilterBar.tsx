@@ -5,6 +5,8 @@ import { useWitStore } from './useWitStore';
 import { SAMPLE_ITERATIONS } from './sampleWorkItems';
 import { typeLabel, WORK_ITEM_TYPES } from './workItemTypes';
 import { useProductsStore } from '@/state/useProductsStore';
+import { useSprintsStore, selectIterations } from '@/state/useSprintsStore';
+import { fmtDateRange } from '@/sprints/sampleSprintData';
 
 interface Props {
   items: WorkItem[];
@@ -47,12 +49,31 @@ export function WorkItemFilterBar({ items, visibleItems }: Props) {
     watching: items.filter((i) => i.watching).length,
   }), [items, filters.meId]);
 
-  // Distinct assignees for the assignee select. Defensive: cards-backfill
-  // can leave displayName/id null on legacy rows; coalesce so the sort
-  // doesn't trip on `.localeCompare` of null.
+  // Items that belong to the active product — used to scope the secondary
+  // dropdowns. When the user further filters by Repo, the assignee /
+  // iteration option lists honor that selection too.
+  const productRepoIdSet = useMemo(() => new Set(productRepos.map((r) => r.id)), [productRepos]);
+  const repoFilterSet = useMemo(
+    () => (filters.repoId.length ? new Set(filters.repoId) : null),
+    [filters.repoId],
+  );
+  const productItems = useMemo(() => {
+    return items.filter((i) => {
+      // Items missing a repoId fall back to "in scope" so existing seed
+      // rows without backfill don't disappear from the dropdowns.
+      if (!i.repoId) return true;
+      if (!productRepoIdSet.has(i.repoId)) return false;
+      if (repoFilterSet && !repoFilterSet.has(i.repoId)) return false;
+      return true;
+    });
+  }, [items, productRepoIdSet, repoFilterSet]);
+
+  // Distinct assignees on items that fall inside the active product (and
+  // optional repo) scope. Defensive: backfill can leave displayName/id
+  // null on legacy rows; coalesce so the sort doesn't trip.
   const assignees = useMemo(() => {
     const map = new Map<string, string>();
-    for (const i of items) {
+    for (const i of productItems) {
       const a = i.assignedTo;
       if (!a) continue;
       const id = a.id ?? '';
@@ -61,7 +82,7 @@ export function WorkItemFilterBar({ items, visibleItems }: Props) {
       map.set(id, display);
     }
     return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
-  }, [items]);
+  }, [productItems]);
 
   // Repo options come from the active product's repo list. We don't fold
   // in repo ids from `items` — once the store is product-scoped, surfacing
@@ -85,14 +106,49 @@ export function WorkItemFilterBar({ items, visibleItems }: Props) {
     }
   }, [productRepos, filters.repoId, setFilters]);
 
+  // Iterations: drive the dropdown from the Phase 15 product-scoped
+  // registry (canonical source, fed by the API), then top up with raw
+  // refs that appear on items in the same scope but haven't been imported
+  // yet. SAMPLE_ITERATIONS stays as a fallback when neither source has data.
+  const ensureSprints = useSprintsStore((s) => s.ensure);
+  useEffect(() => {
+    if (activeProductId) void ensureSprints(activeProductId);
+  }, [activeProductId, ensureSprints]);
+  const productIters = useSprintsStore(selectIterations(activeProductId ?? ''));
   const iterationOptions = useMemo(() => {
     const map = new Map<string, string>();
-    for (const it of SAMPLE_ITERATIONS) map.set(it.ref, it.label);
-    for (const i of items) {
-      if (i.iterationRef && !map.has(i.iterationRef)) map.set(i.iterationRef, i.iterationRef);
+    for (const it of productIters) {
+      const range = fmtDateRange(it.startDate, it.finishDate);
+      map.set(it.providerNodeId, `${it.name} · ${range}`);
+    }
+    // Items inside the product scope may reference iterations that
+    // weren't imported through Phase 15 yet — surface them so the
+    // operator can still filter.
+    for (const i of productItems) {
+      if (i.iterationRef && !map.has(i.iterationRef)) {
+        map.set(i.iterationRef, i.iterationRef);
+      }
+    }
+    if (map.size === 0) {
+      for (const it of SAMPLE_ITERATIONS) map.set(it.ref, it.label);
     }
     return [...map.entries()].map(([value, label]) => ({ value, label }));
-  }, [items]);
+  }, [productIters, productItems]);
+
+  // Drop iteration / assignee selections that no longer match the new
+  // product (or repo) scope so a stale selection doesn't filter to zero.
+  useEffect(() => {
+    if (!filters.iterationRef.length) return;
+    const valid = new Set(iterationOptions.map((o) => o.value));
+    const next = filters.iterationRef.filter((v) => valid.has(v));
+    if (next.length !== filters.iterationRef.length) setFilters({ iterationRef: next });
+  }, [iterationOptions, filters.iterationRef, setFilters]);
+  useEffect(() => {
+    if (!filters.assignee.length) return;
+    const valid = new Set(['__unassigned__', ...assignees.map(([id]) => id)]);
+    const next = filters.assignee.filter((v) => valid.has(v));
+    if (next.length !== filters.assignee.length) setFilters({ assignee: next });
+  }, [assignees, filters.assignee, setFilters]);
 
   return (
     <div className="filter-bar wit-filter-bar">

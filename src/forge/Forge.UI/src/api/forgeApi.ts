@@ -1,21 +1,35 @@
 import type {
   AgentDetail,
+  AgentLevelHistoryEntry,
   Card,
   ColumnId,
   Crew,
   CrewHistoryEntry,
+  CrewPayroll,
   CrewSalary,
   CurrentUser,
+  Deliverable,
+  DeliverableDisputeRequest,
   DiscoverableRepo,
+  DiscoveryNode,
   DomainExpert,
+  Epic,
   ForgeState,
+  ImportNodesRequest,
+  IterationBindingRequest,
   ModelInfo,
   Pr,
   Product,
+  ProductAreaPath,
+  ProductIteration,
   ProductStats,
+  PromotionRunResponse,
   Repo,
   SalaryTodaySummary,
+  SavePrefixRequest,
+  SavedPrefix,
   SoulPayload,
+  SprintDiscoveryRequest,
   TimelineResponse,
   UserSettings,
   Workstream,
@@ -77,6 +91,11 @@ export interface WorkItemPatchBody {
   tags?: string[];
   featureRef?: string | null;
   clearFeatureRef?: boolean;
+  /** Phase 14 follow-up — re-attach to a different repo. */
+  repoId?: string | null;
+  clearRepoId?: boolean;
+  /** Phase 14 follow-up — server auto-flips track per trackOf(). */
+  type?: WorkItemType;
 }
 
 export interface WorkItemSyncBody {
@@ -273,6 +292,15 @@ export const forgeApi = {
     });
   },
 
+  /** POST /api/epics — create a new story/epic. */
+  async createEpic(req: { name: string; id?: string; status?: string }): Promise<Epic> {
+    return fetchJson<Epic>('/api/epics', {
+      method: 'POST',
+      body: JSON.stringify(req),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   /** POST /api/cards/{id}/comment. */
   async commentOnCard(id: string, body: string, provider: 'ado' | 'github' = 'github'): Promise<void> {
     await fetchJson<unknown>(`/api/cards/${encodeURIComponent(id)}/comment`, {
@@ -343,6 +371,14 @@ export const forgeApi = {
     return fetchJson<Card>(`/api/cards/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
+    });
+  },
+
+  /** DELETE /api/cards/{id}. */
+  async deleteCard(id: string): Promise<void> {
+    await fetchJson(`/api/cards/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { 'X-Forge-User': writerHeader() },
     });
   },
 
@@ -551,9 +587,71 @@ export const forgeApi = {
     return fetchJson<Crew[]>(`/api/crews${qs}`);
   },
 
-  /** GET /api/crews/{id}/salary — Phase 11.9 salary roll-up. */
+  /** GET /api/crews/{id}/salary — Phase 11.9 salary roll-up (Q14.7: legacy alias). */
   async getCrewSalary(id: string): Promise<CrewSalary> {
     return fetchJson<CrewSalary>(`/api/crews/${encodeURIComponent(id)}/salary`);
+  },
+
+  /** GET /api/crews/{id}/spend — Phase 14.8 token-cost rollup (Q14.7 canonical name). */
+  async getCrewSpend(id: string): Promise<CrewSalary> {
+    return fetchJson<CrewSalary>(`/api/crews/${encodeURIComponent(id)}/spend`);
+  },
+
+  /** GET /api/crews/{id}/payroll — Phase 14.8 HR salary rollup. */
+  async getCrewPayroll(id: string): Promise<CrewPayroll> {
+    return fetchJson<CrewPayroll>(`/api/crews/${encodeURIComponent(id)}/payroll`);
+  },
+
+  /**
+   * Phase 14.11 — TopBar payroll chip aggregator. No dedicated server
+   * endpoint yet (the per-crew rollup is cheap and the operator's crew
+   * count is small); we list crews and sum `today` client-side.
+   */
+  async getPayrollTodayTotal(): Promise<{ totalUsd: number; crewCount: number }> {
+    const crews = await this.listCrews();
+    if (crews.length === 0) return { totalUsd: 0, crewCount: 0 };
+    const rolls = await Promise.all(crews.map((c) => this.getCrewPayroll(c.id).catch(() => null)));
+    let total = 0;
+    let counted = 0;
+    for (const r of rolls) {
+      if (!r) continue;
+      total += r.today;
+      counted++;
+    }
+    return { totalUsd: total, crewCount: counted };
+  },
+
+  /** GET /api/deliverables/{id} — Phase 14.5. */
+  async getDeliverable(id: number): Promise<Deliverable> {
+    return fetchJson<Deliverable>(`/api/deliverables/${id}`);
+  },
+
+  /** GET /api/work-items/{workItemId}/deliverables — Phase 14.5 list iterations. */
+  async listDeliverablesForWorkItem(workItemId: string): Promise<Deliverable[]> {
+    return fetchJson<Deliverable[]>(`/api/work-items/${encodeURIComponent(workItemId)}/deliverables`);
+  },
+
+  /** POST /api/deliverables/{id}/dispute — Phase 14.5 judge re-score. */
+  async disputeDeliverable(id: number, body: DeliverableDisputeRequest): Promise<Deliverable> {
+    return fetchJson<Deliverable>(`/api/deliverables/${id}/dispute`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** GET /api/agents/{id}/level-history — Phase 14.7 promotion timeline. */
+  async getAgentLevelHistory(agentId: string): Promise<AgentLevelHistoryEntry[]> {
+    return fetchJson<AgentLevelHistoryEntry[]>(`/api/agents/${encodeURIComponent(agentId)}/level-history`);
+  },
+
+  /** POST /api/admin/promotion/run — Phase 14.7 manual trigger. */
+  async runPromotion(): Promise<PromotionRunResponse> {
+    return fetchJson<PromotionRunResponse>(`/api/admin/promotion/run`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
   },
 
   // ----- Phase 13 — crew management & task orchestration ----------------
@@ -743,6 +841,8 @@ export const forgeApi = {
     name?: string;
     description?: string;
     ownerUserId?: string | null;
+    /** Phase 15.6 — empty string clears the override; null leaves it unchanged. */
+    activeIterationId?: string | null;
   }): Promise<Product> {
     return fetchJson<Product>(`/api/products/${encodeURIComponent(id)}`, {
       method: 'PATCH',
@@ -872,6 +972,19 @@ export const forgeApi = {
   },
 
   /** POST /api/work-items/sync/{repoId} — pulls remote into the local cache. */
+  /**
+   * POST /api/work-items/{id}/resync — Phase 14 follow-up. Force-refresh
+   * a single WI from its provider (bypasses the WIQL change filter and
+   * the revision-skip in WorkItemSyncService). Returns the updated WI.
+   */
+  async resyncWorkItem(id: string): Promise<WorkItem> {
+    return fetchJson<WorkItem>(`/api/work-items/${encodeURIComponent(id)}/resync`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   async syncWorkItems(repoId: string, body: WorkItemSyncBody): Promise<WorkItemSyncResult> {
     return fetchJson<WorkItemSyncResult>(`/api/work-items/sync/${encodeURIComponent(repoId)}`, {
       method: 'POST',
@@ -894,6 +1007,99 @@ export const forgeApi = {
       }
       throw err;
     }
+  },
+
+  // ----- Phase 15 — sprint & area path management -----------------------
+
+  /** GET /api/products/{id}/iterations. */
+  async listIterations(productId: string): Promise<ProductIteration[]> {
+    return fetchJson<ProductIteration[]>(`/api/products/${encodeURIComponent(productId)}/iterations`);
+  },
+
+  /** GET /api/products/{id}/area-paths. */
+  async listAreaPaths(productId: string): Promise<ProductAreaPath[]> {
+    return fetchJson<ProductAreaPath[]>(`/api/products/${encodeURIComponent(productId)}/area-paths`);
+  },
+
+  /** GET /api/products/{id}/saved-prefixes. */
+  async listSavedPrefixes(productId: string): Promise<SavedPrefix[]> {
+    return fetchJson<SavedPrefix[]>(`/api/products/${encodeURIComponent(productId)}/saved-prefixes`);
+  },
+
+  /** POST /api/products/{id}/sprint-discovery. */
+  async discoverSprintNodes(
+    productId: string,
+    req: SprintDiscoveryRequest,
+  ): Promise<DiscoveryNode[]> {
+    return fetchJson<DiscoveryNode[]>(`/api/products/${encodeURIComponent(productId)}/sprint-discovery`, {
+      method: 'POST',
+      body: JSON.stringify(req),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/products/{id}/iterations/import — bulk upsert. */
+  async importIterations(productId: string, req: ImportNodesRequest): Promise<ProductIteration[]> {
+    return fetchJson<ProductIteration[]>(`/api/products/${encodeURIComponent(productId)}/iterations/import`, {
+      method: 'POST',
+      body: JSON.stringify(req),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/products/{id}/area-paths/import — bulk upsert. */
+  async importAreaPaths(productId: string, req: ImportNodesRequest): Promise<ProductAreaPath[]> {
+    return fetchJson<ProductAreaPath[]>(`/api/products/${encodeURIComponent(productId)}/area-paths/import`, {
+      method: 'POST',
+      body: JSON.stringify(req),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** PATCH /api/products/{id}/area-paths/{areaPathId}/default — toggle. */
+  async toggleDefaultAreaPath(productId: string, areaPathId: string): Promise<ProductAreaPath[]> {
+    return fetchJson<ProductAreaPath[]>(
+      `/api/products/${encodeURIComponent(productId)}/area-paths/${encodeURIComponent(areaPathId)}/default`,
+      { method: 'PATCH', headers: { 'X-Forge-User': writerHeader() } });
+  },
+
+  /** POST /api/products/{id}/saved-prefixes. */
+  async savePrefix(productId: string, req: SavePrefixRequest): Promise<SavedPrefix> {
+    return fetchJson<SavedPrefix>(`/api/products/${encodeURIComponent(productId)}/saved-prefixes`, {
+      method: 'POST',
+      body: JSON.stringify(req),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** DELETE /api/products/{id}/saved-prefixes/{prefixId}. */
+  async deleteSavedPrefix(productId: string, prefixId: string): Promise<void> {
+    await fetchJson<void>(
+      `/api/products/${encodeURIComponent(productId)}/saved-prefixes/${encodeURIComponent(prefixId)}`,
+      { method: 'DELETE', headers: { 'X-Forge-User': writerHeader() } });
+  },
+
+  /** POST /api/products/{id}/saved-prefixes/{prefixId}/refresh. */
+  async refreshSavedPrefix(productId: string, prefixId: string): Promise<SavedPrefix> {
+    return fetchJson<SavedPrefix>(
+      `/api/products/${encodeURIComponent(productId)}/saved-prefixes/${encodeURIComponent(prefixId)}/refresh`,
+      { method: 'POST', headers: { 'X-Forge-User': writerHeader() } });
+  },
+
+  /** POST /api/repos/{id}/iteration-binding. */
+  async addIterationBinding(repoId: string, req: IterationBindingRequest): Promise<unknown> {
+    return fetchJson<unknown>(`/api/repos/${encodeURIComponent(repoId)}/iteration-binding`, {
+      method: 'POST',
+      body: JSON.stringify(req),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** DELETE /api/repos/{id}/iteration-binding/{bindingId}. */
+  async removeIterationBinding(repoId: string, bindingId: string | number): Promise<void> {
+    await fetchJson<void>(
+      `/api/repos/${encodeURIComponent(repoId)}/iteration-binding/${encodeURIComponent(String(bindingId))}`,
+      { method: 'DELETE', headers: { 'X-Forge-User': writerHeader() } });
   },
 };
 

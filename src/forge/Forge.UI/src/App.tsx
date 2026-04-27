@@ -11,9 +11,11 @@ import { AuditView } from '@/views/AuditView';
 import { SwarmView } from '@/views/SwarmView';
 import { PoliciesView } from '@/views/PoliciesView';
 import { CostView } from '@/views/CostView';
+import { PerformanceView } from '@/views/PerformanceView';
 import { ProductsView } from '@/views/ProductsView';
 import { CrewsView } from '@/views/CrewsView';
 import { WorkItemsView } from '@/views/WorkItemsView';
+import { LiveExecutionView } from '@/views/LiveExecutionView';
 import { useStateStore } from '@/state/useStateStore';
 
 export function App() {
@@ -31,12 +33,14 @@ export function App() {
           <Route path="/" element={<OverviewView />} />
           <Route path="/plan" element={<PlanView />} />
           <Route path="/work-items" element={<WorkItemsView />} />
+          <Route path="/work-items/:id/live" element={<LiveExecutionView />} />
           <Route path="/timeline" element={<TimelineView />} />
           <Route path="/workstreams" element={<WorkstreamsView />} />
           <Route path="/prs" element={<PrsView />} />
           <Route path="/swarm" element={<SwarmView />} />
           <Route path="/policies" element={<PoliciesView />} />
           <Route path="/cost" element={<CostView />} />
+          <Route path="/performance" element={<PerformanceView />} />
           <Route path="/products" element={<ProductsView />} />
           <Route path="/crews" element={<CrewsView />} />
           <Route path="/settings" element={<SettingsView />} />

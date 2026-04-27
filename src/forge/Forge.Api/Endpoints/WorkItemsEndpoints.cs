@@ -38,6 +38,7 @@ public static class WorkItemsEndpoints
         grp.MapPost("/{id}/move", Move).WithName("MoveWorkItem");
         grp.MapPost("/{id}/parent", Reparent).WithName("ReparentWorkItem");
         grp.MapPost("/sync/{repoId}", Sync).WithName("SyncWorkItems");
+        grp.MapPost("/{id}/resync", Resync).WithName("ResyncWorkItem");
 
         return app;
     }
@@ -242,6 +243,7 @@ public static class WorkItemsEndpoints
             CreatedAt = now,
             UpdatedAt = now,
             RemoteRevision = NewRevision(),
+            ExpectedFileChanges = req.ExpectedFileChanges,
         };
 
         // Validate the parent invariants before committing.
@@ -251,10 +253,30 @@ public static class WorkItemsEndpoints
             if (parent is null) return Results.Problem(title: $"Parent {row.ParentId} not found", statusCode: 400);
             var err = WorkItemRules.ValidateParent(row, parent);
             if (err is not null) return Results.Problem(title: err, statusCode: 400);
+
+            // Phase 16.5 — plan-tree fan-out caps (≤20 stages/phase, ≤20 steps/stage).
+            var budget = await WorkItemRules.ValidatePlanTreeBudgetAsync(db, row, parent, ct);
+            if (budget is not null)
+            {
+                return Results.Problem(
+                    type: "work_item.tree_over_capacity",
+                    title: budget,
+                    statusCode: 400);
+            }
         }
         if (!WorkItemRules.AllStates.Contains(row.State))
         {
             return Results.Problem(title: $"Unknown state '{row.State}'", statusCode: 400);
+        }
+
+        // Phase 16.5 — per-step file-change cap (≤20 files).
+        var stepBudget = WorkItemRules.ValidateStepFileBudget(row);
+        if (stepBudget is not null)
+        {
+            return Results.Problem(
+                type: "work_item.step_over_file_budget",
+                title: stepBudget,
+                statusCode: 400);
         }
 
         db.WorkItems.Add(row);
@@ -320,6 +342,37 @@ public static class WorkItemsEndpoints
         if (req.Tags is not null) row.TagsJson = JsonSerializer.Serialize(req.Tags, JsonOpts);
         if (req.FeatureRef is not null) row.FeatureRef = req.FeatureRef;
         if (req.ClearFeatureRef == true) row.FeatureRef = null;
+        if (!string.IsNullOrWhiteSpace(req.RepoId))
+        {
+            // Refuse if the repo isn't attached to any product (FK would dangle).
+            var exists = await db.Repos.AsNoTracking().AnyAsync(r => r.Id == req.RepoId, ct);
+            if (!exists) return Results.Problem(title: $"Repo {req.RepoId} not found", statusCode: 400);
+            row.RepoId = req.RepoId;
+        }
+        if (req.ClearRepoId == true) row.RepoId = null;
+        if (!string.IsNullOrWhiteSpace(req.Type))
+        {
+            if (!WorkItemRules.AllTypes.Contains(req.Type))
+                return Results.Problem(title: $"Unknown type '{req.Type}'", statusCode: 400);
+            // Auto-flip track per trackOf() so cross-ladder edits stay consistent
+            // (epic/feature/task/bug → dev; phase/stage/step → design).
+            row.Type = req.Type;
+            row.Track = WorkItemRules.TrackOf(req.Type);
+        }
+        if (req.ExpectedFileChanges is int efc)
+        {
+            row.ExpectedFileChanges = efc;
+            // Validate immediately so a 21-file PATCH refuses cleanly before persist.
+            var stepBudget = WorkItemRules.ValidateStepFileBudget(row);
+            if (stepBudget is not null)
+            {
+                return Results.Problem(
+                    type: "work_item.step_over_file_budget",
+                    title: stepBudget,
+                    statusCode: 400);
+            }
+        }
+        if (req.ClearExpectedFileChanges == true) row.ExpectedFileChanges = null;
 
         row.UpdatedAt = DateTimeOffset.UtcNow;
         row.RemoteRevision = NewRevision();
@@ -456,6 +509,89 @@ public static class WorkItemsEndpoints
         return Results.Ok(MapWorkItem(row));
     }
 
+    // ----- RESYNC (per-item, bypasses WIQL change filter + revision skip) -
+
+    /// <summary>
+    /// Phase 14 follow-up — force-refresh a single work item from its
+    /// upstream provider. The repo-level <see cref="Sync"/> call uses a
+    /// WIQL change filter (so unchanged items aren't pulled) and a
+    /// revision-skip in <see cref="WorkItemSyncService.UpsertAsync"/>
+    /// (so identical revisions don't re-write the row). This handler
+    /// bypasses both: it fetches the WI directly by provider ref and
+    /// applies the remote fields verbatim, which is what the operator
+    /// wants when the local schema evolved (e.g. the ADO mapper now
+    /// composes Description + ReproSteps + SystemInfo + Acceptance into
+    /// <c>descriptionMd</c>) and the existing row needs to be remapped.
+    /// </summary>
+    private static async Task<IResult> Resync(
+        HttpContext ctx,
+        string id,
+        ForgeDbContext db,
+        IEnumerable<IForgeProvider> providers,
+        IHubContext<ForgeHub> hub,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var row = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id, ct);
+        if (row is null) return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
+        if (string.Equals(row.Provider, "local", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Problem(title: "Local-only work items have no upstream to re-sync from.", statusCode: 400);
+        }
+        if (row.ProviderRef is null)
+        {
+            return Results.Problem(title: "Work item has no provider reference recorded.", statusCode: 400);
+        }
+
+        var provider = providers.FirstOrDefault(p => string.Equals(p.Kind, row.Provider, StringComparison.OrdinalIgnoreCase));
+        if (provider is null)
+        {
+            return Results.Problem(title: $"No provider registered for '{row.Provider}'.", statusCode: 400);
+        }
+
+        WorkItem? remote;
+        try
+        {
+            remote = await provider.GetWorkItemForSyncAsync(row.ProviderRef.Value.ToString(), ct);
+        }
+        catch (Exception ex)
+        {
+            return Results.Problem(title: $"Provider fetch failed: {ex.Message}", statusCode: 502);
+        }
+        if (remote is null)
+        {
+            return Results.Problem(title: $"Item {id} not found on the {row.Provider} side.", statusCode: 404);
+        }
+
+        // Apply remote fields. Skip ParentId when remote omits one (matches
+        // WorkItemSyncService — preserves operator's local re-parent).
+        row.Track = remote.Track;
+        row.Type = remote.Type;
+        row.State = remote.State;
+        row.Title = remote.Title;
+        row.DescriptionMd = remote.DescriptionMd;
+        if (!string.IsNullOrEmpty(remote.ParentId)) row.ParentId = remote.ParentId;
+        row.IterationRef = remote.IterationRef;
+        row.AreaPath = remote.AreaPath;
+        if (remote.AssignedTo is not null)
+        {
+            row.AssignedToJson = JsonSerializer.Serialize(remote.AssignedTo, JsonOpts);
+        }
+        row.Points = remote.Points;
+        row.Priority = remote.Priority;
+        row.TagsJson = JsonSerializer.Serialize(remote.Tags, JsonOpts);
+        row.UpdatedAt = remote.UpdatedAt > DateTimeOffset.MinValue ? remote.UpdatedAt : DateTimeOffset.UtcNow;
+        row.RemoteRevision = remote.RemoteRevision ?? NewRevision();
+
+        await db.SaveChangesAsync(ct);
+        await hub.Clients.All.SendAsync("workitem.changed",
+            new { kind = "updated", workItem = MapWorkItem(row) }, ct);
+
+        return Results.Ok(MapWorkItem(row));
+    }
+
     // ----- helpers --------------------------------------------------------
 
     private static string NewRevision() => Guid.NewGuid().ToString("N");
@@ -471,7 +607,8 @@ public static class WorkItemsEndpoints
         return new WorkItem(
             r.Id, r.RepoId, r.Provider, r.ProviderRef, r.Track, r.Type, r.State,
             r.Title, r.DescriptionMd, r.ParentId, r.FeatureRef, r.IterationRef, r.AreaPath,
-            assignee, r.Points, r.Priority, tags, r.CreatedAt, r.UpdatedAt, r.RemoteRevision);
+            assignee, r.Points, r.Priority, tags, r.CreatedAt, r.UpdatedAt, r.RemoteRevision,
+            r.AutoDispatchedAt, r.ExpectedFileChanges);
     }
 
     private static bool MatchesAssignee(string? json, string filter)

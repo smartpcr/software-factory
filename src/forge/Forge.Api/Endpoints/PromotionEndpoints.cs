@@ -65,10 +65,12 @@ public static class PromotionEndpoints
 
     private static async Task<IResult> GetHistory(string agentId, ForgeDbContext db, CancellationToken ct)
     {
-        var rows = await db.AgentLevelHistory.AsNoTracking()
-            .Where(h => h.AgentId == agentId)
+        // SQLite can't sort DateTimeOffset at the SQL layer; sort client-side.
+        var rows = (await db.AgentLevelHistory.AsNoTracking()
+                .Where(h => h.AgentId == agentId)
+                .ToListAsync(ct))
             .OrderByDescending(h => h.CreatedAt)
-            .ToListAsync(ct);
+            .ToList();
         return Results.Ok(rows);
     }
 }

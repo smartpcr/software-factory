@@ -81,6 +81,9 @@ builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<IAdoConfigResolver, AdoConfigResolver>();
 builder.Services.AddSingleton<IForgeProvider, AdoProvider>();
 builder.Services.AddSingleton<IForgeProvider, GitHubProvider>();
+// Phase 15.2 / 15.4 — sprint discovery services (ADO classification + GH milestones).
+builder.Services.AddSingleton<IAdoClassificationService, AdoClassificationService>();
+builder.Services.AddSingleton<IGitHubMilestoneService, GitHubMilestoneService>();
 builder.Services.AddSingleton<WebhookActivity>();
 builder.Services.AddScoped<ProviderCache>();
 builder.Services.AddSingleton<ProviderSyncService>();
@@ -94,9 +97,21 @@ builder.Services.AddSingleton<WorkItemSyncService>();
 builder.Services.Configure<HumanGateOptions>(builder.Configuration.GetSection(HumanGateOptions.SectionName));
 builder.Services.AddSingleton<IHumanGateEvaluator, HumanGateEvaluator>();
 // Phase 14.4 — generator↔evaluator iteration orchestrator.
-builder.Services.AddScoped<Forge.Api.Services.IDeliverableLoop, Forge.Api.Services.DeliverableLoop>();
+// Phase 16.4 — gets the live TaskChannel so iteration boundaries emit on task.{wid}.
+builder.Services.AddScoped<Forge.Api.Services.IDeliverableLoop>(sp =>
+    new Forge.Api.Services.DeliverableLoop(
+        sp.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>(),
+        sp.GetService<Forge.Api.Realtime.TaskChannel>()));
 // Phase 14.7 — promotion / demotion runner (called from the admin endpoint).
 builder.Services.AddScoped<Forge.Api.Services.IPromotionRunner, Forge.Api.Services.PromotionRunner>();
+// Phase 16.7 — per-work-item live channel (transcript persistence + SignalR fan-out).
+builder.Services.AddSingleton<Forge.Api.Realtime.TaskChannel>();
+// Phase 16.8 — worktree change feed (one FileSystemWatcher per active workstream).
+builder.Services.AddSingleton<Forge.Api.Services.WorktreeChangeFeed>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.WorktreeChangeFeed>());
+// Phase 16.3 — auto-delegation hosted service (lead → crew, ≤10 s p95).
+builder.Services.AddSingleton<Forge.Api.Services.LeadAutoDispatcher>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.LeadAutoDispatcher>());
 builder.Services.AddSingleton<AutoMergeWatcher>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoMergeWatcher>());
 builder.Services.AddHttpContextAccessor();
@@ -157,6 +172,10 @@ using (var scope = app.Services.CreateScope())
     await Phase12Migration.ApplyAsync(db);
     // Phase 14.1 — agent level/hourly + crew schedule + deliverables/level_history tables.
     await Phase14Migration.ApplyAsync(db);
+
+    await Phase15Migration.ApplyAsync(db);
+    // Phase 16.1 — pair columns + auto-dispatch + cost-category + transcript table.
+    await Phase16Migration.ApplyAsync(db);
     await ForgeSeed.EnsureSeededAsync(db);
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.
@@ -196,6 +215,7 @@ app.MapWebhooksEndpoints();
 app.MapAuditEndpoints();
 app.MapHumanGateEndpoints();
 app.MapProductsEndpoints();
+app.MapSprintEndpoints();
 app.MapAuthEndpoints();
 app.MapMeEndpoints();
 app.MapMeSettingsEndpoints();
@@ -209,6 +229,8 @@ app.MapDeliverablesEndpoints();
 app.MapPromotionEndpoints();
 // Phase 14.8 — HR payroll + /spend deprecation alias.
 app.MapPayrollEndpoints();
+// Phase 16.9 — live execution snapshot + transcript pagination.
+app.MapTaskExecutionEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 

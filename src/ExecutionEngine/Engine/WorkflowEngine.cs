@@ -615,6 +615,45 @@ namespace ExecutionEngine.Engine
                 // Step 3: Setup upstream tracking for ALL join nodes
                 this.SetupUpstreamTracking(workflowDefinition);
 
+                // Step 3.1: Set up callback for container nodes (While/ForEach) to prepare body nodes per iteration
+                context.PrepareNodeForIteration = (nodeId, workflowInstanceId) =>
+                {
+                    var freshInstance = new NodeInstance
+                    {
+                        NodeInstanceId = Guid.NewGuid(),
+                        NodeId = nodeId,
+                        WorkflowInstanceId = workflowInstanceId,
+                        Status = NodeExecutionStatus.Pending,
+                        StartTime = null
+                    };
+                    this.nodeExecutionTracking[nodeId] = freshInstance;
+                    this.nodeInstanceTracking[freshInstance.NodeInstanceId] = freshInstance;
+
+                    // Clear JoinAll upstream tracking so join gates reset for new iteration
+                    if (this.upstreamCompletionTracking.TryGetValue(nodeId, out var completed))
+                    {
+                        lock (completed) { completed.Clear(); }
+                    }
+
+                    return freshInstance;
+                };
+
+                // Step 3.2: Identify loop body nodes for re-execution support
+                if (context.Router is MessageRouter loopRouter)
+                {
+                    foreach (var nodeDef in workflowDefinition.Nodes)
+                    {
+                        if (nodeDef.RuntimeType is RuntimeType.While or RuntimeType.ForEach)
+                        {
+                            var bodyNodes = loopRouter.FindAllLoopBodyNodes(nodeDef.NodeId, WhileNode.LoopBodyPort);
+                            foreach (var bodyNodeId in bodyNodes)
+                            {
+                                context.LoopBodyNodes.Add(bodyNodeId);
+                            }
+                        }
+                    }
+                }
+
                 // Step 3.5: Setup concurrency control
                 this.SetupConcurrencyControl(context.InstanceId, workflowDefinition);
 
@@ -1035,7 +1074,6 @@ namespace ExecutionEngine.Engine
         }
 
         /// <summary>
-        /// Sets up concurrency control for the workflow.
         /// Creates a workflow-level concurrency limiter and registers nodes with the node throttler.
         /// Also registers circuit breakers and initializes compensation tracking.
         /// </summary>
@@ -1218,7 +1256,14 @@ namespace ExecutionEngine.Engine
                             if (terminalNodes.Count > 0 && !terminalNodes.Contains(feedbackSource))
                             {
                                 this.logger.LogInformation("[While] SKIPPED: feedback from non-terminal {Source}", feedbackSource);
-                                // Non-terminal child completed — ignore, don't re-trigger
+                                // Non-terminal child completed — consume the message so it's not re-peeked
+                                var whileQueue = (NodeMessageQueue)context.NodeQueues[nodeDef.NodeId];
+                                var skipLease = await whileQueue.LeaseAsync(cancellationToken);
+                                if (skipLease != null)
+                                {
+                                    await whileQueue.CompleteAsync(skipLease, cancellationToken);
+                                }
+
                                 return;
                             }
                         }
@@ -1525,6 +1570,8 @@ namespace ExecutionEngine.Engine
                 };
 
                 // Track by instance ID for iteration executions
+                // Also update nodeExecutionTracking so termination check sees the latest instance
+                this.nodeExecutionTracking[nodeId] = nodeInstance;
                 this.nodeInstanceTracking[nodeInstance.NodeInstanceId] = nodeInstance;
             }
             else
@@ -1547,14 +1594,34 @@ namespace ExecutionEngine.Engine
                         nodeId, context.InstanceId, nodeInstance.Status);
                 }
 
-                // If node has already reached a terminal status, complete the lease and skip execution
+                // If node has already reached a terminal status, check if it's inside a loop body.
+                // Loop body nodes receiving NodeCompleteMessage (from upstream body nodes) need
+                // fresh instances for each iteration — ForEach fires all iterations at once,
+                // so PrepareNodeForIteration can't reset them between iterations.
                 if (nodeInstance.Status == NodeExecutionStatus.Completed ||
                     nodeInstance.Status == NodeExecutionStatus.Failed ||
                     nodeInstance.Status == NodeExecutionStatus.Cancelled ||
                     nodeInstance.Status == NodeExecutionStatus.WaitingForJoin)
                 {
-                    await queue.CompleteAsync(lease, cancellationToken);
-                    return;
+                    if (context.LoopBodyNodes.Contains(nodeId))
+                    {
+                        // Inside a loop body: create a fresh instance for re-execution
+                        nodeInstance = new NodeInstance
+                        {
+                            NodeInstanceId = Guid.NewGuid(),
+                            NodeId = nodeId,
+                            WorkflowInstanceId = context.InstanceId,
+                            Status = NodeExecutionStatus.Pending,
+                            StartTime = DateTime.UtcNow
+                        };
+                        this.nodeExecutionTracking[nodeId] = nodeInstance;
+                        this.nodeInstanceTracking[nodeInstance.NodeInstanceId] = nodeInstance;
+                    }
+                    else
+                    {
+                        await queue.CompleteAsync(lease, cancellationToken);
+                        return;
+                    }
                 }
             }
 
@@ -1764,7 +1831,6 @@ namespace ExecutionEngine.Engine
                         if (isWhileIterationCheck)
                         {
                             // Keep While node as Running so it can be re-executed on feedback
-                            // Don't update status in nodeExecutionTracking, but still route the Complete message
                             nodeInstance.SourcePort = result.SourcePort;
                         }
                         else

@@ -8,11 +8,21 @@ import { useToastStore } from './useToastStore';
 
 export type BoardFilter = 'all' | 'needs-approval' | 'ai-working' | 'blocked' | 'my-watch';
 
+export type BoardGroupBy = 'epic' | 'story' | 'phase' | 'agent' | 'priority';
+
 interface BoardState {
   cards: Card[];
   selectedId: string | null;
   draggingId: string | null;
   activeFilter: BoardFilter;
+  /** Phase-1 select dropdowns (epic / agent / priority). null = "all". */
+  epicFilter: string | null;
+  agentFilter: string | null;
+  priorityFilter: string | null;
+  /** Phase-1 search input (substring match against title/branch/id). */
+  searchTerm: string;
+  /** Group by — currently visual-only (board still groups by epic). */
+  groupBy: BoardGroupBy;
   /** Card id whose move is awaiting confirmation (the modal is open). */
   pendingMove: { cardId: string; toCol: ColumnId } | null;
 
@@ -20,6 +30,11 @@ interface BoardState {
   setSelected: (id: string | null) => void;
   setDragging: (id: string | null) => void;
   setFilter: (f: BoardFilter) => void;
+  setEpicFilter: (e: string | null) => void;
+  setAgentFilter: (a: string | null) => void;
+  setPriorityFilter: (p: string | null) => void;
+  setSearchTerm: (s: string) => void;
+  setGroupBy: (g: BoardGroupBy) => void;
   /** Apply a card update from the SignalR hub. */
   upsertFromRealtime: (card: Card) => void;
   /**
@@ -46,12 +61,22 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   selectedId: null,
   draggingId: null,
   activeFilter: 'all',
+  epicFilter: null,
+  agentFilter: null,
+  priorityFilter: null,
+  searchTerm: '',
+  groupBy: 'story',
   pendingMove: null,
 
   hydrate: (cards) => set({ cards }),
   setSelected: (id) => set({ selectedId: id }),
   setDragging: (id) => set({ draggingId: id }),
   setFilter: (f) => set({ activeFilter: f }),
+  setEpicFilter: (e) => set({ epicFilter: e }),
+  setAgentFilter: (a) => set({ agentFilter: a }),
+  setPriorityFilter: (p) => set({ priorityFilter: p }),
+  setSearchTerm: (s) => set({ searchTerm: s }),
+  setGroupBy: (g) => set({ groupBy: g }),
 
   upsertFromRealtime: (card) => {
     const cards = get().cards;
@@ -124,17 +149,54 @@ export const useBoardStore = create<BoardState>((set, get) => ({
  * runs the selector on every render and a new array/object reference would
  * trigger an infinite update loop.
  */
-export function filterCards(cards: Card[], filter: BoardFilter): Card[] {
-  switch (filter) {
-    case 'needs-approval': return cards.filter((c) => c.humanGate);
-    case 'ai-working':     return cards.filter((c) => c.live && c.agent && c.agent.role !== 'human');
-    case 'blocked':        return cards.filter((c) => c.blocked);
+/**
+ * Pure card filter. The chip filter (`activeFilter`) narrows by lifecycle
+ * state; the select-dropdown filters narrow by epic/agent/priority; the
+ * search term substring-matches across id / title / branch. All filters
+ * AND together — a card must satisfy every one to be visible.
+ */
+export interface BoardFilterState {
+  activeFilter: BoardFilter;
+  epicFilter: string | null;
+  agentFilter: string | null;
+  priorityFilter: string | null;
+  searchTerm: string;
+}
+
+export function filterCards(cards: Card[], filter: BoardFilter | BoardFilterState): Card[] {
+  // Back-compat: legacy callers pass just the chip filter.
+  const f: BoardFilterState = typeof filter === 'string'
+    ? { activeFilter: filter, epicFilter: null, agentFilter: null, priorityFilter: null, searchTerm: '' }
+    : filter;
+
+  let out = cards;
+
+  switch (f.activeFilter) {
+    case 'needs-approval': out = out.filter((c) => c.humanGate); break;
+    case 'ai-working':     out = out.filter((c) => c.live && c.agent && c.agent.role !== 'human'); break;
+    case 'blocked':        out = out.filter((c) => c.blocked); break;
     case 'my-watch': {
       const watch = new Set(['#234', '#812', '#241', 'PR #240', 'PR #229']);
-      return cards.filter((c) => watch.has(c.id));
+      out = out.filter((c) => watch.has(c.id));
+      break;
     }
-    default: return cards;
+    default: break;
   }
+
+  if (f.epicFilter) out = out.filter((c) => c.epic === f.epicFilter);
+  if (f.agentFilter) out = out.filter((c) => c.agent?.id === f.agentFilter);
+  if (f.priorityFilter) out = out.filter((c) => c.priority === f.priorityFilter);
+
+  const q = f.searchTerm.trim().toLowerCase();
+  if (q) {
+    out = out.filter((c) =>
+      c.id.toLowerCase().includes(q)
+      || c.title.toLowerCase().includes(q)
+      || (c.branch ?? '').toLowerCase().includes(q),
+    );
+  }
+
+  return out;
 }
 
 export function computeBurndown(cards: Card[]): { done: number; total: number; pct: number } {

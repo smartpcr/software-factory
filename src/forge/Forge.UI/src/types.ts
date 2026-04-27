@@ -353,6 +353,12 @@ export interface Crew {
    * different models. Null = inherit `model` (warns).
    */
   evaluatorModel?: string | null;
+  /**
+   * Phase 16.2 — pair role: 'standalone' (default), 'generator', or 'evaluator'.
+   */
+  pairRole?: string;
+  /** Phase 16.2 — id of the crew this one is paired with (symmetric). */
+  pairedWithCrewId?: string | null;
 }
 
 /** Phase 11.3 — agent listing payload (mirrors AgentDetail on the server). */
@@ -422,7 +428,7 @@ export interface CrewHistoryEntry {
   byUserId: string | null;
 }
 
-/** Phase 11.9 — salary roll-up payload. */
+/** Phase 11.9 — salary roll-up payload. (Q14.7: same shape, new name `CrewSpend` going forward.) */
 export interface CrewSalary {
   crewId: string;
   today: number;
@@ -432,8 +438,213 @@ export interface CrewSalary {
   sparkline: number[];
 }
 
+/**
+ * Phase 14.8 — HR payroll snapshot. Distinct from `CrewSalary` /
+ * `CrewSpend` (which is token-spend); payroll = `Σ(level → hourly_usd) ×
+ * on_shift_hours`. Field shape is intentionally identical so the UI can
+ * render both side-by-side.
+ */
+export interface CrewPayroll {
+  crewId: string;
+  today: number;
+  sprint: number;
+  month: number;
+  /** 14 daily totals, oldest first → today. */
+  sparkline: number[];
+}
+
+/** Phase 14 — one row per (work-item × iteration). */
+export interface Deliverable {
+  id: number;
+  workItemId: string;
+  crewId: string;
+  generatorAgentId: string;
+  evaluatorAgentId: string;
+  iter: number;
+  score: number;
+  dims: Record<string, number>;
+  verdict: string;
+  notes: string;
+  genCostUsd: number;
+  evalCostUsd: number;
+  judgeAgentId: string | null;
+  judgeScore: number | null;
+  judgeNotes: string | null;
+  createdAt: string;
+}
+
+/** Phase 14.5 — dispute body (caller supplies the judge result). */
+export interface DeliverableDisputeRequest {
+  judgeAgentId: string;
+  judgeScore: number;
+  judgeNotes?: string;
+}
+
+/** Phase 14.7 — one decision row in `PromotionRunResponse`. */
+export interface PromotionDecision {
+  agentId: string;
+  oldLevel: number;
+  newLevel: number;
+  rollingAvg: number;
+  reason: string;
+  windowSize: number;
+}
+
+/** Phase 14.7 — outcome of one `POST /api/admin/promotion/run`. */
+export interface PromotionRunResponse {
+  agentsScanned: number;
+  promoted: number;
+  demoted: number;
+  at: string;
+  decisions: PromotionDecision[];
+}
+
+/** Phase 14.7 — one `agent_level_history` row. */
+export interface AgentLevelHistoryEntry {
+  id: number;
+  agentId: string;
+  oldLevel: number;
+  newLevel: number;
+  windowAvg: number;
+  reason: string;
+  createdAt: string;
+}
+
 /** Phase 11.9 — TopBar chip payload. */
 export interface SalaryTodaySummary {
   totalUsd: number;
   activeAgents: number;
+}
+
+// ─── Phase 15 — sprint & area path management ──────────────────────────────
+//
+// Iteration / area paths / saved prefixes are bound to a product (Q15.1, Q15.2).
+// Mirrors `Forge.Api/Contracts/ForgeContracts.cs` Phase 15 records.
+
+export type ProviderKind = 'ado' | 'github';
+export type IterationState = 'past' | 'current' | 'future' | 'provider-orphan';
+export type IterationBindingRole = 'current' | 'next' | 'reference';
+export type SprintImportKind = 'iterations' | 'areas';
+
+/** Phase 15.5 — one repo binding for a {@link ProductIteration}. */
+export interface IterationBinding {
+  repoId: string;
+  repoName: string;
+  role: IterationBindingRole;
+}
+
+/**
+ * Phase 15.1 — product-scoped iteration imported from a provider.
+ * Bound to exactly one product. `providerNodeId` is the stable upstream
+ * identity used to resolve renames.
+ */
+export interface ProductIteration {
+  id: string;
+  productId: string;
+  providerKind: ProviderKind;
+  providerOrg: string;
+  providerProject: string;
+  providerNodeId: string;
+  path: string;
+  name: string;
+  startDate: string | null;
+  finishDate: string | null;
+  state: IterationState;
+  bindings: IterationBinding[];
+  pointsTotal: number;
+  pointsDone: number;
+  importedAt: string;
+  refreshedAt: string;
+}
+
+/**
+ * Phase 15.2 — product-scoped area path. Tree-structured via `parentPath`.
+ * ADO-only at v0.1 (Q15.6). Bound to a product.
+ */
+export interface ProductAreaPath {
+  id: string;
+  productId: string;
+  providerKind: ProviderKind;
+  providerOrg: string;
+  providerProject: string;
+  providerNodeId: string;
+  path: string;
+  parentPath: string | null;
+  parentNodeId?: string | null;
+  isDefaultFilter: boolean;
+  workItemCount: number;
+  importedAt: string;
+}
+
+/** Phase 15.10 — diff captured by the most recent refresh of a saved prefix. */
+export interface SavedPrefixDelta {
+  added: number;
+  removed: number;
+  renamed: number;
+}
+
+/**
+ * Phase 15.10 — saved prefix shorthand. Bound to a product so refreshing
+ * it scoped-imports under the same product.
+ */
+export interface SavedPrefix {
+  id: string;
+  productId: string;
+  prefix: string;
+  kind: SprintImportKind;
+  repoId: string;
+  repoName: string;
+  addedBy: string;
+  lastRefreshedAt: string;
+  delta: SavedPrefixDelta;
+}
+
+/** Phase 15.2 — provider-specific extras on a {@link DiscoveryNode}. */
+export interface DiscoveryNodeAttributes {
+  startDate?: string;
+  finishDate?: string;
+  /** ADO timeFrame mirrored for iterations: 'past' | 'current' | 'future'. */
+  timeFrame?: 'past' | 'current' | 'future';
+}
+
+/**
+ * Phase 15.2 — flat node returned by ADO classification discovery. Operator
+ * multi-selects from this list to feed the bulk-import endpoint.
+ */
+export interface DiscoveryNode {
+  providerNodeId: string;
+  path: string;
+  name: string;
+  hasChildren: boolean;
+  depth: number;
+  attributes: DiscoveryNodeAttributes;
+  alreadyImported: boolean;
+  workItemCount?: number;
+}
+
+/** Phase 15.2 — request body for `POST /api/products/{id}/sprint-discovery`. */
+export interface SprintDiscoveryRequest {
+  repoId: string;
+  kind: SprintImportKind;
+  prefix?: string;
+}
+
+/** Phase 15.3 — request body for the bulk-import endpoints. */
+export interface ImportNodesRequest {
+  repoId: string;
+  providerNodeIds: string[];
+  savedFromPrefix?: string;
+}
+
+/** Phase 15.5 — request body for `POST /api/repos/{id}/iteration-binding`. */
+export interface IterationBindingRequest {
+  productIterationId: string;
+  role: IterationBindingRole;
+}
+
+/** Phase 15.10 — POST body for saving a new prefix shorthand. */
+export interface SavePrefixRequest {
+  prefix: string;
+  kind: SprintImportKind;
+  repoId: string;
 }

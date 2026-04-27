@@ -11,6 +11,16 @@ interface Props {
   onSync: (ws: Workstream) => void;
   onIde?: (ws: Workstream) => void;
   onOpenPr?: (ws: Workstream) => void;
+  /**
+   * Phase 16.12 — count of work items bound to this workstream that have
+   * `auto_dispatched_at IS NOT NULL AND state IN (proposed, active)`, i.e.
+   * a paired-crew deliverable is in-flight. When > 0 we render a small
+   * "live" badge linking to the first in-flight work item's
+   * `/work-items/{id}/live` view.
+   */
+  liveCount?: number;
+  liveWorkItemId?: string | null;
+  onOpenLive?: (workItemId: string) => void;
 }
 
 function roleFor(id: string): string {
@@ -22,7 +32,7 @@ function roleFor(id: string): string {
 }
 
 // Verbatim port of the prototype's ws-card block (lines 3818-3909).
-export function WorkstreamCard({ ws, epic, prs, cards, onOpen, onSync, onIde, onOpenPr }: Props) {
+export function WorkstreamCard({ ws, epic, prs, cards, onOpen, onSync, onIde, onOpenPr, liveCount, liveWorkItemId, onOpenLive }: Props) {
   const colorVar = epic ? `var(--${epic.color})` : 'var(--text-tertiary)';
 
   return (
@@ -47,6 +57,35 @@ export function WorkstreamCard({ ws, epic, prs, cards, onOpen, onSync, onIde, on
           </div>
         </div>
         <span className={`ws-card-status-pill ${ws.status}`}><span className="dot" />{ws.status}</span>
+        {liveCount && liveCount > 0 ? (
+          <button
+            type="button"
+            className="ws-card-live-badge"
+            onClick={(e) => { e.stopPropagation(); if (liveWorkItemId && onOpenLive) onOpenLive(liveWorkItemId); }}
+            title={`${liveCount} active deliverable${liveCount === 1 ? '' : 's'} — open live view`}
+            style={{
+              marginLeft: 6,
+              fontSize: 10,
+              padding: '2px 6px',
+              borderRadius: 8,
+              border: '1px solid var(--success-border)',
+              background: 'var(--success-bg)',
+              color: 'var(--success)',
+              fontWeight: 600,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              cursor: liveWorkItemId ? 'pointer' : 'default',
+            }}
+          >
+            <span style={{
+              width: 6, height: 6, borderRadius: '50%',
+              background: 'var(--success)',
+              animation: 'forge-pulse 1.6s ease-in-out infinite',
+            }} />
+            {liveCount} live
+          </button>
+        ) : null}
       </div>
 
       <div style={{ fontSize: 11.5, lineHeight: 1.5, color: 'var(--text-secondary)', marginBottom: 12 }}>

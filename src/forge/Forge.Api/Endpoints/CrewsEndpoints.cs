@@ -42,6 +42,9 @@ public static class CrewsEndpoints
         // Phase 13.8 — capability ingestion.
         grp.MapPost("/{id}/capabilities", AddCapability).WithName("AddCrewCapability");
         grp.MapDelete("/{id}/capabilities", RemoveCapability).WithName("RemoveCrewCapability");
+        // Phase 16.2 — pair management.
+        grp.MapPost("/{id}/pair", PairCrew).WithName("PairCrew");
+        grp.MapDelete("/{id}/pair", UnpairCrew).WithName("UnpairCrew");
         // Phase 13.1 — history readout.
         grp.MapGet("/{id}/history", GetHistory).WithName("GetCrewHistory");
         // Phase 13.4 / 13.5 / 13.7 — pipelines (server stubs; behaviour TBD).
@@ -1064,6 +1067,132 @@ public static class CrewsEndpoints
         return Results.Ok(await MapCrewAsync(crew, db, ct));
     }
 
+    // ── Phase 16.2 — pair management ───────────────────────────────────────
+
+    /// <summary>
+    /// Phase 16.2 — pair two crews. Generator becomes the caller's crew,
+    /// evaluator becomes the body's <c>OtherCrewId</c>. Symmetric write
+    /// inside one transaction. Refuses with 400 on team mismatch (only arch
+    /// + eng can pair); 409 if either side is already paired or if the two
+    /// crews don't share a product.
+    /// </summary>
+    private static async Task<IResult> PairCrew(
+        HttpContext ctx,
+        string id,
+        [FromBody] PairCrewRequest req,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
+        if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
+        var gate = RequireRole.CheckForProduct(ctx, db, crew.ProductId, RequireRole.ProductOwner);
+        if (gate is not null) return gate;
+
+        if (req is null || string.IsNullOrWhiteSpace(req.OtherCrewId))
+        {
+            return Results.Problem(title: "otherCrewId required", statusCode: 400);
+        }
+        if (req.OtherCrewId == id)
+        {
+            return Results.Problem(title: "A crew cannot pair with itself.", statusCode: 400);
+        }
+        var other = await db.Crews.FirstOrDefaultAsync(c => c.Id == req.OtherCrewId, ct);
+        if (other is null) return Results.Problem(title: $"Crew {req.OtherCrewId} not found", statusCode: 404);
+
+        // Q16.2 — only arch + eng crews may pair. Review and QA stay on the
+        // Phase 14 in-crew evaluator path.
+        var teamSelf  = TeamFromCrewName(crew.Name);
+        var teamOther = TeamFromCrewName(other.Name);
+        bool TeamAllowed(string? t) => t is "Architecture" or "Engineering";
+        if (!TeamAllowed(teamSelf) || !TeamAllowed(teamOther))
+        {
+            return Results.Problem(
+                type: "crew.pair.team_unsupported",
+                title: "Pairing is only supported for Architecture / Engineering crews at v0.1.",
+                statusCode: 400);
+        }
+
+        // Cross-product pairs are rejected per Q16.2.
+        if (crew.ProductId != other.ProductId)
+        {
+            return Results.Problem(
+                type: "crew.pair.cross_product",
+                title: "Both crews must share the same product to enter a pair.",
+                statusCode: 409);
+        }
+
+        // Already paired? Reject — the caller must DELETE first.
+        if (!string.IsNullOrEmpty(crew.PairedWithCrewId) && crew.PairedWithCrewId != other.Id)
+        {
+            return Results.Problem(
+                type: "crew.pair.already_paired",
+                title: $"Crew {id} is already paired with {crew.PairedWithCrewId}.",
+                statusCode: 409);
+        }
+        if (!string.IsNullOrEmpty(other.PairedWithCrewId) && other.PairedWithCrewId != crew.Id)
+        {
+            return Results.Problem(
+                type: "crew.pair.already_paired",
+                title: $"Crew {other.Id} is already paired with {other.PairedWithCrewId}.",
+                statusCode: 409);
+        }
+
+        // Idempotent: re-pairing the same two crews is a no-op.
+        if (crew.PairedWithCrewId == other.Id && other.PairedWithCrewId == crew.Id)
+        {
+            return Results.Ok(await MapCrewAsync(crew, db, ct));
+        }
+
+        crew.PairRole = "generator";
+        crew.PairedWithCrewId = other.Id;
+        other.PairRole = "evaluator";
+        other.PairedWithCrewId = crew.Id;
+
+        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        db.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id,  Kind = "crew-paired", ToValue = other.Id, ByUserId = caller });
+        db.CrewHistory.Add(new CrewHistoryRow { CrewId = other.Id, Kind = "crew-paired", ToValue = crew.Id,  ByUserId = caller });
+        await db.SaveChangesAsync(ct);
+        return Results.Ok(await MapCrewAsync(crew, db, ct));
+    }
+
+    /// <summary>
+    /// Phase 16.2 — break a pair. Both rows are reset to <c>standalone</c>
+    /// inside a single transaction so the symmetry stays intact even if
+    /// the operator only knows one side.
+    /// </summary>
+    private static async Task<IResult> UnpairCrew(
+        HttpContext ctx,
+        string id,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
+        if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
+        var gate = RequireRole.CheckForProduct(ctx, db, crew.ProductId, RequireRole.ProductOwner);
+        if (gate is not null) return gate;
+
+        if (string.IsNullOrEmpty(crew.PairedWithCrewId))
+        {
+            return Results.Ok(await MapCrewAsync(crew, db, ct)); // already standalone
+        }
+
+        var other = await db.Crews.FirstOrDefaultAsync(c => c.Id == crew.PairedWithCrewId, ct);
+        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+
+        var formerOtherId = crew.PairedWithCrewId;
+        crew.PairRole = "standalone";
+        crew.PairedWithCrewId = null;
+        if (other is not null)
+        {
+            other.PairRole = "standalone";
+            other.PairedWithCrewId = null;
+            db.CrewHistory.Add(new CrewHistoryRow { CrewId = other.Id, Kind = "crew-unpaired", FromValue = crew.Id, ByUserId = caller });
+        }
+        db.CrewHistory.Add(new CrewHistoryRow { CrewId = crew.Id, Kind = "crew-unpaired", FromValue = formerOtherId, ByUserId = caller });
+        await db.SaveChangesAsync(ct);
+        return Results.Ok(await MapCrewAsync(crew, db, ct));
+    }
+
     // ── Phase 13.1 — history readout ───────────────────────────────────────
 
     private static async Task<IResult> GetHistory(string id, ForgeDbContext db, CancellationToken ct)
@@ -1232,7 +1361,8 @@ public static class CrewsEndpoints
         r.ParentCrewId, r.Depth, r.Backend, r.InvokeMode,
         Roster: null, Capabilities: ParseCapsJson(r.CapabilitiesJson),
         r.MaxConcurrent, r.WeeklyCap,
-        r.DefaultGeneratorAgentId, r.DefaultEvaluatorAgentId, r.EvaluatorModel);
+        r.DefaultGeneratorAgentId, r.DefaultEvaluatorAgentId, r.EvaluatorModel,
+        r.PairRole, r.PairedWithCrewId);
 
     private static string? NormaliseBackend(string? s) => s?.ToLowerInvariant() switch
     {

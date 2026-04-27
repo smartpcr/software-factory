@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { AgentDetail, Crew, CrewHistoryEntry, CrewSalary, DomainExpert, ModelInfo } from '@/types';
+import type { AgentDetail, AgentLevelHistoryEntry, Crew, CrewHistoryEntry, CrewPayroll, CrewSalary, DomainExpert, ModelInfo } from '@/types';
 import { forgeApi } from '@/api/forgeApi';
 import { useHasRole } from '@/state/useCurrentUserStore';
 import { useAgentEditorStore } from '@/state/useAgentEditorStore';
@@ -46,7 +46,7 @@ function teamOfCrew(name: string | undefined | null): Team | null {
 // remains visible to anyone signed-in (Phase 13.10) but the controls
 // disable when the role check fails.
 
-type TabKey = 'roster' | 'pair' | 'capabilities' | 'runtime' | 'quota' | 'history';
+type TabKey = 'roster' | 'pair' | 'capabilities' | 'runtime' | 'quota' | 'performance' | 'history';
 
 const TAB_ORDER: Array<{ key: TabKey; label: string }> = [
   { key: 'roster',       label: 'Roster' },
@@ -54,6 +54,7 @@ const TAB_ORDER: Array<{ key: TabKey; label: string }> = [
   { key: 'capabilities', label: 'Capabilities' },
   { key: 'runtime',      label: 'Runtime' },
   { key: 'quota',        label: 'Quota' },
+  { key: 'performance',  label: 'Performance' },
   { key: 'history',      label: 'History' },
 ];
 
@@ -258,6 +259,9 @@ export function CrewsView() {
                 )}
                 {tab === 'quota' && (
                   <QuotaTab crew={selected} canEdit={isPO} onChange={applyCrewUpdate} onError={setError} />
+                )}
+                {tab === 'performance' && (
+                  <PerformanceTab crew={selected} allAgents={agents} onEditAgent={openAgent} onError={setError} />
                 )}
                 {tab === 'history' && <HistoryTab crewId={selected.id} />}
               </div>
@@ -1127,6 +1131,359 @@ function QuotaTab({ crew, canEdit, onChange, onError }: {
       )}
     </div>
   );
+}
+
+// ═══════════════════════════ PERFORMANCE TAB ═════════════════════════════
+
+const LEVEL_TITLES: Record<number, string> = {
+  0: 'Trainee',
+  1: 'Engineer I',
+  2: 'Engineer II',
+  3: 'Engineer III',
+  4: 'Senior I',
+  5: 'Senior II',
+  6: 'Senior III',
+  7: 'Staff',
+  8: 'Principal',
+  9: 'Distinguished',
+  10: 'Fellow',
+};
+
+const LEAD_MIN_LEVEL = 7;
+const HOURLY_BASE = 4;
+const HOURLY_STEP = 3;
+function hourlyForLevel(level: number): number {
+  const clamped = Math.max(0, Math.min(10, level));
+  return HOURLY_BASE + clamped * HOURLY_STEP;
+}
+
+function PerformanceTab({ crew, allAgents, onEditAgent, onError }: {
+  crew: Crew;
+  allAgents: AgentDetail[];
+  onEditAgent: (id: string) => void;
+  onError: (msg: string | null) => void;
+}) {
+  const [payroll, setPayroll] = useState<CrewPayroll | null>(null);
+  const [spend, setSpend] = useState<CrewSalary | null>(null);
+  const [now, setNow] = useState<Date>(() => new Date());
+  const [history, setHistory] = useState<Record<string, AgentLevelHistoryEntry[]>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    onError(null);
+    Promise.all([
+      forgeApi.getCrewPayroll(crew.id).catch(() => null),
+      forgeApi.getCrewSpend(crew.id).catch(() => null),
+    ]).then(([p, s]) => {
+      if (cancelled) return;
+      setPayroll(p);
+      setSpend(s);
+    });
+    return () => { cancelled = true; };
+  }, [crew.id, onError]);
+
+  // Tick "now" every 30s so the schedule strip's countdown stays fresh.
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(new Date()), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const memberIds = useMemo(() => {
+    const set = new Set<string>();
+    if (crew.lead) set.add(crew.lead);
+    for (const m of crew.roster ?? []) set.add(m.agentId);
+    return set;
+  }, [crew.lead, crew.roster]);
+
+  const members = useMemo(() => allAgents.filter((a) => memberIds.has(a.id)), [allAgents, memberIds]);
+
+  // Load level-history per member lazily on mount.
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all(members.map((m) => forgeApi.getAgentLevelHistory(m.id).catch(() => [] as AgentLevelHistoryEntry[])))
+      .then((all) => {
+        if (cancelled) return;
+        const byId: Record<string, AgentLevelHistoryEntry[]> = {};
+        members.forEach((m, i) => { byId[m.id] = all[i] ?? []; });
+        setHistory(byId);
+      });
+    return () => { cancelled = true; };
+  }, [members]);
+
+  const tz = (crew as Crew & { timezone?: string }).timezone ?? 'UTC';
+  const scheduleEnabled = (crew as Crew & { scheduleEnabled?: boolean }).scheduleEnabled !== false;
+  const onShift = isOnShiftLocal(now, tz, scheduleEnabled);
+  const next = nextTransitionLocal(now, tz);
+
+  return (
+    <div style={{ display: 'grid', gap: 16 }}>
+      {/* (a) Schedule strip */}
+      <div
+        style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '8px 12px', borderRadius: 8,
+          border: `1px solid ${onShift ? 'var(--success, rgb(34, 197, 94))' : 'var(--border)'}`,
+          background: onShift
+            ? 'color-mix(in srgb, var(--success, rgb(34, 197, 94)) 12%, transparent)'
+            : 'var(--bg-sunken, transparent)',
+        }}
+      >
+        <span style={{
+          width: 8, height: 8, borderRadius: 999,
+          background: scheduleEnabled
+            ? (onShift ? 'var(--success, rgb(34, 197, 94))' : 'var(--text-tertiary)')
+            : 'var(--text-tertiary)',
+          boxShadow: onShift ? '0 0 0 3px color-mix(in srgb, var(--success, rgb(34, 197, 94)) 30%, transparent)' : 'none',
+        }} />
+        <div style={{ flex: 1, fontSize: 12.5 }}>
+          <strong style={{ color: scheduleEnabled
+            ? (onShift ? 'var(--success, rgb(34, 197, 94))' : 'var(--text-secondary)')
+            : 'var(--text-tertiary)' }}>
+            {!scheduleEnabled ? 'Schedule disabled' : (onShift ? 'On shift' : 'Off shift')}
+          </strong>
+          <span style={{ color: 'var(--text-tertiary)', marginLeft: 8, fontSize: 11.5 }}>
+            {tz} · {scheduleEnabled ? 'Mon–Sat 09:00–21:00' : 'always available'}
+          </span>
+        </div>
+        {scheduleEnabled && next && (
+          <span style={{ fontSize: 11, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono, monospace)' }}>
+            {onShift ? 'closes' : 'opens'} {next}
+          </span>
+        )}
+      </div>
+
+      {/* Payroll + spend cards (Q14.7 dual surface) */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <PayrollCard
+          title="Payroll"
+          subtitle="HR salary · level × on-shift hours"
+          accent="rgb(34, 197, 94)"
+          data={payroll}
+        />
+        <PayrollCard
+          title="Spend"
+          subtitle="Token cost · agent_usage rollup"
+          accent="rgb(20, 110, 245)"
+          data={spend}
+        />
+      </div>
+
+      {/* (b) Roster performance grid */}
+      <div>
+        <SectionHead label="Roster performance" right={`${members.length} member${members.length === 1 ? '' : 's'} · click avatar to edit`} />
+        {members.length === 0 ? (
+          <div style={{ padding: 12, fontSize: 11, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+            No members — add agents in the Roster tab to see scorecards.
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gap: 4 }}>
+            {members.map((m) => (
+              <RosterPerformanceRow
+                key={m.id}
+                agent={m}
+                history={history[m.id] ?? []}
+                isLead={m.id === crew.lead}
+                onEditAgent={onEditAgent}
+              />
+            ))}
+          </div>
+        )}
+        <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)', marginTop: 8 }}>
+          Levels (0–10) and salary update via the nightly promotion job. Trailing-20 rolling-avg ≥ 92 promotes; &lt; 75 demotes. Lead requires L{LEAD_MIN_LEVEL}+.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PayrollCard({ title, subtitle, accent, data }: {
+  title: string;
+  subtitle: string;
+  accent: string;
+  data: CrewPayroll | CrewSalary | null;
+}) {
+  const max = data ? Math.max(0.01, ...data.sparkline) : 0.01;
+  return (
+    <div
+      style={{
+        padding: '10px 12px',
+        borderRadius: 8,
+        border: '1px solid var(--border)',
+        background: 'var(--bg-sunken, transparent)',
+        display: 'grid', gap: 8,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+        <div>
+          <div style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 9.5, color: accent, textTransform: 'uppercase', letterSpacing: 0.12 }}>{title}</div>
+          <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>{subtitle}</div>
+        </div>
+        <div style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 16, fontWeight: 700, color: accent }}>
+          {data ? `$${data.today.toFixed(2)}` : '—'}
+          <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--text-tertiary)', marginLeft: 4 }}>today</span>
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 32 }}>
+        {(data?.sparkline ?? Array.from({ length: 14 }, () => 0)).map((v, i) => (
+          <div
+            key={i}
+            title={`Day ${-13 + i + 1}: $${v.toFixed(2)}`}
+            style={{
+              flex: 1,
+              height: `${Math.max(2, (v / max) * 32)}px`,
+              background: accent,
+              opacity: i === 13 ? 1 : 0.55,
+              borderRadius: 1.5,
+            }}
+          />
+        ))}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono, monospace)' }}>
+        <span>sprint ${data ? data.sprint.toFixed(2) : '—'}</span>
+        <span>month ${data ? data.month.toFixed(2) : '—'}</span>
+      </div>
+    </div>
+  );
+}
+
+function RosterPerformanceRow({ agent, history, isLead, onEditAgent }: {
+  agent: AgentDetail;
+  history: AgentLevelHistoryEntry[];
+  isLead: boolean;
+  onEditAgent: (id: string) => void;
+}) {
+  // Level + hourly come off the agent record (server keeps them in sync).
+  const lev = (agent as AgentDetail & { level?: number }).level ?? 0;
+  const hourly = (agent as AgentDetail & { hourlyUsd?: number }).hourlyUsd ?? hourlyForLevel(lev);
+  const last = history[0];
+  const lastPromote = history.find((h) => h.reason === 'promote');
+  const nextEligible = lastPromote
+    ? new Date(new Date(lastPromote.createdAt).getTime() + 30 * 86400_000)
+    : null;
+  const leadFloorWarn = isLead && lev < LEAD_MIN_LEVEL;
+
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'auto 1fr auto auto auto',
+        alignItems: 'center',
+        gap: 10,
+        padding: '8px 10px',
+        borderRadius: 6,
+        border: leadFloorWarn ? '1px solid var(--warning, rgb(180, 112, 0))' : '1px solid var(--border)',
+        background: 'var(--surface-1, transparent)',
+      }}
+    >
+      <AgentFace
+        id={agent.id}
+        name={agent.name}
+        role={agent.role}
+        soulPath={agent.soulPath}
+        size={28}
+        onClick={() => onEditAgent(agent.id)}
+      />
+      <button
+        type="button"
+        onClick={() => onEditAgent(agent.id)}
+        style={{ minWidth: 0, background: 'transparent', border: 'none', color: 'inherit', textAlign: 'left', cursor: 'pointer', padding: 0 }}
+      >
+        <div style={{ fontWeight: 600, fontSize: 12.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {agent.name}
+          <span style={{ color: 'var(--text-tertiary)', fontWeight: 400, marginLeft: 6, fontFamily: 'var(--font-mono, monospace)', fontSize: 10 }}>{agent.id}</span>
+          {isLead && <span style={{ marginLeft: 6, fontSize: 9.5, fontFamily: 'var(--font-mono, monospace)', color: 'var(--accent)' }}>★ lead</span>}
+        </div>
+        <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>
+          {agent.role}
+          {last
+            ? <> · last {last.reason === 'promote' ? '↑' : last.reason === 'demote' ? '↓' : '·'} {fmtDate(last.createdAt)}</>
+            : <> · no level history yet</>}
+          {nextEligible && nextEligible > new Date() && (
+            <> · next eligible {fmtDate(nextEligible.toISOString())}</>
+          )}
+        </div>
+      </button>
+      <span style={levelPillStyle(lev, leadFloorWarn)} title={leadFloorWarn ? `Lead must be L${LEAD_MIN_LEVEL}+` : undefined}>
+        L{lev}
+        <span style={{ marginLeft: 4, fontWeight: 400, color: 'var(--text-tertiary)' }}>{LEVEL_TITLES[lev] ?? ''}</span>
+      </span>
+      <span style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 11, color: 'var(--text-secondary)' }}>
+        ${hourly.toFixed(0)}/hr
+      </span>
+      <span style={{ fontSize: 10, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono, monospace)' }}>
+        {history.length === 0 ? '—' : `${history.length} change${history.length === 1 ? '' : 's'}`}
+      </span>
+    </div>
+  );
+}
+
+function levelPillStyle(level: number, warn: boolean): React.CSSProperties {
+  // Color ramp: 0–3 muted, 4–6 mid, 7–10 accent. Warn overlays warning border.
+  const tone = level >= 7 ? 'rgb(34, 197, 94)' : level >= 4 ? 'rgb(20, 110, 245)' : 'var(--text-tertiary)';
+  return {
+    fontSize: 11,
+    padding: '2px 8px',
+    borderRadius: 999,
+    border: `1px solid ${warn ? 'var(--warning, rgb(180, 112, 0))' : tone}`,
+    color: warn ? 'var(--warning, rgb(180, 112, 0))' : tone,
+    fontFamily: 'var(--font-mono, monospace)',
+    background: 'transparent',
+    whiteSpace: 'nowrap',
+  };
+}
+
+function fmtDate(iso: string): string {
+  try { return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); }
+  catch { return iso; }
+}
+
+// ── Schedule helpers (mirror server-side ScheduleGate). ────────────────
+
+function isOnShiftLocal(nowUtc: Date, tz: string, scheduleEnabled: boolean): boolean {
+  if (!scheduleEnabled) return true; // bypassed = always available
+  const local = inTimezone(nowUtc, tz);
+  const dow = local.getDay(); // 0=Sun..6=Sat
+  if (dow === 0) return false;
+  const hour = local.getHours();
+  return hour >= 9 && hour < 21;
+}
+
+function nextTransitionLocal(nowUtc: Date, tz: string): string | null {
+  try {
+    const local = inTimezone(nowUtc, tz);
+    const onShift = isOnShiftLocal(nowUtc, tz, true);
+    const target = new Date(local);
+    if (onShift) {
+      target.setHours(21, 0, 0, 0);
+    } else {
+      // Walk forward until we hit a Mon–Sat day; jump to 09:00.
+      if (local.getHours() >= 21) target.setDate(target.getDate() + 1);
+      while (target.getDay() === 0) target.setDate(target.getDate() + 1);
+      target.setHours(9, 0, 0, 0);
+    }
+    const sameDay = target.toDateString() === local.toDateString();
+    return sameDay
+      ? target.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+      : target.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return null;
+  }
+}
+
+function inTimezone(d: Date, tz: string): Date {
+  // Use Intl to format in the target TZ then re-parse — good enough for
+  // hour-resolution display math.
+  try {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }).formatToParts(d);
+    const get = (t: string) => Number(fmt.find((p) => p.type === t)?.value ?? '0');
+    return new Date(get('year'), get('month') - 1, get('day'), get('hour') % 24, get('minute'), get('second'));
+  } catch {
+    return d;
+  }
 }
 
 // ═══════════════════════════ HISTORY TAB ══════════════════════════════════

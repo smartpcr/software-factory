@@ -18,6 +18,14 @@ The agent surfaces (`/crews`, the TopBar salary chip, the soul.md editor entry, 
 | `--font-mono` | Salary figures, pricing rows, agent chip ids | Numeric / id columns |
 | `--danger` | Salary "today" figure when over `dailyBudgetUsd` | Budget breach |
 
+## Phase 16 — Live Execution view
+
+The Live Execution view at `/work-items/{id}/live`, the workstream "live" badge, and the Swarm view's pair lane are exempt from the `forge-board.html` screenshot-diff (Phase 16.17). They reuse the Phase 11 / Phase 14 palette plus exactly **one** new token:
+
+| Token | Used by | Purpose |
+|-------|---------|---------|
+| `--graph-line` | `live-exec__line::before` rule, transcript row separators | Subtle vertical accent rail next to each transcript event when the side (generator / evaluator) isn't otherwise distinguished |
+
 ## Verification
 
 A token grep across the agent UI files should not surface anything that isn't in the table above:

@@ -9,10 +9,13 @@ namespace WorkflowUi.Server.Hosting;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Xml;
 using ExecutionEngine.Engine;
 using ExecutionEngine.Workflow;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using WorkflowUi.Server.Persistence;
 using WorkflowUi.Server.Telemetry;
 
 /// <summary>
@@ -26,17 +29,22 @@ public class RunManager
     private readonly SequenceAllocator seqAllocator;
     private readonly IServiceProvider serviceProvider;
     private readonly ILogger<RunManager> logger;
+    private readonly PersistenceOptions persistenceOptions;
 
     public RunManager(
         IRunEventSink eventSink,
         SequenceAllocator seqAllocator,
         IServiceProvider serviceProvider,
+        IOptions<PersistenceOptions> persistenceOptions,
         ILogger<RunManager> logger)
     {
         this.eventSink = eventSink;
         this.seqAllocator = seqAllocator;
         this.serviceProvider = serviceProvider;
         this.logger = logger;
+        this.persistenceOptions = persistenceOptions.Value;
+
+        this.LoadHistoricalRuns();
     }
 
     /// <summary>
@@ -152,11 +160,113 @@ public class RunManager
     }
 
     /// <summary>
-    /// Lists all tracked runs.
+    /// Lists all tracked runs (active + historical), most recent first.
     /// </summary>
     public IReadOnlyList<ActiveRun> GetRuns()
     {
-        return this.runs.Values.ToList().AsReadOnly();
+        return this.runs.Values
+            .OrderByDescending(r => r.StartTimeUtc)
+            .ToList()
+            .AsReadOnly();
+    }
+
+    /// <summary>
+    /// Loads completed runs from disk (RunsRoot/{runId}/events.jsonl).
+    /// Reads the first and last event lines to extract workflow metadata and final status.
+    /// </summary>
+    private void LoadHistoricalRuns()
+    {
+        var runsRoot = this.persistenceOptions.RunsRoot;
+        if (!Directory.Exists(runsRoot))
+        {
+            return;
+        }
+
+        var loaded = 0;
+        foreach (var dir in Directory.GetDirectories(runsRoot))
+        {
+            var dirName = Path.GetFileName(dir);
+            if (!Guid.TryParse(dirName, out var runId))
+            {
+                continue;
+            }
+
+            // Skip if already tracked (shouldn't happen on startup, but be safe)
+            if (this.runs.ContainsKey(runId))
+            {
+                continue;
+            }
+
+            var eventsFile = Path.Combine(dir, "events.jsonl");
+            if (!File.Exists(eventsFile))
+            {
+                continue;
+            }
+
+            try
+            {
+                var lines = File.ReadAllLines(eventsFile);
+                if (lines.Length == 0)
+                {
+                    continue;
+                }
+
+                // Parse first event (WorkflowStarted) for metadata
+                string workflowId = "unknown", workflowName = "unknown";
+                DateTime startTime = File.GetCreationTimeUtc(eventsFile);
+                using (var firstDoc = JsonDocument.Parse(lines[0]))
+                {
+                    var root = firstDoc.RootElement;
+                    if (root.TryGetProperty("Payload", out var payload))
+                    {
+                        workflowId = payload.TryGetProperty("workflowId", out var wid) ? wid.GetString() ?? "unknown" : "unknown";
+                        workflowName = payload.TryGetProperty("workflowName", out var wn) ? wn.GetString() ?? "unknown" : "unknown";
+                    }
+
+                    if (root.TryGetProperty("TimestampUtc", out var ts) && ts.TryGetDateTime(out var parsed))
+                    {
+                        startTime = parsed;
+                    }
+                }
+
+                // Parse last event for final status
+                var status = "Unknown";
+                DateTime? endTime = null;
+                using (var lastDoc = JsonDocument.Parse(lines[^1]))
+                {
+                    var root = lastDoc.RootElement;
+                    if (root.TryGetProperty("Kind", out var kind))
+                    {
+                        var kindStr = kind.GetString();
+                        status = kindStr switch
+                        {
+                            "WorkflowCompleted" => "Completed",
+                            "WorkflowFailed" => "Failed",
+                            "WorkflowCancelled" => "Cancelled",
+                            _ => "Unknown",
+                        };
+                    }
+
+                    if (root.TryGetProperty("TimestampUtc", out var ts) && ts.TryGetDateTime(out var parsed))
+                    {
+                        endTime = parsed;
+                    }
+                }
+
+                var historicalRun = ActiveRun.CreateHistorical(runId, workflowId, workflowName, status, startTime, endTime);
+                this.runs[runId] = historicalRun;
+                loaded++;
+            }
+            catch (Exception ex)
+            {
+                this.logger.LogWarning(ex, "Failed to load historical run {RunId}", runId);
+            }
+        }
+
+        if (loaded > 0)
+        {
+            this.logger.LogInformation("Loaded {Count} historical runs from disk", loaded);
+        }
     }
 
     private void WireEngineEvents(WorkflowEngine engine, Guid runId, string workflowId)
@@ -293,6 +403,25 @@ public class ActiveRun
         this.Cts = cts;
         this.Status = "Running";
         this.StartTimeUtc = DateTime.UtcNow;
+    }
+
+    private ActiveRun(Guid runId, string workflowId, string workflowName, string status, DateTime startTime, DateTime? endTime)
+    {
+        this.RunId = runId;
+        this.WorkflowId = workflowId;
+        this.WorkflowName = workflowName;
+        this.Cts = new CancellationTokenSource();
+        this.Status = status;
+        this.StartTimeUtc = startTime;
+        this.EndTimeUtc = endTime;
+    }
+
+    /// <summary>
+    /// Creates a historical (completed) run entry loaded from disk.
+    /// </summary>
+    public static ActiveRun CreateHistorical(Guid runId, string workflowId, string workflowName, string status, DateTime startTime, DateTime? endTime)
+    {
+        return new ActiveRun(runId, workflowId, workflowName, status, startTime, endTime);
     }
 
     public Guid RunId { get; }

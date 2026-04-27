@@ -24,7 +24,12 @@ export type WorkItemPriority = 'low' | 'med' | 'high';
 export type RepoKind = 'ado' | 'github';
 
 export interface WorkItemAssignee {
-  kind: 'agent' | 'human';
+  /**
+   * `agent` = a single roster member (individual). `human` = a real
+   * person with a Forge account. `crew` = an entire team — the runner
+   * resolves the actual member at dispatch time via the crew's lead.
+   */
+  kind: 'agent' | 'human' | 'crew';
   id: string;
   displayName: string;
   initials: string;
@@ -64,6 +69,10 @@ export interface WorkItem {
   watching?: boolean;
   /** Blocked flag matching Phase 1.3 chip (UI-only). */
   blocked?: boolean;
+  /** Phase 16.1 — set when LeadAutoDispatcher picked the row up. */
+  autoDispatchedAt?: string | null;
+  /** Phase 16.5 — for step rows: planning-time file-budget (1..20). */
+  expectedFileChanges?: number | null;
 }
 
 export interface IterationRef {

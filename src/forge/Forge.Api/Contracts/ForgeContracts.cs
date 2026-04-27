@@ -202,7 +202,10 @@ public sealed record Product(
     string Slug,
     string Description,
     string? OwnerUserId,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    // ActiveIterationId is the Phase 15.6 explicit override; null = fall back
+    // to the primary repo's RepoIterationBinding with role='current' (Q15.7).
+    string? ActiveIterationId = null);
 
 /// <summary>
 /// Repo — a single git repository attached to a product. A repo's provider is
@@ -238,7 +241,9 @@ public sealed record CreateProductRequest(
 public sealed record UpdateProductRequest(
     string? Name = null,
     string? Description = null,
-    string? OwnerUserId = null);
+    string? OwnerUserId = null,
+    // Phase 15.6 — null leaves it unchanged; empty string clears the override.
+    string? ActiveIterationId = null);
 
 /// <summary>
 /// POST /api/products/{id}/repos body.
@@ -345,7 +350,11 @@ public sealed record Crew(
     // Phase 13b — default pair (generator + evaluator) and per-half model.
     string? DefaultGeneratorAgentId = null,
     string? DefaultEvaluatorAgentId = null,
-    string? EvaluatorModel = null);
+    string? EvaluatorModel = null,
+    // Phase 16.2 — pair-crew topology. PairRole is "standalone" (default),
+    // "generator", or "evaluator"; PairedWithCrewId is the symmetric peer.
+    string PairRole = "standalone",
+    string? PairedWithCrewId = null);
 
 /// <summary>
 /// Phase 13b — one row in a crew's roster. The lead is rendered separately
@@ -534,7 +543,11 @@ public sealed record WorkItem(
     IReadOnlyList<string> Tags,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    string? RemoteRevision);
+    string? RemoteRevision,
+    // Phase 16.1 — set when LeadAutoDispatcher picks the row up.
+    DateTimeOffset? AutoDispatchedAt = null,
+    // Phase 16.5 — for step rows: planning-time file-budget.
+    int? ExpectedFileChanges = null);
 
 public sealed record CreateWorkItemRequest(
     string Id,
@@ -553,7 +566,9 @@ public sealed record CreateWorkItemRequest(
     WorkItemAssignee? AssignedTo = null,
     int? Points = null,
     string? Priority = null,
-    IReadOnlyList<string>? Tags = null);
+    IReadOnlyList<string>? Tags = null,
+    // Phase 16.5 — required for step rows; null for non-step rows.
+    int? ExpectedFileChanges = null);
 
 public sealed record PatchWorkItemRequest(
     string? Title = null,
@@ -567,7 +582,17 @@ public sealed record PatchWorkItemRequest(
     string? Priority = null,
     IReadOnlyList<string>? Tags = null,
     string? FeatureRef = null,
-    bool? ClearFeatureRef = null);
+    bool? ClearFeatureRef = null,
+    // Phase 14 follow-up — let the operator re-attach a work item to a
+    // different repo from the detail rail. Empty string clears the link.
+    string? RepoId = null,
+    bool? ClearRepoId = null,
+    // Phase 14 follow-up — type changes auto-flip Track per trackOf().
+    string? Type = null,
+    // Phase 16.5 — let the operator adjust the planning-time file budget on
+    // step rows. Validated against PlanRubricConstants.MaxFilesPerStep.
+    int? ExpectedFileChanges = null,
+    bool? ClearExpectedFileChanges = null);
 
 public sealed record MoveWorkItemRequest(
     string? State = null,
@@ -668,3 +693,214 @@ public sealed record PromotionDecision(
     decimal RollingAvg,
     string Reason,
     int WindowSize);
+
+// ─────────────────────────────────────────────────────────────────────
+// Phase 15 — sprint &amp; area-path management contracts. Every entity is
+// pinned to a single product (Q15.1, Q15.2). Iteration / area path /
+// saved-prefix rows carry <c>ProductId</c>; bindings sit on the repo
+// (which itself belongs to a product per Q5).
+// ─────────────────────────────────────────────────────────────────────
+
+/// <summary>
+/// Phase 15.5 — one repo binding for a <see cref="ProductIteration"/>.
+/// </summary>
+public sealed record IterationBinding(
+    string RepoId,
+    string RepoName,
+    // Role is "current" | "next" | "reference".
+    string Role);
+
+/// <summary>
+/// Phase 15.1 — product-scoped iteration imported from a provider.
+/// Bound to exactly one product (Q15.1). <see cref="ProviderNodeId"/>
+/// is the stable upstream identity used to resolve renames.
+/// </summary>
+public sealed record ProductIteration(
+    string Id,
+    string ProductId,
+    // ProviderKind is "ado" | "github".
+    string ProviderKind,
+    string ProviderOrg,
+    string ProviderProject,
+    string ProviderNodeId,
+    string Path,
+    string Name,
+    DateTimeOffset? StartDate,
+    DateTimeOffset? FinishDate,
+    // State is "past" | "current" | "future" | "provider-orphan".
+    string State,
+    IReadOnlyList<IterationBinding> Bindings,
+    int PointsTotal,
+    int PointsDone,
+    DateTimeOffset ImportedAt,
+    DateTimeOffset RefreshedAt);
+
+/// <summary>
+/// Phase 15.2 — product-scoped area path imported from ADO. Tree-structured
+/// via <see cref="ParentPath"/>. ADO-only at v0.1 (Q15.6). Bound to a product.
+/// </summary>
+public sealed record ProductAreaPath(
+    string Id,
+    string ProductId,
+    string ProviderKind,
+    string ProviderOrg,
+    string ProviderProject,
+    string ProviderNodeId,
+    string Path,
+    string? ParentPath,
+    string? ParentNodeId,
+    bool IsDefaultFilter,
+    int WorkItemCount,
+    DateTimeOffset ImportedAt);
+
+/// <summary>
+/// Phase 15.10 — saved prefix shorthand. Bound to a product so refreshing
+/// it scoped-imports under the same product.
+/// </summary>
+public sealed record SavedPrefix(
+    string Id,
+    string ProductId,
+    string Prefix,
+    // Kind is "iterations" | "areas".
+    string Kind,
+    string RepoId,
+    string RepoName,
+    string AddedBy,
+    DateTimeOffset? LastRefreshedAt,
+    SavedPrefixDelta Delta);
+
+/// <summary>
+/// Phase 15.10 — diff captured by the most recent refresh of a saved prefix.
+/// Drives the <c>+N</c> badge on the chip.
+/// </summary>
+public sealed record SavedPrefixDelta(int Added, int Removed, int Renamed);
+
+/// <summary>
+/// Phase 15.2 — flat node returned by the ADO classification discovery
+/// API. Operator multi-selects from this list to feed the import endpoint.
+/// </summary>
+public sealed record DiscoveryNode(
+    string ProviderNodeId,
+    string Path,
+    string Name,
+    bool HasChildren,
+    int Depth,
+    DiscoveryNodeAttributes Attributes,
+    bool AlreadyImported,
+    int? WorkItemCount = null);
+
+/// <summary>Provider-specific extras on a discovery node.</summary>
+public sealed record DiscoveryNodeAttributes(
+    DateTimeOffset? StartDate = null,
+    DateTimeOffset? FinishDate = null,
+    // TimeFrame is "past" | "current" | "future" — ADO timeFrame mirrored for iterations.
+    string? TimeFrame = null);
+
+// ── Request bodies ──────────────────────────────────────────────────
+
+/// <summary>
+/// Phase 15.2 — request body for <c>POST /api/products/{id}/sprint-discovery</c>.
+/// </summary>
+public sealed record SprintDiscoveryRequest(
+    string RepoId,
+    // Kind is "iterations" | "areas".
+    string Kind,
+    string? Prefix = null);
+
+/// <summary>
+/// Phase 15.3 — request body for the bulk import endpoints
+/// <c>POST /api/products/{id}/iterations/import</c> and
+/// <c>/api/products/{id}/area-paths/import</c>.
+/// </summary>
+public sealed record ImportNodesRequest(
+    string RepoId,
+    IReadOnlyList<string> ProviderNodeIds,
+    string? SavedFromPrefix = null);
+
+/// <summary>
+/// Phase 15.5 — request body for <c>POST /api/repos/{id}/iteration-binding</c>.
+/// </summary>
+public sealed record IterationBindingRequest(
+    string ProductIterationId,
+    // Role is "current" | "next" | "reference".
+    string Role);
+
+/// <summary>Phase 15.10 — POST body for saving a new prefix shorthand.</summary>
+public sealed record SavePrefixRequest(
+    string Prefix,
+    // Kind is "iterations" | "areas".
+    string Kind,
+    string RepoId);
+
+// ─── Phase 16 — Crew execution & live observability ────────────────────────
+
+/// <summary>
+/// Phase 16.2 — POST /api/crews/{id}/pair body. Symmetric write: both rows
+/// reference each other after the call returns. Refused with 400 if either
+/// crew is not arch/eng, with 409 if either is already paired or if the two
+/// crews don't share a product.
+/// </summary>
+public sealed record PairCrewRequest(string OtherCrewId);
+
+/// <summary>
+/// Phase 16.5 — one row in the live-execution transcript. The payload shape
+/// depends on <see cref="Kind"/>; clients render token deltas as inline text,
+/// tool-call blocks as collapsibles, and iteration boundaries as score chips.
+/// </summary>
+public sealed record TaskTranscriptEvent(
+    long Id,
+    string WorkItemId,
+    string Kind,
+    string? AgentId,
+    string? CrewId,
+    System.Text.Json.JsonElement Payload,
+    DateTimeOffset At);
+
+/// <summary>Phase 16.6 — most recent worktree snapshot for a work item.</summary>
+public sealed record WorktreeSnapshot(
+    string WorkstreamId,
+    /// <summary>Counts by category — added / modified / deleted. Caller can fetch the path arrays from the most recent <c>task.worktree-tick</c>.</summary>
+    int Added,
+    int Modified,
+    int Deleted,
+    int Ahead,
+    int Behind,
+    int Dirty,
+    string? HeadSha,
+    string? HeadMessage,
+    string? HeadAuthor,
+    DateTimeOffset? HeadAt,
+    bool Truncated,
+    DateTimeOffset At);
+
+/// <summary>
+/// Phase 16.9 — snapshot of a work item's execution state. Returned by
+/// <c>GET /api/work-items/{id}/execution</c>; the UI hydrates the Live
+/// Execution view from this and then attaches a SignalR subscription on
+/// <c>task.{workItemId}</c> for the live tail.
+/// </summary>
+public sealed record TaskExecutionSnapshot(
+    string WorkItemId,
+    string? GeneratorCrewId,
+    string? EvaluatorCrewId,
+    string? GeneratorAgentId,
+    string? EvaluatorAgentId,
+    int CurrentIteration,
+    int? CurrentScore,
+    string? CurrentVerdict,
+    decimal GeneratorCostUsd,
+    decimal EvaluatorCostUsd,
+    decimal TotalCostUsd,
+    long GeneratorInputTokens,
+    long GeneratorOutputTokens,
+    long EvaluatorInputTokens,
+    long EvaluatorOutputTokens,
+    decimal? CrewDailyBudgetUsd,
+    decimal? CrewSpendTodayUsd,
+    decimal? MaxTaskBudgetUsd,
+    DateTimeOffset? AutoDispatchedAt,
+    int? ExpectedFileChanges,
+    IReadOnlyList<Deliverable> Deliverables,
+    IReadOnlyList<TaskTranscriptEvent> RecentTranscript,
+    WorktreeSnapshot? Worktree);
+

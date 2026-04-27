@@ -9,9 +9,15 @@ import { Board } from '@/board/Board';
 import { FilterBar } from '@/board/FilterBar';
 import { DetailPanel } from '@/board/DetailPanel';
 import { CardModal } from '@/board/CardModal';
+import { NewStoryModal } from '@/board/NewStoryModal';
 import { Toaster } from '@/board/Toaster';
 import { ConfirmModal } from '@/board/ConfirmModal';
 import { Card as BoardCard } from '@/board/Card';
+import { SprintPicker } from '@/sprints/SprintPicker';
+import { AreaPathFilter } from '@/sprints/AreaPathFilter';
+import { SprintManager } from '@/sprints/SprintManager';
+import { useProductsStore } from '@/state/useProductsStore';
+import { useSprintsStore, selectIterations, selectDefaultArea } from '@/state/useSprintsStore';
 
 const COLUMN_KEYS: ColumnId[] = ['backlog', 'design', 'build', 'review', 'done'];
 
@@ -25,7 +31,61 @@ export function PlanView() {
   const burndown = useMemo(() => computeBurndown(cards), [cards]);
 
   const [modalOpen, setModalOpen] = useState(false);
+  const [storyModalOpen, setStoryModalOpen] = useState(false);
   const [focusedCol, setFocusedCol] = useState<ColumnId | null>(null);
+
+  // Phase 15 — sprint picker + area path filter state. The active product
+  // comes from the global TopBar selector; iterations/areas come from the
+  // sprints store (API-backed, with SignalR invalidation).
+  const activeProductId = useProductsStore((s) => s.activeProductId);
+  const ensureSprints = useSprintsStore((s) => s.ensure);
+  useEffect(() => {
+    if (activeProductId) void ensureSprints(activeProductId);
+  }, [activeProductId, ensureSprints]);
+  // Pass an empty string when the product hasn't loaded — the selectors
+  // tolerate that and return their stable EMPTY constants. Avoid the
+  // `activeProductId ? ... : () => …` ternary because the inline
+  // arrow function is fresh every render and would force a re-subscribe.
+  const productIterations = useSprintsStore(selectIterations(activeProductId ?? ''));
+  const defaultArea = useSprintsStore(selectDefaultArea(activeProductId ?? ''));
+
+  const [selectedIterationId, setSelectedIterationId] = useState<string>('');
+  const [iterationCleared, setIterationCleared] = useState(false);
+  const [areaPath, setAreaPath] = useState<string | null>(null);
+  const [sprintManagerOpen, setSprintManagerOpen] = useState(false);
+  const [sprintManagerTab, setSprintManagerTab] = useState<'iterations' | 'areas' | 'import' | 'prefixes'>('iterations');
+
+  function selectIteration(id: string) {
+    setSelectedIterationId(id);
+    setIterationCleared(id === '');
+  }
+
+  // Default the selected iteration to the product's bound current sprint
+  // once data lands, and reset when the product switches.
+  useEffect(() => {
+    setSelectedIterationId('');
+    setIterationCleared(false);
+    setAreaPath(null);
+  }, [activeProductId]);
+  useEffect(() => {
+    if (selectedIterationId || iterationCleared) return;
+    const current = productIterations.find((i) => i.state === 'current'
+      && i.bindings.some((b) => b.role === 'current'));
+    const fallback = current ?? productIterations[0];
+    if (fallback) setSelectedIterationId(fallback.id);
+  }, [productIterations, selectedIterationId, iterationCleared]);
+
+  const selectedIteration = useMemo(
+    () => productIterations.find((i) => i.id === selectedIterationId) ?? productIterations[0],
+    [productIterations, selectedIterationId],
+  );
+
+  // Default area path follows the product's flagged row until the user
+  // overrides it manually (clearing the chip wipes both).
+  useEffect(() => {
+    if (areaPath !== null) return;
+    if (defaultArea) setAreaPath(defaultArea.path);
+  }, [defaultArea, areaPath]);
 
   // dnd-kit pointer sensor with a small activation distance so clicks on
   // cards still open the detail panel.
@@ -83,18 +143,22 @@ export function PlanView() {
             <span className="sep">/</span>
             <span><span className="live-dot" />6 agents working</span>
           </div>
-          <h1 className="page-title">
+          <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             <span className="mark" />
-            Sprint 14 board
-            <span className="sprint-pill">
-              <span className="pulse" />
-              <span>{burndown.done} / {burndown.total} pts</span>
-              <span className="sprint-burndown">
-                <span className="sprint-burndown-bar">
-                  <span className="sprint-burndown-fill" style={{ width: `${burndown.pct}%` }} />
-                </span>
-              </span>
-            </span>
+            <span>{selectedIteration?.name ?? (iterationCleared ? 'All sprints' : 'Sprint board')}</span>
+            <SprintPicker
+              productId={activeProductId ?? ''}
+              selectedId={selectedIteration?.id ?? ''}
+              burndown={burndown}
+              onSelect={selectIteration}
+              onManage={() => { setSprintManagerTab('iterations'); setSprintManagerOpen(true); }}
+            />
+            <AreaPathFilter
+              productId={activeProductId ?? ''}
+              activePath={areaPath}
+              onChange={setAreaPath}
+              onManage={() => { setSprintManagerTab('areas'); setSprintManagerOpen(true); }}
+            />
           </h1>
         </div>
         <div className="page-head-right">
@@ -109,6 +173,10 @@ export function PlanView() {
           <button className="btn btn-primary" onClick={() => setModalOpen(true)}>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
             New item
+          </button>
+          <button className="btn btn-secondary" onClick={() => setStoryModalOpen(true)}>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
+            New story
           </button>
         </div>
       </div>
@@ -143,7 +211,19 @@ export function PlanView() {
 
       <DetailPanel />
       <CardModal open={modalOpen} onClose={() => setModalOpen(false)} />
+      <NewStoryModal open={storyModalOpen} onClose={() => setStoryModalOpen(false)} />
       <ConfirmModal />
+      <SprintManager
+        open={sprintManagerOpen}
+        productId={activeProductId ?? ''}
+        productName={
+          useProductsStore.getState().products.find((p) => p.id === activeProductId)?.name
+            ?? activeProductId
+            ?? 'Product'
+        }
+        initialTab={sprintManagerTab}
+        onClose={() => setSprintManagerOpen(false)}
+      />
       <Toaster />
     </section>
   );

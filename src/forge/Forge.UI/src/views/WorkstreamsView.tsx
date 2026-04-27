@@ -12,6 +12,7 @@ import { NewWorkstreamCta } from '@/workstreams/NewWorkstreamCta';
 import { NewWorkstreamModal } from '@/workstreams/NewWorkstreamModal';
 import { Toaster } from '@/board/Toaster';
 import { forgeApi } from '@/api/forgeApi';
+import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 
 const FILTER_CHIPS: Array<{ key: WorkstreamFilter; label: string; pulse?: boolean }> = [
   { key: 'all',       label: 'All' },
@@ -37,6 +38,7 @@ export function WorkstreamsView() {
   const syncFromEpics = useWorkstreamsStore((s) => s.syncFromEpics);
 
   const allCards = useBoardStore((s) => s.cards);
+  const allWorkItems = useWorkItemsStore((s) => s.items);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const repoFilter = searchParams.get('repo');
@@ -169,24 +171,39 @@ export function WorkstreamsView() {
           </div>
         )}
         <div className="workstream-grid" id="workstream-grid">
-          {filtered.map((ws) => (
-            <div
-              key={ws.id}
-              data-focused={focusedId === ws.id ? 'true' : undefined}
-              style={focusedId === ws.id ? { outline: '2px solid var(--accent)', borderRadius: 'var(--radius-lg)' } : undefined}
-            >
-              <WorkstreamCard
-                ws={ws}
-                epic={epics.find((e) => e.id === ws.epic)}
-                prs={allPrs}
-                cards={allCards}
-                onOpen={onOpen}
-                onSync={(w) => void syncOne(w.id)}
-                onIde={(w) => useToastStore.getState().show(`Open ${w.name} in IDE — Phase R`, 'info')}
-                onOpenPr={(w) => void onOpenPr(w)}
-              />
-            </div>
-          ))}
+          {filtered.map((ws) => {
+            // Phase 16.12 — count work items bound to this workstream that are
+            // auto-dispatched and still in flight. The workstream's CardsJson
+            // already lists the bound ids; we cross-walk into the WIT store.
+            const liveItems = allWorkItems.filter(
+              (w) => ws.cards.includes(w.id)
+                  && w.autoDispatchedAt != null
+                  && (w.state === 'proposed' || w.state === 'active'),
+            );
+            const liveCount = liveItems.length;
+            const liveWorkItemId = liveItems[0]?.id ?? null;
+            return (
+              <div
+                key={ws.id}
+                data-focused={focusedId === ws.id ? 'true' : undefined}
+                style={focusedId === ws.id ? { outline: '2px solid var(--accent)', borderRadius: 'var(--radius-lg)' } : undefined}
+              >
+                <WorkstreamCard
+                  ws={ws}
+                  epic={epics.find((e) => e.id === ws.epic)}
+                  prs={allPrs}
+                  cards={allCards}
+                  onOpen={onOpen}
+                  onSync={(w) => void syncOne(w.id)}
+                  onIde={(w) => useToastStore.getState().show(`Open ${w.name} in IDE — Phase R`, 'info')}
+                  onOpenPr={(w) => void onOpenPr(w)}
+                  liveCount={liveCount}
+                  liveWorkItemId={liveWorkItemId}
+                  onOpenLive={(wid) => navigate(`/work-items/${wid}/live`)}
+                />
+              </div>
+            );
+          })}
           <NewWorkstreamCta onClick={() => setModalOpen(true)} />
         </div>
       </div>

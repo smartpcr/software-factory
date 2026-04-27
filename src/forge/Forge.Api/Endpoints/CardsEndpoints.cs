@@ -35,6 +35,7 @@ public static class CardsEndpoints
         grp.MapPatch("/{id}", Patch).WithName("PatchCard");
         grp.MapPost("/{id}/move", Move).WithName("MoveCard");
         grp.MapPost("/{id}/comment", Comment).WithName("CommentOnCard");
+        grp.MapDelete("/{id}", Delete).WithName("DeleteCard");
 
         return app;
     }
@@ -181,6 +182,7 @@ public static class CardsEndpoints
         string? Type = null,
         string? AutoNext = null,
         string? Col = null,
+        string? Epic = null,
         string? PostTo = null,
         string? AssigneeUniqueName = null,
         string? IfMatchRemoteRevision = null);
@@ -246,6 +248,7 @@ public static class CardsEndpoints
         if (req.Tags != null)     row.TagsJson = CardMapper.Serialize(req.Tags);
         if (req.AutoNext != null) row.AutoNext = req.AutoNext;
         if (req.Col != null)      row.Col = req.Col;
+        if (req.Epic != null)     row.Epic = req.Epic;
         if (req.AgentNull == true) row.AgentJson = null;
         else if (req.Agent != null) row.AgentJson = CardMapper.Serialize(req.Agent);
 
@@ -301,6 +304,26 @@ public static class CardsEndpoints
         logger.LogInformation("forge.action.card.move id={Id} from={From} to={To}", id, fromCol, req.ToCol);
         await hub.Clients.All.SendAsync("card.changed", new { kind = "moved", card = moved });
         return Results.Ok(new MoveCardResponse(moved, policy));
+    }
+
+    // DELETE /api/cards/{id}
+    private static async Task<IResult> Delete(
+        HttpContext ctx,
+        string id,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var row = await db.Cards.FirstOrDefaultAsync(c => c.Id == id);
+        if (row is null) return NotFound(id);
+
+        db.Cards.Remove(row);
+        await db.SaveChangesAsync();
+
+        await hub.Clients.All.SendAsync("card.changed", new { kind = "deleted", id });
+        return Results.Ok(new { deleted = true, id });
     }
 
     private static IResult NotFound(string id) =>

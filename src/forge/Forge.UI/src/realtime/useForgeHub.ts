@@ -5,6 +5,7 @@ import { useBoardStore } from '@/state/useBoardStore';
 import { usePrsStore } from '@/state/usePrsStore';
 import { usePrLogStore } from '@/state/usePrLogStore';
 import { useToastStore } from '@/state/useToastStore';
+import { useSprintsStore } from '@/state/useSprintsStore';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 import type { WorkItem } from '@/workitems/workItemTypes';
 
@@ -52,6 +53,12 @@ async function ensureConnected() {
     connection.on('pr.log', (payload: { id?: string; line?: string }) => {
       if (payload?.id && typeof payload.line === 'string') {
         usePrLogStore.getState().append(payload.id, payload.line);
+      }
+    });
+    // Phase 15 — sprint registry changes invalidate the per-product cache.
+    connection.on('sprint.changed', (payload: { productId?: string }) => {
+      if (payload?.productId) {
+        void useSprintsStore.getState().invalidate(payload.productId);
       }
     });
     // Phase 12 — work-item changes fan out to the WIT store.

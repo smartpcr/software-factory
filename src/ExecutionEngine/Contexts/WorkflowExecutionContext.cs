@@ -9,6 +9,7 @@ namespace ExecutionEngine.Contexts;
 using System.Collections.Concurrent;
 using System.Reactive.Subjects;
 using System.Text.Json.Serialization;
+using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
 using ExecutionEngine.Events;
 using ExecutionEngine.Queue;
@@ -114,6 +115,22 @@ public class WorkflowExecutionContext : IDisposable
     /// </summary>
     [JsonIgnore]
     public IServiceProvider? ServiceProvider { get; set; }
+
+    /// <summary>
+    /// Callback for container nodes (While/ForEach) to prepare a body node for a new iteration.
+    /// Creates a fresh NodeInstance, clears JoinAll tracking, and drains the queue.
+    /// Set by the engine during workflow setup. Returns the fresh NodeInstance for the container to track.
+    /// </summary>
+    [JsonIgnore]
+    public Func<string, Guid, NodeInstance>? PrepareNodeForIteration { get; set; }
+
+    /// <summary>
+    /// Set of node IDs that are inside a While/ForEach loop body.
+    /// Used by the engine to allow re-execution of body nodes across iterations
+    /// when they receive NodeCompleteMessage with terminal status from a prior iteration.
+    /// </summary>
+    [JsonIgnore]
+    public HashSet<string> LoopBodyNodes { get; } = [];
 
     /// <summary>
     /// Gets the duration of workflow execution.

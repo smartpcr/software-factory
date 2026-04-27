@@ -1,8 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { sampleState } from '@/sampleData';
 import { useStateStore } from '@/state/useStateStore';
+import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
+import { forgeApi } from '@/api/forgeApi';
 import { avatarFor, agentTooltip } from '@/agentAvatar';
-import type { OverviewAgent, Role } from '@/types';
+import type { Crew, OverviewAgent, Role } from '@/types';
 
 // Mocked agent telemetry. The crew + role assignments come from
 // src/crew.ts; everything below is presentational seed data so the view
@@ -85,9 +88,44 @@ const STATUS_CHIPS: Array<{ key: StatusFilter; label: string; pulse?: boolean }>
 export function SwarmView() {
   const apiState = useStateStore((s) => s.state);
   const agents = apiState?.overviewAgents ?? sampleState.overviewAgents;
+  const workItems = useWorkItemsStore((s) => s.items);
+  const navigate = useNavigate();
 
   const [status, setStatus] = useState<StatusFilter>('all');
   const [roleFilter, setRoleFilter] = useState<RoleFilter>('all');
+
+  // Phase 16.11 — pull crews so we can render the pair lane. Server-driven
+  // because pair state lives on the crew row, not in sample data.
+  const [crews, setCrews] = useState<Crew[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void forgeApi.listCrews()
+      .then((rows) => { if (!cancelled) setCrews(rows); })
+      .catch(() => { /* offline / unconfigured — pair lane stays empty */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  const pairs = useMemo(() => {
+    // Pair-crew rows come back symmetric; collapse to one row per pair.
+    const byId = new Map(crews.map((c) => [c.id, c]));
+    const seen = new Set<string>();
+    const out: Array<{ generator: Crew; evaluator: Crew; activeWorkItemId: string | null }> = [];
+    for (const c of crews) {
+      if (c.pairRole !== 'generator' || !c.pairedWithCrewId) continue;
+      const peer = byId.get(c.pairedWithCrewId);
+      if (!peer) continue;
+      const pairKey = [c.id, peer.id].sort().join(':');
+      if (seen.has(pairKey)) continue;
+      seen.add(pairKey);
+      // Find an in-flight work item routed through this generator crew.
+      const wi = workItems.find((w) =>
+        w.autoDispatchedAt != null
+        && (w.state === 'proposed' || w.state === 'active')
+        && w.assignedTo?.id === c.lead);
+      out.push({ generator: c, evaluator: peer, activeWorkItemId: wi?.id ?? null });
+    }
+    return out;
+  }, [crews, workItems]);
 
   const counts = useMemo(() => {
     const acc = { all: agents.length, working: 0, queued: 0, idle: 0 };
@@ -199,6 +237,38 @@ export function SwarmView() {
 
       <div className="swarm-wrap">
         <div className="swarm-main">
+          {pairs.length > 0 && (
+            <div className="swarm-role-section" key="__pair-lane">
+              <div className="swarm-role-head">
+                <span className="name">Pair crews</span>
+                <span className="meta">· generator + evaluator working a single work item</span>
+                <span className="swarm-role-pill arch">{pairs.length}</span>
+              </div>
+              <div className="swarm-grid">
+                {pairs.map((p) => (
+                  <button
+                    key={`${p.generator.id}-${p.evaluator.id}`}
+                    type="button"
+                    className="swarm-card"
+                    onClick={() => p.activeWorkItemId && navigate(`/work-items/${p.activeWorkItemId}/live`)}
+                    disabled={!p.activeWorkItemId}
+                    style={{ textAlign: 'left', cursor: p.activeWorkItemId ? 'pointer' : 'default' }}
+                    title={p.activeWorkItemId ? `Watch ${p.activeWorkItemId} live` : 'No active work item'}
+                  >
+                    <div style={{ fontSize: 12, fontWeight: 600 }}>{p.generator.name}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-tertiary)', margin: '4px 0' }}>
+                      ↔ {p.evaluator.name}
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--text-secondary)' }}>
+                      {p.activeWorkItemId
+                        ? <>working <strong>{p.activeWorkItemId}</strong></>
+                        : 'idle'}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {grouped.map(({ role, agents: rs }) => (
             <div className="swarm-role-section" key={role}>
               <div className="swarm-role-head">

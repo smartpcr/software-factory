@@ -74,4 +74,7 @@ public class NullForgeProvider : IForgeProvider
 
     public Task<IReadOnlyList<WorkItem>> ListWorkItemsForSyncAsync(WorkItemSyncFilters filters, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<WorkItem>>(Array.Empty<WorkItem>());
+
+    public Task<WorkItem?> GetWorkItemForSyncAsync(string providerRef, CancellationToken ct = default) =>
+        Task.FromResult<WorkItem?>(null);
 }

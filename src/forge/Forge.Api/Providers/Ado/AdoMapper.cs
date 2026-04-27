@@ -105,7 +105,17 @@ public static class AdoMapper
             ? string.Empty
             : $"{iterationRefPrefix}:{iter}";
         var tags = MapTags(get("System.Tags"));
-        var description = get("System.Description") ?? string.Empty;
+        // Phase 14 follow-up — combine the four most useful long-text ADO
+        // fields into one markdown blob so the work-item detail panel
+        // surfaces everything the operator needs in-place. ADO returns
+        // these as HTML; we keep the raw HTML inside fenced sections (the
+        // markdown renderer will pass them through). Empty sections are
+        // dropped so the resulting blob isn't padded with placeholders.
+        var description = ComposeDescription(
+            get("System.Description"),
+            get("Microsoft.VSTS.TCM.ReproSteps"),
+            get("Microsoft.VSTS.TCM.SystemInfo"),
+            get("Microsoft.VSTS.Common.AcceptanceCriteria"));
 
         var pts = 0;
         if (fields.TryGetProperty("Microsoft.VSTS.Scheduling.StoryPoints", out var sp) && sp.TryGetDouble(out var d))
@@ -348,5 +358,33 @@ public static class AdoMapper
         if (d.TotalMinutes < 60) return $"{(int)d.TotalMinutes}m";
         if (d.TotalHours < 24) return $"{(int)d.TotalHours}h";
         return $"{(int)d.TotalDays}d";
+    }
+
+    /// <summary>
+    /// Combine ADO long-text fields (System.Description, ReproSteps,
+    /// SystemInfo, AcceptanceCriteria) into a single markdown blob with
+    /// section headings. Empty fields are skipped so a story without
+    /// repro steps doesn't get an empty "## Repro steps" placeholder.
+    /// HTML stays as-is — the UI's markdown preview renders simple HTML
+    /// passthrough, which is good enough for ADO's typical content.
+    /// </summary>
+    public static string ComposeDescription(string? description, string? repro, string? systemInfo, string? acceptance)
+    {
+        var parts = new List<string>(8);
+        void Add(string heading, string? body)
+        {
+            if (string.IsNullOrWhiteSpace(body)) return;
+            parts.Add($"## {heading}");
+            parts.Add(body!.Trim());
+            parts.Add(string.Empty);
+        }
+        Add("Description", description);
+        Add("Repro steps", repro);
+        Add("System info", systemInfo);
+        Add("Acceptance criteria", acceptance);
+        // No sections set → return empty so an unsynced row stays empty
+        // rather than getting a stub.
+        if (parts.Count == 0) return string.Empty;
+        return string.Join('\n', parts).TrimEnd();
     }
 }

@@ -77,6 +77,72 @@ public static class WorkItemRules
     }
 
     /// <summary>
+    /// Phase 16.5 — enforce the plan-tree budgets. Returns null if the proposed
+    /// row is within budget for its parent (or has no parent). Otherwise returns
+    /// a structured problem-detail title that callers turn into 400. The
+    /// <c>parent.Id</c> is the only thing the caller needs from the parent —
+    /// we re-query the child count so the check is race-free against
+    /// concurrent inserts as long as the SQL is in the same transaction.
+    /// </summary>
+    public static async Task<string?> ValidatePlanTreeBudgetAsync(
+        ForgeDbContext db,
+        WorkItemRow child,
+        WorkItemRow? parent,
+        CancellationToken ct)
+    {
+        // Top-level rows (no parent) are always within budget.
+        if (parent is null) return null;
+
+        // Phase 16.5 — only the design ladder has the 20/20/20 caps. Dev rows
+        // (epic / feature / task / bug) keep the existing rank check from
+        // ValidateParent and don't get a budget cap at v0.1.
+        if (TrackOf(child.Type) != "design") return null;
+
+        // stage under phase: ≤ MaxStagesPerPhase children.
+        if (child.Type == "stage" && parent.Type == "phase")
+        {
+            var count = await db.WorkItems.AsNoTracking()
+                .CountAsync(w => w.ParentId == parent.Id && w.Type == "stage", ct);
+            if (count >= PlanRubricConstants.MaxStagesPerPhase)
+            {
+                return $"Phase '{parent.Id}' already has {count} stages (cap {PlanRubricConstants.MaxStagesPerPhase}). Split into a second phase.";
+            }
+        }
+
+        // step under stage: ≤ MaxStepsPerStage children.
+        if (child.Type == "step" && parent.Type == "stage")
+        {
+            var count = await db.WorkItems.AsNoTracking()
+                .CountAsync(w => w.ParentId == parent.Id && w.Type == "step", ct);
+            if (count >= PlanRubricConstants.MaxStepsPerStage)
+            {
+                return $"Stage '{parent.Id}' already has {count} steps (cap {PlanRubricConstants.MaxStepsPerStage}). Split into a second stage.";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Phase 16.5 — enforce the per-step file-change cap. Returns null when
+    /// the row is within budget; otherwise a problem-detail title.
+    /// </summary>
+    public static string? ValidateStepFileBudget(WorkItemRow row)
+    {
+        if (row.Type != "step") return null;
+        if (row.ExpectedFileChanges is null) return null;
+        if (row.ExpectedFileChanges.Value <= 0)
+        {
+            return $"Step '{row.Id}' must declare expectedFileChanges > 0.";
+        }
+        if (row.ExpectedFileChanges.Value > PlanRubricConstants.MaxFilesPerStep)
+        {
+            return $"Step '{row.Id}' declared {row.ExpectedFileChanges.Value} files; cap is {PlanRubricConstants.MaxFilesPerStep}. Split into multiple steps.";
+        }
+        return null;
+    }
+
+    /// <summary>
     /// Walk the parent chain to detect cycles. Returns the offending ancestor
     /// id when a cycle would form, otherwise null. <paramref name="proposedParentId"/>
     /// is the candidate parent for <paramref name="childId"/>.

@@ -265,6 +265,9 @@ public class WorkItemSyncUpsertTests
         public Task<IReadOnlyList<WorkItem>> ListWorkItemsForSyncAsync(WorkItemSyncFilters _, CancellationToken __ = default)
             => Task.FromResult(this.items);
 
+        public Task<WorkItem?> GetWorkItemForSyncAsync(string providerRef, CancellationToken ct = default)
+            => Task.FromResult<WorkItem?>(this.items.FirstOrDefault(i => i.ProviderRef?.ToString() == providerRef));
+
         // The rest of the surface is inert for these tests.
         public Task<IReadOnlyList<Card>> ListWorkItemsAsync(CancellationToken ct = default) =>
             Task.FromResult<IReadOnlyList<Card>>(Array.Empty<Card>());

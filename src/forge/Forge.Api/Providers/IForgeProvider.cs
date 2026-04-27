@@ -92,6 +92,15 @@ public interface IForgeProvider
     /// the provider's revision marker for the conflict policy.
     /// </summary>
     Task<IReadOnlyList<WorkItem>> ListWorkItemsForSyncAsync(WorkItemSyncFilters filters, CancellationToken ct = default);
+
+    /// <summary>
+    /// Phase 14 follow-up — direct fetch of a single work item in the
+    /// sync-shape, by provider reference. Bypasses the WIQL change filter
+    /// so the operator can force-refresh a row that hasn't changed
+    /// upstream (typical when the local schema evolved and the existing
+    /// row needs to be re-mapped). Returns null if not found.
+    /// </summary>
+    Task<WorkItem?> GetWorkItemForSyncAsync(string providerRef, CancellationToken ct = default);
 }
 
 /// <summary>

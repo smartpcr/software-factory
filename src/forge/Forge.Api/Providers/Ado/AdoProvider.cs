@@ -147,6 +147,31 @@ public class AdoProvider : IForgeProvider
         }
     }
 
+    /// <inheritdoc />
+    public async Task<WorkItem?> GetWorkItemForSyncAsync(string providerRef, CancellationToken ct = default)
+    {
+        if (!this.IsConfigured) return null;
+        var numeric = providerRef.TrimStart('#');
+        try
+        {
+            var client = this.NewClient();
+            // Same $expand=relations as the bulk sync path so parent links
+            // round-trip the same way.
+            var resp = await client.GetAsync($"_apis/wit/workitems/{numeric}?$expand=relations&api-version=7.1", ct);
+            this.health.RecordResponse(resp);
+            if (resp.StatusCode == HttpStatusCode.NotFound) return null;
+            resp.EnsureSuccessStatusCode();
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            return AdoMapper.ToWorkItem(doc.RootElement, this.EffectiveProject, this.EffectiveProject);
+        }
+        catch (Exception ex)
+        {
+            this.health.RecordError(ex);
+            this.logger.LogWarning(ex, "ADO GetWorkItemForSyncAsync({Id}) failed", providerRef);
+            return null;
+        }
+    }
+
     public async Task<IReadOnlyList<Pr>> ListPullRequestsAsync(CancellationToken ct = default)
     {
         if (!this.IsConfigured || string.IsNullOrWhiteSpace(this.options.Repository)) return Array.Empty<Pr>();
@@ -569,6 +594,7 @@ public class AdoProvider : IForgeProvider
             return Array.Empty<WorkItem>();
         }
     }
+
 
     /// <summary>
     /// Public for the Batch B unit test. Builds a parameter-free WIQL string

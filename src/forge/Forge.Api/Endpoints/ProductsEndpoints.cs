@@ -164,6 +164,17 @@ public static class ProductsEndpoints
         if (req.Name is not null) row.Name = req.Name;
         if (req.Description is not null) row.Description = req.Description;
         if (req.OwnerUserId is not null) row.OwnerUserId = req.OwnerUserId;
+        // Phase 15.6 — explicit override for the active iteration. An empty
+        // string is treated as "clear the override"; null leaves it unchanged.
+        if (req.ActiveIterationId is not null)
+        {
+            var v = req.ActiveIterationId.Length == 0 ? null : req.ActiveIterationId;
+            if (v is not null && !await db.ProductIterations.AnyAsync(i => i.Id == v && i.ProductId == row.Id))
+            {
+                return Results.Problem(title: $"Iteration {v} is not in product {row.Id}", statusCode: 400);
+            }
+            row.ActiveIterationId = v;
+        }
 
         await db.SaveChangesAsync();
         var product = MapProduct(row);
@@ -384,7 +395,7 @@ public static class ProductsEndpoints
     // ----- helpers ---------------------------------------------------------
 
     private static Product MapProduct(ProductRow r) => new(
-        r.Id, r.Name, r.Slug, r.Description, r.OwnerUserId, r.CreatedAt);
+        r.Id, r.Name, r.Slug, r.Description, r.OwnerUserId, r.CreatedAt, r.ActiveIterationId);
 
     private static Repo MapRepo(RepoRow r) => new(
         r.Id, r.ProductId, r.Kind, r.RemoteUrl, r.DisplayName, r.DefaultBranch, r.CloneRoot,

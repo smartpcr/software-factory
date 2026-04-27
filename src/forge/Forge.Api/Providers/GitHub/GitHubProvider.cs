@@ -122,6 +122,29 @@ public class GitHubProvider : IForgeProvider
         }
     }
 
+    /// <inheritdoc />
+    public async Task<WorkItem?> GetWorkItemForSyncAsync(string providerRef, CancellationToken ct = default)
+    {
+        if (!this.IsConfigured) return null;
+        var num = providerRef.TrimStart('#');
+        try
+        {
+            var client = this.NewClient();
+            var resp = await client.GetAsync($"repos/{this.options.Repo}/issues/{num}", ct);
+            this.health.RecordResponse(resp);
+            if (resp.StatusCode == HttpStatusCode.NotFound) return null;
+            resp.EnsureSuccessStatusCode();
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            return GitHubMapper.IssueToWorkItem(doc.RootElement, this.options.Repo, this.options.Repo);
+        }
+        catch (Exception ex)
+        {
+            this.health.RecordError(ex);
+            this.logger.LogWarning(ex, "GitHub GetWorkItemForSyncAsync({Id}) failed", providerRef);
+            return null;
+        }
+    }
+
     public async Task<IReadOnlyList<Pr>> ListPullRequestsAsync(CancellationToken ct = default)
     {
         if (!this.IsConfigured) return Array.Empty<Pr>();

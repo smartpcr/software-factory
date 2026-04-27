@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useWitStore } from './useWitStore';
 import { useWorkItemsStore } from './useWorkItemsStore';
 import { useToastStore } from '@/state/useToastStore';
 import { WORK_ITEM_STATES, type WorkItemState } from './workItemTypes';
+import { DispatchToAiModal } from './DispatchToAiModal';
 
 interface Props {
   count: number;
@@ -14,12 +15,20 @@ interface Props {
 export function BulkActionBar({ count }: Props) {
   const selection = useWitStore((s) => s.selection);
   const clearSelection = useWitStore((s) => s.clearSelection);
+  const items = useWorkItemsStore((s) => s.items);
   const patch = useWorkItemsStore((s) => s.patch);
   const softDelete = useWorkItemsStore((s) => s.softDelete);
   const showToast = useToastStore((s) => s.show);
 
   const [stateMenuOpen, setStateMenuOpen] = useState(false);
+  const [dispatchOpen, setDispatchOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  // Resolve selected ids → WorkItem objects for the dispatch modal.
+  const selectedItems = useMemo(
+    () => [...selection].map((id) => items.find((w) => w.id === id)).filter((w): w is NonNullable<typeof w> => !!w),
+    [selection, items],
+  );
 
   if (count === 0) return null;
 
@@ -117,6 +126,16 @@ export function BulkActionBar({ count }: Props) {
         </button>
         <button
           type="button"
+          className="wit-bulk-btn"
+          onClick={() => setDispatchOpen(true)}
+          disabled={busy || selectedItems.length === 0}
+          title="Assign to an AI crew — lead delegates and the runner kicks off (Phase 14)"
+          style={{ borderColor: 'var(--accent)', color: 'var(--accent)' }}
+        >
+          ✦ Dispatch to AI
+        </button>
+        <button
+          type="button"
           className="wit-bulk-btn danger"
           onClick={() => void bulkDelete()}
           disabled={busy}
@@ -127,6 +146,11 @@ export function BulkActionBar({ count }: Props) {
       <button type="button" className="wit-bulk-clear" onClick={clearSelection} disabled={busy}>
         Clear
       </button>
+      <DispatchToAiModal
+        open={dispatchOpen}
+        onClose={() => { setDispatchOpen(false); }}
+        items={selectedItems}
+      />
     </div>
   );
 }

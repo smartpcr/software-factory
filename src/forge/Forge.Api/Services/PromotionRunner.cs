@@ -69,12 +69,16 @@ public sealed class PromotionRunner : IPromotionRunner
 
             // Last-promotion lookup — most recent promotion row in the
             // history. A demotion does NOT reset the cooldown clock per
-            // spec §4 (the cooldown gates promotion only).
-            var lastPromotion = await this.db.AgentLevelHistory
+            // spec §4 (the cooldown gates promotion only). SQLite can't
+            // sort DateTimeOffset at the SQL layer, so we pull + sort
+            // client-side.
+            var promotions = await this.db.AgentLevelHistory.AsNoTracking()
                 .Where(h => h.AgentId == agent.Id && h.Reason == PromotionPolicy.ReasonPromote)
-                .OrderByDescending(h => h.CreatedAt)
-                .Select(h => (DateTimeOffset?)h.CreatedAt)
-                .FirstOrDefaultAsync(ct);
+                .Select(h => h.CreatedAt)
+                .ToListAsync(ct);
+            DateTimeOffset? lastPromotion = promotions.Count == 0
+                ? null
+                : promotions.Max();
 
             var decision = PromotionPolicy.Evaluate(agent.Level, lastPromotion, window, now);
 
@@ -122,15 +126,14 @@ public sealed class PromotionRunner : IPromotionRunner
     /// </summary>
     private async Task<IReadOnlyList<DeliverableRow>> BuildTrailingWindowAsync(string agentId, CancellationToken ct)
     {
-        // Pull every row touching this agent (capped generously at 5×window
-        // so an agent who iterates a lot doesn't accidentally truncate the
-        // genuine 20 final-iter rows). Filter in-memory because SQLite
-        // can't translate the GroupBy(...).Max(...) pattern reliably.
-        var raw = await this.db.Deliverables.AsNoTracking()
-            .Where(d => d.GeneratorAgentId == agentId || d.EvaluatorAgentId == agentId)
+        // Pull every row touching this agent and order client-side: SQLite
+        // can't sort DateTimeOffset at the SQL layer.
+        var raw = (await this.db.Deliverables.AsNoTracking()
+                .Where(d => d.GeneratorAgentId == agentId || d.EvaluatorAgentId == agentId)
+                .ToListAsync(ct))
             .OrderByDescending(d => d.CreatedAt)
             .Take(ScoringConstants.RollingWindow * 5)
-            .ToListAsync(ct);
+            .ToList();
 
         // For each work item, keep only the row with the highest Iter.
         var byWorkItem = raw

@@ -1,12 +1,16 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Card as CardModel } from '@/types';
 import { useBoardStore } from '@/state/useBoardStore';
+import { useProductsStore } from '@/state/useProductsStore';
 import { avatarFor, agentTooltip } from '@/agentAvatar';
 import { useAgentEditorStore } from '@/state/useAgentEditorStore';
 import { useWorkstreamsStore } from '@/state/useWorkstreamsStore';
 import { useToastStore } from '@/state/useToastStore';
 import { forgeApi } from '@/api/forgeApi';
+import { DeliverableScorePanel } from '@/board/DeliverableScorePanel';
+import { StoryPicker } from '@/board/StoryPicker';
+import { useStateStore } from '@/state/useStateStore';
 
 // Verbatim port of the prototype's <aside class="detail-panel"> static
 // markup (lines 2899-2934) and renderDetailBody / renderDetailActions
@@ -94,10 +98,26 @@ export function DetailPanel() {
   const selectedId = useBoardStore((s) => s.selectedId);
   const card = useBoardStore((s) => s.cards.find((c) => c.id === s.selectedId)) ?? null;
   const setSelected = useBoardStore((s) => s.setSelected);
+  const upsert = useBoardStore((s) => s.upsertFromRealtime);
   const workstreams = useWorkstreamsStore((s) => s.workstreams);
   const focusWs = useWorkstreamsStore((s) => s.setFocused);
   const navigate = useNavigate();
   const linkedWs = card?.branch ? workstreams.find((w) => w.branch === card.branch) : undefined;
+
+  const [storyPickerOpen, setStoryPickerOpen] = useState(false);
+  const reloadState = useStateStore((s) => s.load);
+
+  async function assignStory(epicId: string) {
+    if (!card) return;
+    try {
+      const updated = await forgeApi.patchCard(card.id, { epic: epicId });
+      upsert(updated);
+      useToastStore.getState().show(epicId ? `Assigned to ${epicId}` : 'Removed story', 'success');
+      void reloadState();
+    } catch {
+      useToastStore.getState().show('Failed to update story', 'danger');
+    }
+  }
 
   const open = !!selectedId && !!card;
   const safe = card;
@@ -111,7 +131,20 @@ export function DetailPanel() {
               <div className="detail-eyebrow">
                 <span id="detail-id">{safe.id}</span>
                 <span style={{ opacity: 0.4 }}>/</span>
-                <span id="detail-epic">{safe.epic}</span>
+                <span
+                  id="detail-epic"
+                  style={{ position: 'relative', cursor: 'pointer', textDecoration: 'underline dotted', textUnderlineOffset: 3 }}
+                  onClick={() => setStoryPickerOpen((v) => !v)}
+                  title="Click to change story"
+                >
+                  {safe.epic || 'No story'}
+                  <StoryPicker
+                    open={storyPickerOpen}
+                    currentEpic={safe.epic}
+                    onSelect={(epicId) => void assignStory(epicId)}
+                    onClose={() => setStoryPickerOpen(false)}
+                  />
+                </span>
                 <span style={{ opacity: 0.4 }}>/</span>
                 <span id="detail-type">{safe.type.charAt(0).toUpperCase() + safe.type.slice(1)}</span>
               </div>
@@ -221,6 +254,9 @@ export function DetailPanel() {
               </ul>
             </div>
 
+            {/* Phase 14.10 — score panel: deliverables for this work item. */}
+            <DeliverableScorePanel workItemId={safe.id} />
+
             <div className="detail-section">
               <div className="detail-section-title">
                 <span>Agent reasoning trace</span>
@@ -274,8 +310,29 @@ export function DetailPanel() {
 
 // Phase 6.3 — comment composer that posts to the linked WI/issue.
 function CardCommentComposer({ cardId }: { cardId: string }) {
+  // Provider dropdown is scoped to the kinds present on the active
+  // product's repos — a single-provider product only sees one option.
+  const activeProductId = useProductsStore((s) => s.activeProductId);
+  const reposByProduct = useProductsStore((s) => s.reposByProduct);
+  const productKinds = useMemo(() => {
+    const repos = activeProductId ? reposByProduct[activeProductId] ?? [] : [];
+    const kinds = new Set(repos.map((r) => r.kind));
+    return {
+      ado: kinds.has('ado'),
+      github: kinds.has('github'),
+      any: kinds.size > 0,
+    };
+  }, [activeProductId, reposByProduct]);
+
   const [body, setBody] = useState('');
-  const [provider, setProvider] = useState<'github' | 'ado'>('github');
+  const [provider, setProvider] = useState<'github' | 'ado'>(
+    productKinds.github ? 'github' : 'ado',
+  );
+  // Snap to a valid kind whenever the product (and therefore the option set) changes.
+  useEffect(() => {
+    if (provider === 'github' && !productKinds.github && productKinds.ado) setProvider('ado');
+    if (provider === 'ado' && !productKinds.ado && productKinds.github) setProvider('github');
+  }, [provider, productKinds.ado, productKinds.github]);
   const [busy, setBusy] = useState(false);
 
   async function send() {
@@ -318,14 +375,16 @@ function CardCommentComposer({ cardId }: { cardId: string }) {
           onChange={(e) => setProvider(e.target.value as 'github' | 'ado')}
           style={{ fontSize: 11, padding: '4px 6px' }}
           title="Provider"
+          disabled={!productKinds.any}
         >
-          <option value="github">GitHub</option>
-          <option value="ado">Azure DevOps</option>
+          {productKinds.github && <option value="github">GitHub</option>}
+          {productKinds.ado    && <option value="ado">Azure DevOps</option>}
+          {!productKinds.any   && <option value="github">No repos in product</option>}
         </select>
         <button
           className="btn btn-secondary"
           onClick={() => void send()}
-          disabled={busy || !body.trim()}
+          disabled={busy || !body.trim() || !productKinds.any}
         >
           {busy ? 'Posting…' : 'Comment'}
         </button>

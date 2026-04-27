@@ -201,6 +201,15 @@ export function SideBar() {
             </div>
             <span className="tooltip">Costs</span>
           </NavLink>
+          <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/performance">
+            <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 13 L 6 8 L 9 11 L 14 4" stroke="currentColor" strokeWidth="1.4" fill="none" strokeLinecap="round" strokeLinejoin="round" /><circle cx="14" cy="4" r="1.4" fill="currentColor" /></svg>
+            <div className="label-block">
+              <span className="label">Performance</span>
+              <span className="sub">2 promo ready · 1 demo risk</span>
+            </div>
+            <span className="badge">2</span>
+            <span className="tooltip">Scorecard · KPI · promotion</span>
+          </NavLink>
         </div>
 
         <div className="nav-section">

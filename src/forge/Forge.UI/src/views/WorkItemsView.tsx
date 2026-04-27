@@ -10,6 +10,7 @@ import { WorkItemList } from '@/workitems/WorkItemList';
 import { WorkItemDetailPanel } from '@/workitems/WorkItemDetailPanel';
 import { BulkActionBar } from '@/workitems/BulkActionBar';
 import { SyncDialog } from '@/workitems/SyncDialog';
+import { NewStoryModal } from '@/board/NewStoryModal';
 import type { WorkItem } from '@/workitems/workItemTypes';
 
 import '@/styles/work-items.css';
@@ -45,6 +46,7 @@ export function WorkItemsView() {
 
   const panelExpanded = useWitStore((s) => s.panelExpanded);
   const [syncOpen, setSyncOpen] = useState(false);
+  const [storyModalOpen, setStoryModalOpen] = useState(false);
 
   // Phase 12.6 — pull from the store. Falls back to SAMPLE_WORK_ITEMS when
   // the API is offline (handled inside useWorkItemsStore.load()).
@@ -107,6 +109,12 @@ export function WorkItemsView() {
             </svg>
             New item
           </button>
+          <button className="btn btn-secondary" type="button" onClick={() => setStoryModalOpen(true)}>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+            </svg>
+            New story
+          </button>
         </div>
       </div>
 
@@ -133,6 +141,7 @@ export function WorkItemsView() {
 
       <BulkActionBar count={selection.size} />
       <SyncDialog open={syncOpen} onClose={() => setSyncOpen(false)} />
+      <NewStoryModal open={storyModalOpen} onClose={() => setStoryModalOpen(false)} />
     </section>
   );
 }
@@ -172,6 +181,10 @@ function ModeToggle({ mode, onChange, count }: ModeToggleProps) {
 
 function applyFilters(items: WorkItem[], f: ReturnType<typeof useWitStore.getState>['filters']): WorkItem[] {
   return items.filter((i) => {
+    // Work Items view shows dev-track (coding) items only.
+    // Design-track items (phase/stage/step) live on Plan & Design.
+    if (i.track === 'design') return false;
+
     // Chips run first.
     switch (f.chip) {
       case 'mine':     if (i.assignedTo?.id !== f.meId) return false; break;

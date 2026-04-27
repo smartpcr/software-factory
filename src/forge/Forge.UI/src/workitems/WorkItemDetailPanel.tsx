@@ -1,12 +1,20 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { WorkItem, WorkItemPriority, WorkItemState } from './workItemTypes';
-import { typeLabel, WORK_ITEM_STATES } from './workItemTypes';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { WorkItem, WorkItemAssignee, WorkItemPriority, WorkItemState, WorkItemType } from './workItemTypes';
+import { typeLabel, WORK_ITEM_STATES, WORK_ITEM_TYPES } from './workItemTypes';
 import { useWitStore } from './useWitStore';
 import { useWorkItemsStore } from './useWorkItemsStore';
 import { TypeMark } from './TypeMark';
 import { StatePill } from './StatePill';
 import { RepoIcon } from '@/products/RepoIcon';
 import { SAMPLE_ITERATIONS, SAMPLE_REPOS } from './sampleWorkItems';
+import { useProductsStore } from '@/state/useProductsStore';
+import { useStateStore } from '@/state/useStateStore';
+import { forgeApi, ForgeApiError } from '@/api/forgeApi';
+import { avatarFor, agentTooltip } from '@/agentAvatar';
+import { CardModal } from '@/board/CardModal';
+import { StoryPicker } from '@/board/StoryPicker';
+import { sampleState } from '@/sampleData';
+import type { AgentDetail, Crew, ProductAreaPath, Repo } from '@/types';
 
 interface Props {
   item: WorkItem | null;
@@ -22,11 +30,83 @@ export function WorkItemDetailPanel({ item }: Props) {
   const togglePanelExpanded = useWitStore((s) => s.togglePanelExpanded);
   const allItems = useWorkItemsStore((s) => s.items);
   const patch = useWorkItemsStore((s) => s.patch);
+  const activeProductId = useProductsStore((s) => s.activeProductId);
+  const reposByProduct = useProductsStore((s) => s.reposByProduct);
 
   // Local-edit buffers so we can submit on blur/Enter without re-rendering on every keystroke.
   const [titleDraft, setTitleDraft] = useState(item?.title ?? '');
   const [editingTitle, setEditingTitle] = useState(false);
   useEffect(() => { setTitleDraft(item?.title ?? ''); setEditingTitle(false); }, [item?.id, item?.title]);
+
+  // Phase 14 — "Create card & dispatch" reuses the existing CardModal
+  // pre-seeded from this WI (skipping the createWorkItem step).
+  const [dispatchModalOpen, setDispatchModalOpen] = useState(false);
+  const [resyncing, setResyncing] = useState(false);
+  const [witStoryPickerOpen, setWitStoryPickerOpen] = useState(false);
+  const reload = useWorkItemsStore((s) => s.load);
+  const apiState = useStateStore((s) => s.state);
+  const epics = apiState?.epics ?? sampleState.epics;
+  async function resyncFromProvider() {
+    if (!item) return;
+    setResyncing(true);
+    try {
+      // Per-WI re-sync — bypasses the WIQL change filter and the
+      // revision-skip so an unchanged remote still re-applies (which is
+      // what we want when the local schema evolves, e.g. after the
+      // ADO mapper started composing description + repro + system info).
+      await forgeApi.resyncWorkItem(item.id);
+      await reload();
+      const { useToastStore } = await import('@/state/useToastStore');
+      useToastStore.getState().show(
+        `Re-synced ${item.id} from ${item.provider}`,
+        'success',
+      );
+    } catch (err) {
+      const { useToastStore } = await import('@/state/useToastStore');
+      const msg = err instanceof ForgeApiError
+        ? `${err.status}: ${err.problem?.detail ?? err.problem?.title ?? err.message}`
+        : err instanceof Error ? err.message : 'Re-sync failed';
+      useToastStore.getState().show(msg, 'danger');
+    } finally {
+      setResyncing(false);
+    }
+  }
+
+  // Repos scoped to the active product (Q5 — a repo belongs to exactly one
+  // product, so showing repos from other products is a UX bug).
+  const productRepos = useMemo<Repo[]>(
+    () => activeProductId ? (reposByProduct[activeProductId] ?? []) : [],
+    [activeProductId, reposByProduct],
+  );
+
+  // Area paths for the active product. Loaded once per product change.
+  const [areaPaths, setAreaPaths] = useState<ProductAreaPath[]>([]);
+  useEffect(() => {
+    if (!activeProductId) { setAreaPaths([]); return; }
+    let cancelled = false;
+    forgeApi.listAreaPaths(activeProductId)
+      .then((rs) => { if (!cancelled) setAreaPaths(rs); })
+      .catch(() => { if (!cancelled) setAreaPaths([]); });
+    return () => { cancelled = true; };
+  }, [activeProductId]);
+
+  // Agents + crews for the assignee picker. Lazy — only loaded when the
+  // picker opens (the operator may never reassign).
+  const [agents, setAgents] = useState<AgentDetail[]>([]);
+  const [crews, setCrews] = useState<Crew[]>([]);
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
+  async function ensureAgentsLoaded() {
+    if (agentsLoaded) return;
+    try {
+      const [rs, cs] = await Promise.all([
+        forgeApi.listAgents(),
+        forgeApi.listCrews().catch(() => [] as Crew[]),
+      ]);
+      setAgents(rs);
+      setCrews(cs);
+    } catch { /* swallow */ }
+    setAgentsLoaded(true);
+  }
 
   if (!item) {
     return (
@@ -40,8 +120,8 @@ export function WorkItemDetailPanel({ item }: Props) {
     );
   }
 
-  const repo = SAMPLE_REPOS.find((r) => r.id === item.repoId);
-  const iteration = SAMPLE_ITERATIONS.find((s) => s.ref === item.iterationRef);
+  const repo = productRepos.find((r) => r.id === item.repoId);
+  const repoLite = repo ?? SAMPLE_REPOS.find((r) => r.id === item.repoId);
   const breadcrumb = useMemo(() => ancestry(item, allItems), [item, allItems]);
   const children = useMemo(() => allItems.filter((c) => c.parentId === item.id), [item, allItems]);
 
@@ -63,6 +143,27 @@ export function WorkItemDetailPanel({ item }: Props) {
   function setPoints(p: number) {
     if (p !== item!.points && p >= 0) void patch(item!.id, { points: p });
   }
+  function setIteration(ref: string) {
+    if (ref !== item!.iterationRef) void patch(item!.id, { iterationRef: ref });
+  }
+  function setAreaPath(area: string) {
+    if (area !== item!.areaPath) void patch(item!.id, { areaPath: area });
+  }
+  function setRepo(id: string) {
+    if (id === (item!.repoId ?? '')) return;
+    void patch(item!.id, id ? { repoId: id } : { clearRepoId: true });
+  }
+  function setType(t: WorkItemType) {
+    if (t !== item!.type) void patch(item!.id, { type: t });
+  }
+  function setAssignee(next: WorkItemAssignee | null) {
+    if (next === null) {
+      if (item!.assignedTo) void patch(item!.id, { clearAssignedTo: true });
+      return;
+    }
+    if (item!.assignedTo?.id === next.id && item!.assignedTo.kind === next.kind) return;
+    void patch(item!.id, { assignedTo: next });
+  }
 
   return (
     <aside className={`wit-detail${expanded ? ' wit-detail-expanded' : ''}`}>
@@ -71,12 +172,57 @@ export function WorkItemDetailPanel({ item }: Props) {
           <TypeMark type={item.type} size={20} />
           <span className="wit-detail-id">{item.id}</span>
           {item.providerRef !== null && (
-            <span className="wit-detail-provider-ref">
-              {item.provider === 'ado' ? `WI #${item.providerRef}` : `#${item.providerRef}`}
-            </span>
+            (() => {
+              const url = buildProviderUrl(item, repo ?? undefined);
+              const label = item.provider === 'ado' ? `WI #${item.providerRef}` : `#${item.providerRef}`;
+              return url ? (
+                <a
+                  className="wit-detail-provider-ref"
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={`Open in ${item.provider === 'ado' ? 'Azure DevOps' : 'GitHub'}`}
+                  style={{ textDecoration: 'none' }}
+                >
+                  {label}
+                  <svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden style={{ marginLeft: 3, verticalAlign: 'middle', opacity: 0.6 }}>
+                    <path d="M4.5 2H2.5A1.5 1.5 0 0 0 1 3.5v6A1.5 1.5 0 0 0 2.5 11h6A1.5 1.5 0 0 0 10 9.5V7.5M7 1h4v4M11 1 5.5 6.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </a>
+              ) : (
+                <span className="wit-detail-provider-ref">{label}</span>
+              );
+            })()
           )}
-          {repo && <RepoIcon kind={repo.kind} size={14} title={repo.displayName} />}
+          {repoLite && <RepoIcon kind={repoLite.kind} size={14} title={repoLite.displayName} />}
           <div className="wit-detail-head-actions">
+            {item.provider !== 'local' && item.repoId && (
+              <button
+                type="button"
+                className="wit-detail-icon-btn"
+                onClick={() => void resyncFromProvider()}
+                disabled={resyncing}
+                aria-label={`Re-sync from ${item.provider.toUpperCase()}`}
+                title={`Re-sync this item's title / description / state from ${item.provider === 'ado' ? 'Azure DevOps' : 'GitHub'}.`}
+              >
+                <svg
+                  width="13" height="13" viewBox="0 0 12 12" fill="none" aria-hidden
+                  style={resyncing ? { animation: 'spin 1.2s linear infinite' } : undefined}
+                >
+                  <path d="M2 6 a 4 4 0 0 1 7 -2.5 M 10 6 a 4 4 0 0 1 -7 2.5 M 9 1.5 V 3.5 H 7 M 3 10.5 V 8.5 H 5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            )}
+            <button
+              type="button"
+              className="wit-detail-icon-btn"
+              onClick={() => setDispatchModalOpen(true)}
+              aria-label="Create card and dispatch to crew"
+              title="Create card & dispatch to AI crew"
+              style={{ color: 'var(--accent)', fontWeight: 600 }}
+            >
+              ✦
+            </button>
             <button
               type="button"
               className="wit-detail-icon-btn"
@@ -129,10 +275,7 @@ export function WorkItemDetailPanel({ item }: Props) {
         )}
         <div className="wit-detail-eyebrow-row">
           <StateSelect value={item.state} onChange={setState} />
-          <span className="wit-detail-eyebrow-meta">
-            <span className="lbl">Iteration</span>
-            <span className="val">{iteration?.label ?? '—'}</span>
-          </span>
+          <IterationSelect value={item.iterationRef} repoId={item.repoId} onChange={setIteration} />
           <PointsStepper value={item.points} onChange={setPoints} />
           <PrioritySelect value={item.priority} onChange={setPriority} />
         </div>
@@ -155,19 +298,48 @@ export function WorkItemDetailPanel({ item }: Props) {
 
       <section className="wit-detail-section">
         <div className="wit-detail-section-title">Assignee</div>
-        {item.assignedTo ? (
-          <div className="wit-detail-assignee">
-            <span className="wit-detail-avatar">{item.assignedTo.initials}</span>
-            <div>
-              <div className="wit-detail-assignee-name">{item.assignedTo.displayName}</div>
-              <div className="wit-detail-assignee-kind">
-                {item.assignedTo.kind} · {item.assignedTo.id}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="muted">— unassigned</div>
-        )}
+        <AssigneePicker
+          value={item.assignedTo}
+          agents={agents}
+          crews={crews}
+          onOpen={ensureAgentsLoaded}
+          onChange={setAssignee}
+        />
+      </section>
+
+      <section className="wit-detail-section">
+        <div className="wit-detail-section-title">Story</div>
+        <div style={{ position: 'relative' }}>
+          <button
+            type="button"
+            onClick={() => setWitStoryPickerOpen((v) => !v)}
+            style={{
+              background: 'transparent',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-sm)',
+              padding: '5px 10px',
+              color: item.featureRef ? 'var(--text-primary)' : 'var(--text-tertiary)',
+              cursor: 'pointer',
+              fontSize: 12,
+              fontStyle: item.featureRef ? 'normal' : 'italic',
+              width: '100%',
+              textAlign: 'left',
+            }}
+          >
+            {item.featureRef
+              ? (() => { const e = epics.find((ep) => ep.id === item.featureRef); return e ? `${e.id} — ${e.name}` : item.featureRef; })()
+              : 'No story — click to assign'}
+          </button>
+          <StoryPicker
+            open={witStoryPickerOpen}
+            currentEpic={item.featureRef ?? ''}
+            onSelect={(epicId) => {
+              void patch(item.id, { featureRef: epicId || null });
+              setWitStoryPickerOpen(false);
+            }}
+            onClose={() => setWitStoryPickerOpen(false)}
+          />
+        </div>
       </section>
 
       <section className="wit-detail-section">
@@ -210,19 +382,13 @@ export function WorkItemDetailPanel({ item }: Props) {
       <section className="wit-detail-section">
         <div className="wit-detail-section-title">Provenance</div>
         <dl className="wit-detail-provenance">
-          <dt>Area</dt><dd>{item.areaPath}</dd>
+          <dt>Area</dt>
+          <dd><AreaPathSelect value={item.areaPath} options={areaPaths} onChange={setAreaPath} /></dd>
           <dt>Repo</dt>
-          <dd>
-            {repo ? (
-              <span className="wit-detail-repo">
-                <RepoIcon kind={repo.kind} size={12} />
-                {repo.displayName} · {repo.kind === 'ado' ? 'Azure DevOps' : 'GitHub'}
-              </span>
-            ) : '—'}
-          </dd>
+          <dd><RepoSelect value={item.repoId ?? ''} repos={productRepos} onChange={setRepo} /></dd>
           <dt>Created</dt><dd>{fmt(item.createdAt)}</dd>
           <dt>Updated</dt><dd>{fmt(item.updatedAt)}</dd>
-          <dt>Type</dt><dd>{typeLabel(item.type)}</dd>
+          <dt>Type</dt><dd><TypeSelect value={item.type} onChange={setType} /></dd>
         </dl>
       </section>
 
@@ -231,6 +397,12 @@ export function WorkItemDetailPanel({ item }: Props) {
           Inline edit on title / state / points / priority is live. Iteration combo + assignee picker + tag editor land with Phase 12.7 follow-up.
         </span>
       </footer>
+
+      <CardModal
+        open={dispatchModalOpen}
+        onClose={() => setDispatchModalOpen(false)}
+        fromWorkItem={item}
+      />
     </aside>
   );
 }
@@ -277,6 +449,435 @@ function PointsStepper({ value, onChange }: { value: number; onChange: (n: numbe
   );
 }
 
+function IterationSelect({ value, repoId, onChange }: {
+  value: string;
+  repoId: string | null;
+  onChange: (next: string) => void;
+}) {
+  // Scope to iterations whose repo matches the work item, else show all.
+  const opts = useMemo(() => {
+    const all = SAMPLE_ITERATIONS;
+    if (!repoId) return all;
+    const scoped = all.filter((it) => it.ref.startsWith(`${repoId}:`));
+    return scoped.length > 0 ? scoped : all;
+  }, [repoId]);
+  return (
+    <label className="wit-detail-eyebrow-meta wit-detail-edit-shell">
+      <span className="lbl">Iteration</span>
+      <select
+        className="wit-detail-state-select"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label="Iteration"
+      >
+        <option value="">— none —</option>
+        {opts.map((it) => (
+          <option key={it.ref} value={it.ref}>{it.label}</option>
+        ))}
+        {value && !opts.some((o) => o.ref === value) && (
+          <option value={value}>{value} (out of scope)</option>
+        )}
+      </select>
+    </label>
+  );
+}
+
+function AreaPathSelect({ value, options, onChange }: {
+  value: string;
+  options: ProductAreaPath[];
+  onChange: (next: string) => void;
+}) {
+  // Free-form fallback when the active product hasn't imported any nodes yet —
+  // keep the operator able to type a value rather than locking the field.
+  if (options.length === 0) {
+    return (
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="No area paths imported · type one"
+        style={{
+          background: 'transparent', border: '1px solid var(--border-strong)',
+          borderRadius: 4, padding: '2px 6px', color: 'inherit', font: 'inherit', width: '100%',
+        }}
+      />
+    );
+  }
+  const known = options.some((o) => o.path === value);
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      aria-label="Area path"
+      style={selectStyle}
+    >
+      <option value="">— none —</option>
+      {options.map((o) => (
+        <option key={o.id} value={o.path}>{o.path}</option>
+      ))}
+      {value && !known && <option value={value}>{value} (custom)</option>}
+    </select>
+  );
+}
+
+function RepoSelect({ value, repos, onChange }: {
+  value: string;
+  repos: Repo[];
+  onChange: (id: string) => void;
+}) {
+  // Defensive — if the product hasn't loaded yet, fall through to the static
+  // sample list so the dropdown isn't empty during boot.
+  const opts = repos.length > 0 ? repos : SAMPLE_REPOS;
+  const known = opts.some((r) => r.id === value);
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      aria-label="Repo"
+      style={selectStyle}
+    >
+      <option value="">— unattached —</option>
+      {opts.map((r) => (
+        <option key={r.id} value={r.id}>
+          {r.displayName} · {r.kind === 'ado' ? 'Azure DevOps' : 'GitHub'}
+        </option>
+      ))}
+      {value && !known && <option value={value}>{value} (other product)</option>}
+    </select>
+  );
+}
+
+function TypeSelect({ value, onChange }: { value: WorkItemType; onChange: (t: WorkItemType) => void }) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value as WorkItemType)}
+      aria-label="Type"
+      style={selectStyle}
+      title="Type changes auto-flip the track (epic/feature/task/bug → dev; phase/stage/step → design)."
+    >
+      {WORK_ITEM_TYPES.map((t) => (
+        <option key={t} value={t}>{typeLabel(t)}</option>
+      ))}
+    </select>
+  );
+}
+
+const selectStyle: React.CSSProperties = {
+  background: 'transparent', border: '1px solid var(--border-strong)',
+  borderRadius: 4, padding: '2px 6px', color: 'inherit', font: 'inherit',
+};
+
+function AssigneePicker({ value, agents, crews, onOpen, onChange }: {
+  value: WorkItemAssignee | null;
+  agents: AgentDetail[];
+  crews: Crew[];
+  onOpen: () => void;
+  onChange: (a: WorkItemAssignee | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e: MouseEvent) {
+      const t = e.target as Node;
+      if (triggerRef.current?.contains(t)) return;
+      if (popoverRef.current?.contains(t)) return;
+      setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false); }
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const filteredCrews = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return crews;
+    return crews.filter((c) =>
+      c.id.toLowerCase().includes(q)
+      || c.name.toLowerCase().includes(q)
+      || (c.lead ?? '').toLowerCase().includes(q),
+    );
+  }, [crews, query]);
+
+  const filteredAgents = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return agents;
+    return agents.filter((a) =>
+      a.id.toLowerCase().includes(q)
+      || a.name.toLowerCase().includes(q)
+      || a.role.toLowerCase().includes(q)
+      || (a.crewId ?? '').toLowerCase().includes(q),
+    );
+  }, [agents, query]);
+
+  function pickCrew(c: Crew) {
+    // The crew's name is the displayName; initials use the first two
+    // capitalized letters of the name (e.g. "Engineering" → "EN").
+    const initials = (c.name.match(/[A-Z]/g)?.join('') ?? c.name.slice(0, 2)).slice(0, 2).toUpperCase();
+    onChange({
+      kind: 'crew',
+      id: c.id,
+      displayName: c.name,
+      initials,
+    });
+    setOpen(false); setQuery('');
+  }
+
+  function pickAgent(a: AgentDetail) {
+    onChange({
+      kind: 'agent',
+      id: a.id,
+      displayName: a.name || a.id,
+      initials: a.id.slice(0, 2).toUpperCase(),
+    });
+    setOpen(false); setQuery('');
+  }
+
+  function openPicker() {
+    setOpen(true);
+    void onOpen();
+  }
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={() => (open ? setOpen(false) : openPicker())}
+        className="wit-detail-assignee"
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          width: '100%', padding: 6, border: '1px solid var(--border)',
+          borderRadius: 4, background: 'transparent', cursor: 'pointer',
+          color: 'inherit', textAlign: 'left',
+        }}
+        title="Click to reassign"
+      >
+        {value ? (
+          <>
+            {value.kind === 'agent' && avatarFor(value.id, value.displayName) ? (
+              <img
+                src={avatarFor(value.id, value.displayName)!}
+                alt={value.displayName}
+                style={{ width: 26, height: 26, borderRadius: 999 }}
+              />
+            ) : value.kind === 'crew' ? (
+              <TeamAvatar
+                lead={crews.find((c) => c.id === value.id)?.lead ?? null}
+                initials={value.initials}
+                size={26}
+              />
+            ) : (
+              <span className="wit-detail-avatar" style={{ width: 26, height: 26 }}>{value.initials}</span>
+            )}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="wit-detail-assignee-name">
+                {value.displayName}
+                {value.kind === 'crew' && (
+                  <span style={{
+                    marginLeft: 6, fontSize: 9.5, padding: '1px 6px', borderRadius: 999,
+                    border: '1px solid var(--accent)', color: 'var(--accent)',
+                    fontFamily: 'var(--font-mono, monospace)', fontWeight: 400,
+                  }}>team</span>
+                )}
+              </div>
+              <div className="wit-detail-assignee-kind">{value.kind} · {value.id}</div>
+            </div>
+            <span aria-hidden style={{ color: 'var(--text-tertiary)', fontSize: 10 }}>▾</span>
+          </>
+        ) : (
+          <>
+            <span className="muted" style={{ flex: 1 }}>— unassigned (click to pick team or agent)</span>
+            <span aria-hidden style={{ color: 'var(--text-tertiary)', fontSize: 10 }}>▾</span>
+          </>
+        )}
+      </button>
+      {open && (
+        <div
+          ref={popoverRef}
+          style={{
+            position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 30,
+            maxHeight: 360, overflow: 'auto',
+            background: 'var(--bg-elevated, #1c1c1c)',
+            border: '1px solid var(--border)', borderRadius: 6,
+            boxShadow: '0 6px 20px rgba(0,0,0,0.35)',
+          }}
+        >
+          <div style={{ position: 'sticky', top: 0, background: 'inherit', padding: 6, borderBottom: '1px solid var(--border)' }}>
+            <input
+              type="text"
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search agents by id, name, role, crew…"
+              style={{
+                width: '100%', padding: '4px 8px', fontSize: 11.5,
+                background: 'var(--bg-base, transparent)', color: 'var(--text-primary)',
+                border: '1px solid var(--border-strong)', borderRadius: 4,
+              }}
+            />
+          </div>
+          <button type="button" onClick={() => { onChange(null); setOpen(false); }} style={pickerRowStyle(false)}>
+            <span style={{ width: 26, height: 26, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)' }}>—</span>
+            <span style={{ flex: 1, fontStyle: 'italic', color: 'var(--text-secondary)' }}>Unassigned</span>
+          </button>
+
+          {filteredCrews.length > 0 && (
+            <>
+              <div style={pickerSectionHeaderStyle}>Teams · {filteredCrews.length}</div>
+              {filteredCrews.map((c) => {
+                const initials = (c.name.match(/[A-Z]/g)?.join('') ?? c.name.slice(0, 2)).slice(0, 2).toUpperCase();
+                const selected = value?.kind === 'crew' && value.id === c.id;
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => pickCrew(c)}
+                    style={pickerRowStyle(selected)}
+                    title={c.summary || c.name}
+                  >
+                    <TeamAvatar lead={c.lead} initials={initials} size={26} />
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 12.5 }}>
+                        {c.name}
+                        <span style={{
+                          marginLeft: 6, fontSize: 9, padding: '1px 5px', borderRadius: 999,
+                          border: '1px solid var(--accent)', color: 'var(--accent)',
+                          fontFamily: 'var(--font-mono, monospace)',
+                        }}>team</span>
+                      </div>
+                      <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+                        {c.lead ? `lead ${c.lead}` : 'no lead'}
+                        {c.summary ? ` · ${c.summary}` : ''}
+                      </div>
+                    </span>
+                  </button>
+                );
+              })}
+            </>
+          )}
+
+          {filteredAgents.length > 0 && (
+            <div style={pickerSectionHeaderStyle}>Individuals · {filteredAgents.length}</div>
+          )}
+          {filteredAgents.length === 0 && filteredCrews.length === 0 ? (
+            <div style={{ padding: 12, fontSize: 11, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>No matches.</div>
+          ) : filteredAgents.map((a) => {
+            const url = avatarFor(a.id, a.name);
+            const tip = agentTooltip(a.id, a.name, a.role, a.soulPath);
+            const selected = value?.kind === 'agent' && value.id === a.id;
+            return (
+              <button
+                key={a.id}
+                type="button"
+                onClick={() => pickAgent(a)}
+                style={pickerRowStyle(selected)}
+                title={tip}
+              >
+                {url ? (
+                  <img src={url} alt={a.name} style={{ width: 26, height: 26, borderRadius: 999, objectFit: 'cover' }} />
+                ) : (
+                  <span style={{
+                    width: 26, height: 26, borderRadius: 999, display: 'inline-flex',
+                    alignItems: 'center', justifyContent: 'center',
+                    background: 'var(--bg-sunken, #2a2a2a)', color: 'var(--text-secondary)',
+                    fontFamily: 'var(--font-mono, monospace)', fontSize: 11,
+                  }}>{a.id.slice(0, 2)}</span>
+                )}
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 12.5 }}>
+                    {a.name}
+                    <span style={{ color: 'var(--text-tertiary)', marginLeft: 6, fontFamily: 'var(--font-mono, monospace)', fontSize: 10 }}>{a.id}</span>
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+                    {a.role}{a.crewId ? ` · ${a.crewId}` : ''}
+                  </div>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function pickerRowStyle(selected: boolean): React.CSSProperties {
+  return {
+    display: 'flex', alignItems: 'center', gap: 8,
+    width: '100%', padding: '6px 8px',
+    background: selected ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'transparent',
+    border: 'none', borderBottom: '1px solid var(--border)',
+    color: 'inherit', cursor: 'pointer', textAlign: 'left',
+  };
+}
+
+const pickerSectionHeaderStyle: React.CSSProperties = {
+  padding: '8px 10px 4px',
+  fontFamily: 'var(--font-mono, monospace)',
+  fontSize: 9.5,
+  color: 'var(--text-tertiary)',
+  textTransform: 'uppercase',
+  letterSpacing: 0.12,
+  borderBottom: '1px solid var(--border)',
+};
+
+/**
+ * Team avatar — uses the lead's portrait when one exists, with a small
+ * accent-bordered "team" badge in the corner so a team is still visually
+ * distinct from picking the lead as an individual. Falls back to
+ * accent-bordered initials when the lead has no portrait or the crew
+ * has no lead.
+ */
+function TeamAvatar({ lead, initials, size = 26 }: {
+  lead: string | null | undefined;
+  initials: string;
+  size?: number;
+}) {
+  const url = lead ? avatarFor(lead, null) : null;
+  if (url) {
+    return (
+      <span style={{ position: 'relative', display: 'inline-block', width: size, height: size }}>
+        <img
+          src={url}
+          alt={`team ${initials}`}
+          style={{ width: size, height: size, borderRadius: 6, objectFit: 'cover', border: '1px solid var(--accent)' }}
+        />
+        <span
+          aria-hidden
+          title="team"
+          style={{
+            position: 'absolute', bottom: -3, right: -3,
+            width: 12, height: 12, borderRadius: 999,
+            background: 'var(--accent)', color: 'var(--bg-base, white)',
+            fontSize: 8, fontWeight: 700,
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            border: '1px solid var(--bg-base, var(--bg-elevated))',
+            fontFamily: 'var(--font-mono, monospace)',
+          }}
+        >T</span>
+      </span>
+    );
+  }
+  return (
+    <span style={{
+      width: size, height: size, borderRadius: 6, display: 'inline-flex',
+      alignItems: 'center', justifyContent: 'center',
+      background: 'color-mix(in srgb, var(--accent) 18%, transparent)',
+      color: 'var(--accent)', fontWeight: 700, fontSize: size * 0.42,
+      border: '1px solid var(--accent)',
+    }}>{initials}</span>
+  );
+}
+
 function PrioritySelect({ value, onChange }: { value: WorkItemPriority; onChange: (p: WorkItemPriority) => void }) {
   const options: WorkItemPriority[] = ['low', 'med', 'high'];
   return (
@@ -312,6 +913,34 @@ function ancestry(item: WorkItem, all: WorkItem[]): WorkItem[] {
     cur = cur.parentId ? all.find((w) => w.id === cur!.parentId) ?? null : null;
   }
   return out;
+}
+
+// Build a deep-link URL to the original work item in its provider.
+// ADO: https://dev.azure.com/{org}/{project}/_workitems/edit/{id}
+// GitHub: https://github.com/{owner}/{repo}/issues/{id}
+function buildProviderUrl(item: WorkItem, repo?: Repo): string | null {
+  if (item.providerRef == null) return null;
+  if (item.provider === 'ado') {
+    if (repo?.adoOrg && repo.adoProject) {
+      const orgUrl = repo.adoOrg.startsWith('http')
+        ? repo.adoOrg
+        : `https://dev.azure.com/${repo.adoOrg}`;
+      return `${orgUrl}/${repo.adoProject}/_workitems/edit/${item.providerRef}`;
+    }
+    // Fallback: try to derive from remoteUrl (e.g. https://dev.azure.com/{org}/{project}/_git/{repo})
+    if (repo?.remoteUrl) {
+      const m = repo.remoteUrl.match(/^(https:\/\/dev\.azure\.com\/[^/]+\/[^/]+)/);
+      if (m) return `${m[1]}/_workitems/edit/${item.providerRef}`;
+    }
+    return null;
+  }
+  if (item.provider === 'github') {
+    if (repo?.ghOwner && repo.ghRepo) {
+      return `https://github.com/${repo.ghOwner}/${repo.ghRepo}/issues/${item.providerRef}`;
+    }
+    return null;
+  }
+  return null;
 }
 
 function fmt(iso: string): string {

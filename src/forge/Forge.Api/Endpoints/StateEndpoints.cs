@@ -7,8 +7,12 @@
 namespace Forge.Api.Endpoints;
 
 using System.Text.Json;
+using Forge.Api.Auth;
 using Forge.Api.Contracts;
 using Forge.Api.Persistence;
+using Forge.Api.Realtime;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
 /// <summary>
@@ -66,8 +70,60 @@ public static class StateEndpoints
         .WithTags("State")
         .WithName("GetState");
 
+        var epicsGrp = app.MapGroup("/api/epics").WithTags("Epics");
+        epicsGrp.MapGet("/", async (ForgeDbContext db) =>
+        {
+            var rows = await db.Epics.AsNoTracking().OrderBy(e => e.Sort).ToListAsync();
+            return Results.Ok(rows.Select(MapEpic).ToList());
+        }).WithName("ListEpics");
+
+        epicsGrp.MapPost("/", async (
+            HttpContext ctx,
+            [FromBody] CreateEpicRequest req,
+            ForgeDbContext db,
+            IHubContext<ForgeHub> hub) =>
+        {
+            var auth = ForgeUser.RequireWriter(ctx);
+            if (auth is not null) return auth;
+            if (string.IsNullOrWhiteSpace(req?.Name))
+                return Results.Problem(title: "Name is required", statusCode: 400);
+
+            var id = req.Id?.Trim();
+            if (string.IsNullOrEmpty(id))
+            {
+                id = req.Name.Trim().ToUpperInvariant()
+                    .Replace(' ', '-')
+                    .Replace("--", "-");
+                if (id.Length > 20) id = id[..20];
+            }
+
+            if (await db.Epics.AnyAsync(e => e.Id == id))
+                return Results.Problem(title: $"Epic {id} already exists", statusCode: 409);
+
+            var maxSort = await db.Epics.Select(e => (int?)e.Sort).MaxAsync() ?? -1;
+            var row = new EpicRow
+            {
+                Id = id,
+                Name = req.Name.Trim(),
+                Status = req.Status ?? "planning",
+                Progress = 0,
+                CrewJson = "[]",
+                Cost = 0,
+                Color = id.ToLowerInvariant(),
+                Sort = maxSort + 1,
+            };
+            db.Epics.Add(row);
+            await db.SaveChangesAsync();
+
+            var epic = MapEpic(row);
+            await hub.Clients.All.SendAsync("epic.changed", new { kind = "created", epic });
+            return Results.Created($"/api/epics/{row.Id}", epic);
+        }).WithName("CreateEpic");
+
         return app;
     }
+
+    public sealed record CreateEpicRequest(string Name, string? Id = null, string? Status = null);
 
     private static Epic MapEpic(EpicRow r) => new(
         r.Id, r.Name, r.Status, r.Progress,

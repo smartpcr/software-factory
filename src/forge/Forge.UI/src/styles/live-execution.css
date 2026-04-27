@@ -1,0 +1,360 @@
+/* Phase 16.10 — Live Execution view. New tokens introduced here:
+ *   --graph-line — thin accent for git-graph node connectors.
+ * Documented in docs/forge/design-tokens.md.
+ */
+:root {
+  --graph-line: rgba(20, 20, 15, 0.18);
+}
+[data-theme='dark'] {
+  --graph-line: rgba(255, 255, 255, 0.18);
+}
+
+.live-exec {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 16px;
+  padding: 16px 24px;
+  height: 100%;
+  overflow: hidden;
+}
+
+.live-exec__header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.live-exec__title {
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--text-primary);
+}
+.live-exec__title small {
+  display: block;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+.live-exec__pair {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+.live-exec__pair-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-surface-2);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.live-exec__pair-side strong { color: var(--text-primary); font-weight: 600; }
+.live-exec__pair-conn {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+.live-exec__iter {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.live-exec__iter strong { color: var(--text-primary); }
+
+.live-exec__budget {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  line-height: 1.4;
+}
+.live-exec__budget-bar {
+  width: 120px;
+  height: 4px;
+  background: var(--bg-sunken);
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+}
+.live-exec__budget-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+}
+.live-exec__budget-fill.over { background: var(--danger); }
+
+/* ── Center column — transcript ────────────────────────────────────────── */
+
+.live-exec__center {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.live-exec__filters {
+  display: flex;
+  gap: 4px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.live-exec__filter {
+  padding: 4px 10px;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.live-exec__filter.active {
+  background: var(--accent-bg);
+  border-color: var(--border-accent);
+  color: var(--accent);
+}
+.live-exec__transcript {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* event line: small left rule colored by kind */
+.live-exec__line {
+  position: relative;
+  padding: 2px 0 2px 14px;
+}
+.live-exec__line::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--graph-line);
+}
+.live-exec__line[data-side='generator']::before { background: var(--accent); }
+.live-exec__line[data-side='evaluator']::before { background: var(--info); }
+.live-exec__line[data-kind^='task.iteration']::before { background: var(--warning); }
+.live-exec__line[data-kind='task.iteration.passed']::before { background: var(--success); }
+.live-exec__line[data-kind='task.iteration.rejected']::before { background: var(--danger); }
+.live-exec__line[data-kind='task.commit']::before { background: var(--success); }
+.live-exec__line[data-kind='task.budget-warning']::before { background: var(--danger); }
+
+.live-exec__line-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-right: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.live-exec__line-kind {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  margin-right: 6px;
+  text-transform: lowercase;
+}
+.live-exec__line-text {
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* iteration boundary band */
+.live-exec__iter-rule {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.live-exec__iter-rule::before,
+.live-exec__iter-rule::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.live-exec__score-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--text-on-accent);
+}
+.live-exec__score-chip.pass     { background: var(--success); }
+.live-exec__score-chip.iterate  { background: var(--warning); }
+.live-exec__score-chip.reject   { background: var(--danger); }
+.live-exec__score-chip.stalled,
+.live-exec__score-chip.stalled-budget { background: var(--text-tertiary); }
+.live-exec__score-chip.paused-eod { background: var(--info); }
+
+/* ── Right rail — tabs + tab content ───────────────────────────────────── */
+
+.live-exec__rail {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.live-exec__tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+}
+.live-exec__tab {
+  flex: 1;
+  padding: 10px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.live-exec__tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.live-exec__tab-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+/* worktree tab */
+.live-exec__wt-summary {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.live-exec__wt-pill {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 10px;
+  background: var(--bg-surface-2);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.live-exec__wt-pill.added    { color: var(--success); border-color: var(--success-border); background: var(--success-bg); }
+.live-exec__wt-pill.modified { color: var(--warning); border-color: var(--warning-border); background: var(--warning-bg); }
+.live-exec__wt-pill.deleted  { color: var(--danger);  border-color: var(--danger-border);  background: var(--danger-bg); }
+.live-exec__wt-pill.ahead    { color: var(--info);    border-color: var(--info-border);    background: var(--info-bg); }
+
+.live-exec__wt-head {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-surface-2);
+}
+.live-exec__wt-sha {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+.live-exec__wt-msg { font-size: 13px; color: var(--text-primary); }
+.live-exec__wt-author { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
+
+.live-exec__file-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.live-exec__file-row { color: var(--text-secondary); }
+.live-exec__file-row.added::before    { content: '+ '; color: var(--success); }
+.live-exec__file-row.modified::before { content: '~ '; color: var(--warning); }
+.live-exec__file-row.deleted::before  { content: '− '; color: var(--danger); }
+
+/* tokens tab */
+.live-exec__tokens-bar {
+  display: flex;
+  height: 12px;
+  border-radius: 6px;
+  overflow: hidden;
+  margin: 8px 0 12px;
+}
+.live-exec__tokens-bar > span { display: block; height: 100%; }
+.live-exec__tokens-bar .gen  { background: var(--accent); }
+.live-exec__tokens-bar .eval { background: var(--info); }
+
+.live-exec__cost-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.live-exec__cost-row strong { font-variant-numeric: tabular-nums; color: var(--text-primary); }
+
+/* progress tab */
+.live-exec__iter-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.live-exec__iter-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  background: var(--bg-surface-2);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.live-exec__file-budget {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.live-exec__file-budget.over { border-color: var(--danger-border); background: var(--danger-bg); }
+.live-exec__file-budget__label { color: var(--text-tertiary); font-size: 11px; }
+.live-exec__file-budget__value { color: var(--text-primary); font-size: 14px; font-weight: 600; }
+
+/* Empty / loading / countdown */
+.live-exec__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 8px;
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+.live-exec__empty-cta { color: var(--accent); font-weight: 500; }
+
+@keyframes forge-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.55; transform: scale(1.4); }
+}

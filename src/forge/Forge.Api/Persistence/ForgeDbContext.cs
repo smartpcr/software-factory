@@ -72,6 +72,16 @@ public class ForgeDbContext : DbContext
 
     public DbSet<AgentLevelHistoryRow> AgentLevelHistory => this.Set<AgentLevelHistoryRow>();
 
+    public DbSet<ProductIterationRow> ProductIterations => this.Set<ProductIterationRow>();
+
+    public DbSet<ProductAreaPathRow> ProductAreaPaths => this.Set<ProductAreaPathRow>();
+
+    public DbSet<RepoIterationBindingRow> RepoIterationBindings => this.Set<RepoIterationBindingRow>();
+
+    public DbSet<ProductSavedPrefixRow> ProductSavedPrefixes => this.Set<ProductSavedPrefixRow>();
+
+    public DbSet<TaskTranscriptEventRow> TaskTranscriptEvents => this.Set<TaskTranscriptEventRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         mb.Entity<EpicRow>().ToTable("epics").HasKey(x => x.Id);
@@ -123,6 +133,10 @@ public class ForgeDbContext : DbContext
         mb.Entity<CrewRow>().Property(x => x.ModelOutputPricePerMTok).HasConversion<double>();
         // Phase 13.1 — hierarchy index for cheap parent walks.
         mb.Entity<CrewRow>().HasIndex(x => x.ParentCrewId);
+        // Phase 16.2 — symmetric pair lookup. The partial-unique semantic
+        // ("at most one pair per crew") is enforced in the migration via a
+        // SQLite WHERE-clause index; the EF index here is just for fast lookup.
+        mb.Entity<CrewRow>().HasIndex(x => x.PairedWithCrewId);
 
         // Phase 13.1 — crew membership.
         mb.Entity<CrewMemberRow>()
@@ -192,5 +206,72 @@ public class ForgeDbContext : DbContext
         mb.Entity<AgentLevelHistoryRow>().ToTable("agent_level_history").HasKey(x => x.Id);
         mb.Entity<AgentLevelHistoryRow>().Property(x => x.WindowAvg).HasConversion<double>();
         mb.Entity<AgentLevelHistoryRow>().HasIndex(x => new { x.AgentId, x.CreatedAt });
+
+        // Phase 15.1 — product-scoped iteration registry. Bound to product via FK.
+        mb.Entity<ProductIterationRow>().ToTable("product_iterations").HasKey(x => x.Id);
+        // Q15.4 — re-import resolves rename via id, so (product, providerNodeId) is unique.
+        mb.Entity<ProductIterationRow>()
+            .HasIndex(x => new { x.ProductId, x.ProviderNodeId })
+            .IsUnique();
+        // Plan & Design and the SprintManager filter by product first.
+        mb.Entity<ProductIterationRow>().HasIndex(x => x.ProductId);
+        mb.Entity<ProductIterationRow>().HasIndex(x => x.State);
+        mb.Entity<ProductIterationRow>()
+            .HasOne<ProductRow>()
+            .WithMany()
+            .HasForeignKey(x => x.ProductId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // Phase 15.2 — product-scoped area-path registry.
+        mb.Entity<ProductAreaPathRow>().ToTable("product_area_paths").HasKey(x => x.Id);
+        mb.Entity<ProductAreaPathRow>()
+            .HasIndex(x => new { x.ProductId, x.ProviderNodeId })
+            .IsUnique();
+        mb.Entity<ProductAreaPathRow>().HasIndex(x => x.ProductId);
+        // Q15.2 — at most one default per product is enforced by app code on write
+        // (a partial filtered unique index is SQLite-supported but EF doesn't
+        // model it portably; the dispatcher zeroes the previous default first).
+        mb.Entity<ProductAreaPathRow>().HasIndex(x => new { x.ProductId, x.IsDefaultFilter });
+        mb.Entity<ProductAreaPathRow>()
+            .HasOne<ProductRow>()
+            .WithMany()
+            .HasForeignKey(x => x.ProductId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // Phase 15.5 — repo ↔ iteration bindings.
+        mb.Entity<RepoIterationBindingRow>().ToTable("repo_iteration_bindings").HasKey(x => x.Id);
+        // A binding row has a single iteration target and a single repo source.
+        mb.Entity<RepoIterationBindingRow>()
+            .HasIndex(x => new { x.RepoId, x.Role });
+        mb.Entity<RepoIterationBindingRow>()
+            .HasIndex(x => x.ProductIterationId);
+        mb.Entity<RepoIterationBindingRow>()
+            .HasOne<RepoRow>()
+            .WithMany()
+            .HasForeignKey(x => x.RepoId)
+            .OnDelete(DeleteBehavior.Cascade);
+        mb.Entity<RepoIterationBindingRow>()
+            .HasOne<ProductIterationRow>()
+            .WithMany()
+            .HasForeignKey(x => x.ProductIterationId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // Phase 15.10 — saved-prefix shorthands per product.
+        mb.Entity<ProductSavedPrefixRow>().ToTable("product_saved_prefixes").HasKey(x => x.Id);
+        mb.Entity<ProductSavedPrefixRow>()
+            .HasIndex(x => new { x.ProductId, x.Prefix, x.Kind })
+            .IsUnique();
+        mb.Entity<ProductSavedPrefixRow>().HasIndex(x => x.ProductId);
+        mb.Entity<ProductSavedPrefixRow>()
+            .HasOne<ProductRow>()
+            .WithMany()
+            .HasForeignKey(x => x.ProductId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // Phase 16.1 — task transcript events. Index on (WorkItemId, At) so
+        // pagination on /api/work-items/{id}/transcript walks a single index.
+        mb.Entity<TaskTranscriptEventRow>().ToTable("task_transcript_event").HasKey(x => x.Id);
+        mb.Entity<TaskTranscriptEventRow>().HasIndex(x => new { x.WorkItemId, x.At });
+        mb.Entity<TaskTranscriptEventRow>().HasIndex(x => x.WorkItemId);
     }
 }

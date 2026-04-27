@@ -373,12 +373,12 @@ public class MessageRouter(IDeadLetterQueue deadLetterQueue, ILogger<MessageRout
         var visited = new HashSet<string>();
         var queue = new Queue<string>();
 
-        // Find direct children from this specific port
+        // Find direct children from this specific port (seed from both Complete and Next connections)
         var initialConnections = this.GetConnections(sourceNodeId);
         foreach (var conn in initialConnections)
         {
             if (conn.IsEnabled &&
-                conn.TriggerMessageType == MessageType.Complete &&
+                (conn.TriggerMessageType == MessageType.Complete || conn.TriggerMessageType == MessageType.Next) &&
                 string.Equals(conn.SourcePort, sourcePort, StringComparison.OrdinalIgnoreCase))
             {
                 queue.Enqueue(conn.TargetNodeId);
@@ -426,6 +426,54 @@ public class MessageRouter(IDeadLetterQueue deadLetterQueue, ILogger<MessageRout
         }
 
         return terminals;
+    }
+
+    /// <summary>
+    /// Finds all nodes reachable from a loop body port (LoopBody).
+    /// Seeds from Next connections (LoopBody → first body node), then follows
+    /// Complete connections downstream, stopping at the source node (feedback edge).
+    /// Used to identify all nodes inside a While/ForEach loop body.
+    /// </summary>
+    public HashSet<string> FindAllLoopBodyNodes(string sourceNodeId, string sourcePort)
+    {
+        var visited = new HashSet<string>();
+        var queue = new Queue<string>();
+
+        // Seed from Next connections (LoopBody port uses MessageType.Next)
+        var initialConnections = this.GetConnections(sourceNodeId);
+        foreach (var conn in initialConnections)
+        {
+            if (conn.IsEnabled &&
+                conn.TriggerMessageType == MessageType.Next &&
+                string.Equals(conn.SourcePort, sourcePort, StringComparison.OrdinalIgnoreCase))
+            {
+                queue.Enqueue(conn.TargetNodeId);
+            }
+        }
+
+        // BFS: follow outgoing Complete connections, stop at feedback edges to source
+        while (queue.Count > 0)
+        {
+            var nodeId = queue.Dequeue();
+            if (!visited.Add(nodeId))
+            {
+                continue;
+            }
+
+            var outgoing = this.GetConnections(nodeId);
+            foreach (var conn in outgoing)
+            {
+                if (conn.IsEnabled &&
+                    conn.TriggerMessageType == MessageType.Complete &&
+                    conn.TargetNodeId != sourceNodeId &&
+                    !visited.Contains(conn.TargetNodeId))
+                {
+                    queue.Enqueue(conn.TargetNodeId);
+                }
+            }
+        }
+
+        return visited;
     }
 
     /// <summary>

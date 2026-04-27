@@ -8,6 +8,7 @@ namespace Forge.Api.Services;
 
 using System.Text.Json;
 using Forge.Api.Persistence;
+using Forge.Api.Realtime;
 using Microsoft.EntityFrameworkCore;
 
 /// <summary>
@@ -58,7 +59,14 @@ public sealed record DeliverableLoopRequest(
     string EvaluatorAgentId,
     Func<int, string, CancellationToken, Task<GeneratorRunOutput>> Generator,
     Func<int, string, CancellationToken, Task<EvaluatorRunOutput>> Evaluator,
-    decimal? MaxTaskBudgetUsd = null);
+    decimal? MaxTaskBudgetUsd = null,
+    /// <summary>
+    /// Phase 16.4 — when set, evaluator-side cost ledger writes are tagged
+    /// to this crew (the paired evaluator crew). When null, the existing
+    /// Phase 14 in-crew evaluator path is used and both costs land on
+    /// <see cref="CrewId"/>.
+    /// </summary>
+    string? EvaluatorCrewId = null);
 
 /// <summary>One generator turn's raw output + cost.</summary>
 public sealed record GeneratorRunOutput(string OutputText, decimal CostUsd);
@@ -78,10 +86,19 @@ public sealed record DeliverableLoopResult(
 public sealed class DeliverableLoop : IDeliverableLoop
 {
     private readonly ForgeDbContext db;
+    private readonly TaskChannel? channel;
 
-    public DeliverableLoop(ForgeDbContext db)
+    public DeliverableLoop(ForgeDbContext db) : this(db, channel: null) { }
+
+    /// <summary>
+    /// Phase 16.7 — when <paramref name="channel"/> is non-null, the loop
+    /// emits <c>task.iteration.started | scored | iterated | passed |
+    /// rejected | stalled</c> events on the per-work-item live channel.
+    /// </summary>
+    public DeliverableLoop(ForgeDbContext db, TaskChannel? channel)
     {
         this.db = db;
+        this.channel = channel;
     }
 
     public async Task<DeliverableLoopResult> RunAsync(DeliverableLoopRequest request, CancellationToken ct)
@@ -97,16 +114,33 @@ public sealed class DeliverableLoop : IDeliverableLoop
         var verdict = "iterate";
         var iter = 0;
 
+        // Phase 14.3 / 16.4 — pin the evaluator agent on iter 1 so subsequent
+        // rounds reuse the same grader (rubric reproducibility). Generator
+        // agent is also pinned for symmetry.
+        var pinnedEvaluator = request.EvaluatorAgentId;
+        var evalCrewId = request.EvaluatorCrewId ?? request.CrewId;
+
         while (iter < ScoringConstants.MaxIterations)
         {
             iter++;
 
+            await this.EmitAsync(request.WorkItemId, "task.iteration.started", new
+            {
+                iter,
+                generatorCrewId = request.CrewId,
+                evaluatorCrewId = evalCrewId,
+                generatorAgentId = request.GeneratorAgentId,
+                evaluatorAgentId = pinnedEvaluator,
+            }, ct);
+
             // (a) generator
             var gen = await request.Generator(iter, notesForNext, ct);
+            await this.WriteUsageAsync(request.WorkItemId, request.GeneratorAgentId, request.CrewId, "generator", gen.CostUsd, ct);
 
             // (b) evaluator
             var eval = await request.Evaluator(iter, gen.OutputText, ct);
             lastScore = EvaluatorScoreParser.Parse(eval.AssistantText);
+            await this.WriteUsageAsync(request.WorkItemId, pinnedEvaluator, evalCrewId, "evaluator", eval.CostUsd, ct);
 
             totalCost += gen.CostUsd + eval.CostUsd;
 
@@ -116,7 +150,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                 WorkItemId = request.WorkItemId,
                 CrewId = request.CrewId,
                 GeneratorAgentId = request.GeneratorAgentId,
-                EvaluatorAgentId = request.EvaluatorAgentId,
+                EvaluatorAgentId = pinnedEvaluator,
                 Iter = iter,
                 Score = lastScore.Score,
                 DimsJson = JsonSerializer.Serialize(lastScore.Dims),
@@ -133,17 +167,30 @@ public sealed class DeliverableLoop : IDeliverableLoop
             verdict = lastScore.Verdict;
             notesForNext = lastScore.Notes;
 
+            await this.EmitAsync(request.WorkItemId, "task.iteration.scored", new
+            {
+                iter,
+                score = lastScore.Score,
+                verdict,
+                dims = lastScore.Dims,
+                generatorCostUsd = gen.CostUsd,
+                evaluatorCostUsd = eval.CostUsd,
+                totalCostUsd = totalCost,
+            }, ct);
+
             // (e) terminal pass → close the work item, exit.
             if (verdict == "pass")
             {
-                await TrySetWorkItemStateAsync(request.WorkItemId, "closed", ct);
+                await TrySetWorkItemStateAsync(this.db, request.WorkItemId, "closed", ct);
+                await this.EmitAsync(request.WorkItemId, "task.iteration.passed", new { iter, score = lastScore.Score }, ct);
                 return new DeliverableLoopResult(verdict, iter, lastScore.Score, rowIds, totalCost);
             }
 
             // (f) terminal reject → bounce back to lead, exit.
             if (verdict == "reject")
             {
-                await TrySetWorkItemStateAsync(request.WorkItemId, "proposed", ct);
+                await TrySetWorkItemStateAsync(this.db, request.WorkItemId, "proposed", ct);
+                await this.EmitAsync(request.WorkItemId, "task.iteration.rejected", new { iter, score = lastScore.Score }, ct);
                 return new DeliverableLoopResult(verdict, iter, lastScore.Score, rowIds, totalCost);
             }
 
@@ -153,10 +200,12 @@ public sealed class DeliverableLoop : IDeliverableLoop
                 verdict = "stalled-budget";
                 row.Verdict = verdict;
                 await this.db.SaveChangesAsync(ct);
+                await this.EmitAsync(request.WorkItemId, "task.budget-warning", new { iter, totalCostUsd = totalCost, cap }, ct);
                 return new DeliverableLoopResult(verdict, iter, lastScore.Score, rowIds, totalCost);
             }
 
             // verdict == "iterate" → loop re-enters
+            await this.EmitAsync(request.WorkItemId, "task.iteration.iterated", new { iter, score = lastScore.Score, notes = lastScore.Notes }, ct);
         }
 
         // Cap hit without pass.
@@ -168,6 +217,8 @@ public sealed class DeliverableLoop : IDeliverableLoop
         lastRow.Verdict = verdict;
         await this.db.SaveChangesAsync(ct);
 
+        await this.EmitAsync(request.WorkItemId, "task.iteration.stalled", new { iter, score = lastScore?.Score ?? 0 }, ct);
+
         return new DeliverableLoopResult(verdict, iter, lastScore?.Score ?? 0, rowIds, totalCost);
     }
 
@@ -177,13 +228,46 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// state-machine constraints (e.g. closed → closed is a no-op) are
     /// respected by the regular <c>WorkItemRow</c> writes.
     /// </summary>
-    private async Task TrySetWorkItemStateAsync(string workItemId, string newState, CancellationToken ct)
+    private static async Task TrySetWorkItemStateAsync(ForgeDbContext db, string workItemId, string newState, CancellationToken ct)
     {
-        var wi = await this.db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+        var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
         if (wi is null) return;
         if (string.Equals(wi.State, newState, StringComparison.OrdinalIgnoreCase)) return;
         wi.State = newState;
         wi.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// Phase 16.4 — split-cost ledger writer. Records one
+    /// <see cref="AgentUsageRow"/> per generator/evaluator turn so the
+    /// per-pair salary is reportable separately. <c>category</c> is one
+    /// of <c>generator | evaluator | judge</c>.
+    /// </summary>
+    private async Task WriteUsageAsync(string workItemId, string? agentId, string crewId, string category, decimal costUsd, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(agentId)) return;
+        var now = DateTimeOffset.UtcNow;
+        this.db.AgentUsage.Add(new AgentUsageRow
+        {
+            AgentId = agentId,
+            CrewId = crewId,
+            TaskId = workItemId,
+            Model = string.Empty,
+            InputTokens = 0,
+            OutputTokens = 0,
+            CostUsd = costUsd,
+            StartedAt = now,
+            EndedAt = now,
+            Status = "finished",
+            CostCategory = category,
+        });
         await this.db.SaveChangesAsync(ct);
+    }
+
+    private async Task EmitAsync(string workItemId, string kind, object payload, CancellationToken ct)
+    {
+        if (this.channel is null) return;
+        await this.channel.EmitAsync(workItemId, kind, payload, ct: ct);
     }
 }

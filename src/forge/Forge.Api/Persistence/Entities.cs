@@ -308,6 +308,14 @@ public class ProductRow
     public string? OwnerUserId { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// Phase 15.6 — product-level override for the active iteration. When
+    /// non-null, the Plan &amp; Design sprint pill reads from this; null
+    /// means fall back to the primary repo's <c>RepoIterationBindingRow</c>
+    /// flagged <c>role='current'</c> (Q15.7).
+    /// </summary>
+    public string? ActiveIterationId { get; set; }
 }
 
 /// <summary>
@@ -439,6 +447,18 @@ public class CrewRow
     /// (e.g. CI fixtures, off-hours sweep crews). Defaults to true.
     /// </summary>
     public bool ScheduleEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Phase 16.2 — pair role. <c>standalone</c> (default) | <c>generator</c>
+    /// | <c>evaluator</c>. Only arch + eng crews may enter a pair (Q16.2).
+    /// </summary>
+    public string PairRole { get; set; } = "standalone";
+
+    /// <summary>
+    /// Phase 16.2 — id of the crew this one is paired with. Symmetric: when A
+    /// pairs with B, both rows reference each other. Null when standalone.
+    /// </summary>
+    public string? PairedWithCrewId { get; set; }
 }
 
 /// <summary>
@@ -749,6 +769,47 @@ public class AgentUsageRow
     public DateTimeOffset? EndedAt { get; set; }
 
     public string Status { get; set; } = "running";
+
+    /// <summary>
+    /// Phase 16.1 — which side of a paired-crew deliverable this row covers.
+    /// One of <c>generator | evaluator | judge</c>. Default <c>generator</c>
+    /// matches the pre-pair behaviour; backfill rewrites every existing row
+    /// to that value.
+    /// </summary>
+    public string CostCategory { get; set; } = "generator";
+}
+
+/// <summary>
+/// Phase 16.5 — one row per persisted live-execution event. Bounded per
+/// work item (cap 10 000, oldest evicted when the cap is hit) so the
+/// transcript replay-on-open returns in O(N) without choking on a runaway
+/// deliverable. <c>PayloadJson</c> is loosely typed by <see cref="Kind"/> —
+/// the channel can grow without breaking old clients.
+/// </summary>
+public class TaskTranscriptEventRow
+{
+    public long Id { get; set; }
+
+    public string WorkItemId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// One of: <c>task.assigned | task.delegated | task.iteration.started |
+    /// task.iteration.scored | task.iteration.iterated | task.iteration.passed |
+    /// task.iteration.rejected | task.token | task.tool-call | task.tool-result |
+    /// task.commit | task.file-changed | task.pr-opened | task.budget-warning |
+    /// task.worktree-tick</c>.
+    /// </summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>Originating agent (token / tool events). Null on aggregate events.</summary>
+    public string? AgentId { get; set; }
+
+    /// <summary>Originating crew (token / tool events). Null on aggregate events.</summary>
+    public string? CrewId { get; set; }
+
+    public string PayloadJson { get; set; } = "{}";
+
+    public DateTimeOffset At { get; set; } = DateTimeOffset.UtcNow;
 }
 
 /// <summary>
@@ -843,6 +904,21 @@ public class WorkItemRow
 
     /// <summary>Phase 5.10 — opaque marker advanced on every server write.</summary>
     public string? RemoteRevision { get; set; }
+
+    /// <summary>
+    /// Phase 16.1 — set when <c>LeadAutoDispatcher</c> picks the row up and
+    /// hands it to <see cref="DeliverableRow"/>. Null = not yet auto-dispatched
+    /// (or the row predates Phase 16). Used by the dispatcher's idempotency
+    /// guard (don't re-dispatch the same row) and for SLO histograms.
+    /// </summary>
+    public DateTimeOffset? AutoDispatchedAt { get; set; }
+
+    /// <summary>
+    /// Phase 16.5 — for <c>step</c> rows only: the planned PR-size budget.
+    /// Phase 16.5 enforces ≤ 20 at create time. Phase 16.6 surfaces a yellow
+    /// pill when the actual PR exceeds this. Null on non-step rows.
+    /// </summary>
+    public int? ExpectedFileChanges { get; set; }
 }
 
 /// <summary>
@@ -862,4 +938,146 @@ public class WorkItemLinkRow
     public string Kind { get; set; } = "related";
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// Phase 15.1 — product-scoped iteration registry. Imported from a
+/// repo's provider (ADO classification node or GitHub milestone) and
+/// pinned to a single <see cref="ProductRow"/>. The pair
+/// <c>(ProductId, ProviderNodeId)</c> is unique so re-importing the same
+/// node updates the row in place rather than duplicating it.
+/// </summary>
+public class ProductIterationRow
+{
+    public string Id { get; set; } = string.Empty;
+
+    /// <summary>Owning product (Q15.1 — iterations are bound to a product, not a repo).</summary>
+    public string ProductId { get; set; } = string.Empty;
+
+    /// <summary>"ado" | "github".</summary>
+    public string ProviderKind { get; set; } = "ado";
+
+    public string ProviderOrg { get; set; } = string.Empty;
+
+    public string ProviderProject { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Stable upstream identity. ADO uses the classification node id;
+    /// GitHub uses <c>milestone:{number}</c>. Renames upstream do NOT
+    /// change this — bindings re-resolve by id, not path (Q15.4).
+    /// </summary>
+    public string ProviderNodeId { get; set; } = string.Empty;
+
+    /// <summary>Backslash-delimited path string (ADO) or "#N title" (GitHub milestone).</summary>
+    public string Path { get; set; } = string.Empty;
+
+    public string Name { get; set; } = string.Empty;
+
+    public DateTimeOffset? StartDate { get; set; }
+
+    public DateTimeOffset? FinishDate { get; set; }
+
+    /// <summary>One of: past, current, future, provider-orphan.</summary>
+    public string State { get; set; } = "future";
+
+    /// <summary>JSON blob of provider-specific extras (e.g. ADO timeFrame, GH state-reason).</summary>
+    public string AttributesJson { get; set; } = "{}";
+
+    public DateTimeOffset ImportedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public DateTimeOffset RefreshedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// Phase 15.2 — product-scoped area-path registry. Tree-structured via
+/// <see cref="ParentNodeId"/>. ADO-only at v0.1 (Q15.6); GitHub repos
+/// use labels for area scoping. Pinned to a single <see cref="ProductRow"/>.
+/// </summary>
+public class ProductAreaPathRow
+{
+    public string Id { get; set; } = string.Empty;
+
+    /// <summary>Owning product (Q15.2 — areas are bound to a product).</summary>
+    public string ProductId { get; set; } = string.Empty;
+
+    /// <summary>"ado" — GitHub label-mapping deferred to Phase R / forge_v2.md.</summary>
+    public string ProviderKind { get; set; } = "ado";
+
+    public string ProviderOrg { get; set; } = string.Empty;
+
+    public string ProviderProject { get; set; } = string.Empty;
+
+    public string ProviderNodeId { get; set; } = string.Empty;
+
+    /// <summary>Backslash-delimited path string.</summary>
+    public string Path { get; set; } = string.Empty;
+
+    public string? ParentPath { get; set; }
+
+    public string? ParentNodeId { get; set; }
+
+    /// <summary>
+    /// Q15.2 — when true, Plan &amp; Design + Work items apply this path as a
+    /// pre-filter before any user-supplied filter. At most one row per
+    /// product is the default; flipping it on flips the previous default off.
+    /// </summary>
+    public bool IsDefaultFilter { get; set; }
+
+    public string AttributesJson { get; set; } = "{}";
+
+    public DateTimeOffset ImportedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// Phase 15.5 — repo ↔ iteration binding. A single repo can bind to
+/// multiple <see cref="ProductIterationRow"/>s with different roles
+/// (current / next / reference). The pair (RepoId, Role) is unique for
+/// roles <c>current</c> and <c>next</c> — a repo has exactly one of each.
+/// </summary>
+public class RepoIterationBindingRow
+{
+    public long Id { get; set; }
+
+    public string RepoId { get; set; } = string.Empty;
+
+    public string ProductIterationId { get; set; } = string.Empty;
+
+    /// <summary>One of: current, next, reference.</summary>
+    public string Role { get; set; } = "reference";
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public string? CreatedBy { get; set; }
+}
+
+/// <summary>
+/// Phase 15.10 — saved prefix shorthand. Lets the operator click
+/// "Refresh Atlas\Sprint*" and re-run discovery + import in one shot,
+/// picking up newly-created upstream nodes (e.g. Sprint 15 once the
+/// admin cuts it in ADO).
+/// </summary>
+public class ProductSavedPrefixRow
+{
+    public long Id { get; set; }
+
+    /// <summary>Owning product (saved prefixes are bound to a product, Q15.10).</summary>
+    public string ProductId { get; set; } = string.Empty;
+
+    /// <summary>The prefix string the operator typed, e.g. <c>Atlas\Sprint</c>.</summary>
+    public string Prefix { get; set; } = string.Empty;
+
+    /// <summary>"iterations" | "areas".</summary>
+    public string Kind { get; set; } = "iterations";
+
+    /// <summary>Repo whose provider was queried; FK to <see cref="RepoRow"/>.</summary>
+    public string RepoId { get; set; } = string.Empty;
+
+    public string AddedBy { get; set; } = string.Empty;
+
+    public DateTimeOffset AddedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public DateTimeOffset? LastRefreshedAt { get; set; }
+
+    /// <summary>JSON <c>{ added, removed, renamed }</c> from the most recent refresh.</summary>
+    public string LastDeltaJson { get; set; } = "{\"added\":0,\"removed\":0,\"renamed\":0}";
 }

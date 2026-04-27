@@ -32,16 +32,23 @@ export function TopBar({ section, current }: TopBarProps) {
   useEffect(() => { void loadProducts(); }, [loadProducts]);
   useEffect(() => { void loadMe(); }, [loadMe]);
 
-  // Phase 11.9 — TopBar salary chip (PO only). Refresh every 60 s so the
-  // operator sees spend tick up live without hammering the API.
+  // Phase 11.9 / 14.11 — TopBar spend + payroll chips (PO only). Refresh
+  // every 60 s so the operator sees both tick up live without hammering
+  // the API. Q14.7: the legacy "salary" payload is now labelled "Spend"
+  // (token-cost rollup); the new "Payroll" chip shows HR salary
+  // (level × on-shift hours).
   const isPO = useHasRole('product-owner');
   const [salary, setSalary] = useState<SalaryTodaySummary | null>(null);
+  const [payroll, setPayroll] = useState<{ totalUsd: number; crewCount: number } | null>(null);
   useEffect(() => {
     if (!isPO) return;
     let cancelled = false;
     const tick = () => {
       forgeApi.getSalaryTodayTotal()
         .then((s) => { if (!cancelled) setSalary(s); })
+        .catch(() => { /* keep last value */ });
+      forgeApi.getPayrollTodayTotal()
+        .then((p) => { if (!cancelled) setPayroll(p); })
         .catch(() => { /* keep last value */ });
     };
     tick();
@@ -114,29 +121,30 @@ export function TopBar({ section, current }: TopBarProps) {
       {isPO && salary && (
         <div
           className="topbar-salary-chip"
-          title={`Total spend today across all crews. ${salary.activeAgents} active invocation${salary.activeAgents === 1 ? '' : 's'}.`}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '4px 10px',
-            borderRadius: 999,
-            border: '1px solid var(--border-strong)',
-            color: 'var(--text-secondary)',
-            fontSize: 11.5,
-            fontFamily: 'var(--font-mono, monospace)',
-            background: 'var(--bg-elevated, transparent)',
-          }}
+          title={`Token-cost spend today across all crews. ${salary.activeAgents} active invocation${salary.activeAgents === 1 ? '' : 's'}.`}
+          style={chipStyle('rgb(20, 110, 245)')}
         >
-          <span style={{ color: 'var(--accent)', fontWeight: 600 }}>${salary.totalUsd.toFixed(2)}</span>
+          <span style={{ color: 'var(--text-tertiary)', fontSize: 9.5, fontFamily: 'var(--font-mono, monospace)', textTransform: 'uppercase', letterSpacing: 0.1 }}>spend</span>
+          <span style={{ color: 'rgb(20, 110, 245)', fontWeight: 600 }}>${salary.totalUsd.toFixed(2)}</span>
           <span style={{ opacity: 0.7 }}>today</span>
           {salary.activeAgents > 0 && (
             <span style={{
               width: 6, height: 6, borderRadius: 999,
-              background: 'var(--accent)',
-              boxShadow: '0 0 0 2px var(--accent-soft, transparent)',
+              background: 'rgb(20, 110, 245)',
+              boxShadow: '0 0 0 2px color-mix(in srgb, rgb(20, 110, 245) 25%, transparent)',
             }} />
           )}
+        </div>
+      )}
+      {isPO && payroll && (
+        <div
+          className="topbar-payroll-chip"
+          title={`HR payroll today across ${payroll.crewCount} crew${payroll.crewCount === 1 ? '' : 's'} (level × on-shift hours).`}
+          style={chipStyle('rgb(34, 197, 94)')}
+        >
+          <span style={{ color: 'var(--text-tertiary)', fontSize: 9.5, fontFamily: 'var(--font-mono, monospace)', textTransform: 'uppercase', letterSpacing: 0.1 }}>payroll</span>
+          <span style={{ color: 'rgb(34, 197, 94)', fontWeight: 600 }}>${payroll.totalUsd.toFixed(2)}</span>
+          <span style={{ opacity: 0.7 }}>today</span>
         </div>
       )}
 
@@ -172,4 +180,20 @@ export function TopBar({ section, current }: TopBarProps) {
       <UserMenu open={menuOpen} onClose={() => setMenuOpen(false)} anchor={menuAnchor} />
     </header>
   );
+}
+
+/** Phase 14.11 — shared TopBar chip shape for spend + payroll. */
+function chipStyle(accent: string): React.CSSProperties {
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '4px 10px',
+    borderRadius: 999,
+    border: `1px solid ${accent}`,
+    color: 'var(--text-secondary)',
+    fontSize: 11.5,
+    fontFamily: 'var(--font-mono, monospace)',
+    background: 'var(--bg-elevated, transparent)',
+  };
 }
