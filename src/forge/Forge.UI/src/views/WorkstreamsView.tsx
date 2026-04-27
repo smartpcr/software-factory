@@ -41,6 +41,7 @@ export function WorkstreamsView() {
 
   const allCards = useBoardStore((s) => s.cards);
   const allWorkItems = useWorkItemsStore((s) => s.items);
+  const refreshWorkItems = useWorkItemsStore((s) => s.refresh);
   // Phase 17.8 — subscribe to queue updates so the queued pill stays live.
   useQueueChannel({});
   const queueRows = useQueueStore((s) => s.rows);
@@ -56,6 +57,16 @@ export function WorkstreamsView() {
   const [storyFilter, setStoryFilter] = useState('');
 
   useEffect(() => { void load(); }, [load]);
+
+  // Re-fetch workstreams + work items every 15s so the live badge picks up
+  // newly auto-linked cards from the queue worker.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      void load();
+      void refreshWorkItems();
+    }, 15_000);
+    return () => clearInterval(interval);
+  }, [load, refreshWorkItems]);
 
   // Derive dropdown options from workstream data.
   const repoOptions = useMemo(() => {
