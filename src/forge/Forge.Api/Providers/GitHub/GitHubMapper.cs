@@ -18,6 +18,156 @@ using Forge.Api.Contracts;
 /// </summary>
 public static class GitHubMapper
 {
+    /// <summary>
+    /// Phase 12.4 — map a GitHub issue envelope into the rich
+    /// <see cref="WorkItem"/> shape consumed by the WIT sync service.
+    /// Type and track are derived from labels (epic / feature / phase /
+    /// stage / step labels override; otherwise bugs/tasks/stories fall
+    /// back to the existing <see cref="ChooseType"/>). Parent is parsed
+    /// from a <c>Parent: #N</c> line in the body when GitHub's native
+    /// sub-issues feature isn't in use.
+    /// </summary>
+    public static WorkItem IssueToWorkItem(JsonElement issue, string repoId, string milestonePrefix)
+    {
+        var number = issue.GetProperty("number").GetInt64();
+        var nodeId = "WI-GH-" + number;
+        var title = issue.GetProperty("title").GetString() ?? "(no title)";
+        var bodyMd = issue.TryGetProperty("body", out var b) && b.ValueKind == JsonValueKind.String
+            ? b.GetString() ?? string.Empty
+            : string.Empty;
+
+        var stateOpen = string.Equals(issue.GetProperty("state").GetString(), "open", StringComparison.OrdinalIgnoreCase);
+        var stateReason = issue.TryGetProperty("state_reason", out var sr) && sr.ValueKind == JsonValueKind.String
+            ? sr.GetString()
+            : null;
+        var state = MapWorkItemState(stateOpen, stateReason);
+
+        var labels = ExtractLabelNames(issue);
+        var (track, type) = MapTypeAndTrack(labels);
+        var priority = ChoosePriority(labels);
+
+        WorkItemAssignee? assignee = null;
+        if (issue.TryGetProperty("assignee", out var a) && a.ValueKind == JsonValueKind.Object)
+        {
+            var login = a.TryGetProperty("login", out var l) ? l.GetString() : null;
+            var name = a.TryGetProperty("name", out var n) ? n.GetString() : null;
+            if (!string.IsNullOrEmpty(login))
+            {
+                assignee = new WorkItemAssignee("human", login!, name ?? login!, ShortId(login!));
+            }
+        }
+
+        // GitHub sub-issues feature: extract from `sub_issues` / `parent_issue`
+        // when present; otherwise fall back to "Parent: #N" body parsing.
+        string? parentId = null;
+        if (issue.TryGetProperty("parent", out var pp) && pp.ValueKind == JsonValueKind.Object &&
+            pp.TryGetProperty("number", out var pn) && pn.TryGetInt64(out var parentNum))
+        {
+            parentId = "WI-GH-" + parentNum;
+        }
+        else
+        {
+            parentId = ParseParentFromBody(bodyMd);
+        }
+
+        // Iteration: take the milestone title, namespaced by repo prefix.
+        var iterationRef = string.Empty;
+        if (issue.TryGetProperty("milestone", out var ms) && ms.ValueKind == JsonValueKind.Object)
+        {
+            var msTitle = ms.TryGetProperty("title", out var mt) ? mt.GetString() : null;
+            if (!string.IsNullOrEmpty(msTitle))
+            {
+                iterationRef = $"{milestonePrefix}:{msTitle}";
+            }
+        }
+
+        var createdAt = issue.TryGetProperty("created_at", out var ca) && ca.ValueKind == JsonValueKind.String
+            ? DateTimeOffset.Parse(ca.GetString()!).ToUniversalTime()
+            : DateTimeOffset.UtcNow;
+        var updatedAt = issue.TryGetProperty("updated_at", out var ua) && ua.ValueKind == JsonValueKind.String
+            ? DateTimeOffset.Parse(ua.GetString()!).ToUniversalTime()
+            : createdAt;
+
+        return new WorkItem(
+            Id: nodeId,
+            RepoId: repoId,
+            Provider: "github",
+            ProviderRef: (int)Math.Min(int.MaxValue, number),
+            Track: track,
+            Type: type,
+            State: state,
+            Title: title,
+            DescriptionMd: bodyMd,
+            ParentId: parentId,
+            FeatureRef: null,
+            IterationRef: iterationRef,
+            AreaPath: string.Empty,
+            AssignedTo: assignee,
+            Points: 0,
+            Priority: priority,
+            Tags: labels,
+            CreatedAt: createdAt,
+            UpdatedAt: updatedAt,
+            // GitHub doesn't expose a concise revision string on the REST
+            // shape; the `updated_at` ISO works as the conflict marker.
+            RemoteRevision: updatedAt.ToString("o"));
+    }
+
+    /// <summary>
+    /// Forge work-item type derivation from issue labels. Epic / feature /
+    /// phase / stage / step labels win; bug overrides task; default = task.
+    /// </summary>
+    public static (string Track, string Type) MapTypeAndTrack(IReadOnlyList<string> labels)
+    {
+        var lower = labels.Select(l => l.ToLowerInvariant()).ToHashSet();
+        if (lower.Contains("epic"))    return ("dev", "epic");
+        if (lower.Contains("feature")) return ("dev", "feature");
+        if (lower.Contains("phase"))   return ("design", "phase");
+        if (lower.Contains("stage"))   return ("design", "stage");
+        if (lower.Contains("step"))    return ("design", "step");
+        if (lower.Contains("bug"))     return ("dev", "bug");
+        return ("dev", "task");
+    }
+
+    /// <summary>Q12.3 mapping for GitHub state + state_reason.</summary>
+    public static string MapWorkItemState(bool stateOpen, string? stateReason)
+    {
+        if (stateOpen)
+        {
+            return string.Equals(stateReason, "not_planned", StringComparison.OrdinalIgnoreCase)
+                ? "proposed"
+                : "active";
+        }
+        return string.Equals(stateReason, "completed", StringComparison.OrdinalIgnoreCase)
+            ? "resolved"
+            : "closed";
+    }
+
+    /// <summary>Read a "Parent: #N" line in the markdown body.</summary>
+    public static string? ParseParentFromBody(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return null;
+        foreach (var raw in body.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0) continue;
+            // Tolerate "Parent:", "parent:", "Parent issue:" etc.
+            const string tag = "parent:";
+            var idx = line.IndexOf(tag, StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+            var rest = line[(idx + tag.Length)..].Trim().TrimStart('#');
+            // Pull the leading numeric token.
+            var n = 0;
+            while (n < rest.Length && char.IsDigit(rest[n])) n++;
+            if (n == 0) continue;
+            if (long.TryParse(rest[..n], out var parentNum))
+            {
+                return "WI-GH-" + parentNum;
+            }
+        }
+        return null;
+    }
+
     public static Card IssueToCard(JsonElement issue, string defaultEpic)
     {
         var id = "#" + issue.GetProperty("number").GetInt64();

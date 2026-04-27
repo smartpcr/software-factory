@@ -11,6 +11,7 @@ using Forge.Api.Auth;
 using Forge.Api.Contracts;
 using Forge.Api.Domain;
 using Forge.Api.Persistence;
+using Forge.Api.Providers;
 using Forge.Api.Realtime;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -36,8 +37,71 @@ public static class WorkItemsEndpoints
         grp.MapDelete("/{id}", Delete).WithName("DeleteWorkItem");
         grp.MapPost("/{id}/move", Move).WithName("MoveWorkItem");
         grp.MapPost("/{id}/parent", Reparent).WithName("ReparentWorkItem");
+        grp.MapPost("/sync/{repoId}", Sync).WithName("SyncWorkItems");
 
         return app;
+    }
+
+    // ----- SYNC (Phase 12.4 / 12.10) -------------------------------------
+
+    public sealed record SyncWorkItemsRequest(
+        string? AreaPath = null,
+        IReadOnlyList<string>? Types = null,
+        string? AssignedTo = null,
+        DateTimeOffset? UpdatedFrom = null,
+        DateTimeOffset? UpdatedTo = null,
+        bool IgnoreThrottle = false);
+
+    private static async Task<IResult> Sync(
+        HttpContext ctx,
+        string repoId,
+        [FromBody] SyncWorkItemsRequest? req,
+        ForgeDbContext db,
+        WorkItemSyncService syncService,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct);
+        if (repo is null) return Results.Problem(title: $"Repo {repoId} not found", statusCode: 404);
+
+        var filters = new WorkItemSyncFilters(
+            AreaPath: req?.AreaPath,
+            Types: req?.Types,
+            AssignedTo: req?.AssignedTo,
+            UpdatedFrom: req?.UpdatedFrom,
+            UpdatedTo: req?.UpdatedTo);
+
+        // Ignoring the throttle is PO-only — operators with the role can
+        // force-sync after a webhook miss without waiting 60 s.
+        var ignoreThrottle = req?.IgnoreThrottle ?? false;
+        if (ignoreThrottle)
+        {
+            var gate = RequireRole.Check(ctx, db, RequireRole.ProductOwner);
+            if (gate is not null) return gate;
+        }
+
+        var result = await syncService.SyncAsync(repo, filters, ignoreThrottle, ct);
+        if (result.Error is not null && result.Pulled == 0 && result.Inserted == 0)
+        {
+            // Throttle / config errors → 429 / 400; provider HTTP errors → 502.
+            var status = result.Error.StartsWith("Rate limit", StringComparison.OrdinalIgnoreCase) ? 429
+                : result.Error.Contains("not configured", StringComparison.OrdinalIgnoreCase) ? 400
+                : result.Error.Contains("No provider registered", StringComparison.OrdinalIgnoreCase) ? 400
+                : 502;
+            return Results.Problem(title: result.Error, statusCode: status);
+        }
+
+        return Results.Ok(new
+        {
+            repoId,
+            pulled = result.Pulled,
+            inserted = result.Inserted,
+            updated = result.Updated,
+            skipped = result.Skipped,
+            error = result.Error,
+        });
     }
 
     // ----- LIST -----------------------------------------------------------

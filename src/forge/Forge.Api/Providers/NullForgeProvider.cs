@@ -71,4 +71,7 @@ public class NullForgeProvider : IForgeProvider
 
     public Task<IReadOnlyList<DiscoverableRepo>> ListRepositoriesAsync(CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<DiscoverableRepo>>(Array.Empty<DiscoverableRepo>());
+
+    public Task<IReadOnlyList<WorkItem>> ListWorkItemsForSyncAsync(WorkItemSyncFilters filters, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<WorkItem>>(Array.Empty<WorkItem>());
 }

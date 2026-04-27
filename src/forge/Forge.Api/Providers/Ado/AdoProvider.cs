@@ -495,6 +495,125 @@ public class AdoProvider : IForgeProvider
         return null;
     }
 
+    /// <summary>
+    /// Phase 12.4 — pull rich <see cref="WorkItem"/>s for the WIT sync
+    /// service. Differences from <see cref="ListWorkItemsAsync"/>:
+    ///   * Builds the WIQL dynamically from <see cref="WorkItemSyncFilters"/>
+    ///     (areaPath UNDER, type IN, AssignedTo equality, ChangedDate range).
+    ///   * Hydrates with <c>$expand=relations</c> so the parent-link is
+    ///     captured (System.LinkTypes.Hierarchy-Reverse).
+    ///   * Returns the canonical Forge work-item shape, not a Card.
+    /// </summary>
+    public async Task<IReadOnlyList<WorkItem>> ListWorkItemsForSyncAsync(
+        WorkItemSyncFilters filters, CancellationToken ct = default)
+    {
+        if (!this.IsConfigured) return Array.Empty<WorkItem>();
+        var client = this.NewClient();
+
+        try
+        {
+            var wiql = BuildSyncWiql(this.EffectiveProject, filters);
+            var wiqlBody = new { query = wiql };
+            var wiqlReq = new HttpRequestMessage(HttpMethod.Post,
+                $"{this.EffectiveProject}/_apis/wit/wiql?api-version=7.1")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(wiqlBody), Encoding.UTF8, "application/json"),
+            };
+            var wiqlResp = await client.SendAsync(wiqlReq, ct);
+            this.health.RecordResponse(wiqlResp);
+            wiqlResp.EnsureSuccessStatusCode();
+            using var wiqlDoc = JsonDocument.Parse(await wiqlResp.Content.ReadAsStringAsync(ct));
+            var ids = wiqlDoc.RootElement.GetProperty("workItems")
+                .EnumerateArray()
+                .Select(w => w.GetProperty("id").GetInt64().ToString())
+                .Take(200)
+                .ToArray();
+            if (ids.Length == 0) return Array.Empty<WorkItem>();
+
+            var idList = string.Join(",", ids);
+            var fields = "System.State,System.WorkItemType,System.Title,System.Description,System.Tags," +
+                         "System.AreaPath,System.IterationPath,System.AssignedTo,System.CreatedDate," +
+                         "System.ChangedDate,System.Rev," +
+                         "Microsoft.VSTS.Scheduling.StoryPoints,Microsoft.VSTS.Common.Priority";
+            var resp = await client.GetAsync(
+                $"_apis/wit/workitems?ids={idList}&fields={fields}&$expand=relations&api-version=7.1", ct);
+            this.health.RecordResponse(resp);
+            resp.EnsureSuccessStatusCode();
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            var items = new List<WorkItem>();
+            foreach (var wi in doc.RootElement.GetProperty("value").EnumerateArray())
+            {
+                items.Add(AdoMapper.ToWorkItem(wi, this.EffectiveProject, this.EffectiveProject));
+            }
+            this.health.MarkSync();
+            return items;
+        }
+        catch (Exception ex)
+        {
+            this.health.RecordError(ex);
+            this.logger.LogWarning(ex, "ADO ListWorkItemsForSyncAsync failed");
+            return Array.Empty<WorkItem>();
+        }
+    }
+
+    /// <summary>
+    /// Public for the Batch B unit test. Builds a parameter-free WIQL string
+    /// scoped to the project and the <paramref name="filters"/>; missing
+    /// filters drop their clause.
+    /// </summary>
+    public static string BuildSyncWiql(string project, WorkItemSyncFilters filters)
+    {
+        var parts = new List<string>();
+        // System.TeamProject filter is what scopes the query in WIQL terms.
+        parts.Add($"[System.TeamProject] = '{EscWiql(project)}'");
+        if (!string.IsNullOrWhiteSpace(filters.AreaPath))
+        {
+            parts.Add($"[System.AreaPath] UNDER '{EscWiql(filters.AreaPath!)}'");
+        }
+        if (filters.Types is { Count: > 0 })
+        {
+            var mapped = filters.Types
+                .Select(t => MapForgeTypeToAdo(t))
+                .Where(t => !string.IsNullOrEmpty(t))
+                .Distinct()
+                .ToArray();
+            if (mapped.Length > 0)
+            {
+                var inList = string.Join(", ", mapped.Select(m => $"'{EscWiql(m)}'"));
+                parts.Add($"[System.WorkItemType] IN ({inList})");
+            }
+        }
+        if (!string.IsNullOrWhiteSpace(filters.AssignedTo))
+        {
+            parts.Add($"[System.AssignedTo] = '{EscWiql(filters.AssignedTo!)}'");
+        }
+        if (filters.UpdatedFrom is DateTimeOffset from)
+        {
+            parts.Add($"[System.ChangedDate] >= '{from.UtcDateTime:yyyy-MM-ddTHH:mm:ssZ}'");
+        }
+        if (filters.UpdatedTo is DateTimeOffset to)
+        {
+            parts.Add($"[System.ChangedDate] <= '{to.UtcDateTime:yyyy-MM-ddTHH:mm:ssZ}'");
+        }
+        return $"Select [System.Id] From WorkItems Where {string.Join(" AND ", parts)} Order By [System.ChangedDate] Desc";
+    }
+
+    private static string EscWiql(string s) => s.Replace("'", "''");
+
+    private static string MapForgeTypeToAdo(string forge) => (forge ?? string.Empty).ToLowerInvariant() switch
+    {
+        "epic"    => "Epic",
+        "feature" => "Feature",
+        "task"    => "Task",
+        "bug"     => "Bug",
+        // Design-track types are mapped onto ADO custom types; if the org
+        // doesn't have those defined the WIQL just returns no rows for them.
+        "phase"   => "Phase",
+        "stage"   => "Stage",
+        "step"    => "Step",
+        _         => string.Empty,
+    };
+
     public async Task<ProviderHealth> TestConnectionAsync(CancellationToken ct = default)
     {
         if (!this.IsConfigured)

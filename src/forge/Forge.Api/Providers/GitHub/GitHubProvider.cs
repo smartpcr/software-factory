@@ -255,6 +255,74 @@ public class GitHubProvider : IForgeProvider
         }
     }
 
+    /// <summary>
+    /// Phase 12.4 — pull rich <see cref="WorkItem"/>s for the WIT sync
+    /// service. Differences from <see cref="ListWorkItemsAsync"/>:
+    ///   * Builds the issues query string from <see cref="WorkItemSyncFilters"/>
+    ///     (assignee, labels, since=updated-from).
+    ///   * Returns the canonical Forge work-item shape including parent
+    ///     extracted from the issue body or sub-issues field.
+    /// </summary>
+    public async Task<IReadOnlyList<WorkItem>> ListWorkItemsForSyncAsync(
+        WorkItemSyncFilters filters, CancellationToken ct = default)
+    {
+        if (!this.IsConfigured) return Array.Empty<WorkItem>();
+        try
+        {
+            var client = this.NewClient();
+            var qs = BuildSyncQueryString(filters);
+            var resp = await client.GetAsync($"repos/{this.options.Repo}/issues{qs}", ct);
+            this.health.RecordResponse(resp);
+            resp.EnsureSuccessStatusCode();
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            var items = new List<WorkItem>();
+            foreach (var issue in doc.RootElement.EnumerateArray())
+            {
+                if (issue.TryGetProperty("pull_request", out _)) continue; // skip PRs
+                var wi = GitHubMapper.IssueToWorkItem(issue, this.options.Repo, this.options.Repo);
+                // Apply type filter post-hoc: GitHub's labels query is `OR`,
+                // not `AND`, so we'd over-pull if we narrowed by label set.
+                if (filters.Types is { Count: > 0 } && !filters.Types.Contains(wi.Type)) continue;
+                items.Add(wi);
+            }
+            this.health.MarkSync();
+            return items;
+        }
+        catch (Exception ex)
+        {
+            this.health.RecordError(ex);
+            this.logger.LogWarning(ex, "GitHub ListWorkItemsForSyncAsync failed");
+            return Array.Empty<WorkItem>();
+        }
+    }
+
+    /// <summary>
+    /// Public for the Batch B unit test. Builds the GitHub /issues query
+    /// string from sync filters; missing filters drop their key.
+    /// </summary>
+    public static string BuildSyncQueryString(WorkItemSyncFilters filters)
+    {
+        var parts = new List<string> { "state=all", "per_page=100" };
+        if (!string.IsNullOrWhiteSpace(filters.AssignedTo))
+        {
+            parts.Add($"assignee={Uri.EscapeDataString(filters.AssignedTo!)}");
+        }
+        if (filters.Types is { Count: > 0 })
+        {
+            // We also OR-match on labels so the API trims the working set;
+            // the post-hoc filter in the caller still honours type strictly.
+            var labels = filters.Types
+                .Select(t => Uri.EscapeDataString(t))
+                .ToArray();
+            if (labels.Length > 0) parts.Add($"labels={string.Join(",", labels)}");
+        }
+        if (filters.UpdatedFrom is DateTimeOffset from)
+        {
+            parts.Add($"since={Uri.EscapeDataString(from.UtcDateTime.ToString("o"))}");
+        }
+        return "?" + string.Join("&", parts);
+    }
+
     public async Task<ProviderHealth> TestConnectionAsync(CancellationToken ct = default)
     {
         // Three-state probe:

@@ -80,7 +80,30 @@ public interface IForgeProvider
     /// underlying API call fails.
     /// </summary>
     Task<IReadOnlyList<DiscoverableRepo>> ListRepositoriesAsync(CancellationToken ct = default);
+
+    // -- Phase 12 Work Item Tracking sync surface -------------------------
+
+    /// <summary>
+    /// Phase 12.4 — pull a richer <see cref="WorkItem"/> projection used by
+    /// the WIT sync service. Differs from <see cref="ListWorkItemsAsync"/>
+    /// in three ways: it accepts arbitrary filters (areaPath / types /
+    /// assignedTo / date range), it returns full work-item shape (parent,
+    /// iteration, area, assignee, points, priority, tags), and it preserves
+    /// the provider's revision marker for the conflict policy.
+    /// </summary>
+    Task<IReadOnlyList<WorkItem>> ListWorkItemsForSyncAsync(WorkItemSyncFilters filters, CancellationToken ct = default);
 }
+
+/// <summary>
+/// Phase 12.4 / 12.10 — narrowing filters for a sync run. Empty values
+/// mean "any". UTC dates apply to the provider's "last updated" column.
+/// </summary>
+public sealed record WorkItemSyncFilters(
+    string? AreaPath = null,
+    IReadOnlyList<string>? Types = null,
+    string? AssignedTo = null,
+    DateTimeOffset? UpdatedFrom = null,
+    DateTimeOffset? UpdatedTo = null);
 
 // -- Phase 6 request DTOs --------------------------------------------------
 

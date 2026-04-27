@@ -85,6 +85,10 @@ builder.Services.AddSingleton<WebhookActivity>();
 builder.Services.AddScoped<ProviderCache>();
 builder.Services.AddSingleton<ProviderSyncService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProviderSyncService>());
+// Phase 12.4 — work item sync. Singleton so the in-memory per-repo throttle
+// dictionary survives across requests; uses IServiceScopeFactory internally
+// to resolve a fresh ForgeDbContext per sync call.
+builder.Services.AddSingleton<WorkItemSyncService>();
 
 // Phase 6 — write-side: human-gate, auto-merge watcher, audit + idempotency, user context.
 builder.Services.Configure<HumanGateOptions>(builder.Configuration.GetSection(HumanGateOptions.SectionName));
