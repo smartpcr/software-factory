@@ -374,6 +374,20 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 }
             }
 
+            // If the resolved path doesn't exist on disk, fall back to a temp
+            // directory so the agent can at least start (e.g. repo not cloned).
+            if (!string.IsNullOrEmpty(worktreePath) && !Directory.Exists(worktreePath))
+            {
+                this.logger.LogWarning(
+                    "Worktree path {Path} does not exist for wi={Wi}; falling back to temp",
+                    worktreePath, workItemId);
+                worktreePath = Path.GetTempPath();
+            }
+            if (string.IsNullOrEmpty(worktreePath))
+            {
+                worktreePath = Path.GetTempPath();
+            }
+
             // Subscribe the worktree feed so the Live Execution view receives
             // file-change events while the agent is running.
             if (!string.IsNullOrEmpty(worktreePath))

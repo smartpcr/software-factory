@@ -46,6 +46,6 @@ public sealed class AgentRunnerOptions
     /// <summary>Extra args passed to the copilot SDK / CLI. Defaults to <c>["--yolo"]</c>.</summary>
     public string[] CopilotCliExtraArgs { get; set; } = new[] { "--yolo" };
 
-    /// <summary>Max agent turns (tool-call rounds) per invocation. Default 30.</summary>
-    public int MaxTurns { get; set; } = 30;
+    /// <summary>Max agent turns (tool-call rounds) per invocation. Default 500.</summary>
+    public int MaxTurns { get; set; } = 500;
 }
