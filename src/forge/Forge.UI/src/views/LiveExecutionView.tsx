@@ -6,7 +6,7 @@
 // for live updates via useTaskLive (Phase 16.13).
 import { useMemo, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
-import { useTaskLive, type TaskTranscriptEvent, type WorktreeSnapshot } from '@/realtime/useTaskLiveStore';
+import { useTaskLive, useTaskLiveStore, type TaskTranscriptEvent, type WorktreeSnapshot } from '@/realtime/useTaskLiveStore';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
 import { avatarFor, agentTooltip } from '@/agentAvatar';
@@ -82,6 +82,28 @@ export function LiveExecutionView(): JSX.Element {
     }
   }
 
+  async function forceRestart() {
+    if (!workItemId || !snapshot?.generatorCrewId) return;
+    setBusy(true);
+    try {
+      // 1. Cancel any active queue entry.
+      const queue: Array<{ id: number; workItemId: string; state: string }> = await forgeApi.listQueue();
+      const queueEntry = queue.find((q) => q.workItemId === workItemId && q.state !== 'cancelled' && q.state !== 'completed');
+      if (queueEntry) {
+        await forgeApi.cancelQueue(queueEntry.id, 'force-restart');
+      }
+      // 2. Re-enqueue to the same crew.
+      await forgeApi.requeueWorkItem(snapshot.generatorCrewId, workItemId);
+      // 3. Re-hydrate snapshot from server.
+      await useTaskLiveStore.getState().ensureLoaded(workItemId);
+      useToastStore.getState().show('Conversation restarted', 'success');
+    } catch (e) {
+      useToastStore.getState().show(e instanceof Error ? e.message : 'Restart failed', 'danger');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="live-exec">
       <header className="live-exec__header">
@@ -115,6 +137,15 @@ export function LiveExecutionView(): JSX.Element {
           />
         </div>
         <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
+          <button
+            className="btn btn-primary"
+            style={{ fontSize: 11, padding: '4px 10px' }}
+            disabled={busy}
+            onClick={() => void forceRestart()}
+            title="Cancel active run and restart the conversation from scratch"
+          >
+            ⟳ Restart
+          </button>
           <button
             className="btn btn-secondary"
             style={{ fontSize: 11, padding: '4px 10px' }}
@@ -262,11 +293,26 @@ function renderPayload(evt: TaskTranscriptEvent): string {
   if (evt.kind === 'task.delegated') {
     return `→ crew ${(p.generatorCrewId as string) ?? '?'}${p.evaluatorCrewId ? ` ↔ ${p.evaluatorCrewId}` : ''} (lead: ${(p.leadId as string) ?? '?'})`;
   }
-  if (evt.kind === 'task.tool-call' && typeof p.tool === 'string') {
-    return `tool: ${p.tool}`;
+  if (evt.kind === 'task.tool-call') {
+    const name = (p.toolName as string) ?? (p.tool as string) ?? '?';
+    const payload = typeof p.toolPayload === 'string' ? p.toolPayload : '';
+    // Show tool name + truncated args for context.
+    return payload ? `${name}: ${payload.substring(0, 120)}${payload.length > 120 ? '…' : ''}` : name;
+  }
+  if (evt.kind === 'task.tool-result') {
+    const name = (p.toolName as string) ?? '';
+    const payload = typeof p.toolPayload === 'string' ? p.toolPayload : '';
+    const err = typeof p.error === 'string' ? p.error : '';
+    if (err) return `✗ ${name || 'tool'}: ${err.substring(0, 120)}`;
+    return payload ? `✓ ${name || 'result'}: ${payload.substring(0, 120)}${payload.length > 120 ? '…' : ''}` : `✓ ${name || 'done'}`;
   }
   if (evt.kind === 'task.budget-warning') {
     return `over budget: ${(p.actual as number) ?? '?'} / ${(p.expected as number) ?? '?'}`;
+  }
+  if (evt.kind === 'task.completed') return '✓ completed';
+  if (evt.kind === 'task.failed') {
+    const err = typeof p.error === 'string' ? p.error : '';
+    return err ? `✗ ${err.substring(0, 150)}` : '✗ failed';
   }
   // Fallback — compact JSON.
   try { return JSON.stringify(p); } catch { return ''; }

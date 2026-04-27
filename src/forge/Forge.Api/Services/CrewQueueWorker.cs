@@ -360,6 +360,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 {
                     AgentEventKind.Token => "task.token",
                     AgentEventKind.ToolCall => "task.tool-call",
+                    AgentEventKind.ToolResult => "task.tool-result",
                     AgentEventKind.Finished => "task.finished",
                     AgentEventKind.Failed => "task.failed",
                     _ => $"task.{evt.Kind.ToString().ToLowerInvariant()}",
@@ -371,6 +372,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     crewId,
                     text = evt.Text,
                     toolName = evt.ToolName,
+                    toolPayload = evt.ToolPayload,
+                    error = evt.Error,
                     inputTokens = evt.InputTokens,
                     outputTokens = evt.OutputTokens,
                 }, crewId: crewId, ct: ct);
