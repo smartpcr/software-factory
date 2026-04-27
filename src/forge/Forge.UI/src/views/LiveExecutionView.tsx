@@ -9,6 +9,7 @@ import { Link, useParams, useNavigate } from 'react-router-dom';
 import { useTaskLive, type TaskTranscriptEvent, type WorktreeSnapshot } from '@/realtime/useTaskLiveStore';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
+import { avatarFor, agentTooltip } from '@/agentAvatar';
 
 type FilterKey = 'all' | 'generator' | 'evaluator' | 'tools' | 'commits';
 
@@ -184,11 +185,23 @@ export function LiveExecutionView(): JSX.Element {
 
 function PairSide(props: { role: 'generator' | 'evaluator'; crewId?: string | null; agentId?: string | null }): JSX.Element {
   const { role, crewId, agentId } = props;
+  const portrait = agentId ? avatarFor(agentId, agentId) : null;
+  const tip = agentId ? agentTooltip(agentId, agentId, role) : '';
   return (
     <div className="live-exec__pair-side" data-role={role}>
-      <span style={{ textTransform: 'capitalize', color: 'var(--text-tertiary)' }}>{role}</span>
+      {portrait ? (
+        <img
+          src={portrait}
+          alt={agentId ?? role}
+          className={`live-exec__pair-avatar ${role === 'generator' ? 'eng' : 'rev'}`}
+          title={tip}
+          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+        />
+      ) : (
+        <span className="live-exec__pair-mono">{agentId ?? '—'}</span>
+      )}
+      <span style={{ textTransform: 'capitalize', color: 'var(--text-tertiary)', fontSize: 10 }}>{role}</span>
       <strong>{crewId ?? '—'}</strong>
-      {agentId ? <span style={{ color: 'var(--text-tertiary)', fontFamily: 'monospace' }}>{agentId}</span> : null}
     </div>
   );
 }
