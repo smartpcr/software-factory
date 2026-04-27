@@ -68,9 +68,13 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     public Task StartAsync(CancellationToken cancellationToken)
     {
         this.cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        // Boot scan once before the timer; the rest runs on the regular tick.
         this.loop = Task.Run(async () =>
         {
+            // Boot recovery: requeue any items left in picked-up from the
+            // previous server process (agent died with the old host).
+            try { await this.SweepBootRecoveryAsync(this.cts.Token); }
+            catch (Exception ex) { this.logger.LogDebug(ex, "CrewQueueWorker boot recovery errored"); }
+            // Boot scan once before the timer.
             try { await this.RunOnceAsync(this.cts.Token); }
             catch (Exception ex) { this.logger.LogDebug(ex, "CrewQueueWorker boot scan errored"); }
             await this.LoopAsync(this.cts.Token);
@@ -112,6 +116,48 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             var delay = PollInterval + TimeSpan.FromMilliseconds(jitter.Next(-1000, 1000));
             try { await Task.Delay(delay, ct); } catch (OperationCanceledException) { break; }
         }
+    }
+
+    // ── Boot recovery — requeue picked-up items from previous run ─────────
+    private async Task<int> SweepBootRecoveryAsync(CancellationToken ct)
+    {
+        using var scope = this.scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+
+        var stale = await db.TaskQueue
+            .Where(r => r.State == TaskQueueStates.PickedUp)
+            .ToListAsync(ct);
+
+        if (stale.Count == 0) return 0;
+
+        this.logger.LogInformation(
+            "Boot recovery: resetting {Count} picked-up items to queued",
+            stale.Count);
+
+        foreach (var row in stale)
+        {
+            row.State = TaskQueueStates.Queued;
+            row.PickedUpByAgent = null;
+            row.PickedUpAt = null;
+            row.LastUpdatedAt = DateTimeOffset.UtcNow;
+
+            db.TaskQueueHistory.Add(new TaskQueueHistoryRow
+            {
+                QueueId = row.Id,
+                Kind = "boot-recovery",
+                FromValue = TaskQueueStates.PickedUp,
+                ToValue = TaskQueueStates.Queued,
+                At = DateTimeOffset.UtcNow,
+            });
+
+            await this.taskChannel.EmitAsync(row.WorkItemId, "task.boot-recovery", new
+            {
+                queueId = row.Id,
+                crewId = row.RoutedToCrewId,
+            }, crewId: row.RoutedToCrewId, ct: ct);
+        }
+        await db.SaveChangesAsync(ct);
+        return stale.Count;
     }
 
     // ── Sweep 1 — auto-ack timeouts ───────────────────────────────────────
