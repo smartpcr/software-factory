@@ -39,5 +39,11 @@ public enum NodeExecutionStatus
     /// <summary>
     /// Node execution was skipped (e.g., conditional branch not taken).
     /// </summary>
-    Skipped
+    Skipped,
+
+    /// <summary>
+    /// Node is waiting for parallel branch joins to complete.
+    /// Used by ParallelNode to indicate branches have been started but the join condition is not yet met.
+    /// </summary>
+    WaitingForJoin
 }

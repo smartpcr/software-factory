@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="ReflectionJsonConverter.cs" company="Microsoft Corp.">
 //     Copyright (c) Microsoft Corp. All rights reserved.
 // </copyright>
@@ -41,6 +41,8 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
         {
             if (reader.TokenType == JsonTokenType.EndObject)
             {
+                // Post-read: populate typed properties from Configuration dict (UI-format JSON compat)
+                MergeConfigurationIntoProperties(instance, options);
                 return instance;
             }
 
@@ -75,6 +77,68 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
         }
 
         throw new JsonException("Unexpected end of JSON");
+    }
+
+    /// <summary>
+    /// For NodeDefinition types: if Configuration dict is populated but typed properties
+    /// are at defaults, merge config values into the typed properties.
+    /// This handles UI-format JSON where node-specific fields are nested under "configuration".
+    /// </summary>
+    private static void MergeConfigurationIntoProperties(T instance, JsonSerializerOptions options)
+    {
+        if (instance is not NodeDefinition nodeDef || nodeDef.Configuration == null || nodeDef.Configuration.Count == 0)
+        {
+            return;
+        }
+
+        var propertyMapByJsonName = GetpropertyMapByJsonName(options);
+        var defaults = new T();
+
+        foreach (var (key, value) in nodeDef.Configuration)
+        {
+            if (value == null) continue;
+
+            // Find the typed property by config key name
+            if (!propertyMapByJsonName.TryGetValue(key, out var property))
+            {
+                propertyMap.TryGetValue(key, out property);
+            }
+
+            if (property == null) continue;
+            // Skip base NodeDefinition properties (nodeId, runtimeType, etc.)
+            if (property.DeclaringType == typeof(NodeDefinition)) continue;
+
+            // Only set if the property is still at its default value
+            var currentValue = property.GetValue(instance);
+            var defaultValue = property.GetValue(defaults);
+            if (currentValue != null && !currentValue.Equals(defaultValue)) continue;
+
+            try
+            {
+                // Convert the config value to the property type
+                if (value is System.Text.Json.JsonElement jsonElement)
+                {
+                    var converted = JsonSerializer.Deserialize(jsonElement.GetRawText(), property.PropertyType, options);
+                    property.SetValue(instance, converted);
+                }
+                else if (property.PropertyType == typeof(string))
+                {
+                    property.SetValue(instance, value.ToString());
+                }
+                else if (property.PropertyType.IsAssignableFrom(value.GetType()))
+                {
+                    property.SetValue(instance, value);
+                }
+                else
+                {
+                    property.SetValue(instance, Convert.ChangeType(value, property.PropertyType));
+                }
+            }
+            catch
+            {
+                // Ignore conversion failures
+            }
+        }
     }
 
     public override void Write(Utf8JsonWriter writer, T? value, JsonSerializerOptions options)
@@ -280,7 +344,8 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
     {
         return runtimeType switch
         {
-            "Noop" => typeof(NoopNodeDefinition),
+            "Setter" => typeof(SetterNodeDefinition),
+            "Assert" => typeof(AssertNodeDefinition),
             "CSharp" => typeof(CSharpNodeDefinition),
             "CSharpScript" => typeof(CSharpScriptNodeDefinition),
             "CSharpTask" => typeof(CSharpTaskNodeDefinition),
@@ -292,7 +357,17 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
             "Switch" => typeof(SwitchNodeDefinition),
             "Subflow" => typeof(SubflowNodeDefinition),
             "Timer" => typeof(TimerNodeDefinition),
-            "Container" => typeof(ContainerNodeDefinition),
+            "Group" => typeof(GroupNodeDefinition),
+            "Start" => typeof(StartNodeDefinition),
+            "Trigger" => typeof(TriggerNodeDefinition),
+            "Action" => typeof(ActionNodeDefinition),
+            "HttpRequest" => typeof(HttpRequestNodeDefinition),
+            "Transform" => typeof(TransformNodeDefinition),
+            "Delay" => typeof(DelayNodeDefinition),
+            "Log" => typeof(LogNodeDefinition),
+            "AI" => typeof(AINodeDefinition),
+            "End" => typeof(EndNodeDefinition),
+            "Parallel" => typeof(ParallelNodeDefinition),
             _ => null
         };
     }
@@ -307,7 +382,7 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
             if (reader.TokenType == JsonTokenType.String)
             {
                 var enumString = reader.GetString()!;
-                return Enum.Parse(underlyingType, enumString, ignoreCase: true);
+                return Enums.EnumMemberHelper.ParseEnumMember(underlyingType, enumString);
             }
             if (reader.TokenType == JsonTokenType.Number)
             {
@@ -438,7 +513,7 @@ public class ReflectionJsonConverter<T> : JsonConverter<T> where T : class, new(
 
         if (underlyingType.IsEnum)
         {
-            writer.WriteStringValue(value.ToString());
+            writer.WriteStringValue(Enums.EnumMemberHelper.ToEnumMemberValue(underlyingType, value));
             return;
         }
 

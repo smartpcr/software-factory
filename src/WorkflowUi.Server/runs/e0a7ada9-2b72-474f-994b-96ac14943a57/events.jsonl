@@ -1,0 +1,2 @@
+{"RunId":"e0a7ada9-2b72-474f-994b-96ac14943a57","Seq":1,"Kind":"WorkflowStarted","Synthetic":false,"TimestampUtc":"2026-04-23T06:37:27.6708237Z","NodeId":null,"NodeName":null,"Payload":{"workflowId":"wf_4pntne4","workflowName":"group","totalNodes":4}}
+{"RunId":"e0a7ada9-2b72-474f-994b-96ac14943a57","Seq":2,"Kind":"WorkflowFailed","Synthetic":false,"TimestampUtc":"2026-04-23T06:37:27.6734071Z","NodeId":null,"NodeName":null,"Payload":{"workflowId":"wf_4pntne4","errorMessage":"Workflow validation failed:\r\nGroup node must have at least one child node."}}

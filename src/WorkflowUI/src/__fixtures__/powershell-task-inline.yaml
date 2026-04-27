@@ -1,8 +1,0 @@
-workflowId: powershell-task-inline
-workflowName: PowerShell Task Inline
-nodes:
-  - nodeId: pst1
-    nodeName: Inline PS Task
-    runtimeType: PowerShellTask
-    scriptContent: 'Write-Host "hello"'
-connections: []

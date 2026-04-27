@@ -19,7 +19,7 @@ using WorkflowUi.Server.Auth;
 
 /// <summary>
 /// File-based implementation of <see cref="IWorkflowStore"/>.
-/// Workflows are stored as {id}.yaml + {id}.ui.json pairs under WorkflowsRoot.
+/// Workflows are stored as {id}.json + {id}.ui.json pairs under WorkflowsRoot.
 /// </summary>
 public class FileWorkflowStore : IWorkflowStore
 {
@@ -47,14 +47,29 @@ public class FileWorkflowStore : IWorkflowStore
             return Task.FromResult<IReadOnlyList<WorkflowSummary>>(Array.Empty<WorkflowSummary>());
         }
 
-        var yamlFiles = Directory.GetFiles(root, "*.yaml", SearchOption.AllDirectories);
-        var summaries = yamlFiles.Select(f =>
+        var defFiles = Directory.GetFiles(root, "*.json", SearchOption.AllDirectories)
+            .Where(f => !f.EndsWith(".ui.json", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        var summaries = defFiles.Select(f =>
         {
             var info = new FileInfo(f);
             var id = Path.GetRelativePath(root, f)
                 .Replace(Path.DirectorySeparatorChar, '/')
-                .Replace(".yaml", string.Empty, StringComparison.OrdinalIgnoreCase);
-            return new WorkflowSummary(id, info.LastWriteTimeUtc, info.Length);
+                .Replace(".json", string.Empty, StringComparison.OrdinalIgnoreCase);
+            string? workflowId = null;
+            string? workflowName = null;
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(f));
+                if (doc.RootElement.TryGetProperty("workflowId", out var wid)) workflowId = wid.GetString();
+                if (doc.RootElement.TryGetProperty("workflowName", out var wn)) workflowName = wn.GetString();
+            }
+            catch
+            {
+                // Skip unparseable files
+            }
+
+            return new WorkflowSummary(id, info.LastWriteTimeUtc, info.Length, workflowId, workflowName ?? id);
         }).ToList();
 
         return Task.FromResult<IReadOnlyList<WorkflowSummary>>(summaries);
@@ -64,31 +79,31 @@ public class FileWorkflowStore : IWorkflowStore
     {
         this.RequireRole(user, AuthPolicies.ViewerRole);
 
-        var yamlPath = this.ResolvePath(id, ".yaml");
-        if (yamlPath == null)
+        var defPath = this.ResolvePath(id, ".json");
+        if (defPath == null)
         {
             this.logger.LogWarning("Path traversal rejected for id {Id}", id);
             return Task.FromResult<WorkflowRecord?>(null);
         }
 
-        if (!File.Exists(yamlPath))
+        if (!File.Exists(defPath))
         {
             return Task.FromResult<WorkflowRecord?>(null);
         }
 
-        var yaml = File.ReadAllText(yamlPath);
-        var sidecarPath = Path.ChangeExtension(yamlPath, ".ui.json");
+        var definition = File.ReadAllText(defPath);
+        var sidecarPath = Path.ChangeExtension(defPath, ".ui.json");
         var sidecar = File.Exists(sidecarPath) ? File.ReadAllText(sidecarPath) : "{}";
-        var etag = ETagComputer.Compute(yaml, sidecar);
-        var lastModified = new FileInfo(yamlPath).LastWriteTimeUtc;
+        var etag = ETagComputer.Compute(definition, sidecar);
+        var lastModified = new FileInfo(defPath).LastWriteTimeUtc;
 
         return Task.FromResult<WorkflowRecord?>(
-            new WorkflowRecord(id, yaml, sidecar, etag, lastModified));
+            new WorkflowRecord(id, definition, sidecar, etag, lastModified));
     }
 
     public Task<SaveResult> SaveAsync(
         string id,
-        string yaml,
+        string definition,
         string sidecarJson,
         string? etag,
         ClaimsPrincipal user,
@@ -96,21 +111,21 @@ public class FileWorkflowStore : IWorkflowStore
     {
         this.RequireRole(user, AuthPolicies.EditorRole);
 
-        var yamlPath = this.ResolvePath(id, ".yaml");
-        if (yamlPath == null)
+        var defPath = this.ResolvePath(id, ".json");
+        if (defPath == null)
         {
             this.logger.LogWarning("Path traversal rejected on save for id {Id}", id);
             return Task.FromResult(SaveResult.PreconditionFailed);
         }
 
-        var sidecarPath = Path.ChangeExtension(yamlPath, ".ui.json");
-        var exists = File.Exists(yamlPath);
+        var sidecarPath = Path.ChangeExtension(defPath, ".ui.json");
+        var exists = File.Exists(defPath);
 
         if (exists && etag != null)
         {
-            var currentYaml = File.ReadAllText(yamlPath);
+            var currentDef = File.ReadAllText(defPath);
             var currentSidecar = File.Exists(sidecarPath) ? File.ReadAllText(sidecarPath) : "{}";
-            var currentEtag = ETagComputer.Compute(currentYaml, currentSidecar);
+            var currentEtag = ETagComputer.Compute(currentDef, currentSidecar);
 
             if (!string.Equals(etag, currentEtag, StringComparison.Ordinal))
             {
@@ -118,13 +133,13 @@ public class FileWorkflowStore : IWorkflowStore
             }
         }
 
-        var dir = Path.GetDirectoryName(yamlPath);
+        var dir = Path.GetDirectoryName(defPath);
         if (dir != null && !Directory.Exists(dir))
         {
             Directory.CreateDirectory(dir);
         }
 
-        File.WriteAllText(yamlPath, yaml);
+        File.WriteAllText(defPath, definition);
         File.WriteAllText(sidecarPath, sidecarJson ?? "{}");
 
         var userId = user.FindFirstValue(ClaimTypes.NameIdentifier) ?? "anonymous";
@@ -138,29 +153,29 @@ public class FileWorkflowStore : IWorkflowStore
     {
         this.RequireRole(user, AuthPolicies.EditorRole);
 
-        var yamlPath = this.ResolvePath(id, ".yaml");
-        if (yamlPath == null)
+        var defPath = this.ResolvePath(id, ".json");
+        if (defPath == null)
         {
             this.logger.LogWarning("Path traversal rejected on delete for id {Id}", id);
             return Task.FromResult(false);
         }
 
-        if (!File.Exists(yamlPath))
+        if (!File.Exists(defPath))
         {
             return Task.FromResult(false);
         }
 
-        var sidecarPath = Path.ChangeExtension(yamlPath, ".ui.json");
-        var currentYaml = File.ReadAllText(yamlPath);
+        var sidecarPath = Path.ChangeExtension(defPath, ".ui.json");
+        var currentDef = File.ReadAllText(defPath);
         var currentSidecar = File.Exists(sidecarPath) ? File.ReadAllText(sidecarPath) : "{}";
-        var currentEtag = ETagComputer.Compute(currentYaml, currentSidecar);
+        var currentEtag = ETagComputer.Compute(currentDef, currentSidecar);
 
         if (!string.Equals(etag, currentEtag, StringComparison.Ordinal))
         {
             return Task.FromResult(false);
         }
 
-        File.Delete(yamlPath);
+        File.Delete(defPath);
         if (File.Exists(sidecarPath))
         {
             File.Delete(sidecarPath);

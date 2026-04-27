@@ -12,9 +12,14 @@ namespace ExecutionEngine.Enums;
 public enum RuntimeType
 {
     /// <summary>
-    /// Noop node that performs no operation.
+    /// Setter node that maps input fields to global variables.
     /// </summary>
-    Noop = 0,
+    Setter = 0,
+
+    /// <summary>
+    /// Assert node that evaluates a condition and fails if not met.
+    /// </summary>
+    Assert,
 
     /// <summary>
     /// Compiled C# assembly node.
@@ -72,8 +77,58 @@ public enum RuntimeType
     Timer,
 
     /// <summary>
-    /// Container node for grouping related nodes into logical units with encapsulated execution flow.
+    /// Group node for grouping related nodes into logical units with encapsulated execution flow.
     /// Similar to Subflow but with inline definition instead of external file.
     /// </summary>
-    Container
+    Group,
+
+    /// <summary>
+    /// Start node — workflow entry point with manual, schedule, or event trigger.
+    /// </summary>
+    Start,
+
+    /// <summary>
+    /// HTTP webhook trigger node.
+    /// </summary>
+    Trigger,
+
+    /// <summary>
+    /// Generic action/task node.
+    /// </summary>
+    Action,
+
+    /// <summary>
+    /// HTTP API call node.
+    /// </summary>
+    HttpRequest,
+
+    /// <summary>
+    /// Data transformation node.
+    /// </summary>
+    Transform,
+
+    /// <summary>
+    /// Wait/pause node.
+    /// </summary>
+    Delay,
+
+    /// <summary>
+    /// Log message output node.
+    /// </summary>
+    Log,
+
+    /// <summary>
+    /// AI skill/subagent node.
+    /// </summary>
+    AI,
+
+    /// <summary>
+    /// Workflow terminator node.
+    /// </summary>
+    End,
+
+    /// <summary>
+    /// Fan-out parallel branches node.
+    /// </summary>
+    Parallel
 }

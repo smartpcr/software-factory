@@ -1,7 +1,0 @@
-workflowId: subflow-neither-rejected
-workflowName: Subflow Neither Rejected (Negative)
-nodes:
-  - nodeId: sf1
-    nodeName: Neither Set
-    runtimeType: Subflow
-connections: []

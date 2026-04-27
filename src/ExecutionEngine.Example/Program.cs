@@ -159,10 +159,10 @@ public class Program
         // Determine execution mode for the progress node
         var executionMode = ExecutionMode.Sequential;
         var childNodes = new List<NodeDefinition>();
-        if (nodeDef is ContainerNodeDefinition containerNodeDefinition)
+        if (nodeDef is GroupNodeDefinition groupNodeDefinition)
         {
-            executionMode = containerNodeDefinition.ExecutionMode;
-            childNodes = containerNodeDefinition.ChildNodes ?? [];
+            executionMode = groupNodeDefinition.ExecutionMode;
+            childNodes = groupNodeDefinition.ChildNodes ?? [];
         }
 
         // Create progress node for this node
@@ -173,7 +173,7 @@ public class Program
 
         nodeProgressMap[nodeDef.NodeId] = progressNode;
 
-        // Check if this is a ContainerNode with ChildNodes
+        // Check if this is a GroupNode with ChildNodes
         if (childNodes.Count != 0)
         {
             foreach (var childNode in childNodes)
@@ -241,7 +241,7 @@ public class Program
                         }
                     };
 
-                    engine.NodeFailed += (nodeId, instanceId, error) =>
+                    engine.NodeFailed += (nodeId, instanceId, error, duration) =>
                     {
                         if (nodeProgressMap.TryGetValue(nodeId, out var progressNode))
                         {

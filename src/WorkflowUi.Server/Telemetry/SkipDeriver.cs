@@ -17,7 +17,7 @@ using ExecutionEngine.Workflow;
 /// <summary>
 /// Derives synthetic <see cref="RunEventKind.NodeSkipped"/> events for
 /// IfElse and Switch nodes when a branch is not taken.
-/// Only IfElse and Switch sources trigger skip derivation (Noop, ForEach siblings do NOT).
+/// Only IfElse and Switch sources trigger skip derivation (Setter, ForEach siblings do NOT).
 /// </summary>
 public class SkipDeriver
 {

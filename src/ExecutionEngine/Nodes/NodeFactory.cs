@@ -79,6 +79,12 @@ public class NodeFactory
             ExecutableNodeBase? node;
             switch (definition.RuntimeType)
             {
+                case Enums.RuntimeType.Setter:
+                    node = CreateSetterNode(definition);
+                    break;
+                case Enums.RuntimeType.Assert:
+                    node = CreateAssertNode(definition);
+                    break;
                 case Enums.RuntimeType.CSharp:
                     node = this.CreateCSharpNode(definition);
                     break;
@@ -112,8 +118,38 @@ public class NodeFactory
                 case Enums.RuntimeType.Timer:
                     node = CreateTimerNode(definition);
                     break;
-                case Enums.RuntimeType.Container:
-                    node = CreateContainerNode(definition);
+                case Enums.RuntimeType.Group:
+                    node = CreateGroupNode(definition);
+                    break;
+                case Enums.RuntimeType.Start:
+                    node = CreateStartNode(definition);
+                    break;
+                case Enums.RuntimeType.Trigger:
+                    node = CreateTriggerNode(definition);
+                    break;
+                case Enums.RuntimeType.Action:
+                    node = CreateActionNode(definition);
+                    break;
+                case Enums.RuntimeType.HttpRequest:
+                    node = CreateHttpRequestNode(definition);
+                    break;
+                case Enums.RuntimeType.Transform:
+                    node = CreateTransformNode(definition);
+                    break;
+                case Enums.RuntimeType.Delay:
+                    node = CreateDelayNode(definition);
+                    break;
+                case Enums.RuntimeType.Log:
+                    node = CreateLogNode(definition);
+                    break;
+                case Enums.RuntimeType.AI:
+                    node = CreateAINode(definition);
+                    break;
+                case Enums.RuntimeType.End:
+                    node = CreateEndNode(definition);
+                    break;
+                case Enums.RuntimeType.Parallel:
+                    node = CreateParallelNode(definition);
                     break;
                 default:
                     this.logger.LogError("Runtime type '{RuntimeType}' is not supported for NodeId {NodeId}", definition.RuntimeType, definition.NodeId);
@@ -321,13 +357,73 @@ public class NodeFactory
     }
 
     /// <summary>
-    /// Creates a Container node for grouping related nodes.
+    /// Creates a Group node for grouping related nodes.
     /// </summary>
     /// <param name="definition">The node definition.</param>
-    /// <returns>The created Container node.</returns>
-    private static ExecutableNodeBase CreateContainerNode(NodeDefinition definition)
+    /// <returns>The created Group node.</returns>
+    private static ExecutableNodeBase CreateGroupNode(NodeDefinition definition)
     {
-        return new ContainerNode();
+        return new GroupNode();
+    }
+
+    private static ExecutableNodeBase CreateStartNode(NodeDefinition definition)
+    {
+        return new StartNode();
+    }
+
+    private static ExecutableNodeBase CreateTriggerNode(NodeDefinition definition)
+    {
+        return new TriggerNode();
+    }
+
+    private static ExecutableNodeBase CreateActionNode(NodeDefinition definition)
+    {
+        return new ActionNode();
+    }
+
+    private static ExecutableNodeBase CreateHttpRequestNode(NodeDefinition definition)
+    {
+        return new HttpRequestNode();
+    }
+
+    private static ExecutableNodeBase CreateTransformNode(NodeDefinition definition)
+    {
+        return new TransformNode();
+    }
+
+    private static ExecutableNodeBase CreateDelayNode(NodeDefinition definition)
+    {
+        return new DelayNode();
+    }
+
+    private static ExecutableNodeBase CreateLogNode(NodeDefinition definition)
+    {
+        return new LogNode();
+    }
+
+    private static ExecutableNodeBase CreateAINode(NodeDefinition definition)
+    {
+        return new AINode();
+    }
+
+    private static ExecutableNodeBase CreateEndNode(NodeDefinition definition)
+    {
+        return new EndNode();
+    }
+
+    private static ExecutableNodeBase CreateParallelNode(NodeDefinition definition)
+    {
+        return new ParallelNode();
+    }
+
+    private static ExecutableNodeBase CreateSetterNode(NodeDefinition definition)
+    {
+        return new SetterNode();
+    }
+
+    private static ExecutableNodeBase CreateAssertNode(NodeDefinition definition)
+    {
+        return new AssertNode();
     }
 
     /// <summary>

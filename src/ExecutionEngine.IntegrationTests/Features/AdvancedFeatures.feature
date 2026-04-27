@@ -4,34 +4,34 @@ Feature: Advanced Features
   So that I can build complex workflow patterns
 
   @integration @smoke
-  Scenario: Container node execution
-    Given I have a Container node "MainContainer" with child nodes "Child1", "Child2", "Child3"
+  Scenario: Group node execution
+    Given I have a Group node "MainGroup" with child nodes "Child1", "Child2", "Child3"
     And "Child1" connects to "Child2" on Complete
     And "Child2" connects to "Child3" on Complete
     When I start the workflow
-    Then the container should start all entry point children
+    Then the group should start all entry point children
     And "Child1", "Child2", "Child3" should execute in order
-    And the container should complete when all children are done
-    And container output should contain ChildResults with all child data
+    And the group should complete when all children are done
+    And group output should contain ChildResults with all child data
     And the workflow should complete successfully
 
   @integration
-  Scenario: Container completes when all children complete
-    Given I have a Container with 5 parallel child nodes
+  Scenario: Group completes when all children complete
+    Given I have a Group with 5 parallel child nodes
     When I start the workflow
-    Then the container should wait for all children to complete
-    And the container status should be "Running" while children execute
-    And the container should complete after the last child completes
+    Then the group should wait for all children to complete
+    And the group status should be "Running" while children execute
+    And the group should complete after the last child completes
     And ChildResults should contain results from all 5 children
 
   @integration @errorhandling
-  Scenario: Container fails if any child fails
-    Given I have a Container with child nodes "A", "B", "C"
+  Scenario: Group fails if any child fails
+    Given I have a Group with child nodes "A", "B", "C"
     And "B" is configured to fail
     When I start the workflow
     Then "B" should fail
-    And the container should fail when "B" fails
-    And the container error should indicate child failure
+    And the group should fail when "B" fails
+    And the group error should indicate child failure
     And remaining children may or may not complete based on error strategy
 
   @integration
@@ -100,22 +100,22 @@ Feature: Advanced Features
       | false     | SkipTask     |
 
   @integration
-  Scenario: Nested container execution
-    Given I have an outer Container "Outer" with child Container "Inner"
+  Scenario: Nested group execution
+    Given I have an outer Group "Outer" with child Group "Inner"
     And "Inner" has child nodes "A", "B", "C"
     And "Outer" has additional child node "D"
     When I start the workflow
-    Then "Inner" container should execute as a child of "Outer"
+    Then "Inner" group should execute as a child of "Outer"
     And "A", "B", "C" should execute within "Inner"
     And "Inner" should complete when all its children complete
     And "D" should execute in parallel with "Inner"
     And "Outer" should complete when both "Inner" and "D" complete
-    And ChildResults should be aggregated at each container level
+    And ChildResults should be aggregated at each group level
 
   @integration
-  Scenario: Multi-level nested containers
-    Given I have containers nested 4 levels deep:
-      | Level | Container | Children              |
+  Scenario: Multi-level nested groups
+    Given I have groups nested 4 levels deep:
+      | Level | Group     | Children              |
       | 1     | Root      | Level2A, Level2B      |
       | 2     | Level2A   | Level3A               |
       | 3     | Level3A   | Level4A, Level4B      |
@@ -210,13 +210,13 @@ Feature: Advanced Features
     And the workflow should complete successfully
 
   @integration
-  Scenario: Subflow with container children
-    Given I have a Subflow node that loads a workflow containing Containers
-    And the subflow's workflow has nested containers
+  Scenario: Subflow with group children
+    Given I have a Subflow node that loads a workflow containing Groups
+    And the subflow's workflow has nested groups
     When I execute the subflow
     Then the external workflow should load correctly
-    And containers within the subflow should execute
-    And container children should execute correctly
+    And groups within the subflow should execute
+    And group children should execute correctly
     And the subflow should aggregate all results
     And control should return to parent workflow
 
@@ -224,7 +224,7 @@ Feature: Advanced Features
   Scenario: Complex workflow with all advanced features
     Given I have a workflow combining:
       | Feature           | Description                           |
-      | Containers        | 3 container nodes with children       |
+      | Groups            | 3 group nodes with children           |
       | Subflows          | 2 subflow calls to external workflows |
       | Timers            | 1 timer trigger node                  |
       | Control Flow      | IfElse, ForEach, Switch nodes         |

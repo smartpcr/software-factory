@@ -1,8 +1,0 @@
-workflowId: csharp-script-inline
-workflowName: CSharp Script Inline
-nodes:
-  - nodeId: css1
-    nodeName: Inline Script
-    runtimeType: CSharpScript
-    scriptContent: 'Console.WriteLine("hello");'
-connections: []

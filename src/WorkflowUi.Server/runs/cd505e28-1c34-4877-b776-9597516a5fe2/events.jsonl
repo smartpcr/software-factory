@@ -1,0 +1,2 @@
+{"RunId":"cd505e28-1c34-4877-b776-9597516a5fe2","Seq":1,"Kind":"WorkflowStarted","Synthetic":false,"TimestampUtc":"2026-04-21T10:23:29.5349949Z","NodeId":null,"NodeName":null,"Payload":{"workflowId":"wf_149asot","workflowName":"icm skill","totalNodes":14}}
+{"RunId":"cd505e28-1c34-4877-b776-9597516a5fe2","Seq":2,"Kind":"WorkflowFailed","Synthetic":false,"TimestampUtc":"2026-04-21T10:23:29.5768551Z","NodeId":null,"NodeName":null,"Payload":{"workflowId":"wf_149asot","errorMessage":"Workflow validation failed:\r\nSubagentId is required in subagent mode."}}

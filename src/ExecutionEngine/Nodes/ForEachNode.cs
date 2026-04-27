@@ -12,6 +12,8 @@ using ExecutionEngine.Core;
 using ExecutionEngine.Enums;
 using ExecutionEngine.Messages;
 using ExecutionEngine.Nodes.Definitions;
+using ExecutionEngine.Queue;
+using ExecutionEngine.Routing;
 using Microsoft.CodeAnalysis.CSharp.Scripting;
 using Microsoft.CodeAnalysis.Scripting;
 
@@ -38,6 +40,16 @@ public class ForEachNode : ExecutableNodeBase
     /// Defaults to "item".
     /// </summary>
     public string ItemVariableName { get; set; } = "item";
+
+    /// <summary>
+    /// Gets the iteration history. Each entry tracks the body node instances for that iteration.
+    /// </summary>
+    public List<LoopIteration> Iterations { get; } = [];
+
+    /// <summary>
+    /// Cached body node IDs discovered from the router on first iteration.
+    /// </summary>
+    private HashSet<string>? bodyNodeIds;
 
     /// <inheritdoc/>
     public override void Initialize(NodeDefinition definition)
@@ -98,9 +110,23 @@ public class ForEachNode : ExecutableNodeBase
             // Get router if available for message routing
             var router = workflowContext.Router;
 
+            // Discover body node IDs once (cache for iteration history tracking)
+            if (this.bodyNodeIds == null && router is MessageRouter msgRouter)
+            {
+                this.bodyNodeIds = msgRouter.FindAllLoopBodyNodes(this.NodeId, LoopBodyPort);
+            }
+
             foreach (var item in items)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+
+                // Track this iteration
+                var iteration = new LoopIteration
+                {
+                    IterationIndex = itemCount,
+                    StartTime = DateTime.UtcNow
+                };
+                this.Iterations.Add(iteration);
 
                 // Set item variables in workflow context
                 workflowContext.Variables[this.ItemVariableName] = item;
@@ -216,9 +242,12 @@ public class ForEachNode : ExecutableNodeBase
                 .AddReferences(typeof(ExecutionState).Assembly)
                 .AddImports("System", "System.Collections", "System.Collections.Generic", "System.Linq");
 
+            // Pre-process {placeholder} syntax to valid C# expressions
+            var processedExpression = ExecutionState.PreProcessExpression(this.CollectionExpression);
+
             // Create and compile the script
             var script = CSharpScript.Create<object>(
-                this.CollectionExpression,
+                processedExpression,
                 scriptOptions,
                 globalsType: typeof(ExecutionState));
 

@@ -1,0 +1,13 @@
+{
+  "name": "open-icm",
+  "version": "1.0.0",
+  "description": "Extract ICM incident content via Playwright",
+  "main": "extract-icm.js",
+  "dependencies": {
+    "playwright": "^1.40.0",
+    "turndown": "^7.1.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

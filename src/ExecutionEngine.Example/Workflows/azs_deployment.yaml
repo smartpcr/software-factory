@@ -21,7 +21,7 @@ nodes:
 
   - nodeId: pre-deployment-checks
     nodeName: Pre-Deployment Checks
-    runtimeType: Container
+    runtimeType: Group
     ExecutionMode: "Sequential"
     ChildNodes:
       # Child 1: Network check
@@ -69,7 +69,7 @@ nodes:
 
   - nodeId: node-deployments
     nodeName: Node Deployments
-    runtimeType: Container
+    runtimeType: Group
     ExecutionMode: "Parallel"
     ChildNodes:
       # Child 1: Deploy to Node1
@@ -117,7 +117,7 @@ nodes:
 
   - nodeId: health-checks
     nodeName: Post-Deployment Health Checks
-    runtimeType: Container
+    runtimeType: Group
     ExecutionMode: "Sequential"
     ChildNodes:
       # Child 1: Portal health check

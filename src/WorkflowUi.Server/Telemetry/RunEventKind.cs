@@ -21,6 +21,7 @@ public enum RunEventKind
     NodeFailed,
     NodeCancelled,
     NodeProgress,
+    NodeLog,
 
     // ---- Synthetic (derived by bridge) ----
     EdgeActivated,

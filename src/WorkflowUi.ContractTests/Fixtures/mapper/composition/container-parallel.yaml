@@ -3,9 +3,9 @@ WorkflowName: Container Parallel
 Description: null
 Version: 1.0
 Nodes:
-- runtimeType: Container
+- runtimeType: Group
   ChildNodes:
-  - runtimeType: Noop
+  - runtimeType: Setter
     NodeId: child-a
     NodeName: A
     Description: null
@@ -17,7 +17,7 @@ Nodes:
     CircuitBreakerPolicy: null
     CompensationNodeId: null
     FallbackNodeId: null
-  - runtimeType: Noop
+  - runtimeType: Setter
     NodeId: child-b
     NodeName: B
     Description: null

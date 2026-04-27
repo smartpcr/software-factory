@@ -36,22 +36,13 @@ public static class AuthServiceCollectionExtensions
         var authOptions = new AuthOptions();
         authSection.Bind(authOptions);
 
-        var useDevBypass = isDevelopment && authOptions.AllowDevBypass;
-
+        // Always register the policy scheme so the DevBypass handler can decide
+        // at runtime whether to bypass (dev mode + AllowDevBypass, or localhost binding).
         var authBuilder = services.AddAuthentication(options =>
         {
-            if (useDevBypass)
-            {
-                // Policy scheme routes loopback → DevBypass, all else → JwtBearer
-                options.DefaultScheme = PolicySchemeName;
-                options.DefaultAuthenticateScheme = PolicySchemeName;
-                options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
-            }
-            else
-            {
-                options.DefaultScheme = JwtBearerDefaults.AuthenticationScheme;
-                options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
-            }
+            options.DefaultScheme = PolicySchemeName;
+            options.DefaultAuthenticateScheme = PolicySchemeName;
+            options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
         })
         .AddJwtBearer(options =>
         {
@@ -85,22 +76,20 @@ public static class AuthServiceCollectionExtensions
         .AddScheme<AuthenticationSchemeOptions, DevBypassAuthenticationHandler>(
             DevBypassAuthenticationHandler.SchemeName, _ => { });
 
-        if (useDevBypass)
+        // Always register policy scheme — handler decides at runtime
+        authBuilder.AddPolicyScheme(PolicySchemeName, PolicySchemeName, options =>
         {
-            authBuilder.AddPolicyScheme(PolicySchemeName, PolicySchemeName, options =>
+            options.ForwardDefaultSelector = context =>
             {
-                options.ForwardDefaultSelector = context =>
+                var remoteIp = context.Connection.RemoteIpAddress;
+                if (remoteIp != null && IPAddress.IsLoopback(remoteIp))
                 {
-                    var remoteIp = context.Connection.RemoteIpAddress;
-                    if (remoteIp != null && IPAddress.IsLoopback(remoteIp))
-                    {
-                        return DevBypassAuthenticationHandler.SchemeName;
-                    }
+                    return DevBypassAuthenticationHandler.SchemeName;
+                }
 
-                    return JwtBearerDefaults.AuthenticationScheme;
-                };
-            });
-        }
+                return JwtBearerDefaults.AuthenticationScheme;
+            };
+        });
 
         services.AddAuthorization(options =>
         {

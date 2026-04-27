@@ -13,7 +13,7 @@ using ExecutionEngine.Nodes.Definitions;
 using ExecutionEngine.Workflow;
 
 /// <summary>
-/// Mapper partials for Subflow, Timer, Container runtime kinds.
+/// Mapper partials for Subflow, Timer, Group runtime kinds.
 /// </summary>
 public static partial class EngineDtoMapper
 {
@@ -80,9 +80,9 @@ public static partial class EngineDtoMapper
     }
 
     /// <summary>
-    /// Maps a Container engine definition to DTO.
+    /// Maps a Group engine definition to DTO.
     /// </summary>
-    public static NodeDto MapContainer(ContainerNodeDefinition source)
+    public static NodeDto MapGroup(GroupNodeDefinition source)
     {
         var dto = new NodeDto();
         MapBaseToDto(source, dto);
@@ -93,11 +93,11 @@ public static partial class EngineDtoMapper
     }
 
     /// <summary>
-    /// Maps a DTO to Container engine definition.
+    /// Maps a DTO to Group engine definition.
     /// </summary>
-    public static ContainerNodeDefinition MapContainerFromDto(NodeDto dto)
+    public static GroupNodeDefinition MapGroupFromDto(NodeDto dto)
     {
-        var target = new ContainerNodeDefinition
+        var target = new GroupNodeDefinition
         {
             ExecutionMode = Enum.Parse<ExecutionMode>(dto.ExecutionMode ?? "Sequential"),
             ChildNodes = dto.ChildNodes?.Select(MapFromDto).ToList(),

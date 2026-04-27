@@ -53,21 +53,21 @@ public class YamlRoundTripTests
     }
 
     [Fact]
-    public void NoopMinimal_Load_Succeeds()
+    public void SetterMinimal_Load_Succeeds()
     {
-        var fixturePath = Path.Combine(FixturesDir, "noop-minimal.yaml");
+        var fixturePath = Path.Combine(FixturesDir, "setter-minimal.yaml");
         Assert.True(File.Exists(fixturePath), $"Fixture not found at {fixturePath}");
 
         var loader = new WorkflowLoader();
         var wf = loader.Load(fixturePath, validateOnLoad: true);
         Assert.NotNull(wf);
-        Assert.Equal("noop-minimal", wf.WorkflowId);
+        Assert.Equal("setter-minimal", wf.WorkflowId);
     }
 
     [Fact]
-    public void NoopMinimal_Serialize_ProducesNonEmpty()
+    public void SetterMinimal_Serialize_ProducesNonEmpty()
     {
-        var fixturePath = Path.Combine(FixturesDir, "noop-minimal.yaml");
+        var fixturePath = Path.Combine(FixturesDir, "setter-minimal.yaml");
         var loader = new WorkflowLoader();
         var wf = loader.Load(fixturePath, validateOnLoad: true);
         var serializer = new WorkflowSerializer();
@@ -76,10 +76,10 @@ public class YamlRoundTripTests
     }
 
     [Fact]
-    public void NoopMinimal_LoadAndSerialize_MatchesCanonicalGolden()
+    public void SetterMinimal_LoadAndSerialize_MatchesCanonicalGolden()
     {
-        var fixturePath = Path.Combine(FixturesDir, "noop-minimal.yaml");
-        var goldenPath = Path.Combine(FixturesDir, "noop-minimal.canonical.yaml");
+        var fixturePath = Path.Combine(FixturesDir, "setter-minimal.yaml");
+        var goldenPath = Path.Combine(FixturesDir, "setter-minimal.canonical.yaml");
         Assert.True(File.Exists(goldenPath), $"Expected golden at {goldenPath}");
 
         var loader = new WorkflowLoader();
@@ -91,9 +91,9 @@ public class YamlRoundTripTests
     }
 
     [Fact]
-    public void NoopMinimal_DoubleRoundTrip_IsIdempotent()
+    public void SetterMinimal_DoubleRoundTrip_IsIdempotent()
     {
-        var fixturePath = Path.Combine(FixturesDir, "noop-minimal.yaml");
+        var fixturePath = Path.Combine(FixturesDir, "setter-minimal.yaml");
         var loader = new WorkflowLoader();
         var serializer = new WorkflowSerializer();
 
@@ -160,7 +160,7 @@ version: '1.0'
 nodes:
 - nodeId: start
   nodeName: Start
-  runtimeType: Noop
+  runtimeType: Setter
 connections:
 - sourceNodeId: start
   targetNodeId: nonexistent
@@ -178,12 +178,12 @@ connections:
     [Fact]
     public void GoldenFixture_MatchesCommittedOrRegenerates()
     {
-        var fixturePath = Path.Combine(FixturesDir, "noop-minimal.yaml");
-        var goldenPath = Path.Combine(FixturesDir, "noop-minimal.canonical.yaml");
+        var fixturePath = Path.Combine(FixturesDir, "setter-minimal.yaml");
+        var goldenPath = Path.Combine(FixturesDir, "setter-minimal.canonical.yaml");
 
         if (!File.Exists(fixturePath))
         {
-            var wf = CreateNoopMinimalWorkflow();
+            var wf = CreateSetterMinimalWorkflow();
             var serializer = new WorkflowSerializer();
             serializer.SaveToFile(wf, fixturePath);
         }
@@ -204,18 +204,18 @@ connections:
         Assert.Equal(committed, canonical);
     }
 
-    private static WorkflowDefinition CreateNoopMinimalWorkflow()
+    private static WorkflowDefinition CreateSetterMinimalWorkflow()
     {
         return new WorkflowDefinition
         {
-            WorkflowId = "noop-minimal",
-            WorkflowName = "Noop Minimal",
-            Description = "A minimal 2-node Noop workflow for parity testing",
+            WorkflowId = "setter-minimal",
+            WorkflowName = "Setter Minimal",
+            Description = "A minimal 2-node Setter workflow for parity testing",
             Version = "1.0",
             Nodes =
             [
-                new NoopNodeDefinition { NodeId = "start", NodeName = "Start" },
-                new NoopNodeDefinition { NodeId = "end", NodeName = "End" },
+                new SetterNodeDefinition { NodeId = "start", NodeName = "Start" },
+                new SetterNodeDefinition { NodeId = "end", NodeName = "End" },
             ],
             Connections =
             [

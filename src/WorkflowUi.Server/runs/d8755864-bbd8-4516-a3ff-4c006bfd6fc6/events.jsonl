@@ -1,0 +1,2 @@
+{"RunId":"d8755864-bbd8-4516-a3ff-4c006bfd6fc6","Seq":1,"Kind":"WorkflowStarted","Synthetic":false,"TimestampUtc":"2026-04-25T10:29:36.6333837Z","NodeId":null,"NodeName":null,"Payload":{"workflowId":"wf_bytmp5b","workflowName":"webhook","totalNodes":7}}
+{"RunId":"d8755864-bbd8-4516-a3ff-4c006bfd6fc6","Seq":2,"Kind":"WorkflowCompleted","Synthetic":false,"TimestampUtc":"2026-04-25T10:30:56.9678956Z","NodeId":null,"NodeName":null,"Payload":{"workflowId":"wf_bytmp5b","status":"Completed","duration":"PT1M20.2972282S"}}

@@ -1,9 +1,0 @@
-workflowId: csharp-task-executor
-workflowName: CSharp Task Executor
-nodes:
-  - nodeId: cst1
-    nodeName: Executor Task
-    runtimeType: CSharpTask
-    executorTypeName: MyApp.Tasks.MyExecutor
-    executorAssemblyPath: MyApp.dll
-connections: []

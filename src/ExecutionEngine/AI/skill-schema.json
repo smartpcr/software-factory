@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Skill/Agent Schema Definition",
+  "description": "Defines parameter sets (scenarios) for a skill or agent, inspired by PowerShell ParameterSets. Each scenario has its own inputs and outputs.",
+
+  "type": "object",
+  "properties": {
+    "name": { "type": "string", "description": "Skill/agent name (must match SKILL.md frontmatter)" },
+    "version": { "type": "string", "default": "1.0" },
+    "defaultScenario": { "type": "string", "description": "Default scenario when none is specified" },
+    "scenarios": {
+      "type": "object",
+      "description": "Named parameter sets, like PowerShell ParameterSets",
+      "additionalProperties": {
+        "$ref": "#/$defs/Scenario"
+      }
+    }
+  },
+  "required": ["name", "scenarios"],
+
+  "$defs": {
+    "Scenario": {
+      "type": "object",
+      "properties": {
+        "description": { "type": "string" },
+        "inputs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/InputParam" }
+        },
+        "outputs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/OutputField" }
+        }
+      },
+      "required": ["inputs", "outputs"]
+    },
+    "InputParam": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["string", "integer", "number", "boolean", "object", "array"] },
+        "required": { "type": "boolean", "default": false },
+        "default": {},
+        "description": { "type": "string" }
+      },
+      "required": ["name", "type"]
+    },
+    "OutputField": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["string", "integer", "number", "boolean", "object", "array", "file", "folder"] },
+        "description": { "type": "string" }
+      },
+      "required": ["name", "type"]
+    }
+  }
+}

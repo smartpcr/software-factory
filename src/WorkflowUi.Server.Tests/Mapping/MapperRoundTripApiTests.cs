@@ -38,13 +38,13 @@ public class MapperRoundTripApiTests : IClassFixture<TestWebApplicationFactory>
         var request = new WorkflowDefinitionDto
         {
             WorkflowId = "rt-noop",
-            WorkflowName = "RT Noop",
+            WorkflowName = "RT Setter",
             Version = "1.0",
             Nodes =
             [
                 new NodeDto
                 {
-                    RuntimeType = "Noop",
+                    RuntimeType = "Setter",
                     NodeId = "n1",
                     NodeName = "Test",
                     JoinType = "Any",
@@ -61,7 +61,7 @@ public class MapperRoundTripApiTests : IClassFixture<TestWebApplicationFactory>
         Assert.NotNull(result);
         Assert.Equal("rt-noop", result!.Workflow.WorkflowId);
         Assert.Single(result.Workflow.Nodes!);
-        Assert.Equal("Noop", result.Workflow.Nodes![0].RuntimeType);
+        Assert.Equal("Setter", result.Workflow.Nodes![0].RuntimeType);
         Assert.Null(result.UnresolvedTypeNames);
     }
 
@@ -88,7 +88,7 @@ public class MapperRoundTripApiTests : IClassFixture<TestWebApplicationFactory>
             [
                 new NodeDto
                 {
-                    RuntimeType = "Noop",
+                    RuntimeType = "Setter",
                     NodeId = "p1",
                     NodeName = "With Policy",
                     JoinType = "Any",
@@ -116,7 +116,7 @@ public class MapperRoundTripApiTests : IClassFixture<TestWebApplicationFactory>
             [
                 new NodeDto
                 {
-                    RuntimeType = "Noop",
+                    RuntimeType = "Setter",
                     NodeId = "p2",
                     NodeName = "No Policy",
                     JoinType = "Any",
@@ -135,7 +135,7 @@ public class MapperRoundTripApiTests : IClassFixture<TestWebApplicationFactory>
     {
         var nodes = new List<NodeDto>
         {
-            new() { RuntimeType = "Noop", NodeId = "n1", NodeName = "N1", JoinType = "Any", Priority = "Normal" },
+            new() { RuntimeType = "Setter", NodeId = "n1", NodeName = "N1", JoinType = "Any", Priority = "Normal" },
             new() { RuntimeType = "CSharp", NodeId = "n2", NodeName = "N2", JoinType = "Any", Priority = "Normal", AssemblyPath = "a.dll", TypeName = "T" },
             new() { RuntimeType = "CSharpScript", NodeId = "n3", NodeName = "N3", JoinType = "Any", Priority = "Normal", ScriptContent = "x", ScriptPath = "y" },
             new() { RuntimeType = "CSharpTask", NodeId = "n4", NodeName = "N4", JoinType = "Any", Priority = "Normal", ScriptContent = "z" },
@@ -147,7 +147,7 @@ public class MapperRoundTripApiTests : IClassFixture<TestWebApplicationFactory>
             new() { RuntimeType = "Switch", NodeId = "n10", NodeName = "N10", JoinType = "Any", Priority = "Normal", Expression = "s", Cases = new() { ["a"] = "b" } },
             new() { RuntimeType = "Subflow", NodeId = "n11", NodeName = "N11", JoinType = "Any", Priority = "Normal", WorkflowFilePath = "f.yaml", Timeout = "PT5M" },
             new() { RuntimeType = "Timer", NodeId = "n12", NodeName = "N12", JoinType = "Any", Priority = "Normal", Schedule = "* * * * *" },
-            new() { RuntimeType = "Container", NodeId = "n13", NodeName = "N13", JoinType = "Any", Priority = "Normal", ExecutionMode = "Parallel" },
+            new() { RuntimeType = "Group", NodeId = "n13", NodeName = "N13", JoinType = "Any", Priority = "Normal", ExecutionMode = "Parallel" },
         };
 
         var request = new WorkflowDefinitionDto
@@ -163,7 +163,7 @@ public class MapperRoundTripApiTests : IClassFixture<TestWebApplicationFactory>
         Assert.Equal(13, result!.Workflow.Nodes!.Count);
 
         var rtTypes = result.Workflow.Nodes!.Select(n => n.RuntimeType).OrderBy(r => r, StringComparer.Ordinal).ToList();
-        var expected = EngineDtoMapper.SupportedRuntimeTypes.OrderBy(r => r, StringComparer.Ordinal).ToList();
+        var expected = nodes.Select(n => n.RuntimeType!).OrderBy(r => r, StringComparer.Ordinal).ToList();
         Assert.Equal(expected, rtTypes);
     }
 
@@ -177,7 +177,7 @@ public class MapperRoundTripApiTests : IClassFixture<TestWebApplicationFactory>
             [
                 new NodeDto
                 {
-                    RuntimeType = "Noop",
+                    RuntimeType = "Setter",
                     NodeId = "n1",
                     NodeName = "N1",
                     JoinType = "Any",

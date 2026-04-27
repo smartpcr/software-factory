@@ -4,7 +4,7 @@
   "version": "1.0",
   "nodes": [
     {
-      "runtimeType": "Noop",
+      "runtimeType": "Setter",
       "nodeId": "src",
       "nodeName": "Source",
       "joinType": "Any",
@@ -12,7 +12,7 @@
       "maxConcurrentExecutions": 0
     },
     {
-      "runtimeType": "Noop",
+      "runtimeType": "Setter",
       "nodeId": "on-complete",
       "nodeName": "On Complete",
       "joinType": "Any",
@@ -20,7 +20,7 @@
       "maxConcurrentExecutions": 0
     },
     {
-      "runtimeType": "Noop",
+      "runtimeType": "Setter",
       "nodeId": "on-fail",
       "nodeName": "On Fail",
       "joinType": "Any",

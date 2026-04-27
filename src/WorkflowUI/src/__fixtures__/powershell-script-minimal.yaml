@@ -1,8 +1,0 @@
-workflowId: powershell-script-minimal
-workflowName: PowerShell Script Minimal
-nodes:
-  - nodeId: ps1
-    nodeName: Run Script
-    runtimeType: PowerShell
-    scriptPath: "scripts/deploy.ps1"
-connections: []

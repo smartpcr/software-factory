@@ -25,4 +25,9 @@ public class NodeFailedEvent : NodeEvent
     /// Gets or sets the exception that caused the node failure.
     /// </summary>
     public Exception? Exception { get; set; }
+
+    /// <summary>
+    /// Gets or sets the execution duration for this node before failure.
+    /// </summary>
+    public TimeSpan Duration { get; set; }
 }

@@ -1,0 +1,2 @@
+{"RunId":"713f0f0f-41f3-4fc9-8798-deed3486fa31","Seq":1,"Kind":"WorkflowStarted","Synthetic":false,"TimestampUtc":"2026-04-25T10:27:12.319547Z","NodeId":null,"NodeName":null,"Payload":{"workflowId":"wf_s3nrgkd","workflowName":"icm skill","totalNodes":20}}
+{"RunId":"713f0f0f-41f3-4fc9-8798-deed3486fa31","Seq":2,"Kind":"WorkflowCompleted","Synthetic":false,"TimestampUtc":"2026-04-25T10:29:00.2189143Z","NodeId":null,"NodeName":null,"Payload":{"workflowId":"wf_s3nrgkd","status":"Completed","duration":"PT1M47.8693038S"}}

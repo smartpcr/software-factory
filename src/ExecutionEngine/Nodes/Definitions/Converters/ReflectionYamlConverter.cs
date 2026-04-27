@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="ReflectionYamlConverter.cs" company="Microsoft Corp.">
 //     Copyright (c) Microsoft Corp. All rights reserved.
 // </copyright>
@@ -370,7 +370,8 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
     {
         return runtimeType switch
         {
-            "Noop" => typeof(NoopNodeDefinition),
+            "Setter" => typeof(SetterNodeDefinition),
+            "Assert" => typeof(AssertNodeDefinition),
             "CSharp" => typeof(CSharpNodeDefinition),
             "CSharpScript" => typeof(CSharpScriptNodeDefinition),
             "CSharpTask" => typeof(CSharpTaskNodeDefinition),
@@ -382,7 +383,17 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
             "Switch" => typeof(SwitchNodeDefinition),
             "Subflow" => typeof(SubflowNodeDefinition),
             "Timer" => typeof(TimerNodeDefinition),
-            "Container" => typeof(ContainerNodeDefinition),
+            "Group" => typeof(GroupNodeDefinition),
+            "Start" => typeof(StartNodeDefinition),
+            "Trigger" => typeof(TriggerNodeDefinition),
+            "Action" => typeof(ActionNodeDefinition),
+            "HttpRequest" => typeof(HttpRequestNodeDefinition),
+            "Transform" => typeof(TransformNodeDefinition),
+            "Delay" => typeof(DelayNodeDefinition),
+            "Log" => typeof(LogNodeDefinition),
+            "AI" => typeof(AINodeDefinition),
+            "End" => typeof(EndNodeDefinition),
+            "Parallel" => typeof(ParallelNodeDefinition),
             _ => null
         };
     }
@@ -407,6 +418,10 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
         else if (IsComplexType(value.GetType()))
         {
             ReflectionYamlConverter<T>.WriteNestedObject(emitter, value, value.GetType(), serializer);
+        }
+        else if (value.GetType().IsEnum)
+        {
+            emitter.Emit(new Scalar(Enums.EnumMemberHelper.ToEnumMemberValue(value.GetType(), value)));
         }
         else
         {
@@ -516,7 +531,7 @@ public class ReflectionYamlConverter<T> : YamlTypeConverter<T> where T : class, 
 
         if (underlyingType.IsEnum)
         {
-            return Enum.Parse(underlyingType, value, ignoreCase: true);
+            return Enums.EnumMemberHelper.ParseEnumMember(underlyingType, value);
         }
 
         return Type.GetTypeCode(underlyingType) switch

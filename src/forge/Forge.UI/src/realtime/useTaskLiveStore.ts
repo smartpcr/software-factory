@@ -1,0 +1,262 @@
+import { useEffect } from 'react';
+import { create } from 'zustand';
+import { HubConnectionBuilder, LogLevel, HubConnectionState, type HubConnection } from '@microsoft/signalr';
+import { forgeApi } from '@/api/forgeApi';
+
+// ─── Types (mirrors Forge.Api/Contracts/TaskExecutionSnapshot) ────────────
+
+export interface TaskTranscriptEvent {
+  id: number;
+  workItemId: string;
+  kind: string;
+  agentId?: string | null;
+  crewId?: string | null;
+  payload: unknown;
+  at: string;
+}
+
+export interface WorktreeSnapshot {
+  workstreamId: string;
+  added: number;
+  modified: number;
+  deleted: number;
+  ahead: number;
+  behind: number;
+  dirty: number;
+  headSha?: string | null;
+  headMessage?: string | null;
+  headAuthor?: string | null;
+  headAt?: string | null;
+  truncated: boolean;
+  at: string;
+}
+
+export interface DeliverableShape {
+  id: number;
+  iter: number;
+  score: number;
+  verdict: string;
+  notes?: string;
+  dims: Record<string, number>;
+  genCostUsd: number;
+  evalCostUsd: number;
+  judgeAgentId?: string | null;
+  judgeScore?: number | null;
+  judgeNotes?: string | null;
+  createdAt: string;
+}
+
+export interface TaskExecutionSnapshot {
+  workItemId: string;
+  generatorCrewId?: string | null;
+  generatorCrewName?: string | null;
+  evaluatorCrewId?: string | null;
+  evaluatorCrewName?: string | null;
+  generatorAgentId?: string | null;
+  generatorAgentName?: string | null;
+  evaluatorAgentId?: string | null;
+  evaluatorAgentName?: string | null;
+  currentIteration: number;
+  currentScore?: number | null;
+  currentVerdict?: string | null;
+  generatorCostUsd: number;
+  evaluatorCostUsd: number;
+  totalCostUsd: number;
+  generatorInputTokens: number;
+  generatorOutputTokens: number;
+  evaluatorInputTokens: number;
+  evaluatorOutputTokens: number;
+  crewDailyBudgetUsd?: number | null;
+  crewSpendTodayUsd?: number | null;
+  maxTaskBudgetUsd?: number | null;
+  autoDispatchedAt?: string | null;
+  expectedFileChanges?: number | null;
+  deliverables: DeliverableShape[];
+  recentTranscript: TaskTranscriptEvent[];
+  worktree?: WorktreeSnapshot | null;
+}
+
+// ─── Store (one entry per work-item) ──────────────────────────────────────
+
+interface TaskLiveEntry {
+  snapshot: TaskExecutionSnapshot | null;
+  transcript: TaskTranscriptEvent[];
+  worktree: WorktreeSnapshot | null;
+  loading: boolean;
+  error?: string;
+  lastEventId: number;
+  refCount: number;
+}
+
+interface TaskLiveStore {
+  entries: Record<string, TaskLiveEntry>;
+  ensureLoaded: (workItemId: string) => Promise<void>;
+  appendEvent: (workItemId: string, evt: TaskTranscriptEvent) => void;
+  applyWorktree: (workItemId: string, snap: WorktreeSnapshot) => void;
+  attach: (workItemId: string) => void;
+  detach: (workItemId: string) => void;
+}
+
+const TRANSCRIPT_CAP = 1000;
+
+const baseUrl = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_FORGE_API_URL) || '';
+const hubUrl = `${baseUrl}/hubs/forge`;
+
+let taskConnection: HubConnection | null = null;
+let taskStarting: Promise<void> | null = null;
+
+async function ensureTaskConnection(): Promise<HubConnection> {
+  if (taskConnection && taskConnection.state === HubConnectionState.Connected) return taskConnection;
+  if (taskStarting) {
+    await taskStarting;
+    return taskConnection!;
+  }
+  if (!taskConnection) {
+    taskConnection = new HubConnectionBuilder()
+      .withUrl(hubUrl)
+      .withAutomaticReconnect()
+      .configureLogging(LogLevel.Warning)
+      .build();
+    // Phase 16.7 — single SignalR method routes per-work-item events. The
+    // payload's `workItemId` discriminator picks which entry the event
+    // updates; the `kind` field picks the renderer in the UI.
+    taskConnection.on('task.event', (msg: { workItemId?: string; kind?: string; agentId?: string; crewId?: string; payload?: unknown; at?: string }) => {
+      if (!msg?.workItemId || !msg.kind) return;
+      const evt: TaskTranscriptEvent = {
+        id: Date.now() + Math.random(), // server doesn't ship the row id; transient ordering is fine
+        workItemId: msg.workItemId,
+        kind: msg.kind,
+        agentId: msg.agentId ?? null,
+        crewId: msg.crewId ?? null,
+        payload: msg.payload ?? {},
+        at: msg.at ?? new Date().toISOString(),
+      };
+      useTaskLiveStore.getState().appendEvent(msg.workItemId, evt);
+      if (msg.kind === 'task.worktree-tick' && msg.payload && typeof msg.payload === 'object') {
+        const p = msg.payload as Record<string, unknown>;
+        const head = (p.head ?? null) as { sha?: string; message?: string; author?: string; at?: string } | null;
+        const snap: WorktreeSnapshot = {
+          workstreamId: typeof p.workstreamId === 'string' ? p.workstreamId : '',
+          added:    typeof p.added    === 'number' ? p.added    : 0,
+          modified: typeof p.modified === 'number' ? p.modified : 0,
+          deleted:  typeof p.deleted  === 'number' ? p.deleted  : 0,
+          ahead:  typeof p.ahead  === 'number' ? p.ahead  : 0,
+          behind: typeof p.behind === 'number' ? p.behind : 0,
+          dirty:  typeof p.dirty  === 'number' ? p.dirty  : 0,
+          headSha:     head?.sha ?? null,
+          headMessage: head?.message ?? null,
+          headAuthor:  head?.author ?? null,
+          headAt:      head?.at ?? null,
+          truncated: p.truncated === true,
+          at: msg.at ?? new Date().toISOString(),
+        };
+        useTaskLiveStore.getState().applyWorktree(msg.workItemId, snap);
+      }
+    });
+  }
+  taskStarting = taskConnection.start().catch((err) => {
+    if (typeof import.meta !== 'undefined' && import.meta.env?.DEV) {
+      console.warn('[forge] task SignalR connect failed', err);
+    }
+  }).finally(() => {
+    taskStarting = null;
+  });
+  await taskStarting;
+  return taskConnection;
+}
+
+export const useTaskLiveStore = create<TaskLiveStore>((set, get) => ({
+  entries: {},
+
+  ensureLoaded: async (workItemId) => {
+    const cur = get().entries[workItemId];
+    if (cur?.snapshot) return; // already hydrated
+    set({ entries: { ...get().entries, [workItemId]: cur ? { ...cur, loading: true, error: undefined } : { snapshot: null, transcript: [], worktree: null, loading: true, lastEventId: 0, refCount: 0 } } });
+    try {
+      const snap: TaskExecutionSnapshot = await forgeApi.getWorkItemExecution(workItemId) as TaskExecutionSnapshot;
+      set({
+        entries: {
+          ...get().entries,
+          [workItemId]: {
+            snapshot: snap,
+            transcript: snap.recentTranscript ?? [],
+            worktree: snap.worktree ?? null,
+            loading: false,
+            lastEventId: 0,
+            refCount: get().entries[workItemId]?.refCount ?? 0,
+          },
+        },
+      });
+    } catch (err) {
+      set({
+        entries: {
+          ...get().entries,
+          [workItemId]: {
+            snapshot: get().entries[workItemId]?.snapshot ?? null,
+            transcript: get().entries[workItemId]?.transcript ?? [],
+            worktree: get().entries[workItemId]?.worktree ?? null,
+            loading: false,
+            error: err instanceof Error ? err.message : String(err),
+            lastEventId: 0,
+            refCount: get().entries[workItemId]?.refCount ?? 0,
+          },
+        },
+      });
+    }
+  },
+
+  appendEvent: (workItemId, evt) => {
+    const cur = get().entries[workItemId] ?? { snapshot: null, transcript: [], worktree: null, loading: false, lastEventId: 0, refCount: 0 };
+    const next = cur.transcript.length >= TRANSCRIPT_CAP ? [...cur.transcript.slice(-TRANSCRIPT_CAP + 1), evt] : [...cur.transcript, evt];
+    set({ entries: { ...get().entries, [workItemId]: { ...cur, transcript: next, lastEventId: Math.max(cur.lastEventId, evt.id) } } });
+  },
+
+  applyWorktree: (workItemId, snap) => {
+    const cur = get().entries[workItemId] ?? { snapshot: null, transcript: [], worktree: null, loading: false, lastEventId: 0, refCount: 0 };
+    set({ entries: { ...get().entries, [workItemId]: { ...cur, worktree: snap } } });
+  },
+
+  attach: (workItemId) => {
+    const cur = get().entries[workItemId] ?? { snapshot: null, transcript: [], worktree: null, loading: false, lastEventId: 0, refCount: 0 };
+    const next = { ...cur, refCount: cur.refCount + 1 };
+    set({ entries: { ...get().entries, [workItemId]: next } });
+    if (cur.refCount === 0) {
+      // First subscriber — wire SignalR group on the shared connection.
+      void (async () => {
+        const conn = await ensureTaskConnection();
+        try { await conn.invoke('Subscribe', `task.${workItemId}`); } catch { /* ignore */ }
+      })();
+    }
+  },
+
+  detach: (workItemId) => {
+    const cur = get().entries[workItemId];
+    if (!cur) return;
+    const next = { ...cur, refCount: Math.max(0, cur.refCount - 1) };
+    set({ entries: { ...get().entries, [workItemId]: next } });
+    if (next.refCount === 0 && taskConnection?.state === HubConnectionState.Connected) {
+      void taskConnection.invoke('Unsubscribe', `task.${workItemId}`).catch(() => { /* ignore */ });
+    }
+  },
+}));
+
+/**
+ * Phase 16.13 — subscribe to a work item's live channel.
+ * Hydrates the snapshot via the REST endpoint, joins the SignalR group, and
+ * leaves on unmount. Multiple components viewing the same work item share
+ * one server-side subscription via the ref-counted attach/detach.
+ */
+export function useTaskLive(workItemId: string | null | undefined): TaskLiveEntry | null {
+  const entry = useTaskLiveStore((s) => (workItemId ? s.entries[workItemId] : null)) ?? null;
+
+  useEffect(() => {
+    if (!workItemId) return;
+    void useTaskLiveStore.getState().ensureLoaded(workItemId);
+    useTaskLiveStore.getState().attach(workItemId);
+    return () => {
+      useTaskLiveStore.getState().detach(workItemId);
+    };
+  }, [workItemId]);
+
+  return entry;
+}

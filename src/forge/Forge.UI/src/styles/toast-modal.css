@@ -1,0 +1,167 @@
+/* ============================================
+   TOAST + MODAL
+   ============================================ */
+.toast {
+  position: fixed;
+  bottom: 24px; left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: var(--shadow-lg);
+  opacity: 0;
+  transition: all 240ms cubic-bezier(0.32, 0.72, 0, 1);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+.toast.success { border-color: var(--success); }
+.toast.warning { border-color: var(--warning); }
+.toast.danger { border-color: var(--danger); }
+.toast-dot { width: 6px; height: 6px; border-radius: 50%; }
+.toast.success .toast-dot { background: var(--success); }
+.toast.warning .toast-dot { background: var(--warning); }
+.toast.danger .toast-dot { background: var(--danger); }
+
+.modal-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  opacity: 0; pointer-events: none;
+  transition: opacity 200ms;
+  z-index: 60;
+}
+.modal-backdrop.show { opacity: 1; pointer-events: auto; }
+.modal {
+  position: fixed; top: 50%; left: 50%;
+  transform: translate(-50%, -45%);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  width: 440px; max-width: 90vw;
+  padding: 22px;
+  opacity: 0; pointer-events: none;
+  transition: all 200ms cubic-bezier(0.32, 0.72, 0, 1);
+  z-index: 61;
+}
+.modal.show { opacity: 1; transform: translate(-50%, -50%); pointer-events: auto; }
+.modal-icon {
+  width: 36px; height: 36px;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--warning);
+  margin-bottom: 14px;
+}
+.modal-title { font-family: var(--font-display); font-size: 17px; font-weight: 600; margin-bottom: 8px; }
+.modal-text { font-size: 12.5px; color: var(--text-secondary); line-height: 1.55; margin-bottom: 18px; }
+.modal-text strong { color: var(--text-primary); }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* Empty state for views */
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  padding: 80px 20px;
+  text-align: center;
+}
+.empty-state .title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+.empty-state .sub { font-size: 12px; max-width: 360px; line-height: 1.5; }
+.empty-state .actions { display: flex; gap: 8px; margin-top: 16px; }
+
+/* ============================================
+   COMMAND PALETTE (Phase 7.1)
+   ============================================ */
+.command-palette {
+  width: min(620px, 92vw);
+  max-height: 70vh;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.cmd-input {
+  width: 100%;
+  padding: 16px 18px;
+  background: transparent;
+  border: none;
+  outline: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-family: inherit;
+}
+.cmd-list { overflow-y: auto; padding: 6px 0; }
+.cmd-empty { padding: 20px; color: var(--text-tertiary); font-size: 12px; text-align: center; }
+.cmd-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.cmd-item.active { background: var(--bg-sunken); }
+.cmd-group {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--text-tertiary);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.cmd-group.view { color: var(--info); }
+.cmd-group.card { color: var(--success); }
+.cmd-group.pr { color: var(--warning); }
+.cmd-group.workstream { color: var(--accent); }
+.cmd-group.action { color: var(--text-secondary); }
+.cmd-label { flex: 1; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmd-hint {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+/* ============================================
+   KEYBOARD MAP OVERLAY (Phase 7.2)
+   ============================================ */
+.keymap-modal {
+  width: min(540px, 92vw);
+  padding: 22px;
+}
+.keymap-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; margin-top: 12px; }
+.keymap-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; }
+.keymap-keys { display: flex; gap: 4px; }
+kbd {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
+}

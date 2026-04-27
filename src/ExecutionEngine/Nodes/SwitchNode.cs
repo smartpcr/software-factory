@@ -201,9 +201,12 @@ public class SwitchNode : ExecutableNodeBase
                 .AddReferences(typeof(ExecutionState).Assembly)
                 .AddImports("System", "System.Collections", "System.Collections.Generic", "System.Linq");
 
+            // Pre-process {placeholder} syntax to valid C# expressions
+            var processedExpression = ExecutionState.PreProcessExpression(this.Expression);
+
             // Create and compile the script
             var script = CSharpScript.Create<object>(
-                this.Expression,
+                processedExpression,
                 scriptOptions,
                 globalsType: typeof(ExecutionState));
 

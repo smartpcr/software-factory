@@ -1,0 +1,20 @@
+{
+  "workflowId": "setter-basic",
+  "workflowName": "Setter Basic",
+  "version": "1.0",
+  "nodes": [
+    {
+      "runtimeType": "Setter",
+      "nodeId": "setter-1",
+      "nodeName": "Simple Setter",
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0
+    }
+  ],
+  "connections": [],
+  "metadata": {},
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0
+}

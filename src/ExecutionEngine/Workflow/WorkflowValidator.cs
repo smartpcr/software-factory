@@ -245,9 +245,11 @@ public class WorkflowValidator
         }
 
         // Check for cycles using DFS
-        // Allow feedback loops for While nodes (child -> while connection for iteration control)
-        var whileNodes = new HashSet<string>(
-            workflow.Nodes.Where(n => n.RuntimeType == RuntimeType.While).Select(n => n.NodeId));
+        // Allow feedback loops for While and ForEach nodes (child -> loop node connection for iteration control)
+        var loopNodes = new HashSet<string>(
+            workflow.Nodes
+                .Where(n => n.RuntimeType == RuntimeType.While || n.RuntimeType == RuntimeType.ForEach)
+                .Select(n => n.NodeId));
 
         var visited = new HashSet<string>();
         var recursionStack = new HashSet<string>();
@@ -256,7 +258,7 @@ public class WorkflowValidator
         {
             if (!visited.Contains(nodeId))
             {
-                if (HasCycleDFS(nodeId, adjacencyList, visited, recursionStack, whileNodes, workflow.Connections))
+                if (HasCycleDFS(nodeId, adjacencyList, visited, recursionStack, loopNodes, workflow.Connections))
                 {
                     this.logger.LogError("Cycle detected in workflow graph involving node {NodeId}", nodeId);
                     result.Errors.Add($"Cycle detected in workflow graph involving node '{nodeId}'. This will cause infinite loops.");
@@ -286,21 +288,14 @@ public class WorkflowValidator
 
     /// <summary>
     /// Detects cycles in the graph using depth-first search.
-    /// Allows feedback loops where a child sends Complete back to a While node parent.
+    /// Allows feedback loops where a child sends Complete back to a While or ForEach loop node.
     /// </summary>
-    /// <param name="nodeId">Current node being visited.</param>
-    /// <param name="adjacencyList">Graph adjacency list.</param>
-    /// <param name="visited">Set of visited nodes.</param>
-    /// <param name="recursionStack">Current recursion stack for cycle detection.</param>
-    /// <param name="whileNodes">Set of While node IDs that can have feedback loops.</param>
-    /// <param name="connections">All workflow connections for checking feedback loop validity.</param>
-    /// <returns>True if a cycle is detected, false otherwise.</returns>
     private static bool HasCycleDFS(
         string nodeId,
         Dictionary<string, List<string>> adjacencyList,
         HashSet<string> visited,
         HashSet<string> recursionStack,
-        HashSet<string> whileNodes,
+        HashSet<string> loopNodes,
         List<NodeConnection> connections)
     {
         visited.Add(nodeId);
@@ -310,7 +305,7 @@ public class WorkflowValidator
         {
             if (!visited.Contains(neighbor))
             {
-                if (HasCycleDFS(neighbor, adjacencyList, visited, recursionStack, whileNodes, connections))
+                if (HasCycleDFS(neighbor, adjacencyList, visited, recursionStack, loopNodes, connections))
                 {
                     return true;
                 }
@@ -318,10 +313,9 @@ public class WorkflowValidator
             else if (recursionStack.Contains(neighbor))
             {
                 // Cycle detected - check if it's an allowed feedback loop
-                // Allow: child -> While node (Complete message triggering next iteration)
-                if (whileNodes.Contains(neighbor))
+                // Allow: child -> While/ForEach node (Complete message triggering next iteration)
+                if (loopNodes.Contains(neighbor))
                 {
-                    // Check if this is a feedback connection (Complete message from child to While)
                     var connection = connections.FirstOrDefault(c =>
                         c.SourceNodeId == nodeId &&
                         c.TargetNodeId == neighbor &&
@@ -329,8 +323,7 @@ public class WorkflowValidator
 
                     if (connection != null)
                     {
-                        // This is an allowed feedback loop for While iteration control
-                        continue;
+                        continue; // Allowed feedback loop
                     }
                 }
 

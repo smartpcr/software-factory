@@ -1,0 +1,253 @@
+{
+  "workflowId": "wf_bytmp5b",
+  "workflowName": "webhook",
+  "description": "",
+  "version": "1.0",
+  "entryPointNodeId": "n_5vecfce",
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0,
+  "defaultVariables": {
+    "newVar": "abc",
+    "icmFolder": "E:\\icms",
+    "agentFolder": "E:\\work\\hub\\docs\\wiki"
+  },
+  "metadata": {},
+  "nodes": [
+    {
+      "nodeId": "n_5vecfce",
+      "runtimeType": "start",
+      "nodeName": "Start",
+      "description": "",
+      "configuration": {
+        "triggerType": "WebHook",
+        "schedule": "0 * * * *",
+        "eventName": "",
+        "webHookRoute": "test",
+        "bodyJsonSchema": "{\n   \"type\": \"object\",\n   \"required\": [\"incidentId\", \"serviceName\", \"teamName\", \"timestamp\"],\n   \"properties\": {\n     \"incidentId\": { \"type\": \"integer\", \"format\": \"int64\" },\n     \"serviceName\": { \"type\": \"string\" },\n     \"teamName\": { \"type\": \"string\" },\n     \"timestamp\": { \"type\": \"string\", \"format\": \"date-time\" }\n   }\n }"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_6m5fwz9",
+      "runtimeType": "Log",
+      "nodeName": "Log",
+      "description": "",
+      "configuration": {
+        "level": "Warn",
+        "messageTemplate": "Incident={incidentId}, on {serviceName}/{teamName}, created at {timestamp}, global var: {newVar}",
+        "parameterBindings": "{\"incidentId\":\"body.incidentId\",\"serviceName\":\"body.serviceName\",\"teamName\":\"body.teamName\",\"timestamp\":\"body.timestamp\",\"newVar\":\"global.newVar\"}"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_jboali7",
+      "runtimeType": "AI",
+      "nodeName": "Extract ICM content",
+      "description": "",
+      "configuration": {
+        "mode": "skill",
+        "skillName": "open-icm",
+        "subAgentName": "",
+        "model": "claude-sonnet-4.6",
+        "userPrompt": "",
+        "systemPrompt": "",
+        "inputMapping": "input",
+        "outputKey": "result",
+        "confidence": 70,
+        "maxTokens": 4096,
+        "inputBindings": "{\"IncidentId\":\"body.incidentId\",\"Headless\":\"static:\",\"Limit\":\"static:\"}",
+        "workingDirectory": "agentFolder"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_9rayebz",
+      "runtimeType": "Log",
+      "nodeName": "Log",
+      "description": "",
+      "configuration": {
+        "level": "Info",
+        "messageTemplate": "incident folder: {incidentFolder}, cost: input={inputTokenUsed}, output={outputTokenUsed}",
+        "parameterBindings": "{\"incidentFolder\":\"incidentFolder\",\"tokenUsed\":\"ai.inputTokens\",\"inputTokenUsed\":\"ai.inputTokens\",\"outputTokenUsed\":\"ai.outputTokens\"}"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_5j72azt",
+      "runtimeType": "Log",
+      "nodeName": "Log",
+      "description": "",
+      "configuration": {
+        "level": "Error",
+        "messageTemplate": "Error: {errorMessage}",
+        "parameterBindings": "{\"errorMessage\":\"errorMessage\"}"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_ygzx5gr",
+      "runtimeType": "Assert",
+      "nodeName": "check incident folder",
+      "description": "",
+      "configuration": {
+        "condition": "Directory.Exists({incidentFolder})",
+        "message": ""
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_pstfl88",
+      "runtimeType": "End",
+      "nodeName": "End",
+      "description": "",
+      "configuration": {
+        "status": "success"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    }
+  ],
+  "connections": [
+    {
+      "sourceNodeId": "n_5vecfce",
+      "targetNodeId": "n_6m5fwz9",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_6m5fwz9",
+      "targetNodeId": "n_jboali7",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_5vecfce",
+      "targetNodeId": "n_jboali7",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_jboali7",
+      "targetNodeId": "n_9rayebz",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_jboali7",
+      "targetNodeId": "n_5j72azt",
+      "sourcePort": "error",
+      "targetPort": "in",
+      "triggerMessageType": "Fail",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_jboali7",
+      "targetNodeId": "n_ygzx5gr",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_9rayebz",
+      "targetNodeId": "n_pstfl88",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_ygzx5gr",
+      "targetNodeId": "n_pstfl88",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_5j72azt",
+      "targetNodeId": "n_pstfl88",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    }
+  ]
+}

@@ -23,7 +23,7 @@ public interface IWorkflowStore
 
     Task<SaveResult> SaveAsync(
         string id,
-        string yaml,
+        string definition,
         string sidecarJson,
         string? etag,
         ClaimsPrincipal user,
@@ -33,16 +33,16 @@ public interface IWorkflowStore
 }
 
 /// <summary>
-/// Summary of a workflow in the store (lightweight, no YAML body).
+/// Summary of a workflow in the store (lightweight, no body).
 /// </summary>
-public record WorkflowSummary(string Id, DateTime LastModifiedUtc, long SizeBytes);
+public record WorkflowSummary(string Id, DateTime LastModifiedUtc, long SizeBytes, string? WorkflowId = null, string? WorkflowName = null);
 
 /// <summary>
-/// Full workflow record with YAML, sidecar, and ETag.
+/// Full workflow record with definition JSON, sidecar, and ETag.
 /// </summary>
 public record WorkflowRecord(
     string Id,
-    string Yaml,
+    string Definition,
     string SidecarJson,
     string ETag,
     DateTime LastModifiedUtc);

@@ -125,9 +125,12 @@ public class IfElseNode : ExecutableNodeBase
             .AddReferences(typeof(ExecutionState).Assembly)
             .AddImports("System", "System.Collections.Generic", "System.Linq");
 
+        // Pre-process {placeholder} syntax to valid C# expressions
+        var processedCondition = ExecutionState.PreProcessExpression(this.Condition);
+
         // Compile and evaluate the condition expression
         var script = CSharpScript.Create<bool>(
-            this.Condition,
+            processedCondition,
             scriptOptions,
             globalsType: typeof(ExecutionState));
 

@@ -21,7 +21,7 @@ public class ExecutableNodeBaseTests
     {
         // Arrange
         var node = new TestExecutableNode();
-        var definition = new NoopNodeDefinition
+        var definition = new SetterNodeDefinition
         {
             NodeId = "test-node",
             NodeName = "Test Node"
@@ -53,7 +53,7 @@ public class ExecutableNodeBaseTests
     {
         // Arrange
         var node = new TestExecutableNode();
-        node.Initialize(new NoopNodeDefinition { NodeId = "test", NodeName = "Test" });
+        node.Initialize(new SetterNodeDefinition { NodeId = "test", NodeName = "Test" });
 
         NodeStartEventArgs? capturedArgs = null;
         node.OnStart += (sender, args) => capturedArgs = args;
@@ -72,7 +72,7 @@ public class ExecutableNodeBaseTests
     {
         // Arrange
         var node = new TestExecutableNode();
-        node.Initialize(new NoopNodeDefinition { NodeId = "test", NodeName = "Test" });
+        node.Initialize(new SetterNodeDefinition { NodeId = "test", NodeName = "Test" });
 
         ProgressEventArgs? capturedArgs = null;
         node.OnProgress += (sender, args) => capturedArgs = args;
@@ -91,7 +91,7 @@ public class ExecutableNodeBaseTests
     {
         // Arrange
         var node = new TestExecutableNode();
-        node.Initialize(new NoopNodeDefinition { NodeId = "test", NodeName = "Test" });
+        node.Initialize(new SetterNodeDefinition { NodeId = "test", NodeName = "Test" });
 
         var workflowContext = new WorkflowExecutionContext();
         var nodeContext = new NodeExecutionContext();
@@ -114,7 +114,7 @@ public class ExecutableNodeBaseTests
     {
         // Arrange
         var node = new TestExecutableNode();
-        node.Initialize(new NoopNodeDefinition { NodeId = "test", NodeName = "Test" });
+        node.Initialize(new SetterNodeDefinition { NodeId = "test", NodeName = "Test" });
 
         var workflowContext = new WorkflowExecutionContext();
         var nodeContext = new NodeExecutionContext();
@@ -132,7 +132,7 @@ public class ExecutableNodeBaseTests
     {
         // Arrange
         var node = new TestExecutableNode();
-        node.Initialize(new NoopNodeDefinition { NodeId = "test", NodeName = "Test" });
+        node.Initialize(new SetterNodeDefinition { NodeId = "test", NodeName = "Test" });
 
         var workflowContext = new WorkflowExecutionContext();
         var nodeContext = new NodeExecutionContext();
@@ -151,7 +151,7 @@ public class ExecutableNodeBaseTests
     {
         // Arrange
         var node = new TestExecutableNode();
-        node.Initialize(new NoopNodeDefinition { NodeId = "test", NodeName = "Test" });
+        node.Initialize(new SetterNodeDefinition { NodeId = "test", NodeName = "Test" });
 
         var workflowContext = new WorkflowExecutionContext();
         workflowContext.Variables["path"] = "/data";
@@ -170,7 +170,7 @@ public class ExecutableNodeBaseTests
     {
         // Arrange
         var node = new TestExecutableNode();
-        node.Initialize(new NoopNodeDefinition { NodeId = "test", NodeName = "Test" });
+        node.Initialize(new SetterNodeDefinition { NodeId = "test", NodeName = "Test" });
 
         var workflowContext = new WorkflowExecutionContext();
         var nodeContext = new NodeExecutionContext();
@@ -188,7 +188,7 @@ public class ExecutableNodeBaseTests
     {
         // Arrange
         var node = new TestExecutableNode();
-        node.Initialize(new NoopNodeDefinition { NodeId = "test", NodeName = "Test" });
+        node.Initialize(new SetterNodeDefinition { NodeId = "test", NodeName = "Test" });
 
         var workflowContext = new WorkflowExecutionContext();
         var nodeContext = new NodeExecutionContext();

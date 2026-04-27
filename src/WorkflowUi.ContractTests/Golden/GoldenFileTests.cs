@@ -59,7 +59,7 @@ public class GoldenFileTests
     [Fact]
     public void Golden_fixture_ids_are_stable()
     {
-        var expectedTaskIds = new[] { "csharp-compiled", "csharp-script-inline", "csharp-task-inline", "noop-basic", "powershell-path", "powershell-task-inline" };
+        var expectedTaskIds = new[] { "csharp-compiled", "csharp-script-inline", "csharp-task-inline", "setter-basic", "powershell-path", "powershell-task-inline" };
         var expectedControlIds = new[] { "foreach-basic", "ifelse-basic", "switch-three-case", "while-default-max-iterations" };
         var expectedCompositionIds = new[] { "container-parallel", "subflow-file", "subflow-inline", "timer-cron" };
 

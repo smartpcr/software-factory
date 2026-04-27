@@ -39,7 +39,7 @@ public class WorkflowSerializer
             Converters =
             {
                 new JsonStringEnumConverter(),
-                new ReflectionJsonConverter<NoopNodeDefinition>(),
+                new ReflectionJsonConverter<SetterNodeDefinition>(),
                 new ReflectionJsonConverter<CSharpNodeDefinition>(),
                 new ReflectionJsonConverter<CSharpScriptNodeDefinition>(),
                 new ReflectionJsonConverter<CSharpTaskNodeDefinition>(),
@@ -51,7 +51,7 @@ public class WorkflowSerializer
                 new ReflectionJsonConverter<SwitchNodeDefinition>(),
                 new ReflectionJsonConverter<SubflowNodeDefinition>(),
                 new ReflectionJsonConverter<TimerNodeDefinition>(),
-                new ReflectionJsonConverter<ContainerNodeDefinition>(),
+                new ReflectionJsonConverter<GroupNodeDefinition>(),
                 new ReflectionJsonConverter<WorkflowDefinition>()
             }
         };
@@ -59,7 +59,7 @@ public class WorkflowSerializer
         // YAML serialization
         this.yamlSerializer = new SerializerBuilder()
             .WithNamingConvention(CamelCaseNamingConvention.Instance)
-            .WithTypeConverter(new ReflectionYamlConverter<NoopNodeDefinition>())
+            .WithTypeConverter(new ReflectionYamlConverter<SetterNodeDefinition>())
             .WithTypeConverter(new ReflectionYamlConverter<CSharpNodeDefinition>())
             .WithTypeConverter(new ReflectionYamlConverter<CSharpScriptNodeDefinition>())
             .WithTypeConverter(new ReflectionYamlConverter<CSharpTaskNodeDefinition>())
@@ -71,12 +71,12 @@ public class WorkflowSerializer
             .WithTypeConverter(new ReflectionYamlConverter<SwitchNodeDefinition>())
             .WithTypeConverter(new ReflectionYamlConverter<SubflowNodeDefinition>())
             .WithTypeConverter(new ReflectionYamlConverter<TimerNodeDefinition>())
-            .WithTypeConverter(new ReflectionYamlConverter<ContainerNodeDefinition>())
+            .WithTypeConverter(new ReflectionYamlConverter<GroupNodeDefinition>())
             .WithTypeConverter(new ReflectionYamlConverter<WorkflowDefinition>())
             .Build();
         this.yamlDeserializer = new DeserializerBuilder()
             .WithNamingConvention(CamelCaseNamingConvention.Instance)
-            .WithTypeConverter(new ReflectionYamlConverter<NoopNodeDefinition>())
+            .WithTypeConverter(new ReflectionYamlConverter<SetterNodeDefinition>())
             .WithTypeConverter(new ReflectionYamlConverter<CSharpNodeDefinition>())
             .WithTypeConverter(new ReflectionYamlConverter<CSharpScriptNodeDefinition>())
             .WithTypeConverter(new ReflectionYamlConverter<CSharpTaskNodeDefinition>())
@@ -88,7 +88,7 @@ public class WorkflowSerializer
             .WithTypeConverter(new ReflectionYamlConverter<SwitchNodeDefinition>())
             .WithTypeConverter(new ReflectionYamlConverter<SubflowNodeDefinition>())
             .WithTypeConverter(new ReflectionYamlConverter<TimerNodeDefinition>())
-            .WithTypeConverter(new ReflectionYamlConverter<ContainerNodeDefinition>())
+            .WithTypeConverter(new ReflectionYamlConverter<GroupNodeDefinition>())
             .WithTypeConverter(new ReflectionYamlConverter<WorkflowDefinition>())
             .Build();
     }

@@ -23,6 +23,8 @@ using Microsoft.CodeAnalysis.Scripting;
 /// Uses Roslyn scripting engine to evaluate condition expressions.
 /// For each iteration, sets iteration data in workflow context.
 /// ARCHITECTURE: Uses feedback loop - child nodes send Complete back to WhileNode to trigger next iteration.
+/// The While node owns its iteration lifecycle: it maintains a list of iterations,
+/// each with its own fresh set of body node instances.
 /// </summary>
 public class WhileNode : ExecutableNodeBase
 {
@@ -37,6 +39,11 @@ public class WhileNode : ExecutableNodeBase
     public const int DefaultMaxIterations = 1000;
 
     /// <summary>
+    /// Gets the workflow variable key used to track iteration count for a While node.
+    /// </summary>
+    public static string GetIterationCounterKey(string nodeId) => $"__{nodeId}__iterationCount";
+
+    /// <summary>
     /// Gets or sets the condition expression that must evaluate to true for iteration to continue.
     /// This should be a valid C# expression that evaluates to bool.
     /// IMPORTANT: Condition is re-evaluated before each iteration.
@@ -48,6 +55,16 @@ public class WhileNode : ExecutableNodeBase
     /// Prevents infinite loops. Default is 1000.
     /// </summary>
     public int MaxIterations { get; set; } = DefaultMaxIterations;
+
+    /// <summary>
+    /// Gets the iteration history. Each entry tracks the body node instances for that iteration.
+    /// </summary>
+    public List<LoopIteration> Iterations { get; } = [];
+
+    /// <summary>
+    /// Cached body node IDs discovered from the router on first iteration.
+    /// </summary>
+    private HashSet<string>? bodyNodeIds;
 
     /// <inheritdoc/>
     public override void Initialize(NodeDefinition definition)
@@ -105,7 +122,7 @@ public class WhileNode : ExecutableNodeBase
         CancellationToken cancellationToken)
     {
         // Track iteration count using workflow variables
-        var counterKey = $"__{this.NodeId}__iterationCount";
+        var counterKey = GetIterationCounterKey(this.NodeId);
         var iterationCount = 0;
         if (workflowContext.Variables.TryGetValue(counterKey, out var counterValue))
         {
@@ -150,8 +167,48 @@ public class WhileNode : ExecutableNodeBase
 
             if (conditionResult)
             {
-                // Condition is true: send ONE Next message to child nodes
+                // Condition is true: prepare body nodes for this iteration, then send Next message
                 var router = workflowContext.Router;
+
+                // Discover body node IDs once (cache for subsequent iterations)
+                if (this.bodyNodeIds == null && router is MessageRouter msgRouter)
+                {
+                    this.bodyNodeIds = msgRouter.FindAllLoopBodyNodes(this.NodeId, LoopBodyPort);
+                }
+
+                // For iteration > 0, prepare fresh body node instances before routing NextMessage.
+                // This must happen BEFORE routing so downstream body nodes have Pending status
+                // when the first body node completes and routes to them.
+                var iteration = new LoopIteration
+                {
+                    IterationIndex = iterationCount,
+                    StartTime = DateTime.UtcNow
+                };
+
+                if (iterationCount > 0 && this.bodyNodeIds != null)
+                {
+                    foreach (var bodyNodeId in this.bodyNodeIds)
+                    {
+                        // Drain stale queue messages
+                        if (workflowContext.NodeQueues.TryGetValue(bodyNodeId, out var queueObj))
+                        {
+                            var queue = (NodeMessageQueue)queueObj;
+                            if (queue.Count > 0)
+                            {
+                                await queue.DrainAllAsync();
+                            }
+                        }
+
+                        // Create fresh instance via engine callback
+                        if (workflowContext.PrepareNodeForIteration != null)
+                        {
+                            var freshInstance = workflowContext.PrepareNodeForIteration(bodyNodeId, workflowContext.InstanceId);
+                            iteration.BodyInstances[bodyNodeId] = freshInstance;
+                        }
+                    }
+                }
+
+                this.Iterations.Add(iteration);
 
                 // Create iteration context for this iteration
                 var iterationContext = new NodeExecutionContext
@@ -194,7 +251,15 @@ public class WhileNode : ExecutableNodeBase
                         }
                     };
 
-                    await router.RouteMessageAsync(nextMessage, workflowContext, cancellationToken);
+                    var delivered = await router.RouteMessageAsync(nextMessage, workflowContext, cancellationToken);
+                    if (delivered == 0)
+                    {
+                        // No child nodes connected to LoopBody — fail immediately
+                        workflowContext.Variables.TryRemove(counterKey, out _);
+                        throw new InvalidOperationException(
+                            "While loop has no child nodes connected to LoopBody port. " +
+                            "Connect a node to the LoopBody slot to provide the loop body.");
+                    }
                 }
 
                 // Emit progress event
@@ -280,9 +345,12 @@ public class WhileNode : ExecutableNodeBase
                 .AddReferences(typeof(ExecutionState).Assembly)
                 .AddImports("System", "System.Collections", "System.Collections.Generic", "System.Linq");
 
+            // Pre-process {placeholder} syntax to valid C# expressions
+            var processedCondition = ExecutionState.PreProcessExpression(this.Condition);
+
             // Create and compile the script
             var script = CSharpScript.Create<object>(
-                this.Condition,
+                processedCondition,
                 scriptOptions,
                 globalsType: typeof(ExecutionState));
 

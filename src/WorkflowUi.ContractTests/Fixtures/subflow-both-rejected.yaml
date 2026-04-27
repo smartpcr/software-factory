@@ -9,6 +9,6 @@ nodes:
       workflowId: inline
       nodes:
         - nodeId: x
-          runtimeType: Noop
+          runtimeType: Setter
       connections: []
 connections: []

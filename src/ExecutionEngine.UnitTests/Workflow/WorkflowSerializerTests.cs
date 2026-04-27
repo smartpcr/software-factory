@@ -441,21 +441,21 @@ public class WorkflowSerializerTests
 
     #endregion
 
-    #region Container Node Tests
+    #region Group Node Tests
 
     [TestMethod]
-    public void FromYaml_ContainerNodeWithChildren_ShouldDeserializeCorrectly()
+    public void FromYaml_GroupNodeWithChildren_ShouldDeserializeCorrectly()
     {
         // Arrange
         var yaml = @"
 workflowId: test-container
-workflowName: Test Container Workflow
+workflowName: Test Group Workflow
 description: Test workflow with container node
 
 nodes:
   - nodeId: container1
-    nodeName: Test Container
-    runtimeType: Container
+    nodeName: Test Group
+    runtimeType: Group
     ExecutionMode: Sequential
     ChildNodes:
       - nodeId: child1
@@ -489,19 +489,19 @@ connections: []
         // Assert - Workflow level
         workflow.Should().NotBeNull();
         workflow.WorkflowId.Should().Be("test-container");
-        workflow.WorkflowName.Should().Be("Test Container Workflow");
+        workflow.WorkflowName.Should().Be("Test Group Workflow");
         workflow.Nodes.Should().HaveCount(1);
 
         // Assert - Container node
-        var containerNode = workflow.Nodes[0] as ContainerNodeDefinition;
-        containerNode.Should().NotBeNull();
-        containerNode!.NodeId.Should().Be("container1");
-        containerNode.NodeName.Should().Be("Test Container");
-        containerNode.RuntimeType.Should().Be(RuntimeType.Container);
-        containerNode.ExecutionMode.Should().Be(ExecutionMode.Sequential);
+        var groupNode = workflow.Nodes[0] as GroupNodeDefinition;
+        groupNode.Should().NotBeNull();
+        groupNode!.NodeId.Should().Be("container1");
+        groupNode.NodeName.Should().Be("Test Group");
+        groupNode.RuntimeType.Should().Be(RuntimeType.Group);
+        groupNode.ExecutionMode.Should().Be(ExecutionMode.Sequential);
 
         // Assert - ChildNodes
-        var childNodes = containerNode.ChildNodes;
+        var childNodes = groupNode.ChildNodes;
         childNodes.Should().NotBeNull("ChildNodes should be present in Configuration");
 
         Console.WriteLine($"ChildNodes type: {childNodes?.GetType().FullName}");
@@ -517,7 +517,7 @@ connections: []
                 Console.WriteLine($"Child item type: {item?.GetType().FullName}");
             }
 
-            childList.Should().HaveCount(2, "Container should have 2 child nodes");
+            childList.Should().HaveCount(2, "Group should have 2 child nodes");
 
             // Verify first child
             var child1 = childList[0];
@@ -535,23 +535,23 @@ connections: []
         }
 
         // Assert - ChildConnections
-        var childConnections = containerNode.ChildConnections;
+        var childConnections = groupNode.ChildConnections;
         childConnections.Should().NotBeNull("ChildConnections should be present in Configuration");
-        childConnections.Should().HaveCount(1, "Container should have 1 child connection");
+        childConnections.Should().HaveCount(1, "Group should have 1 child connection");
     }
 
     [TestMethod]
-    public void FromYaml_ContainerNode_ChildNodesShouldBeNodeDefinitions()
+    public void FromYaml_GroupNode_ChildNodesShouldBeNodeDefinitions()
     {
         // Arrange
         var yaml = @"
 workflowId: test-typed
-workflowName: Test Typed Container
+workflowName: Test Typed Group
 
 nodes:
   - nodeId: container1
-    nodeName: Container with typed children
-    runtimeType: Container
+    nodeName: Group with typed children
+    runtimeType: Group
     ExecutionMode: Parallel
     ChildNodes:
       - nodeId: task1
@@ -568,9 +568,9 @@ connections: []
         var workflow = this.serializer.FromYaml(yaml);
 
         // Assert
-        var containerNode = workflow.Nodes[0] as ContainerNodeDefinition;
-        containerNode.Should().NotBeNull();
-        var nodeDefList = containerNode!.ChildNodes;
+        var groupNode = workflow.Nodes[0] as GroupNodeDefinition;
+        groupNode.Should().NotBeNull();
+        var nodeDefList = groupNode!.ChildNodes;
         nodeDefList.Should().HaveCount(1);
         nodeDefList![0].NodeId.Should().Be("task1");
         nodeDefList[0].NodeName.Should().Be("Task 1");
@@ -579,17 +579,17 @@ connections: []
     }
 
     [TestMethod]
-    public void FromYaml_ComplexContainerNode_ShouldDeserializeAllChildProperties()
+    public void FromYaml_ComplexGroupNode_ShouldDeserializeAllChildProperties()
     {
         // Arrange - This mimics the azs_deployment.yaml structure
         var yaml = @"
 workflowId: complex-container-test
-workflowName: Complex Container Test
+workflowName: Complex Group Test
 
 nodes:
   - nodeId: pre-deployment-checks
     nodeName: Pre-Deployment Checks
-    runtimeType: Container
+    runtimeType: Group
     ExecutionMode: Sequential
     ChildNodes:
       - nodeId: check-network
@@ -626,11 +626,11 @@ connections: []
         workflow.Should().NotBeNull();
         workflow.Nodes.Should().HaveCount(1);
 
-        var containerNode = workflow.Nodes[0] as ContainerNodeDefinition;
-        containerNode.Should().NotBeNull();
-        containerNode!.RuntimeType.Should().Be(RuntimeType.Container);
+        var groupNode = workflow.Nodes[0] as GroupNodeDefinition;
+        groupNode.Should().NotBeNull();
+        groupNode!.RuntimeType.Should().Be(RuntimeType.Group);
 
-        var childNodes = containerNode.ChildNodes;
+        var childNodes = groupNode.ChildNodes;
         childNodes.Should().NotBeNull();
 
         // After deserialization, ChildNodes should be properly typed as List<NodeDefinition>
@@ -661,7 +661,7 @@ connections: []
         Console.WriteLine($"Second child validated: {secondChild.NodeId}");
 
         // Verify ChildConnections are also properly typed
-        var childConnections = containerNode.ChildConnections;
+        var childConnections = groupNode.ChildConnections;
         childConnections.Should().NotBeNull();
         childConnections.Should().BeOfType<List<NodeConnection>>("ChildConnections should be deserialized as List<NodeConnection>");
         childConnections.Should().HaveCount(1, "Should have 1 child connection");
@@ -675,7 +675,7 @@ connections: []
     }
 
     [TestMethod]
-    public void LoadFromFile_ContainerParallel_ShouldDeserializeCorrectly()
+    public void LoadFromFile_GroupParallel_ShouldDeserializeCorrectly()
     {
         // Load test YAML file with parallel container
         var yamlPath = Path.Combine(
@@ -695,20 +695,20 @@ connections: []
         // Assert - Workflow structure
         workflow.Should().NotBeNull();
         workflow.WorkflowId.Should().Be("test-container-parallel");
-        workflow.WorkflowName.Should().Be("Test Container with Parallel Children");
+        workflow.WorkflowName.Should().Be("Test Group with Parallel Children");
         workflow.Nodes.Should().HaveCount(3); // start, parallel-container, finish
 
         // Assert - Find container node
-        var containerNode = workflow.Nodes.FirstOrDefault(n => n.NodeId == "parallel-container") as ContainerNodeDefinition;
-        containerNode.Should().NotBeNull("Container node should exist");
-        containerNode!.RuntimeType.Should().Be(RuntimeType.Container);
-        containerNode.NodeName.Should().Be("Parallel Container");
-        containerNode.ExecutionMode.Should().Be(ExecutionMode.Parallel);
+        var groupNode = workflow.Nodes.FirstOrDefault(n => n.NodeId == "parallel-container") as GroupNodeDefinition;
+        groupNode.Should().NotBeNull("Group node should exist");
+        groupNode!.RuntimeType.Should().Be(RuntimeType.Group);
+        groupNode.NodeName.Should().Be("Parallel Group");
+        groupNode.ExecutionMode.Should().Be(ExecutionMode.Parallel);
 
         // Assert - Child nodes
-        var childNodes = containerNode.ChildNodes;
+        var childNodes = groupNode.ChildNodes;
         childNodes.Should().NotBeNull();
-        childNodes.Should().HaveCount(3, "Container should have 3 child nodes");
+        childNodes.Should().HaveCount(3, "Group should have 3 child nodes");
         foreach (var child in childNodes!)
         {
             child.Should().NotBeNull();
@@ -717,7 +717,7 @@ connections: []
         }
 
         // Assert - Child connections (empty for parallel execution)
-        var childConnections = containerNode.ChildConnections;
+        var childConnections = groupNode.ChildConnections;
         childConnections.Should().NotBeNull();
         childConnections.Should().BeEmpty("Parallel execution has no child connections");
 
@@ -728,7 +728,7 @@ connections: []
     }
 
     [TestMethod]
-    public void LoadFromFile_ContainerSequential_ShouldDeserializeWithChildConnections()
+    public void LoadFromFile_GroupSequential_ShouldDeserializeWithChildConnections()
     {
         // Load test YAML file with sequential container and child connections
         var yamlPath = Path.Combine(
@@ -751,18 +751,18 @@ connections: []
         workflow.Connections.Should().HaveCount(2);
 
         // Assert - Container node
-        var containerNode = workflow.Nodes.FirstOrDefault(n => n.NodeId == "sequential-container") as ContainerNodeDefinition;
-        containerNode.Should().NotBeNull();
-        containerNode!.RuntimeType.Should().Be(RuntimeType.Container);
-        containerNode.ExecutionMode.Should().Be(ExecutionMode.Sequential);
+        var groupNode = workflow.Nodes.FirstOrDefault(n => n.NodeId == "sequential-container") as GroupNodeDefinition;
+        groupNode.Should().NotBeNull();
+        groupNode!.RuntimeType.Should().Be(RuntimeType.Group);
+        groupNode.ExecutionMode.Should().Be(ExecutionMode.Sequential);
 
         // Assert - Child nodes
-        var childNodes = containerNode.ChildNodes;
+        var childNodes = groupNode.ChildNodes;
         childNodes.Should().NotBeNull();
         childNodes.Should().HaveCount(3, "Should have 3 sequential steps");
 
         // Child nodes from YAML are dictionaries, not NodeDefinition objects
-        // They get converted by ContainerNode.ParseChildNodes during initialization
+        // They get converted by groupNode.ParseChildNodes during initialization
         foreach (var child in childNodes!)
         {
             child.Should().NotBeNull();
@@ -770,7 +770,7 @@ connections: []
         }
 
         // Assert - Child connections
-        var childConnections = containerNode.ChildConnections;
+        var childConnections = groupNode.ChildConnections;
         childConnections.Should().NotBeNull();
         childConnections.Should().HaveCount(2, "Sequential execution should have 2 connections");
 
@@ -830,9 +830,9 @@ connections: []
     }
 
     [TestMethod]
-    public void LoadFromFile_ContainerWithSubflows_ShouldDeserializeCorrectly()
+    public void LoadFromFile_GroupWithSubflows_ShouldDeserializeCorrectly()
     {
-        // Test container containing subflow child nodes
+        // Test Group containing subflow child nodes
         var yamlPath = Path.Combine(
             Directory.GetCurrentDirectory(),
             "TestData", "WorkflowDefinitions", "container-with-subflows.yaml");
@@ -852,18 +852,18 @@ connections: []
         workflow.Nodes.Should().HaveCount(3);
 
         // Assert - Find container node
-        var containerNode = workflow.Nodes.FirstOrDefault(n => n.NodeId == "deployment-container") as ContainerNodeDefinition;
-        containerNode.Should().NotBeNull();
-        containerNode!.RuntimeType.Should().Be(RuntimeType.Container);
-        containerNode.ExecutionMode.Should().Be(ExecutionMode.Parallel);
+        var groupNode = workflow.Nodes.FirstOrDefault(n => n.NodeId == "deployment-container") as GroupNodeDefinition;
+        groupNode.Should().NotBeNull();
+        groupNode!.RuntimeType.Should().Be(RuntimeType.Group);
+        groupNode.ExecutionMode.Should().Be(ExecutionMode.Parallel);
 
         // Assert - Child nodes (Subflows)
-        var childNodes = containerNode.ChildNodes;
+        var childNodes = groupNode.ChildNodes;
         childNodes.Should().NotBeNull();
         childNodes.Should().HaveCount(3, "Should have 3 subflow children");
 
         // Child nodes from YAML are dictionaries, not NodeDefinition objects
-        // They get converted by ContainerNode.ParseChildNodes during initialization
+        // They get converted by groupNode.ParseChildNodes during initialization
         foreach (var child in childNodes!)
         {
             child.Should().NotBeNull();
@@ -871,13 +871,13 @@ connections: []
         }
 
         // Assert - Child connections (empty for parallel)
-        var childConnections = containerNode.ChildConnections;
+        var childConnections = groupNode.ChildConnections;
         childConnections.Should().NotBeNull();
         childConnections.Should().BeEmpty("Parallel execution has no child connections");
     }
 
     [TestMethod]
-    public void LoadFromFile_ContainerNode_ChildNodesShouldConvertToNodeDefinitions()
+    public void LoadFromFile_GroupNode_ChildNodesShouldConvertToNodeDefinitions()
     {
         // Test that ChildNodes in container are properly deserialized as NodeDefinition objects
         var yamlPath = Path.Combine(
@@ -894,13 +894,13 @@ connections: []
         var workflow = this.serializer.LoadFromFile(yamlPath);
 
         // Assert
-        var containerNode = workflow.Nodes.FirstOrDefault(n => n.NodeId == "parallel-container") as ContainerNodeDefinition;
-        containerNode.Should().NotBeNull();
+        var groupNode = workflow.Nodes.FirstOrDefault(n => n.NodeId == "parallel-container") as GroupNodeDefinition;
+        groupNode.Should().NotBeNull();
 
-        var childList = containerNode!.ChildNodes;
+        var childList = groupNode!.ChildNodes;
         childList.Should().NotBeNull();
         childList.Should().BeOfType<List<NodeDefinition>>("ChildNodes should be deserialized as List<NodeDefinition>");
-        childList.Should().HaveCount(3, "Container should have 3 child nodes");
+        childList.Should().HaveCount(3, "Group should have 3 child nodes");
 
         // Verify each child is a properly typed NodeDefinition
         childList![0].NodeId.Should().Be("child1");
@@ -919,14 +919,14 @@ connections: []
         Console.WriteLine($"All 3 child nodes properly deserialized as NodeDefinition objects");
 
         // Verify ChildConnections are also properly typed
-        var childConnections = containerNode.ChildConnections;
+        var childConnections = groupNode.ChildConnections;
         childConnections.Should().NotBeNull();
         childConnections.Should().BeOfType<List<NodeConnection>>("ChildConnections should be deserialized as List<NodeConnection>");
         childConnections.Should().BeEmpty("Parallel container has no child connections");
     }
 
     [TestMethod]
-    public void LoadFromFile_ContainerSequential_ChildConnectionsShouldHaveProperStructure()
+    public void LoadFromFile_GroupSequential_ChildConnectionsShouldHaveProperStructure()
     {
         // Test that ChildConnections from YAML have proper structure
         var yamlPath = Path.Combine(
@@ -943,10 +943,10 @@ connections: []
         var workflow = this.serializer.LoadFromFile(yamlPath);
 
         // Assert
-        var containerNode = workflow.Nodes.FirstOrDefault(n => n.NodeId == "sequential-container") as ContainerNodeDefinition;
-        containerNode.Should().NotBeNull();
-        var childConnections = containerNode!.ChildConnections;
-        childConnections.Should().HaveCount(2, "Sequential container should have 2 child connections");
+        var groupNode = workflow.Nodes.FirstOrDefault(n => n.NodeId == "sequential-container") as GroupNodeDefinition;
+        groupNode.Should().NotBeNull();
+        var childConnections = groupNode!.ChildConnections;
+        childConnections.Should().HaveCount(2, "Sequential Group should have 2 child connections");
         foreach (var conn in childConnections!)
         {
             conn.Should().NotBeNull();
@@ -956,7 +956,7 @@ connections: []
     }
 
     [TestMethod]
-    public void LoadFromFile_ContainerWithSubflows_SubflowConfigurationShouldBeComplete()
+    public void LoadFromFile_GroupWithSubflows_SubflowConfigurationShouldBeComplete()
     {
         // Test that Subflow nodes inside containers have complete configuration
         var yamlPath = Path.Combine(
@@ -973,12 +973,12 @@ connections: []
         var workflow = this.serializer.LoadFromFile(yamlPath);
 
         // Assert
-        var containerNode = workflow.Nodes.FirstOrDefault(n => n.NodeId == "deployment-container") as ContainerNodeDefinition;
-        containerNode.Should().NotBeNull();
+        var groupNode = workflow.Nodes.FirstOrDefault(n => n.NodeId == "deployment-container") as GroupNodeDefinition;
+        groupNode.Should().NotBeNull();
 
-        var childNodes = containerNode!.ChildNodes;
+        var childNodes = groupNode!.ChildNodes;
         childNodes.Should().NotBeNull();
-        childNodes.Should().HaveCount(3, "Container should have 3 subflow children");
+        childNodes.Should().HaveCount(3, "Group should have 3 subflow children");
 
         // Check first subflow child structure
         var firstChild = childNodes![0] as SubflowNodeDefinition;
@@ -995,7 +995,7 @@ connections: []
     [TestMethod]
     public void LoadFromFile_AzsDeployment_ShouldDeserializeCorrectly()
     {
-        // Test azs_deployment.yaml - Complex workflow with 3 container nodes
+        // Test azs_deployment.yaml - Complex workflow with 3 group nodes
         var yamlPath = Path.Combine(
             Directory.GetCurrentDirectory(),
             "TestData", "WorkflowDefinitions", "azs_deployment.yaml");
@@ -1014,51 +1014,51 @@ connections: []
         workflow.WorkflowId.Should().Be("azs-deployment");
         workflow.WorkflowName.Should().Be("Azure Stack Deployment");
         workflow.Description.Should().Contain("Azure Stack deployment workflow");
-        workflow.Nodes.Should().HaveCount(3, "Should have 3 container nodes");
+        workflow.Nodes.Should().HaveCount(3, "Should have 3 group nodes");
         workflow.Connections.Should().HaveCount(2, "Should have 2 main connections");
 
-        // Assert - Phase 1: Pre-deployment Checks Container
-        var preDeploymentContainer = workflow.Nodes.FirstOrDefault(n => n.NodeId == "pre-deployment-checks") as ContainerNodeDefinition;
-        preDeploymentContainer.Should().NotBeNull();
-        preDeploymentContainer!.RuntimeType.Should().Be(RuntimeType.Container);
-        preDeploymentContainer.NodeName.Should().Be("Pre-Deployment Checks");
-        preDeploymentContainer.ExecutionMode.Should().Be(ExecutionMode.Sequential);
+        // Assert - Phase 1: Pre-deployment Checks Group
+        var preDeploymentGroup = workflow.Nodes.FirstOrDefault(n => n.NodeId == "pre-deployment-checks") as GroupNodeDefinition;
+        preDeploymentGroup.Should().NotBeNull();
+        preDeploymentGroup!.RuntimeType.Should().Be(RuntimeType.Group);
+        preDeploymentGroup.NodeName.Should().Be("Pre-Deployment Checks");
+        preDeploymentGroup.ExecutionMode.Should().Be(ExecutionMode.Sequential);
 
-        var preDeploymentChildren = preDeploymentContainer.ChildNodes;
+        var preDeploymentChildren = preDeploymentGroup.ChildNodes;
         preDeploymentChildren.Should().NotBeNull();
         preDeploymentChildren.Should().HaveCount(3, "Pre-deployment should have 3 checks");
 
-        var preDeploymentConnections = preDeploymentContainer.ChildConnections;
+        var preDeploymentConnections = preDeploymentGroup.ChildConnections;
         preDeploymentConnections.Should().NotBeNull();
         preDeploymentConnections.Should().HaveCount(2, "Sequential execution should have 2 child connections");
 
-        // Assert - Phase 2: Node Deployments Container (Parallel Subflows)
-        var nodeDeploymentsContainer = workflow.Nodes.FirstOrDefault(n => n.NodeId == "node-deployments") as ContainerNodeDefinition;
-        nodeDeploymentsContainer.Should().NotBeNull();
-        nodeDeploymentsContainer!.RuntimeType.Should().Be(RuntimeType.Container);
-        nodeDeploymentsContainer.NodeName.Should().Be("Node Deployments");
-        nodeDeploymentsContainer.ExecutionMode.Should().Be(ExecutionMode.Parallel);
+        // Assert - Phase 2: Node Deployments Group (Parallel Subflows)
+        var nodeDeploymentsGroup = workflow.Nodes.FirstOrDefault(n => n.NodeId == "node-deployments") as GroupNodeDefinition;
+        nodeDeploymentsGroup.Should().NotBeNull();
+        nodeDeploymentsGroup!.RuntimeType.Should().Be(RuntimeType.Group);
+        nodeDeploymentsGroup.NodeName.Should().Be("Node Deployments");
+        nodeDeploymentsGroup.ExecutionMode.Should().Be(ExecutionMode.Parallel);
 
-        var nodeDeploymentChildren = nodeDeploymentsContainer.ChildNodes;
+        var nodeDeploymentChildren = nodeDeploymentsGroup.ChildNodes;
         nodeDeploymentChildren.Should().NotBeNull();
         nodeDeploymentChildren.Should().HaveCount(3, "Should have 3 parallel subflow deployments");
 
-        var nodeDeploymentConnections = nodeDeploymentsContainer.ChildConnections;
+        var nodeDeploymentConnections = nodeDeploymentsGroup.ChildConnections;
         nodeDeploymentConnections.Should().NotBeNull();
         nodeDeploymentConnections.Should().BeEmpty("Parallel execution should have no child connections");
 
-        // Assert - Phase 3: Post-deployment Health Checks Container
-        var healthChecksContainer = workflow.Nodes.FirstOrDefault(n => n.NodeId == "health-checks") as ContainerNodeDefinition;
-        healthChecksContainer.Should().NotBeNull();
-        healthChecksContainer!.RuntimeType.Should().Be(RuntimeType.Container);
-        healthChecksContainer.NodeName.Should().Be("Post-Deployment Health Checks");
-        healthChecksContainer.ExecutionMode.Should().Be(ExecutionMode.Sequential);
+        // Assert - Phase 3: Post-deployment Health Checks Group
+        var healthChecksGroup = workflow.Nodes.FirstOrDefault(n => n.NodeId == "health-checks") as GroupNodeDefinition;
+        healthChecksGroup.Should().NotBeNull();
+        healthChecksGroup!.RuntimeType.Should().Be(RuntimeType.Group);
+        healthChecksGroup.NodeName.Should().Be("Post-Deployment Health Checks");
+        healthChecksGroup.ExecutionMode.Should().Be(ExecutionMode.Sequential);
 
-        var healthCheckChildren = healthChecksContainer.ChildNodes;
+        var healthCheckChildren = healthChecksGroup.ChildNodes;
         healthCheckChildren.Should().NotBeNull();
         healthCheckChildren.Should().HaveCount(4, "Health checks should have 4 service checks");
 
-        var healthCheckConnections = healthChecksContainer.ChildConnections;
+        var healthCheckConnections = healthChecksGroup.ChildConnections;
         healthCheckConnections.Should().NotBeNull();
         healthCheckConnections.Should().HaveCount(3, "Sequential execution should have 3 child connections");
 

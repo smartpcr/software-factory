@@ -13,7 +13,7 @@ The golden-file harness verifies that fixture triplets round-trip correctly thro
 ```
 src/WorkflowUi.ContractTests/
 ├── Fixtures/mapper/
-│   ├── task/          (Noop, CSharp, CSharpScript, CSharpTask, PowerShell, PowerShellTask)
+│   ├── task/          (Setter, CSharp, CSharpScript, CSharpTask, PowerShell, PowerShellTask)
 │   ├── control/       (IfElse, Switch, ForEach, While)
 │   ├── composition/   (Subflow, Timer, Container)
 │   └── connections/   (multi-message-type connection fixtures)

@@ -78,7 +78,7 @@ public sealed class CapturingLoggerProvider : ILoggerProvider
 
             var previous = this.currentScope.Value;
             this.currentScope.Value = scopeItems;
-            return new ScopeDisposable(() => this.currentScope.Value = previous);
+            return new ScopeDisposable(() => this.currentScope.Value = previous!);
         }
 
         public bool IsEnabled(LogLevel logLevel) => true;

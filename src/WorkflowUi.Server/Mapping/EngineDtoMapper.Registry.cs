@@ -24,7 +24,8 @@ public static partial class EngineDtoMapper
     {
         return source switch
         {
-            NoopNodeDefinition noop => MapNoop(noop),
+            SetterNodeDefinition setter => MapSetter(setter),
+            AssertNodeDefinition assert => MapAssert(assert),
             CSharpNodeDefinition csharp => MapCSharp(csharp),
             CSharpScriptNodeDefinition csharpScript => MapCSharpScript(csharpScript),
             CSharpTaskNodeDefinition csharpTask => MapCSharpTask(csharpTask),
@@ -36,7 +37,7 @@ public static partial class EngineDtoMapper
             WhileNodeDefinition wh => MapWhile(wh),
             SubflowNodeDefinition subflow => MapSubflow(subflow),
             TimerNodeDefinition timer => MapTimer(timer),
-            ContainerNodeDefinition container => MapContainer(container),
+            GroupNodeDefinition group => MapGroup(group),
             _ => throw new ArgumentException($"Unsupported node definition type: {source.GetType().Name}"),
         };
     }
@@ -48,7 +49,8 @@ public static partial class EngineDtoMapper
     {
         return dto.RuntimeType switch
         {
-            "Noop" => MapNoopFromDto(dto),
+            "Setter" => MapSetterFromDto(dto),
+            "Assert" => MapAssertFromDto(dto),
             "CSharp" => MapCSharpFromDto(dto),
             "CSharpScript" => MapCSharpScriptFromDto(dto),
             "CSharpTask" => MapCSharpTaskFromDto(dto),
@@ -60,7 +62,7 @@ public static partial class EngineDtoMapper
             "While" => MapWhileFromDto(dto),
             "Subflow" => MapSubflowFromDto(dto),
             "Timer" => MapTimerFromDto(dto),
-            "Container" => MapContainerFromDto(dto),
+            "Group" => MapGroupFromDto(dto),
             _ => throw new ArgumentException($"Unsupported runtime type: {dto.RuntimeType}"),
         };
     }
@@ -142,9 +144,11 @@ public static partial class EngineDtoMapper
     /// </summary>
     public static readonly IReadOnlyList<string> SupportedRuntimeTypes =
     [
-        "Noop", "CSharp", "CSharpScript", "CSharpTask",
+        "Setter", "Assert", "CSharp", "CSharpScript", "CSharpTask",
         "PowerShell", "PowerShellTask",
         "IfElse", "ForEach", "While", "Switch",
-        "Subflow", "Timer", "Container",
+        "Subflow", "Timer", "Group",
+        "Start", "Trigger", "Action", "HttpRequest",
+        "Transform", "Delay", "Log", "AI", "End", "Parallel",
     ];
 }

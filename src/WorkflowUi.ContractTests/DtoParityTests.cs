@@ -61,11 +61,12 @@ public class DtoParityTests
     }
 
     [Fact]
-    public void NoopNodeDefinition_HasZeroExtraProperties()
+    public void SetterNodeDefinition_HasVariableMappingsProperty()
     {
-        var props = GetPropertyNames(typeof(NoopNodeDefinition));
-        // Only RuntimeType override, which is filtered out
-        Assert.Empty(props.Where(n => n != "RuntimeType"));
+        var props = GetPropertyNames(typeof(SetterNodeDefinition));
+        var extra = props.Where(n => n != "RuntimeType").ToList();
+        Assert.Single(extra);
+        Assert.Contains("VariableMappings", extra);
     }
 
     [Fact]
@@ -170,12 +171,12 @@ public class DtoParityTests
     }
 
     [Fact]
-    public void ContainerNodeDefinition_HasExactly3Properties_AndExecutionModeDefaultIsSequential()
+    public void GroupNodeDefinition_HasExactly3Properties_AndExecutionModeDefaultIsSequential()
     {
-        var props = GetPropertyNames(typeof(ContainerNodeDefinition));
+        var props = GetPropertyNames(typeof(GroupNodeDefinition));
         var nonRuntime = props.Where(n => n != "RuntimeType").ToArray();
         Assert.Equal(3, nonRuntime.Length);
-        var instance = new ContainerNodeDefinition();
+        var instance = new GroupNodeDefinition();
         Assert.Equal(ExecutionMode.Sequential, instance.ExecutionMode);
     }
 

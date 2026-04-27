@@ -189,6 +189,7 @@ public class EngineEventBridge
             {
                 ["nodeInstanceId"] = e.NodeInstanceId.ToString(),
                 ["errorMessage"] = e.ErrorMessage,
+                ["duration"] = XmlConvert.ToString(e.Duration),
             },
         };
     }

@@ -1,0 +1,25 @@
+/* Forge UI — verbatim port of docs/examples/forge-board.html.
+ * Do not modify; section banners and rule order match the prototype byte-for-byte.
+ * See docs/forge_implementation.md (Phase 0.4).
+ */
+
+@import './reset.css';
+@import './theme.css';
+@import './shell.css';
+@import './sidebar.css';
+@import './main.css';
+@import './filter-bar.css';
+@import './board.css';
+@import './timeline.css';
+@import './workstream.css';
+@import './pr.css';
+@import './overview.css';
+@import './detail-panel.css';
+@import './toast-modal.css';
+@import './swarm.css';
+@import './policies.css';
+@import './cost.css';
+@import './performance.css';
+@import './sprints.css';
+@import './live-execution.css';
+@import './inbox.css';

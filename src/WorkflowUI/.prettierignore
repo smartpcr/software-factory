@@ -1,4 +1,0 @@
-dist/
-node_modules/
-*.generated.ts
-src/__fixtures__/

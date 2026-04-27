@@ -22,7 +22,7 @@ public class EngineDtoMapperBaseTests
     [Fact]
     public void MapBase_roundtrips_all_shared_fields()
     {
-        var source = new NoopNodeDefinition
+        var source = new SetterNodeDefinition
         {
             NodeId = "node-1",
             NodeName = "Test Node",
@@ -35,8 +35,8 @@ public class EngineDtoMapperBaseTests
             Configuration = new Dictionary<string, object> { ["key1"] = "value1" },
         };
 
-        var dto = EngineDtoMapper.MapNoop(source);
-        var roundTripped = EngineDtoMapper.MapNoopFromDto(dto);
+        var dto = EngineDtoMapper.MapSetter(source);
+        var roundTripped = EngineDtoMapper.MapSetterFromDto(dto);
 
         Assert.Equal(source.NodeId, roundTripped.NodeId);
         Assert.Equal(source.NodeName, roundTripped.NodeName);
@@ -52,7 +52,7 @@ public class EngineDtoMapperBaseTests
     [Fact]
     public void MapBase_roundtrips_retry_policy_populated()
     {
-        var source = new NoopNodeDefinition
+        var source = new SetterNodeDefinition
         {
             NodeId = "retry-test",
             NodeName = "Retry Test",
@@ -68,14 +68,14 @@ public class EngineDtoMapperBaseTests
             },
         };
 
-        var dto = EngineDtoMapper.MapNoop(source);
+        var dto = EngineDtoMapper.MapSetter(source);
         Assert.NotNull(dto.RetryPolicy);
         Assert.Equal("Exponential", dto.RetryPolicy!.Strategy);
         Assert.Equal(5, dto.RetryPolicy.MaxAttempts);
         Assert.Single(dto.RetryPolicy.RetryOn);
         Assert.Single(dto.RetryPolicy.DoNotRetryOn);
 
-        var roundTripped = EngineDtoMapper.MapNoopFromDto(dto);
+        var roundTripped = EngineDtoMapper.MapSetterFromDto(dto);
         Assert.NotNull(roundTripped.RetryPolicy);
         Assert.Equal(RetryStrategy.Exponential, roundTripped.RetryPolicy!.Strategy);
         Assert.Equal(5, roundTripped.RetryPolicy.MaxAttempts);
@@ -87,24 +87,24 @@ public class EngineDtoMapperBaseTests
     [Fact]
     public void MapBase_roundtrips_retry_policy_null()
     {
-        var source = new NoopNodeDefinition
+        var source = new SetterNodeDefinition
         {
             NodeId = "no-retry",
             NodeName = "No Retry",
             RetryPolicy = null,
         };
 
-        var dto = EngineDtoMapper.MapNoop(source);
+        var dto = EngineDtoMapper.MapSetter(source);
         Assert.Null(dto.RetryPolicy);
 
-        var roundTripped = EngineDtoMapper.MapNoopFromDto(dto);
+        var roundTripped = EngineDtoMapper.MapSetterFromDto(dto);
         Assert.Null(roundTripped.RetryPolicy);
     }
 
     [Fact]
     public void MapBase_roundtrips_circuit_breaker_populated()
     {
-        var source = new NoopNodeDefinition
+        var source = new SetterNodeDefinition
         {
             NodeId = "cb-test",
             NodeName = "CB Test",
@@ -117,11 +117,11 @@ public class EngineDtoMapperBaseTests
             },
         };
 
-        var dto = EngineDtoMapper.MapNoop(source);
+        var dto = EngineDtoMapper.MapSetter(source);
         Assert.NotNull(dto.CircuitBreakerPolicy);
         Assert.Equal(75, dto.CircuitBreakerPolicy!.FailureThreshold);
 
-        var roundTripped = EngineDtoMapper.MapNoopFromDto(dto);
+        var roundTripped = EngineDtoMapper.MapSetterFromDto(dto);
         Assert.NotNull(roundTripped.CircuitBreakerPolicy);
         Assert.Equal(75, roundTripped.CircuitBreakerPolicy!.FailureThreshold);
         Assert.Equal(5, roundTripped.CircuitBreakerPolicy.HalfOpenSuccesses);
@@ -132,17 +132,17 @@ public class EngineDtoMapperBaseTests
     [Fact]
     public void MapBase_roundtrips_circuit_breaker_null()
     {
-        var source = new NoopNodeDefinition
+        var source = new SetterNodeDefinition
         {
             NodeId = "no-cb",
             NodeName = "No CB",
             CircuitBreakerPolicy = null,
         };
 
-        var dto = EngineDtoMapper.MapNoop(source);
+        var dto = EngineDtoMapper.MapSetter(source);
         Assert.Null(dto.CircuitBreakerPolicy);
 
-        var roundTripped = EngineDtoMapper.MapNoopFromDto(dto);
+        var roundTripped = EngineDtoMapper.MapSetterFromDto(dto);
         Assert.Null(roundTripped.CircuitBreakerPolicy);
     }
 
@@ -152,7 +152,7 @@ public class EngineDtoMapperBaseTests
         var retryOn = typeof(TimeoutException);
         var doNotRetryOn = typeof(ArgumentException);
 
-        var source = new NoopNodeDefinition
+        var source = new SetterNodeDefinition
         {
             NodeId = "fqtn-test",
             NodeName = "FQTN Test",
@@ -164,13 +164,13 @@ public class EngineDtoMapperBaseTests
             },
         };
 
-        var dto = EngineDtoMapper.MapNoop(source);
+        var dto = EngineDtoMapper.MapSetter(source);
         Assert.Single(dto.RetryPolicy!.RetryOn);
         Assert.Single(dto.RetryPolicy.DoNotRetryOn);
         Assert.Contains("TimeoutException", dto.RetryPolicy.RetryOn[0]);
         Assert.Contains("ArgumentException", dto.RetryPolicy.DoNotRetryOn[0]);
 
-        var roundTripped = EngineDtoMapper.MapNoopFromDto(dto);
+        var roundTripped = EngineDtoMapper.MapSetterFromDto(dto);
         Assert.Single(roundTripped.RetryPolicy!.RetryOn);
         Assert.Single(roundTripped.RetryPolicy.DoNotRetryOn);
         Assert.Equal(typeof(TimeoutException), roundTripped.RetryPolicy.RetryOn[0]);
@@ -180,23 +180,23 @@ public class EngineDtoMapperBaseTests
     [Fact]
     public void Registry_dispatches_all_13_runtime_types()
     {
-        Assert.Equal(13, EngineDtoMapper.SupportedRuntimeTypes.Count);
+        Assert.Equal(23, EngineDtoMapper.SupportedRuntimeTypes.Count);
     }
 
     [Fact]
     public void MapToDto_and_MapFromDto_roundtrip_noop()
     {
-        var source = new NoopNodeDefinition
+        var source = new SetterNodeDefinition
         {
             NodeId = "noop-rt",
-            NodeName = "Noop RT",
+            NodeName = "Setter RT",
         };
 
         var dto = EngineDtoMapper.MapToDto(source);
-        Assert.Equal("Noop", dto.RuntimeType);
+        Assert.Equal("Setter", dto.RuntimeType);
 
         var roundTripped = EngineDtoMapper.MapFromDto(dto);
-        Assert.IsType<NoopNodeDefinition>(roundTripped);
+        Assert.IsType<SetterNodeDefinition>(roundTripped);
         Assert.Equal("noop-rt", roundTripped.NodeId);
     }
 
@@ -210,7 +210,7 @@ public class EngineDtoMapperBaseTests
     [Fact]
     public void Duration_uses_iso8601_format()
     {
-        var source = new NoopNodeDefinition
+        var source = new SetterNodeDefinition
         {
             NodeId = "dur-test",
             NodeName = "Duration Test",
@@ -226,7 +226,7 @@ public class EngineDtoMapperBaseTests
             },
         };
 
-        var dto = EngineDtoMapper.MapNoop(source);
+        var dto = EngineDtoMapper.MapSetter(source);
 
         // Verify durations use ISO-8601 format (PT*S, PT*M, etc.)
         Assert.Equal("PT2S", dto.RetryPolicy!.InitialDelay);
@@ -234,7 +234,7 @@ public class EngineDtoMapperBaseTests
         Assert.Equal("PT30S", dto.CircuitBreakerPolicy!.OpenDuration);
 
         // Verify round-trip
-        var rt = EngineDtoMapper.MapNoopFromDto(dto);
+        var rt = EngineDtoMapper.MapSetterFromDto(dto);
         Assert.Equal(TimeSpan.FromSeconds(2), rt.RetryPolicy!.InitialDelay);
         Assert.Equal(TimeSpan.FromMinutes(1), rt.RetryPolicy.MaxDelay);
         Assert.Equal(TimeSpan.FromSeconds(30), rt.CircuitBreakerPolicy!.OpenDuration);
@@ -243,7 +243,7 @@ public class EngineDtoMapperBaseTests
     [Fact]
     public void Duration_preserves_values_greater_than_24_hours()
     {
-        var source = new NoopNodeDefinition
+        var source = new SetterNodeDefinition
         {
             NodeId = "long-dur",
             NodeName = "Long Duration",
@@ -259,7 +259,7 @@ public class EngineDtoMapperBaseTests
             },
         };
 
-        var dto = EngineDtoMapper.MapNoop(source);
+        var dto = EngineDtoMapper.MapSetter(source);
 
         // ISO-8601 durations preserve >24h using day components
         Assert.Equal("P1DT1H", dto.RetryPolicy!.InitialDelay);
@@ -267,7 +267,7 @@ public class EngineDtoMapperBaseTests
         Assert.Equal("P1DT12H", dto.CircuitBreakerPolicy!.OpenDuration);
 
         // Verify round-trip
-        var rt = EngineDtoMapper.MapNoopFromDto(dto);
+        var rt = EngineDtoMapper.MapSetterFromDto(dto);
         Assert.Equal(TimeSpan.FromHours(25), rt.RetryPolicy!.InitialDelay);
         Assert.Equal(TimeSpan.FromDays(2), rt.RetryPolicy.MaxDelay);
         Assert.Equal(TimeSpan.FromHours(36), rt.CircuitBreakerPolicy!.OpenDuration);
@@ -310,7 +310,7 @@ public class EngineDtoMapperBaseTests
             [
                 new NodeDto
                 {
-                    RuntimeType = "Noop",
+                    RuntimeType = "Setter",
                     NodeId = "n1",
                     NodeName = "N1",
                     JoinType = "Any",

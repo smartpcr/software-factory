@@ -121,19 +121,19 @@ namespace ExecutionEngine.IntegrationTests.Features
             return new global::Reqnroll.Formatters.RuntimeSupport.FeatureLevelCucumberMessages("Features/AdvancedFeatures.feature.ndjson", 23);
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 7, DisplayName="Container node execution")]
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Container node execution")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 7, DisplayName="Group node execution")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Group node execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("smoke")]
-        public async global::System.Threading.Tasks.Task ContainerNodeExecution()
+        public async global::System.Threading.Tasks.Task GroupNodeExecution()
         {
             string[] tagsOfScenario = new string[] {
                     "integration",
                     "smoke"};
             global::System.Collections.Specialized.OrderedDictionary argumentsOfScenario = new global::System.Collections.Specialized.OrderedDictionary();
             string pickleIndex = "0";
-            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("Container node execution", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
+            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("Group node execution", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
 #line 7
@@ -147,8 +147,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             {
                 await this.ScenarioStartAsync();
 #line 8
-    await testRunner.GivenAsync("I have a Container node \"MainContainer\" with child nodes \"Child1\", \"Child2\", \"Chi" +
-                        "ld3\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
+    await testRunner.GivenAsync("I have a Group node \"MainGroup\" with child nodes \"Child1\", \"Child2\", \"Child3\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
 #line hidden
 #line 9
     await testRunner.AndAsync("\"Child1\" connects to \"Child2\" on Complete", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
@@ -160,16 +159,16 @@ namespace ExecutionEngine.IntegrationTests.Features
     await testRunner.WhenAsync("I start the workflow", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
 #line 12
-    await testRunner.ThenAsync("the container should start all entry point children", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
+    await testRunner.ThenAsync("the group should start all entry point children", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
 #line 13
     await testRunner.AndAsync("\"Child1\", \"Child2\", \"Child3\" should execute in order", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
 #line 14
-    await testRunner.AndAsync("the container should complete when all children are done", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
+    await testRunner.AndAsync("the group should complete when all children are done", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
 #line 15
-    await testRunner.AndAsync("container output should contain ChildResults with all child data", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
+    await testRunner.AndAsync("group output should contain ChildResults with all child data", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
 #line 16
     await testRunner.AndAsync("the workflow should complete successfully", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
@@ -178,17 +177,17 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 19, DisplayName="Container completes when all children complete")]
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Container completes when all children complete")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 19, DisplayName="Group completes when all children complete")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Group completes when all children complete")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
-        public async global::System.Threading.Tasks.Task ContainerCompletesWhenAllChildrenComplete()
+        public async global::System.Threading.Tasks.Task GroupCompletesWhenAllChildrenComplete()
         {
             string[] tagsOfScenario = new string[] {
                     "integration"};
             global::System.Collections.Specialized.OrderedDictionary argumentsOfScenario = new global::System.Collections.Specialized.OrderedDictionary();
             string pickleIndex = "1";
-            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("Container completes when all children complete", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
+            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("Group completes when all children complete", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
 #line 19
@@ -202,19 +201,19 @@ namespace ExecutionEngine.IntegrationTests.Features
             {
                 await this.ScenarioStartAsync();
 #line 20
-    await testRunner.GivenAsync("I have a Container with 5 parallel child nodes", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
+    await testRunner.GivenAsync("I have a Group with 5 parallel child nodes", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
 #line hidden
 #line 21
     await testRunner.WhenAsync("I start the workflow", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
 #line 22
-    await testRunner.ThenAsync("the container should wait for all children to complete", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
+    await testRunner.ThenAsync("the group should wait for all children to complete", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
 #line 23
-    await testRunner.AndAsync("the container status should be \"Running\" while children execute", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
+    await testRunner.AndAsync("the group status should be \"Running\" while children execute", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
 #line 24
-    await testRunner.AndAsync("the container should complete after the last child completes", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
+    await testRunner.AndAsync("the group should complete after the last child completes", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
 #line 25
     await testRunner.AndAsync("ChildResults should contain results from all 5 children", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
@@ -223,19 +222,19 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 28, DisplayName="Container fails if any child fails")]
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Container fails if any child fails")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 28, DisplayName="Group fails if any child fails")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Group fails if any child fails")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("errorhandling")]
-        public async global::System.Threading.Tasks.Task ContainerFailsIfAnyChildFails()
+        public async global::System.Threading.Tasks.Task GroupFailsIfAnyChildFails()
         {
             string[] tagsOfScenario = new string[] {
                     "integration",
                     "errorhandling"};
             global::System.Collections.Specialized.OrderedDictionary argumentsOfScenario = new global::System.Collections.Specialized.OrderedDictionary();
             string pickleIndex = "2";
-            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("Container fails if any child fails", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
+            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("Group fails if any child fails", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
 #line 28
@@ -249,7 +248,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             {
                 await this.ScenarioStartAsync();
 #line 29
-    await testRunner.GivenAsync("I have a Container with child nodes \"A\", \"B\", \"C\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
+    await testRunner.GivenAsync("I have a Group with child nodes \"A\", \"B\", \"C\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
 #line hidden
 #line 30
     await testRunner.AndAsync("\"B\" is configured to fail", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
@@ -261,10 +260,10 @@ namespace ExecutionEngine.IntegrationTests.Features
     await testRunner.ThenAsync("\"B\" should fail", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
 #line 33
-    await testRunner.AndAsync("the container should fail when \"B\" fails", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
+    await testRunner.AndAsync("the group should fail when \"B\" fails", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
 #line 34
-    await testRunner.AndAsync("the container error should indicate child failure", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
+    await testRunner.AndAsync("the group error should indicate child failure", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
 #line 35
     await testRunner.AndAsync("remaining children may or may not complete based on error strategy", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
@@ -554,17 +553,17 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 103, DisplayName="Nested container execution")]
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Nested container execution")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 103, DisplayName="Nested group execution")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Nested group execution")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
-        public async global::System.Threading.Tasks.Task NestedContainerExecution()
+        public async global::System.Threading.Tasks.Task NestedGroupExecution()
         {
             string[] tagsOfScenario = new string[] {
                     "integration"};
             global::System.Collections.Specialized.OrderedDictionary argumentsOfScenario = new global::System.Collections.Specialized.OrderedDictionary();
             string pickleIndex = "9";
-            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("Nested container execution", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
+            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("Nested group execution", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
 #line 103
@@ -578,7 +577,7 @@ namespace ExecutionEngine.IntegrationTests.Features
             {
                 await this.ScenarioStartAsync();
 #line 104
-    await testRunner.GivenAsync("I have an outer Container \"Outer\" with child Container \"Inner\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
+    await testRunner.GivenAsync("I have an outer Group \"Outer\" with child Group \"Inner\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
 #line hidden
 #line 105
     await testRunner.AndAsync("\"Inner\" has child nodes \"A\", \"B\", \"C\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
@@ -590,7 +589,7 @@ namespace ExecutionEngine.IntegrationTests.Features
     await testRunner.WhenAsync("I start the workflow", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
 #line 108
-    await testRunner.ThenAsync("\"Inner\" container should execute as a child of \"Outer\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
+    await testRunner.ThenAsync("\"Inner\" group should execute as a child of \"Outer\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
 #line 109
     await testRunner.AndAsync("\"A\", \"B\", \"C\" should execute within \"Inner\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
@@ -605,23 +604,23 @@ namespace ExecutionEngine.IntegrationTests.Features
     await testRunner.AndAsync("\"Outer\" should complete when both \"Inner\" and \"D\" complete", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
 #line 113
-    await testRunner.AndAsync("ChildResults should be aggregated at each container level", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
+    await testRunner.AndAsync("ChildResults should be aggregated at each group level", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
             }
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 116, DisplayName="Multi-level nested containers")]
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Multi-level nested containers")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 116, DisplayName="Multi-level nested groups")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Multi-level nested groups")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
-        public async global::System.Threading.Tasks.Task Multi_LevelNestedContainers()
+        public async global::System.Threading.Tasks.Task Multi_LevelNestedGroups()
         {
             string[] tagsOfScenario = new string[] {
                     "integration"};
             global::System.Collections.Specialized.OrderedDictionary argumentsOfScenario = new global::System.Collections.Specialized.OrderedDictionary();
             string pickleIndex = "10";
-            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("Multi-level nested containers", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
+            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("Multi-level nested groups", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
 #line 116
@@ -636,7 +635,7 @@ namespace ExecutionEngine.IntegrationTests.Features
                 await this.ScenarioStartAsync();
                 global::Reqnroll.Table table3 = new global::Reqnroll.Table(new string[] {
                             "Level",
-                            "Container",
+                            "Group",
                             "Children"});
                 table3.AddRow(new string[] {
                             "1",
@@ -655,7 +654,7 @@ namespace ExecutionEngine.IntegrationTests.Features
                             "Level4A",
                             "TaskA, TaskB, TaskC"});
 #line 117
-    await testRunner.GivenAsync("I have containers nested 4 levels deep:", ((string)(null)), table3, "Given ");
+    await testRunner.GivenAsync("I have groups nested 4 levels deep:", ((string)(null)), table3, "Given ");
 #line hidden
 #line 123
     await testRunner.WhenAsync("I start the workflow", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
@@ -1071,17 +1070,17 @@ namespace ExecutionEngine.IntegrationTests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 213, DisplayName="Subflow with container children")]
-        [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Subflow with container children")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestMethodAttribute(callerLineNumber: 213, DisplayName="Subflow with group children")]
+        [global::Microsoft.VisualStudio.TestTools.UnitTesting.DescriptionAttribute("Subflow with group children")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestPropertyAttribute("FeatureTitle", "Advanced Features")]
         [global::Microsoft.VisualStudio.TestTools.UnitTesting.TestCategoryAttribute("integration")]
-        public async global::System.Threading.Tasks.Task SubflowWithContainerChildren()
+        public async global::System.Threading.Tasks.Task SubflowWithGroupChildren()
         {
             string[] tagsOfScenario = new string[] {
                     "integration"};
             global::System.Collections.Specialized.OrderedDictionary argumentsOfScenario = new global::System.Collections.Specialized.OrderedDictionary();
             string pickleIndex = "19";
-            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("Subflow with container children", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
+            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("Subflow with group children", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
 #line 213
@@ -1095,10 +1094,10 @@ namespace ExecutionEngine.IntegrationTests.Features
             {
                 await this.ScenarioStartAsync();
 #line 214
-    await testRunner.GivenAsync("I have a Subflow node that loads a workflow containing Containers", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
+    await testRunner.GivenAsync("I have a Subflow node that loads a workflow containing Groups", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
 #line hidden
 #line 215
-    await testRunner.AndAsync("the subflow\'s workflow has nested containers", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
+    await testRunner.AndAsync("the subflow\'s workflow has nested groups", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
 #line 216
     await testRunner.WhenAsync("I execute the subflow", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
@@ -1107,10 +1106,10 @@ namespace ExecutionEngine.IntegrationTests.Features
     await testRunner.ThenAsync("the external workflow should load correctly", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
 #line 218
-    await testRunner.AndAsync("containers within the subflow should execute", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
+    await testRunner.AndAsync("groups within the subflow should execute", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
 #line 219
-    await testRunner.AndAsync("container children should execute correctly", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
+    await testRunner.AndAsync("group children should execute correctly", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
 #line 220
     await testRunner.AndAsync("the subflow should aggregate all results", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
@@ -1151,8 +1150,8 @@ namespace ExecutionEngine.IntegrationTests.Features
                             "Feature",
                             "Description"});
                 table4.AddRow(new string[] {
-                            "Containers",
-                            "3 container nodes with children"});
+                            "Groups",
+                            "3 group nodes with children"});
                 table4.AddRow(new string[] {
                             "Subflows",
                             "2 subflow calls to external workflows"});

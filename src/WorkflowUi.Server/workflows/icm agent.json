@@ -1,0 +1,188 @@
+{
+  "workflowId": "wf_mby2qdn",
+  "workflowName": "icm agent",
+  "description": "",
+  "version": "1.0",
+  "entryPointNodeId": null,
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0,
+  "defaultVariables": {},
+  "metadata": {},
+  "nodes": [
+    {
+      "nodeId": "n_jwecixd",
+      "runtimeType": "start",
+      "nodeName": "timer",
+      "description": "",
+      "configuration": {
+        "triggerType": "Schedule",
+        "schedule": "0 * * * *",
+        "eventName": "",
+        "webHookMethod": "POST",
+        "webHookRoute": "",
+        "bodyJsonSchema": ""
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_w2s7rw0",
+      "runtimeType": "AI",
+      "nodeName": "get team incidents",
+      "description": "",
+      "configuration": {
+        "mode": "Skill",
+        "backend": "Copilot",
+        "skillName": "open-icm",
+        "subAgentName": "",
+        "model": "claude-sonnet-4.6",
+        "userPrompt": "",
+        "systemPrompt": "",
+        "inputMapping": "input",
+        "inputBindings": "{\"Query\":\"static:https://portal.microsofticm.com/imp/v3/incidents/search/advanced?cq=AssignedToMyTeams\",\"Limit\":\"static:25\",\"OutputBase\":\"static:E:\\\\icms\",\"Headless\":\"static:\"}",
+        "outputKey": "result",
+        "confidence": 70,
+        "maxTokens": 4096,
+        "scenario": "QueryUrl"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_5v7lmrw",
+      "runtimeType": "ForEach",
+      "nodeName": "ForEach",
+      "description": "",
+      "configuration": {
+        "collectionExpression": "{incidentFolders}",
+        "itemVariableName": "incidentFolder",
+        "collectionVariable": "incidentFolders",
+        "itemVariable": "incidentFolder"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_o4jfqfv",
+      "runtimeType": "Transform",
+      "nodeName": "Transform",
+      "description": "",
+      "configuration": {
+        "expression": "input"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_iqcmyv8",
+      "runtimeType": "Subflow",
+      "nodeName": "Subflow",
+      "description": "",
+      "configuration": {
+        "workflowFilePath": "",
+        "workflowDefinition": "",
+        "inputMappings": "System.Collections.Generic.Dictionary`2[System.String,System.String]",
+        "outputMappings": "System.Collections.Generic.Dictionary`2[System.String,System.String]",
+        "timeout": "00:05:00",
+        "skipValidation": false,
+        "workflowId": "wf_s3nrgkd"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    }
+  ],
+  "connections": [
+    {
+      "sourceNodeId": "n_jwecixd",
+      "targetNodeId": "n_w2s7rw0",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_w2s7rw0",
+      "targetNodeId": "n_5v7lmrw",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_o4jfqfv",
+      "targetNodeId": "n_5v7lmrw",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_5v7lmrw",
+      "targetNodeId": "n_o4jfqfv",
+      "sourcePort": "LoopBody",
+      "targetPort": "in",
+      "triggerMessageType": "Next",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_o4jfqfv",
+      "targetNodeId": "n_iqcmyv8",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_iqcmyv8",
+      "targetNodeId": "n_5v7lmrw",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    }
+  ]
+}

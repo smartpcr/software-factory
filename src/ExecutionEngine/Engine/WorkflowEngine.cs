@@ -104,13 +104,26 @@ namespace ExecutionEngine.Engine
 
         /// <summary>
         /// Event raised when a node completes successfully.
+        /// Parameters: nodeId, instanceId, duration, inputData, outputData, globalVariables snapshot.
         /// </summary>
         public event Action<string, Guid, TimeSpan>? NodeCompleted;
 
         /// <summary>
-        /// Event raised when a node fails during execution.
+        /// Extended event raised when a node completes with full context data.
         /// </summary>
-        public event Action<string, Guid, string>? NodeFailed;
+        public event Action<string, Guid, TimeSpan, Dictionary<string, object>?, Dictionary<string, object>?, Dictionary<string, object>?>? NodeCompletedEx;
+
+        /// <summary>
+        /// Event raised when a node fails during execution.
+        /// Parameters: nodeId, instanceId, errorMessage, duration.
+        /// </summary>
+        public event Action<string, Guid, string, TimeSpan>? NodeFailed;
+
+        /// <summary>
+        /// Extended event raised when a node fails with full context data.
+        /// Parameters: nodeId, instanceId, errorMessage, duration, inputData, globalVariables.
+        /// </summary>
+        public event Action<string, Guid, string, TimeSpan, Dictionary<string, object>?, Dictionary<string, object>?>? NodeFailedEx;
 
         /// <summary>
         /// Event raised when a node is cancelled.
@@ -129,12 +142,22 @@ namespace ExecutionEngine.Engine
             TimeSpan? timeout = null,
             CancellationToken cancellationToken = default)
         {
-            return await this.StartAsync(workflowDefinition, [], timeout, cancellationToken);
+            return await this.StartAsync(workflowDefinition, [], null, timeout, cancellationToken);
         }
 
         public async Task<WorkflowExecutionContext> StartAsync(
             WorkflowDefinition workflowDefinition,
             Dictionary<string, object> initialVariables,
+            TimeSpan? timeout = null,
+            CancellationToken cancellationToken = default)
+        {
+            return await this.StartAsync(workflowDefinition, initialVariables, null, timeout, cancellationToken);
+        }
+
+        public async Task<WorkflowExecutionContext> StartAsync(
+            WorkflowDefinition workflowDefinition,
+            Dictionary<string, object> initialVariables,
+            Guid? instanceId,
             TimeSpan? timeout = null,
             CancellationToken cancellationToken = default)
         {
@@ -162,7 +185,7 @@ namespace ExecutionEngine.Engine
                 }
 
                 // Execute the workflow with initial variables
-                var context = await this.ExecuteAsync(workflowDefinition, initialVariables, workflowCts.Token);
+                var context = await this.ExecuteAsync(workflowDefinition, initialVariables, instanceId, workflowCts.Token);
                 workflowInstanceId = context.InstanceId;
 
                 // Track active workflow (InstanceId is auto-generated in WorkflowExecutionContext constructor)
@@ -528,24 +551,25 @@ namespace ExecutionEngine.Engine
             WorkflowDefinition workflowDefinition,
             CancellationToken cancellationToken = default)
         {
-            return await this.ExecuteAsync(workflowDefinition, [], cancellationToken);
+            return await this.ExecuteAsync(workflowDefinition, [], null, cancellationToken);
         }
 
         private async Task<WorkflowExecutionContext> ExecuteAsync(
             WorkflowDefinition workflowDefinition,
             Dictionary<string, object> initialVariables,
+            Guid? instanceId,
             CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(workflowDefinition);
 
-            // Create execution context
-            var context = new WorkflowExecutionContext
-            {
-                GraphId = workflowDefinition.WorkflowId,
-                Status = WorkflowExecutionStatus.Running,
-                LoggerFactory = this.loggerFactory,
-                ServiceProvider = this.serviceProvider
-            };
+            // Create execution context — use provided instanceId if given
+            var context = instanceId.HasValue
+                ? new WorkflowExecutionContext(instanceId.Value)
+                : new WorkflowExecutionContext();
+            context.GraphId = workflowDefinition.WorkflowId;
+            context.Status = WorkflowExecutionStatus.Running;
+            context.LoggerFactory = this.loggerFactory;
+            context.ServiceProvider = this.serviceProvider;
 
             // Populate default variables from workflow definition
             if (workflowDefinition.DefaultVariables != null)
@@ -564,6 +588,11 @@ namespace ExecutionEngine.Engine
                     context.Variables[kvp.Key] = kvp.Value;
                 }
             }
+
+            // Parallel dispatch state — declared here so the catch block can drain.
+            // See the comment by the main loop for semantics.
+            var inflightTasks = new ConcurrentDictionary<Guid, (Task task, CancellationTokenSource cts)>();
+            var nodeInFlight = new ConcurrentDictionary<string, byte>();
 
             try
             {
@@ -586,6 +615,45 @@ namespace ExecutionEngine.Engine
                 // Step 3: Setup upstream tracking for ALL join nodes
                 this.SetupUpstreamTracking(workflowDefinition);
 
+                // Step 3.1: Set up callback for container nodes (While/ForEach) to prepare body nodes per iteration
+                context.PrepareNodeForIteration = (nodeId, workflowInstanceId) =>
+                {
+                    var freshInstance = new NodeInstance
+                    {
+                        NodeInstanceId = Guid.NewGuid(),
+                        NodeId = nodeId,
+                        WorkflowInstanceId = workflowInstanceId,
+                        Status = NodeExecutionStatus.Pending,
+                        StartTime = null
+                    };
+                    this.nodeExecutionTracking[nodeId] = freshInstance;
+                    this.nodeInstanceTracking[freshInstance.NodeInstanceId] = freshInstance;
+
+                    // Clear JoinAll upstream tracking so join gates reset for new iteration
+                    if (this.upstreamCompletionTracking.TryGetValue(nodeId, out var completed))
+                    {
+                        lock (completed) { completed.Clear(); }
+                    }
+
+                    return freshInstance;
+                };
+
+                // Step 3.2: Identify loop body nodes for re-execution support
+                if (context.Router is MessageRouter loopRouter)
+                {
+                    foreach (var nodeDef in workflowDefinition.Nodes)
+                    {
+                        if (nodeDef.RuntimeType is RuntimeType.While or RuntimeType.ForEach)
+                        {
+                            var bodyNodes = loopRouter.FindAllLoopBodyNodes(nodeDef.NodeId, WhileNode.LoopBodyPort);
+                            foreach (var bodyNodeId in bodyNodes)
+                            {
+                                context.LoopBodyNodes.Add(bodyNodeId);
+                            }
+                        }
+                    }
+                }
+
                 // Step 3.5: Setup concurrency control
                 this.SetupConcurrencyControl(context.InstanceId, workflowDefinition);
 
@@ -599,6 +667,13 @@ namespace ExecutionEngine.Engine
 
                 // Step 5: Trigger entry point nodes by enqueueing initial messages
                 await TriggerEntryPointNodesAsync(entryNodes, context, cancellationToken);
+
+                // Parallel dispatch — siblings (different nodes) run concurrently; the same
+                // node never runs two messages at once (the per-node guard preserves the
+                // contract Setter / ForEach / Group rely on). Workflow-level concurrency is
+                // still enforced inside ExecuteNodeAsync via workflowConcurrencyLimiters[...]
+                // .AcquireAsync; that gate now actually fires because more than one node can
+                // be in flight at the same time.
 
                 // Step 6: Centralized execution loop - checks all queues for messages
                 var loopIteration = 0;
@@ -624,20 +699,82 @@ namespace ExecutionEngine.Engine
 
                         if (hasSignal || hasMessages)
                         {
-                            // If we have a signal, use it. Otherwise, we'll try to lease directly from the queue.
-                            // ExecuteNodeAsync will handle the case where there's no message available.
+                            this.logger.LogInformation(
+                                "[Dispatch] Node {NodeId} ({NodeName}): hasSignal={HasSignal} hasMessages={HasMessages} queueCount={Count} signalType={SignalType}",
+                                nodeId, nodeDef.NodeName, hasSignal, hasMessages, nodeQueue.Count,
+                                hasSignal ? signal?.GetType().Name : "none");
+
+                            // Per-node guard: if this node is already running, leave the
+                            // message in place and revisit on the next loop tick.
+                            if (!nodeInFlight.TryAdd(nodeId, 0))
+                            {
+                                this.logger.LogWarning(
+                                    "[Dispatch] BLOCKED: Node {NodeId} ({NodeName}) already in-flight, skipping. Queue still has {Count} messages.",
+                                    nodeId, nodeDef.NodeName, nodeQueue.Count);
+                                continue;
+                            }
+
+                            // If we have a signal, use it. Otherwise, peek at the actual queue message
+                            // to get the correct type (cancel vs complete).
                             messageProcessed = true;
 
-                            // Use signal if available, otherwise create a dummy signal
-                            // ProcessMessageAsync will trigger ExecuteNodeAsync which will lease the actual message
-                            var messageToProcess = hasSignal ? signal! : new NodeCompleteMessage
+                            INodeMessage messageToProcess;
+                            if (hasSignal)
                             {
-                                NodeId = "__dummy__",
-                                Timestamp = DateTime.UtcNow
-                            };
+                                messageToProcess = signal!;
+                            }
+                            else
+                            {
+                                var peeked = nodeQueue.PeekFirstMessage();
+                                messageToProcess = peeked ?? new NodeCompleteMessage
+                                {
+                                    NodeId = "__dummy__",
+                                    Timestamp = DateTime.UtcNow
+                                };
+                                this.logger.LogInformation(
+                                    "[Dispatch] No signal, peeked message type={Type} from={FromNode}",
+                                    messageToProcess.GetType().Name, messageToProcess.NodeId);
+                            }
 
-                            // Handle the message based on type
-                            await this.ProcessMessageAsync(nodeDef, messageToProcess, workflowDefinition, context, cancellationToken);
+                            // Fire-and-forget: dispatch in the background so siblings can run
+                            // concurrently. The dispatcher loop continues immediately.
+                            var dispatchedNodeId = nodeId;
+                            var dispatchedNodeDef = nodeDef;
+                            var dispatchedMessage = messageToProcess;
+                            var taskKey = Guid.NewGuid();
+                            var taskCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                            this.logger.LogInformation(
+                                "[Dispatch] Dispatching {NodeId} ({NodeName}) with {MessageType} from {SourceNode}",
+                                nodeId, nodeDef.NodeName, messageToProcess.GetType().Name, messageToProcess.NodeId);
+                            var task = Task.Run(
+                                async () =>
+                                {
+                                    try
+                                    {
+                                        await this.ProcessMessageAsync(dispatchedNodeDef, dispatchedMessage, workflowDefinition, context, taskCts.Token);
+                                    }
+                                    catch (OperationCanceledException) when (taskCts.IsCancellationRequested)
+                                    {
+                                        // Workflow cancellation — expected, swallow.
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        this.logger.LogError(ex, "Background dispatch failed for node {NodeId}", dispatchedNodeId);
+                                    }
+                                    finally
+                                    {
+                                        this.logger.LogInformation(
+                                            "[Dispatch] Released guard for {NodeId} ({NodeName}). Queue has {Count} remaining.",
+                                            dispatchedNodeId, dispatchedNodeDef.NodeName,
+                                            ((NodeMessageQueue)context.NodeQueues[dispatchedNodeId]).Count);
+                                        nodeInFlight.TryRemove(dispatchedNodeId, out _);
+                                        inflightTasks.TryRemove(taskKey, out _);
+                                        taskCts.Dispose();
+                                    }
+                                },
+                                taskCts.Token);
+
+                            inflightTasks[taskKey] = (task, taskCts);
                         }
                     }
 
@@ -646,6 +783,12 @@ namespace ExecutionEngine.Engine
                     var allQueuesEmpty = context.NodeQueues.Values
                         .Cast<NodeMessageQueue>()
                         .All(q => q.Count == 0);
+
+                    // Check for timed-out parallel joins before termination check
+                    if (context.Router is MessageRouter mainRouter)
+                    {
+                        await this.CheckParallelJoinTimeoutsAsync(context, mainRouter, workflowDefinition, cancellationToken);
+                    }
 
                     // Log queue counts for debugging
                     foreach (var queueEntry in context.NodeQueues)
@@ -683,26 +826,51 @@ namespace ExecutionEngine.Engine
                         }
                     }
 
-                    // Exit when all queues are empty AND all tracked nodes are terminal
-                    // This ensures we don't exit before all nodes have had a chance to execute
-                    if (allQueuesEmpty && allTrackedNodesTerminal)
+                    // Exit when all queues are empty AND no background dispatches are
+                    // running AND all tracked nodes are terminal. inflightTasks.IsEmpty
+                    // is checked first so a still-running task can't enqueue new messages
+                    // between the queue check and the break.
+                    if (inflightTasks.IsEmpty && allQueuesEmpty && allTrackedNodesTerminal)
                     {
-                        this.logger.LogInformation("Workflow termination condition met: all queues empty and all nodes terminal");
+                        this.logger.LogInformation("Workflow termination condition met: no inflight tasks, all queues empty, all nodes terminal");
                         break;
                     }
 
-                    // If no messages were processed, wait briefly to avoid busy-wait
+                    // Early exit: workflow marked as failed by HandleNodeFailureAsync
+                    if (context.Status == WorkflowExecutionStatus.Failed)
+                    {
+                        this.logger.LogInformation("Workflow marked as failed, cancelling in-flight tasks and terminating");
+                        foreach (var (key, (_, taskCts)) in inflightTasks)
+                        {
+                            try { taskCts.Cancel(); } catch (ObjectDisposedException) { /* already done */ }
+                        }
+
+                        break;
+                    }
+
+                    // If we didn't dispatch anything this iteration but tasks are still in
+                    // flight, sleep briefly and re-check rather than busy-wait.
                     if (!messageProcessed)
                     {
-                        await Task.Delay(10, cancellationToken);
+                        await Task.Delay(50, cancellationToken);
                     }
+                }
+
+                // Drain any tasks still finishing — they may publish events or write output
+                // data that downstream code (status, persistence) depends on.
+                if (!inflightTasks.IsEmpty)
+                {
+                    this.logger.LogDebug("Awaiting {Count} inflight node tasks before completion", inflightTasks.Count);
+                    var snapshot = inflightTasks.Values.Select(v => v.task).ToArray();
+                    try { await Task.WhenAll(snapshot); }
+                    catch { /* individual failures already logged inside each task */ }
                 }
 
                 // Step 7: Wait for all nodes to complete
                 await this.WaitForCompletionAsync(context, cancellationToken);
 
                 // Step 8: Set final status
-                context.Status = this.DetermineWorkflowStatus(context);
+                context.Status = this.DetermineWorkflowStatus(context, workflowDefinition);
                 context.EndTime = DateTime.UtcNow;
 
                 // Publish workflow completion event based on final status
@@ -754,6 +922,20 @@ namespace ExecutionEngine.Engine
             }
             catch (Exception ex)
             {
+                // Cancel any background dispatches and wait for them to unwind before we
+                // raise the workflow-level failure. Otherwise their late status updates
+                // could race with the failure event we publish below.
+                foreach (var (_, cts) in inflightTasks.Values)
+                {
+                    try { cts.Cancel(); } catch { /* already disposed */ }
+                }
+
+                if (!inflightTasks.IsEmpty)
+                {
+                    var snapshot = inflightTasks.Values.Select(v => v.task).ToArray();
+                    try { await Task.WhenAll(snapshot); } catch { /* failures already logged */ }
+                }
+
                 context.Status = WorkflowExecutionStatus.Failed;
                 context.EndTime = DateTime.UtcNow;
                 context.Variables["__error"] = ex.Message;
@@ -892,7 +1074,6 @@ namespace ExecutionEngine.Engine
         }
 
         /// <summary>
-        /// Sets up concurrency control for the workflow.
         /// Creates a workflow-level concurrency limiter and registers nodes with the node throttler.
         /// Also registers circuit breakers and initializes compensation tracking.
         /// </summary>
@@ -1039,45 +1220,125 @@ namespace ExecutionEngine.Engine
                 }
 
                 // Check join type for other messages
-                if (nodeDef.JoinType == JoinType.Any)
+                // Loop control nodes (While, ForEach): use Any, but only accept feedback
+                // from terminal loop-body nodes (not intermediate children like Iteration++)
+                var effectiveJoinType = nodeDef.RuntimeType is RuntimeType.While or RuntimeType.ForEach
+                    ? JoinType.Any
+                    : nodeDef.JoinType;
+
+                if (effectiveJoinType == JoinType.Any)
                 {
+                    // For While nodes: filter feedback to terminal loop-body nodes only
+                    if (nodeDef.RuntimeType == RuntimeType.While)
+                    {
+                        string? feedbackSource = signal switch
+                        {
+                            NodeCompleteMessage cm => cm.NodeId,
+                            NodeFailMessage fm => fm.NodeId,
+                            _ => null,
+                        };
+
+                        // Check if the iteration counter exists (loop has started iterating)
+                        var counterKey = WhileNode.GetIterationCounterKey(nodeDef.NodeId);
+                        var isLoopRunning = context.Variables.ContainsKey(counterKey);
+
+                        if (isLoopRunning && feedbackSource != null)
+                        {
+                            // Find terminal nodes of the loop body
+                            var router = context.Router as MessageRouter;
+                            var terminalNodes = router?.FindTerminalNodesFromPort(nodeDef.NodeId, WhileNode.LoopBodyPort) ?? [];
+
+                            this.logger.LogInformation(
+                                "[While] Node {NodeId}: feedbackSource={Source}, isLoopRunning={Running}, terminals=[{Terminals}], isTerminal={IsTerminal}",
+                                nodeDef.NodeId, feedbackSource, isLoopRunning,
+                                string.Join(",", terminalNodes), terminalNodes.Contains(feedbackSource));
+
+                            if (terminalNodes.Count > 0 && !terminalNodes.Contains(feedbackSource))
+                            {
+                                this.logger.LogInformation("[While] SKIPPED: feedback from non-terminal {Source}", feedbackSource);
+                                // Non-terminal child completed — consume the message so it's not re-peeked
+                                var whileQueue = (NodeMessageQueue)context.NodeQueues[nodeDef.NodeId];
+                                var skipLease = await whileQueue.LeaseAsync(cancellationToken);
+                                if (skipLease != null)
+                                {
+                                    await whileQueue.CompleteAsync(skipLease, cancellationToken);
+                                }
+
+                                return;
+                            }
+                        }
+                        else
+                        {
+                            this.logger.LogInformation(
+                                "[While] Node {NodeId}: isLoopRunning={Running}, feedbackSource={Source} — executing (initial trigger or no source)",
+                                nodeDef.NodeId, isLoopRunning, feedbackSource ?? "null");
+                        }
+                    }
+
                     // ANY: Execute immediately when any message arrives
                     await this.ExecuteNodeAsync(nodeDef.NodeId, workflowDefinition, context, cancellationToken);
                 }
                 else // JoinType.All
                 {
-                    // ALL: Check if all upstreams have sent a message
-                    string? sourceNodeId = null;
-
-                    if (signal is NodeCompleteMessage completeMsg)
-                        sourceNodeId = completeMsg.NodeId;
-                    else if (signal is NodeFailMessage failMsg)
-                        sourceNodeId = failMsg.NodeId;
-                    else if (signal is NodeNextMessage nextMsg)
-                        sourceNodeId = nextMsg.NodeId;
+                    // ALL: Use the signal message for source identification, then lease+consume
+                    // only when not all upstreams are ready (to prevent infinite re-processing).
+                    string? sourceNodeId = signal switch
+                    {
+                        NodeCompleteMessage cm => cm.NodeId,
+                        NodeFailMessage fm => fm.NodeId,
+                        NodeNextMessage nm => nm.NodeId,
+                        _ => null,
+                    };
 
                     if (!string.IsNullOrEmpty(sourceNodeId))
                     {
                         var shouldExecute = false;
 
-                        if (this.upstreamCompletionTracking.TryGetValue(nodeDef.NodeId, out var completedUpstreams))
+                        // Nodes with no expected upstreams (entry points) execute immediately
+                        if (!this.expectedUpstreamCount.TryGetValue(nodeDef.NodeId, out var expected) || expected == 0)
+                        {
+                            shouldExecute = true;
+                            this.logger.LogInformation(
+                                "[JoinAll] Node {NodeId} ({NodeName}): no expected upstreams, executing immediately",
+                                nodeDef.NodeId, nodeDef.NodeName);
+                        }
+                        else if (this.upstreamCompletionTracking.TryGetValue(nodeDef.NodeId, out var completedUpstreams))
                         {
                             lock (completedUpstreams)
                             {
                                 completedUpstreams.Add(sourceNodeId);
+                                this.logger.LogInformation(
+                                    "[JoinAll] Node {NodeId} ({NodeName}): {Completed}/{Expected} upstreams, source={Source}",
+                                    nodeDef.NodeId, nodeDef.NodeName, completedUpstreams.Count, expected, sourceNodeId);
 
-                                if (this.expectedUpstreamCount.TryGetValue(nodeDef.NodeId, out var expected) &&
-                                    completedUpstreams.Count >= expected)
+                                if (completedUpstreams.Count >= expected)
                                 {
                                     shouldExecute = true;
                                     completedUpstreams.Clear();
                                 }
                             }
                         }
+                        else
+                        {
+                            this.logger.LogWarning(
+                                "[JoinAll] Node {NodeId} ({NodeName}): no tracking entry, source={Source}, expected={Expected}",
+                                nodeDef.NodeId, nodeDef.NodeName, sourceNodeId, expected);
+                        }
 
                         if (shouldExecute)
                         {
                             await this.ExecuteNodeAsync(nodeDef.NodeId, workflowDefinition, context, cancellationToken);
+                        }
+                        else
+                        {
+                            // Not all upstreams ready — consume the message from queue
+                            // so it's not re-peeked and re-processed in infinite loop
+                            var queue = (NodeMessageQueue)context.NodeQueues[nodeDef.NodeId];
+                            var joinLease = await queue.LeaseAsync(cancellationToken);
+                            if (joinLease != null)
+                            {
+                                await queue.CompleteAsync(joinLease, cancellationToken);
+                            }
                         }
                     }
                 }
@@ -1122,7 +1383,7 @@ namespace ExecutionEngine.Engine
             nodeInstance.ErrorMessage = errorMessage;
             nodeInstance.Exception = exception;
 
-            // Route fail message to downstream nodes
+            // Route fail message to downstream nodes (error port connections)
             var failMessage = new NodeFailMessage
             {
                 NodeId = nodeId,
@@ -1132,10 +1393,20 @@ namespace ExecutionEngine.Engine
             };
 
             this.logger.LogDebug("Routing fail message from {NodeId} to downstream nodes", nodeId);
-            await router.RouteMessageAsync(failMessage, context, cancellationToken);
+            var errorHandlerCount = await router.RouteMessageAsync(failMessage, context, cancellationToken);
 
             // Raise NodeFailed event
-            this.NodeFailed?.Invoke(nodeId, nodeInstance.NodeInstanceId, errorMessage);
+            var failDuration = nodeInstance.Duration ?? TimeSpan.Zero;
+            this.NodeFailed?.Invoke(nodeId, nodeInstance.NodeInstanceId, errorMessage, failDuration);
+
+            // Raise extended event with context data
+            if (this.NodeFailedEx != null)
+            {
+                var inputSnap = nodeInstance.ExecutionContext?.InputData != null
+                    ? new Dictionary<string, object>(nodeInstance.ExecutionContext.InputData) : null;
+                var globalsSnap = new Dictionary<string, object>(context.Variables);
+                this.NodeFailedEx.Invoke(nodeId, nodeInstance.NodeInstanceId, errorMessage, failDuration, inputSnap, globalsSnap);
+            }
 
             // Publish NodeFailedEvent
             var nodeDef = workflowDefinition.Nodes.FirstOrDefault(n => n.NodeId == nodeId);
@@ -1147,12 +1418,64 @@ namespace ExecutionEngine.Engine
                 NodeInstanceId = nodeInstance.NodeInstanceId,
                 ErrorMessage = errorMessage,
                 Exception = exception,
+                Duration = failDuration,
                 Timestamp = DateTime.UtcNow
             });
 
             // Publish progress update
             var progress = this.CalculateProgress(context, workflowDefinition.Nodes.Count);
             context.PublishProgress(progress);
+
+            // Propagate cancellation to downstream nodes BEFORE compensation
+            // to prevent race conditions where downstream nodes start before cancel arrives
+            await this.CancelNodeAndPropagate(nodeId, errorMessage, workflowDefinition, context, cancellationToken);
+
+            // If no error handler exists (no error-port connections accepted the fail message),
+            // this is an unhandled failure — cancel ALL remaining nodes and fail the workflow immediately
+            if (errorHandlerCount == 0)
+            {
+                this.logger.LogInformation("Unhandled node failure (no error handler): {NodeId}. Failing workflow.", nodeId);
+                context.Variables["__error"] = $"Unhandled failure in node '{nodeDef?.NodeName ?? nodeId}': {errorMessage}";
+
+                // Mark workflow as failed so the main loop terminates
+                context.Status = WorkflowExecutionStatus.Failed;
+
+                // Cancel all pending/running nodes to stop the workflow
+                foreach (var tracked in this.nodeExecutionTracking.Values)
+                {
+                    if (tracked.WorkflowInstanceId == context.InstanceId &&
+                        (tracked.Status == NodeExecutionStatus.Pending ||
+                         tracked.Status == NodeExecutionStatus.Running))
+                    {
+                        tracked.Status = NodeExecutionStatus.Cancelled;
+                        tracked.ErrorMessage = $"Cancelled: upstream node '{nodeDef?.NodeName ?? nodeId}' failed";
+                        this.NodeCancelled?.Invoke(tracked.NodeId, tracked.NodeInstanceId, tracked.ErrorMessage);
+                        context.PublishEvent(new NodeCancelledEvent
+                        {
+                            WorkflowInstanceId = context.InstanceId,
+                            NodeId = tracked.NodeId,
+                            NodeName = workflowDefinition.Nodes.FirstOrDefault(n => n.NodeId == tracked.NodeId)?.NodeName ?? tracked.NodeId,
+                            NodeInstanceId = tracked.NodeInstanceId,
+                            Reason = tracked.ErrorMessage,
+                            Timestamp = DateTime.UtcNow,
+                        });
+                    }
+                }
+
+                // Drain all queues so the main loop terminates
+                foreach (var queueEntry in context.NodeQueues)
+                {
+                    var queue = (NodeMessageQueue)queueEntry.Value;
+                    while (queue.Count > 0)
+                    {
+                        var lease = await queue.LeaseAsync(cancellationToken);
+                        if (lease != null)
+                        {
+                            await queue.CompleteAsync(lease, cancellationToken);
+                        }
+                    }
+                }
+            }
 
             // Execute compensation logic (Saga pattern)
             await this.ExecuteCompensationAsync(
@@ -1162,9 +1485,6 @@ namespace ExecutionEngine.Engine
                 workflowDefinition,
                 context,
                 cancellationToken);
-
-            // Propagate cancellation to downstream nodes
-            await this.CancelNodeAndPropagate(nodeId, errorMessage, workflowDefinition, context, cancellationToken);
         }
 
         /// <summary>
@@ -1250,6 +1570,8 @@ namespace ExecutionEngine.Engine
                 };
 
                 // Track by instance ID for iteration executions
+                // Also update nodeExecutionTracking so termination check sees the latest instance
+                this.nodeExecutionTracking[nodeId] = nodeInstance;
                 this.nodeInstanceTracking[nodeInstance.NodeInstanceId] = nodeInstance;
             }
             else
@@ -1272,13 +1594,34 @@ namespace ExecutionEngine.Engine
                         nodeId, context.InstanceId, nodeInstance.Status);
                 }
 
-                // If node has already reached a terminal status, complete the lease and skip execution
+                // If node has already reached a terminal status, check if it's inside a loop body.
+                // Loop body nodes receiving NodeCompleteMessage (from upstream body nodes) need
+                // fresh instances for each iteration — ForEach fires all iterations at once,
+                // so PrepareNodeForIteration can't reset them between iterations.
                 if (nodeInstance.Status == NodeExecutionStatus.Completed ||
                     nodeInstance.Status == NodeExecutionStatus.Failed ||
-                    nodeInstance.Status == NodeExecutionStatus.Cancelled)
+                    nodeInstance.Status == NodeExecutionStatus.Cancelled ||
+                    nodeInstance.Status == NodeExecutionStatus.WaitingForJoin)
                 {
-                    await queue.CompleteAsync(lease, cancellationToken);
-                    return;
+                    if (context.LoopBodyNodes.Contains(nodeId))
+                    {
+                        // Inside a loop body: create a fresh instance for re-execution
+                        nodeInstance = new NodeInstance
+                        {
+                            NodeInstanceId = Guid.NewGuid(),
+                            NodeId = nodeId,
+                            WorkflowInstanceId = context.InstanceId,
+                            Status = NodeExecutionStatus.Pending,
+                            StartTime = DateTime.UtcNow
+                        };
+                        this.nodeExecutionTracking[nodeId] = nodeInstance;
+                        this.nodeInstanceTracking[nodeInstance.NodeInstanceId] = nodeInstance;
+                    }
+                    else
+                    {
+                        await queue.CompleteAsync(lease, cancellationToken);
+                        return;
+                    }
                 }
             }
 
@@ -1339,6 +1682,29 @@ namespace ExecutionEngine.Engine
                     foreach (var kvp in nextMsg.IterationContext.InputData)
                     {
                         nodeContext.InputData[kvp.Key] = kvp.Value;
+                    }
+                }
+                else if (lease.Message is Messages.NodeFailMessage failMsg)
+                {
+                    // For fail messages, expose error details as input data
+                    nodeContext.InputData["errorMessage"] = failMsg.ErrorMessage;
+                    nodeContext.InputData["nodeId"] = failMsg.NodeId;
+                    nodeContext.InputData["timestamp"] = failMsg.Timestamp.ToString("O");
+                    nodeContext.InputData["nodeInstanceId"] = failMsg.NodeInstanceId.ToString();
+                    if (failMsg.Exception != null)
+                    {
+                        nodeContext.InputData["exception"] = failMsg.Exception.ToString();
+                        nodeContext.InputData["exceptionType"] = failMsg.Exception.GetType().Name;
+                        nodeContext.InputData["stackTrace"] = failMsg.Exception.StackTrace ?? string.Empty;
+                    }
+
+                    // Also copy partial output data from the failed node if available
+                    if (failMsg.NodeContext?.OutputData != null)
+                    {
+                        foreach (var kvp in failMsg.NodeContext.OutputData)
+                        {
+                            nodeContext.InputData["failed_" + kvp.Key] = kvp.Value;
+                        }
                     }
                 }
 
@@ -1465,7 +1831,6 @@ namespace ExecutionEngine.Engine
                         if (isWhileIterationCheck)
                         {
                             // Keep While node as Running so it can be re-executed on feedback
-                            // Don't update status in nodeExecutionTracking, but still route the Complete message
                             nodeInstance.SourcePort = result.SourcePort;
                         }
                         else
@@ -1488,9 +1853,12 @@ namespace ExecutionEngine.Engine
 
                 // Route completion/failure messages to downstream queues
                 // MessageRouter enqueues → triggers channel signals → downstream workers wake up
-                // Check result status (not nodeInstance status) to handle While iteration checks
-                var shouldRouteComplete = nodeInstance.Status == NodeExecutionStatus.Completed ||
-                                          (result != null && result.Status == NodeExecutionStatus.Completed);
+                // Skip routing for While IterationCheck — children are triggered via NextMessage, not Complete
+                var isWhileIteration = nodeDef.RuntimeType == RuntimeType.While &&
+                                       result != null && result.SourcePort == "IterationCheck";
+                var shouldRouteComplete = !isWhileIteration &&
+                                          (nodeInstance.Status == NodeExecutionStatus.Completed ||
+                                           (result != null && result.Status == NodeExecutionStatus.Completed));
 
                 if (shouldRouteComplete)
                 {
@@ -1519,6 +1887,15 @@ namespace ExecutionEngine.Engine
                     var duration = nodeInstance.Duration ?? TimeSpan.Zero;
                     this.NodeCompleted?.Invoke(nodeId, nodeInstance.NodeInstanceId, duration);
 
+                    // Raise extended event with context data
+                    if (this.NodeCompletedEx != null)
+                    {
+                        var inputSnap = nodeContext?.InputData != null ? new Dictionary<string, object>(nodeContext.InputData) : null;
+                        var outputSnap = nodeContext?.OutputData != null ? new Dictionary<string, object>(nodeContext.OutputData) : null;
+                        var globalsSnap = new Dictionary<string, object>(context.Variables);
+                        this.NodeCompletedEx.Invoke(nodeId, nodeInstance.NodeInstanceId, duration, inputSnap, outputSnap, globalsSnap);
+                    }
+
                     // Publish NodeCompletedEvent
                     context.PublishEvent(new NodeCompletedEvent
                     {
@@ -1533,6 +1910,9 @@ namespace ExecutionEngine.Engine
                     // Publish progress update
                     var progress = this.CalculateProgress(context, workflowDefinition.Nodes.Count);
                     context.PublishProgress(progress);
+
+                    // Check if this node completion satisfies any pending parallel join
+                    await this.CheckParallelJoinsAsync(nodeId, context, router, workflowDefinition, cancellationToken);
                 }
                 else if (nodeInstance.Status == NodeExecutionStatus.Failed)
                 {
@@ -1800,34 +2180,79 @@ namespace ExecutionEngine.Engine
         /// <summary>
         /// Determines the final workflow status based on node statuses.
         /// </summary>
-        private WorkflowExecutionStatus DetermineWorkflowStatus(WorkflowExecutionContext context)
+        private WorkflowExecutionStatus DetermineWorkflowStatus(
+            WorkflowExecutionContext context,
+            WorkflowDefinition? workflowDefinition = null)
         {
             var statuses = this.nodeExecutionTracking.Values.Select(n => n.Status).ToList();
-            var anyFailed = statuses.Any(s => s == NodeExecutionStatus.Failed);
-            var anyCancelled = statuses.Any(s => s == NodeExecutionStatus.Cancelled);
-            var allCompletedOrCancelled = statuses.All(s =>
-                s == NodeExecutionStatus.Completed || s == NodeExecutionStatus.Cancelled);
 
-            if (anyFailed)
+            // A failed node is "handled" if it has an outgoing Fail connection
+            // whose target node completed successfully. Handled failures don't
+            // cause the workflow to fail.
+            var failedNodes = this.nodeExecutionTracking.Values
+                .Where(n => n.Status == NodeExecutionStatus.Failed)
+                .ToList();
+
+            // Try to get the workflow definition from the parameter or the dictionary
+            var wfDef = workflowDefinition ?? this.workflowDefinitions.Values.FirstOrDefault();
+
+            var unhandledFailures = new List<NodeInstance>();
+            if (failedNodes.Count > 0 && wfDef != null)
             {
-                // Collect error messages from failed nodes for debugging
-                var failedNodes = this.nodeExecutionTracking.Values
-                    .Where(n => n.Status == NodeExecutionStatus.Failed)
+                foreach (var failed in failedNodes)
+                {
+                    var failConns = wfDef.Connections.Where(c =>
+                        c.SourceNodeId == failed.NodeId &&
+                        c.TriggerMessageType == MessageType.Fail &&
+                        c.IsEnabled).ToList();
+
+                    if (failConns.Count > 0)
+                    {
+                        // Check if the error handler completed
+                        var handlerTargets = failConns.Select(c => c.TargetNodeId).ToList();
+
+                        var allHandlersCompleted = handlerTargets.All(targetId =>
+                            this.nodeExecutionTracking.TryGetValue(targetId, out var handler) &&
+                            handler.Status == NodeExecutionStatus.Completed);
+
+                        if (!allHandlersCompleted)
+                        {
+                            unhandledFailures.Add(failed);
+                        }
+                    }
+                    else
+                    {
+                        unhandledFailures.Add(failed);
+                    }
+                }
+            }
+            else
+            {
+                unhandledFailures.AddRange(failedNodes);
+            }
+
+            if (unhandledFailures.Count > 0)
+            {
+                // Collect error messages from unhandled failed nodes for debugging
+                var errorMessages = unhandledFailures
                     .Select(n => $"{n.NodeId}: {n.ErrorMessage ?? "Unknown error"}")
                     .ToList();
 
-                if (failedNodes.Count != 0)
+                if (errorMessages.Count != 0)
                 {
-                    context.Variables["__node_errors"] = string.Join("; ", failedNodes);
+                    context.Variables["__node_errors"] = string.Join("; ", errorMessages);
                 }
 
                 return WorkflowExecutionStatus.Failed;
             }
 
-            if (allCompletedOrCancelled)
+            var allCompletedOrCancelledOrHandled = statuses.All(s =>
+                s == NodeExecutionStatus.Completed ||
+                s == NodeExecutionStatus.Cancelled ||
+                s == NodeExecutionStatus.Failed); // Failed but handled
+
+            if (allCompletedOrCancelledOrHandled)
             {
-                // If some were cancelled but none failed, still consider it completed
-                // Cancelled nodes are those that weren't triggered (e.g., disabled connections)
                 return WorkflowExecutionStatus.Completed;
             }
 
@@ -1932,6 +2357,225 @@ namespace ExecutionEngine.Engine
             }
 
             return checkpoint;
+        }
+
+        /// <summary>
+        /// Checks if a completed node satisfies any pending parallel join conditions.
+        /// Called after routing a node completion message.
+        /// </summary>
+        private async Task CheckParallelJoinsAsync(
+            string completedNodeId,
+            WorkflowExecutionContext context,
+            MessageRouter router,
+            WorkflowDefinition workflowDefinition,
+            CancellationToken cancellationToken)
+        {
+            // Find all active parallel tracking entries
+            var trackingKeys = context.Variables.Keys
+                .Where(k => k.StartsWith("__parallel_") && k.EndsWith("_branchTerminals"))
+                .ToList();
+
+            foreach (var key in trackingKeys)
+            {
+                if (!context.Variables.TryGetValue(key, out var terminalsObj) ||
+                    terminalsObj is not Dictionary<string, HashSet<string>> branchTerminals)
+                {
+                    continue;
+                }
+
+                var prefix = key[..^"_branchTerminals".Length];
+
+                // Check if the completed node is a terminal for any branch
+                string? matchedBranch = null;
+                foreach (var kvp in branchTerminals)
+                {
+                    if (kvp.Value.Contains(completedNodeId))
+                    {
+                        matchedBranch = kvp.Key;
+                        break;
+                    }
+                }
+
+                if (matchedBranch == null)
+                {
+                    continue;
+                }
+
+                // Mark this branch as completed
+                if (!context.Variables.TryGetValue($"{prefix}_completedBranches", out var completedObj) ||
+                    completedObj is not ConcurrentDictionary<string, bool> completedBranches)
+                {
+                    continue;
+                }
+
+                completedBranches[matchedBranch] = true;
+
+                // Check join condition
+                var joinMode = context.Variables.TryGetValue($"{prefix}_joinMode", out var jm)
+                    ? jm.ToString() ?? "all"
+                    : "all";
+                var expected = context.Variables.TryGetValue($"{prefix}_expected", out var exp)
+                    ? (int)exp
+                    : 0;
+
+                var shouldComplete = joinMode switch
+                {
+                    "any" or "race" => completedBranches.Count >= 1,
+                    _ => completedBranches.Count >= expected, // "all"
+                };
+
+                if (shouldComplete)
+                {
+                    var parallelNodeId = prefix["__parallel_".Length..];
+                    this.logger.LogInformation(
+                        "Parallel join condition met for {NodeId}: mode={JoinMode}, completed={Completed}/{Expected}",
+                        parallelNodeId, joinMode, completedBranches.Count, expected);
+                    await this.CompleteParallelJoinAsync(
+                        parallelNodeId, completedBranches, context, router, workflowDefinition, cancellationToken);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Checks for timed-out parallel joins and completes them with timeout info.
+        /// Called from the main execution loop.
+        /// </summary>
+        private async Task CheckParallelJoinTimeoutsAsync(
+            WorkflowExecutionContext context,
+            MessageRouter router,
+            WorkflowDefinition workflowDefinition,
+            CancellationToken cancellationToken)
+        {
+            var deadlineKeys = context.Variables.Keys
+                .Where(k => k.StartsWith("__parallel_") && k.EndsWith("_deadline"))
+                .ToList();
+
+            foreach (var key in deadlineKeys)
+            {
+                if (!context.Variables.TryGetValue(key, out var deadlineObj) ||
+                    deadlineObj is not DateTime deadline)
+                {
+                    continue;
+                }
+
+                if (DateTime.UtcNow < deadline)
+                {
+                    continue;
+                }
+
+                var prefix = key[..^"_deadline".Length];
+                var parallelNodeId = prefix["__parallel_".Length..];
+
+                // Only timeout if node is still WaitingForJoin
+                if (!this.nodeExecutionTracking.TryGetValue(parallelNodeId, out var nodeInstance) ||
+                    nodeInstance.Status != NodeExecutionStatus.WaitingForJoin)
+                {
+                    continue;
+                }
+
+                this.logger.LogWarning("Parallel join timed out for {NodeId}", parallelNodeId);
+
+                // Get completed branches for output
+                var completedBranches = context.Variables.TryGetValue($"{prefix}_completedBranches", out var cbObj) &&
+                                        cbObj is ConcurrentDictionary<string, bool> cb
+                    ? cb
+                    : new ConcurrentDictionary<string, bool>();
+
+                // Set timeout info on the node context
+                if (context.Variables.TryGetValue($"{prefix}_nodeContext", out var ncObj) &&
+                    ncObj is NodeExecutionContext nodeContext)
+                {
+                    nodeContext.OutputData["timedOut"] = true;
+                }
+
+                await this.CompleteParallelJoinAsync(
+                    parallelNodeId, completedBranches, context, router, workflowDefinition, cancellationToken);
+            }
+        }
+
+        /// <summary>
+        /// Completes a parallel join by marking the parallel node as Completed,
+        /// routing its completion message downstream, and cleaning up tracking variables.
+        /// </summary>
+        private async Task CompleteParallelJoinAsync(
+            string parallelNodeId,
+            ConcurrentDictionary<string, bool> completedBranches,
+            WorkflowExecutionContext context,
+            MessageRouter router,
+            WorkflowDefinition workflowDefinition,
+            CancellationToken cancellationToken)
+        {
+            if (!this.nodeExecutionTracking.TryGetValue(parallelNodeId, out var nodeInstance))
+            {
+                return;
+            }
+
+            // Retrieve stored node context
+            var trackingPrefix = $"__parallel_{parallelNodeId}";
+            NodeExecutionContext? nodeContext = null;
+            if (context.Variables.TryGetValue($"{trackingPrefix}_nodeContext", out var ncObj))
+            {
+                nodeContext = ncObj as NodeExecutionContext;
+            }
+
+            nodeContext ??= new NodeExecutionContext();
+
+            // Set output data
+            nodeContext.OutputData["completedBranches"] = string.Join(",", completedBranches.Keys);
+            nodeContext.OutputData["completedCount"] = completedBranches.Count;
+
+            // Update node status to Completed
+            nodeInstance.Status = NodeExecutionStatus.Completed;
+            nodeInstance.EndTime = DateTime.UtcNow;
+            nodeInstance.ExecutionContext = nodeContext;
+
+            // Route completion message downstream (no SourcePort, so "out" connections match)
+            var completeMessage = new NodeCompleteMessage
+            {
+                NodeId = parallelNodeId,
+                Timestamp = DateTime.UtcNow,
+                NodeInstanceId = nodeInstance.NodeInstanceId,
+                NodeContext = nodeContext,
+            };
+
+            this.logger.LogDebug("Routing parallel join completion from {NodeId} to downstream nodes", parallelNodeId);
+            await router.RouteMessageAsync(completeMessage, context, cancellationToken);
+
+            // Raise NodeCompleted event
+            var duration = nodeInstance.Duration ?? TimeSpan.Zero;
+            this.NodeCompleted?.Invoke(parallelNodeId, nodeInstance.NodeInstanceId, duration);
+
+            if (this.NodeCompletedEx != null)
+            {
+                var inputSnap = nodeContext.InputData.Count > 0 ? new Dictionary<string, object>(nodeContext.InputData) : null;
+                var outputSnap = nodeContext.OutputData.Count > 0 ? new Dictionary<string, object>(nodeContext.OutputData) : null;
+                var globalsSnap = new Dictionary<string, object>(context.Variables);
+                this.NodeCompletedEx.Invoke(parallelNodeId, nodeInstance.NodeInstanceId, duration, inputSnap, outputSnap, globalsSnap);
+            }
+
+            // Publish NodeCompletedEvent
+            var nodeDef = workflowDefinition.Nodes.FirstOrDefault(n => n.NodeId == parallelNodeId);
+            context.PublishEvent(new NodeCompletedEvent
+            {
+                WorkflowInstanceId = context.InstanceId,
+                NodeId = parallelNodeId,
+                NodeName = nodeDef?.NodeName ?? parallelNodeId,
+                NodeInstanceId = nodeInstance.NodeInstanceId,
+                Duration = duration,
+                Timestamp = DateTime.UtcNow
+            });
+
+            // Publish progress update
+            var progress = this.CalculateProgress(context, workflowDefinition.Nodes.Count);
+            context.PublishProgress(progress);
+
+            // Clean up tracking variables
+            foreach (var key in context.Variables.Keys
+                .Where(k => k.StartsWith(trackingPrefix))
+                .ToList())
+            {
+                context.Variables.TryRemove(key, out _);
+            }
         }
     }
 }

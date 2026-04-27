@@ -8,7 +8,7 @@ nodes:
     itemVariableName: ""
   - nodeId: body1
     nodeName: Body
-    runtimeType: Noop
+    runtimeType: Setter
 connections:
   - sourceNodeId: fe1
     targetNodeId: body1

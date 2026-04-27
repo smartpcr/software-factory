@@ -270,6 +270,35 @@ namespace ExecutionEngine.Queue
         }
 
         /// <summary>
+        /// Peeks at the first ready message without leasing it.
+        /// Returns null if the queue is empty.
+        /// </summary>
+        public INodeMessage? PeekFirstMessage()
+        {
+            var all = this.buffer.GetAllMessagesAsync(CancellationToken.None).GetAwaiter().GetResult();
+            var first = all.FirstOrDefault(e => e.Status == MessageStatus.Ready);
+            return first?.Payload as INodeMessage;
+        }
+
+        /// <summary>
+        /// Removes all messages from the queue. Used to prepare loop body nodes for a new iteration.
+        /// </summary>
+        public async Task<int> DrainAllAsync(CancellationToken cancellationToken = default)
+        {
+            var messages = await this.buffer.GetAllMessagesAsync(cancellationToken);
+            var count = 0;
+            foreach (var msg in messages)
+            {
+                if (await this.buffer.RemoveAsync(msg.MessageId, cancellationToken))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        /// <summary>
         /// Gets all messages in the queue.
         /// Used for checkpoint serialization.
         /// </summary>

@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using ExecutionEngine.AI;
 using WorkflowUi.Server.Auth;
 using WorkflowUi.Server.Endpoints;
 using WorkflowUi.Server.Files;
@@ -41,6 +42,23 @@ builder.Services.AddExecutionEngine();
 // DI: register auth services
 builder.Services.AddWorkflowUiAuth(builder.Configuration, builder.Environment.IsDevelopment());
 
+// DI: register AI registry
+builder.Services.Configure<AIRegistryOptions>(
+    builder.Configuration.GetSection(AIRegistryOptions.SectionName));
+builder.Services.AddSingleton<AIRegistryService>();
+
+// DI: register AI execution services
+var aiRegistryOpts = new AIRegistryOptions();
+builder.Configuration.GetSection(AIRegistryOptions.SectionName).Bind(aiRegistryOpts);
+builder.Services.AddSingleton<IAIPromptResolver>(sp =>
+    new FileAIPromptResolver(
+        aiRegistryOpts.AgentsPath,
+        aiRegistryOpts.SkillsPath,
+        sp.GetRequiredService<ILogger<FileAIPromptResolver>>()));
+builder.Services.AddSingleton<IAIExecutor, CopilotAIExecutor>();
+builder.Services.AddSingleton<IAIExecutor, ClaudeCliAIExecutor>();
+builder.Services.AddSingleton<IAINodeLogger, SignalRAINodeLogger>();
+
 // DI: register persistence services
 builder.Services.Configure<PersistenceOptions>(
     builder.Configuration.GetSection(PersistenceOptions.SectionName));
@@ -58,6 +76,9 @@ builder.Services.AddSingleton<EdgeActivationDeriver>();
 builder.Services.AddSingleton<SkipDeriver>();
 builder.Services.AddSingleton<EngineEventBridge>();
 builder.Services.AddSingleton<IRunEventSink, TelemetryHubSink>();
+
+// DI: register run manager
+builder.Services.AddSingleton<RunManager>();
 
 // SignalR
 builder.Services.AddSignalR();
@@ -91,10 +112,14 @@ app.UseMiddleware<AuditMiddleware>();
 app.MapHealthEndpoints();
 app.MapEngineVersionEndpoints();
 app.MapWorkflowValidationEndpoints();
+app.MapNodeValidationEndpoints();
 app.MapMapperRoundTripEndpoints();
 app.MapWorkflowEndpoints();
 app.MapFilesEndpoints();
+app.MapNodeTypesEndpoints();
 app.MapVersionEndpoints();
+app.MapRunEndpoints();
+app.MapAIRegistryEndpoints();
 
 // SignalR hub
 app.MapHub<TelemetryHub>("/hubs/telemetry");

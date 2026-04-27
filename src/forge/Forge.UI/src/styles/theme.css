@@ -1,0 +1,107 @@
+/* ============================================
+   THEMES
+   ============================================ */
+:root {
+  --bg-base: #F7F5EF;
+  --bg-surface: #FFFFFF;
+  --bg-surface-2: #F1EEE5;
+  --bg-elevated: #FFFFFF;
+  --bg-sunken: #EFEBDF;
+
+  --text-primary: #14140F;
+  --text-secondary: #5A5750;
+  --text-tertiary: #918D82;
+  --text-on-accent: #FFFFFF;
+
+  --border: rgba(20, 20, 15, 0.08);
+  --border-strong: rgba(20, 20, 15, 0.16);
+  --border-accent: rgba(217, 119, 6, 0.32);
+
+  --accent: #C2570B;
+  --accent-hover: #A34708;
+  --accent-bg: rgba(194, 87, 11, 0.08);
+  --accent-glow: rgba(194, 87, 11, 0.18);
+
+  --success: #2F7A4D;
+  --success-bg: rgba(47, 122, 77, 0.10);
+  --success-border: rgba(47, 122, 77, 0.32);
+  --danger: #B5341E;
+  --danger-bg: rgba(181, 52, 30, 0.08);
+  --danger-border: rgba(181, 52, 30, 0.32);
+  --warning: #B47000;
+  --warning-bg: rgba(180, 112, 0, 0.10);
+  --warning-border: rgba(180, 112, 0, 0.32);
+  --info: #1E5BAB;
+  --info-bg: rgba(30, 91, 171, 0.08);
+  --info-border: rgba(30, 91, 171, 0.28);
+
+  --grid-dot: rgba(20, 20, 15, 0.05);
+
+  --epic-024: #C2570B;
+  --epic-021: #1E5BAB;
+  --epic-022: #0F766E;
+  --epic-026: #7C3AED;
+  --epic-018: #5A5750;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  --shadow-sm: 0 1px 2px rgba(20, 20, 15, 0.04);
+  --shadow-md: 0 4px 12px rgba(20, 20, 15, 0.08);
+  --shadow-lg: 0 8px 24px rgba(20, 20, 15, 0.12);
+  --shadow-drag: 0 12px 32px rgba(20, 20, 15, 0.20);
+
+  --font-display: 'Bricolage Grotesque', ui-sans-serif, sans-serif;
+  --font-body: 'Manrope', ui-sans-serif, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+[data-theme="dark"] {
+  --bg-base: #0B0B0E;
+  --bg-surface: #131317;
+  --bg-surface-2: #1A1A20;
+  --bg-elevated: #1E1E25;
+  --bg-sunken: #08080B;
+
+  --text-primary: #ECEAE3;
+  --text-secondary: #9A968D;
+  --text-tertiary: #6A6760;
+  --text-on-accent: #14140F;
+
+  --border: rgba(236, 234, 227, 0.08);
+  --border-strong: rgba(236, 234, 227, 0.16);
+  --border-accent: rgba(245, 158, 11, 0.32);
+
+  --accent: #F59E0B;
+  --accent-hover: #FBBF24;
+  --accent-bg: rgba(245, 158, 11, 0.10);
+  --accent-glow: rgba(245, 158, 11, 0.22);
+
+  --success: #4ADE80;
+  --success-bg: rgba(74, 222, 128, 0.10);
+  --success-border: rgba(74, 222, 128, 0.32);
+  --danger: #F87171;
+  --danger-bg: rgba(248, 113, 113, 0.10);
+  --danger-border: rgba(248, 113, 113, 0.32);
+  --warning: #FBBF24;
+  --warning-bg: rgba(251, 191, 36, 0.10);
+  --warning-border: rgba(251, 191, 36, 0.32);
+  --info: #60A5FA;
+  --info-bg: rgba(96, 165, 250, 0.10);
+  --info-border: rgba(96, 165, 250, 0.28);
+
+  --grid-dot: rgba(236, 234, 227, 0.04);
+
+  --epic-024: #F59E0B;
+  --epic-021: #60A5FA;
+  --epic-022: #34D399;
+  --epic-026: #A78BFA;
+  --epic-018: #6A6760;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --shadow-drag: 0 12px 36px rgba(0, 0, 0, 0.7);
+}

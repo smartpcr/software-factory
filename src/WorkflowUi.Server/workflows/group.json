@@ -1,0 +1,112 @@
+{
+  "workflowId": "wf_4pntne4",
+  "workflowName": "group",
+  "description": "",
+  "version": "1.0",
+  "entryPointNodeId": null,
+  "maxConcurrency": 0,
+  "allowPause": true,
+  "timeoutSeconds": 0,
+  "defaultVariables": {},
+  "metadata": {},
+  "nodes": [
+    {
+      "nodeId": "n_wvifsz4",
+      "runtimeType": "start",
+      "nodeName": "Start",
+      "description": "",
+      "configuration": {
+        "triggerType": "Manual",
+        "schedule": "",
+        "eventName": "",
+        "webHookMethod": "POST",
+        "webHookRoute": "",
+        "bodyJsonSchema": ""
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_hnavclh",
+      "runtimeType": "Group",
+      "nodeName": "Group",
+      "description": "",
+      "configuration": {
+        "scopedVariables": "[{\"name\":\"abc\",\"type\":\"string\",\"default\":\"abc\"},{\"name\":\"num\",\"type\":\"number\",\"default\":\"123\"}]",
+        "childNodes": [
+          {
+            "nodeId": "n_w05pnso",
+            "runtimeType": "Log",
+            "nodeName": "Log",
+            "description": "",
+            "configuration": {
+              "level": "Info",
+              "messageTemplate": "{abc}={num}",
+              "parameterBindings": "{\"abc\":\"abc\",\"num\":\"num\"}"
+            },
+            "joinType": "Any",
+            "priority": "Normal",
+            "maxConcurrentExecutions": 0,
+            "retryPolicy": null,
+            "circuitBreakerPolicy": null,
+            "compensationNodeId": null,
+            "fallbackNodeId": null
+          }
+        ],
+        "childConnections": []
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    },
+    {
+      "nodeId": "n_pypaid4",
+      "runtimeType": "End",
+      "nodeName": "End",
+      "description": "",
+      "configuration": {
+        "status": "success"
+      },
+      "joinType": "Any",
+      "priority": "Normal",
+      "maxConcurrentExecutions": 0,
+      "retryPolicy": null,
+      "circuitBreakerPolicy": null,
+      "compensationNodeId": null,
+      "fallbackNodeId": null
+    }
+  ],
+  "connections": [
+    {
+      "sourceNodeId": "n_wvifsz4",
+      "targetNodeId": "n_hnavclh",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    },
+    {
+      "sourceNodeId": "n_hnavclh",
+      "targetNodeId": "n_pypaid4",
+      "sourcePort": "out",
+      "targetPort": "in",
+      "triggerMessageType": "Complete",
+      "condition": null,
+      "isEnabled": true,
+      "priority": 0,
+      "metadata": null
+    }
+  ]
+}

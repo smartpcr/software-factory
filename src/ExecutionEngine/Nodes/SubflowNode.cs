@@ -70,6 +70,11 @@ public class SubflowNode : ExecutableNodeBase
     /// </summary>
     public bool SkipValidation { get; set; }
 
+    /// <summary>
+    /// When false, the child workflow runs fire-and-forget.
+    /// </summary>
+    public bool WaitForCompletion { get; set; } = true;
+
     /// <inheritdoc/>
     public override void Initialize(NodeDefinition definition)
     {
@@ -154,6 +159,15 @@ public class SubflowNode : ExecutableNodeBase
         if (subflowDef.Configuration?.TryGetValue("SkipValidation", out var skipValidationValue) == true && skipValidationValue is bool skipValidation)
         {
             this.SkipValidation = skipValidation;
+        }
+
+        // Read WaitForCompletion from direct property or Configuration dictionary
+        this.WaitForCompletion = subflowDef.WaitForCompletion;
+        if (subflowDef.Configuration?.TryGetValue("waitForCompletion", out var waitValue) == true)
+        {
+            if (waitValue is bool waitBool) this.WaitForCompletion = waitBool;
+            else if (waitValue is System.Text.Json.JsonElement je && je.ValueKind == System.Text.Json.JsonValueKind.True) this.WaitForCompletion = true;
+            else if (waitValue is System.Text.Json.JsonElement je2 && je2.ValueKind == System.Text.Json.JsonValueKind.False) this.WaitForCompletion = false;
         }
 
         // Load child workflow definition if not already provided
@@ -319,17 +333,17 @@ public class SubflowNode : ExecutableNodeBase
                 this.NodeId, childWorkflowDef.WorkflowId);
             var engine = new WorkflowEngine(null, workflowContext.ServiceProvider);
 
-            // Track child node completion for progress calculation (like ContainerNode)
+            // Track child node completion for progress calculation (like GroupNode)
             var totalChildNodes = childWorkflowDef.Nodes.Count;
             var completedChildNodes = 0;
             var childNodeLock = new object();
 
-            // Subscribe to NodeCreated event to register OnProgress handlers (like ContainerNode)
+            // Subscribe to NodeCreated event to register OnProgress handlers (like GroupNode)
             engine.NodeCreated += (nodeId, node) =>
             {
                 if (node is ExecutableNodeBase executableNode)
                 {
-                    // Subscribe to child node's OnProgress events (like ContainerNode does)
+                    // Subscribe to child node's OnProgress events (like GroupNode does)
                     executableNode.OnProgress += (sender, e) =>
                     {
                         // Forward child node progress with hierarchical key
@@ -372,7 +386,7 @@ public class SubflowNode : ExecutableNodeBase
                     ProgressPercent = 100
                 });
 
-                // Update overall progress based on completed children (like ContainerNode)
+                // Update overall progress based on completed children (like GroupNode)
                 lock (childNodeLock)
                 {
                     completedChildNodes++;
@@ -386,11 +400,11 @@ public class SubflowNode : ExecutableNodeBase
                 }
             };
 
-            engine.NodeFailed += (nodeId, instanceId, error) =>
+            engine.NodeFailed += (nodeId, instanceId, error, duration) =>
             {
                 this.RaiseOnProgress(new ProgressEventArgs
                 {
-                    Status = $"[{this.NodeId}/{nodeId}] Failed: {error}",
+                    Status = $"[{this.NodeId}/{nodeId}] Failed after {duration.TotalSeconds:F1}s: {error}",
                     ProgressPercent = 100
                 });
 
@@ -417,41 +431,70 @@ public class SubflowNode : ExecutableNodeBase
                 });
             };
 
-            this.logger.LogInformation("SubflowNode starting child workflow engine for NodeId: {NodeId}, ChildWorkflow: {ChildWorkflowId}, Timeout: {Timeout}",
-                this.NodeId, childWorkflowDef.WorkflowId, this.Timeout);
+            this.logger.LogInformation("SubflowNode starting child workflow engine for NodeId: {NodeId}, ChildWorkflow: {ChildWorkflowId}, Timeout: {Timeout}, WaitForCompletion: {Wait}",
+                this.NodeId, childWorkflowDef.WorkflowId, this.Timeout, this.WaitForCompletion);
 
-            this.ChildWorkflowContext = await engine.StartAsync(
-                childWorkflowDef,
-                initialVariables,
-                this.Timeout,
-                cancellationToken);
-
-            this.logger.LogInformation("SubflowNode child workflow completed for NodeId: {NodeId}, ChildWorkflow: {ChildWorkflowId}, Status: {Status}",
-                this.NodeId, childWorkflowDef.WorkflowId, this.ChildWorkflowContext.Status);
-
-            // Check child workflow execution status
-            if (this.ChildWorkflowContext.Status == WorkflowExecutionStatus.Failed)
+            if (this.WaitForCompletion)
             {
-                var childErrors = GetChildWorkflowErrors(this.ChildWorkflowContext, engine);
-                throw new InvalidOperationException(
-                    $"Child workflow '{childWorkflowDef.WorkflowId}' failed with errors:{Environment.NewLine}{childErrors}");
-            }
+                this.ChildWorkflowContext = await engine.StartAsync(
+                    childWorkflowDef,
+                    initialVariables,
+                    this.Timeout,
+                    cancellationToken);
 
-            if (this.ChildWorkflowContext.Status == WorkflowExecutionStatus.Cancelled)
+                this.logger.LogInformation("SubflowNode child workflow completed for NodeId: {NodeId}, ChildWorkflow: {ChildWorkflowId}, Status: {Status}",
+                    this.NodeId, childWorkflowDef.WorkflowId, this.ChildWorkflowContext.Status);
+
+                // Check child workflow execution status
+                if (this.ChildWorkflowContext.Status == WorkflowExecutionStatus.Failed)
+                {
+                    var childErrors = GetChildWorkflowErrors(this.ChildWorkflowContext, engine);
+                    throw new InvalidOperationException(
+                        $"Child workflow '{childWorkflowDef.WorkflowId}' failed with errors:{Environment.NewLine}{childErrors}");
+                }
+
+                if (this.ChildWorkflowContext.Status == WorkflowExecutionStatus.Cancelled)
+                {
+                    throw new OperationCanceledException("Child workflow was cancelled");
+                }
+
+                // Map output variables from child to parent
+                this.logger.LogDebug("SubflowNode mapping output variables: {MappingCount} mappings for NodeId: {NodeId}",
+                    this.OutputMappings.Count, this.NodeId);
+                this.MapOutputVariables(this.ChildWorkflowContext, workflowContext);
+
+                // Store child workflow output in node context for downstream access
+                nodeContext.OutputData["ChildWorkflowId"] = childWorkflowDef.WorkflowId;
+                nodeContext.OutputData["ChildWorkflowInstanceId"] = this.ChildWorkflowContext.InstanceId;
+                nodeContext.OutputData["ChildWorkflowStatus"] = this.ChildWorkflowContext.Status.ToString();
+                nodeContext.OutputData["ChildOutputData"] = new Dictionary<string, object>(this.ChildWorkflowContext.Variables);
+            }
+            else
             {
-                throw new OperationCanceledException("Child workflow was cancelled");
+                // Fire-and-forget: start the child workflow without awaiting completion
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await engine.StartAsync(
+                            childWorkflowDef,
+                            initialVariables,
+                            this.Timeout,
+                            CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        this.logger.LogWarning(ex, "Fire-and-forget child workflow '{ChildWorkflowId}' failed for SubflowNode {NodeId}",
+                            childWorkflowDef.WorkflowId, this.NodeId);
+                    }
+                }, CancellationToken.None);
+
+                this.logger.LogInformation("SubflowNode launched fire-and-forget child workflow for NodeId: {NodeId}, ChildWorkflow: {ChildWorkflowId}",
+                    this.NodeId, childWorkflowDef.WorkflowId);
+
+                nodeContext.OutputData["ChildWorkflowId"] = childWorkflowDef.WorkflowId;
+                nodeContext.OutputData["ChildWorkflowStatus"] = "FireAndForget";
             }
-
-            // Map output variables from child to parent
-            this.logger.LogDebug("SubflowNode mapping output variables: {MappingCount} mappings for NodeId: {NodeId}",
-                this.OutputMappings.Count, this.NodeId);
-            this.MapOutputVariables(this.ChildWorkflowContext, workflowContext);
-
-            // Store child workflow output in node context for downstream access
-            nodeContext.OutputData["ChildWorkflowId"] = childWorkflowDef.WorkflowId;
-            nodeContext.OutputData["ChildWorkflowInstanceId"] = this.ChildWorkflowContext.InstanceId;
-            nodeContext.OutputData["ChildWorkflowStatus"] = this.ChildWorkflowContext.Status.ToString();
-            nodeContext.OutputData["ChildOutputData"] = new Dictionary<string, object>(this.ChildWorkflowContext.Variables);
 
             instance.Status = NodeExecutionStatus.Completed;
             instance.EndTime = DateTime.UtcNow;

@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>Forge.Api</RootNamespace>
+    <AssemblyName>Forge.Api</AssemblyName>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" />
+    <PackageReference Include="Swashbuckle.AspNetCore" />
+    <!-- Phase 9 — MSAL interactive sign-in (system browser), DPAPI-backed token cache. -->
+    <PackageReference Include="Microsoft.Identity.Client" />
+    <PackageReference Include="Microsoft.Identity.Client.Extensions.Msal" />
+    <!-- Phase 11.5b — GitHub Copilot SDK for the in-process streaming runner. -->
+    <PackageReference Include="GitHub.Copilot.SDK" />
+  </ItemGroup>
+
+  <!-- Phase 11.2 — model registry seed. The Web SDK auto-includes the JSON;
+       we just promote it from "do nothing" to "copy to output" so operators
+       can edit the file in place after publish without a recompile. -->
+  <ItemGroup>
+    <Content Update="Agents\Models\models.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>

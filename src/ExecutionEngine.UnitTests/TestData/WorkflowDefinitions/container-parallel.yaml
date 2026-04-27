@@ -1,7 +1,7 @@
 # Test workflow with parallel container execution
 workflowId: test-container-parallel
-workflowName: Test Container with Parallel Children
-description: Tests container node with parallel child execution
+workflowName: Test Group with Parallel Children
+description: Tests group node with parallel child execution
 
 nodes:
   - nodeId: start
@@ -10,8 +10,8 @@ nodes:
     scriptContent: "SetOutput(\"started\", true);"
 
   - nodeId: parallel-container
-    nodeName: Parallel Container
-    runtimeType: Container
+    nodeName: Parallel Group
+    runtimeType: Group
     ExecutionMode: "Parallel"
     ChildNodes:
       - nodeId: child1
