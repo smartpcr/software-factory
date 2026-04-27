@@ -480,6 +480,85 @@ Context — what's already in scope vs. what this phase adds:
 
 ---
 
+## Phase 13 — Crew management & task orchestration
+
+> Phase 11 made agents real (model registry, cost ledger, soul.md, runner). Phase 12 made work items real (epic → feature → task | bug, phase → stage → step). **Phase 13 ties them together**: crews become explicit organizational units with hierarchy, role-aware leads, capability authoring, and a typed-task pipeline that turns a feature into PR-sized work the runtime can pick up.
+
+Two principles drive the shape:
+
+1. **Plan is a task type, not a phase**. A *plan task* takes a feature/story and emits a spec + the WIT phase → stage → step breakdown (each `step` becomes the unit a coding task can claim). This makes planning observable, auditable, and budgeted exactly like coding.
+2. **Crews learn**. When a crew completes work, the lead distills what was learned about the domain into a `domain-expert.md` artifact stored alongside the workstream's repo. Future crews ingest those files as front-matter `capabilities:` in their soul.md, so capability is authored, not configured.
+
+### Resolved decisions
+
+- **Q13.1 Crew topology** — each crew has exactly one **lead** (an agent or human) and zero-or-more **members** (agents or humans). Crews can nest: a parent crew (`parentCrewId`) groups child crews under a team-of-teams. Depth cap = 3 (Org → Team → Squad). Membership is exclusive within a depth: an agent can be a member of multiple **child** crews but only one direct **lead** assignment, so accountability for each task has a single owner.
+- **Q13.2 Lead = router** — only the lead can assign tasks within their crew. The lead may assign to themselves; the runtime treats self-assignment identically to peer-assignment for ledger and quota purposes. Reassignment is a write requiring `RequireRole.ProductOwner` *or* `crew.lead == caller`.
+- **Q13.3 Capability via soul.md** — capability is the YAML front-matter `capabilities:` list at the top of the crew's `soul.md` (Phase 11.3). Each entry references a `domain-expert.md` file by **content-addressed id** (sha256 of the file at ingestion time) and optional human label. The system prompt is a deterministic concatenation: `<soul.md body>` + `\n\n<capabilities (sorted by id)>`. Content addressing guarantees that two crews with the same capability list produce identical caches, which the runner reuses as a cache prefix.
+- **Q13.4 Model assignment** — model is a **crew-level** property (every member runs against the same model). Pricing is denormalized per Phase 11.2 so historical salary stays reproducible after a price/model change. Switching models writes a row to `crew_history(crewId, fromModel, toModel, switchedBy, switchedAt)` and forces a new prompt cache (the prefix changes).
+- **Q13.5 Quota model** — three tiers, OR-combined (whichever is hit first stops new pickups):
+  - **dailyBudgetUsd** — Phase 11.10 cap, kept.
+  - **maxConcurrentTasks** — how many tasks the crew can claim at once across members.
+  - **weeklyTaskCap** — hard ceiling on `tasks completed per ISO week`. Throttles a runaway plan-task generator producing more steps than the engineering crew can drain.
+- **Q13.6 Task taxonomy** — two and only two types in v0.1:
+  - **`plan`** — input is a feature / story (or the top-level item the operator drops on the crew). Output is **(a)** a `docs/specs/{slug}/plan.md` checked into the workstream's worktree and **(b)** a tree of WIT rows (`phase → stage → step`) hanging off the input feature. Lead is responsible for review; the lead may delegate authoring but signs off before the WIT rows are visible to coding crews. Unit of work = **one MD file + one phase tree**.
+  - **`coding`** — input is a single `step` work item (the PR-sized leaf). Output is a single PR. Includes implementation, test coverage above the policy threshold (Phase 7's `human-gate.rules`), and a self-review pass that the lead signs before the PR opens. Unit of work = **one PR**.
+  - Reviews, doc edits, ad-hoc spikes are not tracked as new task types — they re-use `coding` (a step whose PR happens to only touch tests, or only docs). Forge does not split task types by what's *in* the PR; it splits by *deliverable shape* (MD vs PR).
+- **Q13.7 Domain expert artifact** — when a coding task closes (PR merged, tests green, lead-reviewed), the runner asks the lead's agent to write a `docs/domain/{slug}/{step-id}.md` summarizing **what changed**, **what was tried and rejected**, and **invariants future implementers must preserve**. The file lives in the same repo as the PR. The runner indexes it (sha256 + frontmatter `topic:`) into a `domain_experts` table the capability picker reads from. Generation is *automatic* but the lead can edit before commit.
+- **Q13.8 Reassignment vs. handoff** — a *reassignment* moves a task to a different member of the **same** crew (lead-only). A *handoff* moves a task to a different crew entirely (lead of source + lead of target both ack via two-phase confirm). Reassignment is cheap and silent in the audit log; handoffs are loud (audit + SignalR fan-out + a "crossed-crew" pill on the work item).
+
+### Implementation steps
+
+- [ ] **13.1** Domain model — extend `CrewRow` (Phase 11):
+  ```
+  ParentCrewId   (string?, FK → crews.Id, indexed)
+  Depth          (int, 0=root, 1=team, 2=squad; computed, persisted for cheap roll-ups)
+  LeadAgentId    (string, FK → agents.Id, NOT NULL)
+  MemberAgentIds (json string[] in `crew_members(crewId, agentId)` join table)
+  Model          (string, FK-by-id → models.json)
+  Capabilities   (json string[] of domain-expert content-ids)
+  MaxConcurrent  (int, default 2)
+  WeeklyCap      (int, default 20)
+  ```
+  New table `crew_history(id, crewId, kind, fromValue, toValue, byUserId, at)` — kind ∈ `model | lead | member-add | member-remove | parent-change`. New table `domain_experts(id, contentId, repoId, path, topic, summary, indexedAt)`.
+- [ ] **13.2** Task taxonomy — add `kind` column to `tasks`: `plan | coding`. The runner reads `kind` to pick the right system-prompt template (under `agents/templates/plan-system.md` and `agents/templates/coding-system.md`); both templates concatenate the crew's soul.md + capabilities and add the kind-specific deliverable rubric.
+- [ ] **13.3** Lead-routing endpoint — `POST /api/crews/{crewId}/assign` body `{ taskId, memberAgentId }`. Server enforces `caller == crew.lead || RequireRole.ProductOwner`. Self-assignment is `memberAgentId == crew.lead`. Reassignment uses the same endpoint with the new memberId.
+- [ ] **13.4** Plan task pipeline:
+  - Endpoint `POST /api/crews/{crewId}/plan` body `{ workItemId }` — input must be `epic | feature` (dev) or `phase` (design). 400 otherwise.
+  - Runner spawns a `plan` invocation. Tools available: `read_repo`, `write_file` (only under `docs/specs/`), `search_work_items`, `create_work_item`. The runner intercepts `create_work_item` calls and validates the parent/child rank rules from Phase 12.
+  - On finish: the spec MD is committed to a `planning/{slug}` branch; a draft PR opens; the WIT rows are inserted with `state = proposed`. Lead reviews + merges the PR; merging flips the WIT rows to `active`.
+  - Unit-of-work counter increments by 1 per merged plan PR.
+- [ ] **13.5** Coding task pipeline:
+  - Endpoint `POST /api/crews/{crewId}/code` body `{ stepWorkItemId }` — input must be a `step` (Q12.1). Step must be `state = active` and not already claimed (`assignedTo === null`).
+  - Runner spawns a `coding` invocation in the workstream's worktree. Tools: `read_repo`, `write_file` (whole repo), `run_tests`, `git_commit`, `git_push`, `open_pr`.
+  - Self-review pass: the runner runs a second invocation against the same agent with a `review` system prompt, scoped to the diff. Lead must explicitly approve via `POST /api/prs/{id}/approve` before the PR comes off draft.
+  - Unit-of-work counter increments by 1 per opened (non-draft) PR.
+- [ ] **13.6** Quota enforcement — extends Phase 11.10 budget pre-flight:
+  - On `assign`: refuse if `active_tasks_for_crew(crewId) >= MaxConcurrent`. 409 + `agent.crew_concurrency_full` SignalR.
+  - On `claim` (any task type): refuse if `tasks_completed_this_iso_week(crewId) >= WeeklyCap`. 429 + `agent.crew_weekly_cap_hit`.
+  - PO-only override `?force=true` on the assign endpoint records `crew_history(kind='quota-override')`.
+- [ ] **13.7** Domain-expert generator — runs as a final tool call on coding-task close. The runner POSTs to itself: a follow-up `domain` invocation with the merged diff + the original step description. Output is committed to the same PR's branch in a separate commit, then merged. Failure to generate is non-fatal — the task closes either way; a follow-up `gap-domain-expert` audit row points at the missing artifact so the lead can author it manually.
+- [ ] **13.8** Capability ingestion — `POST /api/crews/{crewId}/capabilities` body `{ contentId }` validates the file exists in `domain_experts`, appends to the crew's `Capabilities` array, writes the front-matter back to soul.md, and bumps the prompt cache (Phase 11.5). Removal: `DELETE` with the same body. UI lives in `/crews/{id}` with a searchable picker over `domain_experts.topic`.
+- [ ] **13.9** UI — extend `CrewsView` (today: read-only dashboard):
+  - **Hierarchy panel** (left, 30%) — collapsible tree. Drag-drop a crew under another to reparent (writes `crew_history(kind='parent-change')`). Depth cap enforced client-side and server-side.
+  - **Crew detail** (center, 40%) — header shows crew name, lead avatar, model badge, capability chip count. Tabs: `Roster` (lead + members table; +/− with role gate), `Capabilities` (chip list with the picker from 13.8), `Quota` (sliders for `MaxConcurrent`, `WeeklyCap`, `dailyBudgetUsd`), `History` (`crew_history` rows).
+  - **Activity rail** (right, 30%) — current invocations, weekly task counter (`X / WeeklyCap`), salary today/sprint/month (Phase 11.9, kept).
+  - The view is *editable for leads / PO* and *read-only for everyone else*. Field-level `disabled` driven by the role check; trying to mutate as non-lead returns 403 from the API anyway.
+- [ ] **13.10** Sidebar — `/crews` already lives under "Agents" (Phase 10.7). Drop the PO-only gate at the *nav* level (everyone can browse) but keep mutation-level role checks. Sub-label changes from `Supervisory · PO only` to `{n} crews · {m} agents`.
+- [ ] **13.11** Tests:
+  - xUnit: hierarchy depth cap, lead-or-PO assign authorization, plan task → WIT tree round-trip, coding task → PR round-trip, weekly-cap refusal, capability content-id integrity (sha256 match), domain-expert generator hits the file system but tolerates failure.
+  - Playwright: open `/crews`, reparent via drag, assign a self-step, observe the `agent.crew_concurrency_full` toast when MaxConcurrent is hit.
+- [ ] **13.12** Fidelity — new view; not in the prototype. New tokens (hierarchy-tree connector lines, capability chip palette) documented in `docs/forge/design-tokens.md`. Existing Phase 10.7 cards remain as the "Activity rail" content.
+
+### Out of scope (explicitly deferred)
+
+- **Cross-org crew sharing** (one crew working for two products) — all crews bind to a single product. Phase R candidate.
+- **Auto-promotion of members to leads** based on completion stats — manual via PO action only, by design.
+- **Skill matching** (auto-suggesting capabilities based on the work item title/description) — capability picker is operator-driven; ML matching is `forge_v2.md` territory.
+- **Domain-expert MD versioning beyond content-addressing** — if a file changes, it gets a new content-id; old crews keep referencing the old id. Conflict resolution / merge UI is Phase R.
+- **Plan tasks that recurse** (a plan task generating sub-plan-tasks) — v0.1 enforces a single planning round per feature; deeper decomposition lives inside the resulting WIT tree.
+
+---
+
 ## Phase R — Post-implementation refactor (deferred)
 
 > **Do not start until every checkbox in Phases 0–7 is ticked and all fidelity checks are green.** This phase exists only to record the deferred design debt so reviewers know it is acknowledged, not forgotten.

@@ -1,9 +1,10 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { WorkItem, WorkItemState, WorkItemType } from './workItemTypes';
 import type { WitChip } from './useWitStore';
 import { useWitStore } from './useWitStore';
-import { SAMPLE_ITERATIONS, SAMPLE_REPOS } from './sampleWorkItems';
-import { typeLabel } from './workItemTypes';
+import { SAMPLE_ITERATIONS } from './sampleWorkItems';
+import { typeLabel, WORK_ITEM_TYPES } from './workItemTypes';
+import { useProductsStore } from '@/state/useProductsStore';
 
 interface Props {
   items: WorkItem[];
@@ -23,9 +24,21 @@ export function WorkItemFilterBar({ items, visibleItems }: Props) {
   const filters = useWitStore((s) => s.filters);
   const setFilters = useWitStore((s) => s.setFilters);
 
-  // Counts for chip badges. Use the unfiltered registry so the badge tells
-  // the operator what's *available* to filter into, not what the current
-  // chip already shows.
+  // Phase 8.9 — repo dropdown follows the active product. Lazy-load the
+  // repos for that product if the SideBar hasn't already.
+  const activeProductId = useProductsStore((s) => s.activeProductId);
+  const reposByProduct = useProductsStore((s) => s.reposByProduct);
+  const loadReposFor = useProductsStore((s) => s.loadReposFor);
+  useEffect(() => {
+    if (activeProductId && !reposByProduct[activeProductId]) {
+      void loadReposFor(activeProductId);
+    }
+  }, [activeProductId, reposByProduct, loadReposFor]);
+  const productRepos = useMemo(
+    () => (activeProductId ? reposByProduct[activeProductId] ?? [] : []),
+    [activeProductId, reposByProduct],
+  );
+
   const counts = useMemo(() => ({
     all:      items.length,
     mine:     items.filter((i) => i.assignedTo?.id === filters.meId).length,
@@ -34,13 +47,51 @@ export function WorkItemFilterBar({ items, visibleItems }: Props) {
     watching: items.filter((i) => i.watching).length,
   }), [items, filters.meId]);
 
-  // Distinct assignees for the assignee select.
+  // Distinct assignees for the assignee select. Defensive: cards-backfill
+  // can leave displayName/id null on legacy rows; coalesce so the sort
+  // doesn't trip on `.localeCompare` of null.
   const assignees = useMemo(() => {
     const map = new Map<string, string>();
     for (const i of items) {
-      if (i.assignedTo) map.set(i.assignedTo.id, i.assignedTo.displayName);
+      const a = i.assignedTo;
+      if (!a) continue;
+      const id = a.id ?? '';
+      if (!id) continue;
+      const display = a.displayName || a.id || '—';
+      map.set(id, display);
     }
     return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [items]);
+
+  // Repo options come from the active product's repo list. We don't fold
+  // in repo ids from `items` — once the store is product-scoped, surfacing
+  // a repo that doesn't belong to this product would be confusing.
+  const repoOptions = useMemo(
+    () => productRepos.map((r) => ({
+      value: r.id,
+      label: `${r.displayName} · ${r.kind === 'ado' ? 'ADO' : 'GH'}`,
+    })),
+    [productRepos],
+  );
+
+  // When the active product changes, drop any repo selections that no
+  // longer belong to it so the filter doesn't silently match nothing.
+  useEffect(() => {
+    if (!filters.repoId.length) return;
+    const valid = new Set(productRepos.map((r) => r.id));
+    const next = filters.repoId.filter((id) => valid.has(id));
+    if (next.length !== filters.repoId.length) {
+      setFilters({ repoId: next });
+    }
+  }, [productRepos, filters.repoId, setFilters]);
+
+  const iterationOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const it of SAMPLE_ITERATIONS) map.set(it.ref, it.label);
+    for (const i of items) {
+      if (i.iterationRef && !map.has(i.iterationRef)) map.set(i.iterationRef, i.iterationRef);
+    }
+    return [...map.entries()].map(([value, label]) => ({ value, label }));
   }, [items]);
 
   return (
@@ -60,57 +111,48 @@ export function WorkItemFilterBar({ items, visibleItems }: Props) {
       </div>
 
       <div className="wit-filter-selects">
-        <Select
+        <MultiSelect
           label="Type"
-          value={filters.type}
-          onChange={(v) => setFilters({ type: v as WorkItemType | 'any' })}
-          options={[
-            { value: 'any', label: 'All' },
-            ...(['epic', 'feature', 'user-story', 'task', 'bug'] as WorkItemType[]).map((t) => ({
-              value: t,
-              label: typeLabel(t),
-            })),
-          ]}
+          values={filters.type}
+          onChange={(v) => setFilters({ type: v as WorkItemType[] })}
+          options={WORK_ITEM_TYPES.map((t) => ({ value: t, label: typeLabel(t) }))}
+          allLabel="Any type"
         />
-        <Select
+        <MultiSelect
           label="State"
-          value={filters.state}
-          onChange={(v) => setFilters({ state: v as WorkItemState | 'any' })}
+          values={filters.state}
+          onChange={(v) => setFilters({ state: v as WorkItemState[] })}
           options={[
-            { value: 'any', label: 'Any' },
             { value: 'proposed', label: 'Proposed' },
             { value: 'active',   label: 'Active' },
             { value: 'resolved', label: 'Resolved' },
             { value: 'closed',   label: 'Closed' },
           ]}
+          allLabel="Any state"
         />
-        <Select
+        <MultiSelect
           label="Iteration"
-          value={filters.iterationRef}
+          values={filters.iterationRef}
           onChange={(v) => setFilters({ iterationRef: v })}
-          options={[
-            { value: 'any', label: 'Any iteration' },
-            ...SAMPLE_ITERATIONS.map((it) => ({ value: it.ref, label: it.label })),
-          ]}
+          options={iterationOptions}
+          allLabel="Any iteration"
         />
-        <Select
+        <MultiSelect
           label="Assignee"
-          value={filters.assignee}
+          values={filters.assignee}
           onChange={(v) => setFilters({ assignee: v })}
           options={[
-            { value: 'any', label: 'Any assignee' },
             { value: '__unassigned__', label: '— unassigned' },
             ...assignees.map(([id, name]) => ({ value: id, label: `${id} · ${name}` })),
           ]}
+          allLabel="Any assignee"
         />
-        <Select
+        <MultiSelect
           label="Repo"
-          value={filters.repoId}
+          values={filters.repoId}
           onChange={(v) => setFilters({ repoId: v })}
-          options={[
-            { value: 'any', label: 'Any repo' },
-            ...SAMPLE_REPOS.map((r) => ({ value: r.id, label: `${r.displayName} · ${r.kind === 'ado' ? 'ADO' : 'GH'}` })),
-          ]}
+          options={repoOptions}
+          allLabel="Any repo"
         />
       </div>
 
@@ -133,22 +175,106 @@ export function WorkItemFilterBar({ items, visibleItems }: Props) {
   );
 }
 
-interface SelectProps {
+interface MultiSelectProps {
   label: string;
-  value: string;
-  onChange: (v: string) => void;
+  values: string[];
+  onChange: (v: string[]) => void;
   options: Array<{ value: string; label: string }>;
+  /** Summary text shown in the trigger when no value is selected. */
+  allLabel: string;
 }
 
-function Select({ label, value, onChange, options }: SelectProps) {
+function MultiSelect({ label, values, onChange, options, allLabel }: MultiSelectProps) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  const selected = new Set(values);
+
+  // Close on click-outside / Esc so the popover doesn't trap focus.
+  useEffect(() => {
+    if (!open) return;
+    function onMouseDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false); }
+    window.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  function toggle(value: string) {
+    const next = new Set(selected);
+    if (next.has(value)) next.delete(value);
+    else next.add(value);
+    onChange([...next]);
+  }
+
+  const summary = (() => {
+    if (selected.size === 0) return allLabel;
+    if (selected.size === 1) {
+      return options.find((o) => o.value === [...selected][0])?.label ?? allLabel;
+    }
+    return `${selected.size} selected`;
+  })();
+
   return (
-    <label className="wit-select">
-      <span className="wit-select-lbl">{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)}>
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>{o.label}</option>
-        ))}
-      </select>
-    </label>
+    <div className={`wit-multi${open ? ' open' : ''}`} ref={ref}>
+      <button
+        type="button"
+        className="wit-multi-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="wit-select-lbl">{label}</span>
+        <span className="wit-multi-summary">{summary}</span>
+        {selected.size > 0 && (
+          <span className="wit-multi-badge" aria-hidden>{selected.size}</span>
+        )}
+        <svg className="wit-multi-caret" width="10" height="10" viewBox="0 0 10 10" aria-hidden>
+          <path d="M2 4 L5 7 L8 4" stroke="currentColor" strokeWidth="1.3" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {open && (
+        <div className="wit-multi-pop" role="listbox" aria-multiselectable>
+          <div className="wit-multi-pop-head">
+            <span className="wit-select-lbl">{label}</span>
+            <button
+              type="button"
+              className="wit-multi-clear"
+              onClick={() => onChange([])}
+              disabled={selected.size === 0}
+            >
+              Clear
+            </button>
+          </div>
+          <div className="wit-multi-pop-list">
+            {options.length === 0 && (
+              <div className="wit-multi-empty">No options</div>
+            )}
+            {options.map((o) => {
+              const checked = selected.has(o.value);
+              return (
+                <label
+                  key={o.value}
+                  className={`wit-multi-opt${checked ? ' checked' : ''}`}
+                  role="option"
+                  aria-selected={checked}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggle(o.value)}
+                  />
+                  <span className="wit-multi-opt-label">{o.label}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

@@ -13,6 +13,15 @@
   display: none;
   height: 100%;
   flex-direction: column;
+  /* Fallback scroll: views that don't define their own inner scroll
+     container (Audit, Crews, Plan, Products, Prs, Settings, work-item
+     registry) get a scrollbar here when content exceeds the viewport.
+     Views that DO manage their own scroll (overview, cost, swarm,
+     policies, workstream, timeline, board) lay out their children via
+     flex so total height matches the viewport — the outer scroll then
+     stays dormant and their sticky page-head still works. */
+  overflow-y: auto;
+  min-height: 0;
 }
 .view.active { display: flex; }
 

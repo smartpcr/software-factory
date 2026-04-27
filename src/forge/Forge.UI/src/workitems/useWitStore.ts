@@ -7,11 +7,14 @@ export type WitChip = 'all' | 'mine' | 'active' | 'blocked' | 'watching';
 
 export interface WitFilters {
   chip: WitChip;
-  type: WorkItemType | 'any';
-  state: WorkItemState | 'any';
-  iterationRef: string | 'any';
-  assignee: string | 'any';
-  repoId: string | 'any';
+  /** Multi-select — empty array means "any". */
+  type: WorkItemType[];
+  /** Multi-select — empty array means "any". */
+  state: WorkItemState[];
+  /** Multi-select — empty array means "any". `'__unassigned__'` is a valid sentinel inside `assignee`. */
+  iterationRef: string[];
+  assignee: string[];
+  repoId: string[];
   /** Free-text search across title + tags. */
   q: string;
   /** Phase 12 — owner identifier used by the "Mine" chip. Defaults to current PO seed. */
@@ -47,11 +50,11 @@ const FILTERS_KEY = 'forge.wit.filters';
 
 const DEFAULT_FILTERS: WitFilters = {
   chip: 'all',
-  type: 'any',
-  state: 'any',
-  iterationRef: 'any',
-  assignee: 'any',
-  repoId: 'any',
+  type: [],
+  state: [],
+  iterationRef: [],
+  assignee: [],
+  repoId: [],
   q: '',
   meId: 'XD',
 };
@@ -68,10 +71,27 @@ function loadFilters(): WitFilters {
     const raw = window.localStorage.getItem(FILTERS_KEY);
     if (!raw) return DEFAULT_FILTERS;
     const parsed = JSON.parse(raw);
-    return { ...DEFAULT_FILTERS, ...parsed };
+    return { ...DEFAULT_FILTERS, ...parsed, ...migrateLegacy(parsed) };
   } catch {
     return DEFAULT_FILTERS;
   }
+}
+
+// Pre-multiselect builds stored filters as scalars with 'any' as the
+// "no filter" sentinel. Convert those to arrays so older sessions don't
+// crash when reading their saved state.
+function migrateLegacy(parsed: Record<string, unknown>): Partial<WitFilters> {
+  const out: Partial<WitFilters> = {};
+  const keys: Array<keyof WitFilters> = ['type', 'state', 'iterationRef', 'assignee', 'repoId'];
+  for (const k of keys) {
+    const v = parsed[k];
+    if (Array.isArray(v)) continue;
+    if (typeof v === 'string') {
+      // 'any' was the legacy "no filter" sentinel.
+      (out as Record<string, unknown>)[k] = v === 'any' ? [] : [v];
+    }
+  }
+  return out;
 }
 
 function saveMode(mode: WitMode) {

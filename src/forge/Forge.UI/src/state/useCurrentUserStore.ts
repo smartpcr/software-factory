@@ -1,6 +1,28 @@
 import { create } from 'zustand';
 import type { CurrentUser } from '@/types';
 import { forgeApi } from '@/api/forgeApi';
+import imgXiaodong from '@/assets/crews/xiaodong_small.png';
+
+// Operator portrait override. The /api/me endpoint can store an
+// AvatarUrl on the user row; until that's wired through Phase 9 sign-in,
+// match the operator on email/login and bind to the bundled crew portrait
+// so the TopBar + SideBar show a real face instead of computed initials.
+const OPERATOR_AVATARS: Array<{ match: (u: CurrentUser) => boolean; avatar: string }> = [
+  {
+    match: (u) =>
+      u.email?.toLowerCase() === 'xiaodoli@microsoft.com'
+      || u.email?.toLowerCase() === 'lingxd@gmail.com'
+      || u.login?.toLowerCase() === 'xiaodoli'
+      || u.displayName?.toLowerCase().startsWith('xiaodong') === true,
+    avatar: imgXiaodong,
+  },
+];
+
+function applyOperatorAvatar(user: CurrentUser): CurrentUser {
+  if (user.avatarUrl) return user; // server-provided wins
+  const hit = OPERATOR_AVATARS.find((entry) => entry.match(user));
+  return hit ? { ...user, avatarUrl: hit.avatar } : user;
+}
 
 interface CurrentUserState {
   user: CurrentUser | null;
@@ -33,7 +55,7 @@ export const useCurrentUserStore = create<CurrentUserState>((set) => ({
   async load() {
     try {
       const user = await forgeApi.getMe();
-      set({ user, loaded: true });
+      set({ user: applyOperatorAvatar(user), loaded: true });
     } catch {
       set({ user: PLACEHOLDER, loaded: true });
     }
@@ -42,7 +64,7 @@ export const useCurrentUserStore = create<CurrentUserState>((set) => ({
   async refresh() {
     try {
       const user = await forgeApi.getMe();
-      set({ user });
+      set({ user: applyOperatorAvatar(user) });
     } catch {
       // Keep last good user — refresh is fire-and-forget.
     }

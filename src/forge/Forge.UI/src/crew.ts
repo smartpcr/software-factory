@@ -28,7 +28,20 @@ import imgQianKun         from '@/assets/crews/25_Qian_Kun.png';
 import imgHunDun          from '@/assets/crews/24_Hun_Dun.png';
 import imgZhiZhi          from '@/assets/crews/76_Zhi_Zhi.png';
 
+// Operator portrait — the Forge owner ("Product Owner" per Phase 9.9).
+// Bundled rather than fetched from /api/me so the avatar shows up the same
+// in offline / API-unreachable mode and doesn't depend on a DB migration.
+import imgXiaodong        from '@/assets/crews/xiaodong.png';
+
 export const crew: OverviewAgent[] = [
+  // -- Operator: Product Owner (single-row group) --
+  {
+    id: 'XD', name: 'Xiaodong', role: 'product-owner', status: 'working',
+    task: 'product strategy + reviews', avatar: imgXiaodong,
+    capabilities: ['product owner', 'tech lead', 'reviewer'],
+    bio: 'Forge operator — sets the priorities and signs off on releases.',
+  },
+
   // -- Architects: sages, planners, governance --
   {
     id: 'TY', name: 'Taiji Zhenren', role: 'arch', status: 'working',

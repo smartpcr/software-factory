@@ -399,7 +399,7 @@ public static class ForgeSeed
                 FeatureRef = null,
                 IterationRef = string.Empty,
                 AreaPath = string.Empty,
-                AssignedToJson = c.AgentJson, // shape already matches
+                AssignedToJson = TranslateAgentToAssignee(c.AgentJson),
                 Points = c.Pts,
                 Priority = c.Priority,
                 TagsJson = c.TagsJson,
@@ -410,5 +410,106 @@ public static class ForgeSeed
             added++;
         }
         if (added > 0) await db.SaveChangesAsync();
+
+        // One-shot fix-up for rows that were backfilled with the legacy
+        // Card.Agent shape (`{ id, role, name }`). The WorkItemAssignee
+        // contract uses `{ kind, id, displayName, initials }`, so the legacy
+        // rows surface a null displayName in the UI and crash sort/select.
+        await RepairLegacyAssigneeShapeAsync(db);
+    }
+
+    /// <summary>
+    /// Translate Card.Agent JSON (`{ id, role, name }`) into the Phase 12
+    /// WorkItemAssignee shape (`{ kind, id, displayName, initials }`).
+    /// Returns null when the card has no agent, when the JSON is malformed,
+    /// or when neither name nor id is present.
+    /// </summary>
+    private static string? TranslateAgentToAssignee(string? agentJson)
+    {
+        if (string.IsNullOrWhiteSpace(agentJson)) return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(agentJson);
+            var root = doc.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
+
+            var id = root.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
+            var name = root.TryGetProperty("name", out var nameEl) ? nameEl.GetString() : null;
+            var role = root.TryGetProperty("role", out var roleEl) ? roleEl.GetString() : null;
+
+            // Already the new shape? Pass through unchanged.
+            var alreadyNew = root.TryGetProperty("displayName", out _);
+            if (alreadyNew) return agentJson;
+
+            if (string.IsNullOrEmpty(id) && string.IsNullOrEmpty(name)) return null;
+
+            var displayName = name ?? id ?? string.Empty;
+            var kind = string.Equals(role, "human", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(role, "product-owner", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(role, "tech-lead", StringComparison.OrdinalIgnoreCase)
+                ? "human"
+                : "agent";
+            var initials = MakeInitials(displayName, fallback: id);
+            var assignee = new
+            {
+                kind,
+                id = id ?? initials,
+                displayName,
+                initials,
+            };
+            return System.Text.Json.JsonSerializer.Serialize(assignee, new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+            });
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Idempotent repair: walk every <c>work_items</c> row whose
+    /// AssignedToJson is in the legacy `{ id, role, name }` shape and
+    /// rewrite it as the Phase 12 WorkItemAssignee shape. Skips rows that
+    /// already carry <c>displayName</c>.
+    /// </summary>
+    private static async Task RepairLegacyAssigneeShapeAsync(ForgeDbContext db)
+    {
+        var rows = await db.WorkItems
+            .Where(w => w.AssignedToJson != null && w.AssignedToJson != "")
+            .ToListAsync();
+        var changed = 0;
+        foreach (var row in rows)
+        {
+            // Cheap shape check before parsing — skip rows already migrated.
+            if (row.AssignedToJson!.Contains("\"displayName\"", StringComparison.Ordinal)) continue;
+            var fixedJson = TranslateAgentToAssignee(row.AssignedToJson);
+            if (fixedJson is not null && fixedJson != row.AssignedToJson)
+            {
+                row.AssignedToJson = fixedJson;
+                changed++;
+            }
+            else if (fixedJson is null)
+            {
+                row.AssignedToJson = null;
+                changed++;
+            }
+        }
+        if (changed > 0) await db.SaveChangesAsync();
+    }
+
+    private static string MakeInitials(string display, string? fallback)
+    {
+        var s = (display ?? string.Empty).Trim();
+        if (s.Length == 0) return (fallback ?? "?").ToUpperInvariant();
+        var parts = s.Split(new[] { ' ', '\t', '_', '-', '.', '@' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 1)
+        {
+            return parts[0].Length >= 2
+                ? (parts[0][0].ToString() + parts[0][1]).ToUpperInvariant()
+                : parts[0][0].ToString().ToUpperInvariant();
+        }
+        return (parts[0][0].ToString() + parts[1][0]).ToUpperInvariant();
     }
 }

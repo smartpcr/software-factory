@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useSidebarStore } from '@/state/useSidebarStore';
 import { useProductsStore } from '@/state/useProductsStore';
-import { useCurrentUser, useHasRole } from '@/state/useCurrentUserStore';
+import { useCurrentUser } from '@/state/useCurrentUserStore';
 import { ProductIcon } from '@/products/ProductIcon';
 import { UserMenu } from '@/shell/UserMenu';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
@@ -18,7 +18,6 @@ export function SideBar() {
   const loadProducts = useProductsStore((s) => s.load);
   const loadRepos = useProductsStore((s) => s.loadReposFor);
   const me = useCurrentUser();
-  const isPO = useHasRole('product-owner');
 
   useEffect(() => { void loadProducts(); }, [loadProducts]);
 
@@ -175,21 +174,21 @@ export function SideBar() {
 
         <div className="nav-section">
           <div className="nav-section-title"><span>Agents</span><button className="add-btn" title="New agent">+</button></div>
-          {isPO && (
-            <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/crews">
-              <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <circle cx="5" cy="5" r="2" stroke="currentColor" strokeWidth="1.3" />
-                <circle cx="11" cy="5" r="2" stroke="currentColor" strokeWidth="1.3" />
-                <path d="M2 13c0-2 1.5-3 3-3s3 1 3 3" stroke="currentColor" strokeWidth="1.3" fill="none" />
-                <path d="M8 13c0-2 1.5-3 3-3s3 1 3 3" stroke="currentColor" strokeWidth="1.3" fill="none" />
-              </svg>
-              <div className="label-block">
-                <span className="label">Crews</span>
-                <span className="sub">Supervisory · PO only</span>
-              </div>
-              <span className="tooltip">Crews</span>
-            </NavLink>
-          )}
+          <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/crews">
+            <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <circle cx="5" cy="5" r="2" stroke="currentColor" strokeWidth="1.3" />
+              <circle cx="11" cy="5" r="2" stroke="currentColor" strokeWidth="1.3" />
+              <path d="M2 13c0-2 1.5-3 3-3s3 1 3 3" stroke="currentColor" strokeWidth="1.3" fill="none" />
+              <path d="M8 13c0-2 1.5-3 3-3s3 1 3 3" stroke="currentColor" strokeWidth="1.3" fill="none" />
+            </svg>
+            <div className="label-block">
+              <span className="label">Crews</span>
+              <span className="sub">Hierarchy · capability · quota</span>
+            </div>
+            <span className="tooltip">Crews</span>
+          </NavLink>
+          {/* Phase 13.10 — nav is open to all; the view itself stays read-only
+              for non-lead / non-PO users, mutation endpoints enforce role. */}
           <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/swarm">
             <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="1.4" fill="currentColor" /><circle cx="3.5" cy="4.5" r="1.1" fill="currentColor" /><circle cx="12.5" cy="4.5" r="1.1" fill="currentColor" /><circle cx="3.5" cy="11.5" r="1.1" fill="currentColor" /><circle cx="12.5" cy="11.5" r="1.1" fill="currentColor" /></svg>
             <div className="label-block">

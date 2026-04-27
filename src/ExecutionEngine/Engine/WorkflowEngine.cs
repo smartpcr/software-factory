@@ -660,20 +660,23 @@ namespace ExecutionEngine.Engine
 
                         if (hasSignal || hasMessages)
                         {
+                            this.logger.LogInformation(
+                                "[Dispatch] Node {NodeId} ({NodeName}): hasSignal={HasSignal} hasMessages={HasMessages} queueCount={Count} signalType={SignalType}",
+                                nodeId, nodeDef.NodeName, hasSignal, hasMessages, nodeQueue.Count,
+                                hasSignal ? signal?.GetType().Name : "none");
+
                             // Per-node guard: if this node is already running, leave the
-                            // message in place and revisit on the next loop tick. We may
-                            // have already drained the signal pulse, but that's fine — the
-                            // queue still holds the actual messages, and Count > 0 will
-                            // re-trigger this branch (signal is a coalesced wakeup, not the
-                            // message itself).
+                            // message in place and revisit on the next loop tick.
                             if (!nodeInFlight.TryAdd(nodeId, 0))
                             {
+                                this.logger.LogWarning(
+                                    "[Dispatch] BLOCKED: Node {NodeId} ({NodeName}) already in-flight, skipping. Queue still has {Count} messages.",
+                                    nodeId, nodeDef.NodeName, nodeQueue.Count);
                                 continue;
                             }
 
                             // If we have a signal, use it. Otherwise, peek at the actual queue message
-                            // to get the correct type (cancel vs complete). Using a dummy Complete message
-                            // would bypass cancel handling in ProcessMessageAsync.
+                            // to get the correct type (cancel vs complete).
                             messageProcessed = true;
 
                             INodeMessage messageToProcess;
@@ -689,6 +692,9 @@ namespace ExecutionEngine.Engine
                                     NodeId = "__dummy__",
                                     Timestamp = DateTime.UtcNow
                                 };
+                                this.logger.LogInformation(
+                                    "[Dispatch] No signal, peeked message type={Type} from={FromNode}",
+                                    messageToProcess.GetType().Name, messageToProcess.NodeId);
                             }
 
                             // Fire-and-forget: dispatch in the background so siblings can run
@@ -698,6 +704,9 @@ namespace ExecutionEngine.Engine
                             var dispatchedMessage = messageToProcess;
                             var taskKey = Guid.NewGuid();
                             var taskCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                            this.logger.LogInformation(
+                                "[Dispatch] Dispatching {NodeId} ({NodeName}) with {MessageType} from {SourceNode}",
+                                nodeId, nodeDef.NodeName, messageToProcess.GetType().Name, messageToProcess.NodeId);
                             var task = Task.Run(
                                 async () =>
                                 {
@@ -715,6 +724,10 @@ namespace ExecutionEngine.Engine
                                     }
                                     finally
                                     {
+                                        this.logger.LogInformation(
+                                            "[Dispatch] Released guard for {NodeId} ({NodeName}). Queue has {Count} remaining.",
+                                            dispatchedNodeId, dispatchedNodeDef.NodeName,
+                                            ((NodeMessageQueue)context.NodeQueues[dispatchedNodeId]).Count);
                                         nodeInFlight.TryRemove(dispatchedNodeId, out _);
                                         inflightTasks.TryRemove(taskKey, out _);
                                         taskCts.Dispose();
@@ -1197,11 +1210,23 @@ namespace ExecutionEngine.Engine
                             var router = context.Router as MessageRouter;
                             var terminalNodes = router?.FindTerminalNodesFromPort(nodeDef.NodeId, WhileNode.LoopBodyPort) ?? [];
 
+                            this.logger.LogInformation(
+                                "[While] Node {NodeId}: feedbackSource={Source}, isLoopRunning={Running}, terminals=[{Terminals}], isTerminal={IsTerminal}",
+                                nodeDef.NodeId, feedbackSource, isLoopRunning,
+                                string.Join(",", terminalNodes), terminalNodes.Contains(feedbackSource));
+
                             if (terminalNodes.Count > 0 && !terminalNodes.Contains(feedbackSource))
                             {
+                                this.logger.LogInformation("[While] SKIPPED: feedback from non-terminal {Source}", feedbackSource);
                                 // Non-terminal child completed — ignore, don't re-trigger
                                 return;
                             }
+                        }
+                        else
+                        {
+                            this.logger.LogInformation(
+                                "[While] Node {NodeId}: isLoopRunning={Running}, feedbackSource={Source} — executing (initial trigger or no source)",
+                                nodeDef.NodeId, isLoopRunning, feedbackSource ?? "null");
                         }
                     }
 
@@ -1228,12 +1253,18 @@ namespace ExecutionEngine.Engine
                         if (!this.expectedUpstreamCount.TryGetValue(nodeDef.NodeId, out var expected) || expected == 0)
                         {
                             shouldExecute = true;
+                            this.logger.LogInformation(
+                                "[JoinAll] Node {NodeId} ({NodeName}): no expected upstreams, executing immediately",
+                                nodeDef.NodeId, nodeDef.NodeName);
                         }
                         else if (this.upstreamCompletionTracking.TryGetValue(nodeDef.NodeId, out var completedUpstreams))
                         {
                             lock (completedUpstreams)
                             {
                                 completedUpstreams.Add(sourceNodeId);
+                                this.logger.LogInformation(
+                                    "[JoinAll] Node {NodeId} ({NodeName}): {Completed}/{Expected} upstreams, source={Source}",
+                                    nodeDef.NodeId, nodeDef.NodeName, completedUpstreams.Count, expected, sourceNodeId);
 
                                 if (completedUpstreams.Count >= expected)
                                 {
@@ -1241,6 +1272,12 @@ namespace ExecutionEngine.Engine
                                     completedUpstreams.Clear();
                                 }
                             }
+                        }
+                        else
+                        {
+                            this.logger.LogWarning(
+                                "[JoinAll] Node {NodeId} ({NodeName}): no tracking entry, source={Source}, expected={Expected}",
+                                nodeDef.NodeId, nodeDef.NodeName, sourceNodeId, expected);
                         }
 
                         if (shouldExecute)

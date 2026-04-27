@@ -180,16 +180,17 @@ function applyFilters(items: WorkItem[], f: ReturnType<typeof useWitStore.getSta
       case 'watching': if (!i.watching)                 return false; break;
       // 'all' falls through.
     }
-    if (f.type !== 'any' && i.type !== f.type) return false;
-    if (f.state !== 'any' && i.state !== f.state) return false;
-    if (f.iterationRef !== 'any' && i.iterationRef !== f.iterationRef) return false;
-    if (f.repoId !== 'any' && i.repoId !== f.repoId) return false;
-    if (f.assignee !== 'any') {
-      if (f.assignee === '__unassigned__') {
-        if (i.assignedTo) return false;
-      } else if (i.assignedTo?.id !== f.assignee) {
-        return false;
-      }
+    // Multi-select — empty array means "any".
+    if (f.type.length         && !f.type.includes(i.type))                 return false;
+    if (f.state.length        && !f.state.includes(i.state))               return false;
+    if (f.iterationRef.length && !f.iterationRef.includes(i.iterationRef)) return false;
+    if (f.repoId.length       && (!i.repoId || !f.repoId.includes(i.repoId))) return false;
+    if (f.assignee.length) {
+      const wantUnassigned = f.assignee.includes('__unassigned__');
+      const id = i.assignedTo?.id ?? null;
+      const idMatch = id !== null && f.assignee.includes(id);
+      const unassignedMatch = id === null && wantUnassigned;
+      if (!idMatch && !unassignedMatch) return false;
     }
     if (f.q.trim()) {
       const q = f.q.toLowerCase();

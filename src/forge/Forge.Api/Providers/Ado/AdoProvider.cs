@@ -521,7 +521,14 @@ public class AdoProvider : IForgeProvider
             };
             var wiqlResp = await client.SendAsync(wiqlReq, ct);
             this.health.RecordResponse(wiqlResp);
-            wiqlResp.EnsureSuccessStatusCode();
+            if (!wiqlResp.IsSuccessStatusCode)
+            {
+                var errBody = await wiqlResp.Content.ReadAsStringAsync(ct);
+                this.logger.LogWarning(
+                    "ADO WIQL {Status} for project '{Project}'. WIQL: {Wiql} | Response: {Body}",
+                    (int)wiqlResp.StatusCode, this.EffectiveProject, wiql, Trunc(errBody, 800));
+                wiqlResp.EnsureSuccessStatusCode();
+            }
             using var wiqlDoc = JsonDocument.Parse(await wiqlResp.Content.ReadAsStringAsync(ct));
             var ids = wiqlDoc.RootElement.GetProperty("workItems")
                 .EnumerateArray()
@@ -531,14 +538,21 @@ public class AdoProvider : IForgeProvider
             if (ids.Length == 0) return Array.Empty<WorkItem>();
 
             var idList = string.Join(",", ids);
-            var fields = "System.State,System.WorkItemType,System.Title,System.Description,System.Tags," +
-                         "System.AreaPath,System.IterationPath,System.AssignedTo,System.CreatedDate," +
-                         "System.ChangedDate,System.Rev," +
-                         "Microsoft.VSTS.Scheduling.StoryPoints,Microsoft.VSTS.Common.Priority";
+            // ADO rejects `fields` and `$expand` together with
+            // ConflictingParametersException. We want $expand=relations to
+            // capture the parent-link (System.LinkTypes.Hierarchy-Reverse),
+            // so omit `fields` and let ADO return the default field set.
             var resp = await client.GetAsync(
-                $"_apis/wit/workitems?ids={idList}&fields={fields}&$expand=relations&api-version=7.1", ct);
+                $"_apis/wit/workitems?ids={idList}&$expand=relations&api-version=7.1", ct);
             this.health.RecordResponse(resp);
-            resp.EnsureSuccessStatusCode();
+            if (!resp.IsSuccessStatusCode)
+            {
+                var errBody = await resp.Content.ReadAsStringAsync(ct);
+                this.logger.LogWarning(
+                    "ADO workitems hydrate {Status} for {Count} ids. Response: {Body}",
+                    (int)resp.StatusCode, ids.Length, Trunc(errBody, 800));
+                resp.EnsureSuccessStatusCode();
+            }
             using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
             var items = new List<WorkItem>();
             foreach (var wi in doc.RootElement.GetProperty("value").EnumerateArray())
@@ -587,18 +601,25 @@ public class AdoProvider : IForgeProvider
         {
             parts.Add($"[System.AssignedTo] = '{EscWiql(filters.AssignedTo!)}'");
         }
+        // ADO's WIQL [System.ChangedDate] uses *date* precision — supplying a
+        // time component (e.g. '2026-04-27T23:59:59Z') triggers a 400 with
+        // "You cannot supply a time with the date when running a query using
+        // date precision."
         if (filters.UpdatedFrom is DateTimeOffset from)
         {
-            parts.Add($"[System.ChangedDate] >= '{from.UtcDateTime:yyyy-MM-ddTHH:mm:ssZ}'");
+            parts.Add($"[System.ChangedDate] >= '{from.UtcDateTime:yyyy-MM-dd}'");
         }
         if (filters.UpdatedTo is DateTimeOffset to)
         {
-            parts.Add($"[System.ChangedDate] <= '{to.UtcDateTime:yyyy-MM-ddTHH:mm:ssZ}'");
+            parts.Add($"[System.ChangedDate] <= '{to.UtcDateTime:yyyy-MM-dd}'");
         }
         return $"Select [System.Id] From WorkItems Where {string.Join(" AND ", parts)} Order By [System.ChangedDate] Desc";
     }
 
     private static string EscWiql(string s) => s.Replace("'", "''");
+
+    private static string Trunc(string? s, int max) =>
+        string.IsNullOrEmpty(s) ? string.Empty : (s.Length <= max ? s : s.Substring(0, max) + "…");
 
     private static string MapForgeTypeToAdo(string forge) => (forge ?? string.Empty).ToLowerInvariant() switch
     {

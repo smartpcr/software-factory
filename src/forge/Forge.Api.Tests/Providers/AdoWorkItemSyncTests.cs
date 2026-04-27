@@ -64,8 +64,8 @@ public class AdoWorkItemSyncTests
         var from = new DateTimeOffset(2026, 4, 1, 0, 0, 0, TimeSpan.Zero);
         var to = new DateTimeOffset(2026, 4, 30, 23, 59, 59, TimeSpan.Zero);
         var wiql = AdoProvider.BuildSyncWiql("Atlas", new WorkItemSyncFilters(UpdatedFrom: from, UpdatedTo: to));
-        Assert.Contains("[System.ChangedDate] >= '2026-04-01T00:00:00Z'", wiql);
-        Assert.Contains("[System.ChangedDate] <= '2026-04-30T23:59:59Z'", wiql);
+        Assert.Contains("[System.ChangedDate] >= '2026-04-01'", wiql);
+        Assert.Contains("[System.ChangedDate] <= '2026-04-30'", wiql);
     }
 
     [Fact]
