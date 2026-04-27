@@ -604,6 +604,17 @@ export const forgeApi = {
     });
   },
 
+  /** POST /api/repos/{id}/clone — ensure the repo's cloneRoot exists, clone if missing. */
+  async cloneRepo(id: string): Promise<{ outcome: 'cloned' | 'skipped'; message?: string }> {
+    return fetchJson<{ outcome: 'cloned' | 'skipped'; message?: string }>(
+      `/api/repos/${encodeURIComponent(id)}/clone`,
+      {
+        method: 'POST',
+        headers: { 'X-Forge-User': writerHeader() },
+      },
+    );
+  },
+
   /** GET /api/crews. */
   async listCrews(productId?: string): Promise<Crew[]> {
     const qs = productId ? `?productId=${encodeURIComponent(productId)}` : '';
@@ -1177,6 +1188,13 @@ export const forgeApi = {
     if (limit != null) params.set('limit', String(limit));
     const qs = params.toString();
     return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/transcript${qs ? `?${qs}` : ''}`);
+  },
+
+  async clearWorkItemTranscript(workItemId: string): Promise<{ deleted: number }> {
+    return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/transcript`, {
+      method: 'DELETE',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
   },
 
   async requeueWorkItem(crewId: string, workItemId: string): Promise<unknown> {

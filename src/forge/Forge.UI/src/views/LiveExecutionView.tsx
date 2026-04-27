@@ -83,19 +83,33 @@ export function LiveExecutionView(): JSX.Element {
   }
 
   async function forceRestart() {
-    if (!workItemId || !snapshot?.generatorCrewId) return;
+    if (!workItemId) return;
     setBusy(true);
     try {
       // 1. Cancel any active queue entry.
-      const queue: Array<{ id: number; workItemId: string; state: string }> = await forgeApi.listQueue();
+      const queue = await forgeApi.listQueue();
       const queueEntry = queue.find((q) => q.workItemId === workItemId && q.state !== 'cancelled' && q.state !== 'completed');
+      const crewId = snapshot?.generatorCrewId || queueEntry?.routedToCrewId;
       if (queueEntry) {
         await forgeApi.cancelQueue(queueEntry.id, 'force-restart');
       }
-      // 2. Re-enqueue to the same crew.
-      await forgeApi.requeueWorkItem(snapshot.generatorCrewId, workItemId);
-      // 3. Re-hydrate snapshot from server.
-      await useTaskLiveStore.getState().ensureLoaded(workItemId);
+      if (!crewId) {
+        useToastStore.getState().show('No crew to restart with — assign a crew first.', 'danger');
+        return;
+      }
+      // 2. Clear transcript on server.
+      await forgeApi.clearWorkItemTranscript(workItemId);
+      // 3. Re-enqueue to the same crew.
+      await forgeApi.requeueWorkItem(crewId, workItemId);
+      // 4. Clear local store so the view reloads fresh.
+      const store = useTaskLiveStore.getState();
+      store.entries[workItemId] = {
+        snapshot: null, transcript: [], worktree: null,
+        loading: false, lastEventId: 0,
+        refCount: store.entries[workItemId]?.refCount ?? 1,
+      };
+      // 5. Re-hydrate from server.
+      await store.ensureLoaded(workItemId);
       useToastStore.getState().show('Conversation restarted', 'success');
     } catch (e) {
       useToastStore.getState().show(e instanceof Error ? e.message : 'Restart failed', 'danger');

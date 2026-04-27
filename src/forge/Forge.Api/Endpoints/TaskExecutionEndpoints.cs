@@ -37,6 +37,7 @@ public static class TaskExecutionEndpoints
         var grp = app.MapGroup("/api/work-items").WithTags("WorkItems");
         grp.MapGet("/{id}/execution", GetExecution).WithName("GetWorkItemExecution");
         grp.MapGet("/{id}/transcript", GetTranscript).WithName("GetWorkItemTranscript");
+        grp.MapDelete("/{id}/transcript", ClearTranscript).WithName("ClearWorkItemTranscript");
         return app;
     }
 
@@ -231,6 +232,22 @@ public static class TaskExecutionEndpoints
         if (from is long cursor) query = query.Where(e => e.Id > cursor);
         var rows = await query.OrderBy(e => e.Id).Take(size).ToListAsync(ct);
         return Results.Ok(rows.Select(MapTranscript).ToList());
+    }
+
+    private static async Task<IResult> ClearTranscript(
+        string id,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var rows = await db.TaskTranscriptEvents
+            .Where(e => e.WorkItemId == id)
+            .ToListAsync(ct);
+        if (rows.Count > 0)
+        {
+            db.TaskTranscriptEvents.RemoveRange(rows);
+            await db.SaveChangesAsync(ct);
+        }
+        return Results.Ok(new { deleted = rows.Count });
     }
 
     private static Deliverable MapDeliverable(DeliverableRow r)
