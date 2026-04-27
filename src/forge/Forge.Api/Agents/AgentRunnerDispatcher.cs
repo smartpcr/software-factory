@@ -556,6 +556,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                             break;
 
                         case ToolExecutionCompleteEvent tEnd:
+                            turnCount++;
                             queue.Writer.TryWrite(new AgentEvent(
                                 AgentEventKind.ToolResult,
                                 DateTimeOffset.UtcNow,
@@ -565,6 +566,11 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                                 Error: tEnd.Data.Success
                                     ? null
                                     : tEnd.Data.Error?.ToString()));
+                            if (turnCount >= maxTurns)
+                            {
+                                failReason = $"Max turns ({maxTurns}) reached";
+                                done.TrySetResult();
+                            }
                             break;
 
                         case AssistantUsageEvent usage:
