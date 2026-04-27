@@ -332,7 +332,70 @@ public sealed record Crew(
     decimal ModelInputPricePerMTok,
     decimal ModelOutputPricePerMTok,
     decimal? DailyBudgetUsd = null,
-    decimal? MaxTaskBudgetUsd = null);
+    decimal? MaxTaskBudgetUsd = null,
+    // Phase 13.1 additions.
+    string? ParentCrewId = null,
+    int Depth = 0,
+    string Backend = "copilot",
+    string InvokeMode = "sdk",
+    IReadOnlyList<CrewMember>? Roster = null,
+    IReadOnlyList<string>? Capabilities = null,
+    int MaxConcurrent = 2,
+    int WeeklyCap = 20,
+    // Phase 13b — default pair (generator + evaluator) and per-half model.
+    string? DefaultGeneratorAgentId = null,
+    string? DefaultEvaluatorAgentId = null,
+    string? EvaluatorModel = null);
+
+/// <summary>
+/// Phase 13b — one row in a crew's roster. The lead is rendered separately
+/// (top of the roster) but is also represented here with role=<c>lead</c>
+/// when the lead is a member of the crew (lead may be set without being a
+/// member, which is the "external supervisor" case).
+/// </summary>
+public sealed record CrewMember(
+    string AgentId,
+    string Role,
+    DateTimeOffset AddedAt,
+    string? AddedBy);
+
+/// <summary>Phase 13.1 — append-only audit row for a single crew change.</summary>
+public sealed record CrewHistoryEntry(
+    long Id,
+    DateTimeOffset At,
+    string CrewId,
+    string Kind,
+    string? FromValue,
+    string? ToValue,
+    string? ByUserId);
+
+/// <summary>Phase 13.7 — domain-expert artifact summary surfaced to the capability picker.</summary>
+public sealed record DomainExpert(
+    string ContentId,
+    string RepoId,
+    string Path,
+    string Topic,
+    string Summary,
+    DateTimeOffset IndexedAt);
+
+/// <summary>
+/// Phase 13.3 / 13b — assign body. Tasks run as a <strong>pair</strong>:
+/// <see cref="GeneratorAgentId"/> writes the spec / code, <see cref="EvaluatorAgentId"/>
+/// reviews. When <c>EvaluatorAgentId</c> is null the crew's
+/// <c>DefaultEvaluatorAgentId</c> applies; same fallback for the generator.
+/// <c>MemberAgentId</c> is kept as a back-compat alias for callers that
+/// don't yet know about pairs — when set with no Generator/Evaluator, it
+/// becomes the generator.
+/// </summary>
+public sealed record AssignTaskRequest(
+    string WorkItemId,
+    string? MemberAgentId = null,
+    string? GeneratorAgentId = null,
+    string? EvaluatorAgentId = null,
+    bool Force = false);
+
+/// <summary>Phase 13.8 — capability ingestion / removal body.</summary>
+public sealed record CapabilityRequest(string ContentId);
 
 public sealed record UpdateRepoRequest(
     string? DisplayName = null,
@@ -354,6 +417,23 @@ public sealed record AgentDetail(
     string? SoulPath,
     IReadOnlyList<string> Capabilities,
     string State);
+
+/// <summary>Phase 13b — PATCH body for /api/agents/{id}.</summary>
+public sealed record PatchAgentRequest(
+    string? Name = null,
+    string? Role = null,
+    string? SoulPath = null);
+
+/// <summary>Phase 13b — POST /api/crews/auto-assign result.</summary>
+public sealed record AutoAssignResult(
+    int Inspected,
+    int Added,
+    IReadOnlyList<AutoAssignAction> Actions);
+
+public sealed record AutoAssignAction(
+    string AgentId,
+    string CrewId,
+    string Role);
 
 /// <summary>Phase 11.3 — soul.md PUT body.</summary>
 public sealed record SoulWriteRequest(string Contents);

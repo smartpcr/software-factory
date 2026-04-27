@@ -28,6 +28,7 @@ public static class AgentsEndpoints
         var grp = app.MapGroup("/api/agents").WithTags("Agents");
         grp.MapGet("/", ListAgents).WithName("ListAgents");
         grp.MapGet("/{agentId}", GetAgent).WithName("GetAgent");
+        grp.MapPatch("/{agentId}", PatchAgent).WithName("PatchAgent");
         grp.MapPost("/{agentId}/invocations", StartInvocation).WithName("StartAgentInvocation");
         grp.MapGet("/{agentId}/invocations", ListInvocations).WithName("ListAgentInvocations");
         grp.MapPost("/{agentId}/invocations/{invocationId}/cancel", CancelInvocation).WithName("CancelAgentInvocation");
@@ -55,6 +56,29 @@ public static class AgentsEndpoints
         return row is null
             ? Results.Problem(title: $"Agent {agentId} not found", statusCode: 404)
             : Results.Ok(MapAgent(row));
+    }
+
+    /// <summary>Phase 13b — edit name / role / soulPath on an existing agent.</summary>
+    private static async Task<IResult> PatchAgent(
+        HttpContext ctx,
+        string agentId,
+        [FromBody] Forge.Api.Contracts.PatchAgentRequest req,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var row = await db.Agents.FirstOrDefaultAsync(a => a.Id == agentId, ct);
+        if (row is null) return Results.Problem(title: $"Agent {agentId} not found", statusCode: 404);
+
+        if (!string.IsNullOrWhiteSpace(req.Name)) row.Name = req.Name.Trim();
+        if (!string.IsNullOrWhiteSpace(req.Role)) row.Role = req.Role.Trim();
+        // Empty string clears the soulPath override (revert to %LOCALAPPDATA% default).
+        if (req.SoulPath is not null) row.SoulPath = string.IsNullOrWhiteSpace(req.SoulPath) ? null : req.SoulPath.Trim();
+
+        await db.SaveChangesAsync(ct);
+        return Results.Ok(MapAgent(row));
     }
 
     private static async Task<IResult> GetSoul(

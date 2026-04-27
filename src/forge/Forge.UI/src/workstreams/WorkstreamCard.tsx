@@ -1,5 +1,6 @@
 import type { Card as CardModel, Epic, Pr, Workstream } from '@/types';
 import { formatRel } from './formatRel';
+import { avatarFor, agentTooltip } from '@/agentAvatar';
 
 interface Props {
   ws: Workstream;
@@ -115,16 +116,31 @@ export function WorkstreamCard({ ws, epic, prs, cards, onOpen, onSync, onIde, on
       <div className="ws-card-section">
         <div className="ws-card-section-title"><span>Crew · cards</span></div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '4px 0' }}>
-          <div style={{ display: 'flex' }}>
-            {ws.agents.map((a) => (
-              <span
-                key={a}
-                className={`agent-chip ${roleFor(a)}`}
-                style={{ borderColor: 'var(--bg-surface)' }}
-              >
-                {a}
-              </span>
-            ))}
+          <div className="agent-stack" style={{ display: 'flex' }}>
+            {ws.agents.map((a) => {
+              const role = roleFor(a);
+              const av = avatarFor(a);
+              const tip = agentTooltip(a, undefined, role);
+              return av ? (
+                <img
+                  key={a}
+                  src={av}
+                  alt={a}
+                  className={`agent-chip-avatar ${role}`}
+                  style={{ borderColor: 'var(--bg-surface)' }}
+                  title={tip}
+                />
+              ) : (
+                <span
+                  key={a}
+                  className={`agent-chip ${role}`}
+                  style={{ borderColor: 'var(--bg-surface)' }}
+                  title={tip}
+                >
+                  {a}
+                </span>
+              );
+            })}
           </div>
           <span style={{ opacity: 0.4 }}>·</span>
           <div style={{ display: 'flex', flexWrap: 'wrap' }}>

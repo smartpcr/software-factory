@@ -129,7 +129,8 @@ public class AgentsFoundationTests
         using var scope = factory.Services.CreateScope();
         var runner = scope.ServiceProvider.GetRequiredService<IAgentRunner>();
         Assert.NotNull(runner);
-        // Batch B promotes ClaudeAgentRunner to the default.
-        Assert.IsType<ClaudeAgentRunner>(runner);
+        // Phase 11.5b — AgentRunnerDispatcher is the single IAgentRunner;
+        // it routes per-call across the four (backend × mode) cells.
+        Assert.IsType<AgentRunnerDispatcher>(runner);
     }
 }

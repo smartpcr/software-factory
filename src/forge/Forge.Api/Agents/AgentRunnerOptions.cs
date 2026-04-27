@@ -30,4 +30,19 @@ public sealed class AgentRunnerOptions
 
     /// <summary>Max retries on 429 / 503 / 529.</summary>
     public int MaxRetries { get; set; } = 3;
+
+    /// <summary>Phase 11.5b — backend used when an <see cref="AgentContext"/> doesn't override it.</summary>
+    public AgentBackend DefaultBackend { get; set; } = AgentBackend.Copilot;
+
+    /// <summary>Phase 11.5b — mode used when an <see cref="AgentContext"/> doesn't override it.</summary>
+    public AgentInvokeMode DefaultInvokeMode { get; set; } = AgentInvokeMode.Sdk;
+
+    /// <summary>Optional override for the copilot CLI path. Resolved via PATH when null.</summary>
+    public string? CopilotCliPath { get; set; }
+
+    /// <summary>Optional override for the claude CLI path. Resolved via PATH when null.</summary>
+    public string? ClaudeCliPath { get; set; }
+
+    /// <summary>Extra args passed to the copilot SDK / CLI. Defaults to <c>["--yolo"]</c>.</summary>
+    public string[] CopilotCliExtraArgs { get; set; } = new[] { "--yolo" };
 }

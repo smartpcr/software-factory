@@ -3,6 +3,7 @@ import { useStateStore } from '@/state/useStateStore';
 import { useBoardStore, filterCards } from '@/state/useBoardStore';
 import { sampleState } from '@/sampleData';
 import { SwimlaneCell } from './SwimlaneCell';
+import { avatarFor, agentTooltip } from '@/agentAvatar';
 
 // Verbatim port of the prototype's renderBoard (lines 3310-3382).
 // Layout uses CSS grid (defined in board.css); we only emit the same
@@ -83,15 +84,30 @@ export function Board() {
               </div>
               <div className="swimlane-foot">
                 <div className="swimlane-crew">
-                  {epic.crew.map((id) => (
-                    <span
-                      key={id}
-                      className={`agent-chip ${crewRoleFor(id)}`}
-                      style={{ marginLeft: -3, borderColor: 'var(--bg-sunken)', width: 17, height: 17, fontSize: 7 }}
-                    >
-                      {id}
-                    </span>
-                  ))}
+                  {epic.crew.map((id) => {
+                    const role = crewRoleFor(id);
+                    const av = avatarFor(id);
+                    const tip = agentTooltip(id, undefined, role);
+                    return av ? (
+                      <img
+                        key={id}
+                        src={av}
+                        alt={id}
+                        className={`agent-chip-avatar ${role}`}
+                        style={{ marginLeft: -3, borderColor: 'var(--bg-sunken)', width: 17, height: 17 }}
+                        title={tip}
+                      />
+                    ) : (
+                      <span
+                        key={id}
+                        className={`agent-chip ${role}`}
+                        style={{ marginLeft: -3, borderColor: 'var(--bg-sunken)', width: 17, height: 17, fontSize: 7 }}
+                        title={tip}
+                      >
+                        {id}
+                      </span>
+                    );
+                  })}
                 </div>
                 <span className="swimlane-cost">${epic.cost.toFixed(2)}</span>
               </div>

@@ -277,8 +277,26 @@
 .agent-chip.human { background: var(--bg-surface); color: var(--text-primary); border-color: var(--border-strong); }
 .agent-chip.unassigned { background: var(--bg-sunken); color: var(--text-tertiary); border: 1.5px dashed var(--border-strong); }
 .agent-stack { display: flex; }
-.agent-stack .agent-chip { margin-left: -4px; }
-.agent-stack .agent-chip:first-child { margin-left: 0; }
+.agent-stack .agent-chip,
+.agent-stack .agent-chip-avatar { margin-left: -4px; }
+.agent-stack .agent-chip:first-child,
+.agent-stack .agent-chip-avatar:first-child { margin-left: 0; }
+
+/* Avatar variant of `.agent-chip` — same footprint, real portrait. */
+.agent-chip-avatar {
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  object-fit: cover;
+  object-position: top center;
+  flex-shrink: 0;
+  border: 1.5px solid var(--bg-elevated);
+  background: var(--bg-surface);
+}
+.agent-chip-avatar.arch  { box-shadow: 0 0 0 1.5px #7C3AED; }
+.agent-chip-avatar.eng   { box-shadow: 0 0 0 1.5px #2563EB; }
+.agent-chip-avatar.rev   { box-shadow: 0 0 0 1.5px #0F766E; }
+.agent-chip-avatar.qa    { box-shadow: 0 0 0 1.5px #B45309; }
+.agent-chip-avatar.human { box-shadow: 0 0 0 1.5px var(--border-strong); }
 
 .cell-empty {
   flex: 1;

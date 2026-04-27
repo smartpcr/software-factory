@@ -279,13 +279,13 @@ public class AgentRuntimeTests
         Assert.Equal("idle", doc.RootElement.GetProperty("state").GetString());
     }
 
-    private static ClaudeAgentRunner MakeRunner()
+    private static AgentRunnerDispatcher MakeRunner()
     {
         var http = new StubHttpFactory();
         var registry = new TestModelRegistry();
         var opts = Options.Create(new AgentRunnerOptions());
-        var log = NullLogger<ClaudeAgentRunner>.Instance;
-        return new ClaudeAgentRunner(http, registry, opts, log);
+        var log = NullLogger<AgentRunnerDispatcher>.Instance;
+        return new AgentRunnerDispatcher(http, registry, opts, log);
     }
 
     private sealed class StubHttpFactory : IHttpClientFactory

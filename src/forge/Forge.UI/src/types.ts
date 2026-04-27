@@ -303,6 +303,15 @@ export interface UserSettings {
   updatedAt: string;
 }
 
+/** Phase 13b — one row in a crew's roster (lead is rendered separately). */
+export interface CrewMember {
+  agentId: string;
+  /** "coder" | "reviewer" | "architect" | "qa" | "generator" | "evaluator" | other. */
+  role: string;
+  addedAt: string;
+  addedBy: string | null;
+}
+
 /** Phase 10.6 — crew. */
 export interface Crew {
   id: string;
@@ -317,6 +326,82 @@ export interface Crew {
   dailyBudgetUsd?: number | null;
   /** Phase 11.10 — hard cap per single invocation. */
   maxTaskBudgetUsd?: number | null;
+  // Phase 13.1 additions ──────────────────────────────────────────────
+  /** Parent crew id; null = root. */
+  parentCrewId?: string | null;
+  /** 0=root, 1=team, 2=squad. Persisted for cheap roll-ups. */
+  depth?: number;
+  /** Phase 11.5b backend: 'copilot' (default) | 'claude'. */
+  backend?: string;
+  /** Phase 11.5b invoke mode: 'sdk' (default) | 'cli'. */
+  invokeMode?: string;
+  /** Members of this crew with their per-crew role (lead is rendered separately). */
+  roster?: CrewMember[] | null;
+  /** Domain-expert content-ids ingested as capabilities. */
+  capabilities?: string[];
+  /** How many tasks the crew can claim concurrently. */
+  maxConcurrent?: number;
+  /** Hard ceiling on tasks completed per ISO week. */
+  weeklyCap?: number;
+  /** Phase 13b — default generator agent for plan / coding tasks. Null = use lead. */
+  defaultGeneratorAgentId?: string | null;
+  /** Phase 13b — default evaluator agent for the pair. Null = single-agent mode. */
+  defaultEvaluatorAgentId?: string | null;
+  /**
+   * Phase 13b — model the evaluator runs against. Distinct from `model`
+   * (which becomes the generator's model) so the pair always runs on two
+   * different models. Null = inherit `model` (warns).
+   */
+  evaluatorModel?: string | null;
+}
+
+/** Phase 11.3 — agent listing payload (mirrors AgentDetail on the server). */
+export interface AgentDetail {
+  id: string;
+  name: string;
+  role: string;
+  crewId: string | null;
+  soulPath: string | null;
+  capabilities: string[];
+  state: string;
+}
+
+/** Phase 11.3 — soul.md GET payload. */
+export interface SoulPayload {
+  agentId: string;
+  /** Resolved file-system path. */
+  path: string;
+  /** Raw markdown contents (empty string when the file doesn't exist yet). */
+  contents: string;
+  /** Parsed YAML front-matter `capabilities:` list. */
+  capabilities: string[];
+  /** False when the file hasn't been authored yet — UI should offer to create. */
+  exists: boolean;
+}
+
+/** Phase 11.2 — model registry entry. */
+export interface ModelInfo {
+  id: string;
+  vendor: string;
+  family: string;
+  displayName: string;
+  contextWindow: number;
+  inputPricePerMTok: number;
+  outputPricePerMTok: number;
+  supportsTools: boolean;
+  supportsStreaming: boolean;
+  status: string;
+}
+
+/** Phase 13.1 — crew_history audit row. */
+export interface CrewHistoryEntry {
+  id: number;
+  at: string;
+  crewId: string;
+  kind: string;
+  fromValue: string | null;
+  toValue: string | null;
+  byUserId: string | null;
 }
 
 /** Phase 11.9 — salary roll-up payload. */

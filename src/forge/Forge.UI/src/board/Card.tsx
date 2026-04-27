@@ -1,6 +1,7 @@
 import { useDraggable } from '@dnd-kit/core';
 import type { Card as CardModel } from '@/types';
 import { useBoardStore } from '@/state/useBoardStore';
+import { avatarFor, agentTooltip } from '@/agentAvatar';
 import {
   BlockIcon,
   BoltIcon,
@@ -9,6 +10,24 @@ import {
   ShieldIcon,
   TypeIcon,
 } from './icons';
+
+function AgentChip({ id, name, role }: { id: string; name?: string | null; role?: string | null }) {
+  const avatar = avatarFor(id, name);
+  const tooltip = agentTooltip(id, name, role);
+  if (avatar) {
+    return (
+      <img
+        src={avatar}
+        alt={name || id}
+        className={`agent-chip-avatar ${role ?? ''}`}
+        title={tooltip}
+      />
+    );
+  }
+  // No portrait — fall back to the text chip but keep the rich tooltip so
+  // the operator still gets id · role · model · capabilities on hover.
+  return <span className={`agent-chip ${role ?? ''}`} title={tooltip}>{id}</span>;
+}
 
 interface CardProps {
   card: CardModel;
@@ -83,7 +102,7 @@ export function Card({ card }: CardProps) {
         <div className="card-foot-left">
           {card.agent ? (
             <>
-              <span className={`agent-chip ${card.agent.role}`}>{card.agent.id}</span>
+              <AgentChip id={card.agent.id} name={card.agent.name} role={card.agent.role} />
               <span>{card.agent.name}</span>
             </>
           ) : (

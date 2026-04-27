@@ -1,16 +1,20 @@
 import type {
+  AgentDetail,
   Card,
   ColumnId,
   Crew,
+  CrewHistoryEntry,
   CrewSalary,
   CurrentUser,
   DiscoverableRepo,
   ForgeState,
+  ModelInfo,
   Pr,
   Product,
   ProductStats,
   Repo,
   SalaryTodaySummary,
+  SoulPayload,
   TimelineResponse,
   UserSettings,
   Workstream,
@@ -155,8 +159,27 @@ function useLocalSeed(): boolean {
   return new URLSearchParams(window.location.search).get('seed') === 'local';
 }
 
-/** Phase-3 placeholder for the auth identity. Phase 5 replaces this. */
+/**
+ * Identity used for the `X-Forge-User` header on every write. The server
+ * looks the value up against `users.email | login | displayName | id`
+ * (RequireRole.ResolveRole), so we must send something the DB row recognises
+ * — otherwise role gates fall back to "human" and writes 403.
+ *
+ * Resolution order:
+ *  1. Cached identity written by `setWriterIdentity` after `/api/me` resolves
+ *     (the Phase 9 sign-in flow). This is the steady-state path.
+ *  2. Manual `forge.user` localStorage override (handy for multi-user dev).
+ *  3. The legacy `'forge-ui'` placeholder used pre-sign-in. The server only
+ *     accepts this when the users table is empty (single-user bootstrap).
+ */
+let cachedWriterIdentity: string | null = null;
+
+export function setWriterIdentity(identity: string | null): void {
+  cachedWriterIdentity = identity && identity.trim().length > 0 ? identity.trim() : null;
+}
+
 function writerHeader(): string {
+  if (cachedWriterIdentity) return cachedWriterIdentity;
   if (typeof window === 'undefined') return 'forge-ui';
   return window.localStorage.getItem('forge.user') ?? 'forge-ui';
 }
@@ -530,6 +553,124 @@ export const forgeApi = {
   /** GET /api/crews/{id}/salary — Phase 11.9 salary roll-up. */
   async getCrewSalary(id: string): Promise<CrewSalary> {
     return fetchJson<CrewSalary>(`/api/crews/${encodeURIComponent(id)}/salary`);
+  },
+
+  // ----- Phase 13 — crew management & task orchestration ----------------
+
+  /** PATCH /api/crews/{id} — covers backend, invokeMode, parent, quotas, etc. */
+  async patchCrew(id: string, patch: Partial<Crew> & { clearParentCrewId?: boolean }): Promise<Crew> {
+    return fetchJson<Crew>(`/api/crews/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/crews/{id}/assign — Phase 13.3 lead-routing. */
+  async assignCrewTask(id: string, req: { workItemId: string; memberAgentId: string; force?: boolean }): Promise<unknown> {
+    return fetchJson<unknown>(`/api/crews/${encodeURIComponent(id)}/assign`, {
+      method: 'POST',
+      body: JSON.stringify(req),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/crews/{id}/capabilities — Phase 13.8 capability ingestion. */
+  async addCrewCapability(id: string, contentId: string): Promise<Crew> {
+    return fetchJson<Crew>(`/api/crews/${encodeURIComponent(id)}/capabilities`, {
+      method: 'POST',
+      body: JSON.stringify({ contentId }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** DELETE /api/crews/{id}/capabilities — Phase 13.8 capability removal. */
+  async removeCrewCapability(id: string, contentId: string): Promise<Crew> {
+    return fetchJson<Crew>(`/api/crews/${encodeURIComponent(id)}/capabilities`, {
+      method: 'DELETE',
+      body: JSON.stringify({ contentId }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** GET /api/crews/{id}/history — Phase 13.1 history readout. */
+  async listCrewHistory(id: string): Promise<CrewHistoryEntry[]> {
+    return fetchJson<CrewHistoryEntry[]>(`/api/crews/${encodeURIComponent(id)}/history`);
+  },
+
+  /** POST /api/crews/{id}/members — Phase 13b roster CRUD. */
+  async addCrewMember(crewId: string, agentId: string, role = 'coder'): Promise<Crew> {
+    return fetchJson<Crew>(`/api/crews/${encodeURIComponent(crewId)}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ agentId, role }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** PATCH /api/crews/{id}/members/{agentId} — change a member's per-crew role. */
+  async setCrewMemberRole(crewId: string, agentId: string, role: string): Promise<Crew> {
+    return fetchJson<Crew>(`/api/crews/${encodeURIComponent(crewId)}/members/${encodeURIComponent(agentId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ role }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** DELETE /api/crews/{id}/members/{agentId} — remove from crew. */
+  async removeCrewMember(crewId: string, agentId: string): Promise<Crew> {
+    return fetchJson<Crew>(`/api/crews/${encodeURIComponent(crewId)}/members/${encodeURIComponent(agentId)}`, {
+      method: 'DELETE',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** GET /api/agents — Phase 11.3 listing. */
+  async listAgents(): Promise<AgentDetail[]> {
+    return fetchJson<AgentDetail[]>('/api/agents');
+  },
+
+  /** GET /api/models — Phase 11.2 model registry. */
+  async listModels(): Promise<ModelInfo[]> {
+    return fetchJson<ModelInfo[]>('/api/models');
+  },
+
+  /** GET /api/agents/{id}/soul — Phase 11.3 soul.md fetch. */
+  async getAgentSoul(agentId: string): Promise<SoulPayload> {
+    return fetchJson<SoulPayload>(`/api/agents/${encodeURIComponent(agentId)}/soul`);
+  },
+
+  /** PUT /api/agents/{id}/soul — Phase 11.3 soul.md save. */
+  async putAgentSoul(agentId: string, contents: string): Promise<SoulPayload> {
+    return fetchJson<SoulPayload>(`/api/agents/${encodeURIComponent(agentId)}/soul`, {
+      method: 'PUT',
+      body: JSON.stringify({ contents }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** PATCH /api/agents/{id} — Phase 13b agent edit (name / role / soulPath). */
+  async patchAgent(agentId: string, patch: { name?: string; role?: string; soulPath?: string }): Promise<AgentDetail> {
+    return fetchJson<AgentDetail>(`/api/agents/${encodeURIComponent(agentId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /**
+   * POST /api/crews/auto-assign — Phase 13c reconcile pass.
+   * Adds every unassigned agent to its team's crew, alternating
+   * generator / evaluator so each crew ends up balanced. Idempotent.
+   */
+  async autoAssignAgents(): Promise<{
+    inspected: number;
+    added: number;
+    actions: Array<{ agentId: string; crewId: string; role: string }>;
+  }> {
+    return fetchJson(`/api/crews/auto-assign`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
   },
 
   /** GET /api/crews/salary/today — Phase 11.9 TopBar chip total. */

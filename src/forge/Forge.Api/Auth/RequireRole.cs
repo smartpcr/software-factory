@@ -39,6 +39,61 @@ public static class RequireRole
     }
 
     /// <summary>
+    /// Phase 13 / Q13.2 — product-scoped role gate. Resolves the caller's role
+    /// against <paramref name="productId"/> regardless of which product they
+    /// happen to have selected in the UI. Use this when an action targets a
+    /// specific crew / repo / work item; <see cref="Check"/> is fine for
+    /// global-scope writes that don't bind to a product.
+    /// </summary>
+    public static IResult? CheckForProduct(HttpContext ctx, ForgeDbContext db, string? productId, params string[] roles)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var role = ResolveRoleForProduct(ctx, db, productId);
+        if (role is null) return null; // single-user dev — pass-through.
+        if (Array.IndexOf(roles, role) >= 0) return null;
+
+        return Results.Problem(
+            title: "Forbidden",
+            detail: productId is null
+                ? $"This action requires role: {string.Join(", ", roles)}. You are: {role}."
+                : $"This action requires role {string.Join(" / ", roles)} on product {productId}. You are: {role}.",
+            statusCode: 403);
+    }
+
+    /// <summary>
+    /// Sync resolver for the product-scoped role. Looks up the user, then a
+    /// matching <c>UserProductRoleRow</c>, then falls back to the user's
+    /// global <c>UserRow.Role</c>. Pre-sign-in (no users yet) returns null.
+    /// </summary>
+    public static string? ResolveRoleForProduct(HttpContext ctx, ForgeDbContext db, string? productId)
+    {
+        var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(caller)) return null;
+
+        var user = db.Users.AsNoTracking()
+            .Where(u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller)
+            .Select(u => new { u.Id, u.Role })
+            .FirstOrDefault();
+        if (user is null)
+        {
+            if (!db.Users.AsNoTracking().Any()) return null;
+            return "human";
+        }
+
+        if (!string.IsNullOrEmpty(productId))
+        {
+            var over = db.UserProductRoles.AsNoTracking()
+                .Where(r => r.UserId == user.Id && r.ProductId == productId)
+                .Select(r => r.Role)
+                .FirstOrDefault();
+            if (!string.IsNullOrEmpty(over)) return over;
+        }
+        return user.Role;
+    }
+
+    /// <summary>
     /// Sync helper — looks up the calling user's role, honoring the
     /// per-product override when X-Forge-Product-Id is present. Returns
     /// null when no signed-in users exist yet (default = open).

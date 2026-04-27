@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Card as CardModel } from '@/types';
 import { useBoardStore } from '@/state/useBoardStore';
+import { avatarFor, agentTooltip } from '@/agentAvatar';
 import { useWorkstreamsStore } from '@/state/useWorkstreamsStore';
 import { useToastStore } from '@/state/useToastStore';
 import { forgeApi } from '@/api/forgeApi';
@@ -125,11 +126,23 @@ export function DetailPanel() {
               </span>
               <span className="detail-status-pill">
                 <span className="label">Agent</span>
-                {safe.agent && (
-                  <span className={`agent-chip ${safe.agent.role}`} style={{ marginRight: 2 }}>
-                    {safe.agent.id}
-                  </span>
-                )}
+                {safe.agent && (() => {
+                  const av = avatarFor(safe.agent.id, safe.agent.name);
+                  const tip = agentTooltip(safe.agent.id, safe.agent.name, safe.agent.role);
+                  return av ? (
+                    <img
+                      src={av}
+                      alt={safe.agent.name || safe.agent.id}
+                      className={`agent-chip-avatar ${safe.agent.role}`}
+                      style={{ marginRight: 2 }}
+                      title={tip}
+                    />
+                  ) : (
+                    <span className={`agent-chip ${safe.agent.role}`} style={{ marginRight: 2 }} title={tip}>
+                      {safe.agent.id}
+                    </span>
+                  );
+                })()}
                 <span id="detail-agent">{safe.agent ? safe.agent.name : 'unassigned'}</span>
               </span>
               <span className="detail-status-pill">

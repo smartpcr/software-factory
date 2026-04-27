@@ -211,11 +211,11 @@ public class AgentSalaryAndLedgerTests
             SupportsStreaming: true,
             Status: "live"));
 
-        var runner = new ClaudeAgentRunner(
+        var runner = new AgentRunnerDispatcher(
             new InlineHttpFactory(),
             localRegistry,
             Options.Create(new AgentRunnerOptions()),
-            NullLogger<ClaudeAgentRunner>.Instance);
+            NullLogger<AgentRunnerDispatcher>.Instance);
 
         var ctx = new AgentContext(
             CrewId: "engineering",

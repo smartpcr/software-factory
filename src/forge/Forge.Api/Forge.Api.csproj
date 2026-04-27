@@ -14,6 +14,8 @@
     <!-- Phase 9 — MSAL interactive sign-in (system browser), DPAPI-backed token cache. -->
     <PackageReference Include="Microsoft.Identity.Client" />
     <PackageReference Include="Microsoft.Identity.Client.Extensions.Msal" />
+    <!-- Phase 11.5b — GitHub Copilot SDK for the in-process streaming runner. -->
+    <PackageReference Include="GitHub.Copilot.SDK" />
   </ItemGroup>
 
   <!-- Phase 11.2 — model registry seed. The Web SDK auto-includes the JSON;

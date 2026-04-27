@@ -52,6 +52,12 @@ public class ForgeDbContext : DbContext
 
     public DbSet<CrewRow> Crews => this.Set<CrewRow>();
 
+    public DbSet<CrewMemberRow> CrewMembers => this.Set<CrewMemberRow>();
+
+    public DbSet<CrewHistoryRow> CrewHistory => this.Set<CrewHistoryRow>();
+
+    public DbSet<DomainExpertRow> DomainExperts => this.Set<DomainExpertRow>();
+
     public DbSet<AgentUsageRow> AgentUsage => this.Set<AgentUsageRow>();
 
     public DbSet<AgentRow> Agents => this.Set<AgentRow>();
@@ -111,6 +117,25 @@ public class ForgeDbContext : DbContext
         // SQLite stores decimal as TEXT; explicit conversion keeps EF happy.
         mb.Entity<CrewRow>().Property(x => x.ModelInputPricePerMTok).HasConversion<double>();
         mb.Entity<CrewRow>().Property(x => x.ModelOutputPricePerMTok).HasConversion<double>();
+        // Phase 13.1 — hierarchy index for cheap parent walks.
+        mb.Entity<CrewRow>().HasIndex(x => x.ParentCrewId);
+
+        // Phase 13.1 — crew membership.
+        mb.Entity<CrewMemberRow>()
+            .ToTable("crew_members")
+            .HasKey(x => new { x.CrewId, x.AgentId });
+        mb.Entity<CrewMemberRow>().HasIndex(x => x.CrewId);
+        mb.Entity<CrewMemberRow>().HasIndex(x => x.AgentId);
+
+        // Phase 13.1 — crew_history audit log.
+        mb.Entity<CrewHistoryRow>().ToTable("crew_history").HasKey(x => x.Id);
+        mb.Entity<CrewHistoryRow>().HasIndex(x => new { x.CrewId, x.At });
+
+        // Phase 13.7 — domain-expert index.
+        mb.Entity<DomainExpertRow>().ToTable("domain_experts").HasKey(x => x.Id);
+        mb.Entity<DomainExpertRow>().HasIndex(x => x.ContentId).IsUnique();
+        mb.Entity<DomainExpertRow>().HasIndex(x => x.RepoId);
+        mb.Entity<DomainExpertRow>().HasIndex(x => x.Topic);
 
         // Phase 11.4 — agent invocation cost ledger.
         mb.Entity<AgentUsageRow>().ToTable("agent_usage").HasKey(x => x.Id);

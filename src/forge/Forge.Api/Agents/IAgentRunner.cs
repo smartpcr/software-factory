@@ -9,8 +9,10 @@ namespace Forge.Api.Agents;
 /// <summary>
 /// Phase 11.1 — runs a single agent invocation. One invocation = one task.
 /// Long-running agents are modeled as a sequence of invocations, not a
-/// single process. Concrete implementation (<c>ClaudeAgentRunner</c>) lands
-/// in Batch B; Batch A ships the interface + a no-op runner so DI resolves.
+/// single process. The default implementation is
+/// <see cref="AgentRunnerDispatcher"/>, which routes each invocation to one
+/// of four (backend × mode) cells: Copilot/SDK, Copilot/CLI, Claude/SDK,
+/// Claude/CLI. The <c>local-stub</c> model bypasses every backend.
 /// </summary>
 public interface IAgentRunner
 {

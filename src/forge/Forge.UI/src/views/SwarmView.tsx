@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { sampleState } from '@/sampleData';
 import { useStateStore } from '@/state/useStateStore';
+import { avatarFor, agentTooltip } from '@/agentAvatar';
 import type { OverviewAgent, Role } from '@/types';
 
 // Mocked agent telemetry. The crew + role assignments come from
@@ -265,13 +266,18 @@ export function SwarmView() {
 function SwarmCard({ agent }: { agent: OverviewAgent }) {
   const t = TELEMETRY[agent.id];
   const taskEmpty = !agent.task || agent.task === '—';
+  // Server-side overview agents (A1/A2/E4/…) don't carry a bundled `avatar`
+  // url — fall back to the global avatar lookup keyed by id so every card
+  // gets a portrait, not the mono initials.
+  const portrait = agent.avatar ?? avatarFor(agent.id, agent.name);
+  const tip = agentTooltip(agent.id, agent.name, agent.role);
   return (
     <div className="swarm-card" data-status={agent.status} title={agent.bio ?? agent.name}>
       <div className="swarm-card-head">
-        {agent.avatar ? (
-          <img className="swarm-card-avatar" src={agent.avatar} alt={agent.name} />
+        {portrait ? (
+          <img className="swarm-card-avatar" src={portrait} alt={agent.name} title={tip} />
         ) : (
-          <span className="swarm-card-mono">{agent.id}</span>
+          <span className="swarm-card-mono" title={tip}>{agent.id}</span>
         )}
         <div className="swarm-card-name-block">
           <div className="swarm-card-name">{agent.name}</div>

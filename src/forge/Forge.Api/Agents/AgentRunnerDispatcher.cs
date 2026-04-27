@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="ClaudeAgentRunner.cs" company="Microsoft Corp.">
+// <copyright file="AgentRunnerDispatcher.cs" company="Microsoft Corp.">
 //     Copyright (c) Microsoft Corp. All rights reserved.
 // </copyright>
 // -----------------------------------------------------------------------
@@ -7,25 +7,38 @@
 namespace Forge.Api.Agents;
 
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
+using GitHub.Copilot.SDK;
 using Microsoft.Extensions.Options;
 
 /// <summary>
-/// Phase 11.5 — concrete agent runner. Two paths:
-///   * <c>local-stub</c> model — deterministic offline token stream so tests
-///     and offline dev exercise the full event + ledger plumbing without
-///     making network calls.
-///   * Anthropic models — POST <c>/v1/messages</c> with streaming SSE,
-///     prompt-caching the soul.md system block, retry-with-backoff on
-///     429 / 503 / 529.
-/// One scoped <see cref="HttpClient"/> per invocation; no shared state across
-/// agents. Per-agent state (idle / working / paused) lives in a process-local
-/// dictionary keyed on <c>agentId</c>.
+/// Phase 11.5b — single <see cref="IAgentRunner"/> that dispatches across
+/// four (backend × mode) cells:
+///
+///   <list type="bullet">
+///     <item><description>Copilot · SDK — in-process <see cref="CopilotClient"/> with streaming events (default).</description></item>
+///     <item><description>Copilot · CLI — shells out to <c>copilot</c> with the prompt on stdin, captures stdout.</description></item>
+///     <item><description>Claude · SDK — POST <c>/v1/messages</c> with streaming SSE.</description></item>
+///     <item><description>Claude · CLI — shells out to <c>claude --print</c>, captures stdout.</description></item>
+///   </list>
+///
+/// Mirrors the workflow-side pattern in <c>ExecutionEngine.AI.IAIExecutor</c>
+/// (Copilot SDK + Claude CLI) but extends it to the full 2×2 matrix and
+/// surfaces results as the streaming <see cref="AgentEvent"/> shape Forge
+/// already uses everywhere downstream (cost ledger, agent-state hub, etc.).
+///
+/// Per-agent state (idle / working / paused) lives in a process-local
+/// dictionary keyed on <c>agentId</c>; cancellation is keyed on
+/// <c>invocationId</c>. The <c>local-stub</c> model bypasses every backend
+/// and emits a deterministic stream — used by tests and offline dev so the
+/// event + ledger plumbing exercises without network or CLI.
 /// </summary>
-public sealed class ClaudeAgentRunner : IAgentRunner
+public sealed class AgentRunnerDispatcher : IAgentRunner
 {
     public const string ClientName = "AnthropicMessages";
 
@@ -34,16 +47,16 @@ public sealed class ClaudeAgentRunner : IAgentRunner
     private readonly IHttpClientFactory http;
     private readonly IModelRegistry models;
     private readonly IOptions<AgentRunnerOptions> options;
-    private readonly ILogger<ClaudeAgentRunner> log;
+    private readonly ILogger<AgentRunnerDispatcher> log;
 
     private readonly ConcurrentDictionary<string, AgentState> agentStates = new();
     private readonly ConcurrentDictionary<string, CancellationTokenSource> active = new();
 
-    public ClaudeAgentRunner(
+    public AgentRunnerDispatcher(
         IHttpClientFactory http,
         IModelRegistry models,
         IOptions<AgentRunnerOptions> options,
-        ILogger<ClaudeAgentRunner> log)
+        ILogger<AgentRunnerDispatcher> log)
     {
         this.http = http;
         this.models = models;
@@ -63,9 +76,23 @@ public sealed class ClaudeAgentRunner : IAgentRunner
         this.active[invocationId] = linked;
         this.agentStates[agentId] = AgentState.Working;
 
-        var raw = string.Equals(context.Model, "local-stub", StringComparison.OrdinalIgnoreCase)
-            ? this.RunLocalStub(invocationId, prompt, context, linked.Token)
-            : this.RunClaude(invocationId, prompt, context, linked.Token);
+        IAsyncEnumerable<AgentEvent> raw;
+        if (string.Equals(context.Model, "local-stub", StringComparison.OrdinalIgnoreCase))
+        {
+            // local-stub bypasses all backends — used by tests + offline dev.
+            raw = this.RunLocalStub(prompt, context, linked.Token);
+        }
+        else
+        {
+            raw = (context.Backend, context.InvokeMode) switch
+            {
+                (AgentBackend.Claude,  AgentInvokeMode.Sdk) => this.RunClaudeSdk(prompt, context, linked.Token),
+                (AgentBackend.Claude,  AgentInvokeMode.Cli) => this.RunClaudeCli(prompt, context, linked.Token),
+                (AgentBackend.Copilot, AgentInvokeMode.Sdk) => this.RunCopilotSdk(prompt, context, linked.Token),
+                (AgentBackend.Copilot, AgentInvokeMode.Cli) => this.RunCopilotCli(prompt, context, linked.Token),
+                _ => RunUnsupported(context),
+            };
+        }
 
         var stream = this.WrapEvents(invocationId, agentId, raw);
         return Task.FromResult(new AgentInvocation(invocationId, agentId, context.CrewId, taskId, context.Model, stream));
@@ -114,17 +141,17 @@ public sealed class ClaudeAgentRunner : IAgentRunner
         }
     }
 
+    // ── local-stub (no backend) ─────────────────────────────────────────────
+
     private async IAsyncEnumerable<AgentEvent> RunLocalStub(
-        string invocationId,
         string prompt,
         AgentContext context,
         [EnumeratorCancellation] CancellationToken ct)
     {
         yield return new AgentEvent(AgentEventKind.Started, DateTimeOffset.UtcNow);
 
-        var deltas = SplitForStub(prompt);
         long outTokens = 0;
-        foreach (var delta in deltas)
+        foreach (var delta in SplitForStub(prompt))
         {
             ct.ThrowIfCancellationRequested();
             await Task.Delay(1, ct);
@@ -133,18 +160,18 @@ public sealed class ClaudeAgentRunner : IAgentRunner
         }
 
         var inTokens = Math.Max(1, prompt.Length / 4);
-        var model = this.models.Find(context.Model);
-        var cost = ComputeCost(model, inTokens, outTokens);
+        var modelInfo = this.models.Find(context.Model);
         yield return new AgentEvent(
             AgentEventKind.Finished,
             DateTimeOffset.UtcNow,
             InputTokens: inTokens,
             OutputTokens: outTokens,
-            CostUsd: cost);
+            CostUsd: ComputeCost(modelInfo, inTokens, outTokens));
     }
 
-    private async IAsyncEnumerable<AgentEvent> RunClaude(
-        string invocationId,
+    // ── Claude · SDK (Anthropic /v1/messages with streaming SSE) ────────────
+
+    private async IAsyncEnumerable<AgentEvent> RunClaudeSdk(
         string prompt,
         AgentContext context,
         [EnumeratorCancellation] CancellationToken ct)
@@ -159,8 +186,8 @@ public sealed class ClaudeAgentRunner : IAgentRunner
             yield break;
         }
 
-        var model = this.models.Find(context.Model);
-        if (model is null)
+        var modelInfo = this.models.Find(context.Model);
+        if (modelInfo is null)
         {
             yield return new AgentEvent(
                 AgentEventKind.Failed,
@@ -173,23 +200,15 @@ public sealed class ClaudeAgentRunner : IAgentRunner
 
         var body = new
         {
-            model = model.Id,
+            model = modelInfo.Id,
             max_tokens = 4096,
             stream = true,
             // Phase 11.5 — prompt-cache the soul.md system block (5-min TTL).
             system = new[]
             {
-                new
-                {
-                    type = "text",
-                    text = context.SoulMd,
-                    cache_control = new { type = "ephemeral" },
-                },
+                new { type = "text", text = context.SoulMd, cache_control = new { type = "ephemeral" } },
             },
-            messages = new[]
-            {
-                new { role = "user", content = prompt },
-            },
+            messages = new[] { new { role = "user", content = prompt } },
         };
         var payload = JsonSerializer.Serialize(body, JsonOpts);
 
@@ -197,7 +216,6 @@ public sealed class ClaudeAgentRunner : IAgentRunner
         long outputTokens = 0;
         string? failReason = null;
 
-        // Retry loop on 429 / 503 / 529.
         var attempt = 0;
         while (true)
         {
@@ -242,8 +260,6 @@ public sealed class ClaudeAgentRunner : IAgentRunner
                 break;
             }
 
-            // Stream parse: yield each token delta, accumulate usage from the
-            // message_stop event.
             using (resp)
             await using (var stream = await resp.Content.ReadAsStreamAsync(ct))
             using (var reader = new StreamReader(stream))
@@ -288,14 +304,351 @@ public sealed class ClaudeAgentRunner : IAgentRunner
             yield break;
         }
 
-        var cost = ComputeCost(model, inputTokens, outputTokens);
         yield return new AgentEvent(
             AgentEventKind.Finished,
             DateTimeOffset.UtcNow,
             InputTokens: inputTokens,
             OutputTokens: outputTokens,
-            CostUsd: cost);
+            CostUsd: ComputeCost(modelInfo, inputTokens, outputTokens));
     }
+
+    // ── Claude · CLI (claude --print) ───────────────────────────────────────
+
+    private async IAsyncEnumerable<AgentEvent> RunClaudeCli(
+        string prompt,
+        AgentContext context,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        yield return new AgentEvent(AgentEventKind.Started, DateTimeOffset.UtcNow);
+
+        var cliPath = ResolveCli(this.options.Value.ClaudeCliPath, "claude");
+        var fullPrompt = string.IsNullOrEmpty(context.SoulMd)
+            ? prompt
+            : $"{context.SoulMd}\n\n---\n\n{prompt}";
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = cliPath,
+            Arguments = $"--print --model {context.Model}",
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = string.IsNullOrEmpty(context.WorktreePath) ? null : context.WorktreePath,
+        };
+
+        await foreach (var ev in this.RunCliAsync(psi, fullPrompt, context, ct))
+        {
+            yield return ev;
+        }
+    }
+
+    // ── Copilot · CLI (copilot stdout-capture) ─────────────────────────────
+
+    private async IAsyncEnumerable<AgentEvent> RunCopilotCli(
+        string prompt,
+        AgentContext context,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        yield return new AgentEvent(AgentEventKind.Started, DateTimeOffset.UtcNow);
+
+        var cliPath = ResolveCli(this.options.Value.CopilotCliPath, "copilot");
+        var fullPrompt = string.IsNullOrEmpty(context.SoulMd)
+            ? prompt
+            : $"{context.SoulMd}\n\n---\n\n{prompt}";
+
+        // copilot CLI: `--prompt -` reads from stdin, `-m` selects model.
+        var psi = new ProcessStartInfo
+        {
+            FileName = cliPath,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = string.IsNullOrEmpty(context.WorktreePath) ? null : context.WorktreePath,
+        };
+        psi.ArgumentList.Add("--prompt");
+        psi.ArgumentList.Add("-");
+        psi.ArgumentList.Add("-m");
+        psi.ArgumentList.Add(context.Model);
+        foreach (var a in this.options.Value.CopilotCliExtraArgs) psi.ArgumentList.Add(a);
+
+        await foreach (var ev in this.RunCliAsync(psi, fullPrompt, context, ct))
+        {
+            yield return ev;
+        }
+    }
+
+    /// <summary>
+    /// Shared CLI execution path. Pipes <paramref name="stdinPrompt"/> to the
+    /// child process, streams stdout line-by-line as <see cref="AgentEventKind.Token"/>
+    /// events, and emits a terminal Finished/Failed event with token estimates
+    /// (CLIs don't surface usage so we estimate at chars/4).
+    /// </summary>
+    private async IAsyncEnumerable<AgentEvent> RunCliAsync(
+        ProcessStartInfo psi,
+        string stdinPrompt,
+        AgentContext context,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        Process? process = null;
+        Exception? launchError = null;
+        try { process = Process.Start(psi); }
+        catch (Exception ex) { launchError = ex; }
+
+        if (launchError is not null)
+        {
+            yield return new AgentEvent(
+                AgentEventKind.Failed,
+                DateTimeOffset.UtcNow,
+                Error: $"Failed to launch {psi.FileName}: {launchError.Message}");
+            yield break;
+        }
+
+        if (process is null)
+        {
+            yield return new AgentEvent(
+                AgentEventKind.Failed,
+                DateTimeOffset.UtcNow,
+                Error: $"Process.Start returned null for {psi.FileName}");
+            yield break;
+        }
+
+        var output = new StringBuilder();
+        Task<string>? stderrTask = null;
+        try
+        {
+            using var ctReg = ct.Register(() =>
+            {
+                try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+                catch { /* already exited */ }
+            });
+
+            await process.StandardInput.WriteAsync(stdinPrompt);
+            process.StandardInput.Close();
+
+            stderrTask = process.StandardError.ReadToEndAsync(ct);
+
+            string? line;
+            while ((line = await process.StandardOutput.ReadLineAsync(ct)) is not null)
+            {
+                output.AppendLine(line);
+                if (line.Length > 0)
+                {
+                    yield return new AgentEvent(AgentEventKind.Token, DateTimeOffset.UtcNow, Text: line + "\n");
+                }
+            }
+
+            await process.WaitForExitAsync(ct);
+        }
+        finally
+        {
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+            catch { /* best-effort cleanup */ }
+        }
+
+        var stderr = stderrTask is null ? string.Empty : await stderrTask;
+        var exitCode = process.ExitCode;
+        process.Dispose();
+
+        if (exitCode != 0)
+        {
+            yield return new AgentEvent(
+                AgentEventKind.Failed,
+                DateTimeOffset.UtcNow,
+                Error: $"{Path.GetFileName(psi.FileName)} exit={exitCode}: {stderr.Trim()}");
+            yield break;
+        }
+
+        // Token estimate: chars/4 (Anthropic / OpenAI rough heuristic).
+        var inTokens = Math.Max(1, stdinPrompt.Length / 4);
+        var outTokens = Math.Max(1, output.Length / 4);
+        var modelInfo = this.models.Find(context.Model);
+        yield return new AgentEvent(
+            AgentEventKind.Finished,
+            DateTimeOffset.UtcNow,
+            InputTokens: inTokens,
+            OutputTokens: outTokens,
+            CostUsd: ComputeCost(modelInfo, inTokens, outTokens));
+    }
+
+    // ── Copilot · SDK (in-process CopilotClient with streaming events) ─────
+
+    private async IAsyncEnumerable<AgentEvent> RunCopilotSdk(
+        string prompt,
+        AgentContext context,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        yield return new AgentEvent(AgentEventKind.Started, DateTimeOffset.UtcNow);
+
+        var contentBuilder = new StringBuilder();
+        long inputTokens = 0;
+        long outputTokens = 0;
+        string? failReason = null;
+
+        var clientOptions = new CopilotClientOptions
+        {
+            CliArgs = this.options.Value.CopilotCliExtraArgs,
+            CliPath = ResolveCli(this.options.Value.CopilotCliPath, "copilot"),
+            Cwd = string.IsNullOrEmpty(context.WorktreePath) ? null : context.WorktreePath,
+        };
+
+        // Stage results into a channel so the SDK's event subscription (which
+        // is not async-iter-friendly) feeds an IAsyncEnumerable cleanly.
+        var queue = Channel.CreateUnbounded<AgentEvent>();
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        CopilotSession? session = null;
+        IDisposable? subscription = null;
+        CopilotClient? client = null;
+        try
+        {
+            client = new CopilotClient(clientOptions);
+            var sessionConfig = new SessionConfig
+            {
+                Model = context.Model,
+                OnPermissionRequest = PermissionHandler.ApproveAll,
+            };
+            if (!string.IsNullOrEmpty(context.SoulMd))
+            {
+                sessionConfig.SystemMessage = new SystemMessageConfig
+                {
+                    Mode = SystemMessageMode.Append,
+                    Content = context.SoulMd,
+                };
+            }
+
+            session = await client.CreateSessionAsync(sessionConfig, ct);
+
+            subscription = session.On(evt =>
+            {
+                try
+                {
+                    switch (evt)
+                    {
+                        case AssistantMessageDeltaEvent delta:
+                            var chunk = delta.Data.DeltaContent;
+                            if (!string.IsNullOrEmpty(chunk))
+                            {
+                                contentBuilder.Append(chunk);
+                                queue.Writer.TryWrite(new AgentEvent(AgentEventKind.Token, DateTimeOffset.UtcNow, Text: chunk));
+                            }
+                            break;
+
+                        case ToolExecutionStartEvent tStart:
+                            queue.Writer.TryWrite(new AgentEvent(
+                                AgentEventKind.ToolCall,
+                                DateTimeOffset.UtcNow,
+                                ToolName: tStart.Data.ToolName,
+                                ToolPayload: tStart.Data.Arguments is null
+                                    ? null
+                                    : JsonSerializer.Serialize(tStart.Data.Arguments)));
+                            break;
+
+                        case ToolExecutionCompleteEvent tEnd:
+                            queue.Writer.TryWrite(new AgentEvent(
+                                AgentEventKind.ToolResult,
+                                DateTimeOffset.UtcNow,
+                                ToolPayload: tEnd.Data.Result is null
+                                    ? null
+                                    : JsonSerializer.Serialize(tEnd.Data.Result),
+                                Error: tEnd.Data.Success
+                                    ? null
+                                    : tEnd.Data.Error?.ToString()));
+                            break;
+
+                        case AssistantUsageEvent usage:
+                            // SDK exposes usage as double? — cast to long.
+                            inputTokens += (long)(usage.Data.InputTokens ?? 0);
+                            outputTokens += (long)(usage.Data.OutputTokens ?? 0);
+                            break;
+
+                        case SessionIdleEvent:
+                            done.TrySetResult();
+                            break;
+
+                        case SessionErrorEvent:
+                            failReason = "Copilot session error";
+                            done.TrySetResult();
+                            break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    this.log.LogWarning(ex, "Copilot SDK event handler failed");
+                }
+            });
+
+            await session.SendAsync(new MessageOptions { Prompt = prompt }, ct);
+
+            // Drain the channel while the session pumps events. Exit when the
+            // SDK signals idle/error OR cancellation fires.
+            var hardDeadline = DateTime.UtcNow + this.options.Value.WallClockBudget;
+            _ = Task.Run(async () =>
+            {
+                try { await done.Task.WaitAsync(ct); }
+                catch { /* fall through to completer */ }
+                queue.Writer.TryComplete();
+            }, ct);
+
+            while (await queue.Reader.WaitToReadAsync(ct))
+            {
+                while (queue.Reader.TryRead(out var ev))
+                {
+                    yield return ev;
+                }
+                if (DateTime.UtcNow >= hardDeadline)
+                {
+                    failReason ??= $"Hard timeout: exceeded {this.options.Value.WallClockBudget.TotalMinutes:0}m budget";
+                    queue.Writer.TryComplete();
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            subscription?.Dispose();
+            if (session is not null)
+            {
+                try { await session.DisposeAsync(); } catch { /* best-effort */ }
+            }
+            if (client is not null)
+            {
+                try { await client.DisposeAsync(); } catch { /* best-effort */ }
+            }
+        }
+
+        if (failReason is not null)
+        {
+            yield return new AgentEvent(AgentEventKind.Failed, DateTimeOffset.UtcNow, Error: failReason);
+            yield break;
+        }
+
+        // SDK doesn't always emit usage; estimate when missing.
+        if (outputTokens == 0) outputTokens = Math.Max(1, contentBuilder.Length / 4);
+        if (inputTokens == 0) inputTokens = Math.Max(1, prompt.Length / 4);
+
+        var modelInfo = this.models.Find(context.Model);
+        yield return new AgentEvent(
+            AgentEventKind.Finished,
+            DateTimeOffset.UtcNow,
+            InputTokens: inputTokens,
+            OutputTokens: outputTokens,
+            CostUsd: ComputeCost(modelInfo, inputTokens, outputTokens));
+    }
+
+    private static async IAsyncEnumerable<AgentEvent> RunUnsupported(AgentContext context)
+    {
+        await Task.Yield();
+        yield return new AgentEvent(
+            AgentEventKind.Failed,
+            DateTimeOffset.UtcNow,
+            Error: $"Unsupported (backend, mode) combo: {context.Backend} / {context.InvokeMode}");
+    }
+
+    // ── shared helpers ─────────────────────────────────────────────────────
 
     private static int BackoffMs(int attempt)
         => Math.Min(2000 * (int)Math.Pow(2, attempt - 1), 30000);
@@ -308,10 +661,31 @@ public sealed class ClaudeAgentRunner : IAgentRunner
         return Math.Round(input + output, 6);
     }
 
+    /// <summary>
+    /// Resolves a CLI executable. Honours the operator override first, then
+    /// the well-known npm-global location (Windows), then bare PATH lookup.
+    /// </summary>
+    private static string ResolveCli(string? overridePath, string name)
+    {
+        if (!string.IsNullOrWhiteSpace(overridePath) && File.Exists(overridePath)) return overridePath;
+
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        if (!string.IsNullOrEmpty(appData))
+        {
+            // Some packages publish a native exe alongside the .cmd shim — prefer it.
+            var npmExe = Path.Combine(appData, "npm", "node_modules", $"@github/{name}",
+                "node_modules", $"@github/{name}-win32-x64", $"{name}.exe");
+            if (File.Exists(npmExe)) return npmExe;
+            var npmCmd = Path.Combine(appData, "npm", $"{name}.cmd");
+            if (File.Exists(npmCmd)) return npmCmd;
+        }
+
+        // Fallback — the OS process resolver will walk PATH.
+        return name;
+    }
+
     private static IEnumerable<string> SplitForStub(string prompt)
     {
-        // Deterministic tokens for offline tests: split on whitespace,
-        // preserve the spaces so the assembled output is recoverable.
         if (string.IsNullOrEmpty(prompt))
         {
             yield return "(stub)";

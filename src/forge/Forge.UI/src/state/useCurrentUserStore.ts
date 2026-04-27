@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { CurrentUser } from '@/types';
-import { forgeApi } from '@/api/forgeApi';
+import { forgeApi, setWriterIdentity } from '@/api/forgeApi';
 import imgXiaodong from '@/assets/crews/xiaodong_small.png';
 
 // Operator portrait override. The /api/me endpoint can store an
@@ -55,6 +55,7 @@ export const useCurrentUserStore = create<CurrentUserState>((set) => ({
   async load() {
     try {
       const user = await forgeApi.getMe();
+      pushWriterIdentity(user);
       set({ user: applyOperatorAvatar(user), loaded: true });
     } catch {
       set({ user: PLACEHOLDER, loaded: true });
@@ -64,12 +65,23 @@ export const useCurrentUserStore = create<CurrentUserState>((set) => ({
   async refresh() {
     try {
       const user = await forgeApi.getMe();
+      pushWriterIdentity(user);
       set({ user: applyOperatorAvatar(user) });
     } catch {
       // Keep last good user — refresh is fire-and-forget.
     }
   },
 }));
+
+// Phase 9.6 — sync the resolved identity into the API client so every
+// write request lands `X-Forge-User: <email|login|id>` instead of the
+// pre-sign-in placeholder. Without this, RequireRole.ResolveRole can't
+// match the user row and falls back to "human", which 403s every PO
+// action regardless of the role saved in the DB.
+function pushWriterIdentity(user: CurrentUser) {
+  const identity = user.email ?? user.login ?? user.id;
+  if (identity && identity.length > 0) setWriterIdentity(identity);
+}
 
 export function useCurrentUser(): CurrentUser {
   const user = useCurrentUserStore((s) => s.user);

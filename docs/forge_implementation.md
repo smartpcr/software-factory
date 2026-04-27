@@ -355,6 +355,12 @@ Make the agent labels real. Forge spawns and supervises the model that backs eac
 - [~] **11.3** **soul.md authoring**: file-system source of truth at `%LOCALAPPDATA%\Forge\agents\{agentId}\soul.md` (path overridable per agent). `/settings/agents` gains an in-app editor (CodeMirror, markdown preview side-by-side) that reads + writes the file with file-watcher-driven invalidation so external edits hot-reload. soul.md is the system prompt at runtime; capabilities (`tools`, `mcp_servers`, `ado_scopes`) declared in YAML front-matter at the top. _(filesystem service + GET/PUT endpoints + YAML front-matter `tools:` parser ship; CodeMirror `/settings/agents` editor is Phase R UI work — operators currently edit `soul.md` directly on disk and the API picks it up on next read)_
 - [x] **11.4** **Cost ledger** table `agent_usage(id, agentId, crewId, taskId, model, inputTokens, outputTokens, costUsd, startedAt, endedAt, status)` written by the runner on every invocation finish (or partial-finish on cancel). Indexed by `(crewId, startedAt)` and `(taskId)`. SQL views: `crew_salary_today`, `crew_salary_sprint`, `crew_salary_month`. Card cost in Phase 1 becomes `SUM(costUsd) WHERE taskId = card.id`, replacing the prototype's hard-coded values once the runner is live. _(SQL views replaced by an in-memory roll-up in `CrewsEndpoints.GetSalary` — SQLite EF can't translate `DateTimeOffset` filters or `SUM` over a decimal-converter column. Volume is bounded so in-memory is cheap.)_
 - [x] **11.5** **Concrete runner**: `ClaudeAgentRunner` (Anthropic SDK) — uses prompt caching for the soul.md prefix (5-min TTL), streaming responses via SSE, retry-with-backoff on 529 / 503. Per-invocation isolation: each runs in its own scoped `HttpClient`; no shared state across agents. Vendor abstraction is thin so a future `OpenAIAgentRunner` slots in without touching callers. _(uses HttpClient + the Anthropic REST API directly — same pattern as Phase 5's AdoProvider/GitHubProvider, "keeps deps small")_
+- [x] **11.5b** **Dispatcher across 2×2 cells**: `ClaudeAgentRunner` was renamed `AgentRunnerDispatcher` and is now the only `IAgentRunner` registration. It routes each `StartAsync` call through one of four (backend × mode) cells, picked from `AgentContext.Backend` / `AgentContext.InvokeMode` (defaults: **Copilot · SDK**):
+  - **Copilot · SDK** — in-process `CopilotClient` (GitHub.Copilot.SDK 0.3.0), streams `AssistantMessageDelta` / `ToolExecutionStart` / `ToolExecutionComplete` events into the same `AgentEvent` shape downstream consumers already use.
+  - **Copilot · CLI** — shells out to `copilot --prompt - -m <model> --yolo`; soul.md is folded into the stdin prefix; stdout streamed line-by-line.
+  - **Claude · SDK** — the existing 11.5 path (POST `/v1/messages` with streaming SSE + ephemeral prompt cache on the soul.md system block).
+  - **Claude · CLI** — shells out to `claude --print --model <model>`; soul.md folded into stdin prefix.
+  `local-stub` model bypasses every cell with a deterministic token stream for tests / offline. CLI cells are **text-only** — no tool-call surface — so callers that need tools (Phase 13.4 / 13.5 plan + coding pipelines) must use SDK mode. Defaults are operator-overridable via `Forge:Agents:DefaultBackend` / `Forge:Agents:DefaultInvokeMode`; CLI executable paths via `Forge:Agents:CopilotCliPath` / `Forge:Agents:ClaudeCliPath`. Mirrors the workflow-side `IAIExecutor` pattern (`ExecutionEngine.AI.CopilotAIExecutor` / `ClaudeCliAIExecutor`) but extends it to all four cells and surfaces results as Forge's streaming `AgentEvent`. _(see `src/forge/Forge.Api/Agents/AgentRunnerDispatcher.cs`)_
 - [x] **11.6** **Sandboxing**: agents run inside the Forge.Api host as Tasks, NOT subprocess; tool execution (file edits, git, shell) is gated through an `IAgentToolHost` that enforces (a) the workstream's worktree path as the only writable root, (b) per-tool allowlist from soul.md front-matter, (c) hard wall-clock + token budgets per invocation. Subprocess isolation is a Phase R upgrade.
 - [x] **11.7** **Live status streaming**: SignalR channel `agent.{agentId}` broadcasts `started | token | tool-call | tool-result | finished | failed | paused`. UI hooks: card live-progress bar (Phase 1.2) reads the active invocation; `/crews` row updates in place; PR detail panel build-log tail (Phase 4.5) gains an "Agent activity" tab. _(server-side SignalR group + AgentsEndpoints ship; the in-place card / PR-panel UI hooks are a small follow-up — out of scope for the contract that the events stream)_
 - [x] **11.8** **Pause / resume / reassign**: PO actions on `/crews` and the agent detail panel. Pause halts the agent's task pickup loop and surfaces a `paused` pill; resume resumes from queue; reassign moves an agent to another crew (model + pricing change recorded in `agent_history`).
@@ -492,9 +498,9 @@ Two principles drive the shape:
 ### Resolved decisions
 
 - **Q13.1 Crew topology** — each crew has exactly one **lead** (an agent or human) and zero-or-more **members** (agents or humans). Crews can nest: a parent crew (`parentCrewId`) groups child crews under a team-of-teams. Depth cap = 3 (Org → Team → Squad). Membership is exclusive within a depth: an agent can be a member of multiple **child** crews but only one direct **lead** assignment, so accountability for each task has a single owner.
-- **Q13.2 Lead = router** — only the lead can assign tasks within their crew. The lead may assign to themselves; the runtime treats self-assignment identically to peer-assignment for ledger and quota purposes. Reassignment is a write requiring `RequireRole.ProductOwner` *or* `crew.lead == caller`.
+- **Q13.2 Lead = router** — only the lead can assign tasks within their crew. The lead may assign to themselves; the runtime treats self-assignment identically to peer-assignment for ledger and quota purposes. Reassignment is a write requiring **product-scoped** `RequireRole.ProductOwner` *or* `crew.lead == caller`. "Product-scoped" matters because Phase 9.12 made roles per-product: the role check resolves against `crew.productId` (the crew's home product), **not** the caller's active-product header. A PO of product B who happens to have product A selected in the TopBar cannot reach into A's crews; conversely a PO of product A keeps PO authority for A's crews regardless of which product is active in the UI. New `RequireRole.ProductOwnerOf(productId)` helper enforces this; existing endpoints that gated on PO must migrate when the action targets a specific crew/product.
 - **Q13.3 Capability via soul.md** — capability is the YAML front-matter `capabilities:` list at the top of the crew's `soul.md` (Phase 11.3). Each entry references a `domain-expert.md` file by **content-addressed id** (sha256 of the file at ingestion time) and optional human label. The system prompt is a deterministic concatenation: `<soul.md body>` + `\n\n<capabilities (sorted by id)>`. Content addressing guarantees that two crews with the same capability list produce identical caches, which the runner reuses as a cache prefix.
-- **Q13.4 Model assignment** — model is a **crew-level** property (every member runs against the same model). Pricing is denormalized per Phase 11.2 so historical salary stays reproducible after a price/model change. Switching models writes a row to `crew_history(crewId, fromModel, toModel, switchedBy, switchedAt)` and forces a new prompt cache (the prefix changes).
+- **Q13.4 Model + backend + mode assignment** — three properties are **crew-level** (every member runs the same way): `model` (registry id), `backend` (Phase 11.5b: `copilot` (default) or `claude`), `invokeMode` (`sdk` (default) or `cli`). Pricing is denormalized per Phase 11.2 so historical salary stays reproducible after a price/model change. Switching any of the three writes `crew_history(crewId, kind in 'model'|'backend'|'mode', fromValue, toValue, switchedBy, switchedAt)` and forces a new prompt cache (the prefix changes). **Tool-using task kinds (`plan` and `coding`) require `invokeMode == sdk`** — CLI mode is text-only and cannot emit `tool_use` events. Validation: server refuses `assign` of a `plan` or `coding` task to a CLI-mode crew with 400 + `crew.tools_unavailable_in_cli`. **`dailyBudgetUsd` semantics with Copilot**: GitHub Copilot is subscription-billed, not per-token. Forge still computes `costUsd` for Copilot invocations using the matching Anthropic-equivalent price from `models.json` (Copilot routes through `claude-*` models internally, so the registry lookup applies); the budget cap therefore reflects an **estimated** spend, not real-dollar charges to the operator's billing account. Budget refusals (Phase 11.10) still fire so a runaway crew can't wedge the runtime, but the salary chip should label Copilot rows with a small "est." pill so PO doesn't confuse it with billed spend.
 - **Q13.5 Quota model** — three tiers, OR-combined (whichever is hit first stops new pickups):
   - **dailyBudgetUsd** — Phase 11.10 cap, kept.
   - **maxConcurrentTasks** — how many tasks the crew can claim at once across members.
@@ -515,39 +521,147 @@ Two principles drive the shape:
   LeadAgentId    (string, FK → agents.Id, NOT NULL)
   MemberAgentIds (json string[] in `crew_members(crewId, agentId)` join table)
   Model          (string, FK-by-id → models.json)
+  Backend        (string, 'copilot' | 'claude'; default 'copilot' — Phase 11.5b)
+  InvokeMode     (string, 'sdk' | 'cli'; default 'sdk' — Phase 11.5b)
   Capabilities   (json string[] of domain-expert content-ids)
   MaxConcurrent  (int, default 2)
   WeeklyCap      (int, default 20)
   ```
-  New table `crew_history(id, crewId, kind, fromValue, toValue, byUserId, at)` — kind ∈ `model | lead | member-add | member-remove | parent-change`. New table `domain_experts(id, contentId, repoId, path, topic, summary, indexedAt)`.
+  New table `crew_history(id, crewId, kind, fromValue, toValue, byUserId, at)` — kind ∈ `model | backend | mode | lead | member-add | member-remove | parent-change | quota-override`. New table `domain_experts(id, contentId, repoId, path, topic, summary, indexedAt)`. Migration: existing crews backfill `Backend='copilot'`, `InvokeMode='sdk'` so behaviour is unchanged on upgrade.
 - [ ] **13.2** Task taxonomy — add `kind` column to `tasks`: `plan | coding`. The runner reads `kind` to pick the right system-prompt template (under `agents/templates/plan-system.md` and `agents/templates/coding-system.md`); both templates concatenate the crew's soul.md + capabilities and add the kind-specific deliverable rubric.
 - [ ] **13.3** Lead-routing endpoint — `POST /api/crews/{crewId}/assign` body `{ taskId, memberAgentId }`. Server enforces `caller == crew.lead || RequireRole.ProductOwner`. Self-assignment is `memberAgentId == crew.lead`. Reassignment uses the same endpoint with the new memberId.
 - [ ] **13.4** Plan task pipeline:
-  - Endpoint `POST /api/crews/{crewId}/plan` body `{ workItemId }` — input must be `epic | feature` (dev) or `phase` (design). 400 otherwise.
-  - Runner spawns a `plan` invocation. Tools available: `read_repo`, `write_file` (only under `docs/specs/`), `search_work_items`, `create_work_item`. The runner intercepts `create_work_item` calls and validates the parent/child rank rules from Phase 12.
-  - On finish: the spec MD is committed to a `planning/{slug}` branch; a draft PR opens; the WIT rows are inserted with `state = proposed`. Lead reviews + merges the PR; merging flips the WIT rows to `active`.
+  - Endpoint `POST /api/crews/{crewId}/plan` body `{ workItemId }` — input must be `epic | feature` (dev) or `phase` (design). 400 otherwise. Pre-flight: refuse with 400 + `crew.tools_unavailable_in_cli` if `crew.invokeMode == cli` (Q13.4).
+  - `AgentRunnerDispatcher.StartAsync` is called with `kind=plan` (the dispatcher reads the task kind to pick the matching system-prompt template under `agents/templates/plan-system.md`). Tools available: `read_repo`, `write_file` (only under `docs/specs/`), `search_work_items`, `create_work_item`. The runner intercepts `create_work_item` calls and validates the parent/child rank rules from Phase 12. Tool calls are emitted as `AgentEvent.ToolCall` / `ToolResult` (Phase 11.5b) regardless of which SDK cell is active — Copilot SDK emits them natively; Claude SDK requires the runner to declare them in the `/v1/messages` `tools` array (the existing Claude-SDK code path doesn't yet — see 13.4a follow-up).
+  - On finish: the spec MD is committed to a `planning/{slug}` branch; a draft PR opens; the WIT rows are inserted with `state = proposed`. Lead reviews + merges the PR; merging flips the WIT rows to `active`. Git operations use the **lead's** preferred-account credentials (Phase 9.11): ADO via cached MSAL token for `crew.lead`; GitHub via `gh auth token --user <lead.preferredGitHubAccount>`.
   - Unit-of-work counter increments by 1 per merged plan PR.
+- [ ] **13.4a** Claude-SDK tool surface — the existing `RunClaudeSdk` cell in `AgentRunnerDispatcher` does not currently declare tools to Anthropic, so a plan/coding task on a `(claude, sdk)` crew would emit text but never call `create_work_item` / `git_commit` / etc. Add the `tools: [...]` array to the request body and a `tool_use` block parser. Until this lands, the only fully-tool-capable cell is `(copilot, sdk)`; document that on the `/crews` "Backend" badge with a yellow "tools: text-only" pill on `(claude, sdk)` crews.
 - [ ] **13.5** Coding task pipeline:
-  - Endpoint `POST /api/crews/{crewId}/code` body `{ stepWorkItemId }` — input must be a `step` (Q12.1). Step must be `state = active` and not already claimed (`assignedTo === null`).
-  - Runner spawns a `coding` invocation in the workstream's worktree. Tools: `read_repo`, `write_file` (whole repo), `run_tests`, `git_commit`, `git_push`, `open_pr`.
-  - Self-review pass: the runner runs a second invocation against the same agent with a `review` system prompt, scoped to the diff. Lead must explicitly approve via `POST /api/prs/{id}/approve` before the PR comes off draft.
+  - Endpoint `POST /api/crews/{crewId}/code` body `{ stepWorkItemId }` — input must be a `step` (Q12.1). Step must be `state = active` and not already claimed (`assignedTo === null`). Pre-flight: refuse with 400 + `crew.tools_unavailable_in_cli` if `crew.invokeMode == cli`.
+  - `AgentRunnerDispatcher.StartAsync` is called with `kind=coding`; system prompt resolves to `agents/templates/coding-system.md` (concatenated with the crew's soul.md + capabilities, Q13.3). Tools: `read_repo`, `write_file` (whole repo), `run_tests`, `git_commit`, `git_push`, `open_pr`. As with 13.4, tools require `(_, sdk)` and the `(claude, sdk)` cell needs the 13.4a follow-up to actually invoke them.
+  - **Credentials for git / PR ops**: the tool host signs commits + pushes + opens PRs as the **lead** of the crew (lead's `UserSettings.PreferredAdoAccount` for ADO, `PreferredGitHubAccount` for GitHub via `gh auth token --user ...`). Audit row records `actorUserId = crew.lead`, `onBehalfOf = crew.id`. Operators can override per-crew via a future `crew.commitAsAgentId` field — out of scope for v0.1, deferred to Phase R.
+  - Self-review pass: a second `StartAsync(kind=review)` against the same agent, scoped to the diff. Lead must explicitly approve via `POST /api/prs/{id}/approve` before the PR comes off draft.
   - Unit-of-work counter increments by 1 per opened (non-draft) PR.
 - [ ] **13.6** Quota enforcement — extends Phase 11.10 budget pre-flight:
   - On `assign`: refuse if `active_tasks_for_crew(crewId) >= MaxConcurrent`. 409 + `agent.crew_concurrency_full` SignalR.
   - On `claim` (any task type): refuse if `tasks_completed_this_iso_week(crewId) >= WeeklyCap`. 429 + `agent.crew_weekly_cap_hit`.
-  - PO-only override `?force=true` on the assign endpoint records `crew_history(kind='quota-override')`.
-- [ ] **13.7** Domain-expert generator — runs as a final tool call on coding-task close. The runner POSTs to itself: a follow-up `domain` invocation with the merged diff + the original step description. Output is committed to the same PR's branch in a separate commit, then merged. Failure to generate is non-fatal — the task closes either way; a follow-up `gap-domain-expert` audit row points at the missing artifact so the lead can author it manually.
-- [ ] **13.8** Capability ingestion — `POST /api/crews/{crewId}/capabilities` body `{ contentId }` validates the file exists in `domain_experts`, appends to the crew's `Capabilities` array, writes the front-matter back to soul.md, and bumps the prompt cache (Phase 11.5). Removal: `DELETE` with the same body. UI lives in `/crews/{id}` with a searchable picker over `domain_experts.topic`.
+  - Override `?force=true` on the assign endpoint records `crew_history(kind='quota-override')`. The override is gated on **product-scoped** PO (Q13.2): only a PO of `crew.productId` can force; a PO of a different product gets 403, even if their TopBar happens to be on `crew.productId`. Same rule for `dailyBudgetUsd` overrides from Phase 11.10.
+- [ ] **13.7** Domain-expert generator — runs as a final pass on coding-task close. The dispatcher (`AgentRunnerDispatcher`) is re-entered with a fresh `StartAsync(kind=domain)` against the same agent + crew context, with the merged diff + the original step description as the prompt. System-prompt template: `agents/templates/domain-system.md`. Output is committed to the same PR's branch in a separate commit, then merged. Failure to generate is non-fatal — the task closes either way; a follow-up `gap-domain-expert` audit row points at the missing artifact so the lead can author it manually. Like 13.4 / 13.5, this requires `crew.invokeMode == sdk`; CLI crews skip the auto-generation and always go straight to the gap-audit row.
+- [ ] **13.8** Capability ingestion — `POST /api/crews/{crewId}/capabilities` body `{ contentId }` validates the file exists in `domain_experts`, appends to the crew's `Capabilities` array, writes the front-matter back to soul.md, and bumps the prompt cache (Phase 11.5). Removal: `DELETE` with the same body. UI lives in `/crews/{id}` with a searchable picker over `domain_experts.topic`. **Product scoping**: the picker defaults to `domain_experts` rows whose `repoId` belongs to `crew.productId` (a domain expert authored against `atlas-platform` shouldn't be the first hit when configuring an `update`-product crew). Toggle "Show all products" reveals the full set so cross-product reuse stays possible — picking a cross-product expert flags the capability chip with a small "ext." pill so leads see the dependency.
 - [ ] **13.9** UI — extend `CrewsView` (today: read-only dashboard):
   - **Hierarchy panel** (left, 30%) — collapsible tree. Drag-drop a crew under another to reparent (writes `crew_history(kind='parent-change')`). Depth cap enforced client-side and server-side.
-  - **Crew detail** (center, 40%) — header shows crew name, lead avatar, model badge, capability chip count. Tabs: `Roster` (lead + members table; +/− with role gate), `Capabilities` (chip list with the picker from 13.8), `Quota` (sliders for `MaxConcurrent`, `WeeklyCap`, `dailyBudgetUsd`), `History` (`crew_history` rows).
-  - **Activity rail** (right, 30%) — current invocations, weekly task counter (`X / WeeklyCap`), salary today/sprint/month (Phase 11.9, kept).
-  - The view is *editable for leads / PO* and *read-only for everyone else*. Field-level `disabled` driven by the role check; trying to mutate as non-lead returns 403 from the API anyway.
+  - **Crew detail** (center, 40%) — header shows crew name, lead avatar, and a **runtime badge group**: `Model · Backend · Mode` (e.g. `claude-opus-4-7 · Copilot · SDK`). Add a `tools: text-only` yellow pill on `(claude, sdk)` crews until 13.4a lands and on any `(_, cli)` crew. Add an `est.` grey pill on the salary readout when `Backend == copilot` (per Q13.4). Capability chip count next to the badge group. Tabs: `Roster` (lead + members table; +/− with role gate), `Capabilities` (chip list with the picker from 13.8), `Quota` (sliders for `MaxConcurrent`, `WeeklyCap`, `dailyBudgetUsd`), `Runtime` (read-only model registry row + Backend / Mode dropdowns; mutation gated by lead-or-product-scoped-PO), `History` (`crew_history` rows).
+  - **Activity rail** (right, 30%) — current invocations, weekly task counter (`X / WeeklyCap`), salary today/sprint/month (Phase 11.9, kept; "est." pill on Copilot crews).
+  - The view is *editable for leads / product-scoped PO* (Q13.2) and *read-only for everyone else*. Field-level `disabled` driven by the role check resolved against `crew.productId`; trying to mutate as non-lead returns 403 from the API anyway.
 - [ ] **13.10** Sidebar — `/crews` already lives under "Agents" (Phase 10.7). Drop the PO-only gate at the *nav* level (everyone can browse) but keep mutation-level role checks. Sub-label changes from `Supervisory · PO only` to `{n} crews · {m} agents`.
 - [ ] **13.11** Tests:
-  - xUnit: hierarchy depth cap, lead-or-PO assign authorization, plan task → WIT tree round-trip, coding task → PR round-trip, weekly-cap refusal, capability content-id integrity (sha256 match), domain-expert generator hits the file system but tolerates failure.
-  - Playwright: open `/crews`, reparent via drag, assign a self-step, observe the `agent.crew_concurrency_full` toast when MaxConcurrent is hit.
+  - xUnit: hierarchy depth cap, **product-scoped** lead-or-PO assign authorization (PO of A cannot mutate B's crew even with TopBar on B), plan task → WIT tree round-trip, coding task → PR round-trip, weekly-cap refusal, capability content-id integrity (sha256 match), domain-expert generator hits the file system but tolerates failure.
+  - **Cell coverage** (Phase 11.5b): `local-stub` model exercises plan and coding pipelines without network or CLI — both pipelines emit token + finish events through the dispatcher. CLI-mode refusal: assigning a `plan` or `coding` task to a `(_, cli)` crew returns 400 + `crew.tools_unavailable_in_cli`. Backend / mode change writes the right `crew_history` row.
+  - **Cost ledger across cells**: Copilot invocations land an `agent_usage` row with `costUsd` computed from the registry price (estimated $) and the salary readout labels them with `est.`. Claude SDK invocations remain unchanged.
+  - Playwright: open `/crews`, reparent via drag, assign a self-step, observe the `agent.crew_concurrency_full` toast when MaxConcurrent is hit. Switch a crew from `(claude, sdk)` to `(copilot, cli)` and confirm the `tools: text-only` pill renders + the `Plan` / `Code` buttons disable.
 - [ ] **13.12** Fidelity — new view; not in the prototype. New tokens (hierarchy-tree connector lines, capability chip palette) documented in `docs/forge/design-tokens.md`. Existing Phase 10.7 cards remain as the "Activity rail" content.
+
+### Role taxonomy (Phase 13.1 expanded)
+
+Three orthogonal axes. Every one of the 91 agents resolves to all three:
+
+1. **Team** — one of `Architect | Engineer | Review | QA`. The line-of-business
+   the agent reports under. The Product Owner (`XD`) folds into `Architect`
+   because the PO sets product strategy, not because they write systems
+   diagrams; we don't introduce a fifth team for a single seat.
+2. **Pod** — `leadership | plan-design | coding | ai-worker | reserve`. The
+   loop the agent is hot in. Pods cross teams: a `code-judge` is in the
+   `coding` pod but on the `Review` team.
+3. **Role bucket** — the fine-grained sub-role within the pod (`plan-red-team`,
+   `code-generator`, `ai-security-reviewer`, …). Drives soul.md selection
+   and the runner's prompt template.
+
+`agents/allocation.json` is the single source of truth, regenerated by
+`scripts/gen-crew-allocation.py`. The TS bridge module
+`src/agentAllocation.ts` is auto-emitted alongside so the UI consumes the
+exact same data without leaving the Vite root.
+
+Live distribution after seeding the 91 characters:
+
+| Team       | Count |
+|------------|-------|
+| Architect  | 37    |
+| Engineer   | 36    |
+| QA         | 11    |
+| Review     | 7     |
+
+#### Human leadership roles (8 — one seat each)
+
+| # | Role                              | Owns                                                   |
+|---|-----------------------------------|--------------------------------------------------------|
+| 1 | Product Strategist / Product Owner | Outcomes, roadmap, prioritisation, customer value.     |
+| 2 | AI Factory Architect              | Agent orchestration, workflow, memory, multi-agent IO. |
+| 3 | Principal Engineer / Domain Expert | Architecture decisions, complex debugging, perf.       |
+| 4 | Prompt / Agent Engineer           | Prompt systems, eval harness, failure-mode tuning.     |
+| 5 | QA / Validation Engineer          | Adversarial pipelines, regression, hallucination check.|
+| 6 | DevOps / Platform Engineer        | CI/CD, sandbox, secrets, cost, scaling, observability. |
+| 7 | Security / Governance Lead        | Access control, supply chain, audit, policy.           |
+| 8 | Incident Commander / Reliability  | Override, triage, recovery, post-mortems.              |
+
+#### Crew allocation (100 seats — actual: 91)
+
+```
+PLAN + DESIGN POD (30)
+  plan-architect-generator     8    propose systems
+  plan-red-team                8    scalability/security/cost attacks
+  plan-refinement              4    patch based on attacks
+  plan-requirements-judge      4    score completeness/value
+  plan-design-historian        3    track failed patterns
+  plan-orchestrator            3    run loops
+
+CODING POD (30)
+  code-generator              10    implement feature
+  code-breaker                 8    logic flaws / security / race bugs
+  code-unit-test-attacker      5    write failing tests
+  code-refactor-defender       3    optimize / patch
+  code-judge                   2    maintainability/perf score
+  code-memory-agent            2    store bug patterns
+
+AI WORKER SPECIALISTS (13 — single-seat)
+  ai-requirements-analyst      1    sharpen acceptance criteria
+  ai-ux-designer               1    flows + states + copy
+  ai-systems-architect         1    ADR backlog
+  ai-backend-engineer          1    services + persistence
+  ai-frontend-engineer         1    React + a11y
+  ai-test-engineer             1    matrix + regression
+  ai-security-reviewer         1    threat model + auth
+  ai-code-reviewer             1    readability + naming
+  ai-release-manager           1    changelog + rollback
+  ai-sre                       1    SLO + alerts + runbooks
+  ai-customer-support          1    triage + reproduce
+  ai-root-cause-investigator   1    timelines + 5-whys
+  ai-doc-writer                1    examples + README
+
+LEADERSHIP (8) + RESERVE (10)
+```
+
+`ForgeSeed.EnsureSeedAgentsAsync` reads `allocation.json` on boot to populate
+every `AgentRow` with the right `CrewId`, `Role`, and `SoulPath`. Each
+character has a `soul.md` under `agents/<characterId>/` that the runtime
+loads as the system prompt. The hand-curated 20 ship as detailed personas;
+the remaining 71 ship as role-templated personas generated by
+`scripts/gen-crew-souls.py` — hand-editable from there.
+
+#### Example planning loop (per Q13.6 plan task)
+
+```
+Requirement
+  → plan-orchestrator           schedules turns + budget
+    → plan-architect-generator  drafts spec / phase tree (1 of 8)
+      → plan-red-team           attacks the draft (4 of 8 in parallel)
+        → plan-refinement       merges critique into v2 spec
+          → plan-requirements-judge   scores against rubric
+              if score < 90 → loop
+              if score ≥ 90 → spec PR opens, WIT phase tree visible to coding pod
+```
+
+The plan-design-historian sits outside the loop: surfaces prior-art ADRs at
+the start, archives the loser drafts at the end, never directly edits.
 
 ### Out of scope (explicitly deferred)
 
@@ -556,6 +670,8 @@ Two principles drive the shape:
 - **Skill matching** (auto-suggesting capabilities based on the work item title/description) — capability picker is operator-driven; ML matching is `forge_v2.md` territory.
 - **Domain-expert MD versioning beyond content-addressing** — if a file changes, it gets a new content-id; old crews keep referencing the old id. Conflict resolution / merge UI is Phase R.
 - **Plan tasks that recurse** (a plan task generating sub-plan-tasks) — v0.1 enforces a single planning round per feature; deeper decomposition lives inside the resulting WIT tree.
+- **Per-crew commit identity** (`crew.commitAsAgentId`) — v0.1 always commits / opens PRs as the lead's preferred account (Q13.5). A crew running with a "service-account" identity instead of the lead's own credentials is Phase R.
+- **Real-billing cost reporting for Copilot** — v0.1 surfaces an estimated USD via the Anthropic-equivalent registry price (Q13.4) with an "est." pill. True $/seat or per-prompt billing reconciliation against GH's API is Phase R / `forge_v2.md`.
 
 ---
 

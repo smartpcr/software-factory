@@ -1,4 +1,22 @@
 import type { Pr } from '@/types';
+import { avatarFor, agentTooltip } from '@/agentAvatar';
+
+function AgentChip({ id, name, role }: { id: string; name?: string | null; role?: string | null }) {
+  const avatar = avatarFor(id, name);
+  const tooltip = agentTooltip(id, name, role);
+  if (avatar) {
+    return (
+      <img
+        src={avatar}
+        alt={name || id}
+        className={`agent-chip-avatar ${role ?? ''}`}
+        style={{ borderColor: 'var(--bg-sunken)' }}
+        title={tooltip}
+      />
+    );
+  }
+  return <span className={`agent-chip ${role ?? ''}`} style={{ borderColor: 'var(--bg-sunken)' }} title={tooltip}>{id}</span>;
+}
 
 interface Props {
   pr: Pr;
@@ -98,12 +116,7 @@ export function PrCard({ pr, onOpen, onApprove, onRequestChanges }: Props) {
 
       <div className="pr-card-foot">
         <div className="pr-card-foot-left">
-          <span
-            className={`agent-chip ${roleFor(pr.author.id)}`}
-            style={{ borderColor: 'var(--bg-sunken)' }}
-          >
-            {pr.author.id}
-          </span>
+          <AgentChip id={pr.author.id} name={pr.author.name} role={roleFor(pr.author.id)} />
           <span style={{ color: 'var(--text-secondary)' }}>{pr.author.name}</span>
         </div>
         <div className="pr-card-foot-right">
@@ -194,12 +207,11 @@ function PrReviewBlock({ review }: { review: NonNullable<Pr['review']> }) {
   return (
     <div className="pr-card-review">
       <div className="pr-review-summary">
-        <span
-          className={`agent-chip ${review.agent.startsWith('R') ? 'rev' : 'eng'}`}
-          style={{ borderColor: 'var(--bg-sunken)' }}
-        >
-          {review.agent}
-        </span>
+        <AgentChip
+          id={review.agent}
+          name={review.name}
+          role={review.agent.startsWith('R') ? 'rev' : 'eng'}
+        />
         <span className="who">{review.name}</span>
         <span className={`verdict ${review.verdict}`}>{review.verdict}</span>
       </div>

@@ -106,17 +106,18 @@ builder.Services.AddSingleton<IBrowserLauncher, BrowserLauncher>();
 builder.Services.AddSingleton<IAuthService, AdoAuthService>();
 builder.Services.AddSingleton<IAuthService, GitHubAuthService>();
 
-// Phase 11 — agent runtime. ClaudeAgentRunner handles both the local-stub
-// model (offline / tests) and the real Anthropic API path with streaming SSE
-// and prompt-caching for the soul.md prefix. Tool calls go through the
-// sandboxed AgentToolHost (Phase 11.6).
+// Phase 11 — agent runtime. AgentRunnerDispatcher routes invocations across
+// the four (backend × mode) cells: Copilot/SDK (default), Copilot/CLI,
+// Claude/SDK (Anthropic /v1/messages with streaming SSE + soul.md prompt cache),
+// Claude/CLI (claude --print). The local-stub model bypasses every backend
+// for offline tests. Tool calls go through the sandboxed AgentToolHost (Phase 11.6).
 builder.Services.AddSingleton<IModelRegistry, ModelRegistry>();
 builder.Services.AddSingleton<IAgentToolHost, AgentToolHost>();
 builder.Services.Configure<AgentRunnerOptions>(builder.Configuration.GetSection(AgentRunnerOptions.SectionName));
 builder.Services.Configure<SoulOptions>(builder.Configuration.GetSection(SoulOptions.SectionName));
 builder.Services.AddSingleton<ISoulService, SoulService>();
-builder.Services.AddHttpClient(ClaudeAgentRunner.ClientName);
-builder.Services.AddSingleton<IAgentRunner, ClaudeAgentRunner>();
+builder.Services.AddHttpClient(AgentRunnerDispatcher.ClientName);
+builder.Services.AddSingleton<IAgentRunner, AgentRunnerDispatcher>();
 
 // Problem details (RFC-7807). In Development, surface exception messages so
 // failing endpoint calls don't return opaque 500s.
@@ -151,6 +152,9 @@ using (var scope = app.Services.CreateScope())
     // Phase 12.2 — work_items + work_item_links.
     await Phase12Migration.ApplyAsync(db);
     await ForgeSeed.EnsureSeededAsync(db);
+    // Phase 13c — every agent should belong to a team. The reconcile pass
+    // is idempotent: subsequent restarts no-op once the roster is filled.
+    await Forge.Api.Endpoints.CrewsEndpoints.ApplyAutoAssignAsync(db, caller: "boot", ct: default);
 }
 
 app.UseExceptionHandler();

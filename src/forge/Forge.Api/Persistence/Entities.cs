@@ -382,6 +382,120 @@ public class CrewRow
 
     /// <summary>Phase 11.10 — hard cap per single invocation. Null = no cap (only daily applies).</summary>
     public decimal? MaxTaskBudgetUsd { get; set; }
+
+    /// <summary>Phase 13.1 — parent crew for hierarchy (Org → Team → Squad). Null = root.</summary>
+    public string? ParentCrewId { get; set; }
+
+    /// <summary>Phase 13.1 — depth from root (0/1/2). Persisted for cheap roll-ups; computed on insert / parent-change.</summary>
+    public int Depth { get; set; }
+
+    /// <summary>Phase 13.1 — the (Phase 11.5b) backend this crew runs against. 'copilot' (default) | 'claude'.</summary>
+    public string Backend { get; set; } = "copilot";
+
+    /// <summary>Phase 13.1 — the (Phase 11.5b) invoke mode. 'sdk' (default) | 'cli'. Tool-using kinds (plan/coding) require 'sdk'.</summary>
+    public string InvokeMode { get; set; } = "sdk";
+
+    /// <summary>Phase 13.1 — JSON string[] of domain-expert content-ids the crew has ingested as capabilities (Q13.3).</summary>
+    public string CapabilitiesJson { get; set; } = "[]";
+
+    /// <summary>Phase 13.5 — how many tasks the crew can claim at once across members.</summary>
+    public int MaxConcurrent { get; set; } = 2;
+
+    /// <summary>Phase 13.5 — hard ceiling on tasks completed per ISO week.</summary>
+    public int WeeklyCap { get; set; } = 20;
+
+    /// <summary>
+    /// Phase 13b — default generator agent for plan / coding tasks. Every
+    /// task spawned by the crew uses this pair unless the assign endpoint
+    /// overrides it. Null means "use the lead".
+    /// </summary>
+    public string? DefaultGeneratorAgentId { get; set; }
+
+    /// <summary>
+    /// Phase 13b — default evaluator agent (the second half of the pair).
+    /// Reads the generator's diff / plan and approves before a PR comes off
+    /// draft (coding) or before the WIT tree commits (plan).
+    /// </summary>
+    public string? DefaultEvaluatorAgentId { get; set; }
+
+    /// <summary>
+    /// Phase 13b — model the evaluator runs against. Distinct from
+    /// <see cref="Model"/> (which becomes the generator's model) so the pair
+    /// always uses two different models, per the user's "diff-model" rule.
+    /// Null = use the same as <see cref="Model"/> (warns in the UI).
+    /// </summary>
+    public string? EvaluatorModel { get; set; }
+}
+
+/// <summary>
+/// Phase 13.1 — many-to-many crew membership. Lead is stored on
+/// <see cref="CrewRow.Lead"/>; this table holds the rest of the roster.
+/// Composite PK (CrewId, AgentId).
+/// </summary>
+public class CrewMemberRow
+{
+    public string CrewId { get; set; } = string.Empty;
+
+    public string AgentId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Phase 13b — role this agent plays inside this crew. Free-form by
+    /// design (the spec only enforces a few well-known values: <c>coder</c>,
+    /// <c>reviewer</c>, <c>architect</c>, <c>qa</c>, <c>generator</c>,
+    /// <c>evaluator</c>). The crew lead is on <see cref="CrewRow.Lead"/>,
+    /// not in this table — but a member CAN have a per-crew role of
+    /// <c>generator</c> / <c>evaluator</c> independent of being lead.
+    /// </summary>
+    public string Role { get; set; } = "coder";
+
+    public DateTimeOffset AddedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public string? AddedBy { get; set; }
+}
+
+/// <summary>
+/// Phase 13.1 — append-only audit of crew-shape changes. Kind ∈
+/// <c>model | backend | mode | lead | member-add | member-remove |
+/// parent-change | quota-override | capability-add | capability-remove</c>.
+/// </summary>
+public class CrewHistoryRow
+{
+    public long Id { get; set; }
+
+    public DateTimeOffset At { get; set; } = DateTimeOffset.UtcNow;
+
+    public string CrewId { get; set; } = string.Empty;
+
+    public string Kind { get; set; } = string.Empty;
+
+    public string? FromValue { get; set; }
+
+    public string? ToValue { get; set; }
+
+    public string? ByUserId { get; set; }
+}
+
+/// <summary>
+/// Phase 13.7 — index of <c>domain-expert.md</c> artifacts authored by
+/// crews on coding-task close. <see cref="ContentId"/> is sha256(file)
+/// at ingestion — content-addressed so two crews referencing the same
+/// expert produce identical prompt-cache prefixes.
+/// </summary>
+public class DomainExpertRow
+{
+    public long Id { get; set; }
+
+    public string ContentId { get; set; } = string.Empty;
+
+    public string RepoId { get; set; } = string.Empty;
+
+    public string Path { get; set; } = string.Empty;
+
+    public string Topic { get; set; } = string.Empty;
+
+    public string Summary { get; set; } = string.Empty;
+
+    public DateTimeOffset IndexedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
 /// <summary>

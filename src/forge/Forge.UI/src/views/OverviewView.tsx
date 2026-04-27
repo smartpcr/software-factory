@@ -4,6 +4,7 @@ import { useStateStore } from '@/state/useStateStore';
 import { useBoardStore, computeBurndown } from '@/state/useBoardStore';
 import { sampleState } from '@/sampleData';
 import type { OverviewActivity, OverviewAgent } from '@/types';
+import { agentTooltip, avatarFor } from '@/agentAvatar';
 
 // Verbatim port of the prototype's renderOverview (lines 4094-4170).
 export function OverviewView() {
@@ -139,24 +140,30 @@ function ActivityRow({ a }: { a: OverviewActivity }) {
 
 function AgentRow({ a }: { a: OverviewAgent }) {
   const dotCls = a.status === 'idle' ? 'idle' : a.status === 'queued' ? 'queued' : '';
+  const avatarTip = agentTooltip(a.id, a.name, a.role);
+  // Server-side overview agents (A1/A2/E4/…) lack a bundled `avatar`; fall
+  // back to the global lookup keyed by id so the row gets a portrait.
+  const portrait = a.avatar ?? avatarFor(a.id, a.name);
   return (
     <div className="agent-row" title={a.bio ?? a.name}>
-      {a.avatar ? (
+      {portrait ? (
         <img
-          src={a.avatar}
+          src={portrait}
           alt={a.name}
           className={`agent-avatar ${a.role}`}
+          title={avatarTip}
           onError={(e) => {
             const img = e.currentTarget;
             const fallback = document.createElement('span');
             fallback.className = `agent-chip ${a.role}`;
             fallback.style.borderColor = 'var(--bg-sunken)';
             fallback.textContent = a.id;
+            fallback.title = avatarTip;
             img.replaceWith(fallback);
           }}
         />
       ) : (
-        <span className={`agent-chip ${a.role}`} style={{ borderColor: 'var(--bg-sunken)' }}>{a.id}</span>
+        <span className={`agent-chip ${a.role}`} style={{ borderColor: 'var(--bg-sunken)' }} title={avatarTip}>{a.id}</span>
       )}
       <div className="agent-id-block">
         <div className="agent-id-row">

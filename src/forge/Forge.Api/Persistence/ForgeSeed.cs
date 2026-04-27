@@ -39,11 +39,95 @@ public static class ForgeSeed
             await SeedPrototypeDataAsync(db);
         }
 
+        // Phase 13 — rename the prototype's mocked agents (Forge/Rivet/Anvil/
+        // Cortex/Lattice/Atlas/Mercer) to the Ne Zha character crew. Runs every
+        // boot but is a no-op once the DB rows already carry the new names, so
+        // existing data (synced ADO work items, audit history) is preserved.
+        await RenameMockedAgentsAsync(db);
+
         // Phase 12.2 — backfill work_items from existing cards. Idempotent.
         // Runs after the prototype-data seed so first-boot picks up the 23
         // default cards; subsequent boots no-op because every id already
         // exists in work_items.
         await BackfillWorkItemsFromCardsAsync(db);
+    }
+
+    /// <summary>
+    /// Replace the prototype's mocked agent names in every JSON-bearing column
+    /// (cards.AgentJson, prs.AuthorJson, prs.ReviewJson, audit.WhoJson, etc.)
+    /// and in plain string columns (overview_agents.Name) with the matching
+    /// character from src/forge/Forge.UI/src/crew.ts. Idempotent: each
+    /// replacement only runs when the *old* string is still present.
+    /// </summary>
+    private static async Task RenameMockedAgentsAsync(ForgeDbContext db)
+    {
+        var renames = new Dictionary<string, string>
+        {
+            ["Atlas"]   = "Yuan Shi Tianzun",
+            ["Mercer"]  = "Wen Zhong",
+            ["Forge"]   = "Ne Zha",
+            ["Rivet"]   = "Ao Bing",
+            ["Anvil"]   = "Zhu Rong",
+            ["Cortex"]  = "Shen Gongbao",
+            ["Lattice"] = "Yun Xiao",
+        };
+
+        // Bulk update is the cheapest path here — the string columns are small
+        // and SQLite's REPLACE() is happy to no-op when the substring is gone.
+        // We scope each REPLACE to the columns that actually carry agent names
+        // so a stray match in a card title can't corrupt unrelated data.
+        var conn = db.Database.GetDbConnection();
+        if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync();
+
+        // Heal an earlier accidental rename: the default product was named
+        // "Atlas" before this migration learned to skip the products table.
+        await using (var heal = conn.CreateCommand())
+        {
+            heal.CommandText = "UPDATE products SET Name = 'Atlas' WHERE Id = 'atlas' AND Name = 'Yuan Shi Tianzun';";
+            await heal.ExecuteNonQueryAsync();
+        }
+
+        // Phase 13 — Q2 was the unnamed "Probe" row before the Ne Zha rename;
+        // promote it to Shun Feng'er to match the soul.md persona.
+        await using (var probe = conn.CreateCommand())
+        {
+            probe.CommandText = @"
+                UPDATE overview_agents SET Name = 'Shun Feng''er' WHERE Id = 'Q2' AND Name = 'Probe';
+                UPDATE agents          SET Name = 'Shun Feng''er' WHERE Id = 'Q2' AND Name = 'Probe';";
+            await probe.ExecuteNonQueryAsync();
+        }
+
+        foreach (var (oldName, newName) in renames)
+        {
+            // Quoted form (`"name":"Forge"`) inside JSON fields. We wrap with
+            // the surrounding quotes so we don't accidentally rewrite a card
+            // title that legitimately mentions the word "Forge".
+            var jsonOld = "\"" + oldName + "\"";
+            var jsonNew = "\"" + newName + "\"";
+
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+                UPDATE cards            SET AgentJson  = REPLACE(AgentJson,  $jsonOld, $jsonNew) WHERE AgentJson  LIKE $jsonLike;
+                UPDATE prs              SET AuthorJson = REPLACE(AuthorJson, $jsonOld, $jsonNew) WHERE AuthorJson LIKE $jsonLike;
+                UPDATE prs              SET ReviewJson = REPLACE(ReviewJson, $jsonOld, $jsonNew) WHERE ReviewJson LIKE $jsonLike;
+                UPDATE work_items       SET AssignedToJson = REPLACE(AssignedToJson, $jsonOld, $jsonNew) WHERE AssignedToJson LIKE $jsonLike;
+                UPDATE overview_agents  SET Name = $newName WHERE Name = $oldName;
+                UPDATE agents           SET Name = $newName WHERE Name = $oldName;
+            ";
+            void AddParam(string name, object value)
+            {
+                var p = cmd.CreateParameter();
+                p.ParameterName = name;
+                p.Value = value;
+                cmd.Parameters.Add(p);
+            }
+            AddParam("$oldName", oldName);
+            AddParam("$newName", newName);
+            AddParam("$jsonOld", jsonOld);
+            AddParam("$jsonNew", jsonNew);
+            AddParam("$jsonLike", "%" + jsonOld + "%");
+            await cmd.ExecuteNonQueryAsync();
+        }
     }
 
     /// <summary>
@@ -77,13 +161,13 @@ public static class ForgeSeed
             new ColumnRow { Id = "done",    Name = "Done",    Sort = 4, WipLimit = null });
 
         // -- cards (verbatim from prototype, Sort assigned by index) ------
-        var a2Mercer = new { id = "A2", role = "arch",  name = "Mercer" };
-        var a1Atlas  = new { id = "A1", role = "arch",  name = "Atlas" };
-        var e4Forge  = new { id = "E4", role = "eng",   name = "Forge" };
-        var e7Rivet  = new { id = "E7", role = "eng",   name = "Rivet" };
-        var e9Anvil  = new { id = "E9", role = "eng",   name = "Anvil" };
-        var r3Cortex = new { id = "R3", role = "rev",   name = "Cortex" };
-        var r5Lattice = new { id = "R5", role = "rev",  name = "Lattice" };
+        var a2Mercer = new { id = "A2", role = "arch",  name = "Wen Zhong" };
+        var a1Atlas  = new { id = "A1", role = "arch",  name = "Yuan Shi Tianzun" };
+        var e4Forge  = new { id = "E4", role = "eng",   name = "Ne Zha" };
+        var e7Rivet  = new { id = "E7", role = "eng",   name = "Ao Bing" };
+        var e9Anvil  = new { id = "E9", role = "eng",   name = "Zhu Rong" };
+        var r3Cortex = new { id = "R3", role = "rev",   name = "Shen Gongbao" };
+        var r5Lattice = new { id = "R5", role = "rev",  name = "Yun Xiao" };
         // Phase 9.11 — XD is the operator (product owner) under the new Role enum.
         var xdHuman  = new { id = "XD", role = "product-owner", name = "Xiaodong" };
 
@@ -156,11 +240,11 @@ public static class ForgeSeed
             new PrRow { Id = "PR #234",  Col = "build",          Epic = "EPIC-024", EpicColor = "epic024", Workstream = "ws/oidc-rotation",       Base = "main", Branch = "ws/oidc-rotation",       Title = "OIDC token rotation handler with key rollover",       AuthorJson = J(e4Forge), Additions = 287, Deletions = 41,  Files = 8,  Commits = 12, Age = "3h",     BuildJson = J(new { status = "running",  step = "Tests · 98 / 142",     percent = 68 }),  ReviewJson = null, Conflicts = false, HumanGate = false },
             new PrRow { Id = "PR #241",  Col = "implementation", Epic = "EPIC-024", EpicColor = "epic024", Workstream = "ws/rate-limits",         Base = "main", Branch = "ws/rate-limits",         Title = "Per-tenant rate limit policy with sliding window",    AuthorJson = J(e7Rivet), Additions = 102, Deletions = 8,   Files = 4,  Commits = 6,  Age = "1h",     BuildJson = J(new { status = "queued",   step = "queued behind 1",      percent = 0 }),   ReviewJson = null, Conflicts = false, HumanGate = false, ImplJson = J(new { phase = "writing tests", step = "sliding-window store", percent = 28 }) },
             new PrRow { Id = "PR #243",  Col = "implementation", Epic = "EPIC-024", EpicColor = "epic024", Workstream = "ws/tenant-admin-ui",     Base = "main", Branch = "ws/tenant-admin-ui",     Title = "Tenant admin UI scaffold (just spawned)",             AuthorJson = J(e4Forge), Additions = 18,  Deletions = 0,   Files = 2,  Commits = 1,  Age = "12m",    BuildJson = null, ReviewJson = null, Conflicts = false, HumanGate = false, ImplJson = J(new { phase = "reading spec", step = "route layout", percent = 8 }) },
-            new PrRow { Id = "PR #237",  Col = "build",          Epic = "EPIC-021", EpicColor = "epic021", Workstream = "ws/retry-jitter",        Base = "main", Branch = "ws/retry-jitter",        Title = "Webhook retry — exponential backoff + jitter",        AuthorJson = J(e7Rivet), Additions = 64,  Deletions = 22,  Files = 3,  Commits = 5,  Age = "40m",    BuildJson = J(new { status = "running",  step = "Tests · 142 / 142",     percent = 92 }),  ReviewJson = J(new { agent = "R3", name = "Cortex",  verdict = "approved", summary = "Backoff math is sound. Verified jitter caps at 30s. Approved." }), Conflicts = false, HumanGate = false },
-            new PrRow { Id = "PR #240",  Col = "review",         Epic = "EPIC-024", EpicColor = "epic024", Workstream = "ws/idp-failover",        Base = "main", Branch = "ws/idp-failover",        Title = "Add IdP fail-over to Microsoft Entra",                AuthorJson = J(e9Anvil), Additions = 412, Deletions = 76,  Files = 19, Commits = 23, Age = "6h",     BuildJson = J(new { status = "passing",  step = "CI green · 3m 12s",     percent = 100 }), ReviewJson = J(new { agent = "R3", name = "Cortex",  verdict = "changes",  summary = "Token cache TTL needs to handle clock skew. Suggested 30s buffer in <span class=\"hl\">authcache.go:142</span>." }), Conflicts = false, HumanGate = true, GateReason = "/security/ path · human approval required" },
-            new PrRow { Id = "PR #229",  Col = "review",         Epic = "EPIC-024", EpicColor = "epic024", Workstream = "ws/auth-core",           Base = "main", Branch = "ws/auth-core-extract",   Title = "Extract token store to auth-core package",            AuthorJson = J(e4Forge), Additions = 198, Deletions = 234, Files = 12, Commits = 7,  Age = "2h",     BuildJson = J(new { status = "passing",  step = "CI green · 2m 41s",     percent = 100 }), ReviewJson = J(new { agent = "R3", name = "Cortex",  verdict = "approved", summary = "Clean refactor. No behavioural changes detected by trace diff. Auto-merge armed." }), Conflicts = false, HumanGate = false, AutoMerge = true },
-            new PrRow { Id = "PR #237b", Col = "review",         Epic = "EPIC-022", EpicColor = "epic022", Workstream = "ws/dlq-routing",         Base = "main", Branch = "ws/dlq-routing",         Title = "DLQ routing for failed webhook events",               AuthorJson = J(e7Rivet), Additions = 156, Deletions = 31,  Files = 7,  Commits = 19, Age = "8h",     BuildJson = J(new { status = "passing",  step = "CI green · 4m 02s",     percent = 100 }), ReviewJson = J(new { agent = "R3", name = "Cortex",  verdict = "changes",  summary = "Schema migration touches live tables. Recommend two-phase migration (add column nullable → backfill → enforce)." }), Conflicts = true, ConflictPaths = "db/migrations/2026_03_dlq.sql", HumanGate = true, GateReason = "Schema migration · human gate" },
-            new PrRow { Id = "PR #231",  Col = "build",          Epic = "EPIC-021", EpicColor = "epic021", Workstream = "ws/session-cleanup",     Base = "main", Branch = "ws/session-cleanup",     Title = "Session manager cleanup + idle eviction",             AuthorJson = J(e7Rivet), Additions = 84,  Deletions = 51,  Files = 4,  Commits = 9,  Age = "5h",     BuildJson = J(new { status = "failing",  step = "TestIdleEviction.fail", percent = 60, failingTest = "TestIdleEviction" }), ReviewJson = J(new { agent = "R5", name = "Lattice", verdict = "pending",  summary = "Waiting on green build before reviewing." }), Conflicts = false, HumanGate = false },
+            new PrRow { Id = "PR #237",  Col = "build",          Epic = "EPIC-021", EpicColor = "epic021", Workstream = "ws/retry-jitter",        Base = "main", Branch = "ws/retry-jitter",        Title = "Webhook retry — exponential backoff + jitter",        AuthorJson = J(e7Rivet), Additions = 64,  Deletions = 22,  Files = 3,  Commits = 5,  Age = "40m",    BuildJson = J(new { status = "running",  step = "Tests · 142 / 142",     percent = 92 }),  ReviewJson = J(new { agent = "R3", name = "Shen Gongbao",  verdict = "approved", summary = "Backoff math is sound. Verified jitter caps at 30s. Approved." }), Conflicts = false, HumanGate = false },
+            new PrRow { Id = "PR #240",  Col = "review",         Epic = "EPIC-024", EpicColor = "epic024", Workstream = "ws/idp-failover",        Base = "main", Branch = "ws/idp-failover",        Title = "Add IdP fail-over to Microsoft Entra",                AuthorJson = J(e9Anvil), Additions = 412, Deletions = 76,  Files = 19, Commits = 23, Age = "6h",     BuildJson = J(new { status = "passing",  step = "CI green · 3m 12s",     percent = 100 }), ReviewJson = J(new { agent = "R3", name = "Shen Gongbao",  verdict = "changes",  summary = "Token cache TTL needs to handle clock skew. Suggested 30s buffer in <span class=\"hl\">authcache.go:142</span>." }), Conflicts = false, HumanGate = true, GateReason = "/security/ path · human approval required" },
+            new PrRow { Id = "PR #229",  Col = "review",         Epic = "EPIC-024", EpicColor = "epic024", Workstream = "ws/auth-core",           Base = "main", Branch = "ws/auth-core-extract",   Title = "Extract token store to auth-core package",            AuthorJson = J(e4Forge), Additions = 198, Deletions = 234, Files = 12, Commits = 7,  Age = "2h",     BuildJson = J(new { status = "passing",  step = "CI green · 2m 41s",     percent = 100 }), ReviewJson = J(new { agent = "R3", name = "Shen Gongbao",  verdict = "approved", summary = "Clean refactor. No behavioural changes detected by trace diff. Auto-merge armed." }), Conflicts = false, HumanGate = false, AutoMerge = true },
+            new PrRow { Id = "PR #237b", Col = "review",         Epic = "EPIC-022", EpicColor = "epic022", Workstream = "ws/dlq-routing",         Base = "main", Branch = "ws/dlq-routing",         Title = "DLQ routing for failed webhook events",               AuthorJson = J(e7Rivet), Additions = 156, Deletions = 31,  Files = 7,  Commits = 19, Age = "8h",     BuildJson = J(new { status = "passing",  step = "CI green · 4m 02s",     percent = 100 }), ReviewJson = J(new { agent = "R3", name = "Shen Gongbao",  verdict = "changes",  summary = "Schema migration touches live tables. Recommend two-phase migration (add column nullable → backfill → enforce)." }), Conflicts = true, ConflictPaths = "db/migrations/2026_03_dlq.sql", HumanGate = true, GateReason = "Schema migration · human gate" },
+            new PrRow { Id = "PR #231",  Col = "build",          Epic = "EPIC-021", EpicColor = "epic021", Workstream = "ws/session-cleanup",     Base = "main", Branch = "ws/session-cleanup",     Title = "Session manager cleanup + idle eviction",             AuthorJson = J(e7Rivet), Additions = 84,  Deletions = 51,  Files = 4,  Commits = 9,  Age = "5h",     BuildJson = J(new { status = "failing",  step = "TestIdleEviction.fail", percent = 60, failingTest = "TestIdleEviction" }), ReviewJson = J(new { agent = "R5", name = "Yun Xiao", verdict = "pending",  summary = "Waiting on green build before reviewing." }), Conflicts = false, HumanGate = false },
             new PrRow { Id = "PR #244",  Col = "implementation", Epic = "EPIC-026", EpicColor = "epic026", Workstream = "ws/log-rotation-cap",    Base = "main", Branch = "ws/log-rotation-cap",    Title = "Cluster log rotation cap implementation",             AuthorJson = J(e9Anvil), Additions = 0,   Deletions = 0,   Files = 0,  Commits = 0,  Age = "queued", BuildJson = null, ReviewJson = null, Conflicts = false, HumanGate = false, Blocked = true, ImplJson = J(new { phase = "blocked", step = "Waiting on schema review · #822", percent = 0 }) },
         };
         for (var i = 0; i < prs.Length; i++) { prs[i].Sort = i; }
@@ -187,14 +271,14 @@ public static class ForgeSeed
         // -- overview agents ---------------------------------------------
         var overviewAgents = new[]
         {
-            new OverviewAgentRow { Id = "A1", Name = "Atlas",   Role = "arch", Status = "working", Task = "#820 OTel propagation" },
-            new OverviewAgentRow { Id = "A2", Name = "Mercer",  Role = "arch", Status = "working", Task = "#822 log schema design" },
-            new OverviewAgentRow { Id = "E4", Name = "Forge",   Role = "eng",  Status = "working", Task = "#234 OIDC rotation (build)" },
-            new OverviewAgentRow { Id = "E7", Name = "Rivet",   Role = "eng",  Status = "working", Task = "#237 retry/jitter" },
-            new OverviewAgentRow { Id = "E9", Name = "Anvil",   Role = "eng",  Status = "queued",  Task = "awaiting #822 schema" },
-            new OverviewAgentRow { Id = "R3", Name = "Cortex",  Role = "rev",  Status = "working", Task = "PR #240 review" },
-            new OverviewAgentRow { Id = "R5", Name = "Lattice", Role = "rev",  Status = "idle",    Task = "—" },
-            new OverviewAgentRow { Id = "Q2", Name = "Probe",   Role = "qa",   Status = "idle",    Task = "—" },
+            new OverviewAgentRow { Id = "A1", Name = "Yuan Shi Tianzun",   Role = "arch", Status = "working", Task = "#820 OTel propagation" },
+            new OverviewAgentRow { Id = "A2", Name = "Wen Zhong",  Role = "arch", Status = "working", Task = "#822 log schema design" },
+            new OverviewAgentRow { Id = "E4", Name = "Ne Zha",   Role = "eng",  Status = "working", Task = "#234 OIDC rotation (build)" },
+            new OverviewAgentRow { Id = "E7", Name = "Ao Bing",   Role = "eng",  Status = "working", Task = "#237 retry/jitter" },
+            new OverviewAgentRow { Id = "E9", Name = "Zhu Rong",   Role = "eng",  Status = "queued",  Task = "awaiting #822 schema" },
+            new OverviewAgentRow { Id = "R3", Name = "Shen Gongbao",  Role = "rev",  Status = "working", Task = "PR #240 review" },
+            new OverviewAgentRow { Id = "R5", Name = "Yun Xiao", Role = "rev",  Status = "idle",    Task = "—" },
+            new OverviewAgentRow { Id = "Q2", Name = "Shun Feng'er", Role = "qa",   Status = "idle",    Task = "—" },
         };
         for (var i = 0; i < overviewAgents.Length; i++) { overviewAgents[i].Sort = i; }
         db.OverviewAgents.AddRange(overviewAgents);
@@ -270,35 +354,161 @@ public static class ForgeSeed
     /// </summary>
     private static async Task EnsureSeedAgentsAsync(ForgeDbContext db)
     {
-        var existing = await db.Agents.Select(a => a.Id).ToListAsync();
-        var seed = new (string Id, string Name, string Role, string Crew)[]
+        var existing = await db.Agents.ToListAsync();
+        var existingIds = existing.Select(a => a.Id).ToHashSet();
+
+        // Phase 13 — every crew member is sourced from agents/allocation.json.
+        // The eight prototype rows (A1/A2/E4/E7/E9/R3/R5/Q2/XD) keep their
+        // legacy ids for compatibility with old screenshots / tests; their
+        // SoulPath is wired to the matching character file. The remaining
+        // characters seed with their character codes.
+        var repoRoot = FindRepoRoot();
+        string SoulFor(string characterId) =>
+            Path.Combine(repoRoot, "agents", characterId, "soul.md");
+
+        // Legacy aliases: prototype id → character id. Names line up with the
+        // RenameMockedAgentsAsync pass run earlier in EnsureSeededAsync.
+        var prototypeAlias = new Dictionary<string, string>
         {
-            ("A1", "Atlas",      "arch", "crew-arch"),
-            ("A2", "Mercer",     "arch", "crew-arch"),
-            ("E4", "Forge",      "eng",  "crew-eng"),
-            ("E7", "Rivet",      "eng",  "crew-eng"),
-            ("E9", "Anvil",      "eng",  "crew-eng"),
-            ("R3", "Cortex",     "rev",  "crew-rev"),
-            ("R5", "Lattice",    "rev",  "crew-rev"),
-            ("Q2", "Probe",      "qa",   "crew-qa"),
-            ("XD", "Xiaodong",   "product-owner", null!),
+            ["A1"] = "YS",
+            ["A2"] = "WZ",
+            ["E4"] = "NZ",
+            ["E7"] = "AB",
+            ["E9"] = "ZR",
+            ["R3"] = "SG",
+            ["R5"] = "YX",
+            ["Q2"] = "SF",
+            ["XD"] = "XD",
         };
+
+        var allocation = LoadAllocation(repoRoot);
+        // Map character-id → allocation entry for O(1) lookup.
+        var byCharId = allocation.ToDictionary(a => a.Id, StringComparer.OrdinalIgnoreCase);
+
+        // -- 1) Heal the eight prototype rows (and XD): name + crew + SoulPath
+        // come from the matching allocation entry under the alias mapping.
         var sort = 0;
-        foreach (var s in seed)
+        foreach (var (proto, charId) in prototypeAlias)
         {
-            if (existing.Contains(s.Id)) { sort++; continue; }
+            if (!byCharId.TryGetValue(charId, out var entry)) { sort++; continue; }
+            var crewId = CrewIdFor(entry.CrewRole);
+            if (existingIds.Contains(proto))
+            {
+                var row = existing.First(a => a.Id == proto);
+                if (string.IsNullOrEmpty(row.SoulPath)) row.SoulPath = SoulFor(charId);
+                if (row.Name == "Probe") row.Name = entry.Name;
+                if (string.IsNullOrEmpty(row.CrewId)) row.CrewId = crewId;
+            }
+            else
+            {
+                db.Agents.Add(new AgentRow
+                {
+                    Id = proto,
+                    Sort = sort++,
+                    Name = entry.Name,
+                    Role = entry.CrewRole,
+                    CrewId = crewId,
+                    CapabilitiesJson = "[]",
+                    State = "idle",
+                    SoulPath = SoulFor(charId),
+                });
+            }
+        }
+
+        // -- 2) Seed every other character that doesn't already exist. They
+        // use their character id directly (NZ, AB, YS, …) so the backend
+        // surfaces the full Ne Zha crew of 91 to the UI.
+        var aliasedCharIds = new HashSet<string>(prototypeAlias.Values, StringComparer.OrdinalIgnoreCase);
+        sort = 100; // leave ids 0-99 to the prototype slots
+        foreach (var entry in allocation)
+        {
+            if (aliasedCharIds.Contains(entry.Id)) continue; // already covered by alias
+            if (existingIds.Contains(entry.Id))
+            {
+                var row = existing.First(a => a.Id == entry.Id);
+                if (string.IsNullOrEmpty(row.SoulPath)) row.SoulPath = SoulFor(entry.Id);
+                if (string.IsNullOrEmpty(row.CrewId)) row.CrewId = CrewIdFor(entry.CrewRole);
+                continue;
+            }
             db.Agents.Add(new AgentRow
             {
-                Id = s.Id,
+                Id = entry.Id,
                 Sort = sort++,
-                Name = s.Name,
-                Role = s.Role,
-                CrewId = s.Crew,
+                Name = entry.Name,
+                Role = entry.CrewRole,
+                CrewId = CrewIdFor(entry.CrewRole),
                 CapabilitiesJson = "[]",
                 State = "idle",
+                SoulPath = SoulFor(entry.Id),
             });
         }
         await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Crew-role → Phase 11 crew-row id. Pure function so we can use it for
+    /// both fresh seeds and backfill.
+    /// </summary>
+    private static string? CrewIdFor(string crewRole) => crewRole switch
+    {
+        "arch" => "crew-arch",
+        "eng"  => "crew-eng",
+        "rev"  => "crew-rev",
+        "qa"   => "crew-qa",
+        _      => null,
+    };
+
+    /// <summary>Loaded once at seed time from agents/allocation.json.</summary>
+    private sealed record AllocationEntry(string Id, string Name, string RoleLabel, string Team, string RoleBucket, string CrewRole, string? Avatar);
+
+    private static List<AllocationEntry> LoadAllocation(string repoRoot)
+    {
+        var path = Path.Combine(repoRoot, "agents", "allocation.json");
+        if (!File.Exists(path)) return new List<AllocationEntry>();
+        var json = File.ReadAllText(path);
+        var opts = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+            PropertyNameCaseInsensitive = true,
+        };
+        // The JSON keys are snake_case (id, name, role_label, team,
+        // role_bucket, crew_role, avatar) — map manually because the record
+        // uses PascalCase parameters.
+        using var doc = JsonDocument.Parse(json);
+        var list = new List<AllocationEntry>();
+        foreach (var el in doc.RootElement.EnumerateArray())
+        {
+            list.Add(new AllocationEntry(
+                Id: el.GetProperty("id").GetString() ?? string.Empty,
+                Name: el.GetProperty("name").GetString() ?? string.Empty,
+                RoleLabel: el.GetProperty("role_label").GetString() ?? string.Empty,
+                Team: el.GetProperty("team").GetString() ?? string.Empty,
+                RoleBucket: el.GetProperty("role_bucket").GetString() ?? string.Empty,
+                CrewRole: el.GetProperty("crew_role").GetString() ?? "eng",
+                Avatar: el.TryGetProperty("avatar", out var a) ? a.GetString() : null));
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// Walks up from <c>AppContext.BaseDirectory</c> until it finds the repo
+    /// root (presence of an <c>agents/</c> sibling). Used to resolve
+    /// <see cref="AgentRow.SoulPath"/> for the seeded crew. Falls back to the
+    /// current directory if nothing matches.
+    /// </summary>
+    private static string FindRepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            if (Directory.Exists(Path.Combine(dir.FullName, "agents"))
+                && File.Exists(Path.Combine(dir.FullName, "agents", "README.md")))
+            {
+                return dir.FullName;
+            }
+            dir = dir.Parent;
+        }
+        return Directory.GetCurrentDirectory();
     }
 
     private static async Task EnsureSeedCrewsAsync(ForgeDbContext db)

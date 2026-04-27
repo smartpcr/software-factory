@@ -90,6 +90,65 @@ public static class Phase11Migration
             """, ct);
         await ExecAsync(conn, "CREATE INDEX IF NOT EXISTS IX_user_product_roles_UserId ON user_product_roles(UserId);", ct);
         await ExecAsync(conn, "CREATE INDEX IF NOT EXISTS IX_user_product_roles_ProductId ON user_product_roles(ProductId);", ct);
+
+        // Phase 13.1 — crew hierarchy + capabilities + quotas (additive on `crews`).
+        await EnsureColumnAsync(conn, "crews", "ParentCrewId",     "TEXT NULL", ct);
+        await EnsureColumnAsync(conn, "crews", "Depth",            "INTEGER NOT NULL DEFAULT 0", ct);
+        await EnsureColumnAsync(conn, "crews", "Backend",          "TEXT NOT NULL DEFAULT 'copilot'", ct);
+        await EnsureColumnAsync(conn, "crews", "InvokeMode",       "TEXT NOT NULL DEFAULT 'sdk'", ct);
+        await EnsureColumnAsync(conn, "crews", "CapabilitiesJson", "TEXT NOT NULL DEFAULT '[]'", ct);
+        await EnsureColumnAsync(conn, "crews", "MaxConcurrent",    "INTEGER NOT NULL DEFAULT 2", ct);
+        await EnsureColumnAsync(conn, "crews", "WeeklyCap",        "INTEGER NOT NULL DEFAULT 20", ct);
+        await ExecAsync(conn, "CREATE INDEX IF NOT EXISTS IX_crews_ParentCrewId ON crews(ParentCrewId);", ct);
+
+        // Phase 13.1 — crew membership join table.
+        await ExecAsync(conn, """
+            CREATE TABLE IF NOT EXISTS crew_members (
+                CrewId TEXT NOT NULL,
+                AgentId TEXT NOT NULL,
+                AddedAt TEXT NOT NULL,
+                AddedBy TEXT NULL,
+                PRIMARY KEY (CrewId, AgentId)
+            );
+            """, ct);
+        await ExecAsync(conn, "CREATE INDEX IF NOT EXISTS IX_crew_members_CrewId  ON crew_members(CrewId);", ct);
+        await ExecAsync(conn, "CREATE INDEX IF NOT EXISTS IX_crew_members_AgentId ON crew_members(AgentId);", ct);
+
+        // Phase 13.1 — crew_history audit log.
+        await ExecAsync(conn, """
+            CREATE TABLE IF NOT EXISTS crew_history (
+                Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                At TEXT NOT NULL,
+                CrewId TEXT NOT NULL,
+                Kind TEXT NOT NULL,
+                FromValue TEXT NULL,
+                ToValue TEXT NULL,
+                ByUserId TEXT NULL
+            );
+            """, ct);
+        await ExecAsync(conn, "CREATE INDEX IF NOT EXISTS IX_crew_history_CrewId_At ON crew_history(CrewId, At);", ct);
+
+        // Phase 13b — per-member role + crew-level default pair.
+        await EnsureColumnAsync(conn, "crew_members", "Role",                    "TEXT NOT NULL DEFAULT 'coder'", ct);
+        await EnsureColumnAsync(conn, "crews",        "DefaultGeneratorAgentId", "TEXT NULL", ct);
+        await EnsureColumnAsync(conn, "crews",        "DefaultEvaluatorAgentId", "TEXT NULL", ct);
+        await EnsureColumnAsync(conn, "crews",        "EvaluatorModel",          "TEXT NULL", ct);
+
+        // Phase 13.7 — domain-expert index.
+        await ExecAsync(conn, """
+            CREATE TABLE IF NOT EXISTS domain_experts (
+                Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                ContentId TEXT NOT NULL,
+                RepoId TEXT NOT NULL,
+                Path TEXT NOT NULL,
+                Topic TEXT NOT NULL,
+                Summary TEXT NOT NULL DEFAULT '',
+                IndexedAt TEXT NOT NULL
+            );
+            """, ct);
+        await ExecAsync(conn, "CREATE UNIQUE INDEX IF NOT EXISTS UX_domain_experts_ContentId ON domain_experts(ContentId);", ct);
+        await ExecAsync(conn, "CREATE INDEX IF NOT EXISTS IX_domain_experts_RepoId ON domain_experts(RepoId);", ct);
+        await ExecAsync(conn, "CREATE INDEX IF NOT EXISTS IX_domain_experts_Topic  ON domain_experts(Topic);", ct);
     }
 
     private static async Task<bool> ColumnExistsAsync(SqliteConnection conn, string table, string column, CancellationToken ct)
