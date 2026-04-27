@@ -7,7 +7,8 @@ import { useToastStore } from '@/state/useToastStore';
 import { useForgeHub } from '@/realtime/useForgeHub';
 import { Board } from '@/board/Board';
 import { FilterBar } from '@/board/FilterBar';
-import { DetailPanel } from '@/board/DetailPanel';
+import { WorkItemDetailPanel } from '@/workitems/WorkItemDetailPanel';
+import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 import { CardModal } from '@/board/CardModal';
 import { NewStoryModal } from '@/board/NewStoryModal';
 import { StoryList } from '@/board/StoryList';
@@ -28,8 +29,18 @@ export function PlanView() {
   const setDragging = useBoardStore((s) => s.setDragging);
   const move = useBoardStore((s) => s.move);
   const setSelected = useBoardStore((s) => s.setSelected);
+  const selectedId = useBoardStore((s) => s.selectedId);
   const cards = useBoardStore((s) => s.cards);
   const burndown = useMemo(() => computeBurndown(cards), [cards]);
+
+  // Load work items so the detail panel can resolve card→WI.
+  const wiLoad = useWorkItemsStore((s) => s.load);
+  const wiItems = useWorkItemsStore((s) => s.items);
+  useEffect(() => { void wiLoad(); }, [wiLoad]);
+  const selectedWorkItem = useMemo(
+    () => selectedId ? wiItems.find((w) => w.id === selectedId) ?? null : null,
+    [selectedId, wiItems],
+  );
 
   const [modalOpen, setModalOpen] = useState(false);
   const [storyModalOpen, setStoryModalOpen] = useState(false);
@@ -193,35 +204,52 @@ export function PlanView() {
 
       <FilterBar />
 
-      <div className="board-wrap">
-        {cards.length === 0 ? (
-          <div className="empty-state">
-            <div className="title">No cards in this sprint</div>
-            <div className="sub">
-              Press <kbd>n</kbd> to add a new card, or sync from a provider to import
-              your backlog.
+      <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <div className="board-wrap" style={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
+          {cards.length === 0 ? (
+            <div className="empty-state">
+              <div className="title">No cards in this sprint</div>
+              <div className="sub">
+                Press <kbd>n</kbd> to add a new card, or sync from a provider to import
+                your backlog.
+              </div>
+              <div className="actions">
+                <button className="btn btn-primary" onClick={() => setModalOpen(true)}>New card</button>
+              </div>
             </div>
-            <div className="actions">
-              <button className="btn btn-primary" onClick={() => setModalOpen(true)}>New card</button>
+          ) : viewMode === 'stories' ? (
+            <StoryList />
+          ) : (
+            <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd}>
+              <Board />
+              <DragOverlay dropAnimation={null}>
+                {draggingCard ? (
+                  <div className="drag-overlay">
+                    <BoardCard card={draggingCard} />
+                  </div>
+                ) : null}
+              </DragOverlay>
+            </DndContext>
+          )}
+        </div>
+
+        {selectedWorkItem && (
+          <div style={{ width: 420, flexShrink: 0, borderLeft: '1px solid var(--border)', overflow: 'auto' }}>
+            <div style={{ position: 'sticky', top: 0, zIndex: 10, display: 'flex', justifyContent: 'flex-end', padding: '6px 8px' }}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                style={{ fontSize: 16, lineHeight: 1, padding: '2px 6px' }}
+                onClick={() => setSelected(null)}
+                title="Close panel (Esc)"
+              >
+                ×
+              </button>
             </div>
+            <WorkItemDetailPanel item={selectedWorkItem} />
           </div>
-        ) : viewMode === 'stories' ? (
-          <StoryList />
-        ) : (
-          <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd}>
-            <Board />
-            <DragOverlay dropAnimation={null}>
-              {draggingCard ? (
-                <div className="drag-overlay">
-                  <BoardCard card={draggingCard} />
-                </div>
-              ) : null}
-            </DragOverlay>
-          </DndContext>
         )}
       </div>
-
-      <DetailPanel />
       <CardModal open={modalOpen} onClose={() => setModalOpen(false)} />
       <NewStoryModal open={storyModalOpen} onClose={() => setStoryModalOpen(false)} />
       <ConfirmModal />
