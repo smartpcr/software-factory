@@ -33,6 +33,35 @@ export function LiveExecutionView(): JSX.Element {
   const navigate = useNavigate();
 
   const [copied, setCopied] = useState(false);
+  const [promptsCollapsed, setPromptsCollapsed] = useState(false);
+
+  const snapshot = entry?.snapshot ?? null;
+  const transcript = entry?.transcript ?? [];
+  const worktree = entry?.worktree ?? snapshot?.worktree ?? null;
+  const genCrewId = snapshot?.generatorCrewId ?? null;
+  const evalCrewId = snapshot?.evaluatorCrewId ?? null;
+  const genAgentId = snapshot?.generatorAgentId ?? null;
+  const evalAgentId = snapshot?.evaluatorAgentId ?? null;
+  const filtered = useMemo(() => filterEvents(transcript, filter, genCrewId, evalCrewId, genAgentId, evalAgentId), [transcript, filter, genCrewId, evalCrewId, genAgentId, evalAgentId]);
+
+  // Extract latest system + user prompt from the most recent task.prompt event.
+  const latestPrompt = useMemo(() => {
+    for (let i = transcript.length - 1; i >= 0; i--) {
+      if (transcript[i].kind === 'task.prompt') {
+        const p = transcript[i].payload as Record<string, unknown> | null;
+        if (p) {
+          return {
+            systemPrompt: (p.systemPrompt as string) ?? '',
+            userPrompt: (p.userPrompt as string) ?? '',
+            model: (p.model as string) ?? '',
+            backend: (p.backend as string) ?? '',
+            mode: (p.invokeMode as string) ?? '',
+          };
+        }
+      }
+    }
+    return null;
+  }, [transcript]);
 
   function copyLogs() {
     const lines = filtered.map((evt) => {
@@ -50,13 +79,6 @@ export function LiveExecutionView(): JSX.Element {
   if (!workItemId) {
     return <div className="live-exec__empty">Pick a work item to watch.</div>;
   }
-
-  const snapshot = entry?.snapshot ?? null;
-  const transcript = entry?.transcript ?? [];
-  const worktree = entry?.worktree ?? snapshot?.worktree ?? null;
-  const genCrewId = snapshot?.generatorCrewId ?? null;
-  const evalCrewId = snapshot?.evaluatorCrewId ?? null;
-  const filtered = useMemo(() => filterEvents(transcript, filter, genCrewId, evalCrewId), [transcript, filter, genCrewId, evalCrewId]);
 
   async function cancelAndRequeue() {
     if (!workItemId) return;
@@ -145,16 +167,14 @@ export function LiveExecutionView(): JSX.Element {
         <div className="live-exec__pair">
           <PairSide
             role="generator"
-            crewId={snapshot?.generatorCrewId}
             crewName={snapshot?.generatorCrewName}
-            agentId={snapshot?.generatorAgentId}
+            agentName={snapshot?.generatorAgentName ?? snapshot?.generatorAgentId}
           />
           <span className="live-exec__pair-conn">↔ paired</span>
           <PairSide
             role="evaluator"
-            crewId={snapshot?.evaluatorCrewId}
             crewName={snapshot?.evaluatorCrewName}
-            agentId={snapshot?.evaluatorAgentId}
+            agentName={snapshot?.evaluatorAgentName ?? snapshot?.evaluatorAgentId}
           />
         </div>
         <div className="live-exec__iter">
@@ -197,6 +217,35 @@ export function LiveExecutionView(): JSX.Element {
           </button>
         </div>
       </header>
+
+      {latestPrompt && (latestPrompt.systemPrompt || latestPrompt.userPrompt) && (
+        <section className="live-exec__prompts" aria-label="Prompts">
+          <div className="live-exec__prompts-header" onClick={() => setPromptsCollapsed(!promptsCollapsed)} role="button" tabIndex={0}>
+            <span className="live-exec__prompts-title">
+              {promptsCollapsed ? '▸' : '▾'} Prompts
+            </span>
+            <span className="live-exec__prompts-meta">
+              {latestPrompt.backend}/{latestPrompt.mode} · {latestPrompt.model}
+            </span>
+          </div>
+          {!promptsCollapsed && (
+            <div className="live-exec__prompts-body">
+              {latestPrompt.systemPrompt && (
+                <div className="live-exec__prompt-standalone">
+                  <div className="live-exec__prompt-label">System prompt</div>
+                  <pre className="live-exec__prompt-pre">{latestPrompt.systemPrompt}</pre>
+                </div>
+              )}
+              {latestPrompt.userPrompt && (
+                <div className="live-exec__prompt-standalone">
+                  <div className="live-exec__prompt-label">User prompt</div>
+                  <pre className="live-exec__prompt-pre">{latestPrompt.userPrompt}</pre>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+      )}
 
       <main className="live-exec__center">
         <nav className="live-exec__filters" role="tablist">
@@ -254,27 +303,35 @@ export function LiveExecutionView(): JSX.Element {
 
 // ── Sub-components ────────────────────────────────────────────────────────
 
-function PairSide(props: { role: 'generator' | 'evaluator'; crewId?: string | null; crewName?: string | null; agentId?: string | null }): JSX.Element {
-  const { role, crewId, crewName, agentId } = props;
-  const portrait = agentId ? avatarFor(agentId, agentId) : null;
-  const tip = agentId ? agentTooltip(agentId, agentId, role) : '';
-  const displayName = crewName || crewId || '—';
-  const crewTip = crewName && crewId ? `${crewId}` : '';
+function PairSide(props: { role: 'generator' | 'evaluator'; crewName?: string | null; agentName?: string | null }): JSX.Element {
+  const { role, crewName, agentName } = props;
+  const portrait = agentName ? avatarFor(agentName, agentName) : null;
+  const tip = agentName ? agentTooltip(agentName, agentName, role) : '';
   return (
     <div className="live-exec__pair-side" data-role={role}>
       {portrait ? (
         <img
           src={portrait}
-          alt={agentId ?? role}
+          alt={agentName ?? role}
           className={`live-exec__pair-avatar ${role === 'generator' ? 'eng' : 'rev'}`}
           title={tip}
           onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
         />
       ) : (
-        <span className="live-exec__pair-mono">{agentId ?? '—'}</span>
+        <span className="live-exec__pair-mono" title={tip}>
+          {(role === 'generator' ? 'G' : 'E')}
+        </span>
       )}
-      <span style={{ textTransform: 'capitalize', color: 'var(--text-tertiary)', fontSize: 10 }}>{role}</span>
-      <strong title={crewTip}>{displayName}</strong>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
+        <strong style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {agentName ?? '—'}
+        </strong>
+        {crewName && (
+          <span style={{ fontSize: 10, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+            {crewName}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -332,39 +389,18 @@ function TranscriptLine(props: { evt: TaskTranscriptEvent; generatorCrewId?: str
 function PromptLine(props: { evt: TaskTranscriptEvent }): JSX.Element {
   const { evt } = props;
   const p = evt.payload as Record<string, unknown> | null;
-  const systemPrompt = (p?.systemPrompt as string) ?? '';
-  const userPrompt = (p?.userPrompt as string) ?? '';
   const model = (p?.model as string) ?? '';
   const backend = (p?.backend as string) ?? '';
   const mode = (p?.invokeMode as string) ?? '';
-  const worktree = (p?.worktreePath as string) ?? '';
   const meta = new Date(evt.at).toLocaleTimeString();
-  const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="live-exec__prompt-block" data-kind="task.prompt">
-      <div className="live-exec__line" data-kind="task.prompt" onClick={() => setExpanded(!expanded)} style={{ cursor: 'pointer' }}>
-        <span className="live-exec__line-meta">{meta}</span>
-        <span className="live-exec__line-kind">prompt</span>
-        <span className="live-exec__line-text">
-          {expanded ? '▾' : '▸'} [{backend}/{mode} · {model}]
-          {worktree ? ` cwd: ${worktree}` : ''}
-        </span>
-      </div>
-      {expanded && (
-        <div className="live-exec__prompt-detail">
-          {systemPrompt && (
-            <div className="live-exec__prompt-section">
-              <div className="live-exec__prompt-label">System prompt (soul.md)</div>
-              <pre className="live-exec__prompt-pre">{systemPrompt}</pre>
-            </div>
-          )}
-          <div className="live-exec__prompt-section">
-            <div className="live-exec__prompt-label">User prompt</div>
-            <pre className="live-exec__prompt-pre">{userPrompt}</pre>
-          </div>
-        </div>
-      )}
+    <div className="live-exec__line" data-kind="task.prompt">
+      <span className="live-exec__line-meta">{meta}</span>
+      <span className="live-exec__line-kind">prompt</span>
+      <span className="live-exec__line-text">
+        [{backend}/{mode} · {model}] — see Prompts section above
+      </span>
     </div>
   );
 }
@@ -409,22 +445,52 @@ function renderPayload(evt: TaskTranscriptEvent): string {
   try { return JSON.stringify(p); } catch { return ''; }
 }
 
-function filterEvents(events: TaskTranscriptEvent[], f: FilterKey, genCrewId?: string | null, evalCrewId?: string | null): TaskTranscriptEvent[] {
+function filterEvents(
+  events: TaskTranscriptEvent[],
+  f: FilterKey,
+  genCrewId?: string | null,
+  evalCrewId?: string | null,
+  genAgentId?: string | null,
+  evalAgentId?: string | null,
+): TaskTranscriptEvent[] {
   if (f === 'all') return events;
   if (f === 'commits') return events.filter((e) => e.kind === 'task.commit' || e.kind === 'task.pr-opened');
   if (f === 'tools')   return events.filter((e) => e.kind === 'task.tool-call' || e.kind === 'task.tool-result');
+
+  // When generator and evaluator share the same crewId, fall back to
+  // event kind heuristics to split the transcript.
+  const sameCrews = genCrewId && evalCrewId && genCrewId === evalCrewId;
+
+  const EVAL_KINDS = new Set([
+    'task.iteration.scored', 'task.iteration.passed', 'task.iteration.rejected',
+    'task.iteration.iterated', 'task.iteration.stalled',
+  ]);
+
   if (f === 'generator') {
-    return events.filter((e) =>
-      e.kind.startsWith('task.iteration')
-      || (genCrewId && e.crewId === genCrewId)
-      || (!e.crewId && !evalCrewId),
-    );
+    return events.filter((e) => {
+      if (e.kind.startsWith('task.iteration')) return true; // boundaries shown in both
+      if (sameCrews) {
+        // Exclude evaluator-specific events; include everything else.
+        if (e.agentId === evalAgentId && e.agentId !== genAgentId) return false;
+        if (e.crewId && e.crewId !== genCrewId) return false;
+        return !EVAL_KINDS.has(e.kind);
+      }
+      return (genCrewId && e.crewId === genCrewId) || (!e.crewId && !evalCrewId);
+    });
   }
   if (f === 'evaluator') {
-    return events.filter((e) =>
-      e.kind.startsWith('task.iteration')
-      || (evalCrewId && e.crewId === evalCrewId),
-    );
+    return events.filter((e) => {
+      if (e.kind.startsWith('task.iteration')) return true; // boundaries shown in both
+      if (sameCrews) {
+        // Only evaluator-specific events: scoring verdicts + events
+        // tagged with the evaluator agent.
+        if (EVAL_KINDS.has(e.kind)) return true;
+        if (e.agentId === evalAgentId && e.agentId !== genAgentId) return true;
+        // Also include events from the paired (different) crew.
+        return false;
+      }
+      return evalCrewId && e.crewId === evalCrewId;
+    });
   }
   return events;
 }
@@ -504,17 +570,26 @@ function TokensTab(props: { snap: TaskTranscriptEvent extends never ? never : im
 function ProgressTab(props: { snap: import('@/realtime/useTaskLiveStore').TaskExecutionSnapshot | null }): JSX.Element {
   const { snap } = props;
   if (!snap) return <div className="live-exec__empty">No deliverables yet.</div>;
+
+  // Deduplicate deliverables by iter — keep only the latest entry per iteration
+  // (restarts produce multiple rows with the same iter number).
+  const byIter = new Map<number, (typeof snap.deliverables)[number]>();
+  for (const d of snap.deliverables) {
+    byIter.set(d.iter, d);
+  }
+  const deduped = Array.from(byIter.values()).sort((a, b) => a.iter - b.iter);
+
   return (
     <div>
       <div className="live-exec__iter-list">
-        {snap.deliverables.map((d) => (
+        {deduped.map((d) => (
           <div key={d.id} className="live-exec__iter-item">
             <span className={`live-exec__score-chip ${d.verdict}`}>iter {d.iter}: {d.score}</span>
             <span style={{ color: 'var(--text-secondary)', flex: 1, textAlign: 'right' }}>{d.verdict}</span>
             {d.judgeScore != null && <span className="live-exec__score-chip pass" style={{ outline: '1px dashed currentColor' }}>judge {d.judgeScore}</span>}
           </div>
         ))}
-        {snap.deliverables.length === 0 && (
+        {deduped.length === 0 && (
           <div style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>No deliverables yet.</div>
         )}
       </div>

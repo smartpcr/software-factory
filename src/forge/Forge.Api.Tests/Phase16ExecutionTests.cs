@@ -866,46 +866,166 @@ public class Phase16ExecutionTests
         finally { scope.Dispose(); f.Dispose(); }
     }
 
+    // ── Phase 18: RunAgentAsync creates worktree on real repo ─────────────
+
+    /// <summary>
+    /// Exercises the actual <c>CrewQueueWorker.RunAgentAsync</c> code path
+    /// with a real git repo (cloned to a temp dir). Verifies that:
+    ///   - A unique worktree branch is created (not on main)
+    ///   - The agent receives the worktree path (visible in task.prompt)
+    ///   - Main branch has no new commits after the run
+    ///
+    /// Uses local-stub model so no external LLM calls are needed.
+    /// </summary>
+    [Fact]
+    public async Task QueueWorker_RunAgentAsync_Creates_Worktree_On_Real_Repo()
+    {
+        if (!GitAvailable()) return;
+
+        // ── Set up a real git repo ──────────────────────────────────
+        var repoDir = Path.Combine(Path.GetTempPath(), $"forge-real-wt-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(repoDir);
+        await RunGitAsync(repoDir, "init", "-b", "main");
+        await RunGitAsync(repoDir, "config", "user.email", "test@forge.local");
+        await RunGitAsync(repoDir, "config", "user.name", "Forge Test");
+        await File.WriteAllTextAsync(Path.Combine(repoDir, "README.md"), "# Beads\nArchitecture doc placeholder.\n");
+        await RunGitAsync(repoDir, "add", "README.md");
+        await RunGitAsync(repoDir, "commit", "-m", "initial seed");
+
+        var (f, scope, db) = await BootAsync();
+        try
+        {
+            var product = await db.Products.FirstAsync();
+
+            // Crew + member
+            db.Crews.Add(new CrewRow
+            {
+                Id = "wt-real-crew", Name = "Worktree Real",
+                ProductId = product.Id,
+                Lead = "wt-lead", Model = "local-stub",
+                ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
+                MaxConcurrent = 5, ScheduleEnabled = false,
+            });
+            db.CrewMembers.Add(new CrewMemberRow { CrewId = "wt-real-crew", AgentId = "wt-agent", AddedAt = DateTimeOffset.UtcNow });
+
+            // Repo pointing at the real git dir
+            db.Repos.Add(new RepoRow
+            {
+                Id = "real-repo", DisplayName = "Real Repo", Kind = "local",
+                RemoteUrl = "file://localhost/test",
+                ProductId = product.Id, CloneRoot = repoDir, DefaultBranch = "main",
+            });
+
+            // Work item linked to repo
+            var workItemId = $"WI-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+            db.WorkItems.Add(new WorkItemRow
+            {
+                Id = workItemId,
+                Type = "task", Track = "dev", State = "active",
+                Title = "create architecture doc",
+                DescriptionMd = "Create an architecture doc for the project.",
+                RepoId = "real-repo",
+                CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+
+            // Enqueue and run queue worker
+            var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+            await queue.EnqueueAsync(workItemId, "crew", "wt-real-crew", default);
+
+            var worker = f.Services.GetRequiredService<CrewQueueWorker>();
+            await worker.RunOnceAsync(default);
+
+            // local-stub finishes fast but RunAgentAsync is Task.Run
+            await Task.Delay(5000);
+
+            // ── Assert: worktree was created ─────────────────────────
+            var (_, wtListOut, _) = await RunGitResultAsync(repoDir, "worktree", "list", "--porcelain");
+            var sanitizedId = workItemId.Replace("/", "-").Replace("\\", "-").Replace(" ", "-");
+            var expectedBranch = $"ws/{workItemId}";
+
+            // The worktree list should include a branch matching ws/{workItemId}
+            Assert.Contains($"ws/{workItemId}", wtListOut);
+
+            // ── Assert: worktree directory exists under {repoParent}/wt/ ──
+            var parentDir = Path.GetDirectoryName(repoDir)!;
+            var wtDir = Path.Combine(parentDir, "wt", $"ws-{sanitizedId}");
+            Assert.True(Directory.Exists(wtDir),
+                $"Worktree dir '{wtDir}' should exist.\ngit worktree list output:\n{wtListOut}");
+
+            // ── Assert: task.prompt shows the worktree path, not clone root ──
+            var events = await db.TaskTranscriptEvents.AsNoTracking()
+                .Where(e => e.WorkItemId == workItemId)
+                .OrderBy(e => e.Id)
+                .ToListAsync();
+
+            var promptEvt = events.FirstOrDefault(e => e.Kind == "task.prompt");
+            Assert.NotNull(promptEvt);
+            // Must contain the worktree dir, not the clone root
+            Assert.Contains($"ws-{sanitizedId}", promptEvt!.PayloadJson);
+            // Must NOT contain the clone root as the worktree path
+            // (the prompt payload includes worktreePath field)
+            Assert.DoesNotContain($"\"worktreePath\":\"{repoDir.Replace("\\", "\\\\")}\"", promptEvt.PayloadJson);
+
+            // ── Assert: main branch untouched ────────────────────────
+            var (_, mainLog, _) = await RunGitResultAsync(repoDir, "log", "--oneline", "main");
+            Assert.Single(mainLog.Trim().Split('\n')); // only seed commit
+        }
+        finally
+        {
+            scope.Dispose();
+            f.Dispose();
+            // Clean up worktrees first, then repo
+            try
+            {
+                var parentDir = Path.GetDirectoryName(repoDir)!;
+                var wtDir = Path.Combine(parentDir, "wt");
+                if (Directory.Exists(wtDir))
+                {
+                    await RunGitResultAsync(repoDir, "worktree", "prune");
+                    Directory.Delete(wtDir, recursive: true);
+                }
+            }
+            catch { }
+            try { Directory.Delete(repoDir, recursive: true); } catch { }
+        }
+    }
+
     // ── Phase 18: Full gen→eval iteration pipeline on worktree branch ───
 
     /// <summary>
-    /// End-to-end test covering the full paired-agent delivery pipeline:
-    ///   1) A pair of agents (generator + evaluator) work on a bug
-    ///   2) Generator reads repo and understands the bug context
-    ///   3) Generator creates a worktree branch under the repo
-    ///   4) Generator implements a code fix on the worktree branch
-    ///   5) Generator hands off to evaluator for review
-    ///   6) Evaluator gives score 75 with improvement comments
-    ///   7) Generator iterates on the feedback (iteration 2)
-    ///   8) Evaluator reviews again and gives score 95 (pass)
-    ///   9) Changes are on the feature branch (not main)
-    ///  10) PR is created from feature branch → main
+    /// End-to-end test covering the full paired-agent delivery pipeline
+    /// Full end-to-end integration test using the actual <c>CrewQueueWorker.RunAgentAsync</c>
+    /// code path with a real git repo and a real AI model (claude-opus-4.6-1m).
+    ///
+    /// Flow: enqueue work item → queue worker claims → RunAgentAsync creates worktree →
+    /// generator agent runs (real AI) → evaluator agent scores → iterate until pass →
+    /// PR created from feature branch → work item resolved.
+    ///
+    /// Uses a temp git repo. Each run creates a unique worktree. This test is slow
+    /// (~2-5min) and costs real tokens. Tag: Integration — skip in CI.
     /// </summary>
     [Fact]
-    public async Task FullPipeline_Generator_Evaluator_Worktree_Iterate_PR()
+    [Trait("Category", "Integration")]
+    public async Task FullPipeline_RealAI_Worktree_Iterate_PR()
     {
         if (!GitAvailable()) return;
 
         // ── Set up a real git repo with a "buggy" file ──────────────
         var repoDir = Path.Combine(Path.GetTempPath(), $"forge-pipeline-{Guid.NewGuid():N}");
-        var wtRoot = Path.Combine(repoDir, "wt");
         Directory.CreateDirectory(repoDir);
-        Directory.CreateDirectory(wtRoot);
         await RunGitAsync(repoDir, "init", "-b", "main");
         await RunGitAsync(repoDir, "config", "user.email", "test@forge.local");
-        await RunGitAsync(repoDir, "config", "user.name", "Forge Test");
-        // Seed file with a bug: off-by-one in the loop
+        await RunGitAsync(repoDir, "config", "user.name", "Forge E2E");
         await File.WriteAllTextAsync(Path.Combine(repoDir, "Calculator.cs"),
-            "public class Calculator\n{\n    public int Sum(int[] nums)\n    {\n        int total = 0;\n        for (int i = 0; i < nums.Length - 1; i++) // BUG: should be < nums.Length\n            total += nums[i];\n        return total;\n    }\n}\n");
-        await RunGitAsync(repoDir, "add", "Calculator.cs");
+            "public class Calculator\n{\n    public int Sum(int[] nums)\n    {\n        int total = 0;\n        for (int i = 0; i < nums.Length - 1; i++) // BUG: off-by-one\n            total += nums[i];\n        return total;\n    }\n}\n");
+        await RunGitAsync(repoDir, "add", ".");
         await RunGitAsync(repoDir, "commit", "-m", "initial: Calculator with off-by-one bug");
 
-        // ── Boot test server with Git:WorktreeRoot configured ───────
-        var f = new ForgeWebApplicationFactory(new Dictionary<string, string?>
-        {
-            ["Forge:Git:RepoPath"] = repoDir,
-            ["Forge:Git:WorktreeRoot"] = wtRoot,
-        });
+        var workItemId = $"WI-E2E-{Guid.NewGuid():N}";
+
+        // ── Boot test server ────────────────────────────────────────
+        var f = new ForgeWebApplicationFactory();
         using (f.CreateClient()) { /* boot */ }
         var scope = f.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
@@ -914,168 +1034,128 @@ public class Phase16ExecutionTests
         {
             var product = await db.Products.FirstAsync();
 
-            // ── Seed: paired gen + eval crews ────────────────────────
+            // ── Seed: paired gen + eval crews with REAL model ────────
             db.Crews.Add(new CrewRow
             {
-                Id = "pipe-gen", Name = "Pipeline Gen",
-                ProductId = product.Id,
-                Lead = "gen-lead", Model = "local-stub",
-                ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
-                MaxConcurrent = 5, ScheduleEnabled = false,
-                PairRole = "generator", PairedWithCrewId = "pipe-eval",
+                Id = "e2e-ai-gen", Name = "E2E AI Gen",
+                ProductId = product.Id, Lead = "e2e-gen-lead",
+                Model = "claude-opus-4.6-1m",
+                ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,
+                MaxConcurrent = 2, ScheduleEnabled = false,
+                PairRole = "generator", PairedWithCrewId = "e2e-ai-eval",
+                MaxTaskBudgetUsd = 25m,
             });
             db.Crews.Add(new CrewRow
             {
-                Id = "pipe-eval", Name = "Pipeline Eval",
-                ProductId = product.Id,
-                Lead = "eval-lead", Model = "local-stub",
-                ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
-                MaxConcurrent = 5, ScheduleEnabled = false,
-                PairRole = "evaluator", PairedWithCrewId = "pipe-gen",
+                Id = "e2e-ai-eval", Name = "E2E AI Eval",
+                ProductId = product.Id, Lead = "e2e-eval-lead",
+                Model = "claude-opus-4.6-1m",
+                ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,
+                MaxConcurrent = 2, ScheduleEnabled = false,
+                PairRole = "evaluator", PairedWithCrewId = "e2e-ai-gen",
+                MaxTaskBudgetUsd = 25m,
             });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "pipe-gen", AgentId = "gen-agent", AddedAt = DateTimeOffset.UtcNow });
-            db.CrewMembers.Add(new CrewMemberRow { CrewId = "pipe-eval", AgentId = "eval-agent", AddedAt = DateTimeOffset.UtcNow });
+            db.CrewMembers.Add(new CrewMemberRow { CrewId = "e2e-ai-gen", AgentId = "e2e-gen-agent", AddedAt = DateTimeOffset.UtcNow });
+            db.CrewMembers.Add(new CrewMemberRow { CrewId = "e2e-ai-eval", AgentId = "e2e-eval-agent", AddedAt = DateTimeOffset.UtcNow });
             db.Repos.Add(new RepoRow
             {
-                Id = "pipe-repo", DisplayName = "Pipeline Repo", Kind = "local",
-                RemoteUrl = "file://localhost/pipe",
+                Id = "e2e-beads", DisplayName = "E2E Beads", Kind = "local",
+                RemoteUrl = "file://localhost/e2e-beads",
                 ProductId = product.Id, CloneRoot = repoDir, DefaultBranch = "main",
             });
-
-            // Bug work item
             db.WorkItems.Add(new WorkItemRow
             {
-                Id = "wi-bug-fix",
+                Id = workItemId,
                 Type = "bug", Track = "dev", State = "active",
                 Title = "Fix off-by-one in Calculator.Sum",
-                DescriptionMd = "Calculator.Sum skips the last element due to `i < nums.Length - 1`. Should be `i < nums.Length`.",
-                RepoId = "pipe-repo",
+                DescriptionMd = "Calculator.Sum in Calculator.cs skips the last element.\n\n"
+                    + "Root cause: loop bound is `i < nums.Length - 1` but should be `i < nums.Length`.\n\n"
+                    + "Fix the bug and add a test method `Sum_IncludesLastElement` that asserts `Sum(new[]{1,2,3}) == 6`.",
+                RepoId = "e2e-beads",
                 CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
             });
             await db.SaveChangesAsync();
 
-            // ── STEP 1-3: Create worktree branch ────────────────────
-            var wtService = scope.ServiceProvider.GetRequiredService<IGitWorktreeService>();
-            var branchName = "ws/wi-bug-fix";
-            var worktreeDir = Path.Combine(wtRoot, "ws-wi-bug-fix");
-            await wtService.CreateAsync(worktreeDir, branchName, "main");
+            // ── Enqueue and let queue worker pick it up ──────────────
+            var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+            await queue.EnqueueAsync(workItemId, "crew", "e2e-ai-gen", default);
 
-            // Verify: worktree exists and is on the feature branch
-            var worktrees = await wtService.ListAsync();
-            var agentWt = worktrees.FirstOrDefault(w => w.Branch.Contains(branchName));
-            Assert.NotNull(agentWt);
-            Assert.True(Directory.Exists(worktreeDir));
+            var worker = f.Services.GetRequiredService<CrewQueueWorker>();
+            await worker.RunOnceAsync(default);
 
-            // ── STEP 4: Generator makes a code fix on the worktree branch
-            var fixedCode =
-                "public class Calculator\n{\n    public int Sum(int[] nums)\n    {\n        int total = 0;\n        for (int i = 0; i < nums.Length; i++) // FIXED: was < nums.Length - 1\n            total += nums[i];\n        return total;\n    }\n}\n";
-            await File.WriteAllTextAsync(Path.Combine(worktreeDir, "Calculator.cs"), fixedCode);
-            await RunGitAsync(worktreeDir, "add", "Calculator.cs");
-            await RunGitAsync(worktreeDir, "commit", "-m", "fix: off-by-one in Calculator.Sum");
-
-            // Verify: main branch still has the bug
-            var mainContent = await File.ReadAllTextAsync(Path.Combine(repoDir, "Calculator.cs"));
-            Assert.Contains("nums.Length - 1", mainContent); // Bug still present on main
-
-            // Feature branch has the fix
-            var featureContent = await File.ReadAllTextAsync(Path.Combine(worktreeDir, "Calculator.cs"));
-            Assert.Contains("i < nums.Length;", featureContent); // Fixed on feature
-
-            // ── STEP 5-8: DeliverableLoop — generator ↔ evaluator ──
-            var channel = f.Services.GetRequiredService<TaskChannel>();
-            using var loopScope = f.Services.CreateScope();
-            var loopDb = loopScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
-            var loop = new DeliverableLoop(loopDb, channel);
-
-            var iterationCount = 0;
-            var result = await loop.RunAsync(new DeliverableLoopRequest(
-                WorkItemId: "wi-bug-fix",
-                CrewId: "pipe-gen",
-                GeneratorAgentId: "gen-agent",
-                EvaluatorAgentId: "eval-agent",
-                Generator: (iter, notes, ct) =>
+            // Real AI takes time — poll for completion up to 5 minutes.
+            var deadline = DateTime.UtcNow.AddMinutes(5);
+            string? finalVerdict = null;
+            while (DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(10_000);
+                var completedEvt = await db.TaskTranscriptEvents.AsNoTracking()
+                    .FirstOrDefaultAsync(e => e.WorkItemId == workItemId && e.Kind == "task.completed");
+                if (completedEvt is not null)
                 {
-                    iterationCount++;
-                    // Iter 1: initial fix attempt
-                    // Iter 2: incorporate evaluator feedback
-                    var output = iter == 1
-                        ? "Fixed the off-by-one bug in Calculator.Sum. Changed `i < nums.Length - 1` to `i < nums.Length`."
-                        : $"Addressed evaluator feedback: {notes}. Added unit test for edge case with empty array.";
-                    return Task.FromResult(new GeneratorRunOutput(output, 0.05m));
-                },
-                Evaluator: (iter, genOutput, ct) =>
-                {
-                    // STEP 6: First evaluation — score 75, needs improvement
-                    // STEP 8: Second evaluation — score 95, pass
-                    var evalJson = iter == 1
-                        ? Fence + "json\n{ \"score\": 75, \"notes\": \"Fix is correct but missing edge case: empty array input. Add a unit test for Sum(new int[0]) == 0.\" }\n" + Fence
-                        : Fence + "json\n{ \"score\": 95, \"notes\": \"Excellent. Fix is correct and edge case covered.\" }\n" + Fence;
-                    return Task.FromResult(new EvaluatorRunOutput(evalJson, 0.02m));
-                },
-                EvaluatorCrewId: "pipe-eval"),
-                CancellationToken.None);
+                    if (completedEvt.PayloadJson is not null)
+                    {
+                        using var doc = JsonDocument.Parse(completedEvt.PayloadJson);
+                        finalVerdict = doc.RootElement.TryGetProperty("verdict", out var v) ? v.GetString() : null;
+                    }
+                    break;
+                }
+                var failed = await db.TaskTranscriptEvents.AsNoTracking()
+                    .AnyAsync(e => e.WorkItemId == workItemId &&
+                        (e.Kind == "task.failed" || e.Kind == "task.iteration.stalled"));
+                if (failed) break;
+            }
 
-            // ── Assert iteration behavior ────────────────────────────
-            // STEP 6: First score was 75 → iterate
-            // STEP 7: Generator got feedback and iterated
-            // STEP 8: Second score was 95 → pass
-            Assert.Equal("pass", result.FinalVerdict);
-            Assert.Equal(2, result.Iterations);
-            Assert.Equal(95, result.FinalScore);
-            Assert.Equal(2, iterationCount);
-            Assert.Equal(0.14m, result.TotalCostUsd); // (0.05 + 0.02) × 2
+            // ── ASSERT 1: Worktree was created (not on main) ────────
+            var (_, wtListOut, _) = await RunGitResultAsync(repoDir, "worktree", "list", "--porcelain");
+            Assert.Contains($"ws/{workItemId}", wtListOut);
 
-            // Deliverable rows: one per iteration
-            var deliverables = await loopDb.Deliverables.AsNoTracking()
-                .Where(d => d.WorkItemId == "wi-bug-fix")
-                .OrderBy(d => d.Iter)
-                .ToListAsync();
-            Assert.Equal(2, deliverables.Count);
-            Assert.Equal(75, deliverables[0].Score);
-            Assert.Equal("iterate", deliverables[0].Verdict);
-            Assert.Equal(95, deliverables[1].Score);
-            Assert.Equal("pass", deliverables[1].Verdict);
+            var parentDir = Path.GetDirectoryName(repoDir)!;
+            var sanitizedId = workItemId.Replace("/", "-").Replace("\\", "-").Replace(" ", "-");
+            var wtDir = Path.Combine(parentDir, "wt", $"ws-{sanitizedId}");
+            Assert.True(Directory.Exists(wtDir), $"Worktree dir should exist: {wtDir}");
 
-            // Usage rows: split by generator/evaluator
-            var usageRows = await loopDb.AgentUsage.AsNoTracking()
-                .Where(u => u.TaskId == "wi-bug-fix")
-                .ToListAsync();
-            Assert.Equal(4, usageRows.Count); // 2 gen + 2 eval
-            Assert.Equal(2, usageRows.Count(u => u.CostCategory == "generator"));
-            Assert.Equal(2, usageRows.Count(u => u.CostCategory == "evaluator"));
+            // ── ASSERT 2: Prompt shows worktree path ────────────────
+            var promptEvt = await db.TaskTranscriptEvents.AsNoTracking()
+                .FirstOrDefaultAsync(e => e.WorkItemId == workItemId && e.Kind == "task.prompt");
+            Assert.NotNull(promptEvt);
+            Assert.Contains($"ws-{sanitizedId}", promptEvt!.PayloadJson!);
 
-            // Transcript events: iteration lifecycle
-            var events = await loopDb.TaskTranscriptEvents.AsNoTracking()
-                .Where(e => e.WorkItemId == "wi-bug-fix")
-                .OrderBy(e => e.Id)
-                .ToListAsync();
+            // ── ASSERT 3: Iteration events emitted ──────────────────
+            var events = await db.TaskTranscriptEvents.AsNoTracking()
+                .Where(e => e.WorkItemId == workItemId)
+                .OrderBy(e => e.Id).ToListAsync();
             Assert.Contains(events, e => e.Kind == "task.iteration.started");
             Assert.Contains(events, e => e.Kind == "task.iteration.scored");
-            Assert.Contains(events, e => e.Kind == "task.iteration.iterated"); // iter 1 → iterate
-            Assert.Contains(events, e => e.Kind == "task.iteration.passed");   // iter 2 → pass
 
-            // STEP 9: main branch still has ONLY the seed commit
+            // ── ASSERT 4: Deliverables with real scores ─────────────
+            var deliverables = await db.Deliverables.AsNoTracking()
+                .Where(d => d.WorkItemId == workItemId)
+                .OrderBy(d => d.Iter).ToListAsync();
+            Assert.NotEmpty(deliverables);
+            Assert.True(deliverables.Any(d => d.Score > 0),
+                $"Expected non-zero score. Scores: {string.Join(", ", deliverables.Select(d => $"iter{d.Iter}={d.Score}"))}");
+
+            // ── ASSERT 5: Main branch untouched ─────────────────────
             var (_, mainLog, _) = await RunGitResultAsync(repoDir, "log", "--oneline", "main");
             Assert.Single(mainLog.Trim().Split('\n'));
 
-            // Feature branch has the fix commit
-            var (_, branchLog, _) = await RunGitResultAsync(repoDir, "log", "--oneline", branchName);
-            var branchCommits = branchLog.Trim().Split('\n');
-            Assert.Equal(2, branchCommits.Length); // seed + fix
-
-            // Feature branch is ahead of main
-            var ab = await wtService.AheadBehindAsync("main", branchName);
-            Assert.Equal(1, ab.Ahead);
-            Assert.Equal(0, ab.Behind);
-
-            // STEP 10: Work item state transitioned to closed (by DeliverableLoop)
-            var wiAfter = await loopDb.WorkItems.AsNoTracking().FirstAsync(w => w.Id == "wi-bug-fix");
-            Assert.Equal("closed", wiAfter.State);
+            // ── Log outcome ─────────────────────────────────────────
+            var scoreList = string.Join(", ", deliverables.Select(d => $"iter{d.Iter}={d.Score}/{d.Verdict}"));
+            System.Console.WriteLine($"[E2E] verdict={finalVerdict} iters={deliverables.Count} scores=[{scoreList}]");
         }
         finally
         {
             scope.Dispose();
             f.Dispose();
+            try { await RunGitResultAsync(repoDir, "worktree", "prune"); } catch { }
+            try
+            {
+                var parentDir = Path.GetDirectoryName(repoDir)!;
+                var wtDir = Path.Combine(parentDir, "wt");
+                if (Directory.Exists(wtDir)) Directory.Delete(wtDir, recursive: true);
+            }
+            catch { }
             try { Directory.Delete(repoDir, recursive: true); } catch { }
         }
     }

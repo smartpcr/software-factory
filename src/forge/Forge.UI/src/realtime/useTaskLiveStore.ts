@@ -53,7 +53,9 @@ export interface TaskExecutionSnapshot {
   evaluatorCrewId?: string | null;
   evaluatorCrewName?: string | null;
   generatorAgentId?: string | null;
+  generatorAgentName?: string | null;
   evaluatorAgentId?: string | null;
+  evaluatorAgentName?: string | null;
   currentIteration: number;
   currentScore?: number | null;
   currentVerdict?: string | null;

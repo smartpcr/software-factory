@@ -397,67 +397,66 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // 3) On pass, create PR and transition work item to "resolved".
 
             // (1) Worktree setup — create a dedicated branch + directory for
-            //     this work item. The agent's cwd becomes the NEW worktree
-            //     path, not the repo clone root (which is the main branch).
-            var worktreeService = scope.ServiceProvider.GetRequiredService<Git.IGitWorktreeService>();
-            var worktreeOptions = scope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<Git.GitWorktreeOptions>>().Value;
+            //     this work item. We run git directly against the repo clone
+            //     root (not the singleton GitWorktreeService, which is pinned
+            //     to a single RepoPath from config).
             var branchName = $"ws/{workItemId}";
             var baseBranch = "main";
+            string? repoCloneRoot = null;
             if (!string.IsNullOrEmpty(wi?.RepoId))
             {
                 var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
                 if (!string.IsNullOrEmpty(repo?.DefaultBranch))
                     baseBranch = repo.DefaultBranch;
+                if (!string.IsNullOrEmpty(repo?.CloneRoot) && Directory.Exists(repo.CloneRoot))
+                    repoCloneRoot = repo.CloneRoot;
             }
 
-            // Compute a new path under WorktreeRoot for this worktree.
-            // e.g. C:\forge\atlas\wt\ws-WI-37204296
-            // When WorktreeRoot is not configured, derive it from the repo clone
-            // root so the agent always works on a branch, never on main.
-            var wtRoot = worktreeOptions.WorktreeRoot;
-            if (string.IsNullOrEmpty(wtRoot) && !string.IsNullOrEmpty(worktreePath) && worktreePath != Path.GetTempPath())
+            if (!string.IsNullOrEmpty(repoCloneRoot))
             {
-                // Derive a 'wt' sibling directory next to the clone root.
-                var parent = Path.GetDirectoryName(worktreePath);
-                if (!string.IsNullOrEmpty(parent))
-                {
-                    wtRoot = Path.Combine(parent, "wt");
-                    Directory.CreateDirectory(wtRoot);
-                }
-            }
+                // Compute worktree directory: {cloneRoot}/../wt/{sanitizedId}
+                var parentDir = Path.GetDirectoryName(repoCloneRoot)!;
+                var wtRoot = Path.Combine(parentDir, "wt");
+                var sanitizedId = workItemId.Replace("/", "-").Replace("\\", "-").Replace(" ", "-");
+                var worktreeDir = Path.Combine(wtRoot, $"ws-{sanitizedId}");
 
-            var sanitizedId = workItemId.Replace("/", "-").Replace("\\", "-");
-            var worktreeDir = !string.IsNullOrEmpty(wtRoot)
-                ? Path.Combine(wtRoot, $"ws-{sanitizedId}")
-                : "";
-
-            if (!string.IsNullOrEmpty(worktreeDir))
-            {
                 try
                 {
-                    var existing = await worktreeService.ListAsync(ct);
-                    var match = existing.FirstOrDefault(w => w.Branch.EndsWith(branchName));
-                    if (match is not null)
+                    // Check if worktree already exists for this branch.
+                    var (listCode, listOut, _) = await RunGitAsync(repoCloneRoot, "worktree", "list", "--porcelain");
+                    var existingWtPath = ParseWorktreePath(listOut, branchName);
+
+                    if (!string.IsNullOrEmpty(existingWtPath) && Directory.Exists(existingWtPath))
                     {
-                        // Worktree already exists — reuse its path.
-                        worktreePath = match.Path;
+                        worktreePath = existingWtPath;
                         this.logger.LogInformation(
                             "Reusing existing worktree: path={Path} branch={Branch}",
                             worktreePath, branchName);
                     }
                     else
                     {
-                        await worktreeService.CreateAsync(worktreeDir, branchName, baseBranch, ct);
-                        worktreePath = worktreeDir;
-                        this.logger.LogInformation(
-                            "Created worktree: path={Path} branch={Branch} base={Base}",
-                            worktreePath, branchName, baseBranch);
+                        // Create the worktree root directory and the worktree.
+                        Directory.CreateDirectory(wtRoot);
+                        var (code, _, stderr) = await RunGitAsync(repoCloneRoot,
+                            "worktree", "add", "-b", branchName, worktreeDir, baseBranch);
+                        if (code == 0)
+                        {
+                            worktreePath = worktreeDir;
+                            this.logger.LogInformation(
+                                "Created worktree: path={Path} branch={Branch} base={Base}",
+                                worktreePath, branchName, baseBranch);
+                        }
+                        else
+                        {
+                            this.logger.LogWarning(
+                                "git worktree add failed (exit {Code}): {Stderr}", code, stderr);
+                        }
                     }
                 }
                 catch (Exception ex)
                 {
                     this.logger.LogWarning(ex,
-                        "Worktree creation failed for wi={Wi}, continuing with existing path", workItemId);
+                        "Worktree creation failed for wi={Wi}, continuing with repo root", workItemId);
                 }
             }
 
@@ -588,20 +587,38 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 var evalBackend = string.Equals(evalBackendStr, "claude", StringComparison.OrdinalIgnoreCase)
                     ? AgentBackend.Claude : AgentBackend.Copilot;
 
+                // The evaluator uses SDK mode but with a system message that
+                // explicitly forbids tool use and demands structured JSON output.
+                // This ensures the response is text-only with a parseable score.
+                var evalSoulForScoring = (string.IsNullOrEmpty(evalSoul) ? "" : evalSoul + "\n\n---\n\n")
+                    + "CRITICAL RULES FOR THIS SESSION:\n"
+                    + "1. Do NOT call any tools. Do NOT use grep, view, edit, or any other tool.\n"
+                    + "2. Review the work output provided in the user message.\n"
+                    + "3. End your response with a fenced JSON block:\n"
+                    + "```json\n{ \"score\": <0-100>, \"notes\": \"<feedback>\" }\n```\n"
+                    + "4. Score >= 90 = pass, 70-89 = iterate, < 70 = reject.\n";
+
                 var evalContext = new AgentContext(
                     CrewId: evaluatorCrewId!,
                     Model: evalModel,
-                    SoulMd: evalSoul,
+                    SoulMd: evalSoulForScoring,
                     WorktreePath: worktreePath,
                     AllowedTools: Array.Empty<string>(),
                     MaxTaskBudgetUsd: evalCrew.MaxTaskBudgetUsd,
                     Backend: evalBackend,
                     InvokeMode: AgentInvokeMode.Sdk);
 
-                var evalPrompt = $"You are a critical code reviewer. Review the following work output from iteration {iter}.\n\n"
-                    + $"Provide a JSON response with: score (0-100), verdict (pass/iterate/reject), and notes.\n"
-                    + $"Score >= 90 means pass. Score 70-89 means iterate with feedback. Score < 70 means reject.\n\n"
-                    + $"Work output:\n{genOutput.Substring(0, Math.Min(genOutput.Length, 50000))}";
+                var evalPrompt = "You are a critical code reviewer scoring agent work.\n\n"
+                    + "IMPORTANT: You MUST end your response with a fenced JSON block in exactly this format:\n"
+                    + "```json\n"
+                    + "{ \"score\": <0-100>, \"notes\": \"<your feedback>\" }\n"
+                    + "```\n\n"
+                    + "Scoring rubric:\n"
+                    + "- score >= 90: pass (code is correct, tested, ready to merge)\n"
+                    + "- score 70-89: iterate (has issues that need fixing — describe them in notes)\n"
+                    + "- score < 70: reject (fundamentally wrong approach)\n\n"
+                    + $"Review the following work output from iteration {iter}:\n\n"
+                    + genOutput.Substring(0, Math.Min(genOutput.Length, 50000));
 
                 var invocation = await runner.StartAsync(workItemId, evaluatorAgentId, evalPrompt, evalContext, iterCt);
                 var evalOutput = new System.Text.StringBuilder();
@@ -1012,4 +1029,50 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
     /// <summary>Why a crew's head row wasn't claimed on a given tick.</summary>
     public sealed record ClaimSkip(string CrewId, string Reason, string? Detail);
+
+    // ── Git helpers for worktree management ──────────────────────────────
+
+    private static async Task<(int code, string stdout, string stderr)> RunGitAsync(
+        string cwd, params string[] args)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("git")
+        {
+            WorkingDirectory = cwd,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var proc = System.Diagnostics.Process.Start(psi)!;
+        var stdout = await proc.StandardOutput.ReadToEndAsync();
+        var stderr = await proc.StandardError.ReadToEndAsync();
+        await proc.WaitForExitAsync();
+        return (proc.ExitCode, stdout, stderr);
+    }
+
+    /// <summary>
+    /// Parses <c>git worktree list --porcelain</c> output and returns the
+    /// filesystem path of the worktree whose branch ends with <paramref name="branchSuffix"/>.
+    /// Returns null when no match is found.
+    /// </summary>
+    private static string? ParseWorktreePath(string porcelainOutput, string branchSuffix)
+    {
+        string? currentPath = null;
+        foreach (var line in porcelainOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var trimmed = line.TrimEnd('\r');
+            if (trimmed.StartsWith("worktree "))
+            {
+                currentPath = trimmed["worktree ".Length..];
+            }
+            else if (trimmed.StartsWith("branch ") && currentPath is not null)
+            {
+                var branch = trimmed["branch ".Length..];
+                if (branch.EndsWith(branchSuffix))
+                    return currentPath;
+            }
+        }
+        return null;
+    }
 }

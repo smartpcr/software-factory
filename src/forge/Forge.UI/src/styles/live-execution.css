@@ -109,6 +109,68 @@
 }
 .live-exec__budget-fill.over { background: var(--danger); }
 
+/* ── Standalone prompt section (full-width, between header and transcript) ─ */
+
+.live-exec__prompts {
+  grid-column: 1 / -1;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.live-exec__prompts-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid var(--border);
+}
+.live-exec__prompts-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.live-exec__prompts-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.live-exec__prompts-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 12px 16px;
+}
+.live-exec__prompt-standalone {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.live-exec__prompt-standalone .live-exec__prompt-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+}
+.live-exec__prompt-standalone .live-exec__prompt-pre {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  background: var(--bg-inset, var(--bg-canvas));
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+  color: var(--text-primary);
+  user-select: text;
+  border: 1px solid var(--border);
+}
+
 /* ── Center column — transcript ────────────────────────────────────────── */
 
 .live-exec__center {

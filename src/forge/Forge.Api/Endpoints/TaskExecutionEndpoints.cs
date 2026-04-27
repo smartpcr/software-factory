@@ -196,6 +196,21 @@ public static class TaskExecutionEndpoints
         int? currentScore = current?.Score;
         string? currentVerdict = current?.Verdict;
 
+        // Resolve agent full names.
+        string? generatorAgentName = null;
+        string? evaluatorAgentName = null;
+        var agentIds = new HashSet<string>();
+        if (!string.IsNullOrEmpty(generatorAgentId)) agentIds.Add(generatorAgentId);
+        if (!string.IsNullOrEmpty(evaluatorAgentId)) agentIds.Add(evaluatorAgentId);
+        if (agentIds.Count > 0)
+        {
+            var agentRows = await db.Agents.AsNoTracking()
+                .Where(a => agentIds.Contains(a.Id))
+                .ToListAsync(ct);
+            generatorAgentName = agentRows.FirstOrDefault(a => a.Id == generatorAgentId)?.Name;
+            evaluatorAgentName = agentRows.FirstOrDefault(a => a.Id == evaluatorAgentId)?.Name;
+        }
+
         var snap = new TaskExecutionSnapshot(
             WorkItemId: id,
             GeneratorCrewId: generatorCrewId,
@@ -203,7 +218,9 @@ public static class TaskExecutionEndpoints
             EvaluatorCrewId: evaluatorCrewId,
             EvaluatorCrewName: evaluatorCrewName,
             GeneratorAgentId: generatorAgentId,
+            GeneratorAgentName: generatorAgentName,
             EvaluatorAgentId: evaluatorAgentId,
+            EvaluatorAgentName: evaluatorAgentName,
             CurrentIteration: currentIter,
             CurrentScore: currentScore,
             CurrentVerdict: currentVerdict,

@@ -12,6 +12,7 @@ import { WorkItemDetailPanel } from '@/workitems/WorkItemDetailPanel';
 import { BulkActionBar } from '@/workitems/BulkActionBar';
 import { SyncDialog } from '@/workitems/SyncDialog';
 import { NewStoryModal } from '@/board/NewStoryModal';
+import { NewWorkItemModal } from '@/workitems/NewWorkItemModal';
 import type { WorkItem } from '@/workitems/workItemTypes';
 
 import '@/styles/work-items.css';
@@ -48,6 +49,7 @@ export function WorkItemsView() {
   const panelExpanded = useWitStore((s) => s.panelExpanded);
   const [syncOpen, setSyncOpen] = useState(false);
   const [storyModalOpen, setStoryModalOpen] = useState(false);
+  const [newItemOpen, setNewItemOpen] = useState(false);
 
   // Phase 12.6 — pull from the store. Falls back to SAMPLE_WORK_ITEMS when
   // the API is offline (handled inside useWorkItemsStore.load()).
@@ -116,7 +118,7 @@ export function WorkItemsView() {
             </svg>
             Sync now
           </button>
-          <button className="btn btn-primary" type="button" title="Phase 12.3 — implementation step">
+          <button className="btn btn-primary" type="button" title="Create a new work item" onClick={() => setNewItemOpen(true)}>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
               <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
             </svg>
@@ -155,6 +157,7 @@ export function WorkItemsView() {
       <BulkActionBar count={selection.size} />
       <SyncDialog open={syncOpen} onClose={() => setSyncOpen(false)} />
       <NewStoryModal open={storyModalOpen} onClose={() => setStoryModalOpen(false)} />
+      <NewWorkItemModal open={newItemOpen} onClose={() => setNewItemOpen(false)} />
     </section>
   );
 }
