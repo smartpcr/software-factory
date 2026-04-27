@@ -379,6 +379,15 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             this.logger.LogInformation(
                 "Agent invocation completed: wi={Wi} agent={Agent} crew={Crew} invocation={Inv}",
                 workItemId, agentId, crewId, invocation.InvocationId);
+
+            // Transition queue row: picked-up → completed.
+            await this.CompleteQueueRowAsync(workItemId, ct);
+            await this.taskChannel.EmitAsync(workItemId, "task.completed", new
+            {
+                invocationId = invocation.InvocationId,
+                agentId,
+                crewId,
+            }, crewId: crewId, ct: ct);
         }
         catch (OperationCanceledException) { /* shutdown */ }
         catch (Exception ex)
@@ -392,10 +401,39 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 crewId,
                 error = ex.Message,
             }, crewId: crewId, ct: ct);
+
+            // On failure, also complete the queue row so it doesn't stay
+            // picked-up forever (abandoned recovery is a 24h fallback).
+            await this.CompleteQueueRowAsync(workItemId, ct);
         }
         finally
         {
             this.worktreeFeed.Unsubscribe(workItemId);
+        }
+    }
+
+    private async Task CompleteQueueRowAsync(string workItemId, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = this.scopeFactory.CreateScope();
+            var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            // Find the picked-up row. Client-side ordering because SQLite
+            // can't ORDER BY DateTimeOffset reliably.
+            var rows = await db.TaskQueue
+                .Where(r => r.WorkItemId == workItemId && r.State == TaskQueueStates.PickedUp)
+                .ToListAsync(ct);
+            var row = rows.OrderByDescending(r => r.EnqueuedAt).FirstOrDefault();
+            if (row is not null)
+            {
+                await queue.CompleteAsync(row.Id, ct);
+                await this.BroadcastQueueChangedAsync(row, "completed", ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogDebug(ex, "Failed to complete queue row for {Wi}", workItemId);
         }
     }
 
