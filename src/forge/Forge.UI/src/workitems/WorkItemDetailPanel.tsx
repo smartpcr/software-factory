@@ -305,6 +305,25 @@ export function WorkItemDetailPanel({ item }: Props) {
         </nav>
       )}
 
+      <div style={{ display: 'flex', gap: 8, padding: '8px 0' }}>
+        <button
+          className="btn btn-primary"
+          style={{ flex: 1, fontSize: 12 }}
+          onClick={() => navigate(`/work-items/${encodeURIComponent(item.id)}/live`)}
+          title="Open live execution view"
+        >
+          ▶ Live Execution
+        </button>
+        <button
+          className="btn btn-secondary"
+          style={{ fontSize: 12 }}
+          onClick={() => setDispatchModalOpen(true)}
+          title="Create card & dispatch to AI crew"
+        >
+          Dispatch
+        </button>
+      </div>
+
       <section className="wit-detail-section">
         <div className="wit-detail-section-title">Assignee</div>
         <AssigneePicker
@@ -431,20 +450,6 @@ export function WorkItemDetailPanel({ item }: Props) {
       </section>
 
       <footer className="wit-detail-foot" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <button
-          className="btn btn-primary"
-          onClick={() => navigate(`/work-items/${encodeURIComponent(item.id)}/live`)}
-          title="Open live execution view"
-        >
-          Live Execution
-        </button>
-        <button
-          className="btn btn-secondary"
-          onClick={() => setDispatchModalOpen(true)}
-          title="Create card & dispatch to AI crew"
-        >
-          Dispatch
-        </button>
         <button
           className="btn btn-secondary"
           onClick={async () => {
