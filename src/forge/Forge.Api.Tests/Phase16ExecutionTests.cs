@@ -1103,4 +1103,130 @@ public class Phase16ExecutionTests
         }
         finally { scope.Dispose(); f.Dispose(); }
     }
+
+    // ── Pair lifecycle edge-cases ─────────────────────────────────────────
+
+    [Fact]
+    public async Task Delete_Paired_Crew_Should_Clear_Peer_Reference()
+    {
+        var (f, scope, db) = await BootAsync();
+        try
+        {
+            var product = await db.Products.FirstAsync();
+            db.Crews.Add(new CrewRow
+            {
+                Id = "del-gen", Name = "Engineering Gen", ProductId = product.Id,
+                Lead = "L1", Model = "claude-opus-4-7",
+                ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,
+                PairRole = "generator", PairedWithCrewId = "del-eval",
+            });
+            db.Crews.Add(new CrewRow
+            {
+                Id = "del-eval", Name = "Engineering Eval", ProductId = product.Id,
+                Lead = "L2", Model = "claude-sonnet-4-6",
+                ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
+                PairRole = "evaluator", PairedWithCrewId = "del-gen",
+            });
+            await db.SaveChangesAsync();
+
+            using var client = f.CreateClient();
+            client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
+
+            // Delete the generator side.
+            var resp = await client.DeleteAsync("/api/crews/del-gen");
+            Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
+
+            // The evaluator peer must no longer reference the deleted crew.
+            var peer = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == "del-eval");
+            Assert.Equal("standalone", peer.PairRole);
+            Assert.Null(peer.PairedWithCrewId);
+        }
+        finally { scope.Dispose(); f.Dispose(); }
+    }
+
+    [Fact]
+    public async Task Unpair_Resets_Both_Sides_To_Standalone()
+    {
+        var (f, scope, db) = await BootAsync();
+        try
+        {
+            var product = await db.Products.FirstAsync();
+            db.Crews.Add(new CrewRow
+            {
+                Id = "up-gen", Name = "Architecture Gen", ProductId = product.Id,
+                Lead = "L1", Model = "claude-opus-4-7",
+                ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,
+                PairRole = "generator", PairedWithCrewId = "up-eval",
+            });
+            db.Crews.Add(new CrewRow
+            {
+                Id = "up-eval", Name = "Architecture Eval", ProductId = product.Id,
+                Lead = "L2", Model = "claude-sonnet-4-6",
+                ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
+                PairRole = "evaluator", PairedWithCrewId = "up-gen",
+            });
+            await db.SaveChangesAsync();
+
+            using var client = f.CreateClient();
+            client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
+
+            var resp = await client.DeleteAsync("/api/crews/up-gen/pair");
+            Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
+
+            var gen = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == "up-gen");
+            var eval = await db.Crews.AsNoTracking().FirstAsync(c => c.Id == "up-eval");
+            Assert.Equal("standalone", gen.PairRole);
+            Assert.Null(gen.PairedWithCrewId);
+            Assert.Equal("standalone", eval.PairRole);
+            Assert.Null(eval.PairedWithCrewId);
+        }
+        finally { scope.Dispose(); f.Dispose(); }
+    }
+
+    [Fact]
+    public async Task Assign_On_Paired_Generator_Should_Include_EvaluatorCrewId()
+    {
+        var (f, scope, db) = await BootAsync();
+        try
+        {
+            var product = await db.Products.FirstAsync();
+            db.Crews.Add(new CrewRow
+            {
+                Id = "asg-gen", Name = "Engineering Gen", ProductId = product.Id,
+                Lead = "lead-g", Model = "claude-opus-4-7",
+                ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,
+                PairRole = "generator", PairedWithCrewId = "asg-eval",
+            });
+            db.Crews.Add(new CrewRow
+            {
+                Id = "asg-eval", Name = "Engineering Eval", ProductId = product.Id,
+                Lead = "lead-e", Model = "claude-sonnet-4-6",
+                ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
+                PairRole = "evaluator", PairedWithCrewId = "asg-gen",
+            });
+            db.WorkItems.Add(new WorkItemRow
+            {
+                Id = "wi-asg-pair", Type = "step", Track = "design",
+                State = "active", Title = "Pair Assign",
+                CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+
+            using var client = f.CreateClient();
+            client.DefaultRequestHeaders.Add("X-Forge-User", "lead-g");
+
+            var resp = await client.PostAsJsonAsync("/api/crews/asg-gen/assign", new
+            {
+                workItemId = "wi-asg-pair",
+            });
+            Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
+
+            // The AssignedToJson should contain evaluatorCrewId for paired crews.
+            var wi = await db.WorkItems.AsNoTracking().FirstAsync(w => w.Id == "wi-asg-pair");
+            Assert.NotNull(wi.AssignedToJson);
+            Assert.Contains("evaluatorCrewId", wi.AssignedToJson);
+            Assert.Contains("asg-eval", wi.AssignedToJson);
+        }
+        finally { scope.Dispose(); f.Dispose(); }
+    }
 }

@@ -121,17 +121,28 @@ public sealed class TaskQueueService : ITaskQueueService
         if (row is null) return null;
 
         // Stage 2 fast-path: when the team maps to exactly one crew, route
-        // through immediately. Multi-crew teams stay at awaiting-route until
-        // a lead picks via the route endpoint.
+        // through immediately. Multi-crew teams: prefer the on-shift crew
+        // (day/night) so items don't stall at awaiting-route.
         if (row.TargetKind == "team")
         {
             var teamCrews = await this.db.Crews.AsNoTracking()
                 .Where(c => c.Name.StartsWith(row.TargetId))
-                .Select(c => c.Id)
                 .ToListAsync(ct);
+            string? routeTarget = null;
             if (teamCrews.Count == 1)
             {
-                return await this.RouteToCrewAsync(queueId, teamCrews[0], byUserId, ct) ?? row;
+                routeTarget = teamCrews[0].Id;
+            }
+            else if (teamCrews.Count > 1)
+            {
+                // Prefer the generator-side crew if a pair exists.
+                var genCrew = teamCrews.FirstOrDefault(c =>
+                    string.Equals(c.PairRole, "generator", StringComparison.OrdinalIgnoreCase));
+                routeTarget = genCrew?.Id ?? teamCrews[0].Id;
+            }
+            if (routeTarget is not null)
+            {
+                return await this.RouteToCrewAsync(queueId, routeTarget, byUserId, ct) ?? row;
             }
         }
         return row;

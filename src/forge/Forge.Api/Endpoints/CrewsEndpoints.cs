@@ -437,6 +437,22 @@ public static class CrewsEndpoints
         if (row is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
         var gate = RequireRole.CheckForProduct(ctx, db, row.ProductId, RequireRole.ProductOwner);
         if (gate is not null) return gate;
+
+        // Clear the paired crew's reference before removing so the peer
+        // doesn't end up with a stale PairedWithCrewId pointing to a
+        // deleted row.
+        if (!string.IsNullOrEmpty(row.PairedWithCrewId))
+        {
+            var peer = await db.Crews.FirstOrDefaultAsync(c => c.Id == row.PairedWithCrewId, ct);
+            if (peer is not null)
+            {
+                peer.PairRole = "standalone";
+                peer.PairedWithCrewId = null;
+                var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
+                db.CrewHistory.Add(new CrewHistoryRow { CrewId = peer.Id, Kind = "crew-unpaired", FromValue = row.Id, ByUserId = caller });
+            }
+        }
+
         db.Crews.Remove(row);
         await db.SaveChangesAsync(ct);
         return Results.NoContent();
@@ -538,11 +554,16 @@ public static class CrewsEndpoints
         // (13.4 / 13.5) consume `generatorAgentId` and `evaluatorAgentId` when
         // they read this back; the legacy `agentId` mirror is kept for older
         // consumers that haven't migrated to the pair shape yet.
+        // Phase 16.2: also include evaluatorCrewId when the crew is paired.
         var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == req.WorkItemId, ct);
         if (wi is null) return Results.Problem(title: $"Work item {req.WorkItemId} not found", statusCode: 404);
         var evalJson = string.IsNullOrEmpty(evaluator) ? "null" : $"\"{evaluator}\"";
+        var evalCrewId = string.Equals(crew.PairRole, "generator", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(crew.PairedWithCrewId)
+            ? crew.PairedWithCrewId
+            : null;
+        var evalCrewJson = evalCrewId is not null ? $",\"evaluatorCrewId\":\"{evalCrewId}\"" : "";
         wi.AssignedToJson =
-            $"{{\"crewId\":\"{id}\",\"agentId\":\"{generator}\",\"generatorAgentId\":\"{generator}\",\"evaluatorAgentId\":{evalJson},\"by\":\"{caller}\"}}";
+            $"{{\"crewId\":\"{id}\",\"agentId\":\"{generator}\",\"generatorAgentId\":\"{generator}\",\"evaluatorAgentId\":{evalJson}{evalCrewJson},\"by\":\"{caller}\"}}";
         await db.SaveChangesAsync(ct);
 
         // Enqueue into the task queue so the inbox shows the assignment
@@ -879,7 +900,48 @@ public static class CrewsEndpoints
         // capability picker + soul.md prompt-cache prefix work unchanged.
         await EnsureTeamCapabilitiesAsync(db, caller, ct);
 
-        if (actions.Count > 0) await db.SaveChangesAsync(ct);
+        // Step 6 — split each team's roster evenly between day and night crews.
+        // For every day crew that has a night sibling (ParentCrewId == day.Id),
+        // move the second half of the day roster into the night crew so both
+        // shifts have the same member count.
+        var nightCrews = crews.Where(c => c.ParentCrewId is not null).ToList();
+        foreach (var nightCrew in nightCrews)
+        {
+            var dayCrew = crews.FirstOrDefault(c => c.Id == nightCrew.ParentCrewId);
+            if (dayCrew is null) continue;
+
+            var dayMembers = (await db.CrewMembers
+                .Where(m => m.CrewId == dayCrew.Id)
+                .ToListAsync(ct))
+                .OrderBy(m => m.AddedAt)
+                .ToList();
+            var nightMembers = await db.CrewMembers
+                .Where(m => m.CrewId == nightCrew.Id)
+                .ToListAsync(ct);
+
+            // Only rebalance when the night crew is empty (initial distribution)
+            // or significantly unbalanced.
+            if (nightMembers.Count > 0) continue;
+            if (dayMembers.Count < 2) continue;
+
+            var half = (int)Math.Ceiling(dayMembers.Count / 2.0);
+            var toMove = dayMembers.Skip(half).ToList();
+            foreach (var m in toMove)
+            {
+                db.CrewMembers.Remove(m);
+                db.CrewMembers.Add(new CrewMemberRow
+                {
+                    CrewId = nightCrew.Id,
+                    AgentId = m.AgentId,
+                    Role = m.Role,
+                    AddedBy = caller ?? "auto-assign",
+                });
+                db.CrewHistory.Add(new CrewHistoryRow { CrewId = dayCrew.Id, Kind = "member-move-out", ToValue = $"{m.AgentId} → {nightCrew.Id}", ByUserId = caller ?? "auto-assign" });
+                db.CrewHistory.Add(new CrewHistoryRow { CrewId = nightCrew.Id, Kind = "member-move-in", ToValue = $"{m.AgentId} ← {dayCrew.Id}", ByUserId = caller ?? "auto-assign" });
+            }
+        }
+
+        await db.SaveChangesAsync(ct);
         return actions;
     }
 
