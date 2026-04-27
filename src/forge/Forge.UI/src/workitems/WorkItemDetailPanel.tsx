@@ -1,11 +1,12 @@
-import { useMemo } from 'react';
-import type { WorkItem } from './workItemTypes';
-import { typeLabel } from './workItemTypes';
+import { useEffect, useMemo, useState } from 'react';
+import type { WorkItem, WorkItemPriority, WorkItemState } from './workItemTypes';
+import { typeLabel, WORK_ITEM_STATES } from './workItemTypes';
 import { useWitStore } from './useWitStore';
+import { useWorkItemsStore } from './useWorkItemsStore';
 import { TypeMark } from './TypeMark';
 import { StatePill } from './StatePill';
 import { RepoIcon } from '@/products/RepoIcon';
-import { SAMPLE_ITERATIONS, SAMPLE_REPOS, SAMPLE_WORK_ITEMS } from './sampleWorkItems';
+import { SAMPLE_ITERATIONS, SAMPLE_REPOS } from './sampleWorkItems';
 
 interface Props {
   item: WorkItem | null;
@@ -19,6 +20,13 @@ export function WorkItemDetailPanel({ item }: Props) {
   const focus = useWitStore((s) => s.focus);
   const expanded = useWitStore((s) => s.panelExpanded);
   const togglePanelExpanded = useWitStore((s) => s.togglePanelExpanded);
+  const allItems = useWorkItemsStore((s) => s.items);
+  const patch = useWorkItemsStore((s) => s.patch);
+
+  // Local-edit buffers so we can submit on blur/Enter without re-rendering on every keystroke.
+  const [titleDraft, setTitleDraft] = useState(item?.title ?? '');
+  const [editingTitle, setEditingTitle] = useState(false);
+  useEffect(() => { setTitleDraft(item?.title ?? ''); setEditingTitle(false); }, [item?.id, item?.title]);
 
   if (!item) {
     return (
@@ -34,8 +42,27 @@ export function WorkItemDetailPanel({ item }: Props) {
 
   const repo = SAMPLE_REPOS.find((r) => r.id === item.repoId);
   const iteration = SAMPLE_ITERATIONS.find((s) => s.ref === item.iterationRef);
-  const breadcrumb = ancestry(item);
-  const children = SAMPLE_WORK_ITEMS.filter((c) => c.parentId === item.id);
+  const breadcrumb = useMemo(() => ancestry(item, allItems), [item, allItems]);
+  const children = useMemo(() => allItems.filter((c) => c.parentId === item.id), [item, allItems]);
+
+  function commitTitle() {
+    setEditingTitle(false);
+    if (titleDraft.trim() && titleDraft !== item!.title) {
+      void patch(item!.id, { title: titleDraft.trim() });
+    } else {
+      setTitleDraft(item!.title);
+    }
+  }
+
+  function setState(s: WorkItemState) {
+    if (s !== item!.state) void patch(item!.id, { state: s });
+  }
+  function setPriority(p: WorkItemPriority) {
+    if (p !== item!.priority) void patch(item!.id, { priority: p });
+  }
+  function setPoints(p: number) {
+    if (p !== item!.points && p >= 0) void patch(item!.id, { points: p });
+  }
 
   return (
     <aside className={`wit-detail${expanded ? ' wit-detail-expanded' : ''}`}>
@@ -78,21 +105,36 @@ export function WorkItemDetailPanel({ item }: Props) {
             </button>
           </div>
         </div>
-        <h2 className="wit-detail-title">{item.title}</h2>
+        {editingTitle ? (
+          <input
+            type="text"
+            className="wit-detail-title-input"
+            value={titleDraft}
+            autoFocus
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onBlur={commitTitle}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitTitle();
+              if (e.key === 'Escape') { setTitleDraft(item.title); setEditingTitle(false); }
+            }}
+          />
+        ) : (
+          <h2
+            className="wit-detail-title wit-detail-title-editable"
+            onClick={() => setEditingTitle(true)}
+            title="Click to edit"
+          >
+            {item.title}
+          </h2>
+        )}
         <div className="wit-detail-eyebrow-row">
-          <StatePill state={item.state} />
+          <StateSelect value={item.state} onChange={setState} />
           <span className="wit-detail-eyebrow-meta">
             <span className="lbl">Iteration</span>
             <span className="val">{iteration?.label ?? '—'}</span>
           </span>
-          <span className="wit-detail-eyebrow-meta">
-            <span className="lbl">Points</span>
-            <span className="val">{item.points || '—'}</span>
-          </span>
-          <span className="wit-detail-eyebrow-meta">
-            <span className="lbl">Priority</span>
-            <span className={`val pri-${item.priority}`}>{item.priority}</span>
-          </span>
+          <PointsStepper value={item.points} onChange={setPoints} />
+          <PrioritySelect value={item.priority} onChange={setPriority} />
         </div>
       </header>
 
@@ -186,23 +228,88 @@ export function WorkItemDetailPanel({ item }: Props) {
 
       <footer className="wit-detail-foot">
         <span className="wit-detail-foot-hint">
-          Edit / push to provider lands with Phase 12.7 / 12.10. Mockup is read-only.
+          Inline edit on title / state / points / priority is live. Iteration combo + assignee picker + tag editor land with Phase 12.7 follow-up.
         </span>
       </footer>
     </aside>
   );
 }
 
-function ancestry(item: WorkItem): WorkItem[] {
+// ---- inline-edit sub-components ----------------------------------------
+
+function StateSelect({ value, onChange }: { value: WorkItemState; onChange: (s: WorkItemState) => void }) {
+  return (
+    <label className="wit-detail-eyebrow-meta wit-detail-edit-shell">
+      <span className="lbl">State</span>
+      <select
+        className="wit-detail-state-select"
+        value={value}
+        onChange={(e) => onChange(e.target.value as WorkItemState)}
+        aria-label="Work item state"
+      >
+        {WORK_ITEM_STATES.map((s) => (
+          <option key={s} value={s}>{s}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function PointsStepper({ value, onChange }: { value: number; onChange: (n: number) => void }) {
+  return (
+    <span className="wit-detail-eyebrow-meta wit-detail-edit-shell">
+      <span className="lbl">Points</span>
+      <span className="wit-detail-points-stepper">
+        <button
+          type="button"
+          aria-label="Decrement points"
+          disabled={value <= 0}
+          onClick={() => onChange(Math.max(0, value - 1))}
+        >−</button>
+        <span className="val">{value || '—'}</span>
+        <button
+          type="button"
+          aria-label="Increment points"
+          onClick={() => onChange(value + 1)}
+        >+</button>
+      </span>
+    </span>
+  );
+}
+
+function PrioritySelect({ value, onChange }: { value: WorkItemPriority; onChange: (p: WorkItemPriority) => void }) {
+  const options: WorkItemPriority[] = ['low', 'med', 'high'];
+  return (
+    <span className="wit-detail-eyebrow-meta wit-detail-edit-shell">
+      <span className="lbl">Priority</span>
+      <span className="wit-detail-pri-chips" role="radiogroup" aria-label="Priority">
+        {options.map((p) => (
+          <button
+            key={p}
+            type="button"
+            role="radio"
+            aria-checked={value === p}
+            className={`wit-detail-pri-chip pri-${p}${value === p ? ' active' : ''}`}
+            onClick={() => onChange(p)}
+          >
+            {p}
+          </button>
+        ))}
+      </span>
+    </span>
+  );
+}
+
+function ancestry(item: WorkItem, all: WorkItem[]): WorkItem[] {
   const out: WorkItem[] = [];
   const seen = new Set<string>();
   let cur: WorkItem | null = item.parentId
-    ? SAMPLE_WORK_ITEMS.find((w) => w.id === item.parentId) ?? null
+    ? all.find((w) => w.id === item.parentId) ?? null
     : null;
   while (cur && !seen.has(cur.id)) {
     seen.add(cur.id);
     out.unshift(cur);
-    cur = cur.parentId ? SAMPLE_WORK_ITEMS.find((w) => w.id === cur!.parentId) ?? null : null;
+    cur = cur.parentId ? all.find((w) => w.id === cur!.parentId) ?? null : null;
   }
   return out;
 }

@@ -16,6 +16,81 @@ import type {
   Workstream,
 } from '@/types';
 import { sampleState } from '@/sampleData';
+import type {
+  WorkItem,
+  WorkItemAssignee,
+  WorkItemPriority,
+  WorkItemState,
+  WorkItemTrack,
+  WorkItemType,
+} from '@/workitems/workItemTypes';
+
+export interface WorkItemListFilters {
+  repoId?: string;
+  iterationRef?: string;
+  track?: WorkItemTrack;
+  parentId?: string;
+  assignedTo?: string;
+  tag?: string;
+  q?: string;
+  states?: WorkItemState[];
+  types?: WorkItemType[];
+  page?: number;
+  pageSize?: number;
+}
+
+export interface WorkItemCreateBody {
+  id: string;
+  track: WorkItemTrack;
+  type: WorkItemType;
+  title: string;
+  repoId?: string | null;
+  provider?: 'ado' | 'github' | 'local';
+  providerRef?: number | null;
+  state?: WorkItemState;
+  descriptionMd?: string;
+  parentId?: string | null;
+  featureRef?: string | null;
+  iterationRef?: string;
+  areaPath?: string;
+  assignedTo?: WorkItemAssignee | null;
+  points?: number;
+  priority?: WorkItemPriority;
+  tags?: string[];
+}
+
+export interface WorkItemPatchBody {
+  title?: string;
+  descriptionMd?: string;
+  state?: WorkItemState;
+  iterationRef?: string;
+  areaPath?: string;
+  assignedTo?: WorkItemAssignee | null;
+  clearAssignedTo?: boolean;
+  points?: number;
+  priority?: WorkItemPriority;
+  tags?: string[];
+  featureRef?: string | null;
+  clearFeatureRef?: boolean;
+}
+
+export interface WorkItemSyncBody {
+  areaPath?: string | null;
+  types?: WorkItemType[];
+  assignedTo?: string | null;
+  updatedFrom?: string | null;
+  updatedTo?: string | null;
+  ignoreThrottle?: boolean;
+}
+
+export interface WorkItemSyncResult {
+  repoId: string;
+  pulled: number;
+  inserted: number;
+  updated: number;
+  skipped: number;
+  error: string | null;
+}
 
 export interface ProviderHealth {
   kind: string;
@@ -557,6 +632,88 @@ export const forgeApi = {
   /** GET /api/providers/{kind}/repos — Phase 8.5 server-driven add-repo picker. */
   async discoverProviderRepos(kind: 'ado' | 'github'): Promise<DiscoverableRepo[]> {
     return fetchJson<DiscoverableRepo[]>(`/api/providers/${encodeURIComponent(kind)}/repos`);
+  },
+
+  // ----- Phase 12 — Work Item Tracking ----------------------------------
+
+  /** GET /api/work-items with optional filters. */
+  async listWorkItems(filters: WorkItemListFilters = {}): Promise<WorkItem[]> {
+    const qs = new URLSearchParams();
+    if (filters.repoId)       qs.set('repoId', filters.repoId);
+    if (filters.iterationRef) qs.set('iterationRef', filters.iterationRef);
+    if (filters.track)        qs.set('track', filters.track);
+    if (filters.parentId)     qs.set('parentId', filters.parentId);
+    if (filters.assignedTo)   qs.set('assignedTo', filters.assignedTo);
+    if (filters.tag)          qs.set('tag', filters.tag);
+    if (filters.q)            qs.set('q', filters.q);
+    if (filters.states?.length) qs.set('state', filters.states.join(','));
+    if (filters.types?.length)  qs.set('type', filters.types.join(','));
+    if (filters.pageSize)     qs.set('pageSize', String(filters.pageSize));
+    if (filters.page)         qs.set('page', String(filters.page));
+    const url = qs.toString() ? `/api/work-items?${qs}` : '/api/work-items?pageSize=500';
+    return fetchJson<WorkItem[]>(url);
+  },
+
+  /** GET /api/work-items/{id}. */
+  async getWorkItem(id: string): Promise<WorkItem> {
+    return fetchJson<WorkItem>(`/api/work-items/${encodeURIComponent(id)}`);
+  },
+
+  /** POST /api/work-items — caller supplies the id. */
+  async createWorkItem(body: WorkItemCreateBody): Promise<WorkItem> {
+    return fetchJson<WorkItem>('/api/work-items', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** PATCH /api/work-items/{id} — opt-in If-Match for the conflict policy. */
+  async patchWorkItem(id: string, body: WorkItemPatchBody, ifMatch?: string | null): Promise<WorkItem> {
+    const headers: Record<string, string> = { 'X-Forge-User': writerHeader() };
+    if (ifMatch) headers['If-Match'] = ifMatch;
+    return fetchJson<WorkItem>(`/api/work-items/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+      headers,
+    });
+  },
+
+  /** DELETE /api/work-items/{id} (soft) or ?force=true (hard, PO-only). */
+  async deleteWorkItem(id: string, force = false): Promise<WorkItem | null> {
+    const url = `/api/work-items/${encodeURIComponent(id)}${force ? '?force=true' : ''}`;
+    if (force) {
+      await fetchJson<void>(url, { method: 'DELETE', headers: { 'X-Forge-User': writerHeader() } });
+      return null;
+    }
+    return fetchJson<WorkItem>(url, { method: 'DELETE', headers: { 'X-Forge-User': writerHeader() } });
+  },
+
+  /** POST /api/work-items/{id}/move with state and/or iterationRef. */
+  async moveWorkItem(id: string, body: { state?: WorkItem['state']; iterationRef?: string }): Promise<WorkItem> {
+    return fetchJson<WorkItem>(`/api/work-items/${encodeURIComponent(id)}/move`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/work-items/{id}/parent — null parent unsets the link. */
+  async reparentWorkItem(id: string, parentId: string | null): Promise<WorkItem> {
+    return fetchJson<WorkItem>(`/api/work-items/${encodeURIComponent(id)}/parent`, {
+      method: 'POST',
+      body: JSON.stringify({ parentId }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/work-items/sync/{repoId} — pulls remote into the local cache. */
+  async syncWorkItems(repoId: string, body: WorkItemSyncBody): Promise<WorkItemSyncResult> {
+    return fetchJson<WorkItemSyncResult>(`/api/work-items/sync/${encodeURIComponent(repoId)}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
   },
 
   /** GET /api/timeline?from=…&to=… . */

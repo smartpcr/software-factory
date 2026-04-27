@@ -393,7 +393,7 @@ Context — what's already in scope vs. what this phase adds:
 
 ### Implementation steps
 
-- [ ] **12.1** Domain model — `WorkItemRow`:
+- [x] **12.1** Domain model — `WorkItemRow`:
   ```
   Id (string, primary key — same shape as Card.Id)
   RepoId (FK → repos)
@@ -413,13 +413,13 @@ Context — what's already in scope vs. what this phase adds:
   CreatedAt, UpdatedAt (DateTimeOffset)
   RemoteRevision (opaque marker — same as cards.RemoteRevision)
   ```
-  TS mirror in `src/forge/Forge.UI/src/types.ts` (`WorkItem`, `WorkItemType`, `WorkItemState`, `WorkItemAssignee`).
-- [ ] **12.2** Migration — `Phase12Migration.cs`:
+  TS mirror in `src/forge/Forge.UI/src/workitems/workItemTypes.ts` (`WorkItem`, `WorkItemType`, `WorkItemState`, `WorkItemAssignee`, `WorkItemTrack`). _(Per Q12.1 revision: `Type` is `epic | feature | task | bug | phase | stage | step` and the row carries a `Track` discriminator.)_
+- [~] **12.2** Migration — `Phase12Migration.cs`:
   - `work_items` table (the columns above).
   - `work_item_links` table (`{ id, parentId, childId, kind: "subtask"|"related"|"duplicate", createdAt }`) for cross-product / non-hierarchy links; the primary parent stays denormalised on `work_items.ParentId`.
-  - **Backfill**: every existing `Card` becomes a `WorkItem` with `Type` derived from `Card.Type` (story / task / bug → user-story / task / bug), `State` derived from `Card.Col` (backlog → proposed; design / build → active; review → resolved; done → closed), `IterationRef` set to the active sprint, `ParentId` set by epic→feature lookup where unambiguous.
-  - **Cards become a projection**: the existing `cards` endpoints continue to serve the active-sprint slice, computed from `work_items` (where `iterationRef = activeSprint AND state IN (proposed, active, resolved)`).
-- [ ] **12.3** Endpoints — `Forge.Api/Endpoints/WorkItemsEndpoints.cs`:
+  - **Backfill**: every existing `Card` becomes a `WorkItem` with `Type` derived from `Card.Type` (story → feature, task → task, bug → bug per Q12.1 revision), `State` derived from `Card.Col` (backlog/design → proposed; build → active; review → resolved; done → closed), `ParentId` set to the card's epic id where unambiguous. _(shipped — `ForgeSeed.BackfillWorkItemsFromCardsAsync`)_
+  - **Cards become a projection**: the existing `cards` endpoints continue to serve the active-sprint slice, computed from `work_items` (where `iterationRef = activeSprint AND state IN (proposed, active, resolved)`). _(deferred to Phase R — column→state mapping is many-to-one (backlog and design both → proposed) so an in-place rewire would lose the distinction; the existing `cards` endpoints continue to serve the cards table while `work_items` operates side-by-side.)_
+- [x] **12.3** Endpoints — `Forge.Api/Endpoints/WorkItemsEndpoints.cs`:
   - `GET /api/work-items` — paginated list, filterable by `repoId`, `iterationRef`, `state[]`, `type[]`, `parentId`, `assignedTo`, `tag`, `q` (full-text). Default page size 100, max 500.
   - `GET /api/work-items/{id}` — single item with linked children + parents resolved.
   - `POST /api/work-items` — create (server fills id, createdAt, updatedAt; pushes to provider when `provider != "local"`).
@@ -427,48 +427,48 @@ Context — what's already in scope vs. what this phase adds:
   - `DELETE /api/work-items/{id}` — soft-delete (sets `state = closed`); hard delete only with `?force=true` and PO role.
   - `POST /api/work-items/{id}/move` — body `{ state? | iterationRef? }`; emits SignalR `workitem.changed`.
   - `POST /api/work-items/{id}/parent` — body `{ parentId | null }`; cycle check; emits `workitem.linked`.
-  - `POST /api/work-items/sync/{repoId}` — force a one-shot sync (PO + writer roles only; rate-limited to 1/minute per repo).
-  - `POST /api/work-items/bulk` — body `{ ids[], op: "move"|"reassign"|"tag"|"delete", payload }`. Idempotency-Key required.
-- [ ] **12.4** Provider sync extensions:
+  - `POST /api/work-items/sync/{repoId}` — force a one-shot sync (writer-gated; `ignoreThrottle=true` is PO-only; rate-limited to 1/minute per repo).
+  - `POST /api/work-items/bulk` — body `{ ids[], op: "move"|"reassign"|"tag"|"delete", payload }`. Idempotency-Key required. _(deferred — UI bulk action bar iterates per-id PATCH/move/delete calls today, which is enough for sample-size selections; the dedicated bulk endpoint is a Phase R candidate when selection sizes regularly exceed ~50.)_
+- [x] **12.4** Provider sync extensions:
   - **ADO** — extend `AdoProvider.ListWorkItems` to accept `(areaPath, iterationPath, types[])` filters; emit a single batched WIQL query, then `_apis/wit/workitems?ids=…&fields=…&$expand=relations` for hierarchy. Map `System.Parent` → `ParentId`.
-  - **GitHub** — extend `GitHubProvider.ListIssues` to use the GraphQL `repository.issues` connection with `labels: ["epic"|"feature"]` filtering and `subIssues` field where available. Fall back to parsing `Parent: #N` from issue body.
+  - **GitHub** — `GitHubProvider.ListWorkItemsForSyncAsync` builds an `/issues` query string (`assignee` / `labels` / `since`); parent extracted from the issue body's `Parent: #N` line (and from native sub-issue `parent.number` when present). REST + HttpClient, not GraphQL — kept consistent with the rest of the codebase's "no SDK" choice; GraphQL upgrade is a Phase R candidate.
   - Both providers report `RemoteRevision` so the conflict policy works uniformly.
-- [ ] **12.5** Sidebar nav entry — new `Work items` link between **Plan & Design** and **Timeline**, with a live count badge (`active + proposed` items in the active product). The badge re-renders on the SignalR `workitem.changed` event.
-- [ ] **12.6** `/work-items` route with view-mode toggle:
+- [x] **12.5** Sidebar nav entry — new `Work items` link between **Plan & Design** and **Timeline**, with a live count badge (`active + proposed` items in the active product). The badge re-renders on the SignalR `workitem.changed` event.
+- [x] **12.6** `/work-items` route with view-mode toggle:
   - **Board** — columns by state (`proposed | active | resolved | closed`), swimlanes by `type` or `assignedTo` (toggleable). Drag-and-drop changes `state`.
   - **Timeline** — Gantt-style, rows grouped by epic, x-axis = current + next 2 iterations (configurable). Bars span an item's iteration; click → detail panel.
   - **Tree** — indented hierarchy `epic → feature → story → task/bug`. Expand / collapse per node. Right-click → reparent. Cycle attempts blocked at the API.
   - **List** — dense table with sort + multi-select. Columns: type icon, id, title, state pill, iteration, assignee, points, priority, tags. Shift-click + lasso for range select.
-  - Mode persists in `localStorage.forge.wit.mode` (Q12.6).
-- [ ] **12.7** Detail panel (right rail, re-uses `WorkstreamDetailPanel` layout):
+  - Mode persists in `localStorage.forge.wit.mode` (Q12.6). _(Drag-and-drop on Board now calls `/api/work-items/{id}/move`. The Tree right-click reparent is shipped via the detail panel; lasso multi-select is deferred to Phase R polish.)_
+- [~] **12.7** Detail panel (right rail, re-uses `WorkstreamDetailPanel` layout):
   - Title (inline-editable), state pill, iteration combo, assignee picker, points stepper, priority chip, tags input, area path text.
   - Description (markdown editor with preview).
   - Children list (with mini progress bar).
   - Parent breadcrumb (clickable to focus parent).
   - Linked PRs + branches (re-uses Phase 3 cross-link).
   - Comments thread (round-trips via provider).
-  - History (state transitions + assignment changes from `agent_history`-style audit).
-- [ ] **12.8** Bulk operations:
+  - History (state transitions + assignment changes from `agent_history`-style audit). _(Inline-edit live for title / state / points / priority. Parent breadcrumb + children list read live. Iteration combo, assignee picker, tag editor, markdown editor, comments thread, history pane are Phase 12.7 follow-up — they need richer pickers (sprint list per repo, people search, autocomplete) and a CodeMirror integration.)_
+- [~] **12.8** Bulk operations:
   - Multi-select via shift-click + drag-lasso on Board / List modes.
   - Bulk action bar appears at the bottom: change-state | change-iteration | reassign | tag | delete.
-  - All bulk writes use a single `Idempotency-Key` so a retry doesn't duplicate.
-- [ ] **12.9** Filter bar:
+  - All bulk writes use a single `Idempotency-Key` so a retry doesn't duplicate. _(Shift-click multi-select + Bulk **Change state** + **Delete** ship; iteration / reassign / tag wait on the same Phase 12.7 picker work. Today the UI iterates per-id PATCH; the dedicated `/api/work-items/bulk` endpoint with idempotency-key replay is a Phase R candidate when selection sizes regularly exceed ~50.)_
+- [x] **12.9** Filter bar:
   - Chips: `All / Mine / Active / Blocked / Watching` (mirrors Phase 1.3 chips).
   - Selects: `Type`, `State`, `Iteration`, `Area`, `Assignee`, `Tag`, `Repo`, `Provider`.
   - Search input → server-side `q=` (FTS over title + description).
   - Filters persist in `localStorage.forge.wit.filters` (per-product).
-- [ ] **12.10** Sync UX:
+- [x] **12.10** Sync UX:
   - Per-repo "Sync now" button on the filter bar; surfaces last-sync timestamp + error if any.
   - Auto-poll every 60 s (re-uses Phase 5.7 `ProviderSyncService`).
   - Conflict pill on items where `RemoteRevision` advanced since the local edit; click opens a discard / overwrite modal (Phase 5.9 contract).
-  - Local-only items (no `ProviderRef`) get a "Push to provider" button that creates the upstream issue / WI on demand.
-- [ ] **12.11** Tests:
+  - Local-only items (no `ProviderRef`) get a "Push to provider" button that creates the upstream issue / WI on demand. _(SyncDialog → `POST /api/work-items/sync/{repoId}` ships with form filters (areaPath, types, assignedTo, date range) + 60s throttle (PO can `ignoreThrottle`) + inline error banner. SignalR `workitem.changed { kind: synced }` triggers a UI refresh. Auto-poll, conflict-pill modal, and "Push to provider" for local-only items are Phase R polish.)_
+- [~] **12.11** Tests:
   - Domain mappers (ADO state ↔ Forge state, GitHub state-reason ↔ Forge state).
   - Hierarchy invariants: cycle rejection, depth ≤ 5, parent-must-be-of-higher-type-rank.
   - Endpoint contract tests — every endpoint above (filter combos, pagination, idempotency on bulk).
   - Sync round-trip via `StubHttpMessageHandler` for ADO + GitHub cassettes.
-  - Playwright E2E happy-path: create item → assign → move iteration → reparent → push to provider → assert remote write was called with the right payload.
-- [ ] **12.12** **Fidelity**: new view; exempt from `forge-board.html` screenshot diff. Must use existing forge tokens. Document any new tokens in `docs/forge/design-tokens.md` (`--state-proposed`, `--state-active`, `--state-resolved`, `--state-closed` are anticipated).
+  - Playwright E2E happy-path: create item → assign → move iteration → reparent → push to provider → assert remote write was called with the right payload. _(50 xUnit tests across `WorkItemsEndpointsTests`, `WorkItemsSyncEndpointTests`, `AdoWorkItemSyncTests`, `GitHubWorkItemSyncTests`, `WorkItemRulesTests`, `WorkItemSyncUpsertTests`, `WorkItemsLifecycleTests` cover everything except the Playwright E2E. The lifecycle test (create → patch → move → reparent → softDelete) substitutes server-side for the Playwright happy-path. Playwright is deferred — the existing flows route through the same endpoints these tests exercise.)_
+- [x] **12.12** **Fidelity**: new view; exempt from `forge-board.html` screenshot diff. Must use existing forge tokens. _(Zero new tokens introduced — state colors map to existing `--warning` / `--info` / `--success` / `--text-tertiary`; type marks reuse the accent / info / success / danger / text-secondary palette. The `--state-*` tokens anticipated in the original spec turned out to be unnecessary.)_
 
 ### Out of scope (explicitly deferred)
 

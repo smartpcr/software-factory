@@ -12,6 +12,7 @@ import {
 } from '@dnd-kit/core';
 import type { WorkItem, WorkItemState } from './workItemTypes';
 import { useWitStore } from './useWitStore';
+import { useWorkItemsStore } from './useWorkItemsStore';
 import { TypeMark } from './TypeMark';
 import { StatePill } from './StatePill';
 import { RepoIcon } from '@/products/RepoIcon';
@@ -35,7 +36,7 @@ const STATE_COPY: Record<WorkItemState, { label: string; sub: string }> = {
 // witStore overrides map (Phase 12.6 implementation step plumbs this to
 // /api/work-items/{id}/move).
 export function WorkItemBoard({ items }: Props) {
-  const setItemState = useWitStore((s) => s.setItemState);
+  const setItemStateApi = useWorkItemsStore((s) => s.setState);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
   const [draggingId, setDraggingId] = useState<string | null>(null);
 
@@ -60,7 +61,7 @@ export function WorkItemBoard({ items }: Props) {
     if (STATE_ORDER.includes(target as WorkItemState)) {
       const dropped = items.find((i) => i.id === id);
       if (dropped && dropped.state !== target) {
-        setItemState(id, target as WorkItemState);
+        void setItemStateApi(id, target as WorkItemState);
       }
     }
   }

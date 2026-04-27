@@ -1061,6 +1061,133 @@
 .wit-detail-eyebrow-meta .val.pri-med  { color: var(--text-primary); }
 .wit-detail-eyebrow-meta .val.pri-low  { color: var(--text-tertiary); }
 
+.wit-detail-edit-shell {
+  /* Subtle hover affordance so operators see edit-ability. */
+  border-radius: var(--radius-sm);
+  transition: background 100ms ease;
+  padding: 2px 4px;
+  margin: -2px -4px;
+}
+.wit-detail-edit-shell:hover { background: var(--bg-surface-2); }
+
+/* Inline title editor ----------------------------------- */
+.wit-detail-title-editable { cursor: text; }
+.wit-detail-title-editable:hover {
+  background: var(--bg-surface-2);
+  outline: 1px dashed var(--border-strong);
+  outline-offset: 4px;
+  border-radius: var(--radius-sm);
+}
+.wit-detail-title-input {
+  width: 100%;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+/* State select replaces the pill. Style to look like the pill at rest. */
+.wit-detail-state-select {
+  display: inline-flex;
+  margin-top: 2px;
+  padding: 2px 22px 2px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background-color: var(--bg-elevated);
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-tertiary) 50%),
+                    linear-gradient(135deg, var(--text-tertiary) 50%, transparent 50%);
+  background-position: calc(100% - 12px) calc(50% - 1px),
+                       calc(100% - 8px) calc(50% - 1px);
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: lowercase;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+/* Points stepper */
+.wit-detail-points-stepper {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-elevated);
+  font-family: var(--font-mono);
+  margin-top: 2px;
+}
+.wit-detail-points-stepper .val {
+  min-width: 28px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+.wit-detail-points-stepper button {
+  padding: 0 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1;
+}
+.wit-detail-points-stepper button:hover { color: var(--accent); background: var(--bg-surface-2); }
+.wit-detail-points-stepper button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* Priority chip-radio group */
+.wit-detail-pri-chips {
+  display: inline-flex;
+  gap: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg-elevated);
+  margin-top: 2px;
+}
+.wit-detail-pri-chip {
+  padding: 2px 10px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  color: var(--text-tertiary);
+  text-transform: lowercase;
+  border-right: 1px solid var(--border);
+  transition: background 100ms ease, color 100ms ease;
+}
+.wit-detail-pri-chip:last-child { border-right: none; }
+.wit-detail-pri-chip:hover { background: var(--bg-surface-2); color: var(--text-primary); }
+.wit-detail-pri-chip.active.pri-high { background: var(--danger-bg); color: var(--danger); }
+.wit-detail-pri-chip.active.pri-med  { background: var(--accent-bg); color: var(--accent); }
+.wit-detail-pri-chip.active.pri-low  { background: var(--bg-surface-2); color: var(--text-primary); }
+
 /* ---- breadcrumb ---- */
 .wit-detail-breadcrumb {
   display: flex;
@@ -1360,6 +1487,39 @@
   padding-left: 14px;
 }
 .wit-bulk-clear:hover { color: var(--text-primary); }
+.wit-bulk-clear:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* State menu (popover above the bulk bar) */
+.wit-bulk-state-wrap { position: relative; }
+.wit-bulk-state-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  min-width: 140px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  z-index: 95;
+}
+.wit-bulk-state-menu-item {
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
+  text-transform: lowercase;
+}
+.wit-bulk-state-menu-item:hover { background: var(--accent-bg); color: var(--accent); }
+.wit-bulk-state-menu-item:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ====================================================
  * SYNC + RESPONSIVE
@@ -1535,6 +1695,34 @@
   padding: 14px 24px;
   border-top: 1px solid var(--border);
   background: var(--bg-surface);
+}
+
+.wit-sync-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 4px;
+  padding: 10px 12px;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-sm);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.wit-sync-error-mark {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: var(--bg-base);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 11px;
 }
 
 @media (max-width: 1280px) {

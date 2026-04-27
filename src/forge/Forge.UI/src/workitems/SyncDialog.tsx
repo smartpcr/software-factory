@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useToastStore } from '@/state/useToastStore';
 import { useCurrentUser } from '@/state/useCurrentUserStore';
 import { useProductsStore } from '@/state/useProductsStore';
+import { forgeApi } from '@/api/forgeApi';
+import { useWorkItemsStore } from './useWorkItemsStore';
 import { typeLabel, type WorkItemType } from './workItemTypes';
 
 interface Props {
@@ -51,6 +53,8 @@ export function SyncDialog({ open, onClose }: Props) {
 
   const [filters, setFilters] = useState<SyncFilters>(() => initialFilters(me.email ?? me.displayName));
   const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const refreshWorkItems = useWorkItemsStore((s) => s.refresh);
 
   // Re-default `assignedTo` whenever the dialog opens so the operator's name
   // is fresh after sign-in. Also pin repoId to the active product's first
@@ -93,13 +97,32 @@ export function SyncDialog({ open, onClose }: Props) {
   }
 
   async function runSync() {
+    if (!filters.repoId) {
+      setError('Pick a repository first.');
+      return;
+    }
     setRunning(true);
-    // Real impl posts to /api/work-items/sync/{repoId}; mock = 600 ms delay.
-    await new Promise((r) => setTimeout(r, 600));
-    const summary = `${filters.repoId} · ${filters.workItemTypes.length || 'all'} types · ${filters.assignedTo || 'anyone'}`;
-    showToast(`Sync queued · ${summary}`, 'success');
-    setRunning(false);
-    onClose();
+    setError(null);
+    try {
+      const result = await forgeApi.syncWorkItems(filters.repoId, {
+        areaPath: filters.areaPath || null,
+        types: filters.workItemTypes.length > 0 ? filters.workItemTypes : undefined,
+        assignedTo: filters.assignedTo || null,
+        updatedFrom: filters.fromDate ? new Date(filters.fromDate).toISOString() : null,
+        updatedTo: filters.toDate ? new Date(`${filters.toDate}T23:59:59Z`).toISOString() : null,
+      });
+      const summary = `${result.pulled} pulled · ${result.inserted} new · ${result.updated} updated`;
+      showToast(`${filters.repoId} synced · ${summary}`, 'success');
+      void refreshWorkItems();
+      onClose();
+    } catch (err) {
+      // Surface 4xx / 5xx server messages inline so the operator can fix
+      // misconfig (missing PAT, throttle hit) without losing the form.
+      const msg = err instanceof Error ? err.message : 'sync failed';
+      setError(msg);
+    } finally {
+      setRunning(false);
+    }
   }
 
   return (
@@ -202,6 +225,13 @@ export function SyncDialog({ open, onClose }: Props) {
               />
             </Field>
           </div>
+
+          {error && (
+            <div className="wit-sync-error" role="alert">
+              <span className="wit-sync-error-mark" aria-hidden>!</span>
+              <span>{error}</span>
+            </div>
+          )}
         </div>
 
         <footer className="wit-sync-foot">

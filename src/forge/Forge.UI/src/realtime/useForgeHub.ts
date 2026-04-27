@@ -5,6 +5,8 @@ import { useBoardStore } from '@/state/useBoardStore';
 import { usePrsStore } from '@/state/usePrsStore';
 import { usePrLogStore } from '@/state/usePrLogStore';
 import { useToastStore } from '@/state/useToastStore';
+import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
+import type { WorkItem } from '@/workitems/workItemTypes';
 
 const baseUrl = import.meta.env.VITE_FORGE_API_URL ?? '';
 const hubUrl = `${baseUrl}/hubs/forge`;
@@ -50,6 +52,22 @@ async function ensureConnected() {
     connection.on('pr.log', (payload: { id?: string; line?: string }) => {
       if (payload?.id && typeof payload.line === 'string') {
         usePrLogStore.getState().append(payload.id, payload.line);
+      }
+    });
+    // Phase 12 — work-item changes fan out to the WIT store.
+    connection.on('workitem.changed', (payload: { kind?: string; workItem?: WorkItem; id?: string }) => {
+      const store = useWorkItemsStore.getState();
+      if (payload?.kind === 'deleted' && payload?.id) {
+        store.removeFromRealtime(payload.id);
+        return;
+      }
+      if (payload?.kind === 'synced') {
+        // Bulk pull — re-fetch the full slice once.
+        void store.refresh();
+        return;
+      }
+      if (payload?.workItem) {
+        store.upsertFromRealtime(payload.workItem);
       }
     });
   }

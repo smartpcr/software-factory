@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { SAMPLE_WORK_ITEMS } from '@/workitems/sampleWorkItems';
 import { useWitStore } from '@/workitems/useWitStore';
+import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 import type { WitMode } from '@/workitems/useWitStore';
 import { WorkItemFilterBar } from '@/workitems/WorkItemFilterBar';
 import { WorkItemBoard } from '@/workitems/WorkItemBoard';
@@ -43,9 +43,15 @@ export function WorkItemsView() {
   const focusedId = useWitStore((s) => s.focusedId);
   const selection = useWitStore((s) => s.selection);
 
-  const stateOverrides = useWitStore((s) => s.stateOverrides);
   const panelExpanded = useWitStore((s) => s.panelExpanded);
   const [syncOpen, setSyncOpen] = useState(false);
+
+  // Phase 12.6 — pull from the store. Falls back to SAMPLE_WORK_ITEMS when
+  // the API is offline (handled inside useWorkItemsStore.load()).
+  const items = useWorkItemsStore((s) => s.items);
+  const loaded = useWorkItemsStore((s) => s.loaded);
+  const load = useWorkItemsStore((s) => s.load);
+  useEffect(() => { void load(); }, [load]);
 
   // Phase 12 — keyboard: Esc collapses an expanded panel first, otherwise
   // closes the detail rail. Lets users dismiss the overlay without hunting
@@ -63,10 +69,6 @@ export function WorkItemsView() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
-  const items = useMemo(
-    () => SAMPLE_WORK_ITEMS.map((i) => stateOverrides[i.id] ? { ...i, state: stateOverrides[i.id] } : i),
-    [stateOverrides],
-  );
   const visible = useMemo(() => applyFilters(items, filters), [items, filters]);
   const focused = useMemo(
     () => items.find((i) => i.id === focusedId) ?? null,
@@ -80,7 +82,7 @@ export function WorkItemsView() {
           <div className="page-eyebrow">
             <span><span className="num">06</span>&nbsp;Work items</span>
             <span className="sep">/</span>
-            <span>{SAMPLE_WORK_ITEMS.length} item{SAMPLE_WORK_ITEMS.length === 1 ? '' : 's'} · 2 repos</span>
+            <span>{loaded ? `${items.length} item${items.length === 1 ? '' : 's'}` : 'loading…'}</span>
           </div>
           <h1 className="page-title">
             <span className="mark" />

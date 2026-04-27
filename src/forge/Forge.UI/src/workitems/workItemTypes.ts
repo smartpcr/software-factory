@@ -32,7 +32,8 @@ export interface WorkItemAssignee {
 
 export interface WorkItem {
   id: string;
-  repoId: string;
+  /** Null when the item isn't yet pinned to a repo (rare; mostly local-only). */
+  repoId: string | null;
   provider: RepoKind | 'local';
   /** ADO work item id or GitHub issue number. Null for local-only. */
   providerRef: number | null;
@@ -45,9 +46,7 @@ export interface WorkItem {
   parentId: string | null;
   /**
    * Q12.1 — top-level Epic / Phase items can carry an optional reference to
-   * the product feature / functional area they support. UI-only string today
-   * (e.g. "Auth", "Telemetry"); the implementation step plumbs this to a real
-   * FK once `feature_areas` lands.
+   * the product feature / functional area they support.
    */
   featureRef?: string | null;
   /** "{repoId}:{providerSprintId}" — namespaced per Q4. */
@@ -59,9 +58,11 @@ export interface WorkItem {
   tags: string[];
   createdAt: string;
   updatedAt: string;
-  /** Watcher flag for the "Watching" filter chip. */
+  /** Phase 5.10 — opaque marker advanced on every server write. */
+  remoteRevision?: string | null;
+  /** Watcher flag for the "Watching" filter chip (UI-only sample-data convenience). */
   watching?: boolean;
-  /** Blocked flag matching Phase 1.3 chip. */
+  /** Blocked flag matching Phase 1.3 chip (UI-only). */
   blocked?: boolean;
 }
 

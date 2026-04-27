@@ -5,7 +5,7 @@ import { useProductsStore } from '@/state/useProductsStore';
 import { useCurrentUser, useHasRole } from '@/state/useCurrentUserStore';
 import { ProductIcon } from '@/products/ProductIcon';
 import { UserMenu } from '@/shell/UserMenu';
-import { SAMPLE_WORK_ITEMS } from '@/workitems/sampleWorkItems';
+import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 
 // Verbatim port of the prototype's <aside class="sidebar">. The only
 // React-required changes: NavLink in place of <a data-view>, className
@@ -38,12 +38,15 @@ export function SideBar() {
   const repoCount = activeProductRepos.length;
   const roleLabel = formatRole(me.role);
 
-  // Phase 12 — sidebar badge counts active+proposed work items. Reads from
-  // the sample registry today; once 12.3 lands the source becomes the live
-  // /api/work-items count via SignalR `workitem.changed`.
+  // Phase 12 — sidebar badge counts active+proposed work items. Reads live
+  // from the WIT store (which falls back to the sample registry when the
+  // API is unreachable). Updates via SignalR `workitem.changed`.
+  const workItems = useWorkItemsStore((s) => s.items);
+  const loadWorkItems = useWorkItemsStore((s) => s.load);
+  useEffect(() => { void loadWorkItems(); }, [loadWorkItems]);
   const workItemActiveCount = useMemo(
-    () => SAMPLE_WORK_ITEMS.filter((i) => i.state === 'active' || i.state === 'proposed').length,
-    [],
+    () => workItems.filter((i) => i.state === 'active' || i.state === 'proposed').length,
+    [workItems],
   );
 
   // Phase 9 — sidebar foot user widget opens UserMenu (same popover the TopBar
