@@ -13,6 +13,7 @@ import { NewWorkstreamModal } from '@/workstreams/NewWorkstreamModal';
 import { Toaster } from '@/board/Toaster';
 import { forgeApi } from '@/api/forgeApi';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
+import { useQueueStore, useQueueChannel } from '@/realtime/useQueueStore';
 
 const FILTER_CHIPS: Array<{ key: WorkstreamFilter; label: string; pulse?: boolean }> = [
   { key: 'all',       label: 'All' },
@@ -39,6 +40,11 @@ export function WorkstreamsView() {
 
   const allCards = useBoardStore((s) => s.cards);
   const allWorkItems = useWorkItemsStore((s) => s.items);
+  // Phase 17.8 — subscribe to queue updates so the queued pill stays live.
+  useQueueChannel({});
+  const queueRows = useQueueStore((s) => s.rows);
+  const refreshQueue = useQueueStore((s) => s.refresh);
+  useEffect(() => { void refreshQueue(); }, [refreshQueue]);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const repoFilter = searchParams.get('repo');
@@ -182,6 +188,10 @@ export function WorkstreamsView() {
             );
             const liveCount = liveItems.length;
             const liveWorkItemId = liveItems[0]?.id ?? null;
+            // Phase 17.8 — count queued rows for work items in this workstream.
+            const queuedCount = Object.values(queueRows)
+              .filter((r) => r.state === 'queued' && ws.cards.includes(r.workItemId))
+              .length;
             return (
               <div
                 key={ws.id}
@@ -200,6 +210,8 @@ export function WorkstreamsView() {
                   liveCount={liveCount}
                   liveWorkItemId={liveWorkItemId}
                   onOpenLive={(wid) => navigate(`/work-items/${wid}/live`)}
+                  queuedCount={queuedCount}
+                  onOpenInbox={() => navigate('/inbox')}
                 />
               </div>
             );

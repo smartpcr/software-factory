@@ -11,44 +11,23 @@ import { forgeApi } from '@/api/forgeApi';
 import { DeliverableScorePanel } from '@/board/DeliverableScorePanel';
 import { StoryPicker } from '@/board/StoryPicker';
 import { useStateStore } from '@/state/useStateStore';
+import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
+import { useTaskLive } from '@/realtime/useTaskLiveStore';
 
 // Verbatim port of the prototype's <aside class="detail-panel"> static
 // markup (lines 2899-2934) and renderDetailBody / renderDetailActions
 // (lines 3591-3668).
 
-interface ActivityRow {
-  dot: string;
-  line: React.ReactNode;
-  time: string;
-}
-
-function buildActivity(card: CardModel): ActivityRow[] {
-  const items: ActivityRow[] = [];
-  if (card.col === 'done') {
-    items.push({ dot: 'system', line: <><span className="who">CI</span> all checks passed · merged to main</>, time: card.doneAt ?? 'recently' });
-    items.push({ dot: 'rev',    line: <><span className="who">R-03 Cortex</span> approved PR</>, time: '12m before merge' });
-  }
-  if (['review', 'done'].includes(card.col)) {
-    items.push({
-      dot: card.agent ? card.agent.role : 'eng',
-      line: <><span className="who">{card.agent ? `${card.agent.id} ${card.agent.name}` : 'agent'}</span> opened pull request</>,
-      time: '2h ago',
-    });
-  }
-  if (['build', 'review', 'done'].includes(card.col)) {
-    items.push({ dot: 'eng', line: <><span className="who">E-04 Forge</span> pushed 3 commits</>, time: '3h ago' });
-    items.push({ dot: 'eng', line: <><span className="who">E-04 Forge</span> created branch ws/oidc-rotation off main</>, time: '3h ago' });
-  }
-  if (['design', 'build', 'review', 'done'].includes(card.col)) {
-    items.push({ dot: 'arch', line: <><span className="who">A-01 Atlas</span> approved design spec</>, time: '5h ago' });
-    items.push({ dot: 'arch', line: <><span className="who">A-01 Atlas</span> drafted ADR-019 · key rotation strategy</>, time: '6h ago' });
-  }
-  items.push({ dot: 'human',  line: <><span className="who">Xiaodong</span> created from Epic-024 decomposition</>, time: '1d ago' });
-  items.push({ dot: 'system', line: <><span className="who">ADO sync</span> linked to Epic-024 work item</>, time: '1d ago' });
-  return items;
-}
 
 function DetailActions({ card }: { card: CardModel }) {
+  const navigate = useNavigate();
+  // The Plan & Design panel doesn't have a team / crew picker (legacy
+  // prototype shape). Cards and work items share ids after Phase 12.2's
+  // backfill, so navigating to /work-items focused on this id opens the
+  // Phase 12 detail panel where the Phase 17 team picker lives.
+  const openInWorkItems = () => navigate(`/work-items?focus=${encodeURIComponent(card.id)}`);
+  const openLive = () => navigate(`/work-items/${encodeURIComponent(card.id)}/live`);
+
   if (card.humanGate) return (
     <>
       <button className="btn btn-primary" style={{ background: 'var(--success)' }}>
@@ -64,35 +43,35 @@ function DetailActions({ card }: { card: CardModel }) {
   if (card.live) return (
     <>
       <button className="btn btn-secondary">Pause agent</button>
-      <button className="btn btn-secondary">Reassign</button>
-      <button className="btn btn-ghost">View trace →</button>
+      <button className="btn btn-secondary" onClick={openInWorkItems}>Reassign</button>
+      <button className="btn btn-ghost" onClick={openLive}>View trace →</button>
     </>
   );
   if (card.blocked) return (
     <>
       <button className="btn btn-primary">Unblock</button>
-      <button className="btn btn-secondary">Reassign</button>
+      <button className="btn btn-secondary" onClick={openInWorkItems}>Reassign</button>
       <button className="btn btn-ghost">View blocker →</button>
     </>
   );
   if (card.col === 'backlog') return (
     <>
-      <button className="btn btn-primary">Assign to agent</button>
-      <button className="btn btn-secondary">Edit</button>
+      {/* Phase 17 — opens the work-items detail panel where the team /
+          crew picker lives. Routing to a team enqueues the work item;
+          observe in /inbox. */}
+      <button className="btn btn-primary" onClick={openInWorkItems}>Assign to agent or team</button>
+      <button className="btn btn-secondary" onClick={openInWorkItems}>Edit</button>
       <button className="btn btn-ghost">Archive →</button>
     </>
   );
   return (
     <>
-      <button className="btn btn-secondary">Edit</button>
-      <button className="btn btn-secondary">Reassign</button>
+      <button className="btn btn-secondary" onClick={openInWorkItems}>Edit</button>
+      <button className="btn btn-secondary" onClick={openInWorkItems}>Reassign</button>
       <button className="btn btn-ghost">Open in ADO →</button>
     </>
   );
 }
-
-const STATIC_DESC =
-  'Implement automatic OIDC token rotation with key rollover. The handler should rotate signing keys on a 24-hour cadence while maintaining a 60-second grace period for in-flight tokens signed with the previous key. All rotation events must emit audit logs and OTel counters for observability.';
 
 export function DetailPanel() {
   const selectedId = useBoardStore((s) => s.selectedId);
@@ -103,6 +82,15 @@ export function DetailPanel() {
   const focusWs = useWorkstreamsStore((s) => s.setFocused);
   const navigate = useNavigate();
   const linkedWs = card?.branch ? workstreams.find((w) => w.branch === card.branch) : undefined;
+  // Phase 17 — surface the WorkItem.assignedTo (team / crew / agent) so the
+  // legacy Plan & Design panel doesn't show "unassigned" when a Phase 12
+  // assignment has been made via /work-items.
+  const workItem = useWorkItemsStore((s) => (selectedId ? s.items.find((w) => w.id === selectedId) : undefined));
+  const wiAssignee = workItem?.assignedTo ?? null;
+  // Phase 17 — pull the real per-work-item transcript so the "reasoning
+  // trace" panel shows actual agent activity, not the prototype's static
+  // fake. Hook is no-op when selectedId is null.
+  const live = useTaskLive(selectedId ?? null);
 
   const [storyPickerOpen, setStoryPickerOpen] = useState(false);
   const reloadState = useStateStore((s) => s.load);
@@ -140,7 +128,7 @@ export function DetailPanel() {
                   {safe.epic || 'No story'}
                   <StoryPicker
                     open={storyPickerOpen}
-                    currentEpic={safe.epic}
+                    currentStory={safe.epic}
                     onSelect={(epicId) => void assignStory(epicId)}
                     onClose={() => setStoryPickerOpen(false)}
                   />
@@ -198,10 +186,22 @@ export function DetailPanel() {
                 <span
                   id="detail-agent"
                   style={safe.agent ? { cursor: 'pointer', textDecoration: 'underline dotted', textUnderlineOffset: 2 } : undefined}
-                  title={safe.agent ? 'Click to open agent' : undefined}
+                  title={safe.agent ? 'Click to open agent' : (wiAssignee ? `${wiAssignee.kind} — change in /work-items` : undefined)}
                   onClick={() => safe.agent && useAgentEditorStore.getState().openAgent(safe.agent.id)}
                 >
-                  {safe.agent ? safe.agent.name : 'unassigned'}
+                  {safe.agent
+                    ? safe.agent.name
+                    : wiAssignee
+                      ? <>
+                          {wiAssignee.displayName}
+                          <span style={{
+                            marginLeft: 6, fontSize: 9, padding: '1px 5px', borderRadius: 999,
+                            border: `1px solid ${wiAssignee.kind === 'team' ? 'var(--warning)' : 'var(--accent)'}`,
+                            color: wiAssignee.kind === 'team' ? 'var(--warning)' : 'var(--accent)',
+                            fontFamily: 'var(--font-mono, monospace)',
+                          }}>{wiAssignee.kind === 'team' ? 'queue' : wiAssignee.kind}</span>
+                        </>
+                      : 'unassigned'}
                 </span>
               </span>
               <span className="detail-status-pill">
@@ -239,62 +239,81 @@ export function DetailPanel() {
               <div className="detail-meta-cell"><div className="detail-meta-label">Source</div><div className="detail-meta-val mono" style={{ color: 'var(--text-tertiary)' }}>ADO ↗</div></div>
             </div>
 
+            {/* Phase 17 — show the REAL work-item description if one exists.
+                Falls back to a "no description" message instead of the
+                prototype's hard-coded "Token rotation" filler. */}
             <div className="detail-section" style={{ marginTop: 22 }}>
               <div className="detail-section-title">Description</div>
-              <div className="detail-desc">{STATIC_DESC}</div>
-            </div>
-
-            <div className="detail-section">
-              <div className="detail-section-title">Acceptance criteria <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', fontWeight: 400 }}>2 / 4</span></div>
-              <ul className="detail-criteria">
-                <li><span className="check done"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 6 L 5 9 L 10 3" stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round" /></svg></span> Token rotation triggers automatically every 24h</li>
-                <li><span className="check done"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 6 L 5 9 L 10 3" stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round" /></svg></span> Old keys remain valid for 60s grace period</li>
-                <li><span className="check"><svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4" stroke="currentColor" strokeWidth="1.3" fill="none" /></svg></span> Audit log entry on every rotation</li>
-                <li><span className="check"><svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4" stroke="currentColor" strokeWidth="1.3" fill="none" /></svg></span> Telemetry counters expose rotation latency</li>
-              </ul>
+              <div className="detail-desc" style={{ whiteSpace: 'pre-wrap' }}>
+                {workItem?.descriptionMd && workItem.descriptionMd.trim().length > 0
+                  ? workItem.descriptionMd
+                  : <span style={{ color: 'var(--text-tertiary)', fontStyle: 'italic' }}>No description.</span>}
+              </div>
             </div>
 
             {/* Phase 14.10 — score panel: deliverables for this work item. */}
             <DeliverableScorePanel workItemId={safe.id} />
 
-            <div className="detail-section">
-              <div className="detail-section-title">
-                <span>Agent reasoning trace</span>
-                {safe.agent && safe.agent.role !== 'human' && (
-                  <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--success)' }}>
-                    <span style={{ display: 'inline-block', width: 5, height: 5, borderRadius: '50%', background: 'var(--success)', marginRight: 4, animation: 'pulse 1.4s ease-in-out infinite' }} />
-                    live
-                  </span>
-                )}
-              </div>
-              {safe.agent && safe.agent.role !== 'human' ? (
-                <div className="reasoning-trace">
-                  <div className="reasoning-step"><span className="reasoning-step-num">01</span><div className="reasoning-step-body">Read AC + parent epic. Identified 4 sub-concerns: rotation timer, key retention window, audit emission, telemetry.</div></div>
-                  <div className="reasoning-step"><span className="reasoning-step-num">02</span><div className="reasoning-step-body">Searched repo for existing rotation code in /auth/. Found related code in auth/keys.go which I'm extending rather than replacing.</div></div>
-                  <div className="reasoning-step"><span className="reasoning-step-num">03</span><div className="reasoning-step-body">Drafting implementation. Using ticker.NewTicker for rotation cadence; key store gets new RotateAt field; old keys held in rotating window keyed on issued-at.</div></div>
-                  <div className="reasoning-step" style={{ opacity: 0.6 }}><span className="reasoning-step-num">04</span><div className="reasoning-step-body" style={{ fontStyle: 'italic' }}>→ Will write unit tests next, then open PR.</div></div>
-                </div>
-              ) : (
-                <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
-                  No agent assigned · awaiting pickup from backlog or human action.
-                </div>
-              )}
-            </div>
-
-            <div className="detail-section">
-              <div className="detail-section-title">Activity</div>
-              <ul className="activity">
-                {buildActivity(safe).map((i, idx) => (
-                  <li className="activity-item" key={idx}>
-                    <span className={`activity-dot ${i.dot}`} />
-                    <div className="activity-body">
-                      <div className="activity-line">{i.line}</div>
-                      <div className="activity-time">{i.time}</div>
+            {/* Phase 17 — REAL agent activity from task_transcript_event,
+                replacing the prototype's hard-coded fake. Hidden until
+                there's actual content. The full live execution view is at
+                /work-items/{id}/live; this is the inline summary. */}
+            {(() => {
+              const transcript = live?.transcript ?? [];
+              const isAutoDispatched = workItem?.autoDispatchedAt != null;
+              const hasContent = transcript.length > 0 || isAutoDispatched;
+              if (!hasContent) return null;
+              // Surface the most recent meaningful events (skip pure tokens
+              // since they're noisy at this summary level).
+              const meaningful = transcript
+                .filter((e) => e.kind !== 'task.token')
+                .slice(-6);
+              return (
+                <div className="detail-section">
+                  <div className="detail-section-title">
+                    <span>Agent activity</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--success)' }}>
+                      <span style={{ display: 'inline-block', width: 5, height: 5, borderRadius: '50%', background: 'var(--success)', marginRight: 4, animation: 'pulse 1.4s ease-in-out infinite' }} />
+                      live
+                    </span>
+                  </div>
+                  {meaningful.length === 0 ? (
+                    <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                      Routed to crew · waiting for the runner to start.
                     </div>
-                  </li>
-                ))}
-              </ul>
-            </div>
+                  ) : (
+                    <ul className="activity" style={{ marginBottom: 8 }}>
+                      {meaningful.map((e, idx) => (
+                        <li className="activity-item" key={`${e.id}-${idx}`}>
+                          <span className="activity-dot eng" />
+                          <div className="activity-body">
+                            <div className="activity-line" style={{ fontSize: 12 }}>
+                              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)', marginRight: 6 }}>
+                                {e.kind.replace('task.', '')}
+                              </span>
+                              {summariseEvent(e)}
+                            </div>
+                            <div className="activity-time">{new Date(e.at).toLocaleTimeString()}</div>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => navigate(`/work-items/${encodeURIComponent(safe.id)}/live`)}
+                    style={{ fontSize: 11 }}
+                  >
+                    Open live execution view →
+                  </button>
+                </div>
+              );
+            })()}
+
+            {/* Phase 17 — buildActivity() returns prototype-derived stub
+                rows that have no relation to the real work item. Hide
+                until we have a real provider-comments / audit feed. */}
 
             <CardCommentComposer cardId={safe.id} />
           </div>
@@ -391,4 +410,41 @@ function CardCommentComposer({ cardId }: { cardId: string }) {
       </div>
     </div>
   );
+}
+
+// Phase 17 — terse single-line summary of a transcript event for the
+// inline activity list. The full payload is shown on /work-items/{id}/live.
+function summariseEvent(e: { kind: string; payload: unknown; agentId?: string | null; crewId?: string | null }): string {
+  const p = (e.payload && typeof e.payload === 'object' ? e.payload : {}) as Record<string, unknown>;
+  switch (e.kind) {
+    case 'task.delegated':
+      return `→ crew ${(p.generatorCrewId as string) ?? '?'} (member ${(p.memberAgentId as string) ?? '?'})`;
+    case 'task.iteration.started':
+      return `iter ${(p.iter as number) ?? '?'} started`;
+    case 'task.iteration.scored':
+      return `iter ${(p.iter as number) ?? '?'} → score ${(p.score as number) ?? '?'} (${(p.verdict as string) ?? '?'})`;
+    case 'task.iteration.passed':
+      return `passed at iter ${(p.iter as number) ?? '?'} · score ${(p.score as number) ?? '?'}`;
+    case 'task.iteration.rejected':
+      return `rejected at iter ${(p.iter as number) ?? '?'}`;
+    case 'task.iteration.iterated':
+      return `iter ${(p.iter as number) ?? '?'} → re-iterating (notes: ${((p.notes as string) ?? '').slice(0, 60)})`;
+    case 'task.tool-call':
+      return `tool ${(p.tool as string) ?? '?'}`;
+    case 'task.tool-result':
+      return `tool ${(p.tool as string) ?? '?'} done`;
+    case 'task.commit':
+      return `commit ${(p.sha as string)?.slice(0, 8) ?? '?'} — ${(p.message as string) ?? ''}`;
+    case 'task.pr-opened':
+      return `PR opened: ${(p.prId as string) ?? ''}`;
+    case 'task.budget-warning':
+      return `over budget: ${(p.actual as number) ?? '?'} / ${(p.expected as number) ?? '?'}`;
+    case 'queue.acked':
+    case 'queue.routed':
+    case 'queue.picked-up':
+    case 'queue.completed':
+      return `queue ${e.kind.replace('queue.', '')}${p.crewId ? ` → ${p.crewId}` : ''}`;
+    default:
+      try { return JSON.stringify(p).slice(0, 80); } catch { return ''; }
+  }
 }

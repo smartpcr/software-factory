@@ -23,6 +23,8 @@ import type {
   ProductAreaPath,
   ProductIteration,
   ProductStats,
+  ProductStory,
+  PayrollTodaySummary,
   PromotionRunResponse,
   Repo,
   SalaryTodaySummary,
@@ -30,6 +32,8 @@ import type {
   SavedPrefix,
   SoulPayload,
   SprintDiscoveryRequest,
+  TaskQueueEntry,
+  CrewQueueStats,
   TimelineResponse,
   UserSettings,
   Workstream,
@@ -292,9 +296,28 @@ export const forgeApi = {
     });
   },
 
-  /** POST /api/epics — create a new story/epic. */
+  /** POST /api/epics — create a new story/epic (legacy, global). */
   async createEpic(req: { name: string; id?: string; status?: string }): Promise<Epic> {
     return fetchJson<Epic>('/api/epics', {
+      method: 'POST',
+      body: JSON.stringify(req),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** GET /api/epics — list all stories/epics (legacy, global). */
+  async listEpics(): Promise<Epic[]> {
+    return fetchJson<Epic[]>('/api/epics');
+  },
+
+  /** GET /api/products/{productId}/stories — list stories for a product. */
+  async listProductStories(productId: string): Promise<ProductStory[]> {
+    return fetchJson<ProductStory[]>(`/api/products/${encodeURIComponent(productId)}/stories`);
+  },
+
+  /** POST /api/products/{productId}/stories — create a story under a product. */
+  async createProductStory(productId: string, req: { name: string; id?: string; status?: string }): Promise<ProductStory> {
+    return fetchJson<ProductStory>(`/api/products/${encodeURIComponent(productId)}/stories`, {
       method: 'POST',
       body: JSON.stringify(req),
       headers: { 'X-Forge-User': writerHeader() },
@@ -602,23 +625,9 @@ export const forgeApi = {
     return fetchJson<CrewPayroll>(`/api/crews/${encodeURIComponent(id)}/payroll`);
   },
 
-  /**
-   * Phase 14.11 — TopBar payroll chip aggregator. No dedicated server
-   * endpoint yet (the per-crew rollup is cheap and the operator's crew
-   * count is small); we list crews and sum `today` client-side.
-   */
-  async getPayrollTodayTotal(): Promise<{ totalUsd: number; crewCount: number }> {
-    const crews = await this.listCrews();
-    if (crews.length === 0) return { totalUsd: 0, crewCount: 0 };
-    const rolls = await Promise.all(crews.map((c) => this.getCrewPayroll(c.id).catch(() => null)));
-    let total = 0;
-    let counted = 0;
-    for (const r of rolls) {
-      if (!r) continue;
-      total += r.today;
-      counted++;
-    }
-    return { totalUsd: total, crewCount: counted };
+  /** GET /api/crews/payroll/today — Phase 14.11 server-side payroll SUM. */
+  async getPayrollTodayTotal(): Promise<PayrollTodaySummary> {
+    return fetchJson<PayrollTodaySummary>('/api/crews/payroll/today');
   },
 
   /** GET /api/deliverables/{id} — Phase 14.5. */
@@ -1100,6 +1109,60 @@ export const forgeApi = {
     await fetchJson<void>(
       `/api/repos/${encodeURIComponent(repoId)}/iteration-binding/${encodeURIComponent(String(bindingId))}`,
       { method: 'DELETE', headers: { 'X-Forge-User': writerHeader() } });
+  },
+
+  // ─── Phase 17 — Persistent task queue ──────────────────────────────────
+
+  async listQueue(opts?: { targetKind?: string; targetId?: string; state?: string }): Promise<TaskQueueEntry[]> {
+    const qs = new URLSearchParams();
+    if (opts?.targetKind) qs.set('targetKind', opts.targetKind);
+    if (opts?.targetId)   qs.set('targetId', opts.targetId);
+    if (opts?.state)      qs.set('state', opts.state);
+    const tail = qs.toString();
+    return fetchJson<TaskQueueEntry[]>(`/api/queue${tail ? `?${tail}` : ''}`);
+  },
+
+  async listTeamQueue(teamId: string): Promise<TaskQueueEntry[]> {
+    return fetchJson<TaskQueueEntry[]>(`/api/teams/${encodeURIComponent(teamId)}/queue`);
+  },
+
+  async listCrewQueue(crewId: string): Promise<TaskQueueEntry[]> {
+    return fetchJson<TaskQueueEntry[]>(`/api/crews/${encodeURIComponent(crewId)}/queue`);
+  },
+
+  async getCrewQueueStats(crewId: string): Promise<CrewQueueStats> {
+    return fetchJson<CrewQueueStats>(`/api/crews/${encodeURIComponent(crewId)}/queue-stats`);
+  },
+
+  async ackQueue(queueId: number): Promise<TaskQueueEntry> {
+    return fetchJson<TaskQueueEntry>(`/api/queue/${queueId}/ack`, {
+      method: 'POST', body: '{}', headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  async routeQueue(queueId: number, crewId: string): Promise<TaskQueueEntry> {
+    return fetchJson<TaskQueueEntry>(`/api/queue/${queueId}/route`, {
+      method: 'POST', body: JSON.stringify({ crewId }), headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  async reassignQueue(queueId: number, newCrewId: string): Promise<TaskQueueEntry> {
+    return fetchJson<TaskQueueEntry>(`/api/queue/${queueId}/reassign`, {
+      method: 'POST', body: JSON.stringify({ newCrewId }), headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  async cancelQueue(queueId: number, reason?: string): Promise<TaskQueueEntry> {
+    return fetchJson<TaskQueueEntry>(`/api/queue/${queueId}/cancel`, {
+      method: 'POST', body: JSON.stringify({ reason: reason ?? null }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  async confirmStrain(queueId: number): Promise<TaskQueueEntry> {
+    return fetchJson<TaskQueueEntry>(`/api/queue/${queueId}/strain-confirm`, {
+      method: 'POST', body: '{}', headers: { 'X-Forge-User': writerHeader() },
+    });
   },
 };
 

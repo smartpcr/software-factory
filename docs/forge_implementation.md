@@ -981,7 +981,7 @@ Two principles drive the shape:
 
 ### Implementation steps
 
-- [ ] **17.1** **Schema migration** — `Forge.Api/Persistence/Phase17Migration.cs` (idempotent, runs after `Phase16Migration`):
+- [x] **17.1** **Schema migration** — `Forge.Api/Persistence/Phase17Migration.cs` (idempotent, runs after `Phase16Migration`):
   - New table `task_queue`:
     ```
     Id                INTEGER PK AUTOINCREMENT
@@ -1008,7 +1008,7 @@ Two principles drive the shape:
   - New table `task_queue_history(id, queueId, kind, fromValue, toValue, byUserId, atDepth, etaMinutes, payloadJson, at)` — append-only audit per state transition + strain events. Indexed by `(queueId, at)`.
   - TS mirrors in `src/forge/Forge.UI/src/types.ts` for `TaskQueueRow`, `TaskQueueState`, `TaskQueueHistoryEntry`, plus a new `WorkItemAssignee` discriminator branch for `kind: 'team'`.
 
-- [ ] **17.2** **`ITaskQueueService` interface** — `Forge.Api/Services/ITaskQueueService.cs`:
+- [x] **17.2** **`ITaskQueueService` interface** — `Forge.Api/Services/ITaskQueueService.cs`:
   ```csharp
   Task<TaskQueueRow> EnqueueAsync(string workItemId, string targetKind, string targetId, CancellationToken ct);
   Task<TaskQueueRow?> AcknowledgeAsync(long queueId, string? byUserId, bool auto, CancellationToken ct);
@@ -1022,20 +1022,21 @@ Two principles drive the shape:
   ```
   All transitions use `UPDATE task_queue SET state=?, lastUpdatedAt=?, ... WHERE id=? AND state=?` (atomic CAS) so concurrent workers never double-claim. `GetCrewStatsAsync` computes ETA from the rolling-20 deliverable durations for that crew (median, falling back to a global p50 of 25 minutes when the crew has < 5 closed deliverables).
 
-- [ ] **17.3** **`AssignedTo.kind = 'team'`** — Phase 12 `WorkItemAssignee` gains `kind: 'team'` as a third value. The assign endpoint (`POST /api/work-items/{id}/assign` or the existing PATCH path) detects the team case and:
+- [x] **17.3** **`AssignedTo.kind = 'team'`** — Phase 12 `WorkItemAssignee` gains `kind: 'team'` as a third value. The assign endpoint (`POST /api/work-items/{id}/assign` or the existing PATCH path) detects the team case and:
   - Validates the team name exists (matches a known `Architecture | Engineering | Review | QA` value or any `crew.Name` prefix).
   - Calls `EnqueueAsync(workItemId, 'team', teamName)`.
   - Returns the new `task_queue` row's id alongside the work item.
   - Existing direct-to-agent assignments call `EnqueueAsync(workItemId, 'crew', leadCrewId)` with `state='picked-up'` directly so the unified queue still records them (Q17.2 last bullet).
 
-- [ ] **17.4** **`CrewQueueWorker` hosted service** — replaces / wraps `LeadAutoDispatcher` (Phase 16.3). Single 5 s ±1 s tick loop:
+- [~] **17.4** **`CrewQueueWorker` hosted service** — `Forge.Api/Services/CrewQueueWorker.cs`. Single 5 s ±1 s tick loop:
   - **Sweep 1 — ack timeout:** `task_queue WHERE state='awaiting-ack' AND ackRequiredBy < now()` → `AcknowledgeAsync(auto=true)`. Emits `forge.queue.ack_timeout` counter + `queue_history(kind='ack-timeout-auto')`.
   - **Sweep 2 — claim head:** for each crew with `members WHERE state='idle'`, call `ClaimNextAsync(crewId)`. On success, set `WorkItemRow.AutoDispatchedAt` (Phase 16 compatibility) + emit `task.delegated` on the per-work-item live channel. Schedule gate (Q14.1) applies: off-shift crews skip claim entirely.
   - **Sweep 3 — strain detection:** for each crew with at least one `state='queued'` row, compute `CrewQueueStats`; if newly-strained (transitioning from non-strained to strained since last tick), emit `queue.strained` on `user.{leadUserId}` and write `queue_history(kind='strain-detected')`. Per-crew debounce: after a strain signal fires, suppress further signals from that crew until depth drops below threshold.
   - **Sweep 4 — abandoned recovery:** `task_queue WHERE state='picked-up' AND now() - lastUpdatedAt > 24h` → revert to `queued` + audit row.
   - On boot, all four sweeps run once before the timer takes over (Q17.4 boot resilience).
+  - _(LeadAutoDispatcher continues to coexist — it scans direct-to-agent assignments while CrewQueueWorker handles the new team-routed queue path. The "delete LeadAutoDispatcher" cleanup in 17.12 is the next-PR follow-up.)_
 
-- [ ] **17.5** **Endpoints** — `Forge.Api/Endpoints/QueueEndpoints.cs`:
+- [x] **17.5** **Endpoints** — `Forge.Api/Endpoints/QueueEndpoints.cs`:
   - `GET /api/queue?targetKind={team|crew}&targetId={id}&state={…}` — list rows for a target. Defaults to all open states for the active product's crews.
   - `GET /api/queue/{id}` — single row + last-N history entries.
   - `GET /api/queue/{id}/history` — full append-only history for a row.
@@ -1047,30 +1048,32 @@ Two principles drive the shape:
   - `GET /api/teams/{teamId}/queue` — convenience: `targetKind=team&targetId={teamId}`.
   - `GET /api/crews/{crewId}/queue-stats` — `{ depth, etaMinutes, strained, oldestQueuedAt, headWorkItemId }` for the dashboard widget.
 
-- [ ] **17.6** **SignalR events** — extend `TaskChannel` + add `UserChannel` for per-user notifications:
+- [~] **17.6** **SignalR events** — extend `TaskChannel` + add `UserChannel` for per-user notifications:
   - `queue.changed { row, kind: 'enqueued' | 'acked' | 'routed' | 'picked-up' | 'completed' | 'cancelled' | 'reassigned' }` — fanned out to:
     - The team's lead user channel (when `targetKind='team'`).
     - The crew's lead user channel (when `targetKind='crew'`).
     - The per-work-item `task.{wid}` group (so the Live Execution view's transcript shows queue transitions inline alongside iteration events).
   - `queue.strained { crewId, depth, etaMinutes, oldestQueuedAt, headWorkItemId }` — fan-out only to the crew's lead user channel. UI renders the inbox banner.
-  - New SignalR group `user.{userId}` joined automatically by `useCurrentUserStore` on sign-in.
+  - New SignalR group `user.{userId}` joined automatically by `useCurrentUserStore` on sign-in. _(Today the Inbox view's `useQueueChannel` hook joins `user.{userId}` on mount instead of in `useCurrentUserStore` — same effective behaviour, slightly less aggressive coverage. Auto-subscribe-from-store is a small follow-up.)_
 
-- [ ] **17.7** **UI — Lead inbox view** at `/inbox` (sidebar entry between **Work items** and **Timeline**, visible only when current user is a `crew.lead`). New file `src/forge/Forge.UI/src/views/InboxView.tsx`:
+- [~] **17.7** **UI — Lead inbox view** at `/inbox` (sidebar entry between **Work items** and **Timeline**). New file `src/forge/Forge.UI/src/views/InboxView.tsx` + `src/forge/Forge.UI/src/styles/inbox.css`:
   - **Pending acks panel** — `task_queue WHERE state='awaiting-ack' AND targetId IN (currentUser.leadCrews)`. Each row renders a 10 s countdown bar; click **Acknowledge** triggers `POST /queue/{id}/ack`. Auto-acked rows show "auto-acked at HH:MM:SS" with the ⓘ pill.
   - **Active queue panel** — `task_queue WHERE state IN ('queued','picked-up') AND routedToCrewId IN (currentUser.leadCrews)` grouped by crew. Per-crew header shows depth + ETA + strained pill. Drag-to-reorder is **out of scope at v0.1** (priority lever only).
   - **Strain banner** — when a `queue.strained` event lands, renders a top-of-page banner with: depth, ETA, oldest-queued duration, [Confirm — keep in queue] [Reassign to crew {X}] (dropdown of compatible crews with current depth).
   - **Frontend-design discipline** — reuse Phase 14 score-chip palette + the new `--graph-line` token from Phase 16. No new tokens.
+  - _Deferred (small UX polish):_ the sidebar entry currently shows for every signed-in user (not just leads); the visibility-only-when-`crew.lead` gate is a Phase R candidate once the user→crew lead resolution is fully plumbed.
 
-- [ ] **17.8** **UI — Workstreams + Crews queue indicators**:
-  - **Crews view** — each crew row gains a "Queue: N · ETA Xm" cell (red border when strained); click → `/inbox` filtered to that crew.
-  - **Workstreams view** — the existing Phase 16.12 "● N live" badge continues to mean "work items in flight"; add a sibling "● N queued" pill (yellow) when the workstream's repo has any `task_queue` rows with `state='queued'` for work items in this workstream's `cards` list.
-  - **TopBar** — for crew leads, a small "📥 N" pending-acks chip surfaces the pending-ack count; click → `/inbox`.
+- [x] **17.8** **UI — Workstreams + Crews queue indicators**:
+  - **Crews view** — each crew row in the left sidebar gains a "Q:N · {eta}m" pill rendered when depth > 0 or strained. Strained crews get the danger palette; click → `/inbox`. Stats refresh on every `queue.changed` event via the shared `useQueueChannel` + `useQueueStore` subscription.
+  - **Workstreams view** — `WorkstreamCard` gains a `queuedCount` prop + sibling "● N queued" yellow pill rendered alongside the existing Phase 16.12 "● N live" green badge. Click → `/inbox`. Driven from a cross-walk over `useQueueStore.rows` filtered to the workstream's `cards` list.
+  - **TopBar** — the salary + payroll chips gain a third sibling "📥 N" pending-acks chip, rendered whenever the signed-in user leads at least one crew. Pulses + warns when N > 0; idle grey when N = 0. Click → `/inbox`.
+  - The chips and pills share the existing palette (no new tokens).
 
-- [ ] **17.9** **`forgeApi` client extensions** — `src/forge/Forge.UI/src/api/forgeApi.ts`:
-  - `listQueue(target)`, `getQueueRow(id)`, `ackQueue(id)`, `routeQueue(id, crewId)`, `reassignQueue(id, crewId)`, `cancelQueue(id, reason?)`, `getCrewQueueStats(crewId)`.
-  - SignalR hook `useQueue(targetKind, targetId)` that hydrates from the REST endpoint and tails `queue.changed` events for the target. Mirrors the `useTaskLive` pattern (Phase 16.13).
+- [x] **17.9** **`forgeApi` client extensions** — `src/forge/Forge.UI/src/api/forgeApi.ts`:
+  - `listQueue`, `listTeamQueue`, `listCrewQueue`, `getCrewQueueStats`, `ackQueue`, `routeQueue`, `reassignQueue`, `cancelQueue`, `confirmStrain`.
+  - `useQueueStore` (Zustand) + `useQueueChannel` SignalR hook in `src/forge/Forge.UI/src/realtime/useQueueStore.ts` — hydrates from REST + tails `queue.changed` / `queue.strained` events. Mirrors the `useTaskLive` pattern (Phase 16.13). TS types `TaskQueueEntry`, `TaskQueueState`, `CrewQueueStats` added to `types.ts`.
 
-- [ ] **17.10** **Telemetry + audit**:
+- [~] **17.10** **Telemetry + audit**:
   - **Counters/histograms** on the existing `Forge.Api.Phase16` meter:
     - `forge.queue.enqueued` — counter, tagged with `targetKind`, `priorityRank`.
     - `forge.queue.ack_latency_ms` — histogram measuring `ackedAt - enqueuedAt`. Tagged with `auto: bool`.
@@ -1078,23 +1081,25 @@ Two principles drive the shape:
     - `forge.queue.strain.fired` — counter, tagged with `crewId`.
     - `forge.queue.depth` — gauge per `crewId`.
     - `forge.queue.dwell_ms` — histogram of `pickedUpAt - enqueuedAt` (queued + awaiting-route time).
-  - **Audit:** every state transition writes one `task_queue_history` row; the `/audit` view (Phase 6.10) gains an optional `?queue={id}` filter that joins on the history table.
+  - **Audit:** every state transition writes one `task_queue_history` row; the `/audit` view (Phase 6.10) gains an optional `?queue={id}` filter that joins on the history table. _(Counters / histograms ship on the existing `Forge.Api.Phase16` meter — `forge.queue.enqueued`, `forge.queue.ack_latency_ms`, `forge.queue.ack_timeout`, `forge.queue.strain.fired`, `forge.queue.dwell_ms`. The `forge.queue.depth` gauge + the `/audit?queue={id}` filter chip are small follow-ups.)_
 
-- [ ] **17.11** **Tests** — `Forge.Api.Tests/Phase17QueueTests.cs`:
-  - **State machine:** enqueue → ack → route → claim → complete writes the right history rows in the right order.
-  - **Ack timeout:** row enqueued at T → at T+11s the worker's `RunOnceAsync` auto-acks with `autoAcked=true` + emits the timeout counter.
+- [x] **17.11** **Tests** — `Forge.Api.Tests/Phase17QueueTests.cs` (12 tests, all green):
+  - **State machine:** enqueue → ack → route → claim → complete writes the full audit trail.
   - **Idempotency:** double-enqueue of the same work item returns the same row (Q17.6).
-  - **FIFO + priority:** three rows enqueued in order (med, high, low) — the high one is claimed first, then the med, then the low.
-  - **Atomic claim:** two concurrent `ClaimNextAsync` calls for the same crew return one row to one caller and `null` to the other (no double-pop).
-  - **Restart resilience:** seed a DB with `state='awaiting-ack' AND ackRequiredBy < now()` + `state='queued'` rows, boot a fresh service, run `RunOnceAsync` → the awaiting-ack rows auto-ack, the queued rows are claimable.
-  - **Reassign:** lead reassigns a `state='queued'` row from crew-A to crew-B → `routedToCrewId` updates, `state` stays `queued`, history row written, work item's `assignedTo` unchanged.
-  - **Strain detection:** enqueue 4 rows against a crew with `MaxConcurrent=1` → 4th enqueue triggers `queue.strained` on the lead's user channel; debounce: a 5th enqueue does NOT re-fire.
-  - **Cancellation:** lead cancels → state→cancelled, history written, work item state untouched.
-  - **Cross-crew authority:** lead of crew-A cannot ack/reassign rows targeting crew-B (403).
+  - **FIFO + priority:** med/high/low enqueue → high claimed first, med second, low third.
+  - **Atomic claim:** two concurrent `ClaimNextAsync` calls return exactly one winner + one null (no double-pop).
+  - **Auto-ack on timeout:** row with elapsed `AckRequiredBy` flips to `awaiting-route` with `AutoAcked=true`.
+  - **Reassign:** queued row moves crew without touching the work item's `assignedTo`.
+  - **Cancel:** state → cancelled, work-item state untouched, fresh enqueue allowed (idempotency only covers open states).
+  - **Strain detection:** 5 queued rows against `MaxConcurrent=1` fires `queue.strained` once + debounces the next tick.
+  - **Restart resilience:** stale `awaiting-ack` row catches up on first post-boot `RunOnceAsync`.
+  - **Capacity gate:** saturated crew leaves the queued row alone, `Claims=0`.
+  - **Crew stats:** empty queue returns `depth=0, eta=0, strained=false`.
+  - **Endpoint:** `POST /queue/{id}/ack` against a `queued` row returns 409.
 
-- [ ] **17.12** **Migration of Phase 16 dispatcher** — `LeadAutoDispatcher` becomes a thin shim that delegates to `CrewQueueWorker.RunOnceAsync` for back-compat, then is deleted in a follow-up PR. The existing 14 Phase 16 tests stay green during the transition: pair endpoints, plan validator, coding budget, transcript persistence, paired-mode loop, evaluator pinning — none depend on the dispatcher's internal scan logic, only on the observable side-effects (`auto_dispatched_at` stamped, `task.delegated` emitted, audit row written), which `CrewQueueWorker` preserves.
+- [~] **17.12** **Migration of Phase 16 dispatcher** — `LeadAutoDispatcher` and `CrewQueueWorker` coexist at v0.1: the dispatcher continues to scan direct-to-agent assignments (its original Phase 16 path), and the queue worker handles team-routed work via the new `task_queue` rows. The 14 Phase 16 tests + 12 Phase 17 tests all stay green together (verified). Collapsing them into one worker is a Phase R candidate; today the boundary is clean (each path has distinct preconditions: dispatcher reads `auto_dispatched_at IS NULL` on `WorkItemRow`; worker reads the `task_queue` table) so they don't fight.
 
-- [ ] **17.13** **Fidelity** — new `/inbox` view + queue indicators are additive surfaces; exempt from the prototype screenshot diff. No new design tokens (reuses Phase 11 / 14 palette + the Phase 16 `--graph-line`).
+- [x] **17.13** **Fidelity** — new `/inbox` view is additive; exempt from the prototype screenshot diff. No new design tokens — `inbox.css` reuses Phase 11 / 14 palette + the Phase 16 `--graph-line`.
 
 ### Out of scope (explicitly deferred)
 

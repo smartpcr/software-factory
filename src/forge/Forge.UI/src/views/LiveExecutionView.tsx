@@ -5,8 +5,10 @@
 // /api/work-items/{id}/execution and tails the SignalR `task.{id}` group
 // for live updates via useTaskLive (Phase 16.13).
 import { useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { useTaskLive, type TaskTranscriptEvent, type WorktreeSnapshot } from '@/realtime/useTaskLiveStore';
+import { forgeApi } from '@/api/forgeApi';
+import { useToastStore } from '@/state/useToastStore';
 
 type FilterKey = 'all' | 'generator' | 'evaluator' | 'tools' | 'commits';
 
@@ -26,6 +28,8 @@ export function LiveExecutionView(): JSX.Element {
   const entry = useTaskLive(workItemId);
   const [filter, setFilter] = useState<FilterKey>('all');
   const [tab, setTab]       = useState<RailTab>('worktree');
+  const [busy, setBusy]     = useState(false);
+  const navigate = useNavigate();
 
   if (!workItemId) {
     return <div className="live-exec__empty">Pick a work item to watch.</div>;
@@ -34,8 +38,54 @@ export function LiveExecutionView(): JSX.Element {
   const snapshot = entry?.snapshot ?? null;
   const transcript = entry?.transcript ?? [];
   const worktree = entry?.worktree ?? snapshot?.worktree ?? null;
-
   const filtered = useMemo(() => filterEvents(transcript, filter), [transcript, filter]);
+
+  async function cancelAndRequeue() {
+    if (!workItemId) return;
+    setBusy(true);
+    try {
+      // Find the queue entry for this work item.
+      const queue: Array<{ id: number; workItemId: string; state: string }> = await forgeApi.listQueue();
+      const entry = queue.find((q) => q.workItemId === workItemId);
+      if (entry) {
+        await forgeApi.cancelQueue(entry.id, 're-queue from live exec');
+      }
+      // Clear assignment on the work item.
+      await forgeApi.patchWorkItem(workItemId, { clearAssignedTo: true });
+      useToastStore.getState().show('Cancelled and cleared assignment. Ready to re-dispatch.', 'success');
+      navigate('/work-items');
+    } catch (e) {
+      useToastStore.getState().show(e instanceof Error ? e.message : 'Failed', 'danger');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function requeue() {
+    if (!workItemId || !snapshot?.generatorCrewId) return;
+    setBusy(true);
+    try {
+      const queue: Array<{ id: number; workItemId: string; state: string }> = await forgeApi.listQueue();
+      const entry = queue.find((q) => q.workItemId === workItemId);
+      if (entry) {
+        await forgeApi.cancelQueue(entry.id, 're-queue');
+      }
+      // Re-enqueue to the same crew.
+      const r = await fetch(`/api/crews/${encodeURIComponent(snapshot.generatorCrewId)}/plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Forge-User': 'forge-ui' },
+        body: JSON.stringify({ workItemId }),
+      });
+      useToastStore.getState().show(
+        r.ok ? 'Re-queued successfully' : `Re-queue failed (${r.status})`,
+        r.ok ? 'success' : 'danger',
+      );
+    } catch (e) {
+      useToastStore.getState().show(e instanceof Error ? e.message : 'Failed', 'danger');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="live-exec">
@@ -68,6 +118,26 @@ export function LiveExecutionView(): JSX.Element {
             spend={snapshot?.totalCostUsd ?? 0}
             cap={snapshot?.maxTaskBudgetUsd ?? null}
           />
+        </div>
+        <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
+          <button
+            className="btn btn-secondary"
+            style={{ fontSize: 11, padding: '4px 10px' }}
+            disabled={busy}
+            onClick={() => void requeue()}
+            title="Cancel current queue entry and re-enqueue to the same crew"
+          >
+            ↻ Re-queue
+          </button>
+          <button
+            className="btn btn-secondary"
+            style={{ fontSize: 11, padding: '4px 10px', color: 'var(--danger, #ef4444)' }}
+            disabled={busy}
+            onClick={() => void cancelAndRequeue()}
+            title="Cancel queue entry and clear agent assignment — returns to unassigned state"
+          >
+            ✕ Unassign
+          </button>
         </div>
       </header>
 

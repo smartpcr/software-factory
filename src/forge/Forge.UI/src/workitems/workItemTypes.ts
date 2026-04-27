@@ -26,10 +26,13 @@ export type RepoKind = 'ado' | 'github';
 export interface WorkItemAssignee {
   /**
    * `agent` = a single roster member (individual). `human` = a real
-   * person with a Forge account. `crew` = an entire team — the runner
-   * resolves the actual member at dispatch time via the crew's lead.
+   * person with a Forge account. `crew` = a specific crew (direct-to-crew,
+   * skips the team→lead routing). `team` (Phase 17) = the line-of-business
+   * team (Architecture / Engineering / Review / QA). The latter enters the
+   * persistent queue with state='awaiting-ack' and routes through the
+   * lead → crew → member pipeline.
    */
-  kind: 'agent' | 'human' | 'crew';
+  kind: 'agent' | 'human' | 'crew' | 'team';
   id: string;
   displayName: string;
   initials: string;

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import type { WorkItem, WorkItemAssignee, WorkItemPriority, WorkItemState, WorkItemType } from './workItemTypes';
 import { typeLabel, WORK_ITEM_STATES, WORK_ITEM_TYPES } from './workItemTypes';
 import { useWitStore } from './useWitStore';
@@ -8,12 +9,10 @@ import { StatePill } from './StatePill';
 import { RepoIcon } from '@/products/RepoIcon';
 import { SAMPLE_ITERATIONS, SAMPLE_REPOS } from './sampleWorkItems';
 import { useProductsStore } from '@/state/useProductsStore';
-import { useStateStore } from '@/state/useStateStore';
 import { forgeApi, ForgeApiError } from '@/api/forgeApi';
 import { avatarFor, agentTooltip } from '@/agentAvatar';
 import { CardModal } from '@/board/CardModal';
 import { StoryPicker } from '@/board/StoryPicker';
-import { sampleState } from '@/sampleData';
 import type { AgentDetail, Crew, ProductAreaPath, Repo } from '@/types';
 
 interface Props {
@@ -32,6 +31,7 @@ export function WorkItemDetailPanel({ item }: Props) {
   const patch = useWorkItemsStore((s) => s.patch);
   const activeProductId = useProductsStore((s) => s.activeProductId);
   const reposByProduct = useProductsStore((s) => s.reposByProduct);
+  const navigate = useNavigate();
 
   // Local-edit buffers so we can submit on blur/Enter without re-rendering on every keystroke.
   const [titleDraft, setTitleDraft] = useState(item?.title ?? '');
@@ -44,8 +44,17 @@ export function WorkItemDetailPanel({ item }: Props) {
   const [resyncing, setResyncing] = useState(false);
   const [witStoryPickerOpen, setWitStoryPickerOpen] = useState(false);
   const reload = useWorkItemsStore((s) => s.load);
-  const apiState = useStateStore((s) => s.state);
-  const epics = apiState?.epics ?? sampleState.epics;
+
+  // Product-scoped stories for the story name display + picker.
+  const [productStories, setProductStories] = useState<import('@/types').ProductStory[]>([]);
+  useEffect(() => {
+    if (!activeProductId) return;
+    let cancelled = false;
+    forgeApi.listProductStories(activeProductId)
+      .then((s) => { if (!cancelled) setProductStories(s); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [activeProductId]);
   async function resyncFromProvider() {
     if (!item) return;
     setResyncing(true);
@@ -327,14 +336,43 @@ export function WorkItemDetailPanel({ item }: Props) {
             }}
           >
             {item.featureRef
-              ? (() => { const e = epics.find((ep) => ep.id === item.featureRef); return e ? `${e.id} — ${e.name}` : item.featureRef; })()
+              ? (() => { const s = productStories.find((st) => st.id === item.featureRef); return s ? s.name : item.featureRef; })()
               : 'No story — click to assign'}
           </button>
           <StoryPicker
             open={witStoryPickerOpen}
-            currentEpic={item.featureRef ?? ''}
+            currentStory={item.featureRef ?? ''}
             onSelect={(epicId) => {
-              void patch(item.id, { featureRef: epicId || null });
+              void (async () => {
+                // 1. Update the work item's featureRef.
+                await patch(item.id, { featureRef: epicId || null });
+                // 2. Ensure a board card exists so the item appears on
+                //    Plan & Design. If one already exists, update its epic;
+                //    otherwise create one.
+                if (epicId) {
+                  try {
+                    await forgeApi.patchCard(item.id, { epic: epicId });
+                  } catch {
+                    // Card doesn't exist yet — create it.
+                    try {
+                      await forgeApi.createCard({
+                        id: item.id,
+                        epic: epicId,
+                        col: 'backlog',
+                        type: item.type === 'bug' ? 'bug' : item.type === 'task' ? 'task' : 'story',
+                        title: item.title,
+                        tags: item.tags,
+                        pts: item.points,
+                        priority: item.priority,
+                        agent: null,
+                        cost: 0,
+                      });
+                    } catch {
+                      // best-effort
+                    }
+                  }
+                }
+              })();
               setWitStoryPickerOpen(false);
             }}
             onClose={() => setWitStoryPickerOpen(false)}
@@ -392,10 +430,73 @@ export function WorkItemDetailPanel({ item }: Props) {
         </dl>
       </section>
 
-      <footer className="wit-detail-foot">
-        <span className="wit-detail-foot-hint">
-          Inline edit on title / state / points / priority is live. Iteration combo + assignee picker + tag editor land with Phase 12.7 follow-up.
-        </span>
+      <footer className="wit-detail-foot" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <button
+          className="btn btn-primary"
+          onClick={() => navigate(`/work-items/${encodeURIComponent(item.id)}/live`)}
+          title="Open live execution view"
+        >
+          Live Execution
+        </button>
+        <button
+          className="btn btn-secondary"
+          onClick={() => setDispatchModalOpen(true)}
+          title="Create card & dispatch to AI crew"
+        >
+          Dispatch
+        </button>
+        <button
+          className="btn btn-secondary"
+          onClick={async () => {
+            try {
+              const queue = await forgeApi.listQueue();
+              const entry = queue.find((q: { workItemId: string }) => q.workItemId === item.id);
+              if (entry) {
+                await forgeApi.cancelQueue(entry.id, 're-queue from detail panel');
+              }
+              // Re-enqueue via plan endpoint.
+              const assignedJson = item.assignedTo as Record<string, unknown> | null;
+              const crewId = (assignedJson as { crewId?: string } | null)?.crewId;
+              if (crewId) {
+                await fetch(`/api/crews/${encodeURIComponent(crewId)}/plan`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'X-Forge-User': 'forge-ui' },
+                  body: JSON.stringify({ workItemId: item.id }),
+                });
+              }
+              const { useToastStore } = await import('@/state/useToastStore');
+              useToastStore.getState().show('Re-queued', 'success');
+            } catch (e) {
+              const { useToastStore } = await import('@/state/useToastStore');
+              useToastStore.getState().show(e instanceof Error ? e.message : 'Failed', 'danger');
+            }
+          }}
+          title="Cancel current queue entry and re-enqueue"
+        >
+          ↻ Re-queue
+        </button>
+        <button
+          className="btn btn-secondary"
+          style={{ color: 'var(--danger, #ef4444)' }}
+          onClick={async () => {
+            try {
+              const queue = await forgeApi.listQueue();
+              const entry = queue.find((q: { workItemId: string }) => q.workItemId === item.id);
+              if (entry) {
+                await forgeApi.cancelQueue(entry.id, 'unassign from detail panel');
+              }
+              await patch(item.id, { clearAssignedTo: true });
+              const { useToastStore } = await import('@/state/useToastStore');
+              useToastStore.getState().show('Unassigned — ready to re-dispatch', 'success');
+            } catch (e) {
+              const { useToastStore } = await import('@/state/useToastStore');
+              useToastStore.getState().show(e instanceof Error ? e.message : 'Failed', 'danger');
+            }
+          }}
+          title="Cancel queue entry and clear agent assignment"
+        >
+          ✕ Unassign
+        </button>
       </footer>
 
       <CardModal
@@ -631,6 +732,19 @@ function AssigneePicker({ value, agents, crews, onOpen, onChange }: {
     setOpen(false); setQuery('');
   }
 
+  // Phase 17 — assign to a line-of-business team. The server enqueues
+  // a `task_queue` row with state='awaiting-ack' and the lead has 10s to
+  // acknowledge before auto-ack. Visible in /inbox.
+  function pickTeam(name: string) {
+    onChange({
+      kind: 'team',
+      id: name,
+      displayName: name,
+      initials: name.slice(0, 2).toUpperCase(),
+    });
+    setOpen(false); setQuery('');
+  }
+
   function pickAgent(a: AgentDetail) {
     onChange({
       kind: 'agent',
@@ -675,6 +789,15 @@ function AssigneePicker({ value, agents, crews, onOpen, onChange }: {
                 initials={value.initials}
                 size={26}
               />
+            ) : value.kind === 'team' ? (
+              <span style={{
+                width: 26, height: 26, borderRadius: 6,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                background: 'color-mix(in srgb, var(--warning) 15%, transparent)',
+                border: '1px solid var(--warning)',
+                color: 'var(--warning)',
+                fontFamily: 'var(--font-mono, monospace)', fontSize: 11, fontWeight: 600,
+              }}>{value.initials}</span>
             ) : (
               <span className="wit-detail-avatar" style={{ width: 26, height: 26 }}>{value.initials}</span>
             )}
@@ -686,7 +809,14 @@ function AssigneePicker({ value, agents, crews, onOpen, onChange }: {
                     marginLeft: 6, fontSize: 9.5, padding: '1px 6px', borderRadius: 999,
                     border: '1px solid var(--accent)', color: 'var(--accent)',
                     fontFamily: 'var(--font-mono, monospace)', fontWeight: 400,
-                  }}>team</span>
+                  }}>crew</span>
+                )}
+                {value.kind === 'team' && (
+                  <span style={{
+                    marginLeft: 6, fontSize: 9.5, padding: '1px 6px', borderRadius: 999,
+                    border: '1px solid var(--warning)', color: 'var(--warning)',
+                    fontFamily: 'var(--font-mono, monospace)', fontWeight: 400,
+                  }}>queue</span>
                 )}
               </div>
               <div className="wit-detail-assignee-kind">{value.kind} · {value.id}</div>
@@ -730,9 +860,57 @@ function AssigneePicker({ value, agents, crews, onOpen, onChange }: {
             <span style={{ flex: 1, fontStyle: 'italic', color: 'var(--text-secondary)' }}>Unassigned</span>
           </button>
 
+          {/* Phase 17 — line-of-business teams. Picking one enqueues the
+              work item, kicks off the 10s lead-ack SLO, and routes through
+              the queue. Visible in /inbox. */}
+          {(() => {
+            const q = query.trim().toLowerCase();
+            const teams = TEAMS.filter((t) => !q || t.toLowerCase().includes(q));
+            if (teams.length === 0) return null;
+            return (
+              <>
+                <div style={pickerSectionHeaderStyle}>Teams · routes via queue</div>
+                {teams.map((t) => {
+                  const selected = value?.kind === 'team' && value.id === t;
+                  return (
+                    <button
+                      key={`team:${t}`}
+                      type="button"
+                      onClick={() => pickTeam(t)}
+                      style={pickerRowStyle(selected)}
+                      title={`Route to the ${t} team. Lead has 10s to acknowledge before auto-ack — track in /inbox.`}
+                    >
+                      <span style={{
+                        width: 26, height: 26, borderRadius: 6,
+                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                        background: 'color-mix(in srgb, var(--warning) 15%, transparent)',
+                        border: '1px solid var(--warning)',
+                        color: 'var(--warning)',
+                        fontFamily: 'var(--font-mono, monospace)', fontSize: 11, fontWeight: 600,
+                      }}>{t.slice(0, 2).toUpperCase()}</span>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, fontSize: 12.5 }}>
+                          {t}
+                          <span style={{
+                            marginLeft: 6, fontSize: 9, padding: '1px 5px', borderRadius: 999,
+                            border: '1px solid var(--warning)', color: 'var(--warning)',
+                            fontFamily: 'var(--font-mono, monospace)',
+                          }}>queue</span>
+                        </div>
+                        <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+                          lead acks → routes to the matching crew
+                        </div>
+                      </span>
+                    </button>
+                  );
+                })}
+              </>
+            );
+          })()}
+
           {filteredCrews.length > 0 && (
             <>
-              <div style={pickerSectionHeaderStyle}>Teams · {filteredCrews.length}</div>
+              <div style={pickerSectionHeaderStyle}>Crews · direct (skip queue)</div>
               {filteredCrews.map((c) => {
                 const initials = (c.name.match(/[A-Z]/g)?.join('') ?? c.name.slice(0, 2)).slice(0, 2).toUpperCase();
                 const selected = value?.kind === 'crew' && value.id === c.id;
@@ -819,6 +997,9 @@ function pickerRowStyle(selected: boolean): React.CSSProperties {
     color: 'inherit', cursor: 'pointer', textAlign: 'left',
   };
 }
+
+/** Phase 17 — line-of-business teams that can own a work item. */
+const TEAMS = ['Architecture', 'Engineering', 'Review', 'QA'] as const;
 
 const pickerSectionHeaderStyle: React.CSSProperties = {
   padding: '8px 10px 4px',

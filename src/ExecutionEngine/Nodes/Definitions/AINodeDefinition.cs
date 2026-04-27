@@ -97,6 +97,13 @@ public class AINodeDefinition : NodeDefinition
     public bool ContinueOnTimeoutExhausted { get; set; } = false;
 
     /// <summary>
+    /// Gets or sets the maximum number of agentic turns (tool call rounds).
+    /// Limits how many continuation rounds the AI can make. Default is 30.
+    /// Set to 0 for unlimited (not recommended — can burn tokens on idle exploration).
+    /// </summary>
+    public int MaxTurns { get; set; } = 30;
+
+    /// <summary>
     /// Gets or sets the working directory for skill/agent execution.
     /// Supports binding expressions (e.g. <c>{incidentFolder}</c>).
     /// </summary>

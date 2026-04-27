@@ -20,6 +20,14 @@ interface Props {
    */
   liveCount?: number;
   liveWorkItemId?: string | null;
+  /**
+   * Phase 17.8 — count of work items bound to this workstream that are
+   * sitting in `task_queue` with `state='queued'` (waiting for a crew).
+   * Different from `liveCount` (which means picked-up / in-flight).
+   * Click → /inbox.
+   */
+  queuedCount?: number;
+  onOpenInbox?: () => void;
   onOpenLive?: (workItemId: string) => void;
 }
 
@@ -32,7 +40,7 @@ function roleFor(id: string): string {
 }
 
 // Verbatim port of the prototype's ws-card block (lines 3818-3909).
-export function WorkstreamCard({ ws, epic, prs, cards, onOpen, onSync, onIde, onOpenPr, liveCount, liveWorkItemId, onOpenLive }: Props) {
+export function WorkstreamCard({ ws, epic, prs, cards, onOpen, onSync, onIde, onOpenPr, liveCount, liveWorkItemId, onOpenLive, queuedCount, onOpenInbox }: Props) {
   const colorVar = epic ? `var(--${epic.color})` : 'var(--text-tertiary)';
 
   return (
@@ -84,6 +92,31 @@ export function WorkstreamCard({ ws, epic, prs, cards, onOpen, onSync, onIde, on
               animation: 'forge-pulse 1.6s ease-in-out infinite',
             }} />
             {liveCount} live
+          </button>
+        ) : null}
+        {queuedCount && queuedCount > 0 ? (
+          <button
+            type="button"
+            className="ws-card-queued-badge"
+            onClick={(e) => { e.stopPropagation(); onOpenInbox?.(); }}
+            title={`${queuedCount} work item${queuedCount === 1 ? '' : 's'} queued — open inbox`}
+            style={{
+              marginLeft: 4,
+              fontSize: 10,
+              padding: '2px 6px',
+              borderRadius: 8,
+              border: '1px solid var(--warning-border)',
+              background: 'var(--warning-bg)',
+              color: 'var(--warning)',
+              fontWeight: 600,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              cursor: onOpenInbox ? 'pointer' : 'default',
+            }}
+          >
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--warning)' }} />
+            {queuedCount} queued
           </button>
         ) : null}
       </div>

@@ -189,6 +189,7 @@ public static class WorkflowDefinitionMapper
                 TimeoutMinutes = GetInt(el, config, "timeoutMinutes", 5),
                 TimeoutRetries = GetInt(el, config, "timeoutRetries", 0),
                 ContinueOnTimeoutExhausted = GetBool(el, config, "continueOnTimeoutExhausted", false),
+                MaxTurns = GetInt(el, config, "maxTurns", 30),
                 WorkingDirectory = GetString(el, config, "workingDirectory"),
                 InputBindings = GetStringDictionary(el, config, "inputBindings") ?? [],
             },

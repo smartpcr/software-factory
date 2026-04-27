@@ -99,11 +99,18 @@ public class CopilotAIExecutor : IAIExecutor
 
             var clientOptions = new CopilotClientOptions
             {
-                CliArgs = [
-                    "--yolo",
-                    "--add-dir", @"E:\icms",
-                    "--add-dir", @"E:\work",
-                ],
+                CliArgs = request.MaxTurns > 0
+                    ? [
+                        "--yolo",
+                        "--add-dir", @"E:\icms",
+                        "--add-dir", @"E:\work",
+                        "--max-autopilot-continues", request.MaxTurns.ToString(),
+                    ]
+                    : [
+                        "--yolo",
+                        "--add-dir", @"E:\icms",
+                        "--add-dir", @"E:\work",
+                    ],
                 CliPath = CliLocator.Copilot,
             };
             if (!string.IsNullOrEmpty(request.WorkingDirectory))

@@ -107,6 +107,22 @@ public static class Phase8Migration
 
         // Phase 10.8 — supervising flag on the audit row.
         await EnsureColumnAsync(conn, "forge_actions", "Supervising", "INTEGER NOT NULL DEFAULT 0", ct);
+
+        // Product-scoped stories.
+        await ExecAsync(conn, """
+            CREATE TABLE IF NOT EXISTS product_stories (
+                Id TEXT NOT NULL PRIMARY KEY,
+                ProductId TEXT NOT NULL,
+                Name TEXT NOT NULL,
+                Status TEXT NOT NULL DEFAULT 'planning',
+                Sort INTEGER NOT NULL DEFAULT 0,
+                CreatedAt TEXT NOT NULL DEFAULT '2026-01-01T00:00:00Z'
+            );
+            """, ct);
+        await ExecAsync(conn, "CREATE INDEX IF NOT EXISTS IX_product_stories_ProductId ON product_stories(ProductId);", ct);
+
+        // Add ProductId to legacy epics table (may already exist).
+        await EnsureColumnAsync(conn, "epics", "ProductId", "TEXT NULL", ct);
     }
 
     private static async Task<bool> ColumnExistsAsync(SqliteConnection conn, string table, string column, CancellationToken ct)

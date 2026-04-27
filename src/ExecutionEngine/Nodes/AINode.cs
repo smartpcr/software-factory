@@ -267,6 +267,7 @@ public class AINode : ExecutableNodeBase
             MaxTokens = aiDef.MaxTokens,
             Temperature = temperature,
             Timeout = TimeSpan.FromMinutes(aiDef.TimeoutMinutes > 0 ? aiDef.TimeoutMinutes : 5),
+            MaxTurns = aiDef.MaxTurns,
             WorkingDirectory = workingDir,
             OnOutputLine = aiLogger != null
                 ? line => aiLogger.EmitLine(workflowContext.InstanceId, this.NodeId, line)

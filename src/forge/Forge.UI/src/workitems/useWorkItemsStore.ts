@@ -74,38 +74,43 @@ export const useWorkItemsStore = create<WorkItemsState>((set, get) => ({
     set((s) => ({
       items: s.items.map((w) => (w.id === id ? { ...w, state } : w)),
     }));
-    if (!get().isLive) return;
     try {
       const updated = await forgeApi.moveWorkItem(id, { state });
       set((s) => ({
         items: s.items.map((w) => (w.id === id ? updated : w)),
+        isLive: true,
       }));
     } catch (err) {
-      // Roll back.
-      set((s) => ({
-        items: s.items.map((w) => (w.id === id ? prev : w)),
-        error: err instanceof Error ? err.message : 'move failed',
-      }));
+      if (get().isLive) {
+        // Roll back.
+        set((s) => ({
+          items: s.items.map((w) => (w.id === id ? prev : w)),
+          error: err instanceof Error ? err.message : 'move failed',
+        }));
+      }
     }
   },
 
   async patch(id, body) {
-    if (!get().isLive) {
-      // Sample-only path: shallow merge so the UI behaves the same.
-      set((s) => ({
-        items: s.items.map((w) => (w.id === id ? applyPatchLocal(w, body) : w)),
-      }));
-      return get().items.find((w) => w.id === id) ?? null;
-    }
+    // Always try the API first. If it fails AND we're in offline mode,
+    // fall back to local-only so the UI stays responsive.
     try {
       const updated = await forgeApi.patchWorkItem(id, body);
       set((s) => ({
         items: s.items.map((w) => (w.id === id ? updated : w)),
+        isLive: true,
       }));
       return updated;
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : 'patch failed' });
-      return null;
+      if (get().isLive) {
+        set({ error: err instanceof Error ? err.message : 'patch failed' });
+        return null;
+      }
+      // Offline/sample fallback — shallow merge so the UI behaves.
+      set((s) => ({
+        items: s.items.map((w) => (w.id === id ? applyPatchLocal(w, body) : w)),
+      }));
+      return get().items.find((w) => w.id === id) ?? null;
     }
   },
 

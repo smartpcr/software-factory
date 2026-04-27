@@ -18,12 +18,16 @@ using Forge.Api.Persistence;
 /// Time math uses <see cref="TimeZoneInfo"/> to convert UTC to the crew's
 /// local time, then checks <see cref="ScoringConstants.WorkDays"/> +
 /// <see cref="ScoringConstants.ShiftStartHour"/> /
-/// <see cref="ScoringConstants.ShiftEndHour"/>. Sunday + outside the
-/// 09:00–21:00 band → off-shift.
+/// <see cref="ScoringConstants.ShiftEndHour"/>. Day shift = Mon–Sat
+/// 09:00–21:00; night shift = WorkDay 21:00 → 09:00 next morning
+/// (Sat 21:00 → Sun 09:00 counts as the Sat night block).
 /// </para>
 /// </summary>
 public static class ScheduleGate
 {
+    public const string ShiftDay = "day";
+    public const string ShiftNight = "night";
+
     /// <summary>Outcome of a schedule check.</summary>
     public enum Verdict
     {
@@ -53,25 +57,35 @@ public static class ScheduleGate
     {
         var tz = ResolveTimeZone(crew.Timezone);
         var local = TimeZoneInfo.ConvertTime(utcNow, tz);
+        var shift = NormaliseShift(crew.Shift);
 
         if (!crew.ScheduleEnabled)
         {
-            return new Result(Verdict.Bypassed, local, tz, NextTransitionLocal(local));
+            return new Result(Verdict.Bypassed, local, tz, NextTransitionLocal(local, shift));
         }
 
-        var verdict = IsWithinShift(local) ? Verdict.OnShift : Verdict.OffShift;
-        return new Result(verdict, local, tz, NextTransitionLocal(local));
+        var verdict = IsWithinShift(local, shift) ? Verdict.OnShift : Verdict.OffShift;
+        return new Result(verdict, local, tz, NextTransitionLocal(local, shift));
     }
 
     /// <summary>
-    /// True iff <paramref name="local"/> is within Mon–Sat 09:00–21:00.
-    /// Edge cases: 09:00:00 is on-shift; 21:00:00 is off-shift (band is
-    /// half-open <c>[09:00, 21:00)</c>).
+    /// True iff <paramref name="local"/> is within the crew's shift band.
+    /// Day band is half-open <c>[09:00, 21:00)</c> on Mon–Sat. Night band
+    /// is <c>[21:00, 24:00)</c> when today is a work day, or
+    /// <c>[00:00, 09:00)</c> when yesterday was a work day.
     /// </summary>
-    public static bool IsWithinShift(DateTimeOffset local)
+    public static bool IsWithinShift(DateTimeOffset local, string shift = ShiftDay)
     {
-        if (!IsWorkDay(local.DayOfWeek)) return false;
+        shift = NormaliseShift(shift);
         var hour = local.Hour;
+        if (shift == ShiftNight)
+        {
+            if (hour >= ScoringConstants.ShiftEndHour && IsWorkDay(local.DayOfWeek)) return true;
+            if (hour < ScoringConstants.ShiftStartHour && IsWorkDay(PreviousDay(local.DayOfWeek))) return true;
+            return false;
+        }
+
+        if (!IsWorkDay(local.DayOfWeek)) return false;
         return hour >= ScoringConstants.ShiftStartHour && hour < ScoringConstants.ShiftEndHour;
     }
 
@@ -83,6 +97,11 @@ public static class ScheduleGate
         }
         return false;
     }
+
+    private static DayOfWeek PreviousDay(DayOfWeek d) => (DayOfWeek)(((int)d + 6) % 7);
+
+    private static string NormaliseShift(string? s) =>
+        string.Equals(s, ShiftNight, StringComparison.OrdinalIgnoreCase) ? ShiftNight : ShiftDay;
 
     /// <summary>
     /// Resolve an IANA id like <c>America/Los_Angeles</c> to a
@@ -100,29 +119,56 @@ public static class ScheduleGate
     }
 
     /// <summary>
-    /// Next on/off transition after <paramref name="local"/>. If currently
-    /// on shift → next 21:00 today; if currently off shift → next 09:00
-    /// of the next work day. Used by clients to render "back at 09:00 Mon".
+    /// Next on/off transition after <paramref name="local"/> for the given
+    /// shift. Day shift on → today 21:00, day shift off → next work day 09:00.
+    /// Night shift on → next 09:00 (today if hour&lt;9, else tomorrow);
+    /// night shift off → next work-day 21:00.
     /// </summary>
-    public static DateTimeOffset NextTransitionLocal(DateTimeOffset local)
+    public static DateTimeOffset NextTransitionLocal(DateTimeOffset local, string shift = ShiftDay)
     {
-        if (IsWithinShift(local))
+        shift = NormaliseShift(shift);
+        return shift == ShiftNight
+            ? NextTransitionNight(local)
+            : NextTransitionDay(local);
+    }
+
+    private static DateTimeOffset NextTransitionDay(DateTimeOffset local)
+    {
+        if (IsWithinShift(local, ShiftDay))
         {
-            // Next transition = today at 21:00 in the same offset.
             return new DateTimeOffset(local.Year, local.Month, local.Day,
                 ScoringConstants.ShiftEndHour, 0, 0, local.Offset);
         }
-        // Walk forward day-by-day until we hit the next work day's 09:00.
         var probe = local.Date;
-        // If current time is before 09:00 on a work day, the next transition is today at 09:00.
         if (IsWorkDay(local.DayOfWeek) && local.Hour < ScoringConstants.ShiftStartHour)
         {
             return new DateTimeOffset(probe.Year, probe.Month, probe.Day,
                 ScoringConstants.ShiftStartHour, 0, 0, local.Offset);
         }
-        // Otherwise advance to the next work day.
         do { probe = probe.AddDays(1); } while (!IsWorkDay(probe.DayOfWeek));
         return new DateTimeOffset(probe.Year, probe.Month, probe.Day,
             ScoringConstants.ShiftStartHour, 0, 0, local.Offset);
+    }
+
+    private static DateTimeOffset NextTransitionNight(DateTimeOffset local)
+    {
+        if (IsWithinShift(local, ShiftNight))
+        {
+            // On-shift: next transition is the morning close at 09:00.
+            // If we're past midnight, that's today; if we're after 21:00,
+            // that's tomorrow at 09:00.
+            var probe = local.Date;
+            if (local.Hour >= ScoringConstants.ShiftEndHour) probe = probe.AddDays(1);
+            return new DateTimeOffset(probe.Year, probe.Month, probe.Day,
+                ScoringConstants.ShiftStartHour, 0, 0, local.Offset);
+        }
+        // Off-shift: next transition is the next work-day's 21:00 open.
+        var open = local.Date;
+        if (!IsWorkDay(local.DayOfWeek) || local.Hour >= ScoringConstants.ShiftEndHour)
+        {
+            do { open = open.AddDays(1); } while (!IsWorkDay(open.DayOfWeek));
+        }
+        return new DateTimeOffset(open.Year, open.Month, open.Day,
+            ScoringConstants.ShiftEndHour, 0, 0, local.Offset);
     }
 }

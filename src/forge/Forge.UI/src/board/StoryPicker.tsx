@@ -1,36 +1,40 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useStateStore } from '@/state/useStateStore';
-import { sampleState } from '@/sampleData';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
+import { useProductsStore } from '@/state/useProductsStore';
+import type { ProductStory } from '@/types';
 
 interface Props {
   open: boolean;
-  /** Current epic id (may be empty / unknown). */
-  currentEpic: string;
-  onSelect: (epicId: string) => void;
+  /** Current story id (may be empty). */
+  currentStory: string;
+  /** Override product id; defaults to the active product. */
+  productId?: string;
+  onSelect: (storyId: string) => void;
   onClose: () => void;
 }
 
-// Popup for assigning or creating a story. Used from the "No story"
-// swimlane header and from the card detail panel.
-export function StoryPicker({ open, currentEpic, onSelect, onClose }: Props) {
-  const apiState = useStateStore((s) => s.state);
-  const epics = apiState?.epics ?? sampleState.epics;
-  const reloadState = useStateStore((s) => s.load);
+// Product-scoped story picker. Fetches stories from
+// GET /api/products/{id}/stories, with inline create.
+export function StoryPicker({ open, currentStory, productId: propProductId, onSelect, onClose }: Props) {
+  const activeProductId = useProductsStore((s) => s.activeProductId);
+  const productId = propProductId ?? activeProductId ?? '';
 
+  const [stories, setStories] = useState<ProductStory[]>([]);
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return epics;
-    return epics.filter((e) =>
-      e.id.toLowerCase().includes(q) || e.name.toLowerCase().includes(q),
-    );
-  }, [epics, query]);
+  // Load stories when opened.
+  useEffect(() => {
+    if (!open || !productId) return;
+    let cancelled = false;
+    forgeApi.listProductStories(productId)
+      .then((s) => { if (!cancelled) setStories(s); })
+      .catch(() => { /* best effort */ });
+    return () => { cancelled = true; };
+  }, [open, productId]);
 
   useEffect(() => {
     if (!open) return;
@@ -54,15 +58,22 @@ export function StoryPicker({ open, currentEpic, onSelect, onClose }: Props) {
     };
   }, [open, onClose]);
 
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return stories;
+    return stories.filter((s) =>
+      s.id.toLowerCase().includes(q) || s.name.toLowerCase().includes(q),
+    );
+  }, [stories, query]);
+
   async function createAndSelect() {
     const name = query.trim();
-    if (!name) return;
+    if (!name || !productId) return;
     setBusy(true);
     try {
-      const epic = await forgeApi.createEpic({ name });
-      useToastStore.getState().show(`Story "${epic.name}" created`, 'success');
-      void reloadState();
-      onSelect(epic.id);
+      const story = await forgeApi.createProductStory(productId, { name });
+      useToastStore.getState().show(`Story "${story.name}" created`, 'success');
+      onSelect(story.id);
       onClose();
     } catch (e) {
       useToastStore.getState().show(
@@ -95,23 +106,22 @@ export function StoryPicker({ open, currentEpic, onSelect, onClose }: Props) {
         />
       </div>
       <div style={{ maxHeight: 200, overflowY: 'auto' }}>
-        {/* "No story" option */}
         <button
           type="button"
-          style={rowStyle(!currentEpic)}
+          style={rowStyle(!currentStory)}
           onClick={() => { onSelect(''); onClose(); }}
         >
           <span style={{ color: 'var(--text-tertiary)', fontStyle: 'italic' }}>No story</span>
         </button>
-        {filtered.map((e) => (
+        {filtered.map((s) => (
           <button
-            key={e.id}
+            key={s.id}
             type="button"
-            style={rowStyle(currentEpic === e.id)}
-            onClick={() => { onSelect(e.id); onClose(); }}
+            style={rowStyle(currentStory === s.id)}
+            onClick={() => { onSelect(s.id); onClose(); }}
           >
-            <span style={{ fontWeight: 600, fontSize: 11, color: 'var(--text-secondary)' }}>{e.id}</span>
-            <span style={{ marginLeft: 6, fontSize: 12 }}>{e.name}</span>
+            <span style={{ fontSize: 12 }}>{s.name}</span>
+            <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-tertiary)' }}>{s.status}</span>
           </button>
         ))}
         {filtered.length === 0 && query.trim() && (

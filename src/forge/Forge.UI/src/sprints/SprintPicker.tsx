@@ -42,10 +42,10 @@ export function SprintPicker({ productId, selectedId, burndown, onSelect, onMana
     };
   }, [open]);
 
-  const current = all.find((i) => i.id === selectedId)
-    ?? all.find((i) => i.state === 'current')
-    ?? all[0];
-  if (!current) {
+  const current = selectedId
+    ? (all.find((i) => i.id === selectedId) ?? all.find((i) => i.state === 'current') ?? all[0])
+    : null;
+  if (!current && all.length > 0 && selectedId !== '') {
     return (
       <button
         type="button"
@@ -59,7 +59,11 @@ export function SprintPicker({ productId, selectedId, burndown, onSelect, onMana
       </button>
     );
   }
-  const isOrphan = current.state === 'provider-orphan';
+  const isOrphan = current?.state === 'provider-orphan';
+
+  // "All sprints" cleared state — sprints exist but none selected.
+  const chipName = current ? current.name : 'All sprints';
+  const chipRange = current ? fmtDateRange(current.startDate, current.finishDate) : `${all.length} iterations`;
 
   return (
     <div className="sprint-picker-anchor" ref={ref}>
@@ -67,18 +71,22 @@ export function SprintPicker({ productId, selectedId, burndown, onSelect, onMana
         type="button"
         className="sprint-picker-chip"
         data-open={open}
-        data-state={current.state}
+        data-state={current?.state ?? 'all'}
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-haspopup="listbox"
       >
-        <span className="pulse" />
-        <span className="name">{current.name}</span>
-        <span className="range">{fmtDateRange(current.startDate, current.finishDate)}</span>
-        <span style={{ color: 'var(--text-tertiary)', fontSize: 10 }}>·</span>
-        <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
-          {burndown.done} / {burndown.total} pts
-        </span>
+        <span className="pulse" style={current ? undefined : { background: 'var(--text-tertiary)', boxShadow: 'none', animation: 'none' }} />
+        <span className="name">{chipName}</span>
+        <span className="range">{chipRange}</span>
+        {current && (
+          <>
+            <span style={{ color: 'var(--text-tertiary)', fontSize: 10 }}>·</span>
+            <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+              {burndown.done} / {burndown.total} pts
+            </span>
+          </>
+        )}
         <span className="caret">▾</span>
       </button>
 
@@ -109,7 +117,7 @@ export function SprintPicker({ productId, selectedId, burndown, onSelect, onMana
                 className="row"
                 type="button"
                 data-state={i.state}
-                data-current={i.id === current.id}
+                data-current={current ? i.id === current.id : false}
                 onClick={() => { onSelect(i.id); setOpen(false); }}
               >
                 <span className="dot" />

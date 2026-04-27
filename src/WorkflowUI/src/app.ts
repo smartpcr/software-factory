@@ -67,6 +67,7 @@ export const App = {
       () => this.clearLogs(),
     );
     Exec.onRunFinished(() => this.loadRunHistory());
+    Exec.onRunStarted(() => this.loadRunHistory());
     loadFallbackNodeTypes(); // Minimal palette until server responds
     Palette.onCreateNode((type, x, y) => this.createNode(type, x, y));
     Palette.render();

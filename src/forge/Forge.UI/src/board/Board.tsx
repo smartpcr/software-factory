@@ -1,7 +1,8 @@
-import { useMemo, useState, useCallback } from 'react';
-import type { Card, Epic } from '@/types';
+import { useEffect, useMemo, useState, useCallback } from 'react';
+import type { Card, Epic, ProductStory } from '@/types';
 import { useStateStore } from '@/state/useStateStore';
 import { useBoardStore, filterCards } from '@/state/useBoardStore';
+import { useProductsStore } from '@/state/useProductsStore';
 import { sampleState } from '@/sampleData';
 import { SwimlaneCell } from './SwimlaneCell';
 import { avatarFor, agentTooltip } from '@/agentAvatar';
@@ -9,14 +10,32 @@ import { StoryPicker } from './StoryPicker';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
 
-// Verbatim port of the prototype's renderBoard (lines 3310-3382).
-// Layout uses CSS grid (defined in board.css); we only emit the same
-// children in the same order with the same classNames.
 export function Board() {
   const apiState = useStateStore((s) => s.state);
-  const epics = apiState?.epics ?? sampleState.epics;
+  const legacyEpics = apiState?.epics ?? sampleState.epics;
   const columns = apiState?.columns ?? sampleState.columns;
   const groupBy = useBoardStore((s) => s.groupBy);
+  const activeProductId = useProductsStore((s) => s.activeProductId);
+
+  // Product-scoped stories — primary grouping source for 'story' mode.
+  const [productStories, setProductStories] = useState<ProductStory[]>([]);
+  useEffect(() => {
+    if (!activeProductId) return;
+    let cancelled = false;
+    forgeApi.listProductStories(activeProductId)
+      .then((s) => { if (!cancelled) setProductStories(s); })
+      .catch(() => { /* best effort */ });
+    return () => { cancelled = true; };
+  }, [activeProductId]);
+
+  // Convert product stories to Epic shape for the swimlane engine.
+  const storyEpics: Epic[] = useMemo(() => productStories.map((s) => ({
+    id: s.id, name: s.name, status: s.status as Epic['status'],
+    progress: 0, crew: [], cost: 0, color: s.id.toLowerCase(),
+  })), [productStories]);
+
+  // Pick the right epic list based on groupBy mode.
+  const epics = groupBy === 'story' ? storyEpics : legacyEpics;
 
   const cards = useBoardStore((s) => s.cards);
   const activeFilter = useBoardStore((s) => s.activeFilter);
@@ -34,22 +53,21 @@ export function Board() {
 
   // Story picker state for assigning orphan cards to a story.
   const [storyPickerOpen, setStoryPickerOpen] = useState(false);
-  const reloadState = useStateStore((s) => s.load);
 
-  const assignOrphanCards = useCallback(async (epicId: string) => {
-    if (!epicId) return;
-    const epicIds = new Set(epics.map((e) => e.id));
-    const orphans = filtered.filter((c) => !c.epic || !epicIds.has(c.epic));
+  const assignOrphanCards = useCallback(async (storyId: string) => {
+    if (!storyId) return;
+    const knownIds = new Set(epics.map((e) => e.id));
+    const orphans = filtered.filter((c) => !c.epic || !knownIds.has(c.epic));
     for (const card of orphans) {
       try {
-        await forgeApi.patchCard(card.id, { epic: epicId });
+        await forgeApi.patchCard(card.id, { epic: storyId });
       } catch {
         // best-effort
       }
     }
-    useToastStore.getState().show(`Assigned ${orphans.length} card${orphans.length === 1 ? '' : 's'} to ${epicId}`, 'success');
-    void reloadState();
-  }, [filtered, epics, reloadState]);
+    useToastStore.getState().show(`Assigned ${orphans.length} card${orphans.length === 1 ? '' : 's'} to story`, 'success');
+    useStateStore.getState().load();
+  }, [filtered, epics]);
 
   // Column-level stats are computed across ALL filtered cards, not per-cell.
   const colStats = useMemo(() => {
@@ -152,7 +170,7 @@ export function Board() {
               {isNoGroup && (
                 <StoryPicker
                   open={storyPickerOpen}
-                  currentEpic=""
+                  currentStory=""
                   onSelect={(epicId) => void assignOrphanCards(epicId)}
                   onClose={() => setStoryPickerOpen(false)}
                 />

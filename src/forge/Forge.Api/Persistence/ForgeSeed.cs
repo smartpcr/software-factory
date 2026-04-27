@@ -34,6 +34,10 @@ public static class ForgeSeed
         // Phase 11.3 — first-class agent rows. Idempotent.
         await EnsureSeedAgentsAsync(db);
 
+        // Phase 18 — split half of each team's agents to its night sibling
+        // crew. Runs every boot; no-op once the night crew has any agents.
+        await EnsureNightShiftSplitAsync(db);
+
         if (!await db.Epics.AnyAsync())
         {
             await SeedPrototypeDataAsync(db);
@@ -513,18 +517,106 @@ public static class ForgeSeed
 
     private static async Task EnsureSeedCrewsAsync(ForgeDbContext db)
     {
-        var existing = await db.Crews.Select(c => c.Id).ToListAsync();
-        if (existing.Count >= 4) return;
+        var existingIds = (await db.Crews.Select(c => c.Id).ToListAsync()).ToHashSet();
 
-        var crews = new[]
+        var dayCrews = new[]
         {
-            new CrewRow { Id = "crew-eng",  Sort = 0, Name = "Engineering",  ProductId = DefaultProductId, Summary = "Cuts PRs, ships features, keeps tests green.",        Lead = "E4", Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m },
-            new CrewRow { Id = "crew-rev",  Sort = 1, Name = "Review",       ProductId = DefaultProductId, Summary = "Reads every diff, catches what engineers missed.",   Lead = "R3", Model = "claude-sonnet-4-6",       ModelInputPricePerMTok = 3m,  ModelOutputPricePerMTok = 15m },
-            new CrewRow { Id = "crew-arch", Sort = 2, Name = "Architecture", ProductId = DefaultProductId, Summary = "Frames problems, owns ADRs, keeps blast radii small.", Lead = "A1", Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m },
-            new CrewRow { Id = "crew-qa",   Sort = 3, Name = "QA",           ProductId = DefaultProductId, Summary = "Fuzzes, soaks, watches the dials.",                   Lead = "Q2", Model = "claude-haiku-4-5-20251001", ModelInputPricePerMTok = 1m,  ModelOutputPricePerMTok = 5m },
+            new CrewRow { Id = "crew-eng",  Sort = 0, Name = "Engineering",  ProductId = DefaultProductId, Summary = "Cuts PRs, ships features, keeps tests green.",        Lead = "E4", Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,  Shift = "day" },
+            new CrewRow { Id = "crew-rev",  Sort = 1, Name = "Review",       ProductId = DefaultProductId, Summary = "Reads every diff, catches what engineers missed.",   Lead = "R3", Model = "claude-sonnet-4-6",       ModelInputPricePerMTok = 3m,  ModelOutputPricePerMTok = 15m,  Shift = "day" },
+            new CrewRow { Id = "crew-arch", Sort = 2, Name = "Architecture", ProductId = DefaultProductId, Summary = "Frames problems, owns ADRs, keeps blast radii small.", Lead = "A1", Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,  Shift = "day" },
+            new CrewRow { Id = "crew-qa",   Sort = 3, Name = "QA",           ProductId = DefaultProductId, Summary = "Fuzzes, soaks, watches the dials.",                   Lead = "Q2", Model = "claude-haiku-4-5-20251001", ModelInputPricePerMTok = 1m,  ModelOutputPricePerMTok = 5m,   Shift = "day" },
         };
-        foreach (var c in crews.Where(c => !existing.Contains(c.Id))) db.Crews.Add(c);
-        await db.SaveChangesAsync();
+
+        // Phase 18 — night sibling per team. Same model + pricing so a
+        // night-shift dispatch costs the same as a day one; ParentCrewId
+        // points at the day crew so the existing hierarchy panel groups
+        // them under their team. Lead is set later by EnsureNightShiftSplitAsync
+        // once the agent split picks the first night-mover.
+        var nightCrews = new[]
+        {
+            new CrewRow { Id = "crew-eng-night",  Sort = 4, Name = "Engineering (Night)",  ProductId = DefaultProductId, Summary = "Engineering — 21:00–09:00 night band.",        Lead = null, ParentCrewId = "crew-eng",  Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,  Shift = "night" },
+            new CrewRow { Id = "crew-rev-night",  Sort = 5, Name = "Review (Night)",       ProductId = DefaultProductId, Summary = "Review — 21:00–09:00 night band.",             Lead = null, ParentCrewId = "crew-rev",  Model = "claude-sonnet-4-6",       ModelInputPricePerMTok = 3m,  ModelOutputPricePerMTok = 15m,  Shift = "night" },
+            new CrewRow { Id = "crew-arch-night", Sort = 6, Name = "Architecture (Night)", ProductId = DefaultProductId, Summary = "Architecture — 21:00–09:00 night band.",       Lead = null, ParentCrewId = "crew-arch", Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,  Shift = "night" },
+            new CrewRow { Id = "crew-qa-night",   Sort = 7, Name = "QA (Night)",           ProductId = DefaultProductId, Summary = "QA — 21:00–09:00 night band.",                 Lead = null, ParentCrewId = "crew-qa",   Model = "claude-haiku-4-5-20251001", ModelInputPricePerMTok = 1m,  ModelOutputPricePerMTok = 5m,   Shift = "night" },
+        };
+
+        var added = false;
+        foreach (var c in dayCrews.Concat(nightCrews))
+        {
+            if (existingIds.Contains(c.Id)) continue;
+            db.Crews.Add(c);
+            added = true;
+        }
+        if (added) await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Phase 18 — for each (day, night) crew pair, move half of the day
+    /// crew's seeded agents to the night sibling. Deterministic split:
+    /// agents are sorted by id ascending, the existing day-crew lead is
+    /// preserved, and every other remaining agent (indices 1, 3, 5, …)
+    /// is reassigned to the night crew. The first moved agent becomes
+    /// the night crew's lead. Idempotent: the split runs only when the
+    /// night crew has no agents yet, so subsequent boots — and freshly
+    /// added agents — leave the existing distribution alone.
+    /// </summary>
+    private static async Task EnsureNightShiftSplitAsync(ForgeDbContext db)
+    {
+        var pairs = new (string Day, string Night)[]
+        {
+            ("crew-eng",  "crew-eng-night"),
+            ("crew-rev",  "crew-rev-night"),
+            ("crew-arch", "crew-arch-night"),
+            ("crew-qa",   "crew-qa-night"),
+        };
+
+        var changed = false;
+
+        foreach (var (dayId, nightId) in pairs)
+        {
+            var nightCrew = await db.Crews.FirstOrDefaultAsync(c => c.Id == nightId);
+            if (nightCrew is null) continue;
+
+            // Skip when already split — either the night crew has direct
+            // AgentRow.CrewId pointers or any CrewMemberRow rows.
+            var nightAlreadyPopulated =
+                await db.Agents.AnyAsync(a => a.CrewId == nightId)
+                || await db.CrewMembers.AnyAsync(m => m.CrewId == nightId);
+            if (nightAlreadyPopulated) continue;
+
+            var dayCrew = await db.Crews.FirstOrDefaultAsync(c => c.Id == dayId);
+            var dayLeadId = dayCrew?.Lead;
+
+            var dayAgents = await db.Agents
+                .Where(a => a.CrewId == dayId)
+                .OrderBy(a => a.Id)
+                .ToListAsync();
+
+            // Build the move list: skip the day-crew lead, take every other
+            // remaining agent. This gives an exact-half split when the
+            // remainder is even, and the day side gets the extra agent
+            // when it's odd (which is what we want: lead + slight majority).
+            var nonLead = dayAgents.Where(a => a.Id != dayLeadId).ToList();
+            var movers = nonLead.Where((_, i) => i % 2 == 1).ToList();
+
+            if (movers.Count == 0) continue;
+
+            string? newNightLead = null;
+            foreach (var mover in movers)
+            {
+                mover.CrewId = nightId;
+                newNightLead ??= mover.Id;
+            }
+
+            if (string.IsNullOrEmpty(nightCrew.Lead) && newNightLead is not null)
+            {
+                nightCrew.Lead = newNightLead;
+            }
+
+            changed = true;
+        }
+
+        if (changed) await db.SaveChangesAsync();
     }
 
     /// <summary>

@@ -10,6 +10,7 @@ import { FilterBar } from '@/board/FilterBar';
 import { DetailPanel } from '@/board/DetailPanel';
 import { CardModal } from '@/board/CardModal';
 import { NewStoryModal } from '@/board/NewStoryModal';
+import { StoryList } from '@/board/StoryList';
 import { Toaster } from '@/board/Toaster';
 import { ConfirmModal } from '@/board/ConfirmModal';
 import { Card as BoardCard } from '@/board/Card';
@@ -33,6 +34,7 @@ export function PlanView() {
   const [modalOpen, setModalOpen] = useState(false);
   const [storyModalOpen, setStoryModalOpen] = useState(false);
   const [focusedCol, setFocusedCol] = useState<ColumnId | null>(null);
+  const [viewMode, setViewMode] = useState<'board' | 'stories'>('board');
 
   // Phase 15 — sprint picker + area path filter state. The active product
   // comes from the global TopBar selector; iterations/areas come from the
@@ -76,7 +78,9 @@ export function PlanView() {
   }, [productIterations, selectedIterationId, iterationCleared]);
 
   const selectedIteration = useMemo(
-    () => productIterations.find((i) => i.id === selectedIterationId) ?? productIterations[0],
+    () => selectedIterationId
+      ? (productIterations.find((i) => i.id === selectedIterationId) ?? null)
+      : null,
     [productIterations, selectedIterationId],
   );
 
@@ -162,13 +166,19 @@ export function PlanView() {
           </h1>
         </div>
         <div className="page-head-right">
-          <button className="btn btn-secondary">
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 3 H 10 M 2 6 H 10 M 2 9 H 10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>
-            List
+          <button
+            className={`btn ${viewMode === 'board' ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => setViewMode('board')}
+          >
+            <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><rect x="1" y="2" width="3" height="10" rx="0.5" stroke="currentColor" strokeWidth="1.2" /><rect x="5.5" y="2" width="3" height="6" rx="0.5" stroke="currentColor" strokeWidth="1.2" /><rect x="10" y="2" width="3" height="8" rx="0.5" stroke="currentColor" strokeWidth="1.2" /></svg>
+            Board
           </button>
-          <button className="btn btn-secondary">
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="1.5" y="2" width="9" height="2" stroke="currentColor" strokeWidth="1.3" /><rect x="3" y="6" width="6" height="2" stroke="currentColor" strokeWidth="1.3" /><rect x="2" y="9" width="5" height="1.5" stroke="currentColor" strokeWidth="1.3" /></svg>
-            Timeline
+          <button
+            className={`btn ${viewMode === 'stories' ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => setViewMode('stories')}
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 3 H 10 M 2 6 H 10 M 2 9 H 10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>
+            Stories
           </button>
           <button className="btn btn-primary" onClick={() => setModalOpen(true)}>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
@@ -195,6 +205,8 @@ export function PlanView() {
               <button className="btn btn-primary" onClick={() => setModalOpen(true)}>New card</button>
             </div>
           </div>
+        ) : viewMode === 'stories' ? (
+          <StoryList />
         ) : (
           <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd}>
             <Board />

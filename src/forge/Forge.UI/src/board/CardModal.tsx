@@ -274,13 +274,11 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
 
     // 3. Assign to the chosen crew. The crew's lead becomes the
     //    generator (server falls back to lead when memberAgentId is omitted).
-    let assigned = false;
     try {
       const crew = crews.find((c) => c.id === crewId);
       const memberAgentId = crew?.lead ?? '';
       if (memberAgentId) {
         await forgeApi.assignCrewTask(crewId, { workItemId: witId, memberAgentId });
-        assigned = true;
       }
     } catch (err) {
       // Non-fatal: record the gap but the card is created.
@@ -288,11 +286,10 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
       console.warn('[forge] assignCrewTask failed', err);
     }
 
-    // 4. Best-effort runner kickoff. The 501 stubs are expected today;
-    //    once Phase 13.4 / 13.5 wire the dispatcher this becomes the
-    //    point where the AI agent actually starts running.
+    // 4. Enqueue into the task pipeline. The plan/code endpoints now create
+    //    a queue entry and return 200 with { queued: true }.
     const path = taskKind === 'plan' ? 'plan' : 'code';
-    type KickoffOutcome = 'started' | 'queued' | 'failed';
+    type KickoffOutcome = 'queued' | 'failed';
     let kicked: KickoffOutcome = 'queued';
     try {
       const body = taskKind === 'plan'
@@ -303,19 +300,17 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
         headers: { 'Content-Type': 'application/json', 'X-Forge-User': 'forge-ui' },
         body: JSON.stringify(body),
       });
-      kicked = r.ok ? 'started' : r.status === 501 ? 'queued' : 'failed';
+      kicked = r.ok ? 'queued' : 'failed';
     } catch {
       kicked = 'failed';
     }
 
     // 5. Surface the outcome and open the new card.
     const crewLabel = crews.find((c) => c.id === crewId)?.name ?? crewId;
-    if (kicked === 'started') {
-      useToastStore.getState().show(`${witId} → ${crewLabel} · agent running`, 'success');
-    } else if (kicked === 'queued') {
+    if (kicked === 'queued') {
       useToastStore.getState().show(
-        `${witId} created${assigned ? ` · queued for ${crewLabel} lead` : ''} (runner pending Phase 13.4/13.5)`,
-        'info',
+        `${witId} → ${crewLabel} · queued for ${taskKind}`,
+        'success',
       );
     } else {
       useToastStore.getState().show(`${witId} created · runner kickoff failed`, 'danger');

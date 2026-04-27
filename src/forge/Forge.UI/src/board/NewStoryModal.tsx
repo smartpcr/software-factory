@@ -1,21 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
-import { useStateStore } from '@/state/useStateStore';
+import { useProductsStore } from '@/state/useProductsStore';
 
 interface Props {
   open: boolean;
   onClose: () => void;
 }
 
-// Lightweight modal for creating a new story (epic). Usable from both
-// Plan & Design and Work Items views.
+// Product-scoped story creation modal. Creates under the active product.
 export function NewStoryModal({ open, onClose }: Props) {
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement | null>(null);
-  const reloadState = useStateStore((s) => s.load);
+  const activeProductId = useProductsStore((s) => s.activeProductId);
 
   useEffect(() => {
     if (!open) return;
@@ -36,13 +35,12 @@ export function NewStoryModal({ open, onClose }: Props) {
   async function submit() {
     const cleanName = name.trim();
     if (!cleanName) { setErr('Name is required'); return; }
+    if (!activeProductId) { setErr('No active product selected'); return; }
     setBusy(true);
     setErr(null);
     try {
-      const epic = await forgeApi.createEpic({ name: cleanName });
-      useToastStore.getState().show(`Story "${epic.name}" created`, 'success');
-      // Reload board state so the new epic shows up as a swimlane.
-      void reloadState();
+      const story = await forgeApi.createProductStory(activeProductId, { name: cleanName });
+      useToastStore.getState().show(`Story "${story.name}" created`, 'success');
       onClose();
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Create failed';

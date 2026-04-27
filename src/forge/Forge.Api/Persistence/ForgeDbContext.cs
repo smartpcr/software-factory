@@ -20,6 +20,8 @@ public class ForgeDbContext : DbContext
 
     public DbSet<EpicRow> Epics => this.Set<EpicRow>();
 
+    public DbSet<ProductStoryRow> ProductStories => this.Set<ProductStoryRow>();
+
     public DbSet<CardRow> Cards => this.Set<CardRow>();
 
     public DbSet<ColumnRow> Columns => this.Set<ColumnRow>();
@@ -82,9 +84,15 @@ public class ForgeDbContext : DbContext
 
     public DbSet<TaskTranscriptEventRow> TaskTranscriptEvents => this.Set<TaskTranscriptEventRow>();
 
+    public DbSet<TaskQueueRow> TaskQueue => this.Set<TaskQueueRow>();
+
+    public DbSet<TaskQueueHistoryRow> TaskQueueHistory => this.Set<TaskQueueHistoryRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         mb.Entity<EpicRow>().ToTable("epics").HasKey(x => x.Id);
+        mb.Entity<ProductStoryRow>().ToTable("product_stories").HasKey(x => x.Id);
+        mb.Entity<ProductStoryRow>().HasIndex(x => x.ProductId);
         mb.Entity<CardRow>().ToTable("cards").HasKey(x => x.Id);
         mb.Entity<ColumnRow>().ToTable("columns").HasKey(x => x.Id);
         mb.Entity<WorkstreamRow>().ToTable("workstreams").HasKey(x => x.Id);
@@ -273,5 +281,19 @@ public class ForgeDbContext : DbContext
         mb.Entity<TaskTranscriptEventRow>().ToTable("task_transcript_event").HasKey(x => x.Id);
         mb.Entity<TaskTranscriptEventRow>().HasIndex(x => new { x.WorkItemId, x.At });
         mb.Entity<TaskTranscriptEventRow>().HasIndex(x => x.WorkItemId);
+
+        // Phase 17.1 — persistent task queue + per-row history.
+        // Dequeue index: per (kind, target, state) walking by priority + FIFO.
+        // Idempotency: partial unique on (WorkItemId) WHERE State IN OpenStates
+        // is created in Phase17Migration since EF Core doesn't model SQLite
+        // partial unique indexes portably.
+        mb.Entity<TaskQueueRow>().ToTable("task_queue").HasKey(x => x.Id);
+        mb.Entity<TaskQueueRow>().HasIndex(x => new { x.TargetKind, x.TargetId, x.State, x.PriorityRank, x.EnqueuedAt });
+        mb.Entity<TaskQueueRow>().HasIndex(x => x.WorkItemId);
+        mb.Entity<TaskQueueRow>().HasIndex(x => new { x.State, x.AckRequiredBy });
+        mb.Entity<TaskQueueRow>().HasIndex(x => x.RoutedToCrewId);
+
+        mb.Entity<TaskQueueHistoryRow>().ToTable("task_queue_history").HasKey(x => x.Id);
+        mb.Entity<TaskQueueHistoryRow>().HasIndex(x => new { x.QueueId, x.At });
     }
 }

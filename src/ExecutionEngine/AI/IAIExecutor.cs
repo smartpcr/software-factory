@@ -52,6 +52,9 @@ public class AIExecutionRequest
 
     /// <summary>Gets or sets the timeout for this request.</summary>
     public TimeSpan Timeout { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>Gets or sets the max agentic turns (tool call rounds). 0 = unlimited.</summary>
+    public int MaxTurns { get; set; } = 30;
 }
 
 /// <summary>

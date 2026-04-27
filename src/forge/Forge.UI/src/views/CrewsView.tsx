@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { AgentDetail, AgentLevelHistoryEntry, Crew, CrewHistoryEntry, CrewPayroll, CrewSalary, DomainExpert, ModelInfo } from '@/types';
+import { useNavigate } from 'react-router-dom';
+import type { AgentDetail, AgentLevelHistoryEntry, Crew, CrewHistoryEntry, CrewPayroll, CrewQueueStats, CrewSalary, DomainExpert, ModelInfo } from '@/types';
 import { forgeApi } from '@/api/forgeApi';
+import { useQueueStore, useQueueChannel } from '@/realtime/useQueueStore';
 import { useHasRole } from '@/state/useCurrentUserStore';
 import { useAgentEditorStore } from '@/state/useAgentEditorStore';
 import { avatarFor, agentTooltip } from '@/agentAvatar';
@@ -62,11 +64,14 @@ const ROLE_OPTIONS = ['coder', 'reviewer', 'architect', 'qa', 'lead', 'generator
 
 export function CrewsView() {
   const isPO = useHasRole('product-owner');
+  const navigate = useNavigate();
 
   const [crews, setCrews] = useState<Crew[]>([]);
   const [agents, setAgents] = useState<AgentDetail[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [salaries, setSalaries] = useState<Record<string, CrewSalary>>({});
+  // Phase 17.8 — per-crew queue stats (depth + ETA + strained flag).
+  const [queueStats, setQueueStats] = useState<Record<string, CrewQueueStats>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tab, setTab] = useState<TabKey>('roster');
   const [error, setError] = useState<string | null>(null);
@@ -118,6 +123,14 @@ export function CrewsView() {
         const salaryMap: Record<string, CrewSalary> = {};
         for (const e of salaryEntries) if (e) salaryMap[e[0]] = e[1];
         setSalaries(salaryMap);
+        // Phase 17.8 — fetch queue stats per crew (depth + ETA).
+        const queueEntries = await Promise.all(
+          crewList.map((c) => forgeApi.getCrewQueueStats(c.id).then((s) => [c.id, s] as const).catch(() => null)),
+        );
+        if (cancelled) return;
+        const qMap: Record<string, CrewQueueStats> = {};
+        for (const e of queueEntries) if (e) qMap[e[0]] = e[1];
+        setQueueStats(qMap);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
       }
@@ -125,6 +138,26 @@ export function CrewsView() {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot init
   }, []);
+
+  // Phase 17.8 — keep queue stats fresh against the SignalR feed. Whenever
+  // a queue.changed event lands the store's rows reference flips, which
+  // triggers a per-crew stats refresh.
+  useQueueChannel({});
+  const queueRowsRef = useQueueStore((s) => s.rows);
+  useEffect(() => {
+    if (crews.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      const entries = await Promise.all(
+        crews.map((c) => forgeApi.getCrewQueueStats(c.id).then((s) => [c.id, s] as const).catch(() => null)),
+      );
+      if (cancelled) return;
+      const next: Record<string, CrewQueueStats> = {};
+      for (const e of entries) if (e) next[e[0]] = e[1];
+      setQueueStats(next);
+    })();
+    return () => { cancelled = true; };
+  }, [queueRowsRef, crews]);
 
   function applyCrewUpdate(next: Crew) {
     setCrews((cs) => cs.map((c) => c.id === next.id ? next : c));
@@ -198,6 +231,35 @@ export function CrewsView() {
                   <div style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 10, color: 'var(--text-tertiary)', textAlign: 'right' }}>
                     ${salaries[c.id].today.toFixed(2)}
                   </div>
+                )}
+                {queueStats[c.id] && (queueStats[c.id].depth > 0 || queueStats[c.id].strained) && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    title={queueStats[c.id].strained
+                      ? `Strained · ${queueStats[c.id].depth} queued · ETA ${queueStats[c.id].etaMinutes}m`
+                      : `${queueStats[c.id].depth} queued · ETA ${queueStats[c.id].etaMinutes}m`}
+                    onClick={(e) => { e.stopPropagation(); navigate('/inbox'); }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); navigate('/inbox'); }
+                    }}
+                    style={{
+                      marginLeft: 6,
+                      padding: '2px 8px',
+                      borderRadius: 8,
+                      fontSize: 10,
+                      fontFamily: 'var(--font-mono, monospace)',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      border: queueStats[c.id].strained
+                        ? '1px solid var(--danger-border)'
+                        : '1px solid var(--border)',
+                      background: queueStats[c.id].strained ? 'var(--danger-bg)' : 'var(--bg-surface-2)',
+                      color: queueStats[c.id].strained ? 'var(--danger)' : 'var(--text-secondary)',
+                    }}
+                  >
+                    Q:{queueStats[c.id].depth} · {queueStats[c.id].etaMinutes}m
+                  </span>
                 )}
               </button>
             );
@@ -1212,8 +1274,10 @@ function PerformanceTab({ crew, allAgents, onEditAgent, onError }: {
 
   const tz = (crew as Crew & { timezone?: string }).timezone ?? 'UTC';
   const scheduleEnabled = (crew as Crew & { scheduleEnabled?: boolean }).scheduleEnabled !== false;
-  const onShift = isOnShiftLocal(now, tz, scheduleEnabled);
-  const next = nextTransitionLocal(now, tz);
+  const shift: 'day' | 'night' = crew.shift === 'night' ? 'night' : 'day';
+  const onShift = isOnShiftLocal(now, tz, scheduleEnabled, shift);
+  const next = nextTransitionLocal(now, tz, shift);
+  const bandLabel = shift === 'night' ? 'Mon–Sat 21:00–09:00' : 'Mon–Sat 09:00–21:00';
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
@@ -1241,8 +1305,24 @@ function PerformanceTab({ crew, allAgents, onEditAgent, onError }: {
             : 'var(--text-tertiary)' }}>
             {!scheduleEnabled ? 'Schedule disabled' : (onShift ? 'On shift' : 'Off shift')}
           </strong>
+          <span style={{
+            marginLeft: 8,
+            padding: '1px 6px',
+            borderRadius: 4,
+            fontSize: 10,
+            fontWeight: 600,
+            letterSpacing: 0.4,
+            textTransform: 'uppercase',
+            color: shift === 'night' ? 'rgb(178, 165, 255)' : 'rgb(255, 196, 90)',
+            background: shift === 'night'
+              ? 'color-mix(in srgb, rgb(178, 165, 255) 14%, transparent)'
+              : 'color-mix(in srgb, rgb(255, 196, 90) 14%, transparent)',
+            border: `1px solid ${shift === 'night' ? 'rgb(178, 165, 255)' : 'rgb(255, 196, 90)'}`,
+          }}>
+            {shift === 'night' ? 'Night' : 'Day'}
+          </span>
           <span style={{ color: 'var(--text-tertiary)', marginLeft: 8, fontSize: 11.5 }}>
-            {tz} · {scheduleEnabled ? 'Mon–Sat 09:00–21:00' : 'always available'}
+            {tz} · {scheduleEnabled ? bandLabel : 'always available'}
           </span>
         </div>
         {scheduleEnabled && next && (
@@ -1439,24 +1519,44 @@ function fmtDate(iso: string): string {
 
 // ── Schedule helpers (mirror server-side ScheduleGate). ────────────────
 
-function isOnShiftLocal(nowUtc: Date, tz: string, scheduleEnabled: boolean): boolean {
+function isOnShiftLocal(nowUtc: Date, tz: string, scheduleEnabled: boolean, shift: 'day' | 'night' = 'day'): boolean {
   if (!scheduleEnabled) return true; // bypassed = always available
   const local = inTimezone(nowUtc, tz);
   const dow = local.getDay(); // 0=Sun..6=Sat
-  if (dow === 0) return false;
   const hour = local.getHours();
+  if (shift === 'night') {
+    // Night band starts at 21:00 on a work day (Mon–Sat) and runs until
+    // 09:00 the next morning. So 00:00–09:00 is on shift iff yesterday
+    // was a work day (i.e. today is Mon..Sun, but Sun morning closes
+    // out the Sat night block).
+    if (hour >= 21 && dow !== 0) return true;
+    if (hour < 9 && dow !== 1) return true; // dow !== Mon → yesterday was Mon..Sat
+    return false;
+  }
+  if (dow === 0) return false;
   return hour >= 9 && hour < 21;
 }
 
-function nextTransitionLocal(nowUtc: Date, tz: string): string | null {
+function nextTransitionLocal(nowUtc: Date, tz: string, shift: 'day' | 'night' = 'day'): string | null {
   try {
     const local = inTimezone(nowUtc, tz);
-    const onShift = isOnShiftLocal(nowUtc, tz, true);
+    const onShift = isOnShiftLocal(nowUtc, tz, true, shift);
     const target = new Date(local);
-    if (onShift) {
+    if (shift === 'night') {
+      if (onShift) {
+        // Closing transition: next 09:00. Today if hour < 9, else tomorrow.
+        if (local.getHours() >= 21) target.setDate(target.getDate() + 1);
+        target.setHours(9, 0, 0, 0);
+      } else {
+        // Opening transition: next work-day 21:00.
+        if (local.getDay() === 0 || local.getHours() >= 21) target.setDate(target.getDate() + 1);
+        while (target.getDay() === 0) target.setDate(target.getDate() + 1);
+        target.setHours(21, 0, 0, 0);
+      }
+    } else if (onShift) {
       target.setHours(21, 0, 0, 0);
     } else {
-      // Walk forward until we hit a Mon–Sat day; jump to 09:00.
+      // Day shift, off — walk to next Mon–Sat 09:00.
       if (local.getHours() >= 21) target.setDate(target.getDate() + 1);
       while (target.getDay() === 0) target.setDate(target.getDate() + 1);
       target.setHours(9, 0, 0, 0);

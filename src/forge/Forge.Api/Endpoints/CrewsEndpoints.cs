@@ -9,9 +9,11 @@ namespace Forge.Api.Endpoints;
 using Forge.Api.Auth;
 using Forge.Api.Contracts;
 using Forge.Api.Persistence;
+using Forge.Api.Realtime;
 using Forge.Api.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
 /// <summary>
@@ -447,6 +449,8 @@ public static class CrewsEndpoints
         string id,
         [FromBody] AssignTaskRequest req,
         ForgeDbContext db,
+        ITaskQueueService taskQueue,
+        IHubContext<ForgeHub> hub,
         CancellationToken ct)
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
@@ -540,6 +544,21 @@ public static class CrewsEndpoints
         wi.AssignedToJson =
             $"{{\"crewId\":\"{id}\",\"agentId\":\"{generator}\",\"generatorAgentId\":\"{generator}\",\"evaluatorAgentId\":{evalJson},\"by\":\"{caller}\"}}";
         await db.SaveChangesAsync(ct);
+
+        // Enqueue into the task queue so the inbox shows the assignment
+        // and the queue worker can pick it up for the agent runner.
+        try
+        {
+            var queueRow = await taskQueue.EnqueueAsync(req.WorkItemId, "crew", id, ct);
+            await hub.Clients.All.SendAsync("queue.changed", new { kind = "enqueued", item = queueRow }, ct);
+        }
+        catch (Exception ex)
+        {
+            // Non-fatal — the assignment is persisted; queue entry is best-effort.
+            ctx.RequestServices.GetRequiredService<ILoggerFactory>()
+                .CreateLogger("Forge.Crew.Assign")
+                .LogWarning(ex, "Queue enqueue failed for {WiId} → crew {CrewId}", req.WorkItemId, id);
+        }
 
         return Results.Ok(new
         {
@@ -1208,16 +1227,19 @@ public static class CrewsEndpoints
             .ToList());
     }
 
-    // ── Phase 13.4 / 13.5 — pipelines (server stubs) ───────────────────────
+    // ── Phase 13.4 / 13.5 — pipelines ──────────────────────────────────────
 
-    private static async Task<IResult> PlanStub(HttpContext ctx, string id, ForgeDbContext db, CancellationToken ct)
+    public sealed record PlanRequest(string? WorkItemId = null);
+    public sealed record CodeRequest(string? StepWorkItemId = null);
+
+    private static async Task<IResult> PlanStub(
+        HttpContext ctx, string id,
+        [FromBody] PlanRequest req,
+        ForgeDbContext db, ITaskQueueService taskQueue, IHubContext<ForgeHub> hub, CancellationToken ct)
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
 
-        // Phase 14.2 — schedule gate. Must fire before any other check so
-        // off-shift dispatches refuse cleanly even when the rest of the
-        // pipeline is stubbed.
         var sched = await ApplyScheduleGateAsync(ctx, db, crew, kind: "plan", ct);
         if (sched is not null) return sched;
 
@@ -1228,23 +1250,27 @@ public static class CrewsEndpoints
                 title: "Plan tasks require invokeMode=sdk; this crew is configured for CLI.",
                 statusCode: 400);
         }
-        // 13.4 pipeline (commit spec MD + insert WIT tree + open draft PR) is
-        // not wired in this slice. The dispatcher exists; the tool host + git
-        // ops + template files do not. Return 501 with a clear message so
-        // callers can detect "Phase 13.4 not implemented yet" deterministically.
-        return Results.Problem(
-            type: "phase.not_implemented",
-            title: "Phase 13.4 — plan pipeline not implemented yet",
-            detail: "AgentRunnerDispatcher is in place; the spec-MD writer + WIT tree generator + draft-PR opener will follow.",
-            statusCode: 501);
+
+        var wiId = req?.WorkItemId;
+        if (string.IsNullOrWhiteSpace(wiId))
+            return Results.Problem(title: "workItemId is required", statusCode: 400);
+
+        // Enqueue the work item into the task queue so the worker can
+        // route it to the agent runner when capacity is available.
+        var queueRow = await taskQueue.EnqueueAsync(wiId, "crew", id, ct);
+        await hub.Clients.All.SendAsync("queue.changed", new { kind = "enqueued", item = queueRow }, ct);
+
+        return Results.Ok(new { queued = true, queueId = queueRow.Id, workItemId = wiId, crewId = id, pipeline = "plan" });
     }
 
-    private static async Task<IResult> CodeStub(HttpContext ctx, string id, ForgeDbContext db, CancellationToken ct)
+    private static async Task<IResult> CodeStub(
+        HttpContext ctx, string id,
+        [FromBody] CodeRequest req,
+        ForgeDbContext db, ITaskQueueService taskQueue, IHubContext<ForgeHub> hub, CancellationToken ct)
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
 
-        // Phase 14.2 — schedule gate (see PlanStub).
         var sched = await ApplyScheduleGateAsync(ctx, db, crew, kind: "code", ct);
         if (sched is not null) return sched;
 
@@ -1255,11 +1281,15 @@ public static class CrewsEndpoints
                 title: "Coding tasks require invokeMode=sdk; this crew is configured for CLI.",
                 statusCode: 400);
         }
-        return Results.Problem(
-            type: "phase.not_implemented",
-            title: "Phase 13.5 — coding pipeline not implemented yet",
-            detail: "Self-review pass + git-commit/push/open-pr tools authored against the lead's preferred account land in a follow-up.",
-            statusCode: 501);
+
+        var wiId = req?.StepWorkItemId;
+        if (string.IsNullOrWhiteSpace(wiId))
+            return Results.Problem(title: "stepWorkItemId is required", statusCode: 400);
+
+        var queueRow = await taskQueue.EnqueueAsync(wiId, "crew", id, ct);
+        await hub.Clients.All.SendAsync("queue.changed", new { kind = "enqueued", item = queueRow }, ct);
+
+        return Results.Ok(new { queued = true, queueId = queueRow.Id, workItemId = wiId, crewId = id, pipeline = "code" });
     }
 
     /// <summary>
@@ -1350,7 +1380,8 @@ public static class CrewsEndpoints
             r.DailyBudgetUsd, r.MaxTaskBudgetUsd,
             r.ParentCrewId, r.Depth, r.Backend, r.InvokeMode,
             roster, caps, r.MaxConcurrent, r.WeeklyCap,
-            r.DefaultGeneratorAgentId, r.DefaultEvaluatorAgentId, r.EvaluatorModel);
+            r.DefaultGeneratorAgentId, r.DefaultEvaluatorAgentId, r.EvaluatorModel,
+            r.PairRole, r.PairedWithCrewId, r.Shift);
     }
 
     /// <summary>Synchronous mapper used by callers that already have the row in hand and don't need the roster inflated.</summary>
@@ -1362,7 +1393,7 @@ public static class CrewsEndpoints
         Roster: null, Capabilities: ParseCapsJson(r.CapabilitiesJson),
         r.MaxConcurrent, r.WeeklyCap,
         r.DefaultGeneratorAgentId, r.DefaultEvaluatorAgentId, r.EvaluatorModel,
-        r.PairRole, r.PairedWithCrewId);
+        r.PairRole, r.PairedWithCrewId, r.Shift);
 
     private static string? NormaliseBackend(string? s) => s?.ToLowerInvariant() switch
     {

@@ -22,6 +22,8 @@ public class EpicRow
 
     public string Name { get; set; } = string.Empty;
 
+    public string? ProductId { get; set; }
+
     public string Status { get; set; } = string.Empty;
 
     public int Progress { get; set; }
@@ -31,6 +33,26 @@ public class EpicRow
     public double Cost { get; set; }
 
     public string Color { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// A user story scoped to a product. Groups cards and work items on
+/// the Plan &amp; Design board. Unlike the legacy <see cref="EpicRow"/>
+/// (global, seed-only), stories are first-class, product-bound entities.
+/// </summary>
+public class ProductStoryRow
+{
+    public string Id { get; set; } = string.Empty;
+
+    public string ProductId { get; set; } = string.Empty;
+
+    public string Name { get; set; } = string.Empty;
+
+    public string Status { get; set; } = "planning";
+
+    public int Sort { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; }
 }
 
 public class CardRow
@@ -449,6 +471,15 @@ public class CrewRow
     public bool ScheduleEnabled { get; set; } = true;
 
     /// <summary>
+    /// Phase 18 — which 12-hour band of <see cref="ScoringConstants.WorkDays"/>
+    /// this crew runs in. <c>day</c> = 09:00–21:00 local; <c>night</c> =
+    /// 21:00–09:00 next morning (the night block belongs to the work day on
+    /// which it starts, so Sat 21:00 → Sun 09:00 is on-shift but Sun 21:00
+    /// → Mon 09:00 is not). Defaults to <c>day</c> for back-compat.
+    /// </summary>
+    public string Shift { get; set; } = "day";
+
+    /// <summary>
     /// Phase 16.2 — pair role. <c>standalone</c> (default) | <c>generator</c>
     /// | <c>evaluator</c>. Only arch + eng crews may enter a pair (Q16.2).
     /// </summary>
@@ -777,6 +808,101 @@ public class AgentUsageRow
     /// to that value.
     /// </summary>
     public string CostCategory { get; set; } = "generator";
+}
+
+/// <summary>
+/// Phase 17.1 — single persistent queue table. One row per active routing
+/// of one work item through the team → lead → crew → member pipeline.
+/// State machine — see <see cref="TaskQueueStates"/>; transitions are
+/// atomic <c>UPDATE … WHERE id=? AND state=?</c> compare-and-swap so two
+/// concurrent workers can never double-claim the same row.
+/// </summary>
+public class TaskQueueRow
+{
+    public long Id { get; set; }
+
+    public string WorkItemId { get; set; } = string.Empty;
+
+    /// <summary>"team" | "crew".</summary>
+    public string TargetKind { get; set; } = "team";
+
+    /// <summary>Team name (e.g. "Architecture") when TargetKind="team"; crew id otherwise.</summary>
+    public string TargetId { get; set; } = string.Empty;
+
+    /// <summary>One of <see cref="TaskQueueStates"/>.</summary>
+    public string State { get; set; } = TaskQueueStates.AwaitingAck;
+
+    /// <summary>0=high, 1=med, 2=low. Denormalised from <see cref="WorkItemRow.Priority"/> at enqueue.</summary>
+    public int PriorityRank { get; set; } = 1;
+
+    public DateTimeOffset EnqueuedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>Set while State='awaiting-ack'. Worker auto-acks when now() &gt; this.</summary>
+    public DateTimeOffset? AckRequiredBy { get; set; }
+
+    public DateTimeOffset? AckedAt { get; set; }
+
+    public string? AckByUserId { get; set; }
+
+    /// <summary>Q17.8 — true when the ack happened via timeout rather than the lead clicking.</summary>
+    public bool AutoAcked { get; set; }
+
+    /// <summary>The crew that was eventually picked. Set on transition to State='queued'.</summary>
+    public string? RoutedToCrewId { get; set; }
+
+    public DateTimeOffset? PickedUpAt { get; set; }
+
+    public string? PickedUpByAgent { get; set; }
+
+    public DateTimeOffset? CompletedAt { get; set; }
+
+    public DateTimeOffset LastUpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// Phase 17.1 — append-only audit per <see cref="TaskQueueRow"/> state
+/// transition + strain events.
+/// </summary>
+public class TaskQueueHistoryRow
+{
+    public long Id { get; set; }
+
+    public long QueueId { get; set; }
+
+    /// <summary>One of: enqueued | acked | ack-timeout-auto | routed | claimed | completed | cancelled | reassigned | strain-detected | strain-confirmed | abandoned-recovered.</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    public string? FromValue { get; set; }
+
+    public string? ToValue { get; set; }
+
+    public string? ByUserId { get; set; }
+
+    /// <summary>Strain payload — queue depth at the time of the event. Null on non-strain transitions.</summary>
+    public int? AtDepth { get; set; }
+
+    /// <summary>Strain payload — computed ETA in minutes at the time of the event.</summary>
+    public int? EtaMinutes { get; set; }
+
+    /// <summary>JSON blob for transition-specific extras (reason on cancel, reassign target, etc.).</summary>
+    public string PayloadJson { get; set; } = "{}";
+
+    public DateTimeOffset At { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>State-machine constants for <see cref="TaskQueueRow.State"/>.</summary>
+public static class TaskQueueStates
+{
+    public const string AwaitingAck   = "awaiting-ack";
+    public const string AwaitingRoute = "awaiting-route";
+    public const string Queued        = "queued";
+    public const string PickedUp      = "picked-up";
+    public const string Completed     = "completed";
+    public const string Cancelled     = "cancelled";
+    public const string Reassigned    = "reassigned";
+
+    /// <summary>Open states count against the per-work-item idempotency guard.</summary>
+    public static readonly string[] OpenStates = { AwaitingAck, AwaitingRoute, Queued, PickedUp };
 }
 
 /// <summary>

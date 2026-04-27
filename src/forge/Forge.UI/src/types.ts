@@ -24,6 +24,15 @@ export interface Epic {
   color: string;
 }
 
+export interface ProductStory {
+  id: string;
+  productId: string;
+  name: string;
+  status: string;
+  sort: number;
+  createdAt: string;
+}
+
 export interface Card {
   id: string;
   epic: string;
@@ -359,6 +368,11 @@ export interface Crew {
   pairRole?: string;
   /** Phase 16.2 — id of the crew this one is paired with (symmetric). */
   pairedWithCrewId?: string | null;
+  /**
+   * Phase 18 — schedule band. 'day' = 09:00–21:00 local; 'night' =
+   * 21:00–09:00 next morning. Defaults to 'day'.
+   */
+  shift?: 'day' | 'night';
 }
 
 /** Phase 11.3 — agent listing payload (mirrors AgentDetail on the server). */
@@ -516,6 +530,12 @@ export interface SalaryTodaySummary {
   activeAgents: number;
 }
 
+/** Phase 14.11 — TopBar payroll chip aggregator (server-side SUM). */
+export interface PayrollTodaySummary {
+  totalUsd: number;
+  crewCount: number;
+}
+
 // ─── Phase 15 — sprint & area path management ──────────────────────────────
 //
 // Iteration / area paths / saved prefixes are bound to a product (Q15.1, Q15.2).
@@ -647,4 +667,47 @@ export interface SavePrefixRequest {
   prefix: string;
   kind: SprintImportKind;
   repoId: string;
+}
+
+// ─── Phase 17 — Persistent task queue ──────────────────────────────────────
+
+export type TaskQueueState =
+  | 'awaiting-ack'
+  | 'awaiting-route'
+  | 'queued'
+  | 'picked-up'
+  | 'completed'
+  | 'cancelled'
+  | 'reassigned';
+
+/** Phase 17 — one row in the unified task queue. */
+export interface TaskQueueEntry {
+  id: number;
+  workItemId: string;
+  /** "team" | "crew". */
+  targetKind: string;
+  targetId: string;
+  state: TaskQueueState;
+  /** 0 = high, 1 = med, 2 = low. */
+  priorityRank: number;
+  enqueuedAt: string;
+  ackRequiredBy?: string | null;
+  ackedAt?: string | null;
+  ackByUserId?: string | null;
+  autoAcked: boolean;
+  routedToCrewId?: string | null;
+  pickedUpAt?: string | null;
+  pickedUpByAgent?: string | null;
+  completedAt?: string | null;
+  lastUpdatedAt: string;
+}
+
+/** Phase 17 — per-crew queue stats + strain flag. */
+export interface CrewQueueStats {
+  crewId: string;
+  depth: number;
+  etaMinutes: number;
+  strained: boolean;
+  oldestQueuedAt?: string | null;
+  headWorkItemId?: string | null;
 }

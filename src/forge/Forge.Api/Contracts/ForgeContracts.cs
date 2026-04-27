@@ -18,6 +18,14 @@ public sealed record Epic(
     double Cost,
     string Color);
 
+public sealed record ProductStory(
+    string Id,
+    string ProductId,
+    string Name,
+    string Status,
+    int Sort,
+    string CreatedAt);
+
 /// <summary>
 /// Agent reference attached to a card (architect / engineer / reviewer / human).
 /// </summary>
@@ -354,7 +362,10 @@ public sealed record Crew(
     // Phase 16.2 — pair-crew topology. PairRole is "standalone" (default),
     // "generator", or "evaluator"; PairedWithCrewId is the symmetric peer.
     string PairRole = "standalone",
-    string? PairedWithCrewId = null);
+    string? PairedWithCrewId = null,
+    // Phase 18 — schedule band. "day" = 09:00–21:00 local; "night" =
+    // 21:00–09:00 next morning. Defaults to "day" for back-compat.
+    string Shift = "day");
 
 /// <summary>
 /// Phase 13b — one row in a crew's roster. The lead is rendered separately
@@ -506,11 +517,20 @@ public sealed record CrewSalary(
 /// <summary>Phase 11.9 — TopBar chip payload: total spend today across all crews.</summary>
 public sealed record SalaryTodaySummary(decimal TotalUsd, int ActiveAgents);
 
+/// <summary>
+/// Phase 14.11 — TopBar payroll chip aggregator. Replaces the client-side
+/// fan-out (one /payroll request per crew) with a single server-side SUM.
+/// </summary>
+public sealed record PayrollTodaySummary(decimal TotalUsd, int CrewCount);
+
 // -- Phase 12 — Work Item Tracking ---------------------------------------
 
 /// <summary>
 /// Phase 12 — assignee on a <see cref="WorkItem"/>. <see cref="Kind"/> is
-/// either "agent" or "human"; the rest mirrors the UI shape one-to-one.
+/// "agent", "human", or (Phase 17.2) "team" when the work item is routed
+/// through the team → lead → crew → member pipeline rather than pinned to
+/// a specific agent up-front. <see cref="Id"/> carries the team name (e.g.
+/// "Architecture") in the team case, the agent / user id otherwise.
 /// </summary>
 public sealed record WorkItemAssignee(
     string Kind,
@@ -903,4 +923,66 @@ public sealed record TaskExecutionSnapshot(
     IReadOnlyList<Deliverable> Deliverables,
     IReadOnlyList<TaskTranscriptEvent> RecentTranscript,
     WorktreeSnapshot? Worktree);
+
+// ─── Phase 17 — Persistent task queue & team-to-crew routing ──────────────
+
+/// <summary>
+/// Phase 17.1 — one row in the unified task queue. Mirrors
+/// <see cref="Forge.Api.Persistence.TaskQueueRow"/>; field names map 1:1.
+/// </summary>
+public sealed record TaskQueueEntry(
+    long Id,
+    string WorkItemId,
+    /// <summary>"team" | "crew".</summary>
+    string TargetKind,
+    string TargetId,
+    /// <summary>One of TaskQueueStates: awaiting-ack | awaiting-route | queued | picked-up | completed | cancelled | reassigned.</summary>
+    string State,
+    /// <summary>0=high, 1=med, 2=low.</summary>
+    int PriorityRank,
+    DateTimeOffset EnqueuedAt,
+    DateTimeOffset? AckRequiredBy,
+    DateTimeOffset? AckedAt,
+    string? AckByUserId,
+    bool AutoAcked,
+    string? RoutedToCrewId,
+    DateTimeOffset? PickedUpAt,
+    string? PickedUpByAgent,
+    DateTimeOffset? CompletedAt,
+    DateTimeOffset LastUpdatedAt);
+
+/// <summary>Phase 17 history row, used by <c>GET /api/queue/{id}/history</c>.</summary>
+public sealed record TaskQueueHistoryEntry(
+    long Id,
+    long QueueId,
+    string Kind,
+    string? FromValue,
+    string? ToValue,
+    string? ByUserId,
+    int? AtDepth,
+    int? EtaMinutes,
+    System.Text.Json.JsonElement Payload,
+    DateTimeOffset At);
+
+/// <summary>
+/// Phase 17 — per-crew queue stats. Returned by <c>GET /api/crews/{id}/queue-stats</c>
+/// and embedded in the <c>queue.strained</c> SignalR payload.
+/// </summary>
+public sealed record CrewQueueStats(
+    string CrewId,
+    int Depth,
+    int EtaMinutes,
+    bool Strained,
+    DateTimeOffset? OldestQueuedAt,
+    string? HeadWorkItemId);
+
+/// <summary>Body for <c>POST /api/queue/{id}/route</c>.</summary>
+public sealed record RouteQueueRequest(string CrewId);
+
+/// <summary>Body for <c>POST /api/queue/{id}/reassign</c>.</summary>
+public sealed record ReassignQueueRequest(string NewCrewId);
+
+/// <summary>Body for <c>POST /api/queue/{id}/cancel</c>.</summary>
+public sealed record CancelQueueRequest(string? Reason = null);
+
 

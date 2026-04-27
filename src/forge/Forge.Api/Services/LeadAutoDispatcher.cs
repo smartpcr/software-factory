@@ -126,8 +126,25 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
         {
             ct.ThrowIfCancellationRequested();
             string? leadId = TryGetAssigneeId(wi.AssignedToJson);
-            if (leadId is null) continue;
-            if (!crewsByLead.TryGetValue(leadId, out var leadCrew)) continue;
+            CrewRow? leadCrew = null;
+
+            if (leadId is not null)
+            {
+                crewsByLead.TryGetValue(leadId, out leadCrew);
+            }
+
+            // Crew-assigned items (from the Assign endpoint) store
+            // {"crewId":"...", "agentId":"..."} — resolve the crew's lead.
+            if (leadCrew is null)
+            {
+                var crewId = TryGetCrewId(wi.AssignedToJson);
+                if (crewId is not null)
+                {
+                    leadCrew = crewsByLead.Values.FirstOrDefault(c => c.Id == crewId);
+                }
+            }
+
+            if (leadCrew is null) continue;
 
             // 3. Resolve generator + evaluator crews. If the lead's crew is
             //    a generator-side of a pair, evaluator = paired peer. If the
@@ -282,6 +299,24 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
             // Honor camelCase + PascalCase serialisation alike.
             if (doc.RootElement.TryGetProperty("id", out var idCamel)) return idCamel.GetString();
             if (doc.RootElement.TryGetProperty("Id", out var idPascal)) return idPascal.GetString();
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Extract crewId from a crew-assigned JSON blob.</summary>
+    public static string? TryGetCrewId(string? json)
+    {
+        if (string.IsNullOrEmpty(json)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return null;
+            if (doc.RootElement.TryGetProperty("crewId", out var v)) return v.GetString();
+            if (doc.RootElement.TryGetProperty("CrewId", out var v2)) return v2.GetString();
             return null;
         }
         catch

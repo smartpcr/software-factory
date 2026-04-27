@@ -282,6 +282,23 @@ public static class WorkItemsEndpoints
         db.WorkItems.Add(row);
         await db.SaveChangesAsync(ct);
 
+        // Phase 17.3 — team or crew assignees enter the persistent queue;
+        // direct-to-agent assignees still flow through the Phase 16
+        // dispatcher path. The queue service is resolved via DI but is
+        // optional so older callers / tests without DI scope still work.
+        var queue = ctx.RequestServices.GetService<Forge.Api.Services.ITaskQueueService>();
+        if (queue is not null && req.AssignedTo is not null && !string.IsNullOrEmpty(req.AssignedTo.Id))
+        {
+            if (req.AssignedTo.Kind == "team")
+            {
+                await queue.EnqueueAsync(row.Id, "team", req.AssignedTo.Id, ct);
+            }
+            else if (req.AssignedTo.Kind == "crew")
+            {
+                await queue.EnqueueAsync(row.Id, "crew", req.AssignedTo.Id, ct);
+            }
+        }
+
         await hub.Clients.All.SendAsync("workitem.changed", new { kind = "created", workItem = MapWorkItem(row) }, ct);
         return Results.Created($"/api/work-items/{row.Id}", MapWorkItem(row));
     }
@@ -326,6 +343,25 @@ public static class WorkItemsEndpoints
         if (req.AssignedTo is not null)
         {
             row.AssignedToJson = JsonSerializer.Serialize(req.AssignedTo, JsonOpts);
+            // Phase 17.3 — assigning to a team OR a crew enqueues so the
+            // routing is observable in /inbox. Idempotency guard (Q17.6)
+            // returns the existing open row when one is already in flight,
+            // so duplicate PATCHes with the same assignee are safe.
+            //  * kind=team  → state='awaiting-ack', 10s lead-ack SLO.
+            //  * kind=crew  → state='queued' directly (skips ack stage).
+            //  * kind=agent / human → no enqueue (Phase 12 direct path).
+            var queue = ctx.RequestServices.GetService<Forge.Api.Services.ITaskQueueService>();
+            if (queue is not null && req.AssignedTo is not null && !string.IsNullOrEmpty(req.AssignedTo.Id))
+            {
+                if (req.AssignedTo.Kind == "team")
+                {
+                    await queue.EnqueueAsync(row.Id, "team", req.AssignedTo.Id, ct);
+                }
+                else if (req.AssignedTo.Kind == "crew")
+                {
+                    await queue.EnqueueAsync(row.Id, "crew", req.AssignedTo.Id, ct);
+                }
+            }
         }
         if (req.ClearAssignedTo == true) row.AssignedToJson = null;
         if (req.Points is int p)

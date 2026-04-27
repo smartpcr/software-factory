@@ -56,8 +56,9 @@ public static class TaskExecutionEndpoints
         deliverableRows = deliverableRows.OrderBy(d => d.Iter).ThenBy(d => d.CreatedAt).ToList();
         var deliverables = deliverableRows.Select(MapDeliverable).ToList();
 
-        // Generator + evaluator crews from the most recent deliverable
-        // (which captures the routing decisions the dispatcher made).
+        // Generator + evaluator from the most recent deliverable, falling
+        // back to the queue row or work item assignment when no deliverables
+        // exist yet (task is queued/claimed but hasn't produced output).
         string? generatorCrewId = null, evaluatorCrewId = null;
         string? generatorAgentId = null, evaluatorAgentId = null;
         var current = deliverableRows.LastOrDefault();
@@ -66,9 +67,36 @@ public static class TaskExecutionEndpoints
             generatorCrewId = current.CrewId;
             generatorAgentId = current.GeneratorAgentId;
             evaluatorAgentId = current.EvaluatorAgentId;
-            // Resolve evaluator crew from the agent's crew row.
             var evaluatorAgent = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == current.EvaluatorAgentId, ct);
             evaluatorCrewId = evaluatorAgent?.CrewId;
+        }
+        else
+        {
+            // Fallback: read from the queue row or work item assignment JSON.
+            var queueRow = await db.TaskQueue.AsNoTracking()
+                .Where(r => r.WorkItemId == id)
+                .ToListAsync(ct);
+            var latestQueue = queueRow.OrderByDescending(r => r.EnqueuedAt).FirstOrDefault();
+            if (latestQueue is not null)
+            {
+                generatorCrewId = latestQueue.RoutedToCrewId;
+                generatorAgentId = latestQueue.PickedUpByAgent;
+            }
+            // Also try the work item's AssignedToJson for crew/agent info.
+            if (string.IsNullOrEmpty(generatorCrewId) && !string.IsNullOrEmpty(wi.AssignedToJson))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(wi.AssignedToJson);
+                    if (doc.RootElement.TryGetProperty("crewId", out var c))
+                        generatorCrewId ??= c.GetString();
+                    if (doc.RootElement.TryGetProperty("generatorAgentId", out var g))
+                        generatorAgentId ??= g.GetString();
+                    if (doc.RootElement.TryGetProperty("evaluatorAgentId", out var e) && e.ValueKind == JsonValueKind.String)
+                        evaluatorAgentId ??= e.GetString();
+                }
+                catch { /* best effort */ }
+            }
         }
 
         // Cost: split by category from the agent_usage ledger.
@@ -94,9 +122,10 @@ public static class TaskExecutionEndpoints
             if (crew is not null)
             {
                 var since = DateTimeOffset.UtcNow.AddHours(-24);
-                var crewUsage = await db.AgentUsage.AsNoTracking()
-                    .Where(u => u.CrewId == crew.Id && u.StartedAt >= since)
-                    .ToListAsync(ct);
+                var crewUsage = (await db.AgentUsage.AsNoTracking()
+                    .Where(u => u.CrewId == crew.Id)
+                    .ToListAsync(ct))
+                    .Where(u => u.StartedAt >= since);
                 spendToday = crewUsage.Sum(u => u.CostUsd);
             }
         }

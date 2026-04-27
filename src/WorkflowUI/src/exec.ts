@@ -19,6 +19,7 @@ type RunFinishedFn = () => void;
 let logFn: LogFn;
 let clearLogsFn: ClearLogsFn;
 let runFinishedFn: RunFinishedFn | null = null;
+let runStartedFn: RunFinishedFn | null = null;
 let hubConnection: signalR.HubConnection | null = null;
 let currentRunId: string | null = null;
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -299,6 +300,10 @@ export const Exec = {
     runFinishedFn = fn;
   },
 
+  onRunStarted(fn: RunFinishedFn) {
+    runStartedFn = fn;
+  },
+
   setStatus(status: ExecState) {
     this.state = status;
     const ind = document.getElementById('execIndicator');
@@ -371,6 +376,9 @@ export const Exec = {
       const result = await startRun(wf.workflowName, testPayload);
       this.setStatus('running');
       logFn('info', null, `Run started (ID: ${result.runId})`);
+
+      // Notify UI to refresh run history
+      runStartedFn?.();
 
       // SignalR is the primary path for live event streaming
       await attachRun(result.runId);

@@ -16,6 +16,7 @@ import { ProductsView } from '@/views/ProductsView';
 import { CrewsView } from '@/views/CrewsView';
 import { WorkItemsView } from '@/views/WorkItemsView';
 import { LiveExecutionView } from '@/views/LiveExecutionView';
+import { InboxView } from '@/views/InboxView';
 import { useStateStore } from '@/state/useStateStore';
 
 export function App() {
@@ -34,6 +35,7 @@ export function App() {
           <Route path="/plan" element={<PlanView />} />
           <Route path="/work-items" element={<WorkItemsView />} />
           <Route path="/work-items/:id/live" element={<LiveExecutionView />} />
+          <Route path="/inbox" element={<InboxView />} />
           <Route path="/timeline" element={<TimelineView />} />
           <Route path="/workstreams" element={<WorkstreamsView />} />
           <Route path="/prs" element={<PrsView />} />

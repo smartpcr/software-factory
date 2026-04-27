@@ -112,6 +112,11 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services
 // Phase 16.3 — auto-delegation hosted service (lead → crew, ≤10 s p95).
 builder.Services.AddSingleton<Forge.Api.Services.LeadAutoDispatcher>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.LeadAutoDispatcher>());
+// Phase 17.2 — task queue service. Scoped so it shares the request's DbContext.
+builder.Services.AddScoped<Forge.Api.Services.ITaskQueueService, Forge.Api.Services.TaskQueueService>();
+// Phase 17.4 — queue worker hosted service (boot scan + 5s tick).
+builder.Services.AddSingleton<Forge.Api.Services.CrewQueueWorker>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.CrewQueueWorker>());
 builder.Services.AddSingleton<AutoMergeWatcher>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoMergeWatcher>());
 builder.Services.AddHttpContextAccessor();
@@ -176,6 +181,10 @@ using (var scope = app.Services.CreateScope())
     await Phase15Migration.ApplyAsync(db);
     // Phase 16.1 — pair columns + auto-dispatch + cost-category + transcript table.
     await Phase16Migration.ApplyAsync(db);
+    // Phase 17.1 — persistent task queue + history + idempotency guard.
+    await Phase17Migration.ApplyAsync(db);
+    // Phase 18 — per-crew Shift column ('day' | 'night').
+    await Phase18Migration.ApplyAsync(db);
     await ForgeSeed.EnsureSeededAsync(db);
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.
@@ -231,6 +240,10 @@ app.MapPromotionEndpoints();
 app.MapPayrollEndpoints();
 // Phase 16.9 — live execution snapshot + transcript pagination.
 app.MapTaskExecutionEndpoints();
+// Phase 17.5 — persistent task queue surface.
+app.MapQueueEndpoints();
+// Phase 17 follow-up — admin diagnostics (manual worker tick).
+app.MapAdminEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 

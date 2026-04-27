@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useWitStore } from '@/workitems/useWitStore';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 import type { WitMode } from '@/workitems/useWitStore';
@@ -54,6 +55,18 @@ export function WorkItemsView() {
   const loaded = useWorkItemsStore((s) => s.loaded);
   const load = useWorkItemsStore((s) => s.load);
   useEffect(() => { void load(); }, [load]);
+
+  // Phase 17 follow-up — `?focus=ID` query param auto-opens that work
+  // item's detail panel. Used by the Plan & Design "Assign to agent or
+  // team" button to deep-link from the legacy board.
+  const [searchParams] = useSearchParams();
+  const focusParam = searchParams.get('focus');
+  useEffect(() => {
+    if (!focusParam || !loaded) return;
+    if (items.find((i) => i.id === focusParam)) {
+      useWitStore.getState().focus(focusParam);
+    }
+  }, [focusParam, loaded, items]);
 
   // Phase 12 — keyboard: Esc collapses an expanded panel first, otherwise
   // closes the detail rail. Lets users dismiss the overlay without hunting

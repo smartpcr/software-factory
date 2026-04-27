@@ -31,6 +31,14 @@ public static class PayrollEndpoints
             .WithTags("Payroll")
             .WithName("GetCrewPayroll");
 
+        // Phase 14.11 — TopBar payroll chip aggregator. Single SUM across
+        // every crew so the chip's polling cost is O(1) requests, not O(N).
+        // The route's static `payroll/today` segment wins over the wildcard
+        // `{id}/payroll` so there's no conflict with GetPayroll.
+        app.MapGet("/api/crews/payroll/today", GetPayrollTodayTotal)
+            .WithTags("Payroll")
+            .WithName("GetPayrollTodayTotal");
+
         // Q14.7 — `/spend` is the new canonical name for the token-spend
         // rollup. We don't reach into the existing salary handler here —
         // we replicate the payload from `agent_usage` so the alias stays
@@ -41,6 +49,65 @@ public static class PayrollEndpoints
             .WithName("GetCrewSpend");
 
         return app;
+    }
+
+    private static async Task<IResult> GetPayrollTodayTotal(ForgeDbContext db, CancellationToken ct)
+    {
+        var crews = await db.Crews.AsNoTracking().ToListAsync(ct);
+        if (crews.Count == 0) return Results.Ok(new PayrollTodaySummary(0m, 0));
+
+        // Pull every (crew, lead+roster) membership in two queries instead
+        // of N. Build per-crew member id sets, then resolve every member
+        // agent in a single round-trip and group by crew.
+        var crewIds = crews.Select(c => c.Id).ToList();
+        var memberRows = await db.CrewMembers.AsNoTracking()
+            .Where(m => crewIds.Contains(m.CrewId))
+            .Select(m => new { m.CrewId, m.AgentId })
+            .ToListAsync(ct);
+
+        var byCrew = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in crews)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrEmpty(c.Lead)) set.Add(c.Lead);
+            byCrew[c.Id] = set;
+        }
+        foreach (var r in memberRows)
+        {
+            if (byCrew.TryGetValue(r.CrewId, out var set)) set.Add(r.AgentId);
+        }
+
+        var allMemberIds = byCrew.Values.SelectMany(s => s).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var agents = allMemberIds.Count == 0
+            ? new List<AgentRow>()
+            : await db.Agents.AsNoTracking()
+                .Where(a => allMemberIds.Contains(a.Id))
+                .ToListAsync(ct);
+        var agentById = agents.ToDictionary(a => a.Id, StringComparer.OrdinalIgnoreCase);
+
+        var nowUtc = DateTimeOffset.UtcNow;
+        decimal total = 0m;
+        var counted = 0;
+        foreach (var crew in crews)
+        {
+            // Today is local-day-aligned per crew TZ so the result matches
+            // the per-crew /payroll endpoint exactly when summed.
+            var tz = ScheduleGate.ResolveTimeZone(crew.Timezone);
+            var nowLocal = TimeZoneInfo.ConvertTime(nowUtc, tz);
+            var todayLocal = new DateTimeOffset(nowLocal.Year, nowLocal.Month, nowLocal.Day, 0, 0, 0, nowLocal.Offset);
+            var todayUtcStart = todayLocal.ToUniversalTime();
+
+            var members = byCrew[crew.Id]
+                .Select(id => agentById.TryGetValue(id, out var a) ? a : null)
+                .Where(a => a is not null)
+                .Select(a => a!)
+                .ToList();
+
+            total += PayrollCalculator.ComputeTotal(crew, members, todayUtcStart, nowUtc);
+            counted++;
+        }
+
+        return Results.Ok(new PayrollTodaySummary(Math.Round(total, 6), counted));
     }
 
     private static async Task<IResult> GetPayroll(

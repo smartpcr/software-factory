@@ -122,6 +122,17 @@ export function SideBar() {
             <span className="badge">{workItemActiveCount}</span>
             <span className="tooltip">Work items</span>
           </NavLink>
+          <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/inbox">
+            <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M2 9 L 2 13 a 1 1 0 0 0 1 1 H 13 a 1 1 0 0 0 1 -1 V 9 H 10.5 L 9.5 11 H 6.5 L 5.5 9 Z" stroke="currentColor" strokeWidth="1.3" fill="none" />
+              <path d="M3 9 L 4.5 3 a 1 1 0 0 1 1 -0.8 H 10.5 a 1 1 0 0 1 1 0.8 L 13 9" stroke="currentColor" strokeWidth="1.3" fill="none" />
+            </svg>
+            <div className="label-block">
+              <span className="label">Inbox</span>
+              <span className="sub">Pending acks · queue</span>
+            </div>
+            <span className="tooltip">Inbox</span>
+          </NavLink>
           <NavLink className={({ isActive }) => `nav-item has-sub${isActive ? ' active' : ''}`} to="/timeline">
             <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><line x1="2" y1="4" x2="11" y2="4" stroke="currentColor" strokeWidth="1.4" /><line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" strokeWidth="1.4" /><line x1="2" y1="12" x2="9" y2="12" stroke="currentColor" strokeWidth="1.4" /><circle cx="11" cy="4" r="1.3" fill="currentColor" /><circle cx="14" cy="8" r="1.3" fill="currentColor" /><circle cx="9" cy="12" r="1.3" fill="currentColor" /></svg>
             <div className="label-block">
