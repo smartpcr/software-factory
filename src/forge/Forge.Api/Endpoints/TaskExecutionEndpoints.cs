@@ -47,7 +47,17 @@ public static class TaskExecutionEndpoints
         CancellationToken ct)
     {
         var wi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == id, ct);
-        if (wi is null) return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
+
+        // When the work item row doesn't exist (e.g. plan/code task enqueued
+        // before the WIT row is materialized), build a minimal snapshot from
+        // the queue + transcript data instead of returning 404.
+        var queueRows = await db.TaskQueue.AsNoTracking()
+            .Where(r => r.WorkItemId == id)
+            .ToListAsync(ct);
+        var latestQueue = queueRows.OrderByDescending(r => r.EnqueuedAt).FirstOrDefault();
+
+        if (wi is null && latestQueue is null)
+            return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
 
         // Deliverables for this work item, oldest → newest.
         var deliverableRows = await db.Deliverables.AsNoTracking()
@@ -73,17 +83,13 @@ public static class TaskExecutionEndpoints
         else
         {
             // Fallback: read from the queue row or work item assignment JSON.
-            var queueRow = await db.TaskQueue.AsNoTracking()
-                .Where(r => r.WorkItemId == id)
-                .ToListAsync(ct);
-            var latestQueue = queueRow.OrderByDescending(r => r.EnqueuedAt).FirstOrDefault();
             if (latestQueue is not null)
             {
                 generatorCrewId = latestQueue.RoutedToCrewId;
                 generatorAgentId = latestQueue.PickedUpByAgent;
             }
             // Also try the work item's AssignedToJson for crew/agent info.
-            if (string.IsNullOrEmpty(generatorCrewId) && !string.IsNullOrEmpty(wi.AssignedToJson))
+            if (string.IsNullOrEmpty(generatorCrewId) && !string.IsNullOrEmpty(wi?.AssignedToJson))
             {
                 try
                 {
@@ -94,8 +100,23 @@ public static class TaskExecutionEndpoints
                         generatorAgentId ??= g.GetString();
                     if (doc.RootElement.TryGetProperty("evaluatorAgentId", out var e) && e.ValueKind == JsonValueKind.String)
                         evaluatorAgentId ??= e.GetString();
+                    if (doc.RootElement.TryGetProperty("evaluatorCrewId", out var ec) && ec.ValueKind == JsonValueKind.String)
+                        evaluatorCrewId ??= ec.GetString();
                 }
                 catch { /* best effort */ }
+            }
+            // Last resort: check agent_usage ledger (covers direct invocations).
+            if (string.IsNullOrEmpty(generatorCrewId))
+            {
+                var usageRows = await db.AgentUsage.AsNoTracking()
+                    .Where(u => u.TaskId == id && u.CrewId != null && u.CrewId != "")
+                    .ToListAsync(ct);
+                var latestUsage = usageRows.OrderByDescending(u => u.StartedAt).FirstOrDefault();
+                if (latestUsage is not null)
+                {
+                    generatorCrewId = latestUsage.CrewId;
+                    generatorAgentId ??= latestUsage.AgentId;
+                }
             }
         }
 
@@ -111,6 +132,8 @@ public static class TaskExecutionEndpoints
         long evalOut = usage.Where(u => u.CostCategory == "evaluator").Sum(u => u.OutputTokens);
 
         // Crew budget (today's spend vs. daily cap, if any).
+        // Also resolve evaluatorCrewId from the generator crew's pair when not
+        // yet known from deliverables (pre-first-iteration state).
         decimal? dailyBudget = null;
         decimal? spendToday = null;
         decimal? maxTaskBudget = null;
@@ -119,6 +142,10 @@ public static class TaskExecutionEndpoints
             var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == generatorCrewId, ct);
             dailyBudget = crew?.DailyBudgetUsd;
             maxTaskBudget = crew?.MaxTaskBudgetUsd;
+            if (string.IsNullOrEmpty(evaluatorCrewId) && !string.IsNullOrEmpty(crew?.PairedWithCrewId))
+            {
+                evaluatorCrewId = crew.PairedWithCrewId;
+            }
             if (crew is not null)
             {
                 var since = DateTimeOffset.UtcNow.AddHours(-24);
@@ -176,8 +203,8 @@ public static class TaskExecutionEndpoints
             CrewDailyBudgetUsd: dailyBudget,
             CrewSpendTodayUsd: spendToday,
             MaxTaskBudgetUsd: maxTaskBudget,
-            AutoDispatchedAt: wi.AutoDispatchedAt,
-            ExpectedFileChanges: wi.ExpectedFileChanges,
+            AutoDispatchedAt: wi?.AutoDispatchedAt,
+            ExpectedFileChanges: wi?.ExpectedFileChanges,
             Deliverables: deliverables,
             RecentTranscript: transcript,
             Worktree: worktree);

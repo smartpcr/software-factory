@@ -521,9 +521,9 @@ public static class ForgeSeed
 
         var dayCrews = new[]
         {
-            new CrewRow { Id = "crew-eng",  Sort = 0, Name = "Engineering",  ProductId = DefaultProductId, Summary = "Cuts PRs, ships features, keeps tests green.",        Lead = "E4", Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,  Shift = "day" },
+            new CrewRow { Id = "crew-eng",  Sort = 0, Name = "Engineering",  ProductId = DefaultProductId, Summary = "Cuts PRs, ships features, keeps tests green.",        Lead = "E4", Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,  Shift = "day",   PairRole = "generator", PairedWithCrewId = "crew-eng-night" },
             new CrewRow { Id = "crew-rev",  Sort = 1, Name = "Review",       ProductId = DefaultProductId, Summary = "Reads every diff, catches what engineers missed.",   Lead = "R3", Model = "claude-sonnet-4-6",       ModelInputPricePerMTok = 3m,  ModelOutputPricePerMTok = 15m,  Shift = "day" },
-            new CrewRow { Id = "crew-arch", Sort = 2, Name = "Architecture", ProductId = DefaultProductId, Summary = "Frames problems, owns ADRs, keeps blast radii small.", Lead = "A1", Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,  Shift = "day" },
+            new CrewRow { Id = "crew-arch", Sort = 2, Name = "Architecture", ProductId = DefaultProductId, Summary = "Frames problems, owns ADRs, keeps blast radii small.", Lead = "A1", Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,  Shift = "day",   PairRole = "generator", PairedWithCrewId = "crew-arch-night" },
             new CrewRow { Id = "crew-qa",   Sort = 3, Name = "QA",           ProductId = DefaultProductId, Summary = "Fuzzes, soaks, watches the dials.",                   Lead = "Q2", Model = "claude-haiku-4-5-20251001", ModelInputPricePerMTok = 1m,  ModelOutputPricePerMTok = 5m,   Shift = "day" },
         };
 
@@ -534,9 +534,9 @@ public static class ForgeSeed
         // once the agent split picks the first night-mover.
         var nightCrews = new[]
         {
-            new CrewRow { Id = "crew-eng-night",  Sort = 4, Name = "Engineering (Night)",  ProductId = DefaultProductId, Summary = "Engineering — 21:00–09:00 night band.",        Lead = null, ParentCrewId = "crew-eng",  Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,  Shift = "night" },
+            new CrewRow { Id = "crew-eng-night",  Sort = 4, Name = "Engineering (Night)",  ProductId = DefaultProductId, Summary = "Engineering — 21:00–09:00 night band.",        Lead = null, ParentCrewId = "crew-eng",  Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,  Shift = "night", PairRole = "evaluator", PairedWithCrewId = "crew-eng" },
             new CrewRow { Id = "crew-rev-night",  Sort = 5, Name = "Review (Night)",       ProductId = DefaultProductId, Summary = "Review — 21:00–09:00 night band.",             Lead = null, ParentCrewId = "crew-rev",  Model = "claude-sonnet-4-6",       ModelInputPricePerMTok = 3m,  ModelOutputPricePerMTok = 15m,  Shift = "night" },
-            new CrewRow { Id = "crew-arch-night", Sort = 6, Name = "Architecture (Night)", ProductId = DefaultProductId, Summary = "Architecture — 21:00–09:00 night band.",       Lead = null, ParentCrewId = "crew-arch", Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,  Shift = "night" },
+            new CrewRow { Id = "crew-arch-night", Sort = 6, Name = "Architecture (Night)", ProductId = DefaultProductId, Summary = "Architecture — 21:00–09:00 night band.",       Lead = null, ParentCrewId = "crew-arch", Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,  Shift = "night", PairRole = "evaluator", PairedWithCrewId = "crew-arch" },
             new CrewRow { Id = "crew-qa-night",   Sort = 7, Name = "QA (Night)",           ProductId = DefaultProductId, Summary = "QA — 21:00–09:00 night band.",                 Lead = null, ParentCrewId = "crew-qa",   Model = "claude-haiku-4-5-20251001", ModelInputPricePerMTok = 1m,  ModelOutputPricePerMTok = 5m,   Shift = "night" },
         };
 

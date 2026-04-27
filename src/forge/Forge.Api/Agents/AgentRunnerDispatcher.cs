@@ -76,26 +76,32 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         this.active[invocationId] = linked;
         this.agentStates[agentId] = AgentState.Working;
 
+        // Normalize model ID for the chosen backend. Crews store Anthropic
+        // IDs (claude-opus-4-7) but the Copilot SDK/CLI expects dotted IDs
+        // (claude-opus-4.7). Translate when necessary.
+        var resolvedModel = NormalizeModelForBackend(context.Model, context.Backend);
+        var ctx = resolvedModel == context.Model ? context : context with { Model = resolvedModel };
+
         IAsyncEnumerable<AgentEvent> raw;
-        if (string.Equals(context.Model, "local-stub", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(ctx.Model, "local-stub", StringComparison.OrdinalIgnoreCase))
         {
             // local-stub bypasses all backends — used by tests + offline dev.
-            raw = this.RunLocalStub(prompt, context, linked.Token);
+            raw = this.RunLocalStub(prompt, ctx, linked.Token);
         }
         else
         {
-            raw = (context.Backend, context.InvokeMode) switch
+            raw = (ctx.Backend, ctx.InvokeMode) switch
             {
-                (AgentBackend.Claude,  AgentInvokeMode.Sdk) => this.RunClaudeSdk(prompt, context, linked.Token),
-                (AgentBackend.Claude,  AgentInvokeMode.Cli) => this.RunClaudeCli(prompt, context, linked.Token),
-                (AgentBackend.Copilot, AgentInvokeMode.Sdk) => this.RunCopilotSdk(prompt, context, linked.Token),
-                (AgentBackend.Copilot, AgentInvokeMode.Cli) => this.RunCopilotCli(prompt, context, linked.Token),
-                _ => RunUnsupported(context),
+                (AgentBackend.Claude,  AgentInvokeMode.Sdk) => this.RunClaudeSdk(prompt, ctx, linked.Token),
+                (AgentBackend.Claude,  AgentInvokeMode.Cli) => this.RunClaudeCli(prompt, ctx, linked.Token),
+                (AgentBackend.Copilot, AgentInvokeMode.Sdk) => this.RunCopilotSdk(prompt, ctx, linked.Token),
+                (AgentBackend.Copilot, AgentInvokeMode.Cli) => this.RunCopilotCli(prompt, ctx, linked.Token),
+                _ => RunUnsupported(ctx),
             };
         }
 
         var stream = this.WrapEvents(invocationId, agentId, raw);
-        return Task.FromResult(new AgentInvocation(invocationId, agentId, context.CrewId, taskId, context.Model, stream));
+        return Task.FromResult(new AgentInvocation(invocationId, agentId, ctx.CrewId, taskId, resolvedModel, stream));
     }
 
     public Task CancelAsync(string invocationId, CancellationToken ct)
@@ -696,5 +702,29 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         {
             yield return i == 0 ? parts[i] : " " + parts[i];
         }
+    }
+
+    /// <summary>
+    /// Crews store Anthropic-style hyphen IDs (<c>claude-opus-4-7</c>). The
+    /// Copilot SDK/CLI requires dotted IDs (<c>claude-opus-4.7</c>). This
+    /// method normalizes when the backend is Copilot.
+    /// </summary>
+    public static string NormalizeModelForBackend(string model, AgentBackend backend)
+    {
+        if (backend != AgentBackend.Copilot) return model;
+        if (string.IsNullOrEmpty(model)) return model;
+        // Already dotted → no-op.
+        if (model.Contains('.')) return model;
+
+        // Known mappings: anthropic-hyphen → copilot-dotted.
+        return model switch
+        {
+            "claude-opus-4-7"            => "claude-opus-4.7",
+            "claude-opus-4-6"            => "claude-opus-4.6",
+            "claude-sonnet-4-6"          => "claude-sonnet-4.6",
+            "claude-sonnet-4-5"          => "claude-sonnet-4.5",
+            "claude-haiku-4-5-20251001"  => "claude-haiku-4.5",
+            _ => model,
+        };
     }
 }

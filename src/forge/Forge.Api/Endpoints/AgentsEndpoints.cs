@@ -366,7 +366,8 @@ public static class AgentsEndpoints
         await db.SaveChangesAsync(ct);
 
         var pumpLogger = loggers.CreateLogger("Forge.Api.Agents.InvocationPump");
-        _ = Task.Run(() => PumpEvents(inv, ledger.Id, hub, scopes, inputPrice, outputPrice, pumpLogger), CancellationToken.None);
+        var taskChannel = ctx.RequestServices.GetService<TaskChannel>();
+        _ = Task.Run(() => PumpEvents(inv, ledger.Id, hub, scopes, inputPrice, outputPrice, pumpLogger, taskChannel, req.TaskId, crewId), CancellationToken.None);
 
         return Results.Accepted(
             $"/api/agents/{agentId}/invocations/{inv.InvocationId}",
@@ -388,7 +389,10 @@ public static class AgentsEndpoints
         IServiceScopeFactory scopes,
         decimal inputPrice,
         decimal outputPrice,
-        ILogger log)
+        ILogger log,
+        TaskChannel? taskChannel = null,
+        string? taskId = null,
+        string? crewId = null)
     {
         var groupName = $"agent.{inv.AgentId}";
         long inputTokens = 0;
@@ -412,6 +416,31 @@ public static class AgentsEndpoints
                         toolPayload = e.ToolPayload,
                         error = e.Error,
                     });
+
+                // Also emit to the per-work-item live channel so the Live
+                // Execution view picks up events from direct invocations.
+                if (taskChannel is not null && !string.IsNullOrEmpty(taskId))
+                {
+                    var kind = e.Kind switch
+                    {
+                        AgentEventKind.Token => "task.token",
+                        AgentEventKind.ToolCall => "task.tool-call",
+                        AgentEventKind.Finished => "task.finished",
+                        AgentEventKind.Failed => "task.failed",
+                        _ => $"task.{e.Kind.ToString().ToLowerInvariant()}",
+                    };
+                    await taskChannel.EmitAsync(taskId, kind, new
+                    {
+                        invocationId = inv.InvocationId,
+                        agentId = inv.AgentId,
+                        crewId,
+                        text = e.Text,
+                        toolName = e.ToolName,
+                        inputTokens = e.InputTokens,
+                        outputTokens = e.OutputTokens,
+                        error = e.Error,
+                    }, crewId: crewId, ct: default);
+                }
 
                 if (e.Kind == AgentEventKind.Finished)
                 {

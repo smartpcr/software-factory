@@ -49,15 +49,19 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     private CancellationTokenSource? cts;
     private Task? loop;
 
+    private readonly WorktreeChangeFeed worktreeFeed;
+
     public CrewQueueWorker(
         IServiceScopeFactory scopeFactory,
         TaskChannel taskChannel,
         IHubContext<ForgeHub> hub,
+        WorktreeChangeFeed worktreeFeed,
         ILogger<CrewQueueWorker> logger)
     {
         this.scopeFactory = scopeFactory;
         this.taskChannel = taskChannel;
         this.hub = hub;
+        this.worktreeFeed = worktreeFeed;
         this.logger = logger;
     }
 
@@ -195,17 +199,27 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             }
             claimed++;
 
+            // Resolve the paired evaluator crew (if any).
+            CrewRow? evaluatorCrew = null;
+            if (!string.IsNullOrEmpty(crew.PairedWithCrewId))
+            {
+                evaluatorCrew = await db.Crews.AsNoTracking()
+                    .FirstOrDefaultAsync(c => c.Id == crew.PairedWithCrewId, ct);
+            }
+
             // Phase 16 compatibility — stamp AutoDispatchedAt + update assignment + emit task.delegated.
             var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == row.WorkItemId, ct);
             if (wi is not null)
             {
                 wi.AutoDispatchedAt = DateTimeOffset.UtcNow;
                 wi.UpdatedAt = wi.AutoDispatchedAt.Value;
-                // Update assignment to reflect the crew + agent that claimed the task.
-                var evalJson = crew.DefaultEvaluatorAgentId is not null
-                    ? $"\"{crew.DefaultEvaluatorAgentId}\"" : "null";
+                // Include evaluator crew + agent in the assignment so the
+                // execution endpoint can surface both sides from the start.
+                var evalAgentId = crew.DefaultEvaluatorAgentId ?? evaluatorCrew?.Lead;
+                var evalAgentJson = evalAgentId is not null ? $"\"{evalAgentId}\"" : "null";
+                var evalCrewJson = evaluatorCrew is not null ? $"\"{evaluatorCrew.Id}\"" : "null";
                 wi.AssignedToJson =
-                    $"{{\"crewId\":\"{crewId}\",\"agentId\":\"{picked}\",\"generatorAgentId\":\"{picked}\",\"evaluatorAgentId\":{evalJson},\"by\":\"queue-worker\"}}";
+                    $"{{\"crewId\":\"{crewId}\",\"agentId\":\"{picked}\",\"generatorAgentId\":\"{picked}\",\"evaluatorAgentId\":{evalAgentJson},\"evaluatorCrewId\":{evalCrewJson},\"by\":\"queue-worker\"}}";
                 await db.SaveChangesAsync(ct);
             }
             DwellMs.Record((DateTimeOffset.UtcNow - row.EnqueuedAt).TotalMilliseconds);
@@ -213,7 +227,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             {
                 queueId = row.Id,
                 generatorCrewId = crewId,
+                evaluatorCrewId = evaluatorCrew?.Id,
                 memberAgentId = picked,
+                paired = evaluatorCrew is not null,
                 viaQueue = true,
             }, crewId: crewId, ct: ct);
             await this.BroadcastQueueChangedAsync(row, "picked-up", ct);
@@ -261,12 +277,56 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 catch { /* best effort */ }
             }
 
-            // Worktree: resolve from the work item's repo clone root.
+            // Worktree: prefer the workstream's worktree path over the bare repo root.
             var worktreePath = "";
+            var workstreamId = "";
             if (!string.IsNullOrEmpty(wi?.RepoId))
             {
                 var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
-                if (!string.IsNullOrEmpty(repo?.CloneRoot)) worktreePath = repo.CloneRoot;
+
+                // Find the workstream whose CardsJson references this work item.
+                var workstreams = await db.Workstreams.AsNoTracking().ToListAsync(ct);
+                WorkstreamRow? linkedWs = null;
+                foreach (var ws in workstreams)
+                {
+                    try
+                    {
+                        var cards = System.Text.Json.JsonSerializer.Deserialize<List<string>>(ws.CardsJson);
+                        if (cards is not null && cards.Any(c => c == workItemId || c == $"#{workItemId}" || c.Contains(workItemId)))
+                        {
+                            linkedWs = ws;
+                            break;
+                        }
+                    }
+                    catch { /* malformed JSON — skip */ }
+                }
+
+                if (linkedWs is not null)
+                {
+                    workstreamId = linkedWs.Id;
+                    try
+                    {
+                        var wtParts = System.Text.Json.JsonSerializer.Deserialize<List<string>>(linkedWs.WorktreeJson);
+                        if (wtParts is not null && wtParts.Count >= 2 && !string.IsNullOrEmpty(wtParts[0]) && !wtParts[0].StartsWith("("))
+                        {
+                            worktreePath = Path.Combine(wtParts[0], wtParts[1]);
+                        }
+                    }
+                    catch { /* fallback below */ }
+                }
+
+                // Fallback: repo clone root.
+                if (string.IsNullOrEmpty(worktreePath) && !string.IsNullOrEmpty(repo?.CloneRoot))
+                {
+                    worktreePath = repo.CloneRoot;
+                }
+            }
+
+            // Subscribe the worktree feed so the Live Execution view receives
+            // file-change events while the agent is running.
+            if (!string.IsNullOrEmpty(worktreePath))
+            {
+                this.worktreeFeed.Subscribe(workItemId, workstreamId, worktreePath);
             }
 
             // Build prompt from the work item.
@@ -293,15 +353,16 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             var invocation = await runner.StartAsync(workItemId, agentId, prompt, context, ct);
 
             // Consume the event stream and emit to the transcript channel.
+            // Event names are normalised to the task.* contract that the UI expects.
             await foreach (var evt in invocation.Events.WithCancellation(ct))
             {
                 var kind = evt.Kind switch
                 {
-                    AgentEventKind.Token => "agent.token",
-                    AgentEventKind.ToolCall => "agent.tool",
-                    AgentEventKind.Finished => "agent.finished",
-                    AgentEventKind.Failed => "agent.failed",
-                    _ => $"agent.{evt.Kind.ToString().ToLowerInvariant()}",
+                    AgentEventKind.Token => "task.token",
+                    AgentEventKind.ToolCall => "task.tool-call",
+                    AgentEventKind.Finished => "task.finished",
+                    AgentEventKind.Failed => "task.failed",
+                    _ => $"task.{evt.Kind.ToString().ToLowerInvariant()}",
                 };
                 await this.taskChannel.EmitAsync(workItemId, kind, new
                 {
@@ -325,12 +386,16 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             this.logger.LogWarning(ex,
                 "Agent invocation failed: wi={Wi} agent={Agent} crew={Crew}",
                 workItemId, agentId, crewId);
-            await this.taskChannel.EmitAsync(workItemId, "agent.failed", new
+            await this.taskChannel.EmitAsync(workItemId, "task.failed", new
             {
                 agentId,
                 crewId,
                 error = ex.Message,
             }, crewId: crewId, ct: ct);
+        }
+        finally
+        {
+            this.worktreeFeed.Unsubscribe(workItemId);
         }
     }
 

@@ -450,19 +450,24 @@ export function WorkItemDetailPanel({ item }: Props) {
           onClick={async () => {
             try {
               const queue = await forgeApi.listQueue();
-              const entry = queue.find((q: { workItemId: string }) => q.workItemId === item.id);
-              if (entry) {
-                await forgeApi.cancelQueue(entry.id, 're-queue from detail panel');
+              const queueEntry = queue.find((q: { workItemId: string }) => q.workItemId === item.id);
+              if (queueEntry) {
+                await forgeApi.cancelQueue(queueEntry.id, 're-queue from detail panel');
               }
-              // Re-enqueue via plan endpoint.
-              const assignedJson = item.assignedTo as Record<string, unknown> | null;
-              const crewId = (assignedJson as { crewId?: string } | null)?.crewId;
+              // Resolve crew from: queue row → assignedTo kind=crew → assignedTo kind=agent's crew.
+              let crewId: string | undefined = (queueEntry as { routedToCrewId?: string } | undefined)?.routedToCrewId ?? undefined;
+              if (!crewId && item.assignedTo?.kind === 'crew') crewId = item.assignedTo.id;
+              if (!crewId && item.assignedTo?.kind === 'agent') {
+                // Look up which crew this agent belongs to.
+                try {
+                  const crews: Array<{ id: string; members?: Array<{ agentId: string }> }> = await forgeApi.listCrews();
+                  crewId = crews.find(c => c.members?.some(m => m.agentId === item.assignedTo?.id))?.id;
+                } catch { /* best effort */ }
+              }
               if (crewId) {
-                await fetch(`/api/crews/${encodeURIComponent(crewId)}/plan`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json', 'X-Forge-User': 'forge-ui' },
-                  body: JSON.stringify({ workItemId: item.id }),
-                });
+                await forgeApi.requeueWorkItem(crewId, item.id);
+              } else {
+                throw new Error('No crew found to re-queue to. Assign the item to a crew first.');
               }
               const { useToastStore } = await import('@/state/useToastStore');
               useToastStore.getState().show('Re-queued', 'success');

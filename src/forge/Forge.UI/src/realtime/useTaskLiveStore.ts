@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { create } from 'zustand';
 import { HubConnectionBuilder, LogLevel, HubConnectionState, type HubConnection } from '@microsoft/signalr';
+import { forgeApi } from '@/api/forgeApi';
 
 // ─── Types (mirrors Forge.Api/Contracts/TaskExecutionSnapshot) ────────────
 
@@ -168,9 +169,7 @@ export const useTaskLiveStore = create<TaskLiveStore>((set, get) => ({
     if (cur?.snapshot) return; // already hydrated
     set({ entries: { ...get().entries, [workItemId]: cur ? { ...cur, loading: true, error: undefined } : { snapshot: null, transcript: [], worktree: null, loading: true, lastEventId: 0, refCount: 0 } } });
     try {
-      const r = await fetch(`${baseUrl}/api/work-items/${encodeURIComponent(workItemId)}/execution`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const snap: TaskExecutionSnapshot = await r.json();
+      const snap: TaskExecutionSnapshot = await forgeApi.getWorkItemExecution(workItemId) as TaskExecutionSnapshot;
       set({
         entries: {
           ...get().entries,

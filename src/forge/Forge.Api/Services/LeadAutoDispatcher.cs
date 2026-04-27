@@ -6,7 +6,6 @@
 
 namespace Forge.Api.Services;
 
-using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 using System.Text.Json;
 using Forge.Api.Persistence;
@@ -29,11 +28,11 @@ using Microsoft.Extensions.Hosting;
 /// the per-work-item live channel.
 /// </para>
 /// <para>
-/// The dispatcher itself does not execute the deliverable loop — it just
-/// hands the work item off. The Phase 14.4 <c>IDeliverableLoop</c> picks
-/// up from there when the plan/code endpoints are wired (Phase 13.4 / 13.5
-/// stubs become real). Until then the audit row + delegated event are the
-/// observable side-effect.
+/// After stamping the row, the dispatcher enqueues the work item into the
+/// Phase 17 task queue via <see cref="ITaskQueueService"/>. The
+/// <see cref="CrewQueueWorker"/> picks it up from there and starts the
+/// agent runner. <c>AutoDispatchedAt</c> is only stamped after a
+/// successful enqueue so the row is never orphaned.
 /// </para>
 /// </summary>
 public sealed class LeadAutoDispatcher : IHostedService, IDisposable
@@ -43,9 +42,6 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
     private readonly IServiceScopeFactory scopeFactory;
     private readonly TaskChannel channel;
     private readonly ILogger<LeadAutoDispatcher> logger;
-
-    /// <summary>Per-crew round-robin cursor for member selection.</summary>
-    private readonly ConcurrentDictionary<string, int> rrCursors = new();
 
     /// <summary>
     /// Phase 16.15 — dispatch latency histogram (ms). Tagged with
@@ -176,9 +172,10 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
                 continue;
             }
 
-            // 5. Capacity check — refuse if the crew has no idle members.
-            var member = await PickMemberAsync(db, generatorCrew, ct);
-            if (member is null)
+            // 5. Capacity pre-check — skip if the crew is at MaxConcurrent.
+            //    The queue worker also checks capacity, but this avoids flooding
+            //    the queue with items that can't be picked up yet.
+            if (!await HasCapacityAsync(db, generatorCrew, ct))
             {
                 Refused.Add(1, KeyVal("crewId", generatorCrew.Id));
                 LatencyMs.Record(Elapsed(wi), KeyVal("crewId", generatorCrew.Id), KeyVal("pair", evaluatorCrew is not null), KeyVal("outcome", "capacity-blocked"));
@@ -186,7 +183,23 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
                 continue;
             }
 
-            // 6. Stamp + audit + emit. Pull the tracked row to update.
+            // 6. Enqueue to Phase 17 task queue → CrewQueueWorker picks it up
+            //    and starts the agent runner. AutoDispatchedAt is stamped only
+            //    AFTER a successful enqueue so the row is never orphaned.
+            var taskQueue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+            TaskQueueRow? queueRow;
+            try
+            {
+                queueRow = await taskQueue.EnqueueAsync(wi.Id, "crew", generatorCrew.Id, ct);
+            }
+            catch (Exception ex)
+            {
+                this.logger.LogWarning(ex, "Failed to enqueue {Wid} to crew {Crew}", wi.Id, generatorCrew.Id);
+                skipped++;
+                continue;
+            }
+
+            // 7. Stamp + audit + emit. Pull the tracked row to update.
             var tracked = await db.WorkItems.FirstAsync(w => w.Id == wi.Id, ct);
             tracked.AutoDispatchedAt = DateTimeOffset.UtcNow;
             tracked.UpdatedAt = DateTimeOffset.UtcNow;
@@ -204,7 +217,7 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
                     leadId,
                     generatorCrewId = generatorCrew.Id,
                     evaluatorCrewId = evaluatorCrew?.Id,
-                    memberAgentId = member,
+                    queueRowId = queueRow?.Id,
                 }),
                 Supervising = false,
             });
@@ -218,8 +231,8 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
                     leadId,
                     generatorCrewId = generatorCrew.Id,
                     evaluatorCrewId = evaluatorCrew?.Id,
-                    memberAgentId = member,
                     paired = evaluatorCrew is not null,
+                    viaQueue = true,
                 },
                 crewId: generatorCrew.Id,
                 ct: ct);
@@ -253,23 +266,15 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
     }
 
     /// <summary>
-    /// Round-robin pick across the crew's members; skip the lead (per Q16.7
-    /// the lead routes, doesn't generate). Returns null when the crew is at
-    /// or above its <see cref="CrewRow.MaxConcurrent"/> cap, computed as
-    /// "members currently working".
+    /// Returns true when the crew has at least one non-lead member AND the
+    /// in-flight count is below <see cref="CrewRow.MaxConcurrent"/>.
     /// </summary>
-    private async Task<string?> PickMemberAsync(ForgeDbContext db, CrewRow crew, CancellationToken ct)
+    private async Task<bool> HasCapacityAsync(ForgeDbContext db, CrewRow crew, CancellationToken ct)
     {
-        // Members are crew_members rows + (if not in members) the lead.
-        // Phase 16.3 excludes the lead from the round-robin pool.
-        var members = await db.CrewMembers.AsNoTracking()
-            .Where(m => m.CrewId == crew.Id && m.AgentId != crew.Lead)
-            .Select(m => m.AgentId)
-            .ToListAsync(ct);
-        if (members.Count == 0) return null;
+        var memberCount = await db.CrewMembers.AsNoTracking()
+            .CountAsync(m => m.CrewId == crew.Id && m.AgentId != crew.Lead, ct);
+        if (memberCount == 0) return false;
 
-        // Capacity = MaxConcurrent. We approximate "currently working" by
-        // counting deliverables whose work item is still proposed/active.
         var inFlight = await db.Deliverables.AsNoTracking()
             .Where(d => d.CrewId == crew.Id)
             .Join(db.WorkItems.AsNoTracking(),
@@ -277,15 +282,7 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
                   w => w.Id,
                   (d, w) => new { w.State })
             .CountAsync(x => x.State == "proposed" || x.State == "active", ct);
-        if (inFlight >= crew.MaxConcurrent) return null;
-
-        // Cursor walks the list; ties broken by lastActiveAt (we don't track
-        // last-active per-agent at v0.1, so the round-robin is the only
-        // discriminator — close enough for the dispatcher's purposes).
-        var seen = this.rrCursors.GetOrAdd(crew.Id, _ => 0);
-        var pick = members[((seen % members.Count) + members.Count) % members.Count];
-        this.rrCursors[crew.Id] = seen + 1;
-        return pick;
+        return inFlight < crew.MaxConcurrent;
     }
 
     /// <summary>Best-effort assignee.id extraction from the JSON blob.</summary>

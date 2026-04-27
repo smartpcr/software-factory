@@ -38,7 +38,9 @@ export function LiveExecutionView(): JSX.Element {
   const snapshot = entry?.snapshot ?? null;
   const transcript = entry?.transcript ?? [];
   const worktree = entry?.worktree ?? snapshot?.worktree ?? null;
-  const filtered = useMemo(() => filterEvents(transcript, filter), [transcript, filter]);
+  const genCrewId = snapshot?.generatorCrewId ?? null;
+  const evalCrewId = snapshot?.evaluatorCrewId ?? null;
+  const filtered = useMemo(() => filterEvents(transcript, filter, genCrewId, evalCrewId), [transcript, filter, genCrewId, evalCrewId]);
 
   async function cancelAndRequeue() {
     if (!workItemId) return;
@@ -66,20 +68,12 @@ export function LiveExecutionView(): JSX.Element {
     setBusy(true);
     try {
       const queue: Array<{ id: number; workItemId: string; state: string }> = await forgeApi.listQueue();
-      const entry = queue.find((q) => q.workItemId === workItemId);
-      if (entry) {
-        await forgeApi.cancelQueue(entry.id, 're-queue');
+      const queueEntry = queue.find((q) => q.workItemId === workItemId);
+      if (queueEntry) {
+        await forgeApi.cancelQueue(queueEntry.id, 're-queue');
       }
-      // Re-enqueue to the same crew.
-      const r = await fetch(`/api/crews/${encodeURIComponent(snapshot.generatorCrewId)}/plan`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Forge-User': 'forge-ui' },
-        body: JSON.stringify({ workItemId }),
-      });
-      useToastStore.getState().show(
-        r.ok ? 'Re-queued successfully' : `Re-queue failed (${r.status})`,
-        r.ok ? 'success' : 'danger',
-      );
+      await forgeApi.requeueWorkItem(snapshot.generatorCrewId, workItemId);
+      useToastStore.getState().show('Re-queued successfully', 'success');
     } catch (e) {
       useToastStore.getState().show(e instanceof Error ? e.message : 'Failed', 'danger');
     } finally {
@@ -165,7 +159,7 @@ export function LiveExecutionView(): JSX.Element {
               )}
             </div>
           ) : (
-            filtered.map((evt) => <TranscriptLine key={`${evt.id}:${evt.at}`} evt={evt} />)
+            filtered.map((evt) => <TranscriptLine key={`${evt.id}:${evt.at}`} evt={evt} generatorCrewId={genCrewId} evaluatorCrewId={evalCrewId} />)
           )}
         </div>
       </main>
@@ -219,8 +213,8 @@ function BudgetBar(props: { label: string; spend: number; cap: number | null }):
   );
 }
 
-function TranscriptLine(props: { evt: TaskTranscriptEvent }): JSX.Element {
-  const { evt } = props;
+function TranscriptLine(props: { evt: TaskTranscriptEvent; generatorCrewId?: string | null; evaluatorCrewId?: string | null }): JSX.Element {
+  const { evt, generatorCrewId, evaluatorCrewId } = props;
   if (evt.kind === 'task.iteration.scored' || evt.kind === 'task.iteration.passed' || evt.kind === 'task.iteration.rejected' || evt.kind === 'task.iteration.iterated' || evt.kind === 'task.iteration.stalled') {
     const payload = evt.payload as { iter?: number; score?: number; verdict?: string };
     const verdict = payload.verdict ?? evt.kind.replace('task.iteration.', '');
@@ -233,9 +227,9 @@ function TranscriptLine(props: { evt: TaskTranscriptEvent }): JSX.Element {
       </div>
     );
   }
-  const side = evt.crewId
-    ? null // pair side comes from the crew association — not directly known here
-    : null;
+  const side = evt.crewId === generatorCrewId ? 'generator'
+             : evt.crewId === evaluatorCrewId ? 'evaluator'
+             : null;
   const meta = new Date(evt.at).toLocaleTimeString();
   return (
     <div className="live-exec__line" data-kind={evt.kind} data-side={side ?? ''}>
@@ -265,15 +259,22 @@ function renderPayload(evt: TaskTranscriptEvent): string {
   try { return JSON.stringify(p); } catch { return ''; }
 }
 
-function filterEvents(events: TaskTranscriptEvent[], f: FilterKey): TaskTranscriptEvent[] {
+function filterEvents(events: TaskTranscriptEvent[], f: FilterKey, genCrewId?: string | null, evalCrewId?: string | null): TaskTranscriptEvent[] {
   if (f === 'all') return events;
   if (f === 'commits') return events.filter((e) => e.kind === 'task.commit' || e.kind === 'task.pr-opened');
   if (f === 'tools')   return events.filter((e) => e.kind === 'task.tool-call' || e.kind === 'task.tool-result');
-  if (f === 'generator' || f === 'evaluator') {
-    // We don't (yet) flag side directly — heuristic: token / tool events are
-    // generator unless the agentId matches the evaluator slot. Iteration
-    // boundaries always render.
-    return events.filter((e) => e.kind.startsWith('task.iteration') || e.crewId !== null);
+  if (f === 'generator') {
+    return events.filter((e) =>
+      e.kind.startsWith('task.iteration')
+      || (genCrewId && e.crewId === genCrewId)
+      || (!e.crewId && !evalCrewId),
+    );
+  }
+  if (f === 'evaluator') {
+    return events.filter((e) =>
+      e.kind.startsWith('task.iteration')
+      || (evalCrewId && e.crewId === evalCrewId),
+    );
   }
   return events;
 }

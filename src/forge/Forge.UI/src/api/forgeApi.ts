@@ -1164,6 +1164,28 @@ export const forgeApi = {
       method: 'POST', body: '{}', headers: { 'X-Forge-User': writerHeader() },
     });
   },
+
+  // ── Live Execution (Phase 16.9) ──────────────────────────────────────
+
+  async getWorkItemExecution(workItemId: string): Promise<unknown> {
+    return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/execution`);
+  },
+
+  async getWorkItemTranscript(workItemId: string, from?: number, limit?: number): Promise<unknown[]> {
+    const params = new URLSearchParams();
+    if (from != null) params.set('from', String(from));
+    if (limit != null) params.set('limit', String(limit));
+    const qs = params.toString();
+    return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/transcript${qs ? `?${qs}` : ''}`);
+  },
+
+  async requeueWorkItem(crewId: string, workItemId: string): Promise<unknown> {
+    return fetchJson(`/api/crews/${encodeURIComponent(crewId)}/plan`, {
+      method: 'POST',
+      body: JSON.stringify({ workItemId }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
 };
 
 function buildLocalTimeline(from: number, to: number): TimelineResponse {
