@@ -173,9 +173,9 @@ public class IncidentPromptHelper
 
         return this.BuildPrompt("find-etw-logs", new Dictionary<string, string>
         {
-            ["code_issues_file"] = codeIssuesFile,
-            ["repo_path"] = primaryRepoPath,
-            ["output_file"] = Path.Combine(this.incidentFolder, "etw_events.md")
+            ["codeIssuesFile"] = codeIssuesFile,
+            ["repositoryPath"] = primaryRepoPath,
+            ["incident_folder"] = this.incidentFolder
         });
     }
 

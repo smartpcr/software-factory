@@ -219,6 +219,13 @@ public class AINode : ExecutableNodeBase
             userPrompt = BuildUserPrompt(aiDef, nodeContext, workflowContext);
         }
 
+        // Resolve {placeholder} tokens in the system prompt using input bindings,
+        // so agent prompts like "Write output to: {incident_folder}" get actual paths.
+        if (!string.IsNullOrEmpty(systemPrompt) && aiDef.InputBindings.Count > 0)
+        {
+            systemPrompt = BindingResolver.ResolveTemplate(systemPrompt, aiDef.InputBindings, nodeContext, workflowContext);
+        }
+
         // Map confidence (0-100) → temperature (0.0-2.0): high confidence = low temperature
         var temperature = (100 - Math.Clamp(aiDef.Confidence, 0, 100)) / 50.0;
 
