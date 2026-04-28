@@ -1,5 +1,5 @@
 {
-  "workflowId": "wf_1ke3wtd",
+  "workflowId": "wf_k2q70mk",
   "workflowName": "Untitled",
   "description": "",
   "version": "1.0",
@@ -11,191 +11,19 @@
   "metadata": {},
   "nodes": [
     {
-      "nodeId": "n_2rlzv0f",
-      "runtimeType": "Start",
+      "nodeId": "n_vv22krk",
+      "runtimeType": "start",
       "nodeName": "Start",
       "description": "",
       "configuration": {
-        "triggerType": "manual",
-        "schedule": "0 0 * * *"
+        "triggerType": "Manual",
+        "schedule": "",
+        "eventName": "",
+        "webHookMethod": "POST",
+        "webHookRoute": "",
+        "bodyJsonSchema": ""
       },
-      "joinType": "Any",
-      "priority": "Normal",
-      "maxConcurrentExecutions": 0,
-      "retryPolicy": null,
-      "circuitBreakerPolicy": null,
-      "compensationNodeId": null,
-      "fallbackNodeId": null
-    },
-    {
-      "nodeId": "n_90rzalc",
-      "runtimeType": "CSharpScript",
-      "nodeName": "C# Script",
-      "description": "",
-      "configuration": {
-        "scriptPath": "",
-        "scriptContent": "item = @{1,2,3};"
-      },
-      "joinType": "Any",
-      "priority": "Normal",
-      "maxConcurrentExecutions": 0,
-      "retryPolicy": null,
-      "circuitBreakerPolicy": null,
-      "compensationNodeId": null,
-      "fallbackNodeId": null
-    },
-    {
-      "nodeId": "n_e1dc65a",
-      "runtimeType": "While",
-      "nodeName": "While",
-      "description": "",
-      "configuration": {
-        "conditionExpression": "",
-        "maxIterations": "1000"
-      },
-      "joinType": "Any",
-      "priority": "Normal",
-      "maxConcurrentExecutions": 0,
-      "retryPolicy": null,
-      "circuitBreakerPolicy": null,
-      "compensationNodeId": null,
-      "fallbackNodeId": null
-    },
-    {
-      "nodeId": "n_j1v1pi4",
-      "runtimeType": "ForEach",
-      "nodeName": "ForEach",
-      "description": "",
-      "configuration": {
-        "source": "input.items",
-        "maxIterations": 100,
-        "mode": "foreach"
-      },
-      "joinType": "Any",
-      "priority": "Normal",
-      "maxConcurrentExecutions": 0,
-      "retryPolicy": null,
-      "circuitBreakerPolicy": null,
-      "compensationNodeId": null,
-      "fallbackNodeId": null
-    },
-    {
-      "nodeId": "n_l7mjf80",
-      "runtimeType": "container",
-      "nodeName": "Group",
-      "description": "",
-      "configuration": {
-        "label": "Group"
-      },
-      "joinType": "Any",
-      "priority": "Normal",
-      "maxConcurrentExecutions": 0,
-      "retryPolicy": null,
-      "circuitBreakerPolicy": null,
-      "compensationNodeId": null,
-      "fallbackNodeId": null
-    },
-    {
-      "nodeId": "n_10hhtc9",
-      "runtimeType": "subflow",
-      "nodeName": "Subflow",
-      "description": "",
-      "configuration": {
-        "workflowId": "wf_tvvihj6",
-        "inputMapping": "{}",
-        "waitForCompletion": true
-      },
-      "joinType": "Any",
-      "priority": "Normal",
-      "maxConcurrentExecutions": 0,
-      "retryPolicy": null,
-      "circuitBreakerPolicy": null,
-      "compensationNodeId": null,
-      "fallbackNodeId": null
-    },
-    {
-      "nodeId": "n_ucajd2y",
-      "runtimeType": "Setter",
-      "nodeName": "Setter",
-      "description": "",
-      "configuration": {},
-      "joinType": "Any",
-      "priority": "Normal",
-      "maxConcurrentExecutions": 0,
-      "retryPolicy": null,
-      "circuitBreakerPolicy": null,
-      "compensationNodeId": null,
-      "fallbackNodeId": null
-    },
-    {
-      "nodeId": "n_5jntoyl",
-      "runtimeType": "CSharpScript",
-      "nodeName": "C# Script",
-      "description": "",
-      "configuration": {
-        "scriptPath": "",
-        "scriptContent": ""
-      },
-      "joinType": "Any",
-      "priority": "Normal",
-      "maxConcurrentExecutions": 0,
-      "retryPolicy": null,
-      "circuitBreakerPolicy": null,
-      "compensationNodeId": null,
-      "fallbackNodeId": null
-    },
-    {
-      "nodeId": "n_1gja6cw",
-      "runtimeType": "CSharpTask",
-      "nodeName": "C# Task",
-      "description": "",
-      "configuration": {
-        "scriptContent": "",
-        "executorTypeName": "",
-        "executorAssemblyPath": ""
-      },
-      "joinType": "Any",
-      "priority": "Normal",
-      "maxConcurrentExecutions": 0,
-      "retryPolicy": null,
-      "circuitBreakerPolicy": null,
-      "compensationNodeId": null,
-      "fallbackNodeId": null
-    },
-    {
-      "nodeId": "n_s61vcd0",
-      "runtimeType": "AI",
-      "nodeName": "AI",
-      "description": "",
-      "configuration": {
-        "mode": "skill",
-        "skillName": "",
-        "subAgentName": "",
-        "model": "claude-opus-4.7",
-        "systemPrompt": "",
-        "inputMapping": "input",
-        "outputKey": "result",
-        "confidence": 70,
-        "maxTokens": 4096
-      },
-      "joinType": "Any",
-      "priority": "Normal",
-      "maxConcurrentExecutions": 0,
-      "retryPolicy": null,
-      "circuitBreakerPolicy": null,
-      "compensationNodeId": null,
-      "fallbackNodeId": null
-    },
-    {
-      "nodeId": "n_gezchzx",
-      "runtimeType": "PowerShell",
-      "nodeName": "PowerShell Script",
-      "description": "",
-      "configuration": {
-        "scriptPath": "",
-        "requiredModules": ""
-      },
-      "joinType": "Any",
+      "joinType": "All",
       "priority": "Normal",
       "maxConcurrentExecutions": 0,
       "retryPolicy": null,
@@ -204,83 +32,5 @@
       "fallbackNodeId": null
     }
   ],
-  "connections": [
-    {
-      "sourceNodeId": "n_2rlzv0f",
-      "targetNodeId": "n_j1v1pi4",
-      "sourcePort": "out",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
-      "sourceNodeId": "n_j1v1pi4",
-      "targetNodeId": "n_90rzalc",
-      "sourcePort": "out",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
-      "sourceNodeId": "n_90rzalc",
-      "targetNodeId": "n_e1dc65a",
-      "sourcePort": "out",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
-      "sourceNodeId": "n_e1dc65a",
-      "targetNodeId": "n_l7mjf80",
-      "sourcePort": "out",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
-      "sourceNodeId": "n_e1dc65a",
-      "targetNodeId": "n_10hhtc9",
-      "sourcePort": "out",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
-      "sourceNodeId": "n_l7mjf80",
-      "targetNodeId": "n_5jntoyl",
-      "sourcePort": "out",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    },
-    {
-      "sourceNodeId": "n_10hhtc9",
-      "targetNodeId": "n_5jntoyl",
-      "sourcePort": "out",
-      "targetPort": "in",
-      "triggerMessageType": "Complete",
-      "condition": null,
-      "isEnabled": true,
-      "priority": 0,
-      "metadata": null
-    }
-  ]
+  "connections": []
 }

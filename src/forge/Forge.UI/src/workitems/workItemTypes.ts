@@ -76,6 +76,10 @@ export interface WorkItem {
   autoDispatchedAt?: string | null;
   /** Phase 16.5 — for step rows: planning-time file-budget (1..20). */
   expectedFileChanges?: number | null;
+  /** Phase 19 — execution status: idle | queued | live | completed | failed | cancelled. */
+  executionStatus?: string;
+  /** Phase 19 — number of times execution has been attempted. */
+  trialCount?: number;
 }
 
 export interface IterationRef {

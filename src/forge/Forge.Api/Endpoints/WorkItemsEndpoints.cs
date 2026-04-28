@@ -644,7 +644,7 @@ public static class WorkItemsEndpoints
             r.Id, r.RepoId, r.Provider, r.ProviderRef, r.Track, r.Type, r.State,
             r.Title, r.DescriptionMd, r.ParentId, r.FeatureRef, r.IterationRef, r.AreaPath,
             assignee, r.Points, r.Priority, tags, r.CreatedAt, r.UpdatedAt, r.RemoteRevision,
-            r.AutoDispatchedAt, r.ExpectedFileChanges);
+            r.AutoDispatchedAt, r.ExpectedFileChanges, r.ExecutionStatus, r.TrialCount);
     }
 
     private static bool MatchesAssignee(string? json, string filter)

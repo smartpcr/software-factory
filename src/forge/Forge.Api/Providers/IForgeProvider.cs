@@ -136,7 +136,16 @@ public sealed record NewPullRequestRequest(
     string BaseBranch,
     string Title,
     string Body,
-    bool Draft = false);
+    bool Draft = false,
+    /// <summary>
+    /// Override the provider's default repository name for this PR.
+    /// Used when the work item's repo differs from the global config.
+    /// </summary>
+    string? RepositoryName = null,
+    /// <summary>
+    /// Override the provider's default project for this PR.
+    /// </summary>
+    string? ProjectName = null);
 
 /// <summary>
 /// Phase 6.11 — passes the per-request user PAT to provider write paths.

@@ -238,7 +238,9 @@ public static class TaskExecutionEndpoints
             ExpectedFileChanges: wi?.ExpectedFileChanges,
             Deliverables: deliverables,
             RecentTranscript: transcript,
-            Worktree: worktree);
+            Worktree: worktree,
+            ExecutionStatus: wi?.ExecutionStatus ?? ExecutionStatuses.Idle,
+            TrialCount: wi?.TrialCount ?? 0);
 
         return Results.Ok(snap);
     }

@@ -46,9 +46,8 @@ public sealed class TaskQueueService : ITaskQueueService
         if (existing is not null) return existing;
 
         // Priority comes from the work item; missing rows fall through as med.
-        var wi = await this.db.WorkItems.AsNoTracking()
+        var wi = await this.db.WorkItems
             .Where(w => w.Id == workItemId)
-            .Select(w => new { w.Priority })
             .FirstOrDefaultAsync(ct);
         var rank = PriorityRankFor(wi?.Priority);
 
@@ -80,6 +79,14 @@ public sealed class TaskQueueService : ITaskQueueService
             PayloadJson = JsonSerializer.Serialize(new { targetKind, targetId, priorityRank = rank }),
             At = now,
         });
+
+        // Phase 19 — mark the work item as queued when a new row is inserted.
+        if (wi is not null)
+        {
+            wi.ExecutionStatus = ExecutionStatuses.Queued;
+            wi.UpdatedAt = now;
+        }
+
         await this.db.SaveChangesAsync(ct);
 
         // Patch the history row with the assigned id (we couldn't know it
@@ -256,6 +263,15 @@ public sealed class TaskQueueService : ITaskQueueService
         var fromState = row.State;
         row.State = TaskQueueStates.Cancelled;
         row.LastUpdatedAt = DateTimeOffset.UtcNow;
+
+        // Phase 19 — mark execution as cancelled.
+        var wi = await this.db.WorkItems.FirstOrDefaultAsync(w => w.Id == row.WorkItemId, ct);
+        if (wi is not null)
+        {
+            wi.ExecutionStatus = ExecutionStatuses.Cancelled;
+            wi.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
         await this.db.SaveChangesAsync(ct);
 
         await this.WriteHistoryAsync(queueId, kind: "cancelled",

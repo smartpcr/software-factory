@@ -4,6 +4,7 @@ import { typeRank } from './workItemTypes';
 import { useWitStore } from './useWitStore';
 import { TypeMark } from './TypeMark';
 import { StatePill } from './StatePill';
+import { ExecBadge } from './ExecBadge';
 import { RepoIcon } from '@/products/RepoIcon';
 import { SAMPLE_REPOS } from './sampleWorkItems';
 
@@ -76,6 +77,7 @@ function TreeNode({ node, depth }: { node: Node; depth: number }) {
         </span>
         <span className="wit-tree-fill" />
         <StatePill state={node.item.state} size="sm" />
+        <ExecBadge status={node.item.executionStatus} trialCount={node.item.trialCount} size="sm" />
         {node.item.points > 0 && (
           <span className="wit-tree-pts">{node.item.points}<span>pt</span></span>
         )}

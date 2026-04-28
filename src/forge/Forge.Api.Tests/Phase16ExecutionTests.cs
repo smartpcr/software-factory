@@ -1165,6 +1165,234 @@ public class Phase16ExecutionTests
     // The isolated timing-dependent test was removed because Task.Run
     // scheduling makes the "during run" assertion inherently racy.
 
+    // ── Phase 18: Full push + PR e2e against GitHub beads repo ────────────
+
+    /// <summary>
+    /// End-to-end integration test covering the full delivery pipeline
+    /// against a real GitHub repository (smartpcr/beads):
+    ///   worktree → agent commit → git push → PR creation.
+    ///
+    /// Requires env vars: GITHUB_TOKEN (repo scope).
+    /// Skips automatically when token is missing or git unavailable.
+    /// Cleans up remote branch + PR after run.
+    /// </summary>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task FullPipeline_GitHub_Push_And_PR()
+    {
+        if (!GitAvailable()) return;
+        var ghToken = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
+        if (string.IsNullOrEmpty(ghToken))
+        {
+            System.Console.WriteLine("[SKIP] GITHUB_TOKEN not set — skipping GitHub push+PR e2e test.");
+            return;
+        }
+
+        const string ghOwner = "smartpcr";
+        const string ghRepo = "beads";
+        const string ghFullRepo = $"{ghOwner}/{ghRepo}";
+
+        // ── Clone beads repo to temp dir ────────────────────────────
+        var repoDir = Path.Combine(Path.GetTempPath(), $"forge-gh-e2e-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(repoDir);
+
+        // Use token-based URL for push authentication
+        var cloneUrl = $"https://x-access-token:{ghToken}@github.com/{ghFullRepo}.git";
+        await RunGitAsync(repoDir, "clone", cloneUrl, ".");
+        await RunGitAsync(repoDir, "config", "user.email", "forge-e2e@test.local");
+        await RunGitAsync(repoDir, "config", "user.name", "Forge E2E");
+
+        // Pre-seed .worktree/ in .gitignore so the worker doesn't dirty main
+        var gitignorePath = Path.Combine(repoDir, ".gitignore");
+        if (!File.Exists(gitignorePath) || !(await File.ReadAllTextAsync(gitignorePath)).Contains(".worktree/"))
+        {
+            await File.AppendAllTextAsync(gitignorePath, "\n.worktree/\n");
+        }
+
+        // Resolve default branch from remote HEAD
+        var (_, headRef, _) = await RunGitResultAsync(repoDir, "symbolic-ref", "refs/remotes/origin/HEAD", "--short");
+        var defaultBranch = headRef.Trim().Replace("origin/", "");
+        if (string.IsNullOrEmpty(defaultBranch)) defaultBranch = "main";
+
+        var workItemId = $"WI-GH-{Guid.NewGuid():N}"[..14];
+        var branchName = $"ws/{workItemId}";
+        string? createdPrNumber = null;
+
+        // ── Boot test server with GitHub provider configured ────────
+        var extraConfig = new Dictionary<string, string?>
+        {
+            ["Forge:GitHub:Repo"] = ghFullRepo,
+            ["Forge:GitHub:Pat"] = ghToken,
+        };
+        var f = new ForgeWebApplicationFactory(extraConfig);
+        using (f.CreateClient()) { /* boot */ }
+        var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+
+        try
+        {
+            var product = await db.Products.FirstAsync();
+
+            // ── Seed: paired gen + eval crews with real model ────────
+            db.Crews.Add(new CrewRow
+            {
+                Id = "gh-e2e-gen", Name = "GH E2E Gen",
+                ProductId = product.Id, Lead = "gh-gen-lead",
+                Model = "claude-sonnet-4-6",
+                ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
+                MaxConcurrent = 2, ScheduleEnabled = false,
+                PairRole = "generator", PairedWithCrewId = "gh-e2e-eval",
+                MaxTaskBudgetUsd = 10m,
+            });
+            db.Crews.Add(new CrewRow
+            {
+                Id = "gh-e2e-eval", Name = "GH E2E Eval",
+                ProductId = product.Id, Lead = "gh-eval-lead",
+                Model = "claude-sonnet-4-6",
+                ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
+                MaxConcurrent = 2, ScheduleEnabled = false,
+                PairRole = "evaluator", PairedWithCrewId = "gh-e2e-gen",
+                MaxTaskBudgetUsd = 10m,
+            });
+            db.CrewMembers.Add(new CrewMemberRow { CrewId = "gh-e2e-gen", AgentId = "gh-gen-agent", AddedAt = DateTimeOffset.UtcNow });
+            db.CrewMembers.Add(new CrewMemberRow { CrewId = "gh-e2e-eval", AgentId = "gh-eval-agent", AddedAt = DateTimeOffset.UtcNow });
+
+            // Repo row with GitHub kind
+            db.Repos.Add(new RepoRow
+            {
+                Id = "gh-beads", DisplayName = "Beads", Kind = "github",
+                RemoteUrl = $"https://github.com/{ghFullRepo}",
+                ProductId = product.Id, CloneRoot = repoDir,
+                DefaultBranch = defaultBranch,
+                GhOwner = ghOwner, GhRepo = ghRepo,
+            });
+
+            // Work item: trivial file addition to guarantee a diff
+            db.WorkItems.Add(new WorkItemRow
+            {
+                Id = workItemId,
+                Type = "task", Track = "dev", State = "active",
+                Title = "Add CONTRIBUTING.md with DCO sign-off instructions",
+                DescriptionMd = "Create a `CONTRIBUTING.md` file in the repo root that explains:\n\n"
+                    + "1. Fork → branch → PR workflow\n"
+                    + "2. Require DCO sign-off on all commits\n"
+                    + "3. Run `dotnet test` before submitting\n\n"
+                    + "Keep it under 30 lines.",
+                RepoId = "gh-beads",
+                CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+
+            // ── Enqueue and let queue worker pick it up ──────────────
+            var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+            await queue.EnqueueAsync(workItemId, "crew", "gh-e2e-gen", default);
+
+            var worker = f.Services.GetRequiredService<CrewQueueWorker>();
+            await worker.RunOnceAsync(default);
+
+            // Real AI — poll for completion up to 5 minutes
+            var deadline = DateTime.UtcNow.AddMinutes(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(10_000);
+                var completedEvt = await db.TaskTranscriptEvents.AsNoTracking()
+                    .FirstOrDefaultAsync(e => e.WorkItemId == workItemId && e.Kind == "task.completed");
+                if (completedEvt is not null) break;
+                var failed = await db.TaskTranscriptEvents.AsNoTracking()
+                    .AnyAsync(e => e.WorkItemId == workItemId &&
+                        (e.Kind == "task.failed" || e.Kind == "task.iteration.stalled"));
+                if (failed) break;
+            }
+
+            // ── ASSERT 1: Worktree branch was created ───────────────
+            var (_, wtListOut, _) = await RunGitResultAsync(repoDir, "worktree", "list", "--porcelain");
+            Assert.Contains(branchName, wtListOut);
+
+            // ── ASSERT 2: Branch was pushed to remote ───────────────
+            var (lsCode, lsOut, _) = await RunGitResultAsync(repoDir, "ls-remote", "origin", $"refs/heads/{branchName}");
+            Assert.Equal(0, lsCode);
+            Assert.False(string.IsNullOrWhiteSpace(lsOut),
+                $"Branch '{branchName}' should exist on remote after push.\nls-remote output: '{lsOut}'");
+
+            // ── ASSERT 3: PR was created (task.pr-opened event) ─────
+            var events = await db.TaskTranscriptEvents.AsNoTracking()
+                .Where(e => e.WorkItemId == workItemId)
+                .OrderBy(e => e.Id).ToListAsync();
+
+            var prOpenedEvt = events.FirstOrDefault(e => e.Kind == "task.pr-opened");
+            Assert.NotNull(prOpenedEvt);
+            using (var doc = JsonDocument.Parse(prOpenedEvt!.PayloadJson!))
+            {
+                Assert.Equal(branchName, doc.RootElement.GetProperty("branch").GetString());
+                if (doc.RootElement.TryGetProperty("prId", out var prIdEl))
+                {
+                    createdPrNumber = prIdEl.GetString()?.Replace("PR ", "").TrimStart('#');
+                }
+            }
+
+            // ── ASSERT 4: Main branch untouched ─────────────────────
+            var (_, mainLog, _) = await RunGitResultAsync(repoDir, "log", "--oneline", defaultBranch, "-1");
+            var (_, origMain, _) = await RunGitResultAsync(repoDir, "rev-parse", $"origin/{defaultBranch}");
+            var (_, localMain, _) = await RunGitResultAsync(repoDir, "rev-parse", defaultBranch);
+            Assert.Equal(origMain.Trim(), localMain.Trim());
+
+            // ── Log outcome ─────────────────────────────────────────
+            var scoreEvts = events.Where(e => e.Kind == "task.iteration.scored").ToList();
+            System.Console.WriteLine($"[GH-E2E] iterations={scoreEvts.Count} pr={createdPrNumber} branch={branchName}");
+        }
+        finally
+        {
+            // ── Cleanup: close PR, delete remote branch ─────────────
+            try
+            {
+                if (!string.IsNullOrEmpty(createdPrNumber))
+                {
+                    var (closeCode, _, closeErr) = await RunGitResultAsync(repoDir,
+                        "-c", $"http.extraHeader=Authorization: token {ghToken}",
+                        "ls-remote", "origin"); // just validate auth works
+                    // Use gh CLI if available to close PR
+                    try
+                    {
+                        var ghPsi = new System.Diagnostics.ProcessStartInfo("gh")
+                        {
+                            WorkingDirectory = repoDir,
+                            RedirectStandardOutput = true, RedirectStandardError = true,
+                            UseShellExecute = false, CreateNoWindow = true,
+                        };
+                        ghPsi.ArgumentList.Add("pr");
+                        ghPsi.ArgumentList.Add("close");
+                        ghPsi.ArgumentList.Add(createdPrNumber);
+                        ghPsi.ArgumentList.Add("--delete-branch");
+                        ghPsi.EnvironmentVariables["GH_TOKEN"] = ghToken;
+                        using var ghProc = System.Diagnostics.Process.Start(ghPsi)!;
+                        await ghProc.WaitForExitAsync();
+                    }
+                    catch { /* gh CLI not available — fall through to manual delete */ }
+                }
+
+                // Delete remote branch if it exists
+                await RunGitResultAsync(repoDir, "push", "origin", "--delete", branchName);
+            }
+            catch (Exception ex)
+            {
+                System.Console.WriteLine($"[GH-E2E] Cleanup warning: {ex.Message}");
+            }
+
+            scope.Dispose();
+            f.Dispose();
+
+            // Clean up worktrees and temp dir
+            try { await RunGitResultAsync(repoDir, "worktree", "prune"); } catch { }
+            try
+            {
+                var wtRoot = Path.Combine(repoDir, ".worktree");
+                if (Directory.Exists(wtRoot)) Directory.Delete(wtRoot, recursive: true);
+            }
+            catch { }
+            try { Directory.Delete(repoDir, recursive: true); } catch { }
+        }
+    }
+
     // ── Git helper methods for worktree tests ─────────────────────────────
 
     private static bool GitAvailable()

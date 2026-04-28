@@ -16,6 +16,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// Phase 8.4 — products + repos CRUD.
@@ -270,7 +271,9 @@ public static class ProductsEndpoints
         string id,
         [FromBody] CreateRepoRequest req,
         ForgeDbContext db,
-        IHubContext<ForgeHub> hub)
+        IHubContext<ForgeHub> hub,
+        IRepoCloneService cloneSvc,
+        ILoggerFactory loggerFactory)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -334,7 +337,33 @@ public static class ProductsEndpoints
 
         var repo = MapRepo(row);
         await hub.Clients.All.SendAsync("repo.changed", new { kind = "attached", repo });
-        return Results.Created($"/api/repos/{row.Id}", repo);
+
+        // Auto-clone: if the local clone root doesn't exist, clone now.
+        // Progress is streamed via SignalR clone events.
+        string? cloneOutcome = null;
+        string? cloneError = null;
+        if (!Directory.Exists(row.CloneRoot))
+        {
+            try
+            {
+                var result = await cloneSvc.EnsureClonedAsync(row);
+                cloneOutcome = result.Outcome.ToString().ToLowerInvariant();
+                if (result.Outcome == Forge.Api.Services.Git.RepoCloneOutcome.Failed
+                    || result.Outcome == Forge.Api.Services.Git.RepoCloneOutcome.Mismatched)
+                {
+                    cloneError = result.Message;
+                }
+            }
+            catch (Exception ex)
+            {
+                cloneOutcome = "failed";
+                cloneError = ex.Message;
+                var log = loggerFactory.CreateLogger("Forge.Api.Endpoints.ProductsEndpoints");
+                log.LogWarning(ex, "Auto-clone failed for repo {RepoId}", row.Id);
+            }
+        }
+
+        return Results.Created($"/api/repos/{row.Id}", new { repo, cloneOutcome, cloneError });
     }
 
     // ----- /api/products/{id}/stats ---------------------------------------

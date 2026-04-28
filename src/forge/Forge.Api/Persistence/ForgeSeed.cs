@@ -35,8 +35,13 @@ public static class ForgeSeed
         await EnsureSeedAgentsAsync(db);
 
         // Phase 18 — split half of each team's agents to its night sibling
-        // crew. Runs every boot; no-op once the night crew has any agents.
+        // crew. Runs every boot; rebalances if the current split is uneven.
         await EnsureNightShiftSplitAsync(db);
+
+        // Phase 19 — ensure every agent with a crew assignment has a
+        // CrewMemberRow entry (the formal roster). Leads are tracked via
+        // CrewRow.Lead and are excluded to avoid double-counting.
+        await EnsureRosterBackfillAsync(db);
 
         if (!await db.Epics.AnyAsync())
         {
@@ -519,12 +524,23 @@ public static class ForgeSeed
     {
         var existingIds = (await db.Crews.Select(c => c.Id).ToListAsync()).ToHashSet();
 
+        // Canonical model + quotas for all crews (configurable at the seed
+        // level; reconciled on every boot by EnsureStartupConfigAsync).
+        const string RuntimeModel      = "claude-opus-4.6-1m";
+        const decimal InputPrice       = 15m;
+        const decimal OutputPrice      = 75m;
+        const string EvalModel         = "gpt-5.5";
+        const int    ConcurrentCap     = 20;
+        const int    WeekCap           = 200;
+        const decimal DailyBudget      = 5000m;
+        const decimal PerTaskBudget    = 2500m;
+
         var dayCrews = new[]
         {
-            new CrewRow { Id = "crew-eng",  Sort = 0, Name = "Engineering",  ProductId = DefaultProductId, Summary = "Cuts PRs, ships features, keeps tests green.",        Lead = "E4", Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,  Shift = "day",   PairRole = "generator", PairedWithCrewId = "crew-eng-night" },
-            new CrewRow { Id = "crew-rev",  Sort = 1, Name = "Review",       ProductId = DefaultProductId, Summary = "Reads every diff, catches what engineers missed.",   Lead = "R3", Model = "claude-sonnet-4-6",       ModelInputPricePerMTok = 3m,  ModelOutputPricePerMTok = 15m,  Shift = "day" },
-            new CrewRow { Id = "crew-arch", Sort = 2, Name = "Architecture", ProductId = DefaultProductId, Summary = "Frames problems, owns ADRs, keeps blast radii small.", Lead = "A1", Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,  Shift = "day",   PairRole = "generator", PairedWithCrewId = "crew-arch-night" },
-            new CrewRow { Id = "crew-qa",   Sort = 3, Name = "QA",           ProductId = DefaultProductId, Summary = "Fuzzes, soaks, watches the dials.",                   Lead = "Q2", Model = "claude-haiku-4-5-20251001", ModelInputPricePerMTok = 1m,  ModelOutputPricePerMTok = 5m,   Shift = "day" },
+            new CrewRow { Id = "crew-eng",  Sort = 0, Name = "Engineering",  ProductId = DefaultProductId, Summary = "Cuts PRs, ships features, keeps tests green.",        Lead = "E4", Model = RuntimeModel, ModelInputPricePerMTok = InputPrice, ModelOutputPricePerMTok = OutputPrice, EvaluatorModel = EvalModel, MaxConcurrent = ConcurrentCap, WeeklyCap = WeekCap, DailyBudgetUsd = DailyBudget, MaxTaskBudgetUsd = PerTaskBudget, Shift = "day",   PairRole = "generator", PairedWithCrewId = "crew-eng-night" },
+            new CrewRow { Id = "crew-rev",  Sort = 1, Name = "Review",       ProductId = DefaultProductId, Summary = "Reads every diff, catches what engineers missed.",   Lead = "R3", Model = RuntimeModel, ModelInputPricePerMTok = InputPrice, ModelOutputPricePerMTok = OutputPrice, EvaluatorModel = EvalModel, MaxConcurrent = ConcurrentCap, WeeklyCap = WeekCap, DailyBudgetUsd = DailyBudget, MaxTaskBudgetUsd = PerTaskBudget, Shift = "day" },
+            new CrewRow { Id = "crew-arch", Sort = 2, Name = "Architecture", ProductId = DefaultProductId, Summary = "Frames problems, owns ADRs, keeps blast radii small.", Lead = "A1", Model = RuntimeModel, ModelInputPricePerMTok = InputPrice, ModelOutputPricePerMTok = OutputPrice, EvaluatorModel = EvalModel, MaxConcurrent = ConcurrentCap, WeeklyCap = WeekCap, DailyBudgetUsd = DailyBudget, MaxTaskBudgetUsd = PerTaskBudget, Shift = "day",   PairRole = "generator", PairedWithCrewId = "crew-arch-night" },
+            new CrewRow { Id = "crew-qa",   Sort = 3, Name = "QA",           ProductId = DefaultProductId, Summary = "Fuzzes, soaks, watches the dials.",                   Lead = "Q2", Model = RuntimeModel, ModelInputPricePerMTok = InputPrice, ModelOutputPricePerMTok = OutputPrice, EvaluatorModel = EvalModel, MaxConcurrent = ConcurrentCap, WeeklyCap = WeekCap, DailyBudgetUsd = DailyBudget, MaxTaskBudgetUsd = PerTaskBudget, Shift = "day" },
         };
 
         // Phase 18 — night sibling per team. Same model + pricing so a
@@ -534,10 +550,10 @@ public static class ForgeSeed
         // once the agent split picks the first night-mover.
         var nightCrews = new[]
         {
-            new CrewRow { Id = "crew-eng-night",  Sort = 4, Name = "Engineering (Night)",  ProductId = DefaultProductId, Summary = "Engineering — 21:00–09:00 night band.",        Lead = null, ParentCrewId = "crew-eng",  Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,  Shift = "night", PairRole = "evaluator", PairedWithCrewId = "crew-eng" },
-            new CrewRow { Id = "crew-rev-night",  Sort = 5, Name = "Review (Night)",       ProductId = DefaultProductId, Summary = "Review — 21:00–09:00 night band.",             Lead = null, ParentCrewId = "crew-rev",  Model = "claude-sonnet-4-6",       ModelInputPricePerMTok = 3m,  ModelOutputPricePerMTok = 15m,  Shift = "night" },
-            new CrewRow { Id = "crew-arch-night", Sort = 6, Name = "Architecture (Night)", ProductId = DefaultProductId, Summary = "Architecture — 21:00–09:00 night band.",       Lead = null, ParentCrewId = "crew-arch", Model = "claude-opus-4-7",        ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,  Shift = "night", PairRole = "evaluator", PairedWithCrewId = "crew-arch" },
-            new CrewRow { Id = "crew-qa-night",   Sort = 7, Name = "QA (Night)",           ProductId = DefaultProductId, Summary = "QA — 21:00–09:00 night band.",                 Lead = null, ParentCrewId = "crew-qa",   Model = "claude-haiku-4-5-20251001", ModelInputPricePerMTok = 1m,  ModelOutputPricePerMTok = 5m,   Shift = "night" },
+            new CrewRow { Id = "crew-eng-night",  Sort = 4, Name = "Engineering (Night)",  ProductId = DefaultProductId, Summary = "Engineering — 21:00–09:00 night band.",        Lead = null, ParentCrewId = "crew-eng",  Model = RuntimeModel, ModelInputPricePerMTok = InputPrice, ModelOutputPricePerMTok = OutputPrice, EvaluatorModel = EvalModel, MaxConcurrent = ConcurrentCap, WeeklyCap = WeekCap, DailyBudgetUsd = DailyBudget, MaxTaskBudgetUsd = PerTaskBudget, Shift = "night", PairRole = "evaluator", PairedWithCrewId = "crew-eng" },
+            new CrewRow { Id = "crew-rev-night",  Sort = 5, Name = "Review (Night)",       ProductId = DefaultProductId, Summary = "Review — 21:00–09:00 night band.",             Lead = null, ParentCrewId = "crew-rev",  Model = RuntimeModel, ModelInputPricePerMTok = InputPrice, ModelOutputPricePerMTok = OutputPrice, EvaluatorModel = EvalModel, MaxConcurrent = ConcurrentCap, WeeklyCap = WeekCap, DailyBudgetUsd = DailyBudget, MaxTaskBudgetUsd = PerTaskBudget, Shift = "night" },
+            new CrewRow { Id = "crew-arch-night", Sort = 6, Name = "Architecture (Night)", ProductId = DefaultProductId, Summary = "Architecture — 21:00–09:00 night band.",       Lead = null, ParentCrewId = "crew-arch", Model = RuntimeModel, ModelInputPricePerMTok = InputPrice, ModelOutputPricePerMTok = OutputPrice, EvaluatorModel = EvalModel, MaxConcurrent = ConcurrentCap, WeeklyCap = WeekCap, DailyBudgetUsd = DailyBudget, MaxTaskBudgetUsd = PerTaskBudget, Shift = "night", PairRole = "evaluator", PairedWithCrewId = "crew-arch" },
+            new CrewRow { Id = "crew-qa-night",   Sort = 7, Name = "QA (Night)",           ProductId = DefaultProductId, Summary = "QA — 21:00–09:00 night band.",                 Lead = null, ParentCrewId = "crew-qa",   Model = RuntimeModel, ModelInputPricePerMTok = InputPrice, ModelOutputPricePerMTok = OutputPrice, EvaluatorModel = EvalModel, MaxConcurrent = ConcurrentCap, WeeklyCap = WeekCap, DailyBudgetUsd = DailyBudget, MaxTaskBudgetUsd = PerTaskBudget, Shift = "night" },
         };
 
         var added = false;
@@ -551,14 +567,15 @@ public static class ForgeSeed
     }
 
     /// <summary>
-    /// Phase 18 — for each (day, night) crew pair, move half of the day
-    /// crew's seeded agents to the night sibling. Deterministic split:
-    /// agents are sorted by id ascending, the existing day-crew lead is
-    /// preserved, and every other remaining agent (indices 1, 3, 5, …)
-    /// is reassigned to the night crew. The first moved agent becomes
-    /// the night crew's lead. Idempotent: the split runs only when the
-    /// night crew has no agents yet, so subsequent boots — and freshly
-    /// added agents — leave the existing distribution alone.
+    /// Phase 18 — for each (day, night) crew pair, split agents evenly
+    /// between the two shifts. The day-crew lead is preserved; the
+    /// remaining agents are sorted by id ascending and the second half
+    /// moves to the night crew. For teams with an odd non-lead count,
+    /// the night crew gets the extra agent (day already has the lead).
+    ///
+    /// Idempotent: on fresh DBs the night crew starts empty and the
+    /// initial split runs. On existing DBs with an uneven legacy split,
+    /// the method rebalances until the difference is ≤ 1.
     /// </summary>
     private static async Task EnsureNightShiftSplitAsync(ForgeDbContext db)
     {
@@ -577,36 +594,42 @@ public static class ForgeSeed
             var nightCrew = await db.Crews.FirstOrDefaultAsync(c => c.Id == nightId);
             if (nightCrew is null) continue;
 
-            // Skip when already split — either the night crew has direct
-            // AgentRow.CrewId pointers or any CrewMemberRow rows.
-            var nightAlreadyPopulated =
-                await db.Agents.AnyAsync(a => a.CrewId == nightId)
-                || await db.CrewMembers.AnyAsync(m => m.CrewId == nightId);
-            if (nightAlreadyPopulated) continue;
-
             var dayCrew = await db.Crews.FirstOrDefaultAsync(c => c.Id == dayId);
             var dayLeadId = dayCrew?.Lead;
 
-            var dayAgents = await db.Agents
-                .Where(a => a.CrewId == dayId)
+            // Gather ALL agents for this team (both shifts).
+            var teamAgents = await db.Agents
+                .Where(a => a.CrewId == dayId || a.CrewId == nightId)
                 .OrderBy(a => a.Id)
                 .ToListAsync();
+            if (teamAgents.Count == 0) continue;
 
-            // Build the move list: skip the day-crew lead, take every other
-            // remaining agent. This gives an exact-half split when the
-            // remainder is even, and the day side gets the extra agent
-            // when it's odd (which is what we want: lead + slight majority).
-            var nonLead = dayAgents.Where(a => a.Id != dayLeadId).ToList();
-            var movers = nonLead.Where((_, i) => i % 2 == 1).ToList();
+            // Check if already balanced (difference ≤ 1).
+            var dayCount = teamAgents.Count(a => a.CrewId == dayId);
+            var nightCount = teamAgents.Count(a => a.CrewId == nightId);
+            if (nightCount > 0 && Math.Abs(dayCount - nightCount) <= 1) continue;
 
-            if (movers.Count == 0) continue;
+            // Build balanced split: lead stays in day, split rest evenly.
+            var nonLead = teamAgents.Where(a => a.Id != dayLeadId).ToList();
+            var half = nonLead.Count / 2;
 
-            string? newNightLead = null;
-            foreach (var mover in movers)
+            // Day: lead + first half of non-lead agents.
+            foreach (var a in nonLead.Take(half))
             {
-                mover.CrewId = nightId;
-                newNightLead ??= mover.Id;
+                a.CrewId = dayId;
             }
+
+            // Night: remaining half.
+            string? newNightLead = null;
+            foreach (var a in nonLead.Skip(half))
+            {
+                a.CrewId = nightId;
+                newNightLead ??= a.Id;
+            }
+
+            // Ensure lead stays in day crew.
+            var lead = teamAgents.FirstOrDefault(a => a.Id == dayLeadId);
+            if (lead is not null) lead.CrewId = dayId;
 
             if (string.IsNullOrEmpty(nightCrew.Lead) && newNightLead is not null)
             {
@@ -617,6 +640,94 @@ public static class ForgeSeed
         }
 
         if (changed) await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Phase 19 — ensure every agent assigned to a crew also has a
+    /// <see cref="CrewMemberRow"/> entry in that crew's roster. Leads
+    /// are excluded: they are tracked via <see cref="CrewRow.Lead"/>
+    /// and including them here would double-count in effective-roster
+    /// calculations.
+    ///
+    /// Also reconciles lead/CrewId mismatches: if an agent is the lead
+    /// of crew X but has <c>AgentRow.CrewId</c> pointing elsewhere,
+    /// the CrewId is corrected to match the crew they lead.
+    ///
+    /// Idempotent: existing roster entries are preserved; only missing
+    /// rows are added.
+    /// </summary>
+    private static async Task EnsureRosterBackfillAsync(ForgeDbContext db)
+    {
+        var crews = await db.Crews.ToListAsync();
+        var leadByCrewId = crews
+            .Where(c => !string.IsNullOrEmpty(c.Lead))
+            .ToDictionary(c => c.Id, c => c.Lead!, StringComparer.OrdinalIgnoreCase);
+
+        // Reconcile lead/CrewId mismatches: ensure each crew's lead
+        // agent has CrewId pointing at the crew they lead.
+        var allAgents = await db.Agents.ToListAsync();
+        var agentsById = allAgents.ToDictionary(a => a.Id, StringComparer.OrdinalIgnoreCase);
+        foreach (var (crewId, leadId) in leadByCrewId)
+        {
+            if (agentsById.TryGetValue(leadId, out var leadAgent)
+                && !string.Equals(leadAgent.CrewId, crewId, StringComparison.OrdinalIgnoreCase))
+            {
+                leadAgent.CrewId = crewId;
+            }
+        }
+
+        // Build set of (crewId → leadId) so we skip leads in roster entries.
+        var existingMembers = await db.CrewMembers.ToListAsync();
+        var existingPairs = new HashSet<(string, string)>(
+            existingMembers.Select(m => (m.CrewId.ToUpperInvariant(), m.AgentId.ToUpperInvariant())));
+
+        // Track insertion index per crew for alternating roles.
+        var crewIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var m in existingMembers)
+        {
+            crewIndex.TryGetValue(m.CrewId, out var cnt);
+            crewIndex[m.CrewId] = cnt + 1;
+        }
+
+        var added = false;
+        var assignedAgents = allAgents
+            .Where(a => !string.IsNullOrEmpty(a.CrewId))
+            .OrderBy(a => a.Sort)
+            .ThenBy(a => a.Id)
+            .ToList();
+
+        foreach (var agent in assignedAgents)
+        {
+            var crewId = agent.CrewId!;
+
+            // Skip leads — they're tracked via CrewRow.Lead.
+            if (leadByCrewId.TryGetValue(crewId, out var crewLead)
+                && string.Equals(crewLead, agent.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            // Skip if already in roster.
+            if (existingPairs.Contains((crewId.ToUpperInvariant(), agent.Id.ToUpperInvariant())))
+            {
+                continue;
+            }
+
+            crewIndex.TryGetValue(crewId, out var idx);
+            var role = idx % 2 == 0 ? "generator" : "evaluator";
+            crewIndex[crewId] = idx + 1;
+
+            db.CrewMembers.Add(new CrewMemberRow
+            {
+                CrewId = crewId,
+                AgentId = agent.Id,
+                Role = role,
+                AddedBy = "seed-backfill",
+            });
+            added = true;
+        }
+
+        if (added) await db.SaveChangesAsync();
     }
 
     /// <summary>
@@ -813,5 +924,172 @@ public static class ForgeSeed
                 : parts[0][0].ToString().ToUpperInvariant();
         }
         return (parts[0][0].ToString() + parts[1][0]).ToUpperInvariant();
+    }
+
+    /// <summary>
+    /// Startup reconciliation pass. Runs every boot after seed and
+    /// <c>ApplyAutoAssignAsync</c>. Two responsibilities:
+    /// <list type="number">
+    ///   <item><description>Enforce canonical model, evaluator model, and
+    ///         quota settings on the 8 seeded crews.</description></item>
+    ///   <item><description>Guarantee each team's day/night shift has at
+    ///         least 2 effective members (lead + ≥1 roster entry). If a
+    ///         shift is short, fill from same-team agents that are not yet
+    ///         on any crew's effective roster.</description></item>
+    /// </list>
+    /// Idempotent: writing the same values is a no-op at the SQLite layer;
+    /// roster additions only happen when the guarantee is unmet.
+    /// </summary>
+    public static async Task EnsureStartupConfigAsync(ForgeDbContext db, ILogger? logger = null)
+    {
+        // ── 1. Canonical crew ids we manage. ────────────────────────────
+        var canonicalIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "crew-eng", "crew-rev", "crew-arch", "crew-qa",
+            "crew-eng-night", "crew-rev-night", "crew-arch-night", "crew-qa-night",
+        };
+
+        var crews = await db.Crews.Where(c => canonicalIds.Contains(c.Id)).ToListAsync();
+        if (crews.Count == 0) return;
+
+        // ── 2. Enforce model + quotas. ──────────────────────────────────
+        const string runtimeModel  = "claude-opus-4.6-1m";
+        const decimal inputPrice   = 15m;
+        const decimal outputPrice  = 75m;
+        const string evalModel     = "gpt-5.5";
+        const int maxConcurrent    = 20;
+        const int weeklyCap        = 200;
+        const decimal dailyBudget  = 5000m;
+        const decimal perTaskBudget = 2500m;
+
+        foreach (var c in crews)
+        {
+            c.Model                   = runtimeModel;
+            c.ModelInputPricePerMTok  = inputPrice;
+            c.ModelOutputPricePerMTok = outputPrice;
+            c.EvaluatorModel          = evalModel;
+            c.MaxConcurrent           = maxConcurrent;
+            c.WeeklyCap               = weeklyCap;
+            c.DailyBudgetUsd          = dailyBudget;
+            c.MaxTaskBudgetUsd        = perTaskBudget;
+        }
+
+        // ── 3. Roster balance — each shift needs ≥ 2 effective members. ─
+        // Effective roster = lead (if set) + CrewMemberRows.
+        var allLeads = crews
+            .Where(c => !string.IsNullOrEmpty(c.Lead))
+            .Select(c => c.Lead!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var allMemberships = await db.CrewMembers.ToListAsync();
+        var rosterAgentIds = allMemberships.Select(m => m.AgentId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // Globally claimed = anyone who is a lead OR a roster member of any crew.
+        var globallyClaimedIds = new HashSet<string>(allLeads, StringComparer.OrdinalIgnoreCase);
+        globallyClaimedIds.UnionWith(rosterAgentIds);
+
+        // Team mapping: crew id → team name.
+        string? TeamOf(string crewId) => crewId switch
+        {
+            "crew-eng" or "crew-eng-night"   => "Engineering",
+            "crew-rev" or "crew-rev-night"   => "Review",
+            "crew-arch" or "crew-arch-night" => "Architecture",
+            "crew-qa" or "crew-qa-night"     => "QA",
+            _ => null,
+        };
+
+        // Agent role → team name (matches CrewsEndpoints.TeamFromAgentRole).
+        string? TeamOfRole(string? role) => role?.ToLowerInvariant() switch
+        {
+            "arch" or "architect" => "Architecture",
+            "eng" or "engineer"   => "Engineering",
+            "rev" or "reviewer"   => "Review",
+            "qa" or "qe" or "test" => "QA",
+            _ => null,
+        };
+
+        var dayNightPairs = new (string DayId, string NightId)[]
+        {
+            ("crew-eng",  "crew-eng-night"),
+            ("crew-rev",  "crew-rev-night"),
+            ("crew-arch", "crew-arch-night"),
+            ("crew-qa",   "crew-qa-night"),
+        };
+
+        var allAgents = await db.Agents.OrderBy(a => a.Sort).ThenBy(a => a.Id).ToListAsync();
+
+        foreach (var (dayId, nightId) in dayNightPairs)
+        {
+            var dayCrew = crews.FirstOrDefault(c => c.Id == dayId);
+            var nightCrew = crews.FirstOrDefault(c => c.Id == nightId);
+            if (dayCrew is null || nightCrew is null) continue;
+
+            var team = TeamOf(dayId);
+            if (team is null) continue;
+
+            int EffectiveCount(CrewRow crew)
+            {
+                var count = allMemberships.Count(m => m.CrewId == crew.Id);
+                if (!string.IsNullOrEmpty(crew.Lead)) count++;
+                return count;
+            }
+
+            var dayCount = EffectiveCount(dayCrew);
+            var nightCount = EffectiveCount(nightCrew);
+
+            // Both shifts already have ≥ 2 members — skip.
+            if (dayCount >= 2 && nightCount >= 2) continue;
+
+            // Find same-team agents not globally claimed.
+            var candidates = allAgents
+                .Where(a => TeamOfRole(a.Role) == team && !globallyClaimedIds.Contains(a.Id))
+                .ToList();
+
+            if (candidates.Count == 0)
+            {
+                logger?.LogWarning(
+                    "Startup roster check: {Team} has shifts with <2 members (day={Day}, night={Night}) but no unassigned agents available.",
+                    team, dayCount, nightCount);
+                continue;
+            }
+
+            // Fill the underpopulated shift(s). Alternate between day and
+            // night when both are short, preferring the smaller shift first.
+            while (candidates.Count > 0 && (dayCount < 2 || nightCount < 2))
+            {
+                var target = dayCount <= nightCount ? dayCrew : nightCrew;
+                ref int targetCount = ref dayCount <= nightCount ? ref dayCount : ref nightCount;
+
+                var agent = candidates[0];
+                candidates.RemoveAt(0);
+
+                // Set lead if the crew has none.
+                if (string.IsNullOrEmpty(target.Lead))
+                {
+                    target.Lead = agent.Id;
+                    globallyClaimedIds.Add(agent.Id);
+                    targetCount++;
+                    logger?.LogInformation("Startup roster: set {Agent} as lead of {Crew}.", agent.Id, target.Id);
+                    continue;
+                }
+
+                // Add as roster member.
+                var idx = allMemberships.Count(m => m.CrewId == target.Id);
+                var role = idx % 2 == 0 ? "generator" : "evaluator";
+                db.CrewMembers.Add(new CrewMemberRow
+                {
+                    CrewId = target.Id,
+                    AgentId = agent.Id,
+                    Role = role,
+                    AddedBy = "startup-config",
+                });
+                allMemberships.Add(new CrewMemberRow { CrewId = target.Id, AgentId = agent.Id, Role = role });
+                agent.CrewId = target.Id;
+                globallyClaimedIds.Add(agent.Id);
+                targetCount++;
+
+                logger?.LogInformation("Startup roster: added {Agent} to {Crew} as {Role}.", agent.Id, target.Id, role);
+            }
+        }
+
+        await db.SaveChangesAsync();
     }
 }

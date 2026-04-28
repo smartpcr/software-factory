@@ -311,10 +311,12 @@ public class AdoProvider : IForgeProvider
     public async Task<Pr> CreatePullRequestAsync(NewPullRequestRequest req, ProviderCallContext ctx, CancellationToken ct = default)
     {
         this.RequireConfigured();
-        if (string.IsNullOrEmpty(this.options.Repository))
+        var repoName = req.RepositoryName ?? this.options.Repository;
+        if (string.IsNullOrEmpty(repoName))
         {
             throw new InvalidOperationException("Forge:Ado:Repository is required to create PRs");
         }
+        var project = req.ProjectName ?? this.EffectiveProject;
         var client = this.NewClient(ctx);
         var payload = JsonSerializer.Serialize(new
         {
@@ -325,7 +327,7 @@ public class AdoProvider : IForgeProvider
             isDraft = req.Draft,
         });
         using var msg = new HttpRequestMessage(HttpMethod.Post,
-            $"{this.EffectiveProject}/_apis/git/repositories/{this.options.Repository}/pullrequests?api-version=7.1")
+            $"{project}/_apis/git/repositories/{repoName}/pullrequests?api-version=7.1")
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json"),
         };

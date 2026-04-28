@@ -4,6 +4,7 @@ import { typeLabel } from './workItemTypes';
 import { useWitStore, PRIORITY_WEIGHT } from './useWitStore';
 import { TypeMark } from './TypeMark';
 import { StatePill } from './StatePill';
+import { ExecBadge } from './ExecBadge';
 import { RepoIcon } from '@/products/RepoIcon';
 import { SAMPLE_ITERATIONS, SAMPLE_REPOS } from './sampleWorkItems';
 
@@ -105,7 +106,7 @@ export function WorkItemList({ items }: Props) {
                   {item.blocked && <span className="wit-list-blocked-mark" title="Blocked">!</span>}
                   {item.title}
                 </td>
-                <td><StatePill state={item.state} size="sm" /></td>
+                <td><StatePill state={item.state} size="sm" />{' '}<ExecBadge status={item.executionStatus} trialCount={item.trialCount} size="sm" /></td>
                 <td className="wit-list-iter">{it?.label ?? '—'}</td>
                 <td className="wit-list-assignee">
                   {item.assignedTo ? (

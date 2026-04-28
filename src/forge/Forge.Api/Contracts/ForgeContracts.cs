@@ -567,7 +567,10 @@ public sealed record WorkItem(
     // Phase 16.1 — set when LeadAutoDispatcher picks the row up.
     DateTimeOffset? AutoDispatchedAt = null,
     // Phase 16.5 — for step rows: planning-time file-budget.
-    int? ExpectedFileChanges = null);
+    int? ExpectedFileChanges = null,
+    // Phase 19 — execution status and trial count.
+    string ExecutionStatus = "idle",
+    int TrialCount = 0);
 
 public sealed record CreateWorkItemRequest(
     string Id,
@@ -926,7 +929,9 @@ public sealed record TaskExecutionSnapshot(
     int? ExpectedFileChanges,
     IReadOnlyList<Deliverable> Deliverables,
     IReadOnlyList<TaskTranscriptEvent> RecentTranscript,
-    WorktreeSnapshot? Worktree);
+    WorktreeSnapshot? Worktree,
+    string ExecutionStatus = "idle",
+    int TrialCount = 0);
 
 // ─── Phase 17 — Persistent task queue & team-to-crew routing ──────────────
 

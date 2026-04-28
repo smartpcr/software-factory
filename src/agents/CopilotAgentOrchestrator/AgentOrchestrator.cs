@@ -525,7 +525,7 @@ public class AgentOrchestrator : IAsyncDisposable
             if (agentConfig.FileAttachments is { Count: > 0 })
             {
                 options.Attachments = agentConfig.FileAttachments
-                    .Select(path => (UserMessageDataAttachmentsItem)new UserMessageDataAttachmentsItemFile
+                    .Select(path => (UserMessageAttachment)new UserMessageAttachmentFile
                     {
                         Path = path,
                         DisplayName = System.IO.Path.GetFileName(path)

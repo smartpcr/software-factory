@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { avatarFor } from '@/agentAvatar';
 import {
   SCORECARDS,
   PROMOTION_DECISIONS,
@@ -250,7 +251,15 @@ function PromotionLadder({ agents, selectedId, onSelect }: {
                     title={`${a.name} · ${a.team} · avg ${a.avgScore.toFixed(1)}`}
                     aria-pressed={selectedId === a.agentId}
                   >
-                    <span className="id">{a.agentId}</span>
+                    {avatarFor(a.agentId, a.name) ? (
+                      <img
+                        src={avatarFor(a.agentId, a.name)!}
+                        alt=""
+                        style={{ width: 22, height: 22, borderRadius: '50%', objectFit: 'cover', border: '1.5px solid var(--border)' }}
+                      />
+                    ) : (
+                      <span className="id">{a.agentId}</span>
+                    )}
                     <span style={{ color: selectedId === a.agentId ? 'var(--accent)' : 'inherit' }}>{a.name}</span>
                     {arrowEl}
                   </button>
@@ -311,7 +320,15 @@ function ScorecardTable({ agents, selectedId, onSelect }: {
             >
               <td className="left">
                 <div className="agent-cell">
-                  <span className="id">{a.agentId}</span>
+                  {avatarFor(a.agentId, a.name) ? (
+                    <img
+                      src={avatarFor(a.agentId, a.name)!}
+                      alt=""
+                      style={{ width: 28, height: 28, borderRadius: '50%', objectFit: 'cover', border: '1.5px solid var(--border)', flexShrink: 0 }}
+                    />
+                  ) : (
+                    <span className="id">{a.agentId}</span>
+                  )}
                   <div>
                     <div className="name">{a.name}</div>
                     <div className="meta">{a.team.toUpperCase()} · {a.crew}</div>
@@ -365,10 +382,19 @@ function ScorecardDrawer({ agent }: { agent: AgentScorecard }) {
   return (
     <div className="scorecard-detail">
       <div className="name-block">
-        <div>
-          <div className="role">{agent.team} · L{agent.level} · ${agent.hourlyUsd}/hr</div>
-          <div className="name">{agent.name}</div>
-          <div className="crew">{agent.crew}</div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+          {avatarFor(agent.agentId, agent.name) && (
+            <img
+              src={avatarFor(agent.agentId, agent.name)!}
+              alt=""
+              style={{ width: 40, height: 40, borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--border)', flexShrink: 0 }}
+            />
+          )}
+          <div>
+            <div className="role">{agent.team} · L{agent.level} · ${agent.hourlyUsd}/hr</div>
+            <div className="name">{agent.name}</div>
+            <div className="crew">{agent.crew}</div>
+          </div>
         </div>
         <div className="verdict-note">{agent.verdictNote}</div>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)', letterSpacing: 0.04, marginTop: 6 }}>
@@ -427,8 +453,19 @@ function DecisionCard({ d }: { d: PromotionDecision }) {
     <article className="decision" data-kind={kind}>
       <div className="top">
         <div className="move">
-          <div className="who">{d.name}</div>
-          <div className="id">{d.agentId} · {d.team}</div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {avatarFor(d.agentId, d.name) && (
+              <img
+                src={avatarFor(d.agentId, d.name)!}
+                alt=""
+                style={{ width: 26, height: 26, borderRadius: '50%', objectFit: 'cover', border: '1.5px solid var(--border)', flexShrink: 0 }}
+              />
+            )}
+            <div>
+              <div className="who">{d.name}</div>
+              <div className="id">{d.agentId} · {d.team}</div>
+            </div>
+          </div>
           <div className="arrow-row">
             <span className="step">L{d.fromLevel} {d.fromTitle}</span>
             <span>{direction === 'up' ? '→' : direction === 'down' ? '↓' : '·'}</span>

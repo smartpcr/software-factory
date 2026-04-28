@@ -201,7 +201,7 @@ export function AddRepoModal({ productId, open, onClose, onAttached }: Props) {
     setBusy(true);
     setErr(null);
     try {
-      await forgeApi.attachRepo(productId, {
+      const result = await forgeApi.attachRepo(productId, {
         id: repoId.trim(),
         kind: chosen.kind,
         remoteUrl: chosen.remoteUrl,
@@ -213,7 +213,14 @@ export function AddRepoModal({ productId, open, onClose, onAttached }: Props) {
         ghOwner: chosen.ghOwner ?? undefined,
         ghRepo: chosen.ghRepo ?? undefined,
       });
-      useToastStore.getState().show(`${displayName || chosen.displayName} attached`, 'success');
+      const name = displayName || chosen.displayName;
+      if (result.cloneError) {
+        useToastStore.getState().show(`${name} attached — clone failed: ${result.cloneError}`, 'danger');
+      } else if (result.cloneOutcome === 'cloned') {
+        useToastStore.getState().show(`${name} attached & cloned`, 'success');
+      } else {
+        useToastStore.getState().show(`${name} attached`, 'success');
+      }
       onAttached();
       onClose();
     } catch (e) {

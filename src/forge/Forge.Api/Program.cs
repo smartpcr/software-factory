@@ -193,10 +193,16 @@ using (var scope = app.Services.CreateScope())
     await Phase17Migration.ApplyAsync(db);
     // Phase 18 — per-crew Shift column ('day' | 'night').
     await Phase18Migration.ApplyAsync(db);
+    // Phase 19 — execution status + trial count on work items.
+    await Phase19Migration.ApplyAsync(db);
     await ForgeSeed.EnsureSeededAsync(db);
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.
     await Forge.Api.Endpoints.CrewsEndpoints.ApplyAutoAssignAsync(db, caller: "boot", ct: default);
+    // Startup config: enforce canonical model/quota/evaluator-model on
+    // all 8 crews and guarantee each day/night shift has ≥ 2 members.
+    var startupLogger = scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("ForgeSeed");
+    await ForgeSeed.EnsureStartupConfigAsync(db, startupLogger);
 }
 
 app.UseExceptionHandler();

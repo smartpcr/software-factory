@@ -1045,6 +1045,31 @@ public class WorkItemRow
     /// pill when the actual PR exceeds this. Null on non-step rows.
     /// </summary>
     public int? ExpectedFileChanges { get; set; }
+
+    /// <summary>
+    /// One of <see cref="ExecutionStatuses"/>: idle | queued | live |
+    /// completed | failed | cancelled. Updated by the queue state machine.
+    /// </summary>
+    public string ExecutionStatus { get; set; } = ExecutionStatuses.Idle;
+
+    /// <summary>
+    /// Number of times execution has been attempted (incremented on claim,
+    /// not on enqueue, so routing-only events don't inflate the count).
+    /// </summary>
+    public int TrialCount { get; set; }
+}
+
+/// <summary>
+/// Well-known values for <see cref="WorkItemRow.ExecutionStatus"/>.
+/// </summary>
+public static class ExecutionStatuses
+{
+    public const string Idle = "idle";
+    public const string Queued = "queued";
+    public const string Live = "live";
+    public const string Completed = "completed";
+    public const string Failed = "failed";
+    public const string Cancelled = "cancelled";
 }
 
 /// <summary>

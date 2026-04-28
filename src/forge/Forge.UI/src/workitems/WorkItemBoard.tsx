@@ -15,6 +15,7 @@ import { useWitStore } from './useWitStore';
 import { useWorkItemsStore } from './useWorkItemsStore';
 import { TypeMark } from './TypeMark';
 import { StatePill } from './StatePill';
+import { ExecBadge } from './ExecBadge';
 import { RepoIcon } from '@/products/RepoIcon';
 import { SAMPLE_REPOS } from './sampleWorkItems';
 
@@ -197,6 +198,7 @@ function BoardCard({ item, dragging }: { item: WorkItem; dragging?: boolean }) {
       <div className="wit-board-card-row">
         <TypeMark type={item.type} size={20} />
         <span className="wit-board-card-id" title={item.id}>{item.id}</span>
+        <ExecBadge status={item.executionStatus} trialCount={item.trialCount} size="sm" />
         {repo && <RepoIcon kind={repo.kind} size={12} title={repo.displayName} />}
         <span className="wit-board-card-spacer" />
         {item.points > 0 && <span className="wit-board-card-pts">{item.points}</span>}

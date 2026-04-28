@@ -1862,3 +1862,9 @@
     grid-template-columns: repeat(2, minmax(220px, 1fr));
   }
 }
+
+/* ---------- Phase 19 — Execution badge pulse ---------- */
+@keyframes exec-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.3; }
+}

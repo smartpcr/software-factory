@@ -891,8 +891,8 @@ export const forgeApi = {
     adoProject?: string;
     ghOwner?: string;
     ghRepo?: string;
-  }): Promise<Repo> {
-    return fetchJson<Repo>(`/api/products/${encodeURIComponent(productId)}/repos`, {
+  }): Promise<{ repo: Repo; cloneOutcome: string | null; cloneError: string | null }> {
+    return fetchJson<{ repo: Repo; cloneOutcome: string | null; cloneError: string | null }>(`/api/products/${encodeURIComponent(productId)}/repos`, {
       method: 'POST',
       body: JSON.stringify(req),
       headers: { 'X-Forge-User': writerHeader() },

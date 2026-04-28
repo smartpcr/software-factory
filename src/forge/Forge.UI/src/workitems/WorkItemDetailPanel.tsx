@@ -6,6 +6,7 @@ import { useWitStore } from './useWitStore';
 import { useWorkItemsStore } from './useWorkItemsStore';
 import { TypeMark } from './TypeMark';
 import { StatePill } from './StatePill';
+import { ExecBadge } from './ExecBadge';
 import { RepoIcon } from '@/products/RepoIcon';
 import { SAMPLE_ITERATIONS, SAMPLE_REPOS } from './sampleWorkItems';
 import { useProductsStore } from '@/state/useProductsStore';
@@ -284,6 +285,7 @@ export function WorkItemDetailPanel({ item }: Props) {
         )}
         <div className="wit-detail-eyebrow-row">
           <StateSelect value={item.state} onChange={setState} />
+          <ExecBadge status={item.executionStatus} trialCount={item.trialCount} />
           <IterationSelect value={item.iterationRef} repoId={item.repoId} onChange={setIteration} />
           <PointsStepper value={item.points} onChange={setPoints} />
           <PrioritySelect value={item.priority} onChange={setPriority} />

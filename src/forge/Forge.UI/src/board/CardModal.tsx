@@ -54,13 +54,6 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
   const upsert = useBoardStore((s) => s.upsertFromRealtime);
   const setSelected = useBoardStore((s) => s.setSelected);
 
-  const epics = useMemo(() => {
-    const seen = new Set<string>();
-    for (const c of cards) seen.add(c.epic);
-    const filtered = allEpics.filter((e) => seen.has(e.id));
-    return filtered.length > 0 ? filtered : allEpics;
-  }, [cards, allEpics]);
-
   const activeProductId = useProductsStore((s) => s.activeProductId);
   const reposByProduct = useProductsStore((s) => s.reposByProduct);
   const productKinds = useMemo(() => {
@@ -68,6 +61,26 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
     const kinds = new Set(repos.map((r) => r.kind));
     return { ado: kinds.has('ado'), github: kinds.has('github') };
   }, [activeProductId, reposByProduct]);
+
+  // Product-scoped stories for the story/epic dropdown. Falls back to the
+  // global epics from /api/state when no product stories are loaded.
+  const [productStories, setProductStories] = useState<Array<{ id: string; name: string }>>([]);
+  useEffect(() => {
+    if (!open || !activeProductId) return;
+    let cancelled = false;
+    forgeApi.listProductStories(activeProductId)
+      .then((stories) => { if (!cancelled) setProductStories(stories.map((s) => ({ id: s.id, name: s.name }))); })
+      .catch(() => { /* ignore */ });
+    return () => { cancelled = true; };
+  }, [open, activeProductId]);
+
+  const epics = useMemo(() => {
+    if (productStories.length > 0) return productStories;
+    const seen = new Set<string>();
+    for (const c of cards) seen.add(c.epic);
+    const filtered = allEpics.filter((e) => seen.has(e.id));
+    return filtered.length > 0 ? filtered : allEpics;
+  }, [cards, allEpics, productStories]);
 
   // ── form state ──────────────────────────────────────────────────────
   const [taskKind, setTaskKind] = useState<TaskKind>('none');
@@ -92,15 +105,27 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
   const [newStoryName, setNewStoryName] = useState('');
   const [creatingStory, setCreatingStory] = useState(false);
   // Load crews lazily once the modal opens with a task kind set, so simple-
-  // create flows don't pay the round-trip.
+  // create flows don't pay the round-trip.  When the active product has no
+  // crews (e.g. "local" repos that share the canonical atlas crews), fall
+  // back to an unscoped fetch so the picker is never empty.
   useEffect(() => {
     if (!open || taskKind === 'none' || crews.length > 0) return;
     let cancelled = false;
-    forgeApi.listCrews()
-      .then((cs) => { if (!cancelled) setCrews(cs); })
+    const applyCrews = (cs: Crew[]) => {
+      if (cancelled) return;
+      const dayCrews = cs.filter((c) => !c.parentCrewId);
+      setCrews(dayCrews.length > 0 ? dayCrews : cs);
+    };
+    forgeApi.listCrews(activeProductId ?? undefined)
+      .then((cs) => {
+        if (cancelled) return;
+        if (cs.length > 0) { applyCrews(cs); return; }
+        // Fallback: active product has no crews — fetch all.
+        forgeApi.listCrews().then(applyCrews).catch(() => {});
+      })
       .catch(() => { /* ignore */ });
     return () => { cancelled = true; };
-  }, [open, taskKind, crews.length]);
+  }, [open, taskKind, crews.length, activeProductId]);
 
   // Auto-pick the default crew per spec: arch for plan, eng for coding.
   // Re-resolve every time taskKind changes so toggling Plan → Coding swaps
@@ -214,7 +239,7 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
     // skips the createWorkItem step (the row already exists, possibly
     // imported from ADO/GitHub). Otherwise we mint a fresh id and create
     // the row server-side.
-    const witId = fromWorkItem?.id ?? id ?? `WI-${Math.floor(Math.random() * 9000 + 1000)}`;
+    const witId = fromWorkItem?.id || id || `WI-${Math.floor(Math.random() * 9000 + 1000)}`;
     const tagArr = tags.split(',').map((t) => t.trim()).filter(Boolean);
 
     if (!fromWorkItem) {
@@ -226,6 +251,10 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
       const witTags = taskKind === 'plan'
         ? [...tagArr, ...planSubkinds.map((k) => `kind:${k}`), 'task:plan']
         : [...tagArr, 'task:coding'];
+      // Bind to the active product's first repo so the work item
+      // is associated with the correct project, not the default "atlas".
+      const activeRepos = activeProductId ? reposByProduct[activeProductId] ?? [] : [];
+      const repoId = activeRepos.length > 0 ? activeRepos[0].id : undefined;
       await forgeApi.createWorkItem({
         id: witId,
         track: taskKind === 'plan' ? 'design' : 'dev',
@@ -237,6 +266,7 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
         points: pts,
         priority,
         tags: witTags,
+        repoId,
       });
     } else {
       // From-WI flow: keep the existing row but apply any operator edits
@@ -417,11 +447,18 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
                     className="btn btn-primary"
                     style={{ padding: '4px 8px', fontSize: 11 }}
                     disabled={!newStoryName.trim()}
-                    onClick={() => {
-                      const id = newStoryName.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '-').slice(0, 20);
-                      const newEpic = { id, name: newStoryName.trim(), status: 'planning' as const, progress: 0, crew: [], cost: 0, color: id.toLowerCase() };
-                      epics.push(newEpic);
-                      setEpic(id);
+                    onClick={async () => {
+                      if (!activeProductId) return;
+                      try {
+                        const story = await forgeApi.createProductStory(activeProductId, { name: newStoryName.trim() });
+                        setProductStories((prev) => [...prev, { id: story.id, name: story.name }]);
+                        setEpic(story.id);
+                      } catch {
+                        // Fallback: create local-only entry.
+                        const fid = newStoryName.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '-').slice(0, 20);
+                        setProductStories((prev) => [...prev, { id: fid, name: newStoryName.trim() }]);
+                        setEpic(fid);
+                      }
                       setCreatingStory(false);
                       setNewStoryName('');
                     }}

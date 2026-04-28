@@ -150,6 +150,14 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 At = DateTimeOffset.UtcNow,
             });
 
+            // Phase 19 — re-queued items are back to "queued" status.
+            var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == row.WorkItemId, ct);
+            if (wi is not null)
+            {
+                wi.ExecutionStatus = ExecutionStatuses.Queued;
+                wi.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+
             await this.taskChannel.EmitAsync(row.WorkItemId, "task.boot-recovery", new
             {
                 queueId = row.Id,
@@ -259,6 +267,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             {
                 wi.AutoDispatchedAt = DateTimeOffset.UtcNow;
                 wi.UpdatedAt = wi.AutoDispatchedAt.Value;
+                // Phase 19 — mark live and bump trial count on claim.
+                wi.ExecutionStatus = ExecutionStatuses.Live;
+                wi.TrialCount++;
                 // Include evaluator crew + agent in the assignment so the
                 // execution endpoint can surface both sides from the start.
                 var evalAgentId = crew.DefaultEvaluatorAgentId ?? evaluatorCrew?.Lead;
@@ -414,11 +425,30 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
             if (!string.IsNullOrEmpty(repoCloneRoot))
             {
-                // Compute worktree directory: {cloneRoot}/../wt/{sanitizedId}
-                var parentDir = Path.GetDirectoryName(repoCloneRoot)!;
-                var wtRoot = Path.Combine(parentDir, "wt");
+                // Compute worktree directory: {cloneRoot}/.worktree/{sanitizedId}
+                var wtRoot = Path.Combine(repoCloneRoot, ".worktree");
                 var sanitizedId = workItemId.Replace("/", "-").Replace("\\", "-").Replace(" ", "-");
                 var worktreeDir = Path.Combine(wtRoot, $"ws-{sanitizedId}");
+
+                // Ensure .worktree/ is in .gitignore so it's never committed.
+                try
+                {
+                    var gitignorePath = Path.Combine(repoCloneRoot, ".gitignore");
+                    var needsEntry = true;
+                    if (File.Exists(gitignorePath))
+                    {
+                        var lines = await File.ReadAllLinesAsync(gitignorePath, ct);
+                        needsEntry = !lines.Any(l => l.Trim() is ".worktree/" or ".worktree");
+                    }
+                    if (needsEntry)
+                    {
+                        await File.AppendAllTextAsync(gitignorePath, "\n.worktree/\n", ct);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    this.logger.LogDebug(ex, "Could not update .gitignore for {Repo}", repoCloneRoot);
+                }
 
                 try
                 {
@@ -671,19 +701,62 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 "Deliverable loop completed: wi={Wi} verdict={Verdict} score={Score} iters={Iters} cost={Cost}",
                 workItemId, result.FinalVerdict, result.FinalScore, result.Iterations, result.TotalCostUsd);
 
-            // (4) On pass, create PR from worktree branch → base.
+            // (4) On pass, push branch then create PR from worktree branch → base.
             if (result.FinalVerdict == "pass")
             {
+                // Push the branch to the remote so ADO/GitHub can see it.
+                var pushCwd = repoCloneRoot ?? worktreePath;
+                if (!string.IsNullOrEmpty(pushCwd))
+                {
+                    var (pushCode, pushOut, pushErr) = await RunGitAsync(pushCwd, "push", "origin", branchName);
+                    if (pushCode == 0)
+                    {
+                        this.logger.LogInformation(
+                            "Pushed branch to remote: wi={Wi} branch={Branch}", workItemId, branchName);
+                    }
+                    else
+                    {
+                        this.logger.LogWarning(
+                            "git push failed (exit {Code}): {Stderr}", pushCode, pushErr);
+                    }
+                }
+
                 try
                 {
-                    var provider = scope.ServiceProvider.GetRequiredService<Forge.Api.Providers.IForgeProvider>();
+                    // Pick the correct provider based on the repo's kind (ado / github).
+                    var providers = scope.ServiceProvider.GetRequiredService<IEnumerable<Forge.Api.Providers.IForgeProvider>>();
+                    var repoKind = "ado";
+                    string? prRepoName = null;
+                    string? prProjectName = null;
+                    if (!string.IsNullOrEmpty(wi?.RepoId))
+                    {
+                        var prRepo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+                        if (!string.IsNullOrEmpty(prRepo?.Kind)) repoKind = prRepo.Kind;
+                        // Extract the ADO repository name from the remote URL
+                        // (e.g. https://dev.azure.com/org/project/_git/reponame).
+                        if (prRepo is not null && repoKind == "ado")
+                        {
+                            prRepoName = ExtractAdoRepoName(prRepo.RemoteUrl);
+                            if (!string.IsNullOrEmpty(prRepo.AdoProject))
+                            {
+                                prProjectName = prRepo.AdoProject;
+                            }
+                        }
+                    }
+                    var provider = providers.FirstOrDefault(p => p.Kind == repoKind && p.IsConfigured)
+                        ?? providers.FirstOrDefault(p => p.IsConfigured);
+                    if (provider is null)
+                    {
+                        throw new InvalidOperationException($"No configured provider found for kind '{repoKind}'");
+                    }
 
                     var prTitle = wi?.Title ?? workItemId;
                     var prBody = $"Auto-generated by Forge agent {agentId} (crew {crewId}).\n\n"
                         + $"**Score:** {result.FinalScore} | **Iterations:** {result.Iterations} | **Cost:** ${result.TotalCostUsd:F2}";
 
                     var pr = await provider.CreatePullRequestAsync(
-                        new Forge.Api.Providers.NewPullRequestRequest(branchName, baseBranch, prTitle, prBody),
+                        new Forge.Api.Providers.NewPullRequestRequest(branchName, baseBranch, prTitle, prBody,
+                            RepositoryName: prRepoName, ProjectName: prProjectName),
                         Forge.Api.Providers.ProviderCallContext.Anonymous, ct);
 
                     await this.taskChannel.EmitAsync(workItemId, "task.pr-opened", new
@@ -707,13 +780,15 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     }, crewId: crewId, ct: ct);
                 }
 
-                // (5) Transition work item to "resolved".
+                // (5) Transition work item to "active" (build column on the
+                //     kanban board). The PR review cycle drives the subsequent
+                //     resolved → closed transitions.
                 try
                 {
                     var wiRow = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
                     if (wiRow is not null)
                     {
-                        wiRow.State = "resolved";
+                        wiRow.State = "active";
                         wiRow.UpdatedAt = DateTimeOffset.UtcNow;
                         await db.SaveChangesAsync(ct);
                     }
@@ -751,6 +826,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // On failure, also complete the queue row so it doesn't stay
             // picked-up forever (abandoned recovery is a 24h fallback).
             await this.CompleteQueueRowAsync(workItemId, ct);
+
+            // Phase 19 — mark execution as failed.
+            await this.SetExecutionStatusAsync(workItemId, ExecutionStatuses.Failed, ct);
         }
         finally
         {
@@ -776,10 +854,45 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 await queue.CompleteAsync(row.Id, ct);
                 await this.BroadcastQueueChangedAsync(row, "completed", ct);
             }
+
+            // Phase 19 — mark execution as completed (success path;
+            // failure path sets "failed" separately in the catch block).
+            var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+            if (wi is not null && wi.ExecutionStatus == ExecutionStatuses.Live)
+            {
+                wi.ExecutionStatus = ExecutionStatuses.Completed;
+                wi.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(ct);
+            }
         }
         catch (Exception ex)
         {
             this.logger.LogDebug(ex, "Failed to complete queue row for {Wi}", workItemId);
+        }
+    }
+
+    /// <summary>
+    /// Phase 19 — update <see cref="WorkItemRow.ExecutionStatus"/> from a
+    /// separate scope (used by the failure path where CompleteQueueRowAsync
+    /// already ran in a different scope).
+    /// </summary>
+    private async Task SetExecutionStatusAsync(string workItemId, string status, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = this.scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+            if (wi is not null)
+            {
+                wi.ExecutionStatus = status;
+                wi.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogDebug(ex, "Failed to set execution status for {Wi}", workItemId);
         }
     }
 
@@ -997,6 +1110,15 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 ToValue = TaskQueueStates.Queued,
                 At = DateTimeOffset.UtcNow,
             });
+
+            // Phase 19 — re-queued items are back to "queued" status.
+            var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == row.WorkItemId, ct);
+            if (wi is not null)
+            {
+                wi.ExecutionStatus = ExecutionStatuses.Queued;
+                wi.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+
             recovered++;
         }
         if (recovered > 0) await db.SaveChangesAsync(ct);
@@ -1072,6 +1194,23 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 if (branch.EndsWith(branchSuffix))
                     return currentPath;
             }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Extracts the ADO repository name from a remote URL.
+    /// E.g. <c>https://dev.azure.com/org/project/_git/reponame</c> → <c>reponame</c>.
+    /// </summary>
+    private static string? ExtractAdoRepoName(string? remoteUrl)
+    {
+        if (string.IsNullOrEmpty(remoteUrl)) return null;
+        if (!Uri.TryCreate(remoteUrl, UriKind.Absolute, out var uri)) return null;
+        var segs = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var gitIdx = Array.IndexOf(segs, "_git");
+        if (gitIdx >= 0 && gitIdx + 1 < segs.Length)
+        {
+            return segs[gitIdx + 1].TrimEnd('/');
         }
         return null;
     }
