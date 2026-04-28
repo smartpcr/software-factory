@@ -39,6 +39,7 @@ public static class WorkItemsEndpoints
         grp.MapPost("/{id}/parent", Reparent).WithName("ReparentWorkItem");
         grp.MapPost("/sync/{repoId}", Sync).WithName("SyncWorkItems");
         grp.MapPost("/{id}/resync", Resync).WithName("ResyncWorkItem");
+        grp.MapPost("/{id}/create-pr", CreatePr).WithName("CreateWorkItemPr");
 
         return app;
     }
@@ -626,6 +627,80 @@ public static class WorkItemsEndpoints
             new { kind = "updated", workItem = MapWorkItem(row) }, ct);
 
         return Results.Ok(MapWorkItem(row));
+    }
+
+    // ----- Phase 19 — agent-callable PR creation --------------------------
+
+    /// <summary>Request body for POST /api/work-items/{id}/create-pr.</summary>
+    public sealed record CreatePrRequest(
+        string Branch,
+        string BaseBranch,
+        string Title,
+        string? Body = null);
+
+    /// <summary>
+    /// Phase 19 — lightweight endpoint the delivery-phase agent calls via
+    /// <c>curl</c> to create a PR through the configured provider. This keeps
+    /// PR creation agent-initiated while reusing the existing provider
+    /// abstraction (ADO / GitHub) for auth + API wiring.
+    /// </summary>
+    private static async Task<IResult> CreatePr(
+        string id,
+        [FromBody] CreatePrRequest req,
+        ForgeDbContext db,
+        IEnumerable<IForgeProvider> providers,
+        Forge.Api.Realtime.TaskChannel taskChannel,
+        CancellationToken ct)
+    {
+        var wi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == id, ct);
+        if (wi is null) return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
+
+        // Resolve the provider from the work item's repo.
+        var repoKind = "ado";
+        string? prRepoName = null;
+        string? prProjectName = null;
+        if (!string.IsNullOrEmpty(wi.RepoId))
+        {
+            var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+            if (!string.IsNullOrEmpty(repo?.Kind)) repoKind = repo.Kind;
+            if (repo is not null && repoKind == "ado")
+            {
+                prRepoName = ExtractAdoRepoName(repo.RemoteUrl);
+                if (!string.IsNullOrEmpty(repo.AdoProject))
+                    prProjectName = repo.AdoProject;
+            }
+        }
+
+        var provider = providers.FirstOrDefault(p => p.Kind == repoKind && p.IsConfigured)
+            ?? providers.FirstOrDefault(p => p.IsConfigured);
+        if (provider is null)
+            return Results.Problem(title: $"No configured provider for kind '{repoKind}'", statusCode: 503);
+
+        var prReq = new NewPullRequestRequest(
+            req.Branch, req.BaseBranch, req.Title, req.Body ?? "",
+            RepositoryName: prRepoName, ProjectName: prProjectName);
+
+        var pr = await provider.CreatePullRequestAsync(prReq, ProviderCallContext.Anonymous, ct);
+
+        // Emit event so the live transcript shows the PR.
+        await taskChannel.EmitAsync(id, "task.pr-opened", new
+        {
+            prId = pr.Id,
+            prTitle = pr.Title,
+            branch = req.Branch,
+            baseBranch = req.BaseBranch,
+        }, ct: ct);
+
+        return Results.Ok(new { prId = pr.Id, prTitle = pr.Title });
+    }
+
+    /// <summary>Extract the ADO repository name from a remote URL.</summary>
+    private static string? ExtractAdoRepoName(string? remoteUrl)
+    {
+        if (string.IsNullOrEmpty(remoteUrl)) return null;
+        // https://dev.azure.com/org/project/_git/reponame
+        var idx = remoteUrl.LastIndexOf("/_git/", StringComparison.OrdinalIgnoreCase);
+        return idx >= 0 ? remoteUrl[(idx + 6)..] : null;
     }
 
     // ----- helpers --------------------------------------------------------

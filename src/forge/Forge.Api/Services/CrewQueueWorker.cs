@@ -701,101 +701,107 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 "Deliverable loop completed: wi={Wi} verdict={Verdict} score={Score} iters={Iters} cost={Cost}",
                 workItemId, result.FinalVerdict, result.FinalScore, result.Iterations, result.TotalCostUsd);
 
-            // (4) On pass, push branch then create PR from worktree branch → base.
+            // (4) On pass, run a delivery-phase agent invocation. The agent
+            //     is responsible for pushing the branch and creating a PR via
+            //     the create-pr endpoint. Server-side verification ensures
+            //     both actually happened before the task is marked complete.
             if (result.FinalVerdict == "pass")
             {
-                // Push the branch to the remote so ADO/GitHub can see it.
-                var pushCwd = repoCloneRoot ?? worktreePath;
-                if (!string.IsNullOrEmpty(pushCwd))
+                var deliveryPrompt = BuildDeliveryPrompt(workItemId, branchName, baseBranch, wi);
+
+                this.logger.LogInformation(
+                    "Starting delivery phase: wi={Wi} branch={Branch} base={Base}",
+                    workItemId, branchName, baseBranch);
+
+                await this.taskChannel.EmitAsync(workItemId, "task.delivery-start", new
                 {
-                    var (pushCode, pushOut, pushErr) = await RunGitAsync(pushCwd, "push", "origin", branchName);
-                    if (pushCode == 0)
+                    agentId,
+                    crewId,
+                    branch = branchName,
+                    baseBranch,
+                }, crewId: crewId, ct: ct);
+
+                // Reuse the same runner/context for the delivery invocation.
+                var deliveryInvocation = await runner.StartAsync(
+                    workItemId, agentId, deliveryPrompt, context, ct);
+
+                await foreach (var evt in deliveryInvocation.Events.WithCancellation(ct))
+                {
+                    var kind = evt.Kind switch
                     {
-                        this.logger.LogInformation(
-                            "Pushed branch to remote: wi={Wi} branch={Branch}", workItemId, branchName);
-                    }
-                    else
+                        AgentEventKind.Token => "task.delivery-token",
+                        AgentEventKind.ToolCall => "task.delivery-tool-call",
+                        AgentEventKind.ToolResult => "task.delivery-tool-result",
+                        AgentEventKind.Finished => "task.delivery-finished",
+                        AgentEventKind.Failed => "task.delivery-failed",
+                        _ => $"task.delivery-{evt.Kind.ToString().ToLowerInvariant()}",
+                    };
+                    await this.taskChannel.EmitAsync(workItemId, kind, new
                     {
-                        this.logger.LogWarning(
-                            "git push failed (exit {Code}): {Stderr}", pushCode, pushErr);
-                    }
+                        invocationId = deliveryInvocation.InvocationId,
+                        agentId,
+                        crewId,
+                        text = evt.Text,
+                        toolName = evt.ToolName,
+                        error = evt.Error,
+                    }, crewId: crewId, ct: ct);
                 }
 
-                try
+                // (5) Verify delivery: branch pushed + PR created.
+                var branchPushed = await this.VerifyBranchPushedAsync(
+                    repoCloneRoot ?? worktreePath, branchName, ct);
+                var prCreated = await VerifyPrCreatedAsync(db, workItemId, ct);
+
+                if (branchPushed && prCreated)
                 {
-                    // Pick the correct provider based on the repo's kind (ado / github).
-                    var providers = scope.ServiceProvider.GetRequiredService<IEnumerable<Forge.Api.Providers.IForgeProvider>>();
-                    var repoKind = "ado";
-                    string? prRepoName = null;
-                    string? prProjectName = null;
-                    if (!string.IsNullOrEmpty(wi?.RepoId))
+                    this.logger.LogInformation(
+                        "Delivery verified: wi={Wi} branch={Branch}", workItemId, branchName);
+
+                    // Transition work item to "resolved" — PR review cycle
+                    // drives the subsequent resolved → closed transitions.
+                    try
                     {
-                        var prRepo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
-                        if (!string.IsNullOrEmpty(prRepo?.Kind)) repoKind = prRepo.Kind;
-                        // Extract the ADO repository name from the remote URL
-                        // (e.g. https://dev.azure.com/org/project/_git/reponame).
-                        if (prRepo is not null && repoKind == "ado")
+                        var wiRow = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+                        if (wiRow is not null)
                         {
-                            prRepoName = ExtractAdoRepoName(prRepo.RemoteUrl);
-                            if (!string.IsNullOrEmpty(prRepo.AdoProject))
-                            {
-                                prProjectName = prRepo.AdoProject;
-                            }
+                            wiRow.State = "resolved";
+                            wiRow.UpdatedAt = DateTimeOffset.UtcNow;
+                            await db.SaveChangesAsync(ct);
                         }
                     }
-                    var provider = providers.FirstOrDefault(p => p.Kind == repoKind && p.IsConfigured)
-                        ?? providers.FirstOrDefault(p => p.IsConfigured);
-                    if (provider is null)
+                    catch (Exception ex)
                     {
-                        throw new InvalidOperationException($"No configured provider found for kind '{repoKind}'");
-                    }
-
-                    var prTitle = wi?.Title ?? workItemId;
-                    var prBody = $"Auto-generated by Forge agent {agentId} (crew {crewId}).\n\n"
-                        + $"**Score:** {result.FinalScore} | **Iterations:** {result.Iterations} | **Cost:** ${result.TotalCostUsd:F2}";
-
-                    var pr = await provider.CreatePullRequestAsync(
-                        new Forge.Api.Providers.NewPullRequestRequest(branchName, baseBranch, prTitle, prBody,
-                            RepositoryName: prRepoName, ProjectName: prProjectName),
-                        Forge.Api.Providers.ProviderCallContext.Anonymous, ct);
-
-                    await this.taskChannel.EmitAsync(workItemId, "task.pr-opened", new
-                    {
-                        prId = pr.Id,
-                        prTitle = pr.Title,
-                        branch = branchName,
-                        baseBranch,
-                    }, crewId: crewId, ct: ct);
-
-                    this.logger.LogInformation(
-                        "PR created: wi={Wi} pr={Pr} branch={Branch}", workItemId, pr.Id, branchName);
-                }
-                catch (Exception ex)
-                {
-                    this.logger.LogWarning(ex, "PR creation failed for wi={Wi}", workItemId);
-                    await this.taskChannel.EmitAsync(workItemId, "task.pr-failed", new
-                    {
-                        error = ex.Message,
-                        branch = branchName,
-                    }, crewId: crewId, ct: ct);
-                }
-
-                // (5) Transition work item to "active" (build column on the
-                //     kanban board). The PR review cycle drives the subsequent
-                //     resolved → closed transitions.
-                try
-                {
-                    var wiRow = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
-                    if (wiRow is not null)
-                    {
-                        wiRow.State = "active";
-                        wiRow.UpdatedAt = DateTimeOffset.UtcNow;
-                        await db.SaveChangesAsync(ct);
+                        this.logger.LogDebug(ex, "Work item state transition failed for wi={Wi}", workItemId);
                     }
                 }
-                catch (Exception ex)
+                else
                 {
-                    this.logger.LogDebug(ex, "Work item state transition failed for wi={Wi}", workItemId);
+                    this.logger.LogWarning(
+                        "Delivery verification failed: wi={Wi} branchPushed={Pushed} prCreated={Pr}",
+                        workItemId, branchPushed, prCreated);
+                    await this.taskChannel.EmitAsync(workItemId, "task.delivery-failed", new
+                    {
+                        agentId,
+                        crewId,
+                        branchPushed,
+                        prCreated,
+                        reason = !branchPushed
+                            ? "Branch not pushed to remote"
+                            : "PR not created",
+                    }, crewId: crewId, ct: ct);
+
+                    // Mark as failed — delivery is incomplete.
+                    await this.CompleteQueueRowAsync(workItemId, ct);
+                    await this.SetExecutionStatusAsync(workItemId, ExecutionStatuses.Failed, ct);
+                    await this.taskChannel.EmitAsync(workItemId, "task.failed", new
+                    {
+                        agentId,
+                        crewId,
+                        error = !branchPushed
+                            ? "Agent did not push branch to remote"
+                            : "Agent did not create a pull request",
+                    }, crewId: crewId, ct: ct);
+                    return; // skip the normal completion path
                 }
             }
 
@@ -894,6 +900,74 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         {
             this.logger.LogDebug(ex, "Failed to set execution status for {Wi}", workItemId);
         }
+    }
+
+    // ── Phase 19 — delivery helpers ───────────────────────────────────────
+
+    /// <summary>
+    /// Build the delivery-phase prompt. Instructs the agent to push the
+    /// branch and create a PR via the Forge API endpoint.
+    /// </summary>
+    private static string BuildDeliveryPrompt(
+        string workItemId, string branchName, string baseBranch, WorkItemRow? wi)
+    {
+        var title = wi?.Title ?? workItemId;
+        var safeTitle = title.Replace("\"", "\\\"");
+        var jsonBody = "{\"branch\":\"" + branchName + "\",\"baseBranch\":\"" + baseBranch
+            + "\",\"title\":\"" + safeTitle + "\",\"body\":\"Automated PR for " + workItemId + "\"}";
+
+        return "You have finished implementing the changes for work item " + workItemId + ".\n"
+            + "Now you need to deliver your work by performing these two steps:\n\n"
+            + "## Step 1: Push the branch to the remote\n"
+            + "Run the following git commands:\n"
+            + "```\n"
+            + "git add -A\n"
+            + "git status\n"
+            + "git diff --cached --stat\n"
+            + "git commit -m \"" + safeTitle + "\" --allow-empty\n"
+            + "git push origin " + branchName + "\n"
+            + "```\n"
+            + "Verify the push succeeded (exit code 0). If it fails, diagnose and retry.\n\n"
+            + "## Step 2: Create a Pull Request\n"
+            + "Create a PR by calling the Forge API:\n"
+            + "```\n"
+            + "curl -X POST http://localhost:5180/api/work-items/" + workItemId + "/create-pr "
+            + "-H \"Content-Type: application/json\" "
+            + "-d '" + jsonBody + "'\n"
+            + "```\n"
+            + "Verify the response contains a prId. If it fails, check the error and retry once.\n\n"
+            + "IMPORTANT:\n"
+            + "- Do NOT modify any source code in this step. Only push and create the PR.\n"
+            + "- Both steps must succeed for the delivery to be complete.";
+    }
+
+    /// <summary>
+    /// Verify the branch was pushed to the remote by checking
+    /// <c>git ls-remote --heads origin {branch}</c>.
+    /// </summary>
+    private async Task<bool> VerifyBranchPushedAsync(string cwd, string branchName, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(cwd)) return false;
+        try
+        {
+            var (code, stdout, _) = await RunGitAsync(cwd, "ls-remote", "--heads", "origin", branchName);
+            return code == 0 && !string.IsNullOrWhiteSpace(stdout);
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogDebug(ex, "Branch verification failed for {Branch}", branchName);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Verify a PR was created by checking if a <c>task.pr-opened</c>
+    /// transcript event exists for this work item.
+    /// </summary>
+    private static async Task<bool> VerifyPrCreatedAsync(ForgeDbContext db, string workItemId, CancellationToken ct)
+    {
+        return await db.TaskTranscriptEvents
+            .AnyAsync(e => e.WorkItemId == workItemId && e.Kind == "task.pr-opened", ct);
     }
 
     /// <summary>

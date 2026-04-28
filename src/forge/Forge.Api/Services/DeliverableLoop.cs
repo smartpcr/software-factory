@@ -178,10 +178,11 @@ public sealed class DeliverableLoop : IDeliverableLoop
                 totalCostUsd = totalCost,
             }, ct);
 
-            // (e) terminal pass → close the work item, exit.
+            // (e) terminal pass → mark active (delivery phase will set
+            //     "resolved" once branch is pushed and PR is created).
             if (verdict == "pass")
             {
-                await TrySetWorkItemStateAsync(this.db, request.WorkItemId, "closed", ct);
+                await TrySetWorkItemStateAsync(this.db, request.WorkItemId, "active", ct);
                 await this.EmitAsync(request.WorkItemId, "task.iteration.passed", new { iter, score = lastScore.Score }, ct);
                 return new DeliverableLoopResult(verdict, iter, lastScore.Score, rowIds, totalCost);
             }
