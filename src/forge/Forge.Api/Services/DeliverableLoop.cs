@@ -66,7 +66,12 @@ public sealed record DeliverableLoopRequest(
     /// Phase 14 in-crew evaluator path is used and both costs land on
     /// <see cref="CrewId"/>.
     /// </summary>
-    string? EvaluatorCrewId = null);
+    string? EvaluatorCrewId = null,
+    /// <summary>
+    /// Phase 20 — optional override for <see cref="ScoringConstants.MaxIterations"/>.
+    /// When null, the compile-time constant is used.
+    /// </summary>
+    int? MaxIterations = null);
 
 /// <summary>One generator turn's raw output + cost.</summary>
 public sealed record GeneratorRunOutput(string OutputText, decimal CostUsd);
@@ -120,8 +125,22 @@ public sealed class DeliverableLoop : IDeliverableLoop
         var pinnedEvaluator = request.EvaluatorAgentId;
         var evalCrewId = request.EvaluatorCrewId ?? request.CrewId;
 
-        while (iter < ScoringConstants.MaxIterations)
+        var maxIter = request.MaxIterations ?? ScoringConstants.MaxIterations;
+
+        while (iter < maxIter)
         {
+            // Phase 20 — re-read per-work-item override each iteration so
+            // the lead can raise/lower the cap from the Live Execution view.
+            var queueOverride = await this.db.TaskQueue.AsNoTracking()
+                .Where(q => q.WorkItemId == request.WorkItemId && q.MaxIterOverride != null)
+                .OrderByDescending(q => q.EnqueuedAt)
+                .Select(q => q.MaxIterOverride)
+                .FirstOrDefaultAsync(ct);
+            if (queueOverride is int ov && ov > 0)
+            {
+                maxIter = ov;
+            }
+
             iter++;
 
             await this.EmitAsync(request.WorkItemId, "task.iteration.started", new

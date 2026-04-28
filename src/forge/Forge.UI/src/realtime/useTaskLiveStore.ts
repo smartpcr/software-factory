@@ -74,6 +74,7 @@ export interface TaskExecutionSnapshot {
   deliverables: DeliverableShape[];
   recentTranscript: TaskTranscriptEvent[];
   worktree?: WorktreeSnapshot | null;
+  maxIterations?: number;
 }
 
 // ─── Store (one entry per work-item) ──────────────────────────────────────

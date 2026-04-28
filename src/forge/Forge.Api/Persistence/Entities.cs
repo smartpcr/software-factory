@@ -857,6 +857,10 @@ public class TaskQueueRow
     public DateTimeOffset? CompletedAt { get; set; }
 
     public DateTimeOffset LastUpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>Phase 20 — runtime override for <see cref="ScoringConstants.MaxIterations"/>. When set via
+    /// PATCH /api/work-items/{id}/execution, the deliverable loop reads this each iteration.</summary>
+    public int? MaxIterOverride { get; set; }
 }
 
 /// <summary>

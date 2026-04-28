@@ -318,14 +318,19 @@ public class AdoProvider : IForgeProvider
         }
         var project = req.ProjectName ?? this.EffectiveProject;
         var client = this.NewClient(ctx);
-        var payload = JsonSerializer.Serialize(new
+        var payloadObj = new Dictionary<string, object>
         {
-            sourceRefName = $"refs/heads/{req.Branch}",
-            targetRefName = $"refs/heads/{req.BaseBranch}",
-            title = req.Title,
-            description = req.Body,
-            isDraft = req.Draft,
-        });
+            ["sourceRefName"] = $"refs/heads/{req.Branch}",
+            ["targetRefName"] = $"refs/heads/{req.BaseBranch}",
+            ["title"] = req.Title,
+            ["description"] = req.Body,
+            ["isDraft"] = req.Draft,
+        };
+        if (req.WorkItemRef.HasValue)
+        {
+            payloadObj["workItemRefs"] = new[] { new { id = req.WorkItemRef.Value.ToString() } };
+        }
+        var payload = JsonSerializer.Serialize(payloadObj);
         using var msg = new HttpRequestMessage(HttpMethod.Post,
             $"{project}/_apis/git/repositories/{repoName}/pullrequests?api-version=7.1")
         {

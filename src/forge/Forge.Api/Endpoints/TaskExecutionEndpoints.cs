@@ -38,6 +38,7 @@ public static class TaskExecutionEndpoints
         grp.MapGet("/{id}/execution", GetExecution).WithName("GetWorkItemExecution");
         grp.MapGet("/{id}/transcript", GetTranscript).WithName("GetWorkItemTranscript");
         grp.MapDelete("/{id}/transcript", ClearTranscript).WithName("ClearWorkItemTranscript");
+        grp.MapPatch("/{id}/execution", PatchExecution).WithName("PatchWorkItemExecution");
         return app;
     }
 
@@ -240,7 +241,8 @@ public static class TaskExecutionEndpoints
             RecentTranscript: transcript,
             Worktree: worktree,
             ExecutionStatus: wi?.ExecutionStatus ?? ExecutionStatuses.Idle,
-            TrialCount: wi?.TrialCount ?? 0);
+            TrialCount: wi?.TrialCount ?? 0,
+            MaxIterations: latestQueue?.MaxIterOverride ?? ScoringConstants.MaxIterations);
 
         return Results.Ok(snap);
     }
@@ -338,5 +340,33 @@ public static class TaskExecutionEndpoints
         if (!el.TryGetProperty(name, out var v)) return fallback;
         if (v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var i)) return i;
         return fallback;
+    }
+
+    // ── Phase 20 — PATCH /api/work-items/{id}/execution ─────────────────
+
+    private sealed record PatchExecutionBody(int? MaxIterations);
+
+    private static async Task<IResult> PatchExecution(
+        string id,
+        [FromBody] PatchExecutionBody body,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        if (body.MaxIterations is int val && (val < 1 || val > 50))
+            return Results.Problem(title: "maxIterations must be between 1 and 50", statusCode: 400);
+
+        var queueRow = await db.TaskQueue
+            .Where(q => q.WorkItemId == id)
+            .OrderByDescending(q => q.EnqueuedAt)
+            .FirstOrDefaultAsync(ct);
+
+        if (queueRow is null)
+            return Results.Problem(title: $"No queue entry for work item {id}", statusCode: 404);
+
+        queueRow.MaxIterOverride = body.MaxIterations;
+        queueRow.LastUpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+
+        return Results.Ok(new { workItemId = id, maxIterations = body.MaxIterations });
     }
 }

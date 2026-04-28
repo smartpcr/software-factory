@@ -458,17 +458,38 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
                     if (!string.IsNullOrEmpty(existingWtPath) && Directory.Exists(existingWtPath))
                     {
-                        worktreePath = existingWtPath;
-                        this.logger.LogInformation(
-                            "Reusing existing worktree: path={Path} branch={Branch}",
-                            worktreePath, branchName);
+                        // If the existing worktree is under the repo's .worktree/ dir, reuse it.
+                        // Otherwise it's an old path (e.g. E:\forge\wt\) — remove and recreate
+                        // under the repo so the agent works in the correct location.
+                        var normalizedExisting = Path.GetFullPath(existingWtPath);
+                        var normalizedWtRoot = Path.GetFullPath(wtRoot);
+                        if (normalizedExisting.StartsWith(normalizedWtRoot, StringComparison.OrdinalIgnoreCase))
+                        {
+                            worktreePath = existingWtPath;
+                            this.logger.LogInformation(
+                                "Reusing existing worktree: path={Path} branch={Branch}",
+                                worktreePath, branchName);
+                        }
+                        else
+                        {
+                            this.logger.LogInformation(
+                                "Removing stale worktree at {OldPath} (outside {WtRoot})",
+                                existingWtPath, wtRoot);
+                            await RunGitAsync(repoCloneRoot, "worktree", "remove", "--force", existingWtPath);
+                            existingWtPath = null; // fall through to creation below
+                        }
                     }
-                    else
+
+                    if (string.IsNullOrEmpty(existingWtPath) || !Directory.Exists(existingWtPath))
                     {
                         // Create the worktree root directory and the worktree.
                         Directory.CreateDirectory(wtRoot);
-                        var (code, _, stderr) = await RunGitAsync(repoCloneRoot,
-                            "worktree", "add", "-b", branchName, worktreeDir, baseBranch);
+                        // Branch may already exist from a prior run — use checkout instead of -b
+                        var (checkCode, _, _) = await RunGitAsync(repoCloneRoot,
+                            "rev-parse", "--verify", branchName);
+                        var (code, _, stderr) = checkCode == 0
+                            ? await RunGitAsync(repoCloneRoot, "worktree", "add", worktreeDir, branchName)
+                            : await RunGitAsync(repoCloneRoot, "worktree", "add", "-b", branchName, worktreeDir, baseBranch);
                         if (code == 0)
                         {
                             worktreePath = worktreeDir;
@@ -651,6 +672,21 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     + genOutput.Substring(0, Math.Min(genOutput.Length, 50000));
 
                 var invocation = await runner.StartAsync(workItemId, evaluatorAgentId, evalPrompt, evalContext, iterCt);
+
+                // Emit evaluator prompt so the live execution view shows it.
+                await this.taskChannel.EmitAsync(workItemId, "task.prompt", new
+                {
+                    agentId = evaluatorAgentId,
+                    crewId = evaluatorCrewId,
+                    systemPrompt = string.IsNullOrEmpty(evalSoulForScoring) ? null : evalSoulForScoring,
+                    userPrompt = evalPrompt,
+                    model = evalModel,
+                    backend = evalBackendStr,
+                    invokeMode = "sdk",
+                    role = "evaluator",
+                    iter,
+                }, crewId: evaluatorCrewId!, ct: iterCt);
+
                 var evalOutput = new System.Text.StringBuilder();
                 decimal evalCost = 0m;
 
@@ -913,8 +949,30 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     {
         var title = wi?.Title ?? workItemId;
         var safeTitle = title.Replace("\"", "\\\"");
+        var providerRef = wi?.ProviderRef?.ToString() ?? "";
+
+        // Build a meaningful PR description
+        var bodyLines = new System.Text.StringBuilder();
+        bodyLines.Append("## " + title + "\\n\\n");
+        bodyLines.Append("**Work Item:** " + workItemId);
+        if (!string.IsNullOrEmpty(providerRef))
+            bodyLines.Append(" (ADO #" + providerRef + ")");
+        bodyLines.Append("\\n\\n");
+        if (!string.IsNullOrEmpty(wi?.DescriptionMd))
+        {
+            // Take first 500 chars of description, escape for JSON
+            var desc = wi.DescriptionMd.Length > 500
+                ? wi.DescriptionMd[..500] + "..."
+                : wi.DescriptionMd;
+            desc = desc.Replace("\\", "\\\\").Replace("\"", "\\\"")
+                .Replace("\r\n", "\\n").Replace("\n", "\\n").Replace("\r", "\\n");
+            bodyLines.Append("### Description\\n" + desc + "\\n\\n");
+        }
+        bodyLines.Append("---\\n*Auto-generated by Forge.*");
+
         var jsonBody = "{\"branch\":\"" + branchName + "\",\"baseBranch\":\"" + baseBranch
-            + "\",\"title\":\"" + safeTitle + "\",\"body\":\"Automated PR for " + workItemId + "\"}";
+            + "\",\"title\":\"" + safeTitle
+            + "\",\"body\":\"" + bodyLines + "\"}";
 
         return "You have finished implementing the changes for work item " + workItemId + ".\n"
             + "Now you need to deliver your work by performing these two steps:\n\n"
@@ -931,7 +989,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             + "## Step 2: Create a Pull Request\n"
             + "Create a PR by calling the Forge API:\n"
             + "```\n"
-            + "curl -X POST http://localhost:5180/api/work-items/" + workItemId + "/create-pr "
+            + "curl -X POST http://localhost:5181/api/work-items/" + workItemId + "/create-pr "
             + "-H \"Content-Type: application/json\" "
             + "-d '" + jsonBody + "'\n"
             + "```\n"

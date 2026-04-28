@@ -145,7 +145,12 @@ public sealed record NewPullRequestRequest(
     /// <summary>
     /// Override the provider's default project for this PR.
     /// </summary>
-    string? ProjectName = null);
+    string? ProjectName = null,
+    /// <summary>
+    /// ADO work item ID to link to the PR. When set, the PR is created
+    /// with a work-item reference so ADO shows the link automatically.
+    /// </summary>
+    int? WorkItemRef = null);
 
 /// <summary>
 /// Phase 6.11 — passes the per-request user PAT to provider write paths.

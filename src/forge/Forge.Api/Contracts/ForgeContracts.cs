@@ -931,7 +931,9 @@ public sealed record TaskExecutionSnapshot(
     IReadOnlyList<TaskTranscriptEvent> RecentTranscript,
     WorktreeSnapshot? Worktree,
     string ExecutionStatus = "idle",
-    int TrialCount = 0);
+    int TrialCount = 0,
+    /// <summary>Phase 20 — effective max iterations (override or default constant).</summary>
+    int MaxIterations = 5);
 
 // ─── Phase 17 — Persistent task queue & team-to-crew routing ──────────────
 

@@ -636,7 +636,9 @@ public static class WorkItemsEndpoints
         string Branch,
         string BaseBranch,
         string Title,
-        string? Body = null);
+        string? Body = null,
+        /// <summary>ADO work item ID to link to the PR (numeric).</summary>
+        int? WorkItemId = null);
 
     /// <summary>
     /// Phase 19 — lightweight endpoint the delivery-phase agent calls via
@@ -676,9 +678,13 @@ public static class WorkItemsEndpoints
         if (provider is null)
             return Results.Problem(title: $"No configured provider for kind '{repoKind}'", statusCode: 503);
 
+        // Resolve work item ref for linking
+        int? wiRef = req.WorkItemId ?? wi.ProviderRef;
+
         var prReq = new NewPullRequestRequest(
             req.Branch, req.BaseBranch, req.Title, req.Body ?? "",
-            RepositoryName: prRepoName, ProjectName: prProjectName);
+            RepositoryName: prRepoName, ProjectName: prProjectName,
+            WorkItemRef: wiRef);
 
         var pr = await provider.CreatePullRequestAsync(prReq, ProviderCallContext.Anonymous, ct);
 

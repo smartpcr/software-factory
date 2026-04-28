@@ -1204,6 +1204,14 @@ export const forgeApi = {
       headers: { 'X-Forge-User': writerHeader() },
     });
   },
+
+  async patchExecution(workItemId: string, body: { maxIterations?: number }): Promise<void> {
+    await fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/execution`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
 };
 
 function buildLocalTimeline(from: number, to: number): TimelineResponse {

@@ -4,7 +4,7 @@
 // (Worktree, Tokens, Progress). Reads the snapshot from
 // /api/work-items/{id}/execution and tails the SignalR `task.{id}` group
 // for live updates via useTaskLive (Phase 16.13).
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { useTaskLive, useTaskLiveStore, type TaskTranscriptEvent, type WorktreeSnapshot } from '@/realtime/useTaskLiveStore';
 import { forgeApi } from '@/api/forgeApi';
@@ -34,6 +34,11 @@ export function LiveExecutionView(): JSX.Element {
 
   const [copied, setCopied] = useState(false);
   const [promptsCollapsed, setPromptsCollapsed] = useState(false);
+  const [promptRole, setPromptRole] = useState<'generator' | 'evaluator'>('generator');
+  const [maxIter, setMaxIter] = useState<number | null>(null);
+
+  // Sync local maxIter from server snapshot on first load.
+  const effectiveMaxIter = maxIter ?? snapshot?.maxIterations ?? 5;
 
   const snapshot = entry?.snapshot ?? null;
   const transcript = entry?.transcript ?? [];
@@ -44,24 +49,27 @@ export function LiveExecutionView(): JSX.Element {
   const evalAgentId = snapshot?.evaluatorAgentId ?? null;
   const filtered = useMemo(() => filterEvents(transcript, filter, genCrewId, evalCrewId, genAgentId, evalAgentId), [transcript, filter, genCrewId, evalCrewId, genAgentId, evalAgentId]);
 
-  // Extract latest system + user prompt from the most recent task.prompt event.
+  // Extract latest system + user prompt from the most recent task.prompt event, per role.
   const latestPrompt = useMemo(() => {
     for (let i = transcript.length - 1; i >= 0; i--) {
       if (transcript[i].kind === 'task.prompt') {
         const p = transcript[i].payload as Record<string, unknown> | null;
-        if (p) {
-          return {
-            systemPrompt: (p.systemPrompt as string) ?? '',
-            userPrompt: (p.userPrompt as string) ?? '',
-            model: (p.model as string) ?? '',
-            backend: (p.backend as string) ?? '',
-            mode: (p.invokeMode as string) ?? '',
-          };
-        }
+        if (!p) continue;
+        const evtRole = (p.role as string) ?? undefined;
+        const isEvaluator = evtRole === 'evaluator';
+        if (promptRole === 'evaluator' && !isEvaluator) continue;
+        if (promptRole === 'generator' && isEvaluator) continue;
+        return {
+          systemPrompt: (p.systemPrompt as string) ?? '',
+          userPrompt: (p.userPrompt as string) ?? '',
+          model: (p.model as string) ?? '',
+          backend: (p.backend as string) ?? '',
+          mode: (p.invokeMode as string) ?? '',
+        };
       }
     }
     return null;
-  }, [transcript]);
+  }, [transcript, promptRole]);
 
   function copyLogs() {
     const lines = filtered.map((evt) => {
@@ -75,6 +83,17 @@ export function LiveExecutionView(): JSX.Element {
       setTimeout(() => setCopied(false), 2000);
     });
   }
+
+  const handleMaxIterChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = parseInt(e.target.value, 10);
+    if (Number.isNaN(v) || v < 1 || v > 50) return;
+    setMaxIter(v);
+    if (workItemId) {
+      void forgeApi.patchExecution(workItemId, { maxIterations: v }).catch(() => {
+        useToastStore.getState().show('Failed to update max iterations', 'danger');
+      });
+    }
+  }, [workItemId]);
 
   if (!workItemId) {
     return <div className="live-exec__empty">Pick a work item to watch.</div>;
@@ -169,22 +188,27 @@ export function LiveExecutionView(): JSX.Element {
             role="generator"
             crewName={snapshot?.generatorCrewName}
             agentName={snapshot?.generatorAgentName ?? snapshot?.generatorAgentId}
+            selected={promptRole === 'generator'}
+            onClick={() => setPromptRole('generator')}
           />
           <span className="live-exec__pair-conn">↔ paired</span>
           <PairSide
             role="evaluator"
             crewName={snapshot?.evaluatorCrewName}
             agentName={snapshot?.evaluatorAgentName ?? snapshot?.evaluatorAgentId}
+            selected={promptRole === 'evaluator'}
+            onClick={() => setPromptRole('evaluator')}
           />
         </div>
         <div className="live-exec__iter">
-          <strong>iter {snapshot?.currentIteration ?? 0}</strong> of 5
-        </div>
-        <div className="live-exec__budget">
-          <BudgetBar
-            label="task"
-            spend={snapshot?.totalCostUsd ?? 0}
-            cap={snapshot?.maxTaskBudgetUsd ?? null}
+          <strong>iter {snapshot?.currentIteration ?? 0}</strong> of{' '}
+          <input
+            type="number"
+            min={1}
+            max={50}
+            value={effectiveMaxIter}
+            onChange={handleMaxIterChange}
+            style={{ width: 48, textAlign: 'center', fontSize: 'inherit', fontWeight: 'bold', border: '1px solid var(--border, #ccc)', borderRadius: 3, padding: '1px 4px' }}
           />
         </div>
         <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
@@ -222,7 +246,7 @@ export function LiveExecutionView(): JSX.Element {
         <section className="live-exec__prompts" aria-label="Prompts">
           <div className="live-exec__prompts-header" onClick={() => setPromptsCollapsed(!promptsCollapsed)} role="button" tabIndex={0}>
             <span className="live-exec__prompts-title">
-              {promptsCollapsed ? '▸' : '▾'} Prompts
+              {promptsCollapsed ? '▸' : '▾'} {promptRole === 'generator' ? 'Generator' : 'Evaluator'} Prompts
             </span>
             <span className="live-exec__prompts-meta">
               {latestPrompt.backend}/{latestPrompt.mode} · {latestPrompt.model}
@@ -303,12 +327,29 @@ export function LiveExecutionView(): JSX.Element {
 
 // ── Sub-components ────────────────────────────────────────────────────────
 
-function PairSide(props: { role: 'generator' | 'evaluator'; crewName?: string | null; agentName?: string | null }): JSX.Element {
-  const { role, crewName, agentName } = props;
+function PairSide(props: {
+  role: 'generator' | 'evaluator';
+  crewName?: string | null;
+  agentName?: string | null;
+  selected?: boolean;
+  onClick?: () => void;
+}): JSX.Element {
+  const { role, crewName, agentName, selected, onClick } = props;
   const portrait = agentName ? avatarFor(agentName, agentName) : null;
   const tip = agentName ? agentTooltip(agentName, agentName, role) : '';
   return (
-    <div className="live-exec__pair-side" data-role={role}>
+    <div
+      className="live-exec__pair-side"
+      data-role={role}
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      style={{
+        cursor: onClick ? 'pointer' : undefined,
+        borderBottom: selected ? '2px solid var(--accent, #3b82f6)' : '2px solid transparent',
+        paddingBottom: 2,
+      }}
+    >
       {portrait ? (
         <img
           src={portrait}
