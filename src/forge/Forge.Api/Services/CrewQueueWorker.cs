@@ -370,6 +370,13 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // Phase 19 — mark live and bump trial count on claim.
                 wi.ExecutionStatus = ExecutionStatuses.Live;
                 wi.TrialCount++;
+                // Move to 'active' on the board when an agent picks it up.
+                // Items in 'proposed' or 'new' haven't been activated yet;
+                // claiming them means work has started.
+                if (wi.State is "proposed" or "new")
+                {
+                    wi.State = "active";
+                }
                 // Phase 22 — write AssignedAgentJson (not AssignedToJson).
                 // AssignedToJson retains whatever WIT-level value it had.
                 var evalAgentId = crew.DefaultEvaluatorAgentId ?? evaluatorCrew?.Lead;
