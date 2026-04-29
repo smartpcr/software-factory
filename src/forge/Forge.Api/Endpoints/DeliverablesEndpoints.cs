@@ -45,10 +45,11 @@ public static class DeliverablesEndpoints
 
     private static async Task<IResult> ListByWorkItem(string workItemId, ForgeDbContext db, CancellationToken ct)
     {
-        var rows = await db.Deliverables.AsNoTracking()
+        var rows = (await db.Deliverables.AsNoTracking()
             .Where(d => d.WorkItemId == workItemId)
-            .OrderBy(d => d.Iter)
-            .ToListAsync(ct);
+            .ToListAsync(ct))
+            .OrderBy(d => d.CreatedAt).ThenBy(d => d.Iter)
+            .ToList();
         return Results.Ok(rows.Select(MapToDto));
     }
 

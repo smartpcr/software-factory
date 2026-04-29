@@ -265,6 +265,19 @@ app.MapAdminEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 
+// Serve agent avatar PNGs from the UI assets directory so PR descriptions
+// on ADO can embed real character portraits via http://localhost:5180/api/avatars/{file}.
+app.MapGet("/api/avatars/{filename}", (string filename) =>
+{
+    if (filename.Contains("..") || filename.Contains('/') || filename.Contains('\\'))
+        return Results.BadRequest();
+    var crewsDir = Path.Combine(
+        ForgeSeed.FindRepoRoot(), "src", "forge", "Forge.UI", "src", "assets", "crews");
+    var filePath = Path.Combine(crewsDir, filename);
+    if (!File.Exists(filePath)) return Results.NotFound();
+    return Results.File(filePath, "image/png");
+}).WithTags("Avatars").WithName("GetAgentAvatar");
+
 // Prevent unobserved Task exceptions from crashing the process.
 // Background agent tasks (Task.Run in CrewQueueWorker) can throw
 // ObjectDisposedException on shutdown — swallow instead of crashing.

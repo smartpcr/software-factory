@@ -122,4 +122,5 @@ public sealed record AgentContext(
     IReadOnlyList<string> AllowedTools,
     decimal? MaxTaskBudgetUsd = null,
     AgentBackend Backend = AgentBackend.Copilot,
-    AgentInvokeMode InvokeMode = AgentInvokeMode.Sdk);
+    AgentInvokeMode InvokeMode = AgentInvokeMode.Sdk,
+    TimeSpan? WallClockBudget = null);

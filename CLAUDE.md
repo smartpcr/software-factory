@@ -51,6 +51,11 @@ dotnet build src/ExecutionEngine/ExecutionEngine.csproj
 dotnet run --project src/EtlIterator/EtlIterator.csproj
 dotnet run --project src/Unzip/Unzip.csproj
 dotnet run --project src/ExecutionEngine.Example/ExecutionEngine.Example.csproj
+
+# Run Forge.Api tests (IMPORTANT: stop the running Forge.Api server first,
+# the test build needs to copy Forge.Api.exe which is file-locked by the server.
+# Always restart the server after tests complete.)
+dotnet test src/forge/Forge.Api.Tests/Forge.Api.Tests.csproj
 ```
 
 ## Architecture

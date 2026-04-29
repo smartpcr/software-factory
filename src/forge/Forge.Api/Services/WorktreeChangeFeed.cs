@@ -176,7 +176,7 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
     /// Build a snapshot of the worktree. Returns null if the path isn't a
     /// git repo (a misconfigured workstream shouldn't break the loop).
     /// </summary>
-    private async Task<Snapshot?> SampleAsync(string path, CancellationToken ct)
+    public async Task<Snapshot?> SampleAsync(string path, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(path) || !Directory.Exists(path)) return null;
         if (!Directory.Exists(Path.Combine(path, ".git")) && !File.Exists(Path.Combine(path, ".git"))) return null;

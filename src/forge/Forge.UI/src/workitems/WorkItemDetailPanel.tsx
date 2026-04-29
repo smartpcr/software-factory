@@ -285,7 +285,10 @@ export function WorkItemDetailPanel({ item }: Props) {
         )}
         <div className="wit-detail-eyebrow-row">
           <StateSelect value={item.state} onChange={setState} />
-          <ExecBadge status={item.executionStatus} trialCount={item.trialCount} />
+          <div className="wit-detail-eyebrow-meta">
+            <span className="lbl">Execution</span>
+            <ExecBadge status={item.executionStatus} trialCount={item.trialCount} />
+          </div>
           <IterationSelect value={item.iterationRef} repoId={item.repoId} onChange={setIteration} />
           <PointsStepper value={item.points} onChange={setPoints} />
           <PrioritySelect value={item.priority} onChange={setPriority} />

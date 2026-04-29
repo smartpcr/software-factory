@@ -150,6 +150,19 @@ export function InboxView(): JSX.Element {
                   <div className="inbox-crew-head">
                     <span className="inbox-crew-name">{crew?.name ?? crewId}</span>
                     <span className="inbox-crew-meta">
+                      {(() => {
+                        const active = queueRows.filter((r) => r.state === 'picked-up').length;
+                        const cap = crew?.maxConcurrent ?? 0;
+                        const over = cap > 0 && active >= cap;
+                        return (
+                          <>
+                            <strong className={over ? 'inbox-over-cap' : ''}>{active}</strong>
+                            {cap > 0 ? <> / {cap} active</> : <> active</>}
+                            {over && <span className="inbox-over-cap-pill">⚠ at capacity</span>}
+                            <span className="inbox-meta-sep">·</span>
+                          </>
+                        );
+                      })()}
                       depth: <strong>{stats?.depth ?? queueRows.filter((r) => r.state === 'queued').length}</strong>
                       {stats ? <> · ETA: <strong>{stats.etaMinutes}m</strong></> : null}
                       {stats?.strained ? <span className="inbox-strain-pill">strained</span> : null}

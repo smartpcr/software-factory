@@ -75,6 +75,8 @@ export interface TaskExecutionSnapshot {
   deliverables: DeliverableShape[];
   recentTranscript: TaskTranscriptEvent[];
   worktree?: WorktreeSnapshot | null;
+  executionStatus?: string;
+  trialCount?: number;
   maxIterations?: number;
 }
 

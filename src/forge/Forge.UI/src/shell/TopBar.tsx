@@ -59,6 +59,36 @@ export function TopBar({ section, current }: TopBarProps) {
     return () => { cancelled = true; window.clearInterval(id); };
   }, [isPO]);
 
+  // Phase 21 — concurrency chip: active-vs-capacity per crew. Refreshes
+  // alongside spend/payroll so the operator sees warnings without extra clicks.
+  const [concurrency, setConcurrency] = useState<{ active: number; cap: number; overCrews: string[] } | null>(null);
+  useEffect(() => {
+    if (!isPO) return;
+    let cancelled = false;
+    const tick = () => {
+      Promise.all([forgeApi.listCrews(), forgeApi.listQueue()])
+        .then(([cs, q]) => {
+          if (cancelled) return;
+          let totalActive = 0;
+          let totalCap = 0;
+          const overCrews: string[] = [];
+          for (const c of cs) {
+            const cap = c.maxConcurrent ?? 0;
+            const active = (q as Array<{ routedToCrewId?: string; state: string }>)
+              .filter((r) => r.routedToCrewId === c.id && r.state === 'picked-up').length;
+            totalActive += active;
+            totalCap += cap;
+            if (cap > 0 && active >= cap) overCrews.push(c.name);
+          }
+          setConcurrency({ active: totalActive, cap: totalCap, overCrews });
+        })
+        .catch(() => { /* keep last */ });
+    };
+    tick();
+    const id = window.setInterval(tick, 300_000);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, [isPO]);
+
   // Phase 17.8 — inbox chip. Subscribes to the queue's user channel and
   // counts pending acks for crews this user leads. Visible whenever the
   // signed-in user leads at least one crew (drops to zero otherwise).
@@ -194,6 +224,27 @@ export function TopBar({ section, current }: TopBarProps) {
           <span style={{ color: 'var(--text-tertiary)', fontSize: 9.5, fontFamily: 'var(--font-mono, monospace)', textTransform: 'uppercase', letterSpacing: 0.1 }}>payroll</span>
           <span style={{ color: 'rgb(34, 197, 94)', fontWeight: 600 }}>${payroll.totalUsd.toFixed(2)}</span>
           <span style={{ opacity: 0.7 }}>today</span>
+        </div>
+      )}
+      {isPO && concurrency && (
+        <div
+          className="topbar-concurrency-chip"
+          title={concurrency.overCrews.length > 0
+            ? `⚠ At capacity: ${concurrency.overCrews.join(', ')}`
+            : `${concurrency.active} active / ${concurrency.cap} total capacity`}
+          style={chipStyle(concurrency.overCrews.length > 0 ? 'var(--warning, #f59e0b)' : 'var(--text-tertiary)')}
+        >
+          <span style={{ color: 'var(--text-tertiary)', fontSize: 9.5, fontFamily: 'var(--font-mono, monospace)', textTransform: 'uppercase', letterSpacing: 0.1 }}>active</span>
+          <span style={{ color: concurrency.overCrews.length > 0 ? 'var(--warning, #f59e0b)' : 'var(--text-secondary)', fontWeight: 600 }}>
+            {concurrency.active}/{concurrency.cap}
+          </span>
+          {concurrency.overCrews.length > 0 && (
+            <span style={{
+              width: 6, height: 6, borderRadius: 999,
+              background: 'var(--warning, #f59e0b)',
+              animation: 'forge-pulse 1.6s ease-in-out infinite',
+            }} />
+          )}
         </div>
       )}
       {/* Phase 17.8 — inbox chip for crew leads. */}

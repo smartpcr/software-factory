@@ -3,6 +3,7 @@ import type { Card as CardModel } from '@/types';
 import { useBoardStore } from '@/state/useBoardStore';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 import { StatePill } from '@/workitems/StatePill';
+import { ExecBadge } from '@/workitems/ExecBadge';
 import { avatarFor, agentTooltip } from '@/agentAvatar';
 import {
   BlockIcon,
@@ -40,6 +41,8 @@ export function Card({ card }: CardProps) {
   const selected = useBoardStore((s) => s.selectedId === card.id);
   const setSelected = useBoardStore((s) => s.setSelected);
   const wiState = useWorkItemsStore((s) => s.items.find((w) => w.id === card.id)?.state ?? null);
+  const wiExecStatus = useWorkItemsStore((s) => s.items.find((w) => w.id === card.id)?.executionStatus ?? null);
+  const wiTrialCount = useWorkItemsStore((s) => s.items.find((w) => w.id === card.id)?.trialCount ?? 0);
 
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: card.id,
@@ -75,6 +78,7 @@ export function Card({ card }: CardProps) {
           <span className="card-id">{card.id}</span>
           {card.priority !== 'low' && <span className={`card-priority ${card.priority}`} />}
           {wiState && <StatePill state={wiState} size="sm" />}
+          <ExecBadge status={wiExecStatus ?? undefined} trialCount={wiTrialCount} size={wiExecStatus && wiExecStatus !== 'idle' ? 'md' : 'sm'} />
         </div>
         <div className="card-actions">
           <button className="card-action" title="Open" data-action="open"><CardOpenIcon /></button>

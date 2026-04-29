@@ -429,7 +429,7 @@ public sealed class TaskQueueService : ITaskQueueService
             .ToListAsync(ct);
         if (recent.Count < 5) return TaskQueueDefaults.DefaultIterationMinutes;
 
-        var sorted = recent.OrderBy(d => d.CreatedAt).Take(20).ToList();
+        var sorted = recent.OrderByDescending(d => d.CreatedAt).Take(20).OrderBy(d => d.CreatedAt).ToList();
         var deltas = new List<double>();
         for (var i = 1; i < sorted.Count; i++)
         {

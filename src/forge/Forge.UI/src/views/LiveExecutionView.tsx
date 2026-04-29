@@ -33,7 +33,7 @@ export function LiveExecutionView(): JSX.Element {
   const navigate = useNavigate();
 
   const [copied, setCopied] = useState(false);
-  const [promptsCollapsed, setPromptsCollapsed] = useState(false);
+  const [promptsCollapsed, setPromptsCollapsed] = useState(true);
   const [promptRole, setPromptRole] = useState<'generator' | 'evaluator'>('generator');
   const [maxIter, setMaxIter] = useState<number | null>(null);
 
@@ -219,6 +219,14 @@ export function LiveExecutionView(): JSX.Element {
             onChange={handleMaxIterChange}
             style={{ width: 48, textAlign: 'center', fontSize: 'inherit', fontWeight: 'bold', border: '1px solid var(--border, #ccc)', borderRadius: 3, padding: '1px 4px' }}
           />
+          {snapshot?.executionStatus && snapshot.executionStatus !== 'live' && snapshot.executionStatus !== 'idle' && (
+            <span className={`live-exec__status-badge live-exec__status-badge--${snapshot.executionStatus}`}>
+              {snapshot.executionStatus === 'failed' ? '✗ failed' :
+               snapshot.executionStatus === 'completed' ? '✓ completed' :
+               snapshot.executionStatus === 'queued' ? '◌ queued' :
+               snapshot.executionStatus}
+            </span>
+          )}
         </div>
         <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
           <button

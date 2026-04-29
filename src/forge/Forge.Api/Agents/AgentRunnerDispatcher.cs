@@ -432,10 +432,9 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         // the finally runs.
         ChildProcessTracker.AddProcess(process);
 
-        // Hard wall-clock timeout. The SDK path already enforces this; CLI
-        // mode used to run unbounded, which is what let hung copilot.exe
-        // sessions sit until manually killed and accumulate as orphans.
-        var budget = this.options.Value.WallClockBudget;
+        // Hard wall-clock timeout. Per-invocation override (from work item
+        // points) takes precedence over the global default.
+        var budget = context.WallClockBudget ?? this.options.Value.WallClockBudget;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         if (budget > TimeSpan.Zero) timeoutCts.CancelAfter(budget);
         var effectiveCt = timeoutCts.Token;
@@ -546,10 +545,9 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         int turnCount = 0;
         var maxTurns = this.options.Value.MaxTurns;
 
-        // Hard wall-clock timeout — mirrors the CLI path (line 435-438).
-        // Without this, a hung SDK session can sit indefinitely, leaking a
-        // copilot.exe child process and blocking subsequent invocations.
-        var budget = this.options.Value.WallClockBudget;
+        // Hard wall-clock timeout — per-invocation override from work item
+        // points takes precedence over the global default.
+        var budget = context.WallClockBudget ?? this.options.Value.WallClockBudget;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         if (budget > TimeSpan.Zero) timeoutCts.CancelAfter(budget);
         var effectiveCt = timeoutCts.Token;

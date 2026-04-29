@@ -304,7 +304,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 var priorAgent = (await db.Deliverables.AsNoTracking()
                     .Where(d => d.WorkItemId == headRow.WorkItemId)
                     .ToListAsync(ct))
-                    .OrderByDescending(d => d.Iter).ThenByDescending(d => d.CreatedAt)
+                    .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
                     .Select(d => d.GeneratorAgentId)
                     .FirstOrDefault();
                 if (!string.IsNullOrEmpty(priorAgent) && members.Contains(priorAgent))
@@ -614,16 +614,27 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // Append PR summary instruction so the generator's final text
             // block can be used as the "Generator perspective" in the PR.
             var prompt = basePrompt + "\n\n"
-                + "IMPORTANT: After completing all code changes, tests, and commits, "
-                + "end your response with a section titled '## Change Summary' that explains:\n"
-                + "1. **What** you changed (files and code paths modified)\n"
-                + "2. **Why** this fixes the problem or improves the system\n"
-                + "3. **How** the fix works (technical approach)\n"
-                + "Keep it concise (3-6 sentences). This will appear in the PR description.";
+                + "IMPORTANT: After completing all code changes and tests:\n"
+                + "1. Commit your changes with a descriptive commit message.\n"
+                + "2. Push the branch to the remote with `git push --force-with-lease origin HEAD`.\n"
+                + "   The remote branch may already exist from a prior run — force-push is expected.\n"
+                + "3. End your response with a section titled '## Change Summary' that explains:\n"
+                + "   - **What** you changed (files and code paths modified)\n"
+                + "   - **Why** this fixes the problem or improves the system\n"
+                + "   - **How** the fix works (technical approach)\n"
+                + "Keep the summary concise (3-6 sentences). This will appear in the PR description.\n"
+                + "You MUST push before finishing — the server creates the PR automatically after you push.";
+
+            // Phase 21 — per-task wall-clock budget: 30 min per story point.
+            // Falls back to the global default when points = 0.
+            var points = wi?.Points ?? 0;
+            TimeSpan? taskBudget = points > 0
+                ? TimeSpan.FromMinutes(points * 30)
+                : null;
 
             this.logger.LogInformation(
-                "Starting agent invocation: wi={Wi} agent={Agent} crew={Crew} model={Model} backend={Backend} mode={Mode} worktree={Worktree}",
-                workItemId, agentId, crewId, model, backend, invokeMode, worktreePath);
+                "Starting agent invocation: wi={Wi} agent={Agent} crew={Crew} model={Model} backend={Backend} mode={Mode} worktree={Worktree} budget={Budget}m",
+                workItemId, agentId, crewId, model, backend, invokeMode, worktreePath, taskBudget?.TotalMinutes ?? 10);
 
             // Emit the system + user prompts so the live execution view shows
             // what the agent is being asked to do.
@@ -649,7 +660,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 AllowedTools: Array.Empty<string>(),
                 MaxTaskBudgetUsd: crew.MaxTaskBudgetUsd,
                 Backend: backend,
-                InvokeMode: invokeMode);
+                InvokeMode: invokeMode,
+                WallClockBudget: taskBudget);
 
             // (2) Resolve evaluator crew + agent for the gen-eval loop.
             CrewRow? evalCrew = null;
@@ -764,7 +776,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     AllowedTools: Array.Empty<string>(),
                     MaxTaskBudgetUsd: evalCrew.MaxTaskBudgetUsd,
                     Backend: evalBackend,
-                    InvokeMode: AgentInvokeMode.Sdk);
+                    InvokeMode: AgentInvokeMode.Sdk,
+                    WallClockBudget: taskBudget);
 
                 // The evaluator prompt is lean — just the task context + work item
                 // title. The evaluator uses tools to inspect the worktree itself.
@@ -899,8 +912,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     var lastDeliverable = (await db.Deliverables.AsNoTracking()
                         .Where(d => d.WorkItemId == workItemId)
                         .ToListAsync(ct))
-                        .OrderByDescending(d => d.Iter)
-                        .ThenByDescending(d => d.CreatedAt)
+                        .OrderByDescending(d => d.CreatedAt)
+                        .ThenByDescending(d => d.Iter)
                         .FirstOrDefault();
                     var changeNotes = lastDeliverable?.Notes ?? string.Empty;
                     var generatorSummary = lastDeliverable?.GeneratorSummary ?? string.Empty;
@@ -917,7 +930,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     if (generatorSummary.Length > 800) generatorSummary = generatorSummary[..800] + "...";
 
                     // Build rich PR description. Includes work item link,
-                    // agent avatar (dicebear seeded by id), full name + role,
+                    // agent avatar from allocation.json, full name + role,
                     // change summary from evaluator notes. NO cost or token
                     // counts — the user expressly does not want PRs to leak
                     // spend numbers into the merge history.
@@ -927,10 +940,46 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         : null;
                     var evalDisplayName = evalAgentRow?.Name ?? evaluatorAgentId;
 
-                    var avatarUrl = $"https://api.dicebear.com/7.x/personas/svg?seed={Uri.EscapeDataString(agentId)}";
-                    var evalAvatarUrl = !string.IsNullOrEmpty(evaluatorAgentId)
-                        ? $"https://api.dicebear.com/7.x/personas/svg?seed={Uri.EscapeDataString(evaluatorAgentId)}"
-                        : null;
+                    // Load real avatar filenames from allocation.json.
+                    string? genAvatarFile = null, evalAvatarFile = null;
+                    try
+                    {
+                        var allocPath = Path.Combine(
+                            Forge.Api.Persistence.ForgeSeed.FindRepoRoot(), "agents", "allocation.json");
+                        if (File.Exists(allocPath))
+                        {
+                            using var allocDoc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(allocPath));
+                            foreach (var el in allocDoc.RootElement.EnumerateArray())
+                            {
+                                var elId = el.GetProperty("id").GetString();
+                                if (elId == agentId && el.TryGetProperty("avatar", out var av))
+                                    genAvatarFile = av.GetString();
+                                if (elId == evaluatorAgentId && el.TryGetProperty("avatar", out var ev))
+                                    evalAvatarFile = ev.GetString();
+                            }
+                        }
+                    }
+                    catch { /* fallback to no avatar */ }
+
+                    // Embed avatar PNGs as base64 data URIs so they render in
+                    // ADO/GitHub PR descriptions without needing localhost access.
+                    var crewsDir = Path.Combine(
+                        Forge.Api.Persistence.ForgeSeed.FindRepoRoot(),
+                        "src", "forge", "Forge.UI", "src", "assets", "crews");
+                    string? avatarDataUri = null, evalAvatarDataUri = null;
+                    if (!string.IsNullOrEmpty(genAvatarFile))
+                    {
+                        var path = Path.Combine(crewsDir, genAvatarFile);
+                        if (File.Exists(path))
+                            avatarDataUri = $"data:image/png;base64,{Convert.ToBase64String(File.ReadAllBytes(path))}";
+                    }
+                    if (!string.IsNullOrEmpty(evalAvatarFile))
+                    {
+                        var path = Path.Combine(crewsDir, evalAvatarFile);
+                        if (File.Exists(path))
+                            evalAvatarDataUri = $"data:image/png;base64,{Convert.ToBase64String(File.ReadAllBytes(path))}";
+                    }
+
                     var prBodyBuilder = new System.Text.StringBuilder();
                     prBodyBuilder.AppendLine($"## {prTitle}");
                     prBodyBuilder.AppendLine();
@@ -939,16 +988,25 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     prBodyBuilder.AppendLine(wiLine);
                     prBodyBuilder.AppendLine($"**Score:** {result.FinalScore} | **Iterations:** {result.Iterations}");
                     prBodyBuilder.AppendLine();
-                    prBodyBuilder.AppendLine($"<img src=\"{avatarUrl}\" width=\"32\" height=\"32\" alt=\"{agentDisplayName}\" /> **Generator:** {agentDisplayName}");
-                    if (!string.IsNullOrEmpty(evalDisplayName) && evalAvatarUrl is not null)
+
+                    // Agent header — listed once with real portraits.
+                    var genImg = avatarDataUri is not null
+                        ? $"<img src=\"{avatarDataUri}\" width=\"24\" height=\"24\" alt=\"{agentDisplayName}\" /> "
+                        : "";
+                    prBodyBuilder.Append($"{genImg}**Generator:** {agentDisplayName}");
+                    if (!string.IsNullOrEmpty(evalDisplayName))
                     {
-                        prBodyBuilder.AppendLine($"<img src=\"{evalAvatarUrl}\" width=\"32\" height=\"32\" alt=\"{evalDisplayName}\" /> **Evaluator:** {evalDisplayName}");
+                        var evalImg = evalAvatarDataUri is not null
+                            ? $"<img src=\"{evalAvatarDataUri}\" width=\"24\" height=\"24\" alt=\"{evalDisplayName}\" /> "
+                            : "";
+                        prBodyBuilder.Append($" | {evalImg}**Evaluator:** {evalDisplayName}");
                     }
                     prBodyBuilder.AppendLine();
+                    prBodyBuilder.AppendLine();
+
+                    // What changed — content only, no repeated agent names.
                     prBodyBuilder.AppendLine("### What changed");
                     prBodyBuilder.AppendLine();
-                    // Generator perspective
-                    prBodyBuilder.AppendLine($"#### <img src=\"{avatarUrl}\" width=\"20\" height=\"20\" /> {agentDisplayName} (Generator)");
                     if (!string.IsNullOrWhiteSpace(generatorSummary))
                     {
                         prBodyBuilder.AppendLine(generatorSummary);
@@ -958,10 +1016,12 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         prBodyBuilder.AppendLine("_No change summary provided._");
                     }
                     prBodyBuilder.AppendLine();
-                    // Evaluator perspective
-                    if (!string.IsNullOrEmpty(evalDisplayName) && evalAvatarUrl is not null)
+
+                    // Evaluator review — content only.
+                    if (!string.IsNullOrEmpty(evalDisplayName))
                     {
-                        prBodyBuilder.AppendLine($"#### <img src=\"{evalAvatarUrl}\" width=\"20\" height=\"20\" /> {evalDisplayName} (Evaluator)");
+                        prBodyBuilder.AppendLine("### Evaluator Review");
+                        prBodyBuilder.AppendLine();
                         if (!string.IsNullOrWhiteSpace(changeNotes))
                         {
                             var notes = changeNotes.Length > 800 ? changeNotes[..800] + "..." : changeNotes;
@@ -1593,7 +1653,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 .Where(d => d.WorkItemId == wi.Id)
                 .ToListAsync(ct);
             var lastDeliv = delivCandidates
-                .OrderByDescending(d => d.Iter).ThenByDescending(d => d.CreatedAt)
+                .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
                 .FirstOrDefault();
 
             var canResume = lastDeliv is not null

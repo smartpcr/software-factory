@@ -138,7 +138,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
         var existingDeliverables = await this.db.Deliverables.AsNoTracking()
             .Where(d => d.WorkItemId == request.WorkItemId)
             .ToListAsync(ct);
-        var lastPersisted = existingDeliverables.OrderByDescending(d => d.Iter).ThenByDescending(d => d.CreatedAt).FirstOrDefault();
+        var lastPersisted = existingDeliverables.OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter).FirstOrDefault();
         if (lastPersisted is not null
             && lastPersisted.Verdict is "iterate" or "stalled" or "stalled-budget"
             && lastPersisted.Iter < maxIter)

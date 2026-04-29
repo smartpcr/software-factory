@@ -138,7 +138,7 @@ public sealed class PromotionRunner : IPromotionRunner
         // For each work item, keep only the row with the highest Iter.
         var byWorkItem = raw
             .GroupBy(d => d.WorkItemId)
-            .Select(g => g.OrderByDescending(x => x.Iter).First())
+            .Select(g => g.OrderByDescending(x => x.CreatedAt).First())
             .OrderByDescending(d => d.CreatedAt)
             .Take(ScoringConstants.RollingWindow)
             .ToList();

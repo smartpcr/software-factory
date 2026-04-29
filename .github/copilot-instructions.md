@@ -23,6 +23,12 @@ dotnet test src/EtwIngest/EtwIngest.csproj --filter "Category=ingest"
 # Run integration tests
 dotnet test src/EtwEventReader.IntegrationTests/EtwEventReader.IntegrationTests.csproj --filter "TestCategory=Integration"
 dotnet test src/ExecutionEngine.IntegrationTests/ExecutionEngine.IntegrationTests.csproj
+
+# Run Forge.Api tests
+# IMPORTANT: The running Forge.Api server must be stopped first — the test
+# build copies Forge.Api.exe which is file-locked by the server process.
+# Always restart the server after tests complete.
+dotnet test src/forge/Forge.Api.Tests/Forge.Api.Tests.csproj
 ```
 
 ## Architecture Overview

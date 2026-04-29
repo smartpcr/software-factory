@@ -83,8 +83,35 @@
   font-size: 13px;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .live-exec__iter strong { color: var(--text-primary); }
+
+.live-exec__status-badge {
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.live-exec__status-badge--failed {
+  background: var(--danger-bg, color-mix(in srgb, #ef4444 12%, transparent));
+  color: var(--danger, #ef4444);
+  border: 1px solid var(--danger-border, color-mix(in srgb, #ef4444 30%, transparent));
+}
+.live-exec__status-badge--completed {
+  background: color-mix(in srgb, var(--success, #22c55e) 12%, transparent);
+  color: var(--success, #22c55e);
+  border: 1px solid color-mix(in srgb, var(--success, #22c55e) 30%, transparent);
+}
+.live-exec__status-badge--queued {
+  background: color-mix(in srgb, var(--accent, #3b82f6) 12%, transparent);
+  color: var(--accent, #3b82f6);
+  border: 1px solid color-mix(in srgb, var(--accent, #3b82f6) 30%, transparent);
+}
 
 .live-exec__budget {
   display: flex;

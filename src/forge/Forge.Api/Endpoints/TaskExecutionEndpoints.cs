@@ -65,7 +65,7 @@ public static class TaskExecutionEndpoints
         var deliverableRows = await db.Deliverables.AsNoTracking()
             .Where(d => d.WorkItemId == id)
             .ToListAsync(ct);
-        deliverableRows = deliverableRows.OrderBy(d => d.Iter).ThenBy(d => d.CreatedAt).ToList();
+        deliverableRows = deliverableRows.OrderBy(d => d.CreatedAt).ThenBy(d => d.Iter).ToList();
         var deliverables = deliverableRows.Select(MapDeliverable).ToList();
 
         // Generator + evaluator from the most recent deliverable, falling
@@ -90,8 +90,12 @@ public static class TaskExecutionEndpoints
                 generatorCrewId = latestQueue.RoutedToCrewId;
                 generatorAgentId = latestQueue.PickedUpByAgent;
             }
-            // Also try the work item's AssignedToJson for crew/agent info.
-            if (string.IsNullOrEmpty(generatorCrewId) && !string.IsNullOrEmpty(wi?.AssignedToJson))
+            // Also try the work item's AssignedToJson for any still-missing fields.
+            // The queue row may set generatorCrewId but leave generatorAgentId null
+            // (e.g. restart before claim), so check each field independently.
+            if (!string.IsNullOrEmpty(wi?.AssignedToJson)
+                && (string.IsNullOrEmpty(generatorCrewId) || string.IsNullOrEmpty(generatorAgentId)
+                    || string.IsNullOrEmpty(evaluatorAgentId) || string.IsNullOrEmpty(evaluatorCrewId)))
             {
                 try
                 {
@@ -195,6 +199,8 @@ public static class TaskExecutionEndpoints
         var transcript = transcriptRows.Select(MapTranscript).ToList();
 
         // Worktree (best-effort): most recent task.worktree-tick payload.
+        // Falls back to a live disk read when no tick events exist (e.g.
+        // after a server restart that lost in-memory feed subscriptions).
         WorktreeSnapshot? worktree = null;
         var lastTick = transcriptRows.LastOrDefault(e => e.Kind == "task.worktree-tick");
         if (lastTick is not null)
@@ -207,8 +213,56 @@ public static class TaskExecutionEndpoints
             catch { /* malformed payload — fall through to null */ }
         }
 
-        // Iteration counter + score: derived from deliverables.
-        var currentIter = deliverableRows.Count;
+        // Fallback: read worktree directly from disk using the path from
+        // the started event or derived from the work item's repo + branch.
+        if (worktree is null)
+        {
+            string? wtPath = null;
+            var startedEvt = transcriptRows.FirstOrDefault(e => e.Kind == "task.started" || e.Kind == "task.prompts");
+            if (startedEvt is not null)
+            {
+                try
+                {
+                    using var startDoc = JsonDocument.Parse(startedEvt.PayloadJson);
+                    if (startDoc.RootElement.TryGetProperty("worktreePath", out var wp))
+                        wtPath = wp.GetString();
+                }
+                catch { /* ignore */ }
+            }
+
+            // Convention fallback: E:\forge\{repoId}\.worktree\ws-{workItemId}
+            if (string.IsNullOrEmpty(wtPath) && wi is not null && !string.IsNullOrEmpty(wi.RepoId))
+            {
+                var repo = await db.Set<Forge.Api.Persistence.RepoRow>().AsNoTracking()
+                    .FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+                if (repo is not null && !string.IsNullOrEmpty(repo.CloneRoot))
+                    wtPath = Path.Combine(repo.CloneRoot, ".worktree", $"ws-{id}");
+            }
+
+            if (!string.IsNullOrEmpty(wtPath) && Directory.Exists(wtPath))
+            {
+                try
+                {
+                    var diskSnap = await worktreeFeed.SampleAsync(wtPath, ct);
+                    if (diskSnap is not null)
+                    {
+                        worktree = new WorktreeSnapshot(
+                            string.Empty,
+                            diskSnap.Added, diskSnap.Modified, diskSnap.Deleted,
+                            diskSnap.Ahead, diskSnap.Behind, diskSnap.Dirty,
+                            diskSnap.HeadSha, diskSnap.HeadMessage, diskSnap.HeadAuthor, diskSnap.HeadAt,
+                            diskSnap.Truncated, DateTimeOffset.UtcNow);
+
+                        // Re-subscribe the feed so future ticks are emitted.
+                        worktreeFeed.Subscribe(id, string.Empty, wtPath);
+                    }
+                }
+                catch { /* best-effort */ }
+            }
+        }
+
+        // Iteration counter + score: derived from the chronologically latest deliverable.
+        var currentIter = current?.Iter ?? 0;
         int? currentScore = current?.Score;
         string? currentVerdict = current?.Verdict;
 

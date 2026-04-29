@@ -505,7 +505,7 @@ public static class ForgeSeed
     /// <see cref="AgentRow.SoulPath"/> for the seeded crew. Falls back to the
     /// current directory if nothing matches.
     /// </summary>
-    private static string FindRepoRoot()
+    internal static string FindRepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
