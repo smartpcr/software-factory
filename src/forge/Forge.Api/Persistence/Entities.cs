@@ -1068,6 +1068,14 @@ public class WorkItemRow
     /// not on enqueue, so routing-only events don't inflate the count).
     /// </summary>
     public int TrialCount { get; set; }
+
+    /// <summary>
+    /// Phase 22 — runtime-assigned agent(s). JSON of <see cref="Forge.Api.Contracts.AssignedAgent"/>
+    /// shape: <c>{ agents, team?, crewId?, role, assignedAt, assignedBy? }</c>.
+    /// Null when no agent is actively working on this item. Independent of
+    /// <see cref="AssignedToJson"/> which carries the WIT-level assignee.
+    /// </summary>
+    public string? AssignedAgentJson { get; set; }
 }
 
 /// <summary>
@@ -1081,6 +1089,62 @@ public static class ExecutionStatuses
     public const string Completed = "completed";
     public const string Failed = "failed";
     public const string Cancelled = "cancelled";
+}
+
+/// <summary>
+/// Phase 22 — append-only assignment history. Each row records a transition
+/// of the runtime <see cref="WorkItemRow.AssignedAgentJson"/> field, giving
+/// the operator a timeline of "who has been on this and when".
+/// </summary>
+public class AgentAssignmentRow
+{
+    public long Id { get; set; }
+
+    public string WorkItemId { get; set; } = string.Empty;
+
+    /// <summary>One of <see cref="AgentAssignmentKinds"/>.</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>Snapshot of agent IDs at this moment — JSON array of strings.</summary>
+    public string AgentIdsJson { get; set; } = "[]";
+
+    public string? Team { get; set; }
+
+    public string? CrewId { get; set; }
+
+    public string? Role { get; set; }
+
+    public string? FromExecutionStatus { get; set; }
+
+    public string? ToExecutionStatus { get; set; }
+
+    /// <summary>Who triggered this transition: 'queue-worker', 'lead-dispatcher', userId, 'backfill', null.</summary>
+    public string? AssignedBy { get; set; }
+
+    public string? Reason { get; set; }
+
+    public DateTimeOffset At { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// Well-known values for <see cref="AgentAssignmentRow.Kind"/>.
+/// </summary>
+public static class AgentAssignmentKinds
+{
+    public const string Claimed = "claimed";
+    public const string Reassigned = "reassigned";
+    public const string ClearedRestart = "cleared-restart";
+    public const string ClearedManual = "cleared-manual";
+    public const string PrOpened = "pr-opened";
+    public const string ReviewerAssigned = "reviewer-assigned";
+    public const string Completed = "completed";
+    public const string Backfill = "backfill";
+
+    public static readonly HashSet<string> All = new(StringComparer.OrdinalIgnoreCase)
+    {
+        Claimed, Reassigned, ClearedRestart, ClearedManual,
+        PrOpened, ReviewerAssigned, Completed, Backfill,
+    };
 }
 
 /// <summary>

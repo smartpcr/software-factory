@@ -796,11 +796,11 @@ public class Phase16ExecutionTests
             var tick = await worker.RunOnceAsync(default);
             Assert.Equal(1, tick.Claims);
 
-            // Work item should have AutoDispatchedAt + updated AssignedToJson.
+            // Work item should have AutoDispatchedAt + updated AssignedAgentJson (Phase 22).
             var wi = await db.WorkItems.AsNoTracking().FirstAsync(w => w.Id == "wi-qw");
             Assert.NotNull(wi.AutoDispatchedAt);
-            Assert.Contains("qw-crew", wi.AssignedToJson ?? "");
-            Assert.Contains("qw-agent", wi.AssignedToJson ?? "");
+            Assert.Contains("qw-crew", wi.AssignedAgentJson ?? "");
+            Assert.Contains("qw-agent", wi.AssignedAgentJson ?? "");
 
             // task.delegated transcript event must exist.
             var events = await db.TaskTranscriptEvents.AsNoTracking()
@@ -1585,12 +1585,12 @@ public class Phase16ExecutionTests
             var tick = await worker.RunOnceAsync(default);
             Assert.Equal(1, tick.Claims);
 
-            // Work item must have BOTH crews in AssignedToJson.
+            // Work item must have BOTH crews in AssignedAgentJson (Phase 22).
             var wi = await db.WorkItems.AsNoTracking().FirstAsync(w => w.Id == "wi-e2e-pair");
             Assert.NotNull(wi.AutoDispatchedAt);
-            Assert.Contains("e2e-gen", wi.AssignedToJson ?? "");
-            Assert.Contains("e2e-eval", wi.AssignedToJson ?? "");
-            Assert.Contains("gen-agent", wi.AssignedToJson ?? "");
+            Assert.Contains("e2e-gen", wi.AssignedAgentJson ?? "");
+            Assert.Contains("e2e-eval", wi.AssignedAgentJson ?? "");
+            Assert.Contains("gen-agent", wi.AssignedAgentJson ?? "");
 
             // ──────────────────────────────────────────────────────────
             // STEP 2: Execution endpoint shows BOTH crews

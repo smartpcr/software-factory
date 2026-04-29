@@ -486,6 +486,7 @@ public static class WorkItemsEndpoints
         if (row is null) return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
         if (req is null) return Results.Problem(title: "body is required", statusCode: 400);
 
+        var previousState = row.State;
         if (req.State is not null)
         {
             if (!WorkItemRules.AllStates.Contains(req.State))
@@ -493,6 +494,12 @@ public static class WorkItemsEndpoints
             row.State = req.State;
         }
         if (req.IterationRef is not null) row.IterationRef = req.IterationRef;
+
+        // Phase 22 — state transition hooks for assignment history.
+        if (req.State is not null)
+        {
+            RecordAssignmentTransition(db, row, previousState, req.State);
+        }
 
         row.UpdatedAt = DateTimeOffset.UtcNow;
         row.RemoteRevision = NewRevision();
@@ -753,11 +760,18 @@ public static class WorkItemsEndpoints
         var tags = string.IsNullOrWhiteSpace(r.TagsJson)
             ? new List<string>()
             : (JsonSerializer.Deserialize<List<string>>(r.TagsJson, JsonOpts) ?? new List<string>());
+        AssignedAgent? assignedAgent = null;
+        if (!string.IsNullOrWhiteSpace(r.AssignedAgentJson))
+        {
+            try { assignedAgent = JsonSerializer.Deserialize<AssignedAgent>(r.AssignedAgentJson, JsonOpts); }
+            catch { /* malformed JSON — return null gracefully */ }
+        }
         return new WorkItem(
             r.Id, r.RepoId, r.Provider, r.ProviderRef, r.Track, r.Type, r.State,
             r.Title, r.DescriptionMd, r.ParentId, r.FeatureRef, r.IterationRef, r.AreaPath,
             assignee, r.Points, r.Priority, tags, r.CreatedAt, r.UpdatedAt, r.RemoteRevision,
-            r.AutoDispatchedAt, r.ExpectedFileChanges, r.ExecutionStatus, r.TrialCount);
+            r.AutoDispatchedAt, r.ExpectedFileChanges, r.ExecutionStatus, r.TrialCount,
+            assignedAgent);
     }
 
     private static bool MatchesAssignee(string? json, string filter)
@@ -782,5 +796,60 @@ public static class WorkItemsEndpoints
             return tags is not null && tags.Any(t => string.Equals(t, tag, StringComparison.OrdinalIgnoreCase));
         }
         catch { return false; }
+    }
+
+    // ── Phase 22 — assignment transition hooks ──────────────────────────
+
+    /// <summary>
+    /// Records an <see cref="AgentAssignmentRow"/> when a state transition
+    /// triggers an assignment event (Q22.3 steps 4-6). Called from both
+    /// <see cref="Move"/> and the queue worker's PR-open path.
+    /// </summary>
+    internal static void RecordAssignmentTransition(
+        ForgeDbContext db, WorkItemRow row, string fromState, string toState)
+    {
+        // → in-review (PR opened): record pr-opened, do NOT change AssignedAgentJson.
+        if (toState is "in-review")
+        {
+            var agentIds = ParseAgentIds(row.AssignedAgentJson);
+            db.AgentAssignments.Add(new AgentAssignmentRow
+            {
+                WorkItemId = row.Id,
+                Kind = AgentAssignmentKinds.PrOpened,
+                AgentIdsJson = JsonSerializer.Serialize(agentIds, JsonOpts),
+                FromExecutionStatus = fromState,
+                ToExecutionStatus = toState,
+                At = DateTimeOffset.UtcNow,
+            });
+            return;
+        }
+
+        // → resolved / closed: record completed AND null out AssignedAgentJson.
+        if (toState is "resolved" or "closed")
+        {
+            var agentIds = ParseAgentIds(row.AssignedAgentJson);
+            db.AgentAssignments.Add(new AgentAssignmentRow
+            {
+                WorkItemId = row.Id,
+                Kind = AgentAssignmentKinds.Completed,
+                AgentIdsJson = JsonSerializer.Serialize(agentIds, JsonOpts),
+                FromExecutionStatus = fromState,
+                ToExecutionStatus = toState,
+                At = DateTimeOffset.UtcNow,
+            });
+            row.AssignedAgentJson = null;
+        }
+    }
+
+    /// <summary>Parse agent IDs from the <c>AssignedAgentJson</c> field (best-effort).</summary>
+    internal static List<string> ParseAgentIds(string? assignedAgentJson)
+    {
+        if (string.IsNullOrWhiteSpace(assignedAgentJson)) return new List<string>();
+        try
+        {
+            var agent = JsonSerializer.Deserialize<AssignedAgent>(assignedAgentJson, JsonOpts);
+            return agent?.Agents?.ToList() ?? new List<string>();
+        }
+        catch { return new List<string>(); }
     }
 }

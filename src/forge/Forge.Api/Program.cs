@@ -199,6 +199,8 @@ using (var scope = app.Services.CreateScope())
     await Phase20Migration.ApplyAsync(db);
     // Phase 21 — SkipSoulPrompt flag on task_queue rows.
     await Phase21Migration.ApplyAsync(db);
+    // Phase 22 — AssignedAgent field + agent_assignments history + backfill.
+    await Phase22Migration.ApplyAsync(db);
     await ForgeSeed.EnsureSeededAsync(db);
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.
@@ -262,6 +264,8 @@ app.MapTaskExecutionEndpoints();
 app.MapQueueEndpoints();
 // Phase 17 follow-up — admin diagnostics (manual worker tick).
 app.MapAdminEndpoints();
+// Phase 22 — assigned-agent + assignment history endpoints.
+app.MapAgentAssignmentsEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 
