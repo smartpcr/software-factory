@@ -6,6 +6,7 @@ import { NewProductModal } from '@/products/NewProductModal';
 import { EditProductModal } from '@/products/EditProductModal';
 import { AddRepoModal } from '@/products/AddRepoModal';
 import { EditRepoModal } from '@/products/EditRepoModal';
+import { RepoSyncPanel } from '@/products/RepoSyncPanel';
 import { ProductIcon } from '@/products/ProductIcon';
 import { RepoIcon } from '@/products/RepoIcon';
 import { forgeApi } from '@/api/forgeApi';
@@ -31,6 +32,8 @@ export function ProductsView() {
   const [newProductOpen, setNewProductOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editingRepo, setEditingRepo] = useState<Repo | null>(null);
+  // Phase 23/24 — sync management panel for a repo.
+  const [syncRepo, setSyncRepo] = useState<Repo | null>(null);
   // Phase 15 — sprint manager modal scoped to a product.
   const [sprintMgr, setSprintMgr] = useState<{ productId: string; productName: string; tab?: 'iterations' | 'areas' | 'import' | 'prefixes' } | null>(null);
 
@@ -94,6 +97,7 @@ export function ProductsView() {
               onAttach={() => setPickerOpen(p.id)}
               onEdit={() => setEditingProduct(p)}
               onEditRepo={(r) => setEditingRepo(r)}
+              onSyncRepo={(r) => setSyncRepo(r)}
               onManageSprints={(tab) => setSprintMgr({ productId: p.id, productName: p.name, tab })}
             />
           ))}
@@ -147,6 +151,19 @@ export function ProductsView() {
           }
         }}
       />
+
+      {syncRepo && (
+        <RepoSyncPanel
+          open={true}
+          repo={syncRepo}
+          onClose={() => setSyncRepo(null)}
+          onRepoUpdated={(updated) => {
+            void loadReposFor(updated.productId);
+            void loadStatsFor(updated.productId);
+            setSyncRepo(updated);
+          }}
+        />
+      )}
     </section>
   );
 }
@@ -160,10 +177,11 @@ interface ProductCardProps {
   onAttach: () => void;
   onEdit: () => void;
   onEditRepo: (repo: Repo) => void;
+  onSyncRepo: (repo: Repo) => void;
   onManageSprints: (tab?: 'iterations' | 'areas' | 'import' | 'prefixes') => void;
 }
 
-function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, onEdit, onEditRepo, onManageSprints }: ProductCardProps) {
+function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, onEdit, onEditRepo, onSyncRepo, onManageSprints }: ProductCardProps) {
   const navigate = useNavigate();
   const deleteProduct = useProductsStore((s) => s.deleteProduct);
   const loadReposFor = useProductsStore((s) => s.loadReposFor);
@@ -291,6 +309,20 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, on
                 catch { /* surfaced inside the drawer */ }
               }}
             />
+
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => onSyncRepo(r)}
+              title={`Manage sync for ${r.displayName}`}
+              aria-label={`Manage sync for ${r.displayName}`}
+              style={{ width: 22, height: 22, color: 'var(--accent)' }}
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                <path d="M2 8a6 6 0 0 1 10.2-4.3M14 8a6 6 0 0 1-10.2 4.3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <path d="M12 1v3.5h-3.5M4 15v-3.5h3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </button>
 
             <button
               type="button"
