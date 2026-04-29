@@ -94,7 +94,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     public void Dispose() => this.cts?.Dispose();
 
     /// <summary>
-    /// Run all four sweeps once. Public so tests can drive it deterministically.
+    /// Run all five sweeps once. Public so tests can drive it deterministically.
     /// </summary>
     public async Task<WorkerTickResult> RunOnceAsync(CancellationToken ct)
     {
@@ -102,7 +102,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         var (claims, claimSkips) = await this.SweepClaimsAsync(ct);
         var strainSignals = await this.SweepStrainAsync(ct);
         var recovered = await this.SweepAbandonedAsync(ct);
-        return new WorkerTickResult(ackTimeouts, claims, strainSignals, recovered, claimSkips);
+        var reconciled = await this.SweepLiveBadgeReconciliationAsync(ct);
+        return new WorkerTickResult(ackTimeouts, claims, strainSignals, recovered, claimSkips, reconciled);
     }
 
     private async Task LoopAsync(CancellationToken ct)
@@ -663,7 +664,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         outputTokens = evt.OutputTokens,
                     }, crewId: crewId, ct: iterCt);
 
-                    if (!string.IsNullOrEmpty(evt.Text)) output.Append(evt.Text);
+                    if (!string.IsNullOrEmpty(evt.Text) && evt.Kind == AgentEventKind.Token) output.Append(evt.Text);
                     if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;
                     if (evt.InputTokens is > 0) inTok += evt.InputTokens.Value;
                     if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
@@ -724,6 +725,59 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     Backend: evalBackend,
                     InvokeMode: AgentInvokeMode.Sdk);
 
+                // Build focused evaluator input: git diff (actual changes) + cleaned
+                // summary. The raw genOutput includes verbose tool-call narration from
+                // the Copilot CLI that wastes evaluator tokens and dilutes focus.
+                var reviewContent = new System.Text.StringBuilder();
+
+                // 1. Git diff — the primary artifact for code review.
+                if (!string.IsNullOrEmpty(worktreePath) && Directory.Exists(worktreePath))
+                {
+                    try
+                    {
+                        var psi = new System.Diagnostics.ProcessStartInfo("git", "diff HEAD~1 --stat -p")
+                        {
+                            WorkingDirectory = worktreePath,
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true,
+                            UseShellExecute = false,
+                            CreateNoWindow = true,
+                        };
+                        using var proc = System.Diagnostics.Process.Start(psi);
+                        if (proc is not null)
+                        {
+                            var diff = await proc.StandardOutput.ReadToEndAsync(iterCt);
+                            await proc.WaitForExitAsync(iterCt);
+                            if (proc.ExitCode == 0 && diff.Length > 10)
+                            {
+                                reviewContent.AppendLine("## Git Diff (actual changes)");
+                                reviewContent.AppendLine("```diff");
+                                reviewContent.AppendLine(diff.Length > 30000 ? diff[..30000] + "\n... (truncated)" : diff);
+                                reviewContent.AppendLine("```");
+                                reviewContent.AppendLine();
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        this.logger.LogDebug(ex, "Git diff for evaluator failed for wi={Wi}", workItemId);
+                    }
+                }
+
+                // 2. Cleaned generator summary — strip tool-call narration and noise.
+                var cleanedOutput = CleanGeneratorOutput(genOutput);
+                if (cleanedOutput.Length > 0)
+                {
+                    reviewContent.AppendLine("## Agent Summary");
+                    reviewContent.AppendLine(cleanedOutput.Length > 15000
+                        ? cleanedOutput[..15000] + "\n... (truncated)"
+                        : cleanedOutput);
+                }
+
+                var reviewText = reviewContent.Length > 0
+                    ? reviewContent.ToString()
+                    : genOutput.Substring(0, Math.Min(genOutput.Length, 50000));
+
                 var evalPrompt = "You are a critical code reviewer scoring agent work.\n\n"
                     + "IMPORTANT: You MUST end your response with a fenced JSON block in exactly this format:\n"
                     + "```json\n"
@@ -740,7 +794,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     + "- Any remaining risks, edge cases, or suggestions\n"
                     + "Do NOT mention build/test pass — that is assumed. Focus on technical substance.\n\n"
                     + $"Review the following work output from iteration {iter}:\n\n"
-                    + genOutput.Substring(0, Math.Min(genOutput.Length, 50000));
+                    + reviewText;
 
                 var invocation = await runner.StartAsync(workItemId, evaluatorAgentId, evalPrompt, evalContext, iterCt);
 
@@ -1497,6 +1551,105 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         return recovered;
     }
 
+    // ── Sweep 5 — live-badge reconciliation ───────────────────────────────
+    /// <summary>
+    /// Heals work items whose <c>ExecutionStatus = "live"</c> badge is stuck
+    /// because their queue row terminated without the corresponding WI write
+    /// (race during restart, crashed agent process, etc.). Without this sweep
+    /// the UI badge pulses forever and operators have to re-queue manually.
+    /// <para>
+    /// Decision rule per stuck WI:
+    /// <list type="bullet">
+    ///   <item>Latest deliverable verdict is <c>iterate</c>/<c>stalled</c>/
+    ///         <c>stalled-budget</c> AND WI state is <c>active</c>/<c>proposed</c>:
+    ///         auto-enqueue back to the original crew so SweepClaims can
+    ///         pick it up. Combined with the agent-pin in SweepClaims and
+    ///         the iter-seed in DeliverableLoop, this is true resume-from-
+    ///         disk with no operator action.</item>
+    ///   <item>Otherwise (terminal verdict, missing deliverables, in-review/
+    ///         resolved/closed): just flip the badge to <c>failed</c> so the
+    ///         UI stops claiming it's running.</item>
+    /// </list>
+    /// </para>
+    /// </summary>
+    private async Task<int> SweepLiveBadgeReconciliationAsync(CancellationToken ct)
+    {
+        using var scope = this.scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+
+        var liveWis = await db.WorkItems
+            .Where(w => w.ExecutionStatus == ExecutionStatuses.Live)
+            .ToListAsync(ct);
+        if (liveWis.Count == 0) return 0;
+
+        // OpenStates is a static array; materialize for the EF Contains() translation.
+        var openStates = TaskQueueStates.OpenStates.ToList();
+        var reconciled = 0;
+
+        foreach (var wi in liveWis)
+        {
+            var hasOpenRow = await db.TaskQueue.AsNoTracking()
+                .AnyAsync(r => r.WorkItemId == wi.Id && openStates.Contains(r.State), ct);
+            if (hasOpenRow) continue;
+
+            // No open queue row + executionStatus=live → stuck badge.
+            var lastDeliv = await db.Deliverables.AsNoTracking()
+                .Where(d => d.WorkItemId == wi.Id)
+                .OrderByDescending(d => d.Iter).ThenByDescending(d => d.CreatedAt)
+                .FirstOrDefaultAsync(ct);
+
+            var canResume = lastDeliv is not null
+                && lastDeliv.Verdict is "iterate" or "stalled" or "stalled-budget"
+                && wi.State is "active" or "proposed";
+
+            if (canResume)
+            {
+                try
+                {
+                    var newRow = await queue.EnqueueAsync(wi.Id, "crew", lastDeliv!.CrewId, ct);
+                    this.logger.LogInformation(
+                        "Live-badge reconcile: auto-resumed wi={Wi} into crew={Crew} (lastIter={Iter} verdict={Verdict})",
+                        wi.Id, lastDeliv.CrewId, lastDeliv.Iter, lastDeliv.Verdict);
+                    await this.taskChannel.EmitAsync(wi.Id, "task.auto-resumed", new
+                    {
+                        queueId = newRow.Id,
+                        crewId = lastDeliv.CrewId,
+                        resumeFromIter = lastDeliv.Iter,
+                        priorVerdict = lastDeliv.Verdict,
+                        priorScore = lastDeliv.Score,
+                    }, crewId: lastDeliv.CrewId, ct: ct);
+                    // EnqueueAsync sets ExecutionStatus=Queued; broadcast it.
+                    var refreshed = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == wi.Id, ct);
+                    if (refreshed is not null) await this.BroadcastWorkItemChangedAsync(refreshed, "exec-auto-resumed", ct);
+                    reconciled++;
+                }
+                catch (Exception ex)
+                {
+                    this.logger.LogDebug(ex, "Live-badge reconcile: auto-resume failed for wi={Wi}, falling back to failed badge", wi.Id);
+                    await this.HealStuckBadgeAsync(db, wi, "exec-reconciled-failed", ct);
+                    reconciled++;
+                }
+            }
+            else
+            {
+                await this.HealStuckBadgeAsync(db, wi, "exec-reconciled-failed", ct);
+                reconciled++;
+            }
+        }
+        return reconciled;
+    }
+
+    private async Task HealStuckBadgeAsync(ForgeDbContext db, WorkItemRow wi, string broadcastKind, CancellationToken ct)
+    {
+        wi.ExecutionStatus = ExecutionStatuses.Failed;
+        wi.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+        await this.BroadcastWorkItemChangedAsync(wi, broadcastKind, ct);
+        this.logger.LogInformation(
+            "Live-badge reconcile: healed stuck badge wi={Wi} state={State} → failed", wi.Id, wi.State);
+    }
+
     private async Task BroadcastQueueChangedAsync(TaskQueueRow row, string kind, CancellationToken ct)
     {
         await this.hub.Clients.All.SendAsync("queue.changed", new
@@ -1541,7 +1694,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         int Claims,
         int StrainSignals,
         int Recovered,
-        IReadOnlyList<ClaimSkip>? ClaimSkips = null);
+        IReadOnlyList<ClaimSkip>? ClaimSkips = null,
+        int Reconciled = 0);
 
     /// <summary>Why a crew's head row wasn't claimed on a given tick.</summary>
     public sealed record ClaimSkip(string CrewId, string Reason, string? Detail);
@@ -1607,5 +1761,52 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             return segs[gitIdx + 1].TrimEnd('/');
         }
         return null;
+    }
+
+    /// <summary>
+    /// Strip tool-call narration, system notifications, and filler text from
+    /// the generator's raw output so the evaluator sees only substantive content.
+    /// </summary>
+    private static string CleanGeneratorOutput(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return string.Empty;
+
+        var sb = new System.Text.StringBuilder(raw.Length / 2);
+        var inNotification = false;
+
+        foreach (var line in raw.Split('\n'))
+        {
+            var trimmed = line.TrimStart();
+
+            // Skip <system_notification> blocks
+            if (trimmed.StartsWith("<system_notification>", StringComparison.Ordinal))
+            {
+                inNotification = !trimmed.Contains("</system_notification>");
+                continue;
+            }
+
+            if (inNotification)
+            {
+                if (trimmed.Contains("</system_notification>")) inNotification = false;
+                continue;
+            }
+
+            // Skip tool-call narration patterns
+            if (trimmed.StartsWith("Let me ", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("Now let me ", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("I'll ", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("Still waiting on ", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("Perfect! Now ", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("Good! Now ", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("Excellent! ", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("Perfect! Let me ", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            sb.AppendLine(line);
+        }
+
+        return sb.ToString().Trim();
     }
 }
