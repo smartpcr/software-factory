@@ -483,9 +483,22 @@ public static class ProductsEndpoints
     private static Product MapProduct(ProductRow r) => new(
         r.Id, r.Name, r.Slug, r.Description, r.OwnerUserId, r.CreatedAt, r.ActiveIterationId);
 
-    private static Repo MapRepo(RepoRow r) => new(
-        r.Id, r.ProductId, r.Kind, r.RemoteUrl, r.DisplayName, r.DefaultBranch, r.CloneRoot,
-        r.AdoOrg, r.AdoProject, r.GhOwner, r.GhRepo);
+    private static readonly System.Text.Json.JsonSerializerOptions RepoJsonOpts = new(System.Text.Json.JsonSerializerDefaults.Web);
+
+    private static Repo MapRepo(RepoRow r)
+    {
+        IReadOnlyList<string>? areaPaths = null;
+        if (!string.IsNullOrWhiteSpace(r.AreaPathsJson))
+        {
+            try { areaPaths = System.Text.Json.JsonSerializer.Deserialize<List<string>>(r.AreaPathsJson, RepoJsonOpts); }
+            catch { /* malformed — null */ }
+        }
+        return new Repo(
+            r.Id, r.ProductId, r.Kind, r.RemoteUrl, r.DisplayName, r.DefaultBranch, r.CloneRoot,
+            r.AdoOrg, r.AdoProject, r.GhOwner, r.GhRepo,
+            areaPaths, r.LastSyncAt, r.LastSyncCursor, r.LastSyncStatus, r.LastSyncError,
+            r.IsRunningSince, r.AgentReadyDefaultTeam, r.InitialSyncWindowDays);
+    }
 
     private static string Slugify(string name)
     {

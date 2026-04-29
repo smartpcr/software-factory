@@ -239,7 +239,16 @@ public sealed record Repo(
     string? AdoOrg = null,
     string? AdoProject = null,
     string? GhOwner = null,
-    string? GhRepo = null);
+    string? GhRepo = null,
+    // Phase 23 — sync fields.
+    IReadOnlyList<string>? AreaPaths = null,
+    string? LastSyncAt = null,
+    string? LastSyncCursor = null,
+    string? LastSyncStatus = null,
+    string? LastSyncError = null,
+    string? IsRunningSince = null,
+    string? AgentReadyDefaultTeam = null,
+    int? InitialSyncWindowDays = null);
 
 /// <summary>
 /// POST /api/products body.
