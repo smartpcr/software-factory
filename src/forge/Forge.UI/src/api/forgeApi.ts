@@ -659,6 +659,9 @@ export const forgeApi = {
     adoProject?: string | null;
     ghOwner?: string | null;
     ghRepo?: string | null;
+    // Phase 23 — sync settings.
+    areaPaths?: string[];
+    agentReadyDefaultTeam?: string | null;
   }): Promise<Repo> {
     return fetchJson<Repo>(`/api/repos/${encodeURIComponent(id)}`, {
       method: 'PATCH',

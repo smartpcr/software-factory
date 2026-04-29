@@ -51,9 +51,15 @@ public class GitHubProvider : IForgeProvider
     /// <see cref="HasAuthAsync"/> for the "do we have a token" question
     /// and only check this flag when a specific <c>options.Repo</c> matters.
     /// </summary>
+    /// <summary>
+    /// Configured = has a token. The global <c>options.Repo</c> is no longer
+    /// required because per-repo sync paths supply <c>{owner}/{repo}</c> via
+    /// <see cref="WorkItemSyncFilters.GitHubRepo"/>; legacy single-repo
+    /// callers still see a true value when both global pieces are set.
+    /// </summary>
     public bool IsConfigured =>
-        !string.IsNullOrWhiteSpace(this.options.Repo) &&
-        !string.IsNullOrWhiteSpace(this.options.Pat);
+        !string.IsNullOrWhiteSpace(this.options.Pat)
+        || this.ghAuth is not null;
 
     /// <summary>True when we can produce a bearer token (PAT or gh CLI).</summary>
     private async Task<bool> HasAuthAsync(CancellationToken ct)
@@ -321,14 +327,23 @@ public class GitHubProvider : IForgeProvider
         WorkItemSyncFilters filters,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
-        if (!this.IsConfigured) yield break;
+        // Per-repo scope overrides the global Forge:GitHub:Repo. Required
+        // when more than one GitHub repo is attached to the same Forge.
+        var scopedRepo = !string.IsNullOrWhiteSpace(filters.GitHubRepo)
+            ? filters.GitHubRepo!
+            : this.options.Repo;
+        if (string.IsNullOrWhiteSpace(scopedRepo)) yield break;
+        // Auth must still come from somewhere global today (PAT or auth
+        // service); if neither's around there's nothing to send.
+        if (string.IsNullOrWhiteSpace(this.options.Pat) && this.ghAuth is null) yield break;
+
         var client = this.NewClient();
 
         // Resume from a stored next-page URL when the prior run left a
         // cursor; otherwise build the first request from filters.
         var nextUrl = !string.IsNullOrEmpty(filters.StartCursor)
             ? filters.StartCursor!
-            : $"repos/{this.options.Repo}/issues{BuildSyncQueryString(filters)}";
+            : $"repos/{scopedRepo}/issues{BuildSyncQueryString(filters)}";
         var pageIndex = 0;
 
         while (!string.IsNullOrEmpty(nextUrl))
@@ -338,8 +353,15 @@ public class GitHubProvider : IForgeProvider
             this.health.RecordResponse(resp);
             if (!resp.IsSuccessStatusCode)
             {
+                var errBody = await resp.Content.ReadAsStringAsync(ct);
+                this.logger.LogWarning(
+                    "GitHub issues {Status} for repo '{Repo}'. URL: {Url} | Response: {Body}",
+                    (int)resp.StatusCode, scopedRepo, nextUrl, Trunc(errBody, 800));
                 resp.Dispose();
-                resp.EnsureSuccessStatusCode();
+                throw new HttpRequestException(
+                    $"GitHub issues {(int)resp.StatusCode} for '{scopedRepo}': {Trunc(errBody, 400)}",
+                    inner: null,
+                    statusCode: resp.StatusCode);
             }
 
             // Honour the GitHub rate-limit floor before parsing the page so
@@ -355,7 +377,7 @@ public class GitHubProvider : IForgeProvider
                 foreach (var issue in doc.RootElement.EnumerateArray())
                 {
                     if (issue.TryGetProperty("pull_request", out _)) continue; // skip PRs
-                    var wi = GitHubMapper.IssueToWorkItem(issue, this.options.Repo, this.options.Repo);
+                    var wi = GitHubMapper.IssueToWorkItem(issue, scopedRepo, scopedRepo);
                     if (filters.Types is { Count: > 0 } && !filters.Types.Contains(wi.Type)) continue;
                     items.Add(wi);
                 }
@@ -371,6 +393,9 @@ public class GitHubProvider : IForgeProvider
             }
         }
     }
+
+    private static string Trunc(string s, int max) =>
+        s is null ? string.Empty : (s.Length <= max ? s : s[..max] + "…");
 
     /// <summary>
     /// Phase 23.5 — extract the <c>Link: …; rel="next"</c> URL, if any,

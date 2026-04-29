@@ -20,6 +20,9 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
   const [displayName, setDisplayName] = useState(repo.displayName);
   const [cloneRoot, setCloneRoot] = useState(repo.cloneRoot);
   const [defaultBranch, setDefaultBranch] = useState(repo.defaultBranch);
+  // Phase 23 — sync settings.
+  const [areaPathsText, setAreaPathsText] = useState((repo.areaPaths ?? []).join('\n'));
+  const [agentReadyTeam, setAgentReadyTeam] = useState(repo.agentReadyDefaultTeam ?? '');
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<'idle' | 'saving' | 'cloning'>('idle');
   const [err, setErr] = useState<string | null>(null);
@@ -31,6 +34,8 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
     setDisplayName(repo.displayName);
     setCloneRoot(repo.cloneRoot);
     setDefaultBranch(repo.defaultBranch);
+    setAreaPathsText((repo.areaPaths ?? []).join('\n'));
+    setAgentReadyTeam(repo.agentReadyDefaultTeam ?? '');
     setBusy(false);
     setPhase('idle');
     setErr(null);
@@ -52,26 +57,52 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
     if (!cleanName) { setErr('Display name is required'); return; }
     if (!cleanPath) { setErr('Local repo path is required'); return; }
 
+    // Phase 23 — area paths: one per line, trimmed, blanks dropped.
+    const cleanAreaPaths = areaPathsText
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    const cleanTeam = agentReadyTeam.trim();
+    const prevAreaPaths = repo.areaPaths ?? [];
+    const areaPathsChanged =
+      cleanAreaPaths.length !== prevAreaPaths.length
+      || cleanAreaPaths.some((p, i) => p !== prevAreaPaths[i]);
+    const teamChanged = cleanTeam !== (repo.agentReadyDefaultTeam ?? '');
+
     setBusy(true);
     setErr(null);
     try {
       setPhase('saving');
-      const patch: { displayName?: string; cloneRoot?: string; defaultBranch?: string } = {};
+      const patch: {
+        displayName?: string;
+        cloneRoot?: string;
+        defaultBranch?: string;
+        areaPaths?: string[];
+        agentReadyDefaultTeam?: string | null;
+      } = {};
       if (cleanName !== repo.displayName) patch.displayName = cleanName;
       if (cleanPath !== repo.cloneRoot) patch.cloneRoot = cleanPath;
       if (cleanBranch !== repo.defaultBranch) patch.defaultBranch = cleanBranch;
+      if (areaPathsChanged) patch.areaPaths = cleanAreaPaths;
+      if (teamChanged) patch.agentReadyDefaultTeam = cleanTeam.length === 0 ? null : cleanTeam;
 
       const updated = Object.keys(patch).length > 0
         ? await forgeApi.patchRepo(repo.id, patch)
         : repo;
       onSaved(updated);
 
-      setPhase('cloning');
-      const result = await forgeApi.cloneRepo(repo.id);
-      if (result.outcome === 'cloned') {
-        toast(`Cloned ${cleanName} to ${cleanPath}`, 'success');
+      // Only attempt clone when the local path actually changed — otherwise
+      // we needlessly re-shell-out to git for every settings tweak.
+      if (patch.cloneRoot) {
+        setPhase('cloning');
+        const result = await forgeApi.cloneRepo(repo.id);
+        if (result.outcome === 'cloned') {
+          toast(`Cloned ${cleanName} to ${cleanPath}`, 'success');
+        } else {
+          toast(`Saved "${cleanName}" — local repo already present`, 'success');
+        }
       } else {
-        toast(`Saved "${cleanName}" — local repo already present`, 'success');
+        toast(`Saved "${cleanName}"`, 'success');
       }
       onClose();
     } catch (e) {
@@ -169,6 +200,37 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
               spellCheck={false}
               disabled={busy}
               style={{ ...inputStyle, fontFamily: 'var(--font-mono, monospace)', fontSize: 12 }}
+            />
+          </FieldGroup>
+
+          <FieldGroup
+            label="Area paths"
+            hint="One per line. Empty = whole project. ADO uses UNDER prefix (e.g. Atlas\\Platform); GitHub ignores."
+          >
+            <textarea
+              value={areaPathsText}
+              onChange={(e) => setAreaPathsText(e.target.value)}
+              placeholder={'Atlas\\\\Platform\n' + 'Atlas\\\\Edge\\\\IoT'}
+              rows={4}
+              spellCheck={false}
+              disabled={busy}
+              style={{ ...inputStyle, fontFamily: 'var(--font-mono, monospace)', fontSize: 12, resize: 'vertical' }}
+              data-testid="repo-area-paths"
+            />
+          </FieldGroup>
+
+          <FieldGroup
+            label="Agent-ready default team"
+            hint="Team auto-assigned to work items tagged `agent-ready`. Defaults to Engineering."
+          >
+            <input
+              value={agentReadyTeam}
+              onChange={(e) => setAgentReadyTeam(e.target.value)}
+              placeholder="Engineering"
+              spellCheck={false}
+              disabled={busy}
+              style={inputStyle}
+              data-testid="repo-agent-ready-team"
             />
           </FieldGroup>
 

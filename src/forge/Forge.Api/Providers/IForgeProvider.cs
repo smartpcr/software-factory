@@ -134,7 +134,21 @@ public sealed record WorkItemSyncFilters(
     /// <summary>Phase 23.4 — multi-area-path scope for ADO; OR'd in the WIQL.</summary>
     IReadOnlyList<string>? AreaPaths = null,
     /// <summary>Phase 23.6 — opaque resume token written by a prior batch.</summary>
-    string? StartCursor = null);
+    string? StartCursor = null,
+    // ── Per-repo provider scope (Phase 23 follow-up) ──────────────────────
+    // When non-null, these override the global Forge:Ado / Forge:GitHub
+    // settings for THIS sync invocation only. Required when more than one
+    // repo (and therefore more than one ADO project / GitHub repo) is
+    // attached to a single Forge instance — without these every repo's
+    // sync would silently run against the global config.
+    /// <summary>ADO org URL override, e.g. <c>https://dev.azure.com/microsoft</c>.</summary>
+    string? AdoOrgUrl = null,
+    /// <summary>ADO team-project override, e.g. <c>One</c>.</summary>
+    string? AdoProject = null,
+    /// <summary>ADO repository name override (PR endpoints).</summary>
+    string? AdoRepository = null,
+    /// <summary>GitHub <c>owner/repo</c> override.</summary>
+    string? GitHubRepo = null);
 
 /// <summary>
 /// Phase 23.4 / 23.5 — one batch returned by

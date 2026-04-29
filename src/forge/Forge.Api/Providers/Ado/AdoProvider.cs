@@ -52,10 +52,22 @@ public class AdoProvider : IForgeProvider
 
     public string Kind => "ado";
 
+    /// <summary>
+    /// True when the provider has enough state to make an authenticated
+    /// request. Per-repo sync paths supply <c>OrgUrl</c> + <c>Project</c> via
+    /// <see cref="WorkItemSyncFilters"/>, so authentication alone is the
+    /// minimum bar; legacy single-repo callers still fall through the global
+    /// org/project below.
+    /// </summary>
     public bool IsConfigured =>
-        !string.IsNullOrWhiteSpace(this.EffectiveOrgUrl)
-        && !string.IsNullOrWhiteSpace(this.EffectiveProject)
-        && (!string.IsNullOrWhiteSpace(this.options.Pat) || this.authService is not null);
+        (!string.IsNullOrWhiteSpace(this.options.Pat) || this.authService is not null)
+        && (
+            // Global config still satisfies — keeps existing single-repo
+            // deployments working without forcing a per-repo migration.
+            (!string.IsNullOrWhiteSpace(this.EffectiveOrgUrl) && !string.IsNullOrWhiteSpace(this.EffectiveProject))
+            // OR auth credentials suffice on their own; the per-repo sync
+            // paths plug in their own org+project via WorkItemSyncFilters.
+            || (!string.IsNullOrWhiteSpace(this.options.Pat) || this.authService is not null));
 
     private (string OrgUrl, string Project) ResolveConfig()
     {
@@ -578,8 +590,26 @@ public class AdoProvider : IForgeProvider
         WorkItemSyncFilters filters,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
+        // Per-repo project takes precedence over the global config; the
+        // global path remains the fallback for legacy single-repo deployments.
+        var scopedProject = !string.IsNullOrWhiteSpace(filters.AdoProject)
+            ? filters.AdoProject!
+            : this.EffectiveProject;
+        var scopedOrgUrl = !string.IsNullOrWhiteSpace(filters.AdoOrgUrl)
+            ? filters.AdoOrgUrl!
+            : this.EffectiveOrgUrl;
+        if (string.IsNullOrWhiteSpace(scopedProject) || string.IsNullOrWhiteSpace(scopedOrgUrl))
+        {
+            yield break;
+        }
         if (!this.IsConfigured) yield break;
+
         var client = this.NewClient();
+        // Override BaseAddress when the per-repo org differs from the global one.
+        if (!string.IsNullOrWhiteSpace(filters.AdoOrgUrl))
+        {
+            client.BaseAddress = new Uri(scopedOrgUrl.TrimEnd('/') + "/");
+        }
 
         // Resume from a prior failure: the cursor is the index of the last
         // successfully-committed batch; we start at the next one.
@@ -592,14 +622,14 @@ public class AdoProvider : IForgeProvider
         }
 
         // ── WIQL pass: collect every ID with retry ────────────────────────
-        var wiql = BuildSyncWiql(this.EffectiveProject, filters);
+        var wiql = BuildSyncWiql(scopedProject, filters);
         var wiqlBody = new { query = wiql };
         HttpResponseMessage wiqlResp;
         try
         {
             wiqlResp = await this.SendWithRetryAsync(
                 () => new HttpRequestMessage(HttpMethod.Post,
-                    $"{this.EffectiveProject}/_apis/wit/wiql?api-version=7.1")
+                    $"{Uri.EscapeDataString(scopedProject)}/_apis/wit/wiql?api-version=7.1")
                 {
                     Content = new StringContent(
                         JsonSerializer.Serialize(wiqlBody), Encoding.UTF8, "application/json"),
@@ -609,7 +639,7 @@ public class AdoProvider : IForgeProvider
         }
         catch (Exception ex)
         {
-            this.logger.LogWarning(ex, "ADO WIQL request failed for {Project}", this.EffectiveProject);
+            this.logger.LogWarning(ex, "ADO WIQL request failed for {Project}", scopedProject);
             throw;
         }
         using (wiqlResp)
@@ -620,8 +650,11 @@ public class AdoProvider : IForgeProvider
                 var errBody = await wiqlResp.Content.ReadAsStringAsync(ct);
                 this.logger.LogWarning(
                     "ADO WIQL {Status} for project '{Project}'. WIQL: {Wiql} | Response: {Body}",
-                    (int)wiqlResp.StatusCode, this.EffectiveProject, wiql, Trunc(errBody, 800));
-                wiqlResp.EnsureSuccessStatusCode();
+                    (int)wiqlResp.StatusCode, scopedProject, wiql, Trunc(errBody, 800));
+                throw new HttpRequestException(
+                    $"ADO WIQL {(int)wiqlResp.StatusCode} for project '{scopedProject}': {Trunc(errBody, 400)}",
+                    inner: null,
+                    statusCode: wiqlResp.StatusCode);
             }
             using var wiqlDoc = JsonDocument.Parse(await wiqlResp.Content.ReadAsStringAsync(ct));
             var allIds = wiqlDoc.RootElement.GetProperty("workItems")
@@ -672,7 +705,7 @@ public class AdoProvider : IForgeProvider
                     var items = new List<WorkItem>(ids.Length);
                     foreach (var wi in doc.RootElement.GetProperty("value").EnumerateArray())
                     {
-                        items.Add(AdoMapper.ToWorkItem(wi, this.EffectiveProject, this.EffectiveProject));
+                        items.Add(AdoMapper.ToWorkItem(wi, scopedProject, scopedProject));
                     }
                     this.health.MarkSync();
                     yield return new WorkItemBatch(

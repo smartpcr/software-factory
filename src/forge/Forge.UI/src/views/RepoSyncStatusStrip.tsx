@@ -6,6 +6,7 @@
 // -----------------------------------------------------------------------
 
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { Repo, WorkItemSyncRun } from '@/types';
 
 const STATUS_COLOR: Record<NonNullable<Repo['lastSyncStatus']>, string> = {
@@ -131,22 +132,54 @@ function RepoSyncDrawer({
     return () => { cancelled = true; };
   }, [repo.id]);
 
-  return (
-    <div
-      role="dialog"
-      data-testid={`repo-sync-drawer-${repo.id}`}
-      style={{
-        position: 'fixed',
-        inset: '0 0 0 auto',
-        width: 460,
-        background: 'var(--bg-elevated, #fff)',
-        borderLeft: '1px solid var(--border)',
-        boxShadow: '-4px 0 16px rgba(0,0,0,0.1)',
-        zIndex: 100,
-        display: 'flex',
-        flexDirection: 'column',
-      }}
-    >
+  // Esc-to-close + body-scroll lock while open.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [onClose]);
+
+  // Portal to <body> so the panel escapes any transformed/filtered ancestor
+  // (the bug that caused the drawer to anchor to the product card instead of
+  // the viewport edge — `position:fixed` is contained by transformed
+  // ancestors per CSS spec).
+  return createPortal(
+    <>
+      <div
+        aria-hidden
+        onClick={onClose}
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0, 0, 0, 0.35)',
+          zIndex: 9000,
+        }}
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        data-testid={`repo-sync-drawer-${repo.id}`}
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          position: 'fixed',
+          top: 0,
+          right: 0,
+          bottom: 0,
+          width: 480,
+          background: 'var(--bg-elevated, #1a1a1a)',
+          color: 'var(--text-primary)',
+          borderLeft: '1px solid var(--border, #333)',
+          boxShadow: '-8px 0 24px rgba(0,0,0,0.4)',
+          zIndex: 9001,
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
       <header style={{ padding: 12, borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
         <span
           aria-hidden
@@ -189,19 +222,30 @@ function RepoSyncDrawer({
             </thead>
             <tbody>
               {runs.map((r) => (
-                <tr key={r.id} style={{ borderTop: '1px solid var(--border)' }}>
-                  <td style={{ padding: '6px 8px' }}>{relativeTime(r.startedAt)}</td>
-                  <td style={{ padding: '6px 8px' }}>{r.kind}</td>
-                  <td style={{ padding: '6px 8px' }}>+{r.itemsAdded}/~{r.itemsUpdated}{r.itemsConflicted > 0 ? `/!${r.itemsConflicted}` : ''}</td>
-                  <td style={{ padding: '6px 8px', color: r.completedSuccessfully ? 'rgb(34, 197, 94)' : 'rgb(220, 38, 38)' }}>
-                    {r.completedSuccessfully ? 'ok' : 'failed'}
-                  </td>
-                </tr>
+                <>
+                  <tr key={r.id} style={{ borderTop: '1px solid var(--border)' }}>
+                    <td style={{ padding: '6px 8px' }}>{relativeTime(r.startedAt)}</td>
+                    <td style={{ padding: '6px 8px' }}>{r.kind}</td>
+                    <td style={{ padding: '6px 8px' }}>+{r.itemsAdded}/~{r.itemsUpdated}{r.itemsConflicted > 0 ? `/!${r.itemsConflicted}` : ''}</td>
+                    <td style={{ padding: '6px 8px', color: r.completedSuccessfully ? 'rgb(34, 197, 94)' : 'rgb(220, 38, 38)' }}>
+                      {r.completedSuccessfully ? 'ok' : 'failed'}
+                    </td>
+                  </tr>
+                  {!r.completedSuccessfully && r.errorMessage && (
+                    <tr key={`${r.id}-err`}>
+                      <td colSpan={4} style={{ padding: '4px 8px 8px', fontSize: 10.5, color: 'rgb(220, 38, 38)', whiteSpace: 'pre-wrap' }}>
+                        {r.errorMessage}
+                      </td>
+                    </tr>
+                  )}
+                </>
               ))}
             </tbody>
           </table>
         )}
       </div>
     </div>
+    </>,
+    document.body,
   );
 }
