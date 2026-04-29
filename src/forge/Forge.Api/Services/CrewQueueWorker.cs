@@ -299,7 +299,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
             // Kick off the agent runner in the background. The invocation
             // runs asynchronously — the claim sweep doesn't wait for it.
-            _ = Task.Run(() => RunAgentAsync(row.WorkItemId, crewId, picked!, crew, wi, ct), ct);
+            // Use CancellationToken.None so the agent isn't cancelled when the
+            // sweep loop's token is disposed — the agent manages its own lifetime.
+            _ = Task.Run(() => RunAgentAsync(row.WorkItemId, crewId, picked!, crew, wi, CancellationToken.None));
         }
         return (claimed, skips);
     }
@@ -743,6 +745,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             //     both actually happened before the task is marked complete.
             if (result.FinalVerdict == "pass")
             {
+                // Track PR creation locally — VerifyPrCreatedAsync checks ALL
+                // historical transcript events, so a task.pr-opened from a
+                // previous execution would incorrectly pass verification.
+                var prCreatedInThisExecution = false;
                 try
                 {
                     var provider = scope.ServiceProvider.GetRequiredService<Forge.Api.Providers.IForgeProvider>();
@@ -763,6 +769,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         baseBranch,
                     }, crewId: crewId, ct: ct);
 
+                    prCreatedInThisExecution = true;
                     this.logger.LogInformation(
                         "PR created: wi={Wi} pr={Pr} branch={Branch}", workItemId, pr.Id, branchName);
                 }
@@ -771,33 +778,29 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     this.logger.LogWarning(ex, "PR creation failed for wi={Wi}", workItemId);
                     await this.taskChannel.EmitAsync(workItemId, "task.pr-failed", new
                     {
-                        invocationId = deliveryInvocation.InvocationId,
-                        agentId,
-                        crewId,
-                        text = evt.Text,
-                        toolName = evt.ToolName,
-                        error = evt.Error,
+                        error = ex.Message,
+                        branch = branchName,
                     }, crewId: crewId, ct: ct);
                 }
 
-                // (5) Verify delivery: branch pushed + PR created.
+                // (5) Verify delivery: branch pushed + PR created in THIS execution.
                 var branchPushed = await this.VerifyBranchPushedAsync(
                     repoCloneRoot ?? worktreePath, branchName, ct);
-                var prCreated = await VerifyPrCreatedAsync(db, workItemId, ct);
+                var prCreated = prCreatedInThisExecution;
 
                 if (branchPushed && prCreated)
                 {
                     this.logger.LogInformation(
                         "Delivery verified: wi={Wi} branch={Branch}", workItemId, branchName);
 
-                    // Transition work item to "resolved" — PR review cycle
-                    // drives the subsequent resolved → closed transitions.
+                    // Transition work item to "in-review" — PR review cycle
+                    // drives the subsequent in-review → resolved → closed transitions.
                     try
                     {
                         var wiRow = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
                         if (wiRow is not null)
                         {
-                            wiRow.State = "resolved";
+                            wiRow.State = "in-review";
                             wiRow.UpdatedAt = DateTimeOffset.UtcNow;
                             await db.SaveChangesAsync(ct);
                         }
@@ -850,24 +853,29 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             }, crewId: crewId, ct: ct);
         }
         catch (OperationCanceledException) { /* shutdown */ }
+        catch (ObjectDisposedException) { /* host shutting down — scope already disposed */ }
         catch (Exception ex)
         {
             this.logger.LogWarning(ex,
                 "Agent invocation failed: wi={Wi} agent={Agent} crew={Crew}",
                 workItemId, agentId, crewId);
-            await this.taskChannel.EmitAsync(workItemId, "task.failed", new
+            try
             {
-                agentId,
-                crewId,
-                error = ex.Message,
-            }, crewId: crewId, ct: ct);
+                await this.taskChannel.EmitAsync(workItemId, "task.failed", new
+                {
+                    agentId,
+                    crewId,
+                    error = ex.Message,
+                }, crewId: crewId, ct: ct);
 
-            // On failure, also complete the queue row so it doesn't stay
-            // picked-up forever (abandoned recovery is a 24h fallback).
-            await this.CompleteQueueRowAsync(workItemId, ct);
+                // On failure, also complete the queue row so it doesn't stay
+                // picked-up forever (abandoned recovery is a 24h fallback).
+                await this.CompleteQueueRowAsync(workItemId, ct);
 
-            // Phase 19 — mark execution as failed.
-            await this.SetExecutionStatusAsync(workItemId, ExecutionStatuses.Failed, ct);
+                // Phase 19 — mark execution as failed.
+                await this.SetExecutionStatusAsync(workItemId, ExecutionStatuses.Failed, ct);
+            }
+            catch (ObjectDisposedException) { /* host shutting down */ }
         }
         finally
         {
