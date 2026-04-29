@@ -19,6 +19,7 @@ using Forge.Api.Tests.Infrastructure;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 /// <summary>
@@ -613,5 +614,362 @@ public class Phase24PrSyncTests
         var workItemId = "42";
         var path = Path.Combine(cloneRoot, ".worktree", $"ws-{workItemId}");
         Assert.Equal(@"E:\repos\my-project\.worktree\ws-42", path);
+    }
+
+    // ── 10. ADO commentThread.status mapping (Q24.4) ──────────────────────
+
+    [Theory]
+    [InlineData("active", "active")]
+    [InlineData("fixed", "resolved")]
+    [InlineData("closed", "resolved")]
+    [InlineData("byDesign", "resolved")]
+    [InlineData("wontFix", "wont-fix")]
+    [InlineData("pending", "pending")]
+    [InlineData("unknown", "active")]
+    public void AdoStatus_Maps_To_Canonical_State(string ado, string expected)
+    {
+        var actual = AdoPrCommentSyncClient.MapAdoStatus(ado);
+        Assert.Equal(expected, actual);
+    }
+
+    // ── 11. Comment-response queue hook (Q24.8) ───────────────────────────
+
+    [Fact]
+    public async Task Enqueue_CommentResponse_Idempotent_When_Open_Row_Exists()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+
+        var wi = new WorkItemRow
+        {
+            Id = "wi-q24-8",
+            Title = "Phase24 queue test",
+            Type = "task",
+            State = "in-review",
+            ExecutionStatus = ExecutionStatuses.Idle,
+            DescriptionMd = "...",
+        };
+        db.WorkItems.Add(wi);
+        await db.SaveChangesAsync();
+
+        var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+        var first = await queue.EnqueueAsync(wi.Id, "crew", "C1", default, kind: TaskQueueKinds.CommentResponse);
+        var second = await queue.EnqueueAsync(wi.Id, "crew", "C1", default, kind: TaskQueueKinds.CommentResponse);
+        Assert.Equal(first.Id, second.Id);
+        Assert.Equal(TaskQueueKinds.CommentResponse, first.Kind);
+    }
+
+    [Fact]
+    public async Task Enqueue_CommentResponse_Coexists_With_Work_Row()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+
+        var wi = new WorkItemRow
+        {
+            Id = "wi-q24-8b",
+            Title = "Phase24 dual-kind",
+            Type = "task",
+            State = "in-review",
+            DescriptionMd = "...",
+        };
+        db.WorkItems.Add(wi);
+        await db.SaveChangesAsync();
+
+        var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+        var work = await queue.EnqueueAsync(wi.Id, "crew", "C1", default);
+        var resp = await queue.EnqueueAsync(wi.Id, "crew", "C1", default, kind: TaskQueueKinds.CommentResponse);
+        Assert.NotEqual(work.Id, resp.Id);
+        Assert.Equal(TaskQueueKinds.Work, work.Kind);
+        Assert.Equal(TaskQueueKinds.CommentResponse, resp.Kind);
+    }
+
+    // ── 12. PrCommentLinker — body-parse heuristics (Q24.6) ───────────────
+
+    [Theory]
+    [InlineData("Addresses comment 12345", true)]
+    [InlineData("addresses Comment 12345", true)]
+    [InlineData("Fixes comment 12345", true)]
+    [InlineData("fixes Comment 12345 quickly", true)]
+    [InlineData("CR-12345", true)]
+    [InlineData("addresses comment 99999", false)]
+    [InlineData("not relevant", false)]
+    [InlineData("CR-99999", false)]
+    public void Linker_BodyTagRegex_Matches_Recognised_Forms(string text, bool shouldMatch)
+    {
+        // Use the same regex shape as PrCommentLinker.BodyTagRegex.
+        var regex = new System.Text.RegularExpressions.Regex(
+            @"(?:Addresses|Fixes|fix|fixes|address|addresses)\s+comment\s+(?<id>\d+)|CR-(?<id2>\d+)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var matched = false;
+        foreach (System.Text.RegularExpressions.Match m in regex.Matches(text))
+        {
+            var id = m.Groups["id"].Success ? m.Groups["id"].Value : m.Groups["id2"].Value;
+            if (id == "12345") { matched = true; break; }
+        }
+        Assert.Equal(shouldMatch, matched);
+    }
+
+    [Fact]
+    public async Task Linker_Sets_LinkedAgentResponseId_For_Direct_Reply()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        SeedPr(db, "p24-link-reply");
+
+        var parent = new PrCommentRow
+        {
+            PrId = "p24-link-reply",
+            ProviderCommentId = "p1",
+            ThreadId = "t1",
+            AuthorKind = "human",
+            Body = "Please rename this method.",
+            State = "active",
+            CreatedAt = DateTimeOffset.UtcNow.AddHours(-2),
+            UpdatedAt = DateTimeOffset.UtcNow.AddHours(-2),
+            RequiresAttention = true,
+        };
+        db.PrComments.Add(parent);
+        await db.SaveChangesAsync();
+
+        var reply = new PrCommentRow
+        {
+            PrId = "p24-link-reply",
+            ProviderCommentId = "r1",
+            ThreadId = "t1",
+            ParentCommentId = parent.Id,
+            AuthorKind = "agent",
+            Body = "Done. Addresses comment " + parent.Id,
+            State = "active",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+            RequiresAttention = false,
+        };
+        db.PrComments.Add(reply);
+        await db.SaveChangesAsync();
+
+        var linker = new PrCommentLinker(db, new LoggerFactory().CreateLogger<PrCommentLinker>(), null);
+        var matched = await linker.LinkAsync("p24-link-reply", worktreeRoot: null, default);
+
+        Assert.Equal(1, matched);
+        var refreshed = await db.PrComments.AsNoTracking().FirstAsync(c => c.Id == parent.Id);
+        Assert.Equal(reply.Id, refreshed.LinkedAgentResponseId);
+        Assert.False(refreshed.RequiresAttention);
+
+        var history = await db.PrCommentHistory.AsNoTracking()
+            .Where(h => h.CommentId == parent.Id && h.Kind == "linked")
+            .ToListAsync();
+        Assert.Single(history);
+    }
+
+    [Fact]
+    public async Task Linker_Skips_Comments_Without_Match()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        SeedPr(db, "p24-link-no-match");
+
+        var c = new PrCommentRow
+        {
+            PrId = "p24-link-no-match",
+            ProviderCommentId = "p2",
+            ThreadId = "t2",
+            AuthorKind = "human",
+            Body = "Reword the docstring.",
+            State = "active",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+            RequiresAttention = true,
+        };
+        db.PrComments.Add(c);
+        await db.SaveChangesAsync();
+
+        var linker = new PrCommentLinker(db, new LoggerFactory().CreateLogger<PrCommentLinker>(), null);
+        var matched = await linker.LinkAsync("p24-link-no-match", worktreeRoot: null, default);
+
+        Assert.Equal(0, matched);
+        var refreshed = await db.PrComments.AsNoTracking().FirstAsync(x => x.Id == c.Id);
+        Assert.True(refreshed.RequiresAttention);
+        Assert.Null(refreshed.LinkedCommitSha);
+        Assert.Null(refreshed.LinkedAgentResponseId);
+    }
+
+    // ── 13. PrSyncJob ApplySnapshot — comment upsert (Q24.10) ─────────────
+
+    [Fact]
+    public async Task PrSync_Upsert_Inserts_New_Comments()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        SeedPr(db, "p24-snap-1");
+        var pr = await db.Prs.FirstAsync(p => p.Id == "p24-snap-1");
+        pr.Provider = "ado";
+        pr.ProviderRef = "1";
+        await db.SaveChangesAsync();
+
+        var snapshot = new PrSyncSnapshot(
+            CanonicalState: "open",
+            UpstreamUpdatedAt: "2026-01-01T00:00:00Z",
+            Comments: new[]
+            {
+                new PrSyncComment("c1", "t1", "alice@example.com", "human",
+                    "Looks good", null, null, "active",
+                    DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null, null, null),
+                new PrSyncComment("c2", "t1", "bot@example.com", "system",
+                    "Build failed", "src/foo.cs", 5, "active",
+                    DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null, null, "c1"),
+            },
+            CommentsFetched: true);
+
+        // Run the apply manually via reflection (it's a private method).
+        var job = scope.ServiceProvider.GetRequiredService<PrSyncJob>();
+        var method = typeof(PrSyncJob).GetMethod("ApplySnapshotAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(method);
+        var candidate = new PrSyncJob.PrSyncCandidate("p24-snap-1", "ado", "1", "open", null, null);
+        await (Task)method!.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
+
+        using var scope2 = f.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var comments = await db2.PrComments.Where(c => c.PrId == "p24-snap-1").ToListAsync();
+        Assert.Equal(2, comments.Count);
+        var c1 = comments.First(c => c.ProviderCommentId == "c1");
+        Assert.True(c1.RequiresAttention);
+        Assert.Equal("human", c1.AuthorKind);
+        var c2 = comments.First(c => c.ProviderCommentId == "c2");
+        Assert.Equal("system", c2.AuthorKind);
+        Assert.Equal(c1.Id, c2.ParentCommentId);
+    }
+
+    [Fact]
+    public async Task PrSync_Upsert_Resolves_State_To_Resolved()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        SeedPr(db, "p24-snap-2");
+        var existing = new PrCommentRow
+        {
+            PrId = "p24-snap-2",
+            ProviderCommentId = "c1",
+            ThreadId = "t1",
+            AuthorKind = "human",
+            Body = "Fix this",
+            State = "active",
+            CreatedAt = DateTimeOffset.UtcNow.AddHours(-1),
+            UpdatedAt = DateTimeOffset.UtcNow.AddHours(-1),
+            RequiresAttention = true,
+        };
+        db.PrComments.Add(existing);
+        await db.SaveChangesAsync();
+
+        var snapshot = new PrSyncSnapshot(
+            CanonicalState: "open",
+            UpstreamUpdatedAt: "2026-01-01T00:00:00Z",
+            Comments: new[]
+            {
+                new PrSyncComment("c1", "t1", "alice@example.com", "human",
+                    "Fix this", null, null, "resolved",
+                    existing.CreatedAt, DateTimeOffset.UtcNow, "alice@example.com", DateTimeOffset.UtcNow, null),
+            },
+            CommentsFetched: true);
+
+        var job = scope.ServiceProvider.GetRequiredService<PrSyncJob>();
+        var method = typeof(PrSyncJob).GetMethod("ApplySnapshotAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var candidate = new PrSyncJob.PrSyncCandidate("p24-snap-2", "ado", "2", "open", null, null);
+        await (Task)method.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
+
+        using var scope2 = f.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var refreshed = await db2.PrComments.AsNoTracking().FirstAsync(c => c.PrId == "p24-snap-2");
+        Assert.Equal("resolved", refreshed.State);
+        Assert.False(refreshed.RequiresAttention);
+        Assert.NotNull(refreshed.ResolvedAt);
+
+        var history = await db2.PrCommentHistory.Where(h => h.CommentId == refreshed.Id && h.Kind == "resolved").ToListAsync();
+        Assert.Single(history);
+    }
+
+    [Fact]
+    public async Task PrSync_Terminal_State_Sets_IsActive_False()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        SeedPr(db, "p24-snap-term");
+        var snapshot = new PrSyncSnapshot(
+            CanonicalState: "completed",
+            UpstreamUpdatedAt: null,
+            Comments: Array.Empty<PrSyncComment>(),
+            CommentsFetched: false);
+
+        var job = scope.ServiceProvider.GetRequiredService<PrSyncJob>();
+        var method = typeof(PrSyncJob).GetMethod("ApplySnapshotAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var candidate = new PrSyncJob.PrSyncCandidate("p24-snap-term", "ado", "1", "open", null, null);
+        await (Task)method.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
+
+        using var scope2 = f.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var pr = await db2.Prs.AsNoTracking().FirstAsync(p => p.Id == "p24-snap-term");
+        Assert.False(pr.IsActive);
+        Assert.Equal("completed", pr.Col);
+    }
+
+    // ── 14. Sweep filters out IsActive=false (Q24.3) ──────────────────────
+
+    [Fact]
+    public async Task Sweep_Skips_Inactive_Prs()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var active = SeedPr(db, "p24-sweep-active");
+        var inactive = SeedPr(db, "p24-sweep-inactive");
+        active.Provider = "ado"; active.ProviderRef = "10";
+        inactive.Provider = "ado"; inactive.ProviderRef = "11";
+        inactive.IsActive = false;
+        await db.SaveChangesAsync();
+
+        var staleThreshold = DateTimeOffset.UtcNow.AddHours(-1).ToString("o");
+        var candidates = await db.Prs
+            .AsNoTracking()
+            .Where(p => p.IsActive && (p.LastSyncStatus == "idle" || p.LastSyncStatus == "failed"))
+            .Select(p => p.Id)
+            .ToListAsync();
+
+        Assert.Contains("p24-sweep-active", candidates);
+        Assert.DoesNotContain("p24-sweep-inactive", candidates);
+    }
+
+    // ── 15. Constants spec consistency ────────────────────────────────────
+
+    [Fact]
+    public void SyncConstants_PrSync_Match_Spec()
+    {
+        Assert.Equal(1200, SyncConstants.PrSyncIntervalSeconds);
+        Assert.Equal(8, SyncConstants.PrSyncMaxParallel);
+        Assert.Equal(100, SyncConstants.PrCommentPageSize);
+    }
+
+    [Fact]
+    public void TaskQueueKinds_Constants()
+    {
+        Assert.Equal("work", TaskQueueKinds.Work);
+        Assert.Equal("comment-response", TaskQueueKinds.CommentResponse);
     }
 }

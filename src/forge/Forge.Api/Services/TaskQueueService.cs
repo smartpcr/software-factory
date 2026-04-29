@@ -29,7 +29,7 @@ public sealed class TaskQueueService : ITaskQueueService
         this.logger = logger;
     }
 
-    public async Task<TaskQueueRow> EnqueueAsync(string workItemId, string targetKind, string targetId, CancellationToken ct, bool skipSoulPrompt = false)
+    public async Task<TaskQueueRow> EnqueueAsync(string workItemId, string targetKind, string targetId, CancellationToken ct, bool skipSoulPrompt = false, string kind = TaskQueueKinds.Work)
     {
         ArgumentException.ThrowIfNullOrEmpty(workItemId);
         ArgumentException.ThrowIfNullOrEmpty(targetKind);
@@ -38,10 +38,12 @@ public sealed class TaskQueueService : ITaskQueueService
         // Q17.6 — idempotency: the partial UNIQUE prevents two open rows for
         // the same work item, but we resolve the existing row first so the
         // caller sees the same shape on a duplicate call instead of a 409.
+        // Q24.8 — same-kind idempotency: a 'comment-response' row in flight does
+        // not block a fresh 'work' enqueue and vice-versa.
         // SQLite EF can't translate string[].Contains; convert to List<string>.
         var openStates = TaskQueueStates.OpenStates.ToList();
         var existing = await this.db.TaskQueue
-            .Where(r => r.WorkItemId == workItemId && openStates.Contains(r.State))
+            .Where(r => r.WorkItemId == workItemId && r.Kind == kind && openStates.Contains(r.State))
             .FirstOrDefaultAsync(ct);
         if (existing is not null) return existing;
 
@@ -70,6 +72,7 @@ public sealed class TaskQueueService : ITaskQueueService
             RoutedToCrewId = string.Equals(targetKind, "crew", StringComparison.OrdinalIgnoreCase) ? targetId : null,
             LastUpdatedAt = now,
             SkipSoulPrompt = skipSoulPrompt,
+            Kind = kind,
         };
         this.db.TaskQueue.Add(row);
         this.db.TaskQueueHistory.Add(new TaskQueueHistoryRow

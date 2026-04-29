@@ -10,6 +10,7 @@ import { ProductIcon } from '@/products/ProductIcon';
 import { RepoIcon } from '@/products/RepoIcon';
 import { forgeApi } from '@/api/forgeApi';
 import type { Product, Repo } from '@/types';
+import { RepoSyncStatusStrip } from '@/views/RepoSyncStatusStrip';
 import { ProductSprintStrip } from '@/sprints/ProductSprintStrip';
 import { SprintManager } from '@/sprints/SprintManager';
 
@@ -281,6 +282,16 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, on
                 {r.kind === 'ado' ? 'ADO' : 'GH'}
               </span>
             </button>
+            {/* Phase 23.8 — sync status strip + drawer. Click → shows the
+                last 20 sync runs with errors and a "Sync now" button. */}
+            <RepoSyncStatusStrip
+              repo={r}
+              onSyncNow={async (repoId) => {
+                try { await forgeApi.syncRepoWorkItems(repoId); }
+                catch { /* surfaced inside the drawer */ }
+              }}
+            />
+
             <button
               type="button"
               className="icon-btn"

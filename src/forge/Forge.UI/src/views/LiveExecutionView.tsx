@@ -4,7 +4,7 @@
 // (Worktree, Tokens, Progress). Reads the snapshot from
 // /api/work-items/{id}/execution and tails the SignalR `task.{id}` group
 // for live updates via useTaskLive (Phase 16.13).
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { useTaskLive, useTaskLiveStore, type TaskTranscriptEvent, type WorktreeSnapshot } from '@/realtime/useTaskLiveStore';
 import { forgeApi } from '@/api/forgeApi';
@@ -21,7 +21,7 @@ const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: 'commits',   label: 'Commits' },
 ];
 
-type RailTab = 'worktree' | 'tokens' | 'progress';
+type RailTab = 'worktree' | 'tokens' | 'progress' | 'comments';
 
 export function LiveExecutionView(): JSX.Element {
   const params = useParams<{ id: string }>();
@@ -399,11 +399,13 @@ export function LiveExecutionView(): JSX.Element {
           <button type="button" className={`live-exec__tab${tab === 'worktree' ? ' active' : ''}`} onClick={() => setTab('worktree')}>Worktree</button>
           <button type="button" className={`live-exec__tab${tab === 'tokens'   ? ' active' : ''}`} onClick={() => setTab('tokens')}>Tokens</button>
           <button type="button" className={`live-exec__tab${tab === 'progress' ? ' active' : ''}`} onClick={() => setTab('progress')}>Progress</button>
+          <button type="button" className={`live-exec__tab${tab === 'comments' ? ' active' : ''}`} onClick={() => setTab('comments')}>Comments</button>
         </div>
         <div className="live-exec__tab-body">
           {tab === 'worktree' && <WorktreeTab snap={worktree} transcript={transcript} />}
           {tab === 'tokens'   && <TokensTab snap={snapshot} />}
           {tab === 'progress' && <ProgressTab snap={snapshot} />}
+          {tab === 'comments' && <CommentsTab workItemId={workItemId} />}
         </div>
       </aside>
     </div>
@@ -934,3 +936,119 @@ function ProgressTab(props: { snap: import('@/realtime/useTaskLiveStore').TaskEx
     </div>
   );
 }
+
+// Phase 24.11 — Comments tab on the Live Execution right rail.
+// Lists the work item's PR comments needing response, newest first. When a
+// `comment-response` queue row exists for this work item, a banner at the
+// top says "Agent is handling these (queue position: N)".
+function CommentsTab({ workItemId }: { workItemId: string | null }): JSX.Element {
+  const [comments, setComments] = useState<Array<{
+    id: number;
+    prId: string;
+    body: string;
+    filePath?: string | null;
+    line?: number | null;
+    authorId?: string | null;
+    updatedAt: string;
+    requiresAttention: boolean;
+  }>>([]);
+  const [prId, setPrId] = useState<string | null>(null);
+  const [queuePos, setQueuePos] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!workItemId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        // Resolve the PR linked to this work item via /api/state.
+        const state = await forgeApi.getState();
+        const linkedPr = state.prs.find((p: { id?: string }) => (p as { workItemId?: string | null }).workItemId === workItemId)
+          ?? state.prs.find((p) => p.workstream && p.workstream.endsWith(workItemId));
+        if (cancelled) return;
+        if (!linkedPr) { setComments([]); setPrId(null); return; }
+        setPrId(linkedPr.id);
+        const resp = await forgeApi.listPrComments(linkedPr.id, { requiresAttention: true, take: 100 });
+        if (cancelled) return;
+        setComments(resp.items.map((c) => ({
+          id: c.id,
+          prId: c.prId,
+          body: c.body,
+          filePath: c.filePath,
+          line: c.line,
+          authorId: c.authorId,
+          updatedAt: c.updatedAt,
+          requiresAttention: c.requiresAttention,
+        })));
+
+        // Resolve queue position (best-effort).
+        const queue = await forgeApi.listQueue();
+        const my = queue.find((q: { workItemId?: string; kind?: string; state?: string }) =>
+          q.workItemId === workItemId && q.kind === 'comment-response' && q.state !== 'completed' && q.state !== 'cancelled');
+        if (cancelled) return;
+        setQueuePos(my ? queue.indexOf(my) + 1 : null);
+      } catch (e: unknown) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [workItemId]);
+
+  return (
+    <div className="live-exec__pane live-exec__pane--comments">
+      {error && <div style={{ color: 'var(--danger)', fontSize: 11.5 }}>Error: {error}</div>}
+      {queuePos !== null && (
+        <div
+          style={{
+            background: 'var(--info-bg)',
+            border: '1px solid var(--info-border)',
+            color: 'var(--info)',
+            padding: '6px 10px',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: 11.5,
+            marginBottom: 8,
+          }}
+        >
+          Agent is handling these (queue position: {queuePos})
+        </div>
+      )}
+      {!prId ? (
+        <div style={{ color: 'var(--text-tertiary)', fontSize: 11.5, fontStyle: 'italic' }}>
+          No PR linked to this work item yet.
+        </div>
+      ) : comments.length === 0 ? (
+        <div style={{ color: 'var(--text-tertiary)', fontSize: 11.5, fontStyle: 'italic' }}>
+          No comments need a response.
+        </div>
+      ) : (
+        <div data-testid="live-exec-comments">
+          {[...comments]
+            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+            .map((c) => (
+              <div
+                key={c.id}
+                style={{
+                  borderTop: '1px solid var(--border-subtle)',
+                  padding: '6px 0',
+                  fontSize: 11.5,
+                }}
+              >
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 2 }}>
+                  {c.filePath && (
+                    <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', fontSize: 10 }}>
+                      {c.filePath}{c.line != null ? `:${c.line}` : ''}
+                    </span>
+                  )}
+                  <span style={{ color: 'var(--text-secondary)', fontSize: 10 }}>{c.authorId}</span>
+                </div>
+                <div style={{ color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>
+                  {c.body.length > 120 ? `${c.body.slice(0, 120)}…` : c.body}
+                </div>
+              </div>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
+

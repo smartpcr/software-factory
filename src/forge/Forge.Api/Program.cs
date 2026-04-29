@@ -127,6 +127,11 @@ builder.Services.AddScoped<Forge.Api.Services.ITaskQueueService, Forge.Api.Servi
 builder.Services.AddSingleton<Forge.Api.Services.CrewQueueWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.CrewQueueWorker>());
 // Phase 24 — PR state & comment sync sweep.
+builder.Services.AddSingleton<Forge.Api.Services.ForgeMetrics>();
+builder.Services.AddHttpClient(Forge.Api.Services.AdoPrCommentSyncClient.ClientName);
+builder.Services.AddHttpClient(Forge.Api.Services.GitHubPrCommentSyncClient.ClientName);
+builder.Services.AddSingleton<Forge.Api.Services.IPrCommentSyncClient, Forge.Api.Services.AdoPrCommentSyncClient>();
+builder.Services.AddSingleton<Forge.Api.Services.IPrCommentSyncClient, Forge.Api.Services.GitHubPrCommentSyncClient>();
 builder.Services.AddSingleton<Forge.Api.Services.PrSyncJob>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.PrSyncJob>());
 builder.Services.AddSingleton<AutoMergeWatcher>();

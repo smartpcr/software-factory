@@ -58,14 +58,29 @@ public static class PrsEndpoints
             q = q.Where(p => p.RepoId != null && ids.Contains(p.RepoId));
         }
         var rows = await q.OrderBy(p => p.Sort).ToListAsync();
-        return Results.Ok(rows.Select(PrMapper.ToContract).ToList());
+        // Phase 24 — fetch open + attention comment counts in one batch query.
+        var prIds = rows.Select(r => r.Id).ToList();
+        var commentCounts = await db.PrComments
+            .Where(c => prIds.Contains(c.PrId) && c.State == "active")
+            .GroupBy(c => c.PrId)
+            .Select(g => new { PrId = g.Key, Open = g.Count(), Attention = g.Count(c => c.RequiresAttention) })
+            .ToListAsync();
+        var byId = commentCounts.ToDictionary(x => x.PrId, x => x);
+        return Results.Ok(rows.Select(r =>
+        {
+            byId.TryGetValue(r.Id, out var cc);
+            return PrMapper.ToContract(r, cc?.Open, cc?.Attention);
+        }).ToList());
     }
 
     // GET /api/prs/{id} — single PR.
     private static async Task<IResult> Get(string id, ForgeDbContext db)
     {
         var row = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
-        return row is null ? NotFound(id) : Results.Ok(PrMapper.ToContract(row));
+        if (row is null) return NotFound(id);
+        var open = await db.PrComments.CountAsync(c => c.PrId == id && c.State == "active");
+        var attention = await db.PrComments.CountAsync(c => c.PrId == id && c.State == "active" && c.RequiresAttention);
+        return Results.Ok(PrMapper.ToContract(row, open, attention));
     }
 
     public sealed record PrDetailsResponse(

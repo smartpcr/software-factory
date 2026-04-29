@@ -546,19 +546,74 @@ public class AdoProvider : IForgeProvider
     public async Task<IReadOnlyList<WorkItem>> ListWorkItemsForSyncAsync(
         WorkItemSyncFilters filters, CancellationToken ct = default)
     {
-        if (!this.IsConfigured) return Array.Empty<WorkItem>();
-        var client = this.NewClient();
-
+        // Flatten the streamed batches into a single list. Used by callers
+        // that don't need cursor-based resume (Phase 12 throttled syncs).
+        var all = new List<WorkItem>();
         try
         {
-            var wiql = BuildSyncWiql(this.EffectiveProject, filters);
-            var wiqlBody = new { query = wiql };
-            var wiqlReq = new HttpRequestMessage(HttpMethod.Post,
-                $"{this.EffectiveProject}/_apis/wit/wiql?api-version=7.1")
+            await foreach (var batch in this.StreamWorkItemBatchesAsync(filters, ct))
             {
-                Content = new StringContent(JsonSerializer.Serialize(wiqlBody), Encoding.UTF8, "application/json"),
-            };
-            var wiqlResp = await client.SendAsync(wiqlReq, ct);
+                all.AddRange(batch.Items);
+            }
+            return all;
+        }
+        catch (Exception ex)
+        {
+            this.health.RecordError(ex);
+            this.logger.LogWarning(ex, "ADO ListWorkItemsForSyncAsync failed");
+            return all;
+        }
+    }
+
+    /// <summary>
+    /// Phase 23.4 — paginated streaming with cursor support. Walks the WIQL
+    /// result in 200-ID batches per
+    /// <see cref="Services.SyncConstants.AdoMaxIdsPerWorkItemBatch"/>;
+    /// each yielded <see cref="WorkItemBatch"/> carries its 0-based index
+    /// as <see cref="WorkItemBatch.OpaqueCursor"/> so a consumer that
+    /// commits per batch can persist it as <c>repo.LastSyncCursor</c> and
+    /// resume from the next batch on the following run.
+    /// </summary>
+    public async IAsyncEnumerable<WorkItemBatch> StreamWorkItemBatchesAsync(
+        WorkItemSyncFilters filters,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        if (!this.IsConfigured) yield break;
+        var client = this.NewClient();
+
+        // Resume from a prior failure: the cursor is the index of the last
+        // successfully-committed batch; we start at the next one.
+        var startIndex = 0;
+        if (!string.IsNullOrEmpty(filters.StartCursor)
+            && int.TryParse(filters.StartCursor, out var parsed)
+            && parsed >= 0)
+        {
+            startIndex = parsed + 1;
+        }
+
+        // ── WIQL pass: collect every ID with retry ────────────────────────
+        var wiql = BuildSyncWiql(this.EffectiveProject, filters);
+        var wiqlBody = new { query = wiql };
+        HttpResponseMessage wiqlResp;
+        try
+        {
+            wiqlResp = await this.SendWithRetryAsync(
+                () => new HttpRequestMessage(HttpMethod.Post,
+                    $"{this.EffectiveProject}/_apis/wit/wiql?api-version=7.1")
+                {
+                    Content = new StringContent(
+                        JsonSerializer.Serialize(wiqlBody), Encoding.UTF8, "application/json"),
+                },
+                client,
+                ct);
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogWarning(ex, "ADO WIQL request failed for {Project}", this.EffectiveProject);
+            throw;
+        }
+        using (wiqlResp)
+        {
             this.health.RecordResponse(wiqlResp);
             if (!wiqlResp.IsSuccessStatusCode)
             {
@@ -569,44 +624,108 @@ public class AdoProvider : IForgeProvider
                 wiqlResp.EnsureSuccessStatusCode();
             }
             using var wiqlDoc = JsonDocument.Parse(await wiqlResp.Content.ReadAsStringAsync(ct));
-            var ids = wiqlDoc.RootElement.GetProperty("workItems")
+            var allIds = wiqlDoc.RootElement.GetProperty("workItems")
                 .EnumerateArray()
                 .Select(w => w.GetProperty("id").GetInt64().ToString())
-                .Take(200)
+                .Take(Services.SyncConstants.AdoMaxWiqlReferences)
                 .ToArray();
-            if (ids.Length == 0) return Array.Empty<WorkItem>();
+            if (allIds.Length == 0) yield break;
 
-            var idList = string.Join(",", ids);
-            // ADO rejects `fields` and `$expand` together with
-            // ConflictingParametersException. We want $expand=relations to
-            // capture the parent-link (System.LinkTypes.Hierarchy-Reverse),
-            // so omit `fields` and let ADO return the default field set.
-            var resp = await client.GetAsync(
-                $"_apis/wit/workitems?ids={idList}&$expand=relations&api-version=7.1", ct);
-            this.health.RecordResponse(resp);
-            if (!resp.IsSuccessStatusCode)
+            // ── Hydrate pass: 200-ID batches with per-batch retry ─────────
+            var pageSize = Services.SyncConstants.AdoMaxIdsPerWorkItemBatch;
+            var totalBatches = (allIds.Length + pageSize - 1) / pageSize;
+            for (var batchIdx = startIndex; batchIdx < totalBatches; batchIdx++)
             {
-                var errBody = await resp.Content.ReadAsStringAsync(ct);
-                this.logger.LogWarning(
-                    "ADO workitems hydrate {Status} for {Count} ids. Response: {Body}",
-                    (int)resp.StatusCode, ids.Length, Trunc(errBody, 800));
-                resp.EnsureSuccessStatusCode();
+                ct.ThrowIfCancellationRequested();
+                var skip = batchIdx * pageSize;
+                var ids = allIds.Skip(skip).Take(pageSize).ToArray();
+                var idList = string.Join(",", ids);
+
+                HttpResponseMessage resp;
+                try
+                {
+                    resp = await this.SendWithRetryAsync(
+                        () => new HttpRequestMessage(HttpMethod.Get,
+                            $"_apis/wit/workitems?ids={idList}&$expand=relations&api-version=7.1"),
+                        client,
+                        ct);
+                }
+                catch (HttpRequestException)
+                {
+                    // Surface to the consumer; the JOB writes LastSyncCursor
+                    // = (last successful batchIdx - 1) before we throw.
+                    throw;
+                }
+
+                using (resp)
+                {
+                    this.health.RecordResponse(resp);
+                    if (!resp.IsSuccessStatusCode)
+                    {
+                        var errBody = await resp.Content.ReadAsStringAsync(ct);
+                        this.logger.LogWarning(
+                            "ADO workitems hydrate {Status} (batch {Batch}). Response: {Body}",
+                            (int)resp.StatusCode, batchIdx, Trunc(errBody, 800));
+                        resp.EnsureSuccessStatusCode();
+                    }
+                    using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+                    var items = new List<WorkItem>(ids.Length);
+                    foreach (var wi in doc.RootElement.GetProperty("value").EnumerateArray())
+                    {
+                        items.Add(AdoMapper.ToWorkItem(wi, this.EffectiveProject, this.EffectiveProject));
+                    }
+                    this.health.MarkSync();
+                    yield return new WorkItemBatch(
+                        Index: batchIdx,
+                        Items: items,
+                        OpaqueCursor: batchIdx.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                }
             }
-            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-            var items = new List<WorkItem>();
-            foreach (var wi in doc.RootElement.GetProperty("value").EnumerateArray())
-            {
-                items.Add(AdoMapper.ToWorkItem(wi, this.EffectiveProject, this.EffectiveProject));
-            }
-            this.health.MarkSync();
-            return items;
         }
-        catch (Exception ex)
+    }
+
+    /// <summary>
+    /// Phase 23.4 — single-shot retry helper for ADO HTTP calls. Honours the
+    /// upstream <c>Retry-After</c> header (capped at
+    /// <see cref="Services.SyncConstants.MaxRetryAfterSeconds"/>); after
+    /// three consecutive 429/503 responses the most recent failure is
+    /// returned so the caller can let the run fail.
+    /// </summary>
+    private async Task<HttpResponseMessage> SendWithRetryAsync(
+        Func<HttpRequestMessage> requestFactory,
+        HttpClient client,
+        CancellationToken ct)
+    {
+        const int maxAttempts = 3;
+        HttpResponseMessage? response = null;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
-            this.health.RecordError(ex);
-            this.logger.LogWarning(ex, "ADO ListWorkItemsForSyncAsync failed");
-            return Array.Empty<WorkItem>();
+            response?.Dispose();
+            using var req = requestFactory();
+            response = await client.SendAsync(req, ct);
+            if ((int)response.StatusCode != 429 && (int)response.StatusCode != 503)
+            {
+                return response;
+            }
+            // Transient — back off per Retry-After (capped) then retry.
+            var retryAfter = response.Headers.RetryAfter?.Delta
+                ?? (response.Headers.RetryAfter?.Date is DateTimeOffset until
+                    ? until - DateTimeOffset.UtcNow
+                    : (TimeSpan?)null)
+                ?? TimeSpan.FromSeconds(1);
+            var capped = TimeSpan.FromSeconds(Math.Min(
+                retryAfter.TotalSeconds,
+                Services.SyncConstants.MaxRetryAfterSeconds));
+            if (capped > TimeSpan.Zero)
+            {
+                try { await Task.Delay(capped, ct); }
+                catch (TaskCanceledException) { throw; }
+            }
         }
+        // Three retries spent — return the most recent (failing) response so
+        // the caller's status-code check trips and the run is recorded as
+        // failed with the right error class.
+        return response!;
     }
 
 
@@ -620,9 +739,27 @@ public class AdoProvider : IForgeProvider
         var parts = new List<string>();
         // System.TeamProject filter is what scopes the query in WIQL terms.
         parts.Add($"[System.TeamProject] = '{EscWiql(project)}'");
-        if (!string.IsNullOrWhiteSpace(filters.AreaPath))
+
+        // Phase 23.4 — multi-area-path scope (Q23.3). When AreaPaths is
+        // populated the clauses are OR'd; legacy single AreaPath is honored
+        // when AreaPaths is empty so existing call-sites keep working.
+        var areaPaths = filters.AreaPaths;
+        if ((areaPaths is null || areaPaths.Count == 0)
+            && !string.IsNullOrWhiteSpace(filters.AreaPath))
         {
-            parts.Add($"[System.AreaPath] UNDER '{EscWiql(filters.AreaPath!)}'");
+            areaPaths = new[] { filters.AreaPath! };
+        }
+        if (areaPaths is { Count: > 0 })
+        {
+            var ored = string.Join(
+                " OR ",
+                areaPaths
+                    .Where(p => !string.IsNullOrWhiteSpace(p))
+                    .Select(p => $"[System.AreaPath] UNDER '{EscWiql(p)}'"));
+            if (!string.IsNullOrEmpty(ored))
+            {
+                parts.Add(areaPaths.Count == 1 ? ored : $"({ored})");
+            }
         }
         if (filters.Types is { Count: > 0 })
         {

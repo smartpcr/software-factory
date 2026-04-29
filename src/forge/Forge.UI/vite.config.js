@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath, URL } from 'node:url';
@@ -22,5 +23,11 @@ export default defineConfig({
                 ws: true,
             },
         },
+    },
+    test: {
+        // Phase 18.6 / 23.8 — vitest covers `src/**/*.spec.ts` (pure-logic UI
+        // tests, no DOM). Playwright e2e specs in `e2e/` use the Playwright
+        // test runner and must NOT be discovered here.
+        exclude: ['**/node_modules/**', '**/e2e/**', '**/dist/**'],
     },
 });

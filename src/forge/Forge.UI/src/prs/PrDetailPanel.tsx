@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { forgeApi, type PrDetailsResponse } from '@/api/forgeApi';
 import { usePrsStore } from '@/state/usePrsStore';
 import { usePrLogStore } from '@/state/usePrLogStore';
+import { PrCommentsList } from './PrCommentsList';
 
 const EMPTY_LOG: readonly string[] = [];
 
@@ -160,6 +161,19 @@ export function PrDetailPanel() {
               >
                 {[...(details?.buildLogTail ?? []), ...liveLog].join('\n')}
               </pre>
+            </div>
+
+            <div className="detail-section">
+              <div className="detail-section-title">
+                <span>Comments</span>
+                {(pr.openCommentCount ?? 0) > 0 && (
+                  <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>
+                    {pr.openCommentCount} open
+                    {(pr.attentionCommentCount ?? 0) > 0 && ` · ${pr.attentionCommentCount} need response`}
+                  </span>
+                )}
+              </div>
+              <PrCommentsList prId={pr.id} />
             </div>
 
             <div className="detail-section">

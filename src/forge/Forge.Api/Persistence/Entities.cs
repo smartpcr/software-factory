@@ -260,6 +260,9 @@ public class PrRow
 
     /// <summary>Phase 24 — provider's PR id/number.</summary>
     public string? ProviderRef { get; set; }
+
+    /// <summary>Phase 24 — cursor for the comment-↔-commit linker sweep.</summary>
+    public string? LastLinkerCommitSha { get; set; }
 }
 
 /// <summary>Phase 24 — mirrors upstream PR comment threads + individual comments.</summary>
@@ -958,6 +961,21 @@ public class TaskQueueRow
     /// <summary>Phase 21 — when true, the agent runner skips loading soul.md (system prompt)
     /// for both generator and evaluator. Used by force-restart to run lean.</summary>
     public bool SkipSoulPrompt { get; set; }
+
+    /// <summary>
+    /// Phase 24 — discriminator for the runner to pick the prompt template.
+    /// 'work' (default) runs the standard work-item brief; 'comment-response'
+    /// loads the open PR comments needing response and replies / commits
+    /// fixes against the existing PR.
+    /// </summary>
+    public string Kind { get; set; } = TaskQueueKinds.Work;
+}
+
+/// <summary>Phase 24 — well-known values for <see cref="TaskQueueRow.Kind"/>.</summary>
+public static class TaskQueueKinds
+{
+    public const string Work = "work";
+    public const string CommentResponse = "comment-response";
 }
 
 /// <summary>

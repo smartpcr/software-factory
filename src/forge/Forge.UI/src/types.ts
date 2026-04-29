@@ -143,6 +143,56 @@ export interface Pr {
   autoMerge?: boolean;
   blocked?: boolean;
   impl?: ImplStatus | null;
+
+  // Phase 24 — sync metadata + comment counts surfaced on the card.
+  isActive?: boolean;
+  /** Total open comments on this PR. */
+  openCommentCount?: number;
+  /** Subset of openCommentCount that need an agent response. */
+  attentionCommentCount?: number;
+  /** ISO-8601 of the most-recent successful sync; null when never synced. */
+  lastSyncAt?: string | null;
+  /** idle | running | failed. */
+  lastSyncStatus?: string;
+  /** Provider key (`ado` | `github`); null for prototype/seed PRs. */
+  provider?: string | null;
+}
+
+// Phase 24 — comment lifecycle types -----------------------------------------
+
+export type PrCommentState = 'active' | 'resolved' | 'wont-fix' | 'closed' | 'pending';
+export type PrCommentAuthorKind = 'human' | 'agent' | 'system';
+
+export interface PrComment {
+  id: number;
+  prId: string;
+  providerCommentId: string;
+  threadId: string;
+  parentCommentId?: number | null;
+  authorId?: string | null;
+  authorKind: PrCommentAuthorKind;
+  body: string;
+  filePath?: string | null;
+  line?: number | null;
+  state: PrCommentState;
+  createdAt: string;
+  updatedAt: string;
+  resolvedByUserId?: string | null;
+  resolvedAt?: string | null;
+  linkedCommitSha?: string | null;
+  linkedAgentResponseId?: number | null;
+  requiresAttention: boolean;
+}
+
+export interface PrCommentHistory {
+  id: number;
+  commentId: number;
+  kind: 'opened' | 'edited' | 'replied' | 'resolved' | 'reopened' | 'linked' | 'unlinked' | 'attention-flipped';
+  fromValue?: string | null;
+  toValue?: string | null;
+  byUserId?: string | null;
+  at: string;
+  payloadJson?: string | null;
 }
 
 export interface WsStat {
@@ -248,6 +298,36 @@ export interface Repo {
   adoProject?: string | null;
   ghOwner?: string | null;
   ghRepo?: string | null;
+  /** Phase 23.3 — multi-area-path scope for ADO; OR'd in WIQL. Null/empty = whole project. */
+  areaPaths?: string[] | null;
+  /** Phase 23.3 — ISO timestamp of the last successful work-item sync run. */
+  lastSyncAt?: string | null;
+  /** Phase 23.3 — opaque resume cursor written by a partial sync run. */
+  lastSyncCursor?: string | null;
+  /** Phase 23.3 — `idle | running | failed`. */
+  lastSyncStatus?: 'idle' | 'running' | 'failed';
+  /** Phase 23.3 — error message from the most recent failed sync. */
+  lastSyncError?: string | null;
+  /** Phase 23.3 — when a sync run started; used to enforce the 19-minute stale threshold. */
+  isRunningSince?: string | null;
+  /** Phase 23.3 — per-repo override for the `agent-ready` auto-team-assign target. Null falls back to `Engineering`. */
+  agentReadyDefaultTeam?: string | null;
+  /** Phase 23.3 — override for the initial sync window (ADO only); null defaults to 365 days. */
+  initialSyncWindowDays?: number | null;
+}
+
+/** Phase 23.3 — one row in the per-repo sync history. */
+export interface WorkItemSyncRun {
+  id: string;
+  repoId: string;
+  kind: 'full' | 'delta' | 'manual';
+  startedAt: string;
+  finishedAt?: string | null;
+  itemsAdded: number;
+  itemsUpdated: number;
+  itemsConflicted: number;
+  errorMessage?: string | null;
+  completedSuccessfully: boolean;
 }
 
 export interface DiscoverableRepo {

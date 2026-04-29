@@ -416,7 +416,34 @@ export function WorkItemDetailPanel({ item }: Props) {
         </div>
         <div className="wit-detail-tags">
           {item.tags.length === 0 && <span className="muted">— none</span>}
-          {item.tags.map((t) => <span key={t} className="wit-tag">{t}</span>)}
+          {item.tags.map((t) => {
+            // Phase 23.8 — agent-ready upstream tag gets an orange pill so
+            // operators can see at a glance which items the auto-team-assign
+            // touched. Match case-insensitively to align with the resolver.
+            const isAgentReady = t.toLowerCase() === 'agent-ready';
+            if (isAgentReady) {
+              return (
+                <span
+                  key={t}
+                  className="wit-tag"
+                  data-testid="agent-ready-pill"
+                  title="agent-ready — auto-team-assigned by sync (Phase 23.8 / Q23.8)"
+                  style={{
+                    background: 'color-mix(in srgb, rgb(234, 88, 12) 14%, transparent)',
+                    color: 'rgb(234, 88, 12)',
+                    border: '1px solid rgb(234, 88, 12)',
+                    fontWeight: 600,
+                    letterSpacing: 0.4,
+                    textTransform: 'uppercase',
+                    fontSize: 10,
+                  }}
+                >
+                  agent-ready
+                </span>
+              );
+            }
+            return <span key={t} className="wit-tag">{t}</span>;
+          })}
         </div>
       </section>
 

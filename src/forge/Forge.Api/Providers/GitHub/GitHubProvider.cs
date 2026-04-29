@@ -289,34 +289,132 @@ public class GitHubProvider : IForgeProvider
     public async Task<IReadOnlyList<WorkItem>> ListWorkItemsForSyncAsync(
         WorkItemSyncFilters filters, CancellationToken ct = default)
     {
-        if (!this.IsConfigured) return Array.Empty<WorkItem>();
+        // Flatten the streaming batches for legacy callers.
+        var all = new List<WorkItem>();
         try
         {
-            var client = this.NewClient();
-            var qs = BuildSyncQueryString(filters);
-            var resp = await client.GetAsync($"repos/{this.options.Repo}/issues{qs}", ct);
-            this.health.RecordResponse(resp);
-            resp.EnsureSuccessStatusCode();
-            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-            var items = new List<WorkItem>();
-            foreach (var issue in doc.RootElement.EnumerateArray())
+            await foreach (var batch in this.StreamWorkItemBatchesAsync(filters, ct))
             {
-                if (issue.TryGetProperty("pull_request", out _)) continue; // skip PRs
-                var wi = GitHubMapper.IssueToWorkItem(issue, this.options.Repo, this.options.Repo);
-                // Apply type filter post-hoc: GitHub's labels query is `OR`,
-                // not `AND`, so we'd over-pull if we narrowed by label set.
-                if (filters.Types is { Count: > 0 } && !filters.Types.Contains(wi.Type)) continue;
-                items.Add(wi);
+                all.AddRange(batch.Items);
             }
-            this.health.MarkSync();
-            return items;
+            return all;
         }
         catch (Exception ex)
         {
             this.health.RecordError(ex);
             this.logger.LogWarning(ex, "GitHub ListWorkItemsForSyncAsync failed");
-            return Array.Empty<WorkItem>();
+            return all;
         }
+    }
+
+    /// <summary>
+    /// Phase 23.5 — paginated streaming. Walks the GitHub
+    /// <c>Link: rel="next"</c> chain one page at a time and yields each
+    /// page as a separate batch. <see cref="WorkItemBatch.OpaqueCursor"/>
+    /// stores the next-page URL so a mid-walk failure persists the resume
+    /// token; a subsequent run starts with a single GET against that URL.
+    /// Honours the <c>X-RateLimit-Remaining</c> floor: drops below
+    /// <see cref="Services.SyncConstants.GithubRateLimitFloor"/> trigger a
+    /// sleep until <c>X-RateLimit-Reset</c>.
+    /// </summary>
+    public async IAsyncEnumerable<WorkItemBatch> StreamWorkItemBatchesAsync(
+        WorkItemSyncFilters filters,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        if (!this.IsConfigured) yield break;
+        var client = this.NewClient();
+
+        // Resume from a stored next-page URL when the prior run left a
+        // cursor; otherwise build the first request from filters.
+        var nextUrl = !string.IsNullOrEmpty(filters.StartCursor)
+            ? filters.StartCursor!
+            : $"repos/{this.options.Repo}/issues{BuildSyncQueryString(filters)}";
+        var pageIndex = 0;
+
+        while (!string.IsNullOrEmpty(nextUrl))
+        {
+            ct.ThrowIfCancellationRequested();
+            var resp = await client.GetAsync(nextUrl, ct);
+            this.health.RecordResponse(resp);
+            if (!resp.IsSuccessStatusCode)
+            {
+                resp.Dispose();
+                resp.EnsureSuccessStatusCode();
+            }
+
+            // Honour the GitHub rate-limit floor before parsing the page so
+            // a single tight loop never burns the bucket. A drop below
+            // GithubRateLimitFloor sleeps until X-RateLimit-Reset.
+            await this.HonourRateLimitAsync(resp, ct);
+
+            using (resp)
+            {
+                var raw = await resp.Content.ReadAsStringAsync(ct);
+                using var doc = JsonDocument.Parse(raw);
+                var items = new List<WorkItem>();
+                foreach (var issue in doc.RootElement.EnumerateArray())
+                {
+                    if (issue.TryGetProperty("pull_request", out _)) continue; // skip PRs
+                    var wi = GitHubMapper.IssueToWorkItem(issue, this.options.Repo, this.options.Repo);
+                    if (filters.Types is { Count: > 0 } && !filters.Types.Contains(wi.Type)) continue;
+                    items.Add(wi);
+                }
+                this.health.MarkSync();
+
+                var advance = ParseNextLink(resp.Headers);
+                yield return new WorkItemBatch(
+                    Index: pageIndex,
+                    Items: items,
+                    OpaqueCursor: advance);
+                nextUrl = advance ?? string.Empty;
+                pageIndex++;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Phase 23.5 — extract the <c>Link: …; rel="next"</c> URL, if any,
+    /// from a GitHub response. Returns null when no next page exists.
+    /// </summary>
+    private static string? ParseNextLink(System.Net.Http.Headers.HttpResponseHeaders headers)
+    {
+        if (!headers.TryGetValues("Link", out var values)) return null;
+        foreach (var raw in values)
+        {
+            // Link: <https://api.github.com/...?page=2>; rel="next", <https://...?page=10>; rel="last"
+            foreach (var part in raw.Split(','))
+            {
+                var trimmed = part.Trim();
+                if (!trimmed.Contains("rel=\"next\"", StringComparison.OrdinalIgnoreCase)) continue;
+                var lt = trimmed.IndexOf('<');
+                var gt = trimmed.IndexOf('>');
+                if (lt >= 0 && gt > lt) return trimmed.Substring(lt + 1, gt - lt - 1);
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Phase 23.5 — when <c>X-RateLimit-Remaining</c> falls below the
+    /// configured floor, sleep until the reset epoch advertised by
+    /// <c>X-RateLimit-Reset</c>. Tests inject deterministic values; in
+    /// production this prevents the runner from burning the bucket.
+    /// </summary>
+    private async Task HonourRateLimitAsync(HttpResponseMessage resp, CancellationToken ct)
+    {
+        if (!resp.Headers.TryGetValues("X-RateLimit-Remaining", out var remValues)) return;
+        if (!int.TryParse(remValues.FirstOrDefault(), out var remaining)) return;
+        if (remaining >= Services.SyncConstants.GithubRateLimitFloor) return;
+        if (!resp.Headers.TryGetValues("X-RateLimit-Reset", out var resetValues)) return;
+        if (!long.TryParse(resetValues.FirstOrDefault(), out var resetEpoch)) return;
+
+        var resetUtc = DateTimeOffset.FromUnixTimeSeconds(resetEpoch);
+        var sleep = resetUtc - DateTimeOffset.UtcNow;
+        if (sleep <= TimeSpan.Zero) return;
+        // Cap at 60s so a misconfigured upstream can't pin the runner.
+        var capped = TimeSpan.FromSeconds(Math.Min(sleep.TotalSeconds, Services.SyncConstants.MaxRetryAfterSeconds));
+        try { await Task.Delay(capped, ct); }
+        catch (TaskCanceledException) { throw; }
     }
 
     /// <summary>
@@ -325,7 +423,7 @@ public class GitHubProvider : IForgeProvider
     /// </summary>
     public static string BuildSyncQueryString(WorkItemSyncFilters filters)
     {
-        var parts = new List<string> { "state=all", "per_page=100" };
+        var parts = new List<string> { "state=all", $"per_page={Services.SyncConstants.GithubPerPage}" };
         if (!string.IsNullOrWhiteSpace(filters.AssignedTo))
         {
             parts.Add($"assignee={Uri.EscapeDataString(filters.AssignedTo!)}");

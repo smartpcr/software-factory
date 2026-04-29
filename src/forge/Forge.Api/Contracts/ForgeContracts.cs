@@ -154,7 +154,15 @@ public sealed record Pr(
     string? ConflictPaths = null,
     bool AutoMerge = false,
     bool Blocked = false,
-    ImplStatus? Impl = null);
+    ImplStatus? Impl = null,
+    // -- Phase 24 — PR sync metadata + comment counts --
+    bool? IsActive = null,
+    int? OpenCommentCount = null,
+    int? AttentionCommentCount = null,
+    string? LastSyncAt = null,
+    string? LastSyncStatus = null,
+    string? Provider = null,
+    string? WorkItemId = null);
 
 /// <summary>
 /// Stat tile shown at the top of the workstreams view.

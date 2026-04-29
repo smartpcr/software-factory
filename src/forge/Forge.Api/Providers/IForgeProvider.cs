@@ -101,18 +101,53 @@ public interface IForgeProvider
     /// row needs to be re-mapped). Returns null if not found.
     /// </summary>
     Task<WorkItem?> GetWorkItemForSyncAsync(string providerRef, CancellationToken ct = default);
+
+    /// <summary>
+    /// Phase 23.4 / 23.5 — stream work items in upstream-paginated batches
+    /// so the consumer can commit each batch in its own transaction and
+    /// resume from <see cref="WorkItemSyncFilters.StartCursor"/> after a
+    /// mid-walk failure. Default implementation (for legacy providers)
+    /// emits a single terminal batch from
+    /// <see cref="ListWorkItemsForSyncAsync"/>.
+    /// </summary>
+    async IAsyncEnumerable<WorkItemBatch> StreamWorkItemBatchesAsync(
+        WorkItemSyncFilters filters,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var single = await this.ListWorkItemsForSyncAsync(filters, ct);
+        yield return new WorkItemBatch(Index: 0, Items: single, OpaqueCursor: null);
+    }
 }
 
 /// <summary>
 /// Phase 12.4 / 12.10 — narrowing filters for a sync run. Empty values
 /// mean "any". UTC dates apply to the provider's "last updated" column.
+/// Phase 23 adds <see cref="AreaPaths"/> for multi-area-path scoping
+/// (ADO only) and <see cref="StartCursor"/> for cursor-driven resume.
 /// </summary>
 public sealed record WorkItemSyncFilters(
     string? AreaPath = null,
     IReadOnlyList<string>? Types = null,
     string? AssignedTo = null,
     DateTimeOffset? UpdatedFrom = null,
-    DateTimeOffset? UpdatedTo = null);
+    DateTimeOffset? UpdatedTo = null,
+    /// <summary>Phase 23.4 — multi-area-path scope for ADO; OR'd in the WIQL.</summary>
+    IReadOnlyList<string>? AreaPaths = null,
+    /// <summary>Phase 23.6 — opaque resume token written by a prior batch.</summary>
+    string? StartCursor = null);
+
+/// <summary>
+/// Phase 23.4 / 23.5 — one batch returned by
+/// <see cref="IForgeProvider.StreamWorkItemBatchesAsync"/>. Each batch is
+/// the unit of cursor commit: when the consumer persists a batch's items,
+/// it should also persist <see cref="OpaqueCursor"/> as
+/// <c>repo.LastSyncCursor</c> so a subsequent failure resumes from the
+/// next batch instead of replaying the whole walk.
+/// </summary>
+public sealed record WorkItemBatch(
+    int Index,
+    IReadOnlyList<WorkItem> Items,
+    string? OpaqueCursor);
 
 // -- Phase 6 request DTOs --------------------------------------------------
 

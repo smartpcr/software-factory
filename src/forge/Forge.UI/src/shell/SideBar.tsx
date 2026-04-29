@@ -34,6 +34,14 @@ export function SideBar() {
     () => (activeProduct ? reposByProduct[activeProduct.id] ?? [] : []),
     [activeProduct, reposByProduct],
   );
+  // Phase 23.9 — when any repo in the active product has lastSyncStatus
+  // 'failed', the sidebar entry surfaces a small red dot. No separate
+  // alert center at v0.1; click → /products/{id} (the entry already
+  // navigates there) and the failing repo card is auto-scrolled into view.
+  const hasFailedSync = useMemo(
+    () => activeProductRepos.some((r) => r.lastSyncStatus === 'failed'),
+    [activeProductRepos],
+  );
   const repoCount = activeProductRepos.length;
   const roleLabel = formatRole(me.role);
 
@@ -74,9 +82,15 @@ export function SideBar() {
       <div className="sidebar-body">
 
         <NavLink
-          to="/products"
+          to={hasFailedSync && activeProduct ? `/products?focus=${encodeURIComponent(activeProduct.id)}#sync-failed` : '/products'}
           className="repo-card"
-          title={activeProduct ? `${activeProduct.name} — switch product` : 'Manage products'}
+          title={
+            hasFailedSync
+              ? `${activeProduct?.name ?? 'Product'} — sync failed on at least one repo`
+              : (activeProduct ? `${activeProduct.name} — switch product` : 'Manage products')
+          }
+          data-testid="sidebar-product-link"
+          data-sync-failed={hasFailedSync ? 'true' : 'false'}
           style={{ textDecoration: 'none', color: 'inherit', display: 'block' }}
         >
           <div className="repo-card-row" style={{ alignItems: 'center', gap: 8 }}>
@@ -86,6 +100,19 @@ export function SideBar() {
             <span className="repo-card-name" style={{ flex: 1, minWidth: 0 }}>
               {activeProduct?.name ?? 'No product'}
             </span>
+            {hasFailedSync && (
+              <span
+                aria-hidden
+                data-testid="sidebar-sync-failed-dot"
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: 999,
+                  background: 'rgb(220, 38, 38)',
+                  boxShadow: '0 0 0 3px color-mix(in srgb, rgb(220, 38, 38) 30%, transparent)',
+                }}
+              />
+            )}
             <span className="repo-card-source">{products.length > 1 ? 'Switch' : 'Product'}</span>
           </div>
           <div className="repo-card-meta">

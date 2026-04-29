@@ -52,6 +52,7 @@ export function PrCard({ pr, onOpen, onApprove, onRequestChanges }: Props) {
           <span className="pr-card-id">{pr.id}</span>
           <span className={`pr-card-epic ${pr.epicColor}`}>{pr.epic}</span>
           <span className="pr-card-age">{pr.age}</span>
+          <PrCommentBadges pr={pr} />
         </div>
         <div className="pr-card-title">{pr.title}</div>
         <div className="pr-card-branch">
@@ -160,6 +161,62 @@ export function PrCard({ pr, onOpen, onApprove, onRequestChanges }: Props) {
         </div>
       </div>
     </div>
+  );
+}
+
+// Phase 24.12 — comment + sync badges on the PR card.
+function PrCommentBadges({ pr }: { pr: Pr }) {
+  const isTerminal = pr.col === 'merged' || pr.isActive === false;
+  if (isTerminal) {
+    return (
+      <span
+        className="pr-card-done-pill"
+        title="PR closed (completed or abandoned)"
+        style={{
+          background: 'var(--bg-sunken)',
+          color: 'var(--text-tertiary)',
+          padding: '0 6px',
+          borderRadius: 'var(--radius-sm)',
+          fontSize: 10,
+          fontWeight: 600,
+        }}
+      >
+        ✓ done
+      </span>
+    );
+  }
+  const open = pr.openCommentCount ?? 0;
+  const attention = pr.attentionCommentCount ?? 0;
+  if (open === 0 && attention === 0) return null;
+  return (
+    <span style={{ display: 'inline-flex', gap: 4 }}>
+      {open > 0 && (
+        <span
+          className="pr-card-comment-chip"
+          title={`${open} open comment${open === 1 ? '' : 's'}`}
+          style={{ fontSize: 10, color: 'var(--text-secondary)' }}
+        >
+          💬 {open}
+        </span>
+      )}
+      {attention > 0 && (
+        <span
+          className="pr-card-attention-chip"
+          data-testid="pr-card-attention"
+          title={`${attention} comment${attention === 1 ? '' : 's'} needs response`}
+          style={{
+            background: 'color-mix(in srgb, rgb(234, 88, 12) 14%, transparent)',
+            color: 'rgb(234, 88, 12)',
+            padding: '0 5px',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: 10,
+            fontWeight: 600,
+          }}
+        >
+          ⚠ {attention}
+        </span>
+      )}
+    </span>
   );
 }
 

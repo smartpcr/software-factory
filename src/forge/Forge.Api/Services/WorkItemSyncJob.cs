@@ -7,6 +7,8 @@
 namespace Forge.Api.Services;
 
 using System.Diagnostics;
+using System.Text.Json;
+using Forge.Api.Contracts;
 using Forge.Api.Persistence;
 using Forge.Api.Providers;
 using Forge.Api.Realtime;
@@ -21,10 +23,14 @@ using Microsoft.Extensions.Logging;
 /// configured repos on a 20-minute cadence. Each tick dispatches up to
 /// <see cref="SyncConstants.WorkItemSyncMaxParallel"/> repos in parallel
 /// via a <see cref="SemaphoreSlim"/>; repos beyond the cap wait for the
-/// next tick.
+/// next tick. Phase 23.4 / 23.5 drive the providers' streaming API and
+/// commit each batch in its own transaction so a mid-walk failure
+/// resumes from <c>repo.LastSyncCursor</c> on the following run.
 /// </summary>
 public class WorkItemSyncJob : BackgroundService
 {
+    private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
+
     private readonly IServiceScopeFactory scopes;
     private readonly ILogger<WorkItemSyncJob> logger;
     private readonly Random jitterRng = new();
@@ -97,7 +103,7 @@ public class WorkItemSyncJob : BackgroundService
             await semaphore.WaitAsync(ct);
             try
             {
-                await this.SyncRepoAsync(repo.Id, ct);
+                await this.SyncRepoAsync(repo.Id, kind: null, ct: ct);
             }
             finally
             {
@@ -108,9 +114,18 @@ public class WorkItemSyncJob : BackgroundService
         await Task.WhenAll(tasks);
     }
 
-    internal async Task SyncRepoAsync(string repoId, CancellationToken ct)
+    /// <summary>
+    /// Phase 23.4 / 23.5 — sync a single repo via the streaming batch API.
+    /// Each yielded batch is committed in its own transaction; cursor
+    /// advances only after the batch's items + repo cursor write together.
+    /// On exception the cursor stays at the last successfully-committed
+    /// batch so the next run resumes from the next batch.
+    /// </summary>
+    /// <param name="kind">Optional override; otherwise inferred from <c>LastSyncAt</c>.</param>
+    internal async Task SyncRepoAsync(string repoId, string? kind, CancellationToken ct)
     {
         var startedAt = DateTimeOffset.UtcNow;
+        var stopwatch = Stopwatch.StartNew();
         var runId = $"sr-{Guid.NewGuid():N}";
 
         using var scope = this.scopes.CreateScope();
@@ -123,10 +138,14 @@ public class WorkItemSyncJob : BackgroundService
         repo.IsRunningSince = startedAt.ToString("o");
         await db.SaveChangesAsync(ct);
 
-        var syncService = scope.ServiceProvider.GetRequiredService<WorkItemSyncService>();
+        var providers = scope.ServiceProvider.GetRequiredService<IEnumerable<IForgeProvider>>();
         var hub = scope.ServiceProvider.GetRequiredService<IHubContext<ForgeHub>>();
 
-        var kind = string.IsNullOrEmpty(repo.LastSyncAt) ? "full" : "delta";
+        var resolvedKind = kind ?? (string.IsNullOrEmpty(repo.LastSyncAt) ? "full" : "delta");
+
+        var provider = providers.FirstOrDefault(
+            p => string.Equals(p.Kind, repo.Kind, StringComparison.OrdinalIgnoreCase));
+        var providerLabel = repo.Kind ?? "unknown";
 
         // Build filters from the repo's sync configuration.
         DateTimeOffset? updatedFrom = null;
@@ -137,7 +156,7 @@ public class WorkItemSyncJob : BackgroundService
         }
         else
         {
-            // First sync: use the initial window.
+            // First sync: use the initial window (per-repo override or default).
             var windowDays = repo.InitialSyncWindowDays
                 ?? (string.Equals(repo.Kind, "github", StringComparison.OrdinalIgnoreCase)
                     ? (int?)null
@@ -148,75 +167,282 @@ public class WorkItemSyncJob : BackgroundService
             }
         }
 
-        var filters = new WorkItemSyncFilters(UpdatedFrom: updatedFrom);
+        var areaPaths = ParseAreaPaths(repo.AreaPathsJson);
+        var filters = new WorkItemSyncFilters(
+            UpdatedFrom: updatedFrom,
+            AreaPaths: areaPaths,
+            StartCursor: repo.LastSyncCursor);
 
+        var totalAdded = 0;
+        var totalUpdated = 0;
+        var totalConflicted = 0;
+        var batchCount = 0;
+        Exception? terminalEx = null;
+
+        if (provider is null || !provider.IsConfigured)
+        {
+            terminalEx = new InvalidOperationException(
+                provider is null
+                    ? $"No provider registered for kind '{repo.Kind}'."
+                    : $"Provider '{repo.Kind}' is not configured.");
+        }
+        else
+        {
+            try
+            {
+                await foreach (var batch in provider.StreamWorkItemBatchesAsync(filters, ct))
+                {
+                    batchCount++;
+                    WorkItemSyncMetrics.PaginationBatches.Add(1, KeyVal("provider", providerLabel));
+
+                    var (added, updated, conflicted) = await this.CommitBatchAsync(
+                        db, repo, batch, hub, ct);
+                    totalAdded += added;
+                    totalUpdated += updated;
+                    totalConflicted += conflicted;
+
+                    // Per-batch cursor commit (Phase 23.6 resume guarantee).
+                    repo.LastSyncCursor = batch.OpaqueCursor;
+                    await db.SaveChangesAsync(ct);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                terminalEx = ex;
+            }
+        }
+
+        stopwatch.Stop();
+
+        if (terminalEx is null)
+        {
+            // Successful run — advance LastSyncAt to the run START time so
+            // a subsequent delta run doesn't miss items written DURING this
+            // run; clear the cursor + error.
+            repo.LastSyncAt = startedAt.ToString("o");
+            repo.LastSyncStatus = "idle";
+            repo.LastSyncCursor = null;
+            repo.LastSyncError = null;
+        }
+        else
+        {
+            repo.LastSyncStatus = "failed";
+            repo.LastSyncError = terminalEx.Message;
+            // LastSyncAt + LastSyncCursor stay at their prior values so the
+            // next run resumes the same window from the last committed batch.
+        }
+        repo.IsRunningSince = null;
+
+        db.WorkItemSyncRuns.Add(new WorkItemSyncRunRow
+        {
+            Id = runId,
+            RepoId = repoId,
+            Kind = resolvedKind,
+            StartedAt = startedAt.ToString("o"),
+            FinishedAt = DateTimeOffset.UtcNow.ToString("o"),
+            ItemsAdded = totalAdded,
+            ItemsUpdated = totalUpdated,
+            ItemsConflicted = totalConflicted,
+            ErrorMessage = terminalEx?.Message,
+            CompletedSuccessfully = terminalEx is null,
+        });
+        await db.SaveChangesAsync(ct);
+
+        // Telemetry — duration histogram + counters.
+        var outcome = terminalEx is null ? "success" : "failed";
+        WorkItemSyncMetrics.DurationMs.Record(
+            stopwatch.Elapsed.TotalMilliseconds,
+            KeyVal("provider", providerLabel),
+            KeyVal("kind", resolvedKind),
+            KeyVal("outcome", outcome));
+        WorkItemSyncMetrics.Items.Add(totalAdded, KeyVal("provider", providerLabel), KeyVal("kind", "added"));
+        WorkItemSyncMetrics.Items.Add(totalUpdated, KeyVal("provider", providerLabel), KeyVal("kind", "updated"));
+        WorkItemSyncMetrics.Items.Add(totalConflicted, KeyVal("provider", providerLabel), KeyVal("kind", "conflicted"));
+        if (terminalEx is not null)
+        {
+            WorkItemSyncMetrics.Errors.Add(1,
+                KeyVal("provider", providerLabel),
+                KeyVal("errorClass", WorkItemSyncMetrics.ClassifyError(terminalEx)));
+            this.logger.LogWarning(terminalEx,
+                "WorkItemSync {RepoId}: {Kind} failed after {Batches} batch(es)",
+                repoId, resolvedKind, batchCount);
+        }
+        else
+        {
+            this.logger.LogInformation(
+                "WorkItemSync {RepoId}: {Kind} completed — {Batches} batches, {Added} added, {Updated} updated, {Conflicted} conflicts",
+                repoId, resolvedKind, batchCount, totalAdded, totalUpdated, totalConflicted);
+        }
+
+        // Single fan-out for the UI.
+        await hub.Clients.All.SendAsync(
+            "workitem.changed",
+            new
+            {
+                kind = "synced",
+                repoId,
+                pulled = totalAdded + totalUpdated,
+                inserted = totalAdded,
+                updated = totalUpdated,
+                conflicts = totalConflicted,
+                outcome,
+            },
+            ct);
+    }
+
+    /// <summary>
+    /// Phase 23.4 / 23.5 — commit a single batch. Counts are returned so
+    /// the caller can roll them up across the whole run.
+    /// </summary>
+    private async Task<(int Added, int Updated, int Conflicted)> CommitBatchAsync(
+        ForgeDbContext db,
+        RepoRow repo,
+        WorkItemBatch batch,
+        IHubContext<ForgeHub> hub,
+        CancellationToken ct)
+    {
+        var added = 0;
+        var updated = 0;
+        var conflicted = 0;
+
+        foreach (var w in batch.Items)
+        {
+            var withRepo = w with { RepoId = repo.Id };
+            var (didInsert, didUpdate, didConflict) = await UpsertAsync(db, withRepo, ct);
+            if (didInsert) added++;
+            else if (didUpdate) updated++;
+            if (didConflict) conflicted++;
+
+            // Phase 23.6 / 23.8 — apply agent-ready auto-team-assign after
+            // the upsert so the row exists. The resolver returns the result
+            // but does not write itself; we persist + audit + fan-out here.
+            var existing = await db.WorkItems.FirstOrDefaultAsync(
+                x => x.Provider == withRepo.Provider && x.ProviderRef == withRepo.ProviderRef, ct);
+            if (existing is null) continue;
+
+            var resolverResult = AgentReadyResolver.Apply(
+                existing.AssignedToJson,
+                withRepo.Tags ?? Array.Empty<string>(),
+                repo.AgentReadyDefaultTeam);
+            if (!resolverResult.WasAssigned) continue;
+
+            existing.AssignedToJson = resolverResult.NewAssignedToJson;
+            db.Audit.Add(new AuditRow
+            {
+                At = DateTimeOffset.UtcNow,
+                User = "sync",
+                Method = "AUTO",
+                Path = $"/api/repos/{repo.Id}/auto-assigned-by-flag",
+                Status = 200,
+                IdempotencyKey = null,
+                RequestBodySnippet = JsonSerializer.Serialize(new
+                {
+                    repoId = repo.Id,
+                    workItemId = existing.Id,
+                    team = resolverResult.TeamName,
+                }),
+                Supervising = false,
+            });
+            WorkItemSyncMetrics.AgentReadyAssignments.Add(1, KeyVal("team", resolverResult.TeamName ?? "unknown"));
+
+            await hub.Clients.All.SendAsync(
+                "workitem.changed",
+                new
+                {
+                    kind = "auto-assigned-by-flag",
+                    workItemId = existing.Id,
+                    repoId = repo.Id,
+                    team = resolverResult.TeamName,
+                },
+                ct);
+        }
+
+        return (added, updated, conflicted);
+    }
+
+    private static IReadOnlyList<string>? ParseAreaPaths(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
         try
         {
-            var result = await syncService.SyncAsync(repo, filters, ignoreThrottle: true, ct);
-
-            if (result.Error is not null)
-            {
-                repo.LastSyncStatus = "failed";
-                repo.LastSyncError = result.Error;
-            }
-            else
-            {
-                repo.LastSyncAt = startedAt.ToString("o");
-                repo.LastSyncStatus = "idle";
-                repo.LastSyncCursor = null;
-                repo.LastSyncError = null;
-            }
-
-            repo.IsRunningSince = null;
-
-            db.WorkItemSyncRuns.Add(new WorkItemSyncRunRow
-            {
-                Id = runId,
-                RepoId = repoId,
-                Kind = kind,
-                StartedAt = startedAt.ToString("o"),
-                FinishedAt = DateTimeOffset.UtcNow.ToString("o"),
-                ItemsAdded = result.Inserted,
-                ItemsUpdated = result.Updated,
-                ItemsConflicted = 0,
-                ErrorMessage = result.Error,
-                CompletedSuccessfully = result.Error is null,
-            });
-
-            await db.SaveChangesAsync(ct);
-
-            this.logger.LogInformation(
-                "WorkItemSync {RepoId}: {Kind} completed — {Pulled} pulled, {Inserted} inserted, {Updated} updated",
-                repoId, kind, result.Pulled, result.Inserted, result.Updated);
+            var arr = JsonSerializer.Deserialize<List<string>>(json, JsonOpts);
+            return arr is { Count: > 0 } ? arr : null;
         }
-        catch (Exception ex)
-        {
-            this.logger.LogWarning(ex, "WorkItemSync {RepoId}: {Kind} failed", repoId, kind);
-
-            // Reload in case tracking was lost.
-            var freshRepo = await db.Repos.FirstOrDefaultAsync(r => r.Id == repoId, ct);
-            if (freshRepo is not null)
-            {
-                freshRepo.LastSyncStatus = "failed";
-                freshRepo.LastSyncError = ex.Message;
-                freshRepo.IsRunningSince = null;
-            }
-
-            db.WorkItemSyncRuns.Add(new WorkItemSyncRunRow
-            {
-                Id = runId,
-                RepoId = repoId,
-                Kind = kind,
-                StartedAt = startedAt.ToString("o"),
-                FinishedAt = DateTimeOffset.UtcNow.ToString("o"),
-                ItemsAdded = 0,
-                ItemsUpdated = 0,
-                ItemsConflicted = 0,
-                ErrorMessage = ex.Message,
-                CompletedSuccessfully = false,
-            });
-
-            await db.SaveChangesAsync(ct);
-        }
+        catch { return null; }
     }
+
+    /// <summary>
+    /// Insert when no <c>(provider, providerRef)</c> row exists; otherwise
+    /// update only the upstream-owned fields. <c>didConflict</c> fires when
+    /// the local <c>RemoteRevision</c> differs from the upstream value
+    /// (last-writer-wins, but the divergence is surfaced so Phase 5.9's
+    /// conflict policy lights up the divergence pill in the UI).
+    /// </summary>
+    private static async Task<(bool Inserted, bool Updated, bool Conflicted)> UpsertAsync(
+        ForgeDbContext db, WorkItem remote, CancellationToken ct)
+    {
+        var existing = await db.WorkItems.FirstOrDefaultAsync(
+            w => w.Provider == remote.Provider && w.ProviderRef == remote.ProviderRef, ct);
+
+        if (existing is null)
+        {
+            db.WorkItems.Add(new WorkItemRow
+            {
+                Id = remote.Id,
+                RepoId = remote.RepoId,
+                Provider = remote.Provider,
+                ProviderRef = remote.ProviderRef,
+                Track = remote.Track,
+                Type = remote.Type,
+                State = remote.State,
+                Title = remote.Title,
+                DescriptionMd = remote.DescriptionMd,
+                ParentId = remote.ParentId,
+                FeatureRef = remote.FeatureRef,
+                IterationRef = remote.IterationRef,
+                AreaPath = remote.AreaPath,
+                AssignedToJson = remote.AssignedTo is null
+                    ? null
+                    : JsonSerializer.Serialize(remote.AssignedTo, JsonOpts),
+                Points = remote.Points,
+                Priority = remote.Priority,
+                TagsJson = JsonSerializer.Serialize(remote.Tags, JsonOpts),
+                CreatedAt = remote.CreatedAt,
+                UpdatedAt = remote.UpdatedAt,
+                RemoteRevision = remote.RemoteRevision,
+            });
+            return (true, false, false);
+        }
+
+        // Skip when the revision matches.
+        if (!string.IsNullOrEmpty(remote.RemoteRevision)
+            && existing.RemoteRevision == remote.RemoteRevision)
+        {
+            return (false, false, false);
+        }
+
+        var hadDifferentRevision = !string.IsNullOrEmpty(existing.RemoteRevision)
+            && !string.IsNullOrEmpty(remote.RemoteRevision)
+            && existing.RemoteRevision != remote.RemoteRevision;
+
+        existing.Track = remote.Track;
+        existing.Type = remote.Type;
+        existing.State = remote.State;
+        existing.Title = remote.Title;
+        existing.DescriptionMd = remote.DescriptionMd;
+        if (!string.IsNullOrEmpty(remote.ParentId)) existing.ParentId = remote.ParentId;
+        existing.IterationRef = remote.IterationRef;
+        existing.AreaPath = remote.AreaPath;
+        existing.AssignedToJson = remote.AssignedTo is null
+            ? existing.AssignedToJson
+            : JsonSerializer.Serialize(remote.AssignedTo, JsonOpts);
+        existing.Points = remote.Points;
+        existing.Priority = remote.Priority;
+        existing.TagsJson = JsonSerializer.Serialize(remote.Tags, JsonOpts);
+        existing.UpdatedAt = remote.UpdatedAt;
+        existing.RemoteRevision = remote.RemoteRevision;
+        return (false, true, hadDifferentRevision);
+    }
+
+    private static KeyValuePair<string, object?> KeyVal(string k, object? v) => new(k, v);
 }

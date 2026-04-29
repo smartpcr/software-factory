@@ -84,6 +84,20 @@ public static class Phase24Migration
         await ExecAsync(conn, @"
             CREATE INDEX IF NOT EXISTS IX_pr_comment_history_CommentId_At
             ON pr_comment_history (CommentId, At);", ct);
+
+        // -- task_queue: add Kind discriminator (Q24.8) + extend unique
+        // index to allow a 'work' row and a 'comment-response' row to
+        // coexist for the same work item.
+        await EnsureColumnAsync(conn, "task_queue", "Kind", "TEXT NOT NULL DEFAULT 'work'", ct);
+        await ExecAsync(conn, "DROP INDEX IF EXISTS UX_task_queue_open_per_work_item;", ct);
+        await ExecAsync(conn, """
+            CREATE UNIQUE INDEX IF NOT EXISTS UX_task_queue_open_per_work_item_kind
+            ON task_queue(WorkItemId, Kind)
+            WHERE State IN ('awaiting-ack','awaiting-route','queued','picked-up');
+            """, ct);
+
+        // -- prs: track linker cursor for incremental commit-link sweeps --
+        await EnsureColumnAsync(conn, "prs", "LastLinkerCommitSha", "TEXT NULL", ct);
     }
 
     private static async Task<bool> ColumnExistsAsync(SqliteConnection conn, string table, string column, CancellationToken ct)

@@ -40,6 +40,12 @@ public static class SyncConstants
     /// <summary>Default team name when <c>Repo.AgentReadyDefaultTeam</c> is null (Q23.8).</summary>
     public const string AgentReadyDefaultTeam = "Engineering";
 
+    /// <summary>Phase 23.4 — cap the upstream <c>Retry-After</c> header at 60s before retrying (Q23.6).</summary>
+    public const int MaxRetryAfterSeconds = 60;
+
+    /// <summary>Phase 23.5 — sleep until <c>X-RateLimit-Reset</c> when remaining drops below this number (Q23.6).</summary>
+    public const int GithubRateLimitFloor = 100;
+
     /// <summary>Phase 24 — base tick interval for the PR sync loop (20 min).</summary>
     public const int PrSyncIntervalSeconds = 1200;
 

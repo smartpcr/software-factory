@@ -428,7 +428,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // runs asynchronously — the claim sweep doesn't wait for it.
             // Use CancellationToken.None so the agent isn't cancelled when the
             // sweep loop's token is disposed — the agent manages its own lifetime.
-            _ = Task.Run(() => RunAgentAsync(row.WorkItemId, crewId, picked!, crew, wi, row.SkipSoulPrompt, CancellationToken.None));
+            _ = Task.Run(() => RunAgentAsync(row.WorkItemId, crewId, picked!, crew, wi, row.SkipSoulPrompt, row.Kind, CancellationToken.None));
         }
         return (claimed, skips);
     }
@@ -436,7 +436,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     // ── Agent runner kickoff ───────────────────────────────────────────────
     private async Task RunAgentAsync(
         string workItemId, string crewId, string agentId,
-        CrewRow crew, WorkItemRow? wi, bool skipSoulPrompt, CancellationToken ct)
+        CrewRow crew, WorkItemRow? wi, bool skipSoulPrompt, string kind, CancellationToken ct)
     {
         try
         {
@@ -664,23 +664,34 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // Build prompt from the work item.
             var title = wi?.Title ?? workItemId;
             var desc = wi?.DescriptionMd ?? "";
-            var basePrompt = string.IsNullOrWhiteSpace(desc)
-                ? $"Work item: {title}"
-                : $"Work item: {title}\n\n{desc}";
 
-            // Append PR summary instruction so the generator's final text
-            // block can be used as the "Generator perspective" in the PR.
-            var prompt = basePrompt + "\n\n"
-                + "IMPORTANT: After completing all code changes and tests:\n"
-                + "1. Commit your changes with a descriptive commit message.\n"
-                + "2. Push the branch to the remote with `git push --force-with-lease origin HEAD`.\n"
-                + "   The remote branch may already exist from a prior run — force-push is expected.\n"
-                + "3. End your response with a section titled '## Change Summary' that explains:\n"
-                + "   - **What** you changed (files and code paths modified)\n"
-                + "   - **Why** this fixes the problem or improves the system\n"
-                + "   - **How** the fix works (technical approach)\n"
-                + "Keep the summary concise (3-6 sentences). This will appear in the PR description.\n"
-                + "You MUST push before finishing — the server creates the PR automatically after you push.";
+            string prompt;
+            if (string.Equals(kind, TaskQueueKinds.CommentResponse, StringComparison.OrdinalIgnoreCase))
+            {
+                // Phase 24.9 — comment-response prompt loads the open PR comments
+                // needing response and asks the agent to reply or commit a fix.
+                prompt = await BuildCommentResponsePromptAsync(db, workItemId, title, ct);
+            }
+            else
+            {
+                var basePrompt = string.IsNullOrWhiteSpace(desc)
+                    ? $"Work item: {title}"
+                    : $"Work item: {title}\n\n{desc}";
+
+                // Append PR summary instruction so the generator's final text
+                // block can be used as the "Generator perspective" in the PR.
+                prompt = basePrompt + "\n\n"
+                    + "IMPORTANT: After completing all code changes and tests:\n"
+                    + "1. Commit your changes with a descriptive commit message.\n"
+                    + "2. Push the branch to the remote with `git push --force-with-lease origin HEAD`.\n"
+                    + "   The remote branch may already exist from a prior run — force-push is expected.\n"
+                    + "3. End your response with a section titled '## Change Summary' that explains:\n"
+                    + "   - **What** you changed (files and code paths modified)\n"
+                    + "   - **Why** this fixes the problem or improves the system\n"
+                    + "   - **How** the fix works (technical approach)\n"
+                    + "Keep the summary concise (3-6 sentences). This will appear in the PR description.\n"
+                    + "You MUST push before finishing — the server creates the PR automatically after you push.";
+            }
 
             // Phase 21 — per-task budgets scaled by story points.
             // Wall-clock: 30 min per point. Max turns: 30 turns per point.
@@ -1478,6 +1489,60 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     {
         return await db.TaskTranscriptEvents
             .AnyAsync(e => e.WorkItemId == workItemId && e.Kind == "task.pr-opened", ct);
+    }
+
+    /// <summary>
+    /// Phase 24.9 — build the comment-response prompt for the agent. Loads
+    /// the open PR comments needing response and instructs the agent to
+    /// either reply on the thread or commit a fix to the existing PR
+    /// branch (no new PR — the existing PR receives the new commit).
+    /// </summary>
+    private static async Task<string> BuildCommentResponsePromptAsync(ForgeDbContext db, string workItemId, string workItemTitle, CancellationToken ct)
+    {
+        var pr = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.WorkItemId == workItemId, ct);
+        if (pr is null)
+        {
+            return $"Work item: {workItemTitle}\n\nThis task asked you to address PR comments, but no PR is linked to this work item.";
+        }
+
+        var openComments = await db.PrComments.AsNoTracking()
+            .Where(c => c.PrId == pr.Id && c.RequiresAttention)
+            .OrderBy(c => c.CreatedAt)
+            .ToListAsync(ct);
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Work item: {workItemTitle}");
+        sb.AppendLine();
+        sb.AppendLine($"You are addressing reviewer comments on PR {pr.Id} (branch `{pr.Branch}`, base `{pr.Base}`).");
+        sb.AppendLine();
+        sb.AppendLine($"There are {openComments.Count} open comment(s) requiring a response.");
+        sb.AppendLine();
+        var idx = 1;
+        foreach (var c in openComments)
+        {
+            sb.AppendLine($"## Comment {idx} (id: {c.Id})");
+            if (!string.IsNullOrEmpty(c.FilePath))
+            {
+                sb.AppendLine($"Location: `{c.FilePath}`{(c.Line.HasValue ? $" line {c.Line.Value}" : string.Empty)}");
+            }
+            sb.AppendLine($"Author: {c.AuthorId ?? "unknown"} ({c.AuthorKind})");
+            sb.AppendLine();
+            sb.AppendLine(c.Body);
+            sb.AppendLine();
+            idx++;
+        }
+
+        sb.AppendLine("## Instructions");
+        sb.AppendLine("For each comment, choose ONE of:");
+        sb.AppendLine("- **Reply** on the thread when the comment is a question or asks for clarification.");
+        sb.AppendLine("  Reply with `Addresses comment <id>` so the linker can map your reply.");
+        sb.AppendLine("- **Commit a fix** when the comment requests a code change. Include the tag");
+        sb.AppendLine("  `Addresses comment <id>` in the commit message so the linker can map the commit.");
+        sb.AppendLine("Push to the existing branch with `git push --force-with-lease origin HEAD`.");
+        sb.AppendLine("Do NOT open a new PR — the existing PR will receive the new commit.");
+        sb.AppendLine("Do NOT mark comments as resolved — only the human reviewer can resolve threads.");
+
+        return sb.ToString();
     }
 
     /// <summary>

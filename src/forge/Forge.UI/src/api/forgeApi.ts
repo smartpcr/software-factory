@@ -359,6 +359,69 @@ export const forgeApi = {
     });
   },
 
+  // -- Phase 24 — comment lifecycle endpoints -------------------------------
+
+  /** GET /api/prs/{prId}/comments — list comments with optional filters. */
+  async listPrComments(
+    prId: string,
+    opts?: { state?: string; requiresAttention?: boolean; skip?: number; take?: number },
+  ): Promise<{ total: number; items: import('@/types').PrComment[] }> {
+    const q = new URLSearchParams();
+    if (opts?.state) q.set('state', opts.state);
+    if (opts?.requiresAttention !== undefined) q.set('requiresAttention', String(opts.requiresAttention));
+    if (opts?.skip !== undefined) q.set('skip', String(opts.skip));
+    if (opts?.take !== undefined) q.set('take', String(opts.take));
+    const qs = q.toString();
+    return fetchJson(`/api/prs/${encodeURIComponent(prId)}/comments${qs ? `?${qs}` : ''}`);
+  },
+
+  /** GET /api/prs/{prId}/comments/{id} — single comment + history. */
+  async getPrComment(prId: string, commentId: number): Promise<{
+    comment: import('@/types').PrComment;
+    history: import('@/types').PrCommentHistory[];
+  }> {
+    return fetchJson(`/api/prs/${encodeURIComponent(prId)}/comments/${commentId}`);
+  },
+
+  /** POST /api/prs/{prId}/comments — write a new comment / reply. */
+  async createPrComment(
+    prId: string,
+    body: { body: string; parentCommentId?: number; filePath?: string; line?: number },
+  ): Promise<import('@/types').PrComment> {
+    return fetchJson(`/api/prs/${encodeURIComponent(prId)}/comments`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** PATCH /api/prs/{prId}/comments/{id} — edit body. */
+  async editPrComment(prId: string, commentId: number, body: string): Promise<import('@/types').PrComment> {
+    return fetchJson(`/api/prs/${encodeURIComponent(prId)}/comments/${commentId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ body }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/prs/{prId}/comments/{id}/resolve — humans only. */
+  async resolvePrComment(prId: string, commentId: number, resolution: 'resolved' | 'wont-fix' = 'resolved'):
+    Promise<import('@/types').PrComment> {
+    return fetchJson(`/api/prs/${encodeURIComponent(prId)}/comments/${commentId}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ resolution }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/prs/{prId}/comments/{id}/reopen — humans only. */
+  async reopenPrComment(prId: string, commentId: number): Promise<import('@/types').PrComment> {
+    return fetchJson(`/api/prs/${encodeURIComponent(prId)}/comments/${commentId}/reopen`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   /** POST /api/prs/{id}/merge. */
   async mergePr(id: string): Promise<Pr> {
     return fetchJson<Pr>(`/api/prs/${encodeURIComponent(id)}/merge`, {
@@ -910,6 +973,15 @@ export const forgeApi = {
     await fetchJson<void>(`/api/repos/${encodeURIComponent(id)}?force=${force}`, {
       method: 'DELETE',
       headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** Phase 23.7 — POST /api/repos/{id}/sync-work-items (manual trigger). */
+  async syncRepoWorkItems(id: string, body: { kind?: 'full' | 'delta' | 'auto'; ignoreThrottle?: boolean } = {}): Promise<void> {
+    await fetchJson<void>(`/api/repos/${encodeURIComponent(id)}/sync-work-items`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
     });
   },
 
