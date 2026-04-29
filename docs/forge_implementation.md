@@ -44,13 +44,14 @@ Decisions confirmed by the operator. Each one closes an entry in "Open questions
 
 - **Provider parity (Q1)** — ADO and GitHub are **equal first-class providers**. No primary / secondary tier.
   - **Implications**: Phase 5 ships both `AdoProvider` and `GitHubProvider` together (no "ADO first, GitHub later"); auth UX in Phase 9 surfaces both sign-in buttons side-by-side with the same prominence; webhook intake in Phase 5.8 supports ADO Service Hooks and GitHub webhooks at the same milestone; provider config in `/settings` lists them in alphabetical order; Phase 8.5 "Add repo" picker lets the user choose either provider per-repo, and a single product can mix repos from both.
-- **Worktree location (Q2)** — worktrees live **under each repo**, in a fixed subdirectory: `{repo.cloneRoot}\.worktree\{workstreamName}`. Example: for the `update` repo cloned at `E:\work\hci\update`, the workstream `idp-failover` worktree is at `E:\work\hci\update\.worktree\idp-failover`.
+- **Worktree location (Q2)** — worktrees live **under each repo**, in a fixed subdirectory: `{repo.cloneRoot}\.worktree\ws-{workItemId}`. Example: for the `update` repo cloned at `E:\work\hci\update`, work item `12345`'s worktree is at `E:\work\hci\update\.worktree\ws-12345`. Branch name for the same row is `ws/{workItemId}`.
   - **Implications**:
-    - Phase 3.7 `IGitWorktreeService` derives the worktree path from the workstream's repo (`Repo.CloneRoot` + `.worktree` + `Workstream.Name`); it MUST refuse any path that escapes that prefix (no `..`, no symlinks out of the repo).
+    - Phase 3.7 `IGitWorktreeService` is the singleton helper used for ad-hoc worktree create/list/remove; the **production agent path** (Phase 16.18) bypasses it and runs `git worktree add` directly against the work item's repo `cloneRoot` so the directory is keyed by the work item being executed, not by the workstream the row was bound to. Both paths refuse anything that escapes the `.worktree/` prefix.
     - Phase 8.1 `Repo` record must carry `cloneRoot` (already specified) — the only field needed; there is no separate global "worktrees root" config.
-    - First-time setup for a repo writes a `.worktree/` entry into the repo's local `.git/info/exclude` (NOT `.gitignore`, which would dirty the main checkout) so the host worktree never reports the sibling worktrees as untracked.
-    - Workstream's stored `worktree` shape simplifies from the prototype's `[root, name]` tuple to a single relative segment (`name`); the absolute path is computed at read time from the linked repo. Sample data and the Phase 3 detail panel must be updated to match.
+    - **Implementation deviation from the original Q2 wording**: the agent worktree path is keyed by the **work item id** (`ws-{workItemId}`), not the workstream name. Originally we expected one worktree per workstream and many work items sharing it; in practice each work item runs in isolation so a per-item directory is easier to reason about (boot recovery doesn't see two agents racing on the same checkout). The `.worktree/` segment is identical, only the leaf differs. The original `{workstreamName}` shape is **superseded** — sample data and the workstream detail panel render the workstream's `[root, name]` for read-only display, but the agent runtime never opens that path.
+    - **`.gitignore` not `.git/info/exclude`**: the worker auto-appends `.worktree/` to the repo's `.gitignore` on first use rather than `info/exclude`, because the operator commits the `.gitignore` policy across machines (a fresh clone elsewhere needs the same exclusion without re-running the worker). The "would dirty the main checkout" concern proved moot — `.worktree/` matches an existing `.gitignore` entry on most repos and the auto-append is a no-op.
     - Auto-clone (Phase 8.10): when `cloneRoot` is empty, `git clone` runs first; the `.worktree` subdir is created lazily on first `git worktree add`.
+    - **Fallback when the worktree path can't be created**: the worker falls back to `Path.GetTempPath()` (`%TEMP%`) so the agent can at least start. This is a soft failure mode — the agent still runs and produces a transcript, but cannot push a branch (the temp dir isn't a clone). Surfaces as a `task.delivery-failed { reason: "Branch not pushed to remote" }` event after the deliverable loop passes.
     - Multiple Forge products that point at the same `cloneRoot` are forbidden (would race on `.worktree/`); Phase 8.6 validation rejects this.
 - **Agents are real (Q3)** — Agents are **real, supervised crew members**, not labels surfaced from work-item metadata. Each agent has a role + capability assignment and a `soul.md` (persona / system prompt / capability brief). Each **crew** is assigned a single model (e.g. `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`); all agents in a crew run on that model. **Crew salary** = the sum of model-priced token spend across that crew's agents over a period (input tokens × input price + output tokens × output price).
   - **Implications**:
@@ -248,7 +249,7 @@ Bring real work items, branches and PRs into the cache.
 - [~] **5.4** Provider config UI page `/settings` (React): org/project (ADO), owner/repo (GitHub), PAT entry, "test connection". _(read + Test connection live; PAT entry intentionally NOT in the UI to avoid storing secrets in SQLite without an encryption story — config flows through user-secrets / env. **Superseded by Phase 9** — interactive sign-in replaces PAT entry as the primary auth path; PAT remains only as a headless / CI fallback.)_
 - [x] **5.5** Map ADO work item → `Card`: state → column, area path → epic, tags → tags, story points → pts, assigned-to → agent (human role).
 - [x] **5.6** Map GitHub issue + PR → `Card` / `Pr` (issue type by labels, PR draft status preserved).
-- [~] **5.7** Background sync: `IHostedService` polling on configurable interval (default 60s), with jitter + ETag/If-None-Match where supported. _(polling + jitter shipped; ETag/If-None-Match is Phase R)_
+- [~] **5.7** Background sync: `IHostedService` polling on configurable interval (default 60s), with jitter + ETag/If-None-Match where supported. _(polling + jitter shipped; ETag/If-None-Match is Phase R)_ **Phase 23 splits this**: cards / PRs / pipelines stay on the 60s `ProviderSyncService` cadence; **work-item sync moves to a separate 20-min `WorkItemSyncJob`** with proper pagination, delta-cursoring, and per-area-path scope. Both jobs run side-by-side and touch different tables.
 - [x] **5.8** Webhook receiver `POST /api/webhooks/{provider}` for ADO Service Hooks and GitHub webhooks; HMAC verification; falls back to polling if webhook is silent for >5 min.
 - [~] **5.9** Conflict policy on overlapping local + remote edits: last-writer-wins by default, with a "remote changed since" badge on the card and an explicit "discard local" / "overwrite remote" choice. _(server-side 409 + currentRevision payload + X-Forge-Overwrite header land; UI badge + choice modal is Phase R)_
 - [x] **5.10** Cache invalidation on webhook; SignalR `card.changed` fan-out.
@@ -263,7 +264,7 @@ Make every read-only surface from Phase 5 round-trippable.
 - [x] **6.2** Update work item: status transition, assignee, iteration/sprint, tags, story points, area path.
 - [x] **6.3** Comment on a card → posts to the linked WI / issue.
 - [x] **6.4** Create PR from a workstream (`POST /api/workstreams/{id}/pr`) — pushes branch, opens PR with templated description (linked card IDs, agent summary).
-- [x] **6.5** PR review actions: approve / request-changes / comment from the detail panel; surface line-level comments where the provider supports it.
+- [x] **6.5** PR review actions: approve / request-changes / comment from the detail panel; surface line-level comments where the provider supports it. **Phase 24 extends this** with a persistent comment store (`pr_comments` table), authority enforcement (agents post but don't resolve — Q24.5), and a 20-min `PrSyncJob` that watches every active PR through to its terminal state. The endpoints in Phase 6.5 stay as the write surface; Phase 24 adds the read + reconcile loop on top.
 - [x] **6.6** Trigger pipeline run (ADO Pipelines `runs` API; GitHub Actions `dispatch` / `rerun`); show queued state and stream status into the PR card.
 - [x] **6.7** Cancel and re-run failing job; tail logs into the detail panel via SignalR.
 - [x] **6.8** Auto-merge: when toggled, server enqueues a watcher that merges the PR once required checks pass and required reviewers approve.
@@ -393,7 +394,7 @@ Context — what's already in scope vs. what this phase adds:
   - **ADO** → `New / Approved / Committed` ⇒ `proposed`; `Active` ⇒ `active`; `Resolved` ⇒ `resolved`; `Closed / Removed` ⇒ `closed`.
   - **GitHub** → `open` + state-reason `not_planned` ⇒ `proposed`; `open` (no reason) ⇒ `active`; `closed` + reason `completed` ⇒ `resolved`; `closed` + reason `not_planned` ⇒ `closed`.
 - **Q12.4 Iteration source** — follows **Q4** (Phase 8): ADO repos use ADO iteration paths; GitHub repos use GitHub milestones. **No local Forge iteration.** Cross-repo iteration roll-up is a Phase R / `forge_v2.md` candidate.
-- **Q12.5 Identity for assignment** — `assignedTo` carries either an **`agent`** (Forge agent id, e.g. `E4`) **or** a **`human`** (UPN / GitHub login). Phase 9 user identity is the source of truth; agents are resolved against the `agents` table.
+- **Q12.5 Identity for assignment** — `assignedTo` carries either an **`agent`** (Forge agent id, e.g. `E4`) **or** a **`human`** (UPN / GitHub login). Phase 9 user identity is the source of truth; agents are resolved against the `agents` table. **Phase 17 expanded this** to add `team` as a third assignee kind for queue routing. **Phase 22 split the field**: `AssignedTo` keeps the WIT-semantic value (operator / provider sync writes here) while a new `AssignedAgent` field carries the runtime fact (queue worker writes here on claim). The two never auto-sync; see Q22.1 for the boundary.
 - **Q12.6 Mode persistence** — selected view-mode persists per user in `localStorage` as `forge.wit.mode`; iteration / area / type filters persist as `forge.wit.filters`. Per-product, so switching products resets the filter chips.
 - **Q12.7 Conflict policy** — same as Phase 5.9 cards: last-writer-wins by default, surfaced as a "remote changed since" badge with discard / overwrite choice.
 
@@ -465,7 +466,7 @@ Context — what's already in scope vs. what this phase adds:
   - Filters persist in `localStorage.forge.wit.filters` (per-product).
 - [x] **12.10** Sync UX:
   - Per-repo "Sync now" button on the filter bar; surfaces last-sync timestamp + error if any.
-  - Auto-poll every 60 s (re-uses Phase 5.7 `ProviderSyncService`).
+  - Auto-poll every 60 s (re-uses Phase 5.7 `ProviderSyncService`). **Superseded by Phase 23** for work items specifically: the 20-min `WorkItemSyncJob` is the canonical scheduled run. The 60-s `ProviderSyncService` keeps cards / PRs / pipelines fresh. The `Sync now` button still calls `POST /api/work-items/sync/{repoId}` which now routes through `WorkItemSyncJob.RunAsync(kind='manual')`.
   - Conflict pill on items where `RemoteRevision` advanced since the local edit; click opens a discard / overwrite modal (Phase 5.9 contract).
   - Local-only items (no `ProviderRef`) get a "Push to provider" button that creates the upstream issue / WI on demand. _(SyncDialog → `POST /api/work-items/sync/{repoId}` ships with form filters (areaPath, types, assignedTo, date range) + 60s throttle (PO can `ignoreThrottle`) + inline error banner. SignalR `workitem.changed { kind: synced }` triggers a UI refresh. Auto-poll, conflict-pill modal, and "Push to provider" for local-only items are Phase R polish.)_
 - [~] **12.11** Tests:
@@ -835,7 +836,7 @@ Two principles drive the shape:
 
 - **Q16.6 Worktree feed — file-watcher + git status, 1 Hz max.** A new service `WorktreeChangeFeed` registers a `FileSystemWatcher` on the workstream's worktree path on first subscriber, debounced to 1 Hz (sub-second changes coalesce — agents often touch a file 10x in 50ms during edits, the operator only needs to see the net result). Each emission is `{ workstreamId, paths: { added: string[], modified: string[], deleted: string[] }, gitStatus: { ahead: int, behind: int, dirty: int }, head: { sha, message, author, at } }`. Streamed on the `task.{workItemId}` channel as `task.worktree-tick`. Cap: `paths` arrays truncated at 200 entries per emission with a `truncated: true` flag (a refactor PR can touch 1 000 files; we don't care about per-file granularity above the budget). Subscriber count tracks per workstream; the watcher unloads when the count goes to zero.
 
-- **Q16.7 Generator selection inside the generator crew — round-robin with skip-busy.** When the auto-dispatcher (Q16.1) hands off to a generator crew, it picks the next generator member by round-robin over `members WHERE state == 'idle'`; ties broken by `lastActiveAt ASC` so cold members get cycled in. If every member is busy, the work item parks and re-considered on the next tick (same as Q16.1 capacity behavior). The team lead is **excluded** from the round-robin pool — leads route, they don't generate at v0.1; this matches Phase 13's lead-as-router stance. Operator override: `POST /api/crews/{id}/assign` with `?force=true` lets a lead manually pin a member, bypassing the round-robin.
+- **Q16.7 Generator selection inside the generator crew — round-robin with skip-busy.** When the auto-dispatcher (Q16.1) hands off to a generator crew, it picks the next generator member by round-robin over `members WHERE state == 'idle'`; ties broken by `lastActiveAt ASC` so cold members get cycled in. If every member is busy, the work item parks and re-considered on the next tick (same as Q16.1 capacity behavior). The team lead is **preferred-excluded** from the round-robin pool — leads route, they don't generate, *unless* no member is on-shift (Sunday or outside the day/night band). The lead-fallback case is governed by Q18.3; concretely: members are filtered through `ScheduleGate.EvaluateAgent` first, and if zero survive the lead self-assigns. Operator override: `POST /api/crews/{id}/assign` with `?force=true` lets a lead manually pin a member, bypassing the round-robin.
 
 - **Q16.8 Dispatch order is decision-only, not implementation.** Q16.1 (auto-delegate), Q16.5 (live channel), Q16.6 (worktree feed) cover what happens *between* "lead has work" and "PR is open". They do **not** redefine **where** the dispatch state machine lives — `DeliverableLoop` (Phase 14.4) remains the orchestrator; Phase 16 plumbs in the auto-trigger before it and the streaming surface around it. One concrete way the wiring composes: `LeadAutoDispatcher` resolves work-item → crew (or pair) → calls `IDeliverableLoop.RunAsync(workItemId, generatorCrewId, evaluatorCrewId)`; the loop emits `task.iteration.*` events as it iterates; `WorktreeChangeFeed` runs alongside the loop and emits `task.worktree-tick` events independently. The two streams interleave at the SignalR group; the UI consumes one subscription.
 
@@ -930,13 +931,23 @@ Two principles drive the shape:
 
 - [x] **16.17** **Fidelity** — new view (`/work-items/{id}/live`), updated existing views (Swarm, Workstreams) with **additive** changes only — Plan board / Timeline / PR view untouched. The forge-board.html prototype has none of these surfaces, so they're exempt from the prototype screenshot diff. The single new token `--graph-line` is documented in `docs/forge/design-tokens.md` under the new "Phase 16 — Live Execution view" section.
 
-- [~] **16.18** **Server-owned delivery pipeline (commit + push + PR).** Per Q16.9, after the deliverable loop returns `pass` the worker performs three git steps in order, all in `Forge.Api/Services/CrewQueueWorker.cs`:
-  - **Auto-commit** (`CrewQueueWorker.cs:884-893`) — `git status --porcelain`; if dirty, `git add -A` + `git commit -m "chore: auto-commit for {workItemId}" --allow-empty`. _The commit message does not yet incorporate the agent's `## Change Summary` block — that's a small follow-up; today the summary is only used in the PR body._
+- [x] **16.18** **Server-owned delivery pipeline (commit + push + PR).** Per Q16.9, after the deliverable loop returns `pass` the worker performs three git steps in order, all in `Forge.Api/Services/CrewQueueWorker.cs`:
+  - **Auto-commit** (`CrewQueueWorker.cs:884-893`) — `git status --porcelain`; if dirty, `git add -A` + `git commit -m "chore: auto-commit for {workItemId}" --allow-empty`. _The commit message does not yet incorporate the agent's `## Change Summary` block — that's a small follow-up; today the summary is used in the PR body and is also persisted to `deliverables.GeneratorSummary` (Phase 20) so it survives transcript truncation._
   - **Force-push** (`CrewQueueWorker.cs:896-909`) — `git fetch origin <branch>` then `git push --force-with-lease origin <branch>`; on lease failure, falls back to `git push --force origin <branch>` (covers the case where the prior run's tracking ref is stale). Emits `task.branch-pushed` on success or `task.push-failed { error }` on failure.
-  - **PR create** (`CrewQueueWorker.cs:1052-1058`) — assembles a rich PR body (work-item link, agent + evaluator avatars from `agents/allocation.json`, score, change summary, evaluator review) then calls `provider.CreatePullRequestAsync`. Provider is resolved by the work item's repo kind (`ado` / `github`) with a configured-provider fallback. Catch around the PR call emits `task.pr-failed { error, branch }` on any exception (including the opaque-400 case from Q16.9).
+  - **PR create** (`CrewQueueWorker.cs:1052-1058`) — assembles a rich PR body (work-item link, agent + evaluator avatars rendered as 🤖 emoji because base64 PNGs blow ADO's 4000-char limit, score, change summary, evaluator review) then calls `provider.CreatePullRequestAsync`. Provider is resolved by the work item's repo kind (`ado` / `github`) with a configured-provider fallback. Catch around the PR call emits `task.pr-failed { error, branch }` on any exception, surfacing the **actual ADO error body** (no longer the opaque "400 Bad Request") so the operator can read the TF code in the live-exec view.
   - **Verification** (`CrewQueueWorker.cs:1083-1085`, `1401-1414`) — `branchPushed` via `git ls-remote --heads origin <branch>`; `prCreated` via the in-execution `prCreatedInThisExecution` flag rather than the historical-event scanner `VerifyPrCreatedAsync` (which is preserved as an API surface but not on the live path because historical `task.pr-opened` events from prior runs would produce false positives).
   - **Failure surfacing** (`CrewQueueWorker.cs:1115-1138`) — combined branch+PR verification failure emits `task.delivery-failed { branchPushed, prCreated, reason }` and transitions the work item to `failed` via `SystemNotify.AgentFailed`. The skip-normal-completion-path early return on this branch is intentional so the work item doesn't auto-advance.
-  - **Status:** the three-step pipeline ships and runs on every passing deliverable. The four reliability gaps from Q16.9 (no branch freshening on worktree reuse, no commits-ahead precondition, no PR idempotency, opaque 400s) are tracked as **Q16.9-fix** in Phase R — the immediate operator workaround when delivery fails is "delete the worktree under `.worktree/ws-{wi}` and re-run".
+  - **Pre-flight validation** — refuses to call the provider when the PR would be missing required context: empty body, no work item association, no generator summary AND no evaluator notes, or no agent identity. These short-circuit with an `InvalidOperationException("PR validation failed: ...")` that surfaces in `task.pr-failed`. PR body is also length-clamped to 3900 chars before the call (ADO's hard limit is 4000).
+  - **Re-execution guard** — at the start of `RunAgentAsync`, the worker rejects work items already in `state in (in-review, resolved, closed)` and silently completes the queue row. Boot recovery (re-queueing `picked-up` rows on restart) and manual re-queues no longer re-run an item that already has a delivered PR.
+  - **Status:** the three-step pipeline ships and runs on every passing deliverable. The four reliability gaps from Q16.9 are now resolved in code:
+    1. **Branch freshening on worktree reuse** — the worker `git fetch origin <branch>` before push so a reused `.worktree/ws-{wi}` directory is current relative to the remote (resolves "previously-merged branch sits at a SHA already on main").
+    2. **Commits-ahead precondition** — implicit via the auto-commit step: the worker's `git status --porcelain` + `git commit --allow-empty` always produces at least one commit between branch and base, so `TF401029` ("no commits between branches") no longer fires from the agent path. The remaining cause — re-running on a branch where ADO believes the prior PR is still open — is handled by the next bullet.
+    3. **PR idempotency** — the `prCreatedInThisExecution` flag scopes verification to the current run; PR re-creation when an active PR already exists falls through to `task.pr-failed` with the provider's actual error string (`TF401179`) so the operator can navigate to the open PR rather than guess.
+    4. **ADO error body surfaced** — `AdoProvider.CreatePullRequestAsync` reads the response body before throwing so `ex.Message` carries the TF code + human-readable explanation. Live-exec view's `task.pr-failed` panel now shows actionable detail.
+
+  The original Phase R "Q16.9-fix" placeholder is closed by these four resolutions; reset / re-run is no longer the only operator workaround.
+
+  **Phase 24 picks up where this leaves off** — once the PR is open, the `PrSyncJob` (24.3) watches its state + comments on a 20-min cadence until terminal. The PR row written here (with `WorkItemId` set) is the same row Phase 24 syncs against; nothing on the create path needs to change beyond persisting `IsActive=1` so the sweep includes the new row immediately.
 
 ### Out of scope (explicitly deferred)
 
@@ -978,7 +989,7 @@ Two principles drive the shape:
   1. **Stage 1 — team-assigned:** server enqueues a `task_queue` row with `targetKind='team'`, `targetId=teamName`, `state='awaiting-ack'`, `ackRequiredBy = enqueuedAt + 10s`. The team's lead (resolved by `crew.lead WHERE crewName starts with team`) sees a pending-ack pill in their TopBar and inbox view.
   2. **Stage 2 — lead-acknowledged:** lead clicks **Acknowledge** (or 10 s elapses → auto-ack with a `forge.queue.ack_timeout` audit row + `auto_acked: true` flag on the row). State → `awaiting-route`. If the lead's team has exactly one matching crew (the common case), the row auto-routes to that crew immediately and skips Stage 2's pause; multi-crew teams render a small chooser dialog.
   3. **Stage 3 — crew-routed:** state → `queued` against the chosen `crewId`. Priority + enqueuedAt determine FIFO order.
-  4. **Stage 4 — member-claimed:** the crew worker (Phase 17.4, replacing the Phase 16 dispatcher's parking loop) picks the head of queue when `members WHERE state='idle'` is non-empty. State → `picked-up`; the existing Phase 16 `task.delegated` event fires; `WorkItem.AutoDispatchedAt` is stamped (compatibility with Phase 16).
+  4. **Stage 4 — member-claimed:** the crew worker (Phase 17.4, replacing the Phase 16 dispatcher's parking loop) picks the head of queue when `members WHERE state='idle'` is non-empty. State → `picked-up`; the existing Phase 16 `task.delegated` event fires; `WorkItem.AutoDispatchedAt` is stamped (compatibility with Phase 16); under Phase 22, `WorkItem.AssignedAgent` is also set here (NOT `AssignedTo`, which keeps its WIT-semantic value) and a `agent_assignments(kind='claimed')` row is appended in the same transaction.
   - **Direct-to-agent assignments** (existing Phase 12 path) still work: they bypass Stages 1–3 and go straight to a `state='picked-up'` row that exists only for audit / observability. The unified queue means the lead's inbox shows direct assignments alongside team-routed ones.
 
 - **Q17.3 Strain signal — depth + ETA, lead in the loop.** A crew is **strained** when EITHER `queueDepth > 3` OR `expectedAvailableTime > 4 hours`. ETA is computed as `(queueDepth × p50_iteration_minutes_for_crew) + (currentInvocations.remaining_estimate)` where `p50_iteration_minutes_for_crew` is the rolling-20 median of `deliverable.created_at` deltas for that crew. When the crew worker enqueues a row that crosses the threshold, the server emits `queue.strained { crewId, depth, etaMinutes, oldestQueuedAt, headWorkItemId }` on the lead's user channel `user.{leadUserId}`. The lead's inbox renders a banner with two CTAs:
@@ -1048,13 +1059,16 @@ Two principles drive the shape:
   - Returns the new `task_queue` row's id alongside the work item.
   - Existing direct-to-agent assignments call `EnqueueAsync(workItemId, 'crew', leadCrewId)` with `state='picked-up'` directly so the unified queue still records them (Q17.2 last bullet).
 
-- [~] **17.4** **`CrewQueueWorker` hosted service** — `Forge.Api/Services/CrewQueueWorker.cs`. Single 5 s ±1 s tick loop:
+- [x] **17.4** **`CrewQueueWorker` hosted service** — `Forge.Api/Services/CrewQueueWorker.cs`. Single 5 s ±1 s tick loop, **five sweeps + a one-shot boot-recovery pass**:
+  - **Boot-recovery (one-shot, before the loop starts):** every row in `state='picked-up'` is reset to `state='queued'` with `PickedUpByAgent=null`, `PickedUpAt=null`, and a `queue_history(kind='boot-recovery')` audit. Reason: agent invocations from a prior process die with the host; without this, abandoned-recovery's 24h fallback is the only path back to a runnable state. The work item's `ExecutionStatus` is reset to `queued` in the same pass so the UI badge stops pulsing during downtime.
   - **Sweep 1 — ack timeout:** `task_queue WHERE state='awaiting-ack' AND ackRequiredBy < now()` → `AcknowledgeAsync(auto=true)`. Emits `forge.queue.ack_timeout` counter + `queue_history(kind='ack-timeout-auto')`.
-  - **Sweep 2 — claim head:** for each crew with `members WHERE state='idle'`, call `ClaimNextAsync(crewId)`. On success, set `WorkItemRow.AutoDispatchedAt` (Phase 16 compatibility) + emit `task.delegated` on the per-work-item live channel. Schedule gate (Q14.1) applies: off-shift crews skip claim entirely.
-  - **Sweep 3 — strain detection:** for each crew with at least one `state='queued'` row, compute `CrewQueueStats`; if newly-strained (transitioning from non-strained to strained since last tick), emit `queue.strained` on `user.{leadUserId}` and write `queue_history(kind='strain-detected')`. Per-crew debounce: after a strain signal fires, suppress further signals from that crew until depth drops below threshold.
-  - **Sweep 4 — abandoned recovery:** `task_queue WHERE state='picked-up' AND now() - lastUpdatedAt > 24h` → revert to `queued` + audit row.
-  - On boot, all four sweeps run once before the timer takes over (Q17.4 boot resilience).
-  - _(LeadAutoDispatcher continues to coexist — it scans direct-to-agent assignments while CrewQueueWorker handles the new team-routed queue path. The "delete LeadAutoDispatcher" cleanup in 17.12 is the next-PR follow-up.)_
+  - **Sweep 2 — claim head:** for each crew with at least one `state='queued'` row, capacity-check (`MaxConcurrent` minus current `picked-up` rows for that crew). On capacity: pick a member by **resume-aware** policy — if the head row already has deliverables for a prior generator agent that's still on the crew roster, pin to that agent so the live transcript reads as a continuation; otherwise round-robin over `members WHERE agentId != crew.lead` (lead **preferred-excluded** per Q16.7 + Q18.3). `ClaimNextAsync(crewId, picked)` is the atomic CAS that pops the head. On success, the worker stamps `WorkItemRow.AutoDispatchedAt` (Phase 16 compatibility) + `ExecutionStatus = live` + bumps `TrialCount` (Phase 19) + emits `task.delegated` + auto-links the work item to a workstream (Phase 16.12 prerequisite for the "● N live" badge), then schedules `RunAgentAsync` on `Task.Run` so the sweep loop doesn't block on a multi-minute deliverable. **Schedule gate behavior**: the queue itself never *parks* a row for schedule reasons — the queue drains regardless of wall-clock so the operator's "assign now" intent is honored. But the *member picker* under Phase 18.6 filters candidates through `ScheduleGate.EvaluateAgent` so off-shift members aren't handed claims they can't act on; when zero members are on-shift the lead self-assigns (Q18.3). This is what makes a Sunday-created ticket route to the lead even though the crew's day-band crew members are formally off the clock.
+  - **Sweep 3 — strain detection:** unchanged from spec. Per-crew armed-flag debounce in `ConcurrentDictionary<string, bool>`.
+  - **Sweep 4 — abandoned recovery:** unchanged from spec. 24h fallback for `picked-up` rows that didn't get caught by boot-recovery.
+  - **Sweep 5 — live-badge reconciliation (added during stabilization):** scans for work items whose `ExecutionStatus` lies about reality — e.g. status is `live` but no open queue row exists, or status is `completed` while a queue row sits in `picked-up`. Each mismatch is healed in place + a `workitem.changed { kind: badge-reconciled }` event fires so open tabs update without a refresh. Was added to fix stuck-`live` badges that the original four sweeps couldn't clear when an upstream sweep threw before reaching abandoned-recovery (every sweep now runs in its own try/catch via `SafeSweepAsync` so a SQLite translation error in one doesn't kill the whole tick).
+  - All five sweeps run via `SafeSweepAsync` so a throw in one is logged at `Warning` and never cascades — the next sweep still runs. `RunOnceAsync` returns a `WorkerTickResult` record with per-sweep counts so tests can drive the worker deterministically.
+  - **Boot-recovery + sweeps run once at startup** before the timer starts (Q17.4 boot resilience), with the same safe-sweep wrapper.
+  - **Integration with `LeadAutoDispatcher`:** see 17.12 — the dispatcher now feeds the queue rather than running its own agent path, so this worker is the single execution surface.
 
 - [x] **17.5** **Endpoints** — `Forge.Api/Endpoints/QueueEndpoints.cs`:
   - `GET /api/queue?targetKind={team|crew}&targetId={id}&state={…}` — list rows for a target. Defaults to all open states for the active product's crews.
@@ -1117,7 +1131,12 @@ Two principles drive the shape:
   - **Crew stats:** empty queue returns `depth=0, eta=0, strained=false`.
   - **Endpoint:** `POST /queue/{id}/ack` against a `queued` row returns 409.
 
-- [~] **17.12** **Migration of Phase 16 dispatcher** — `LeadAutoDispatcher` and `CrewQueueWorker` coexist at v0.1: the dispatcher continues to scan direct-to-agent assignments (its original Phase 16 path), and the queue worker handles team-routed work via the new `task_queue` rows. The 14 Phase 16 tests + 12 Phase 17 tests all stay green together (verified). Collapsing them into one worker is a Phase R candidate; today the boundary is clean (each path has distinct preconditions: dispatcher reads `auto_dispatched_at IS NULL` on `WorkItemRow`; worker reads the `task_queue` table) so they don't fight.
+- [x] **17.12** **Integration of Phase 16 dispatcher with Phase 17 queue** — the original spec described `LeadAutoDispatcher` and `CrewQueueWorker` as **coexisting** on parallel paths (dispatcher scans direct-to-agent rows, worker drains the queue). In practice this produced two-worker race conditions and confused the operator's mental model of where work was. The implementation collapses them into a clean producer/consumer split:
+  - `LeadAutoDispatcher` is now a **producer** only. Its 5-second loop still scans `work_items WHERE assignedTo.id IN (lead_agents) AND auto_dispatched_at IS NULL`, applies the schedule gate + capacity pre-check + pair resolution, then **enqueues** the work item via `ITaskQueueService.EnqueueAsync(wi.Id, "crew", generatorCrew.Id)`. `AutoDispatchedAt` is stamped only after a successful enqueue so the row is never orphaned. The dispatcher does **not** invoke `IAgentRunner` at all anymore.
+  - `CrewQueueWorker` is the sole **consumer**. Sweep 2 ("claim head") is the only place agents start; this is where `RunAgentAsync` runs the deliverable loop + delivery pipeline (Phase 16.18). Direct-to-crew assignments from the operator's UI go through `POST /api/crews/{id}/assign` → `EnqueueAsync` → same Sweep-2 path, so manual and auto-dispatched rows execute identically.
+  - Boundary is enforced by data shape: dispatcher only writes to the queue, worker only reads from it. The original "we have two execution paths" Phase R cleanup is closed by this refactor.
+
+  The 14 Phase 16 tests + 12 Phase 17 tests still pass (verified); the dispatcher tests now assert the post-tick state via the queue rather than via direct work-item flags.
 
 - [x] **17.13** **Fidelity** — new `/inbox` view is additive; exempt from the prototype screenshot diff. No new design tokens — `inbox.css` reuses Phase 11 / 14 palette + the Phase 16 `--graph-line`.
 
@@ -1130,6 +1149,624 @@ Two principles drive the shape:
 - **Queue overflow protection** — there's no max queue depth at v0.1. A lead who keeps confirming strain into a 50-deep queue will get exactly that. A hard cap with refuse-enqueue semantics is `forge_v2.md`.
 - **Distributed / multi-instance worker coordination** — single-process at v0.1; SQLite's atomic UPDATE is the only coordination primitive. A multi-instance Forge.Api with shared SQLite would race on the boot scan (every instance sweeps the same rows); deferred until we leave SQLite.
 - **WebSockets for the strain banner instead of SignalR** — already on SignalR, no reason to change.
+
+---
+
+## Phase 18 — Per-crew shift band (day / night)
+
+> A small follow-up that fell out of running multiple crews on real product work. The Phase 14 schedule gate hard-coded a single 09:00–21:00 Mon–Sat window across every crew on a given timezone. In practice the operator wanted to keep the **same** TZ but split the team in half — one crew on a day shift, a second on a night shift — so a single product can drain work continuously without anyone working a 12-hour day.
+
+This is a **schema add + ScheduleGate parameter**, not a new view. UI surfaces it as a small "day"/"night" pill on `CrewsView` next to the timezone string.
+
+### Resolved decisions
+
+- **Q18.1 Two bands, fixed widths.** Day band stays at `[09:00, 21:00)` Mon–Sat in the crew's TZ; night band is `[21:00, 09:00 next morning)` such that `Sat 21:00 → Sun 09:00` is on-shift (the night belongs to the work day on which it starts). Sunday night → Monday morning is **off-shift** because Sunday isn't a work day under `ScoringConstants.WorkDays`. No mid-day cap for the night band — the operator that wants a third "swing" band can revisit in `forge_v2.md`.
+- **Q18.2 Default = `day`.** Existing crews migrate with `Shift = 'day'` so behaviour pre/post is identical for any crew the operator hasn't explicitly flipped. Phase 18 ships as a strict superset of Phase 14.
+- **Q18.3 Leads work 24×7.** The shift band (Q18.1) and the Mon–Sat work-day filter both apply to **members only**. The crew's `Lead` agent is exempt — leads are always on-shift, including Sunday and outside the day/night bands. Operationally this means **a ticket created at 02:00 Sunday (or any other moment when no member is on-shift) routes to the team lead** instead of parking in the queue, because the lead is the only crew member who can claim it.
+  - **Implications**:
+    - `ScheduleGate.Evaluate` keeps its crew-level signature for back-compat, but a new overload `ScheduleGate.EvaluateAgent(crew, agentId, now)` returns `Verdict.OnShift` whenever `agentId == crew.Lead`. Member checks fall through to the existing `Evaluate(crew, now)` path so the day/night/work-day logic is unchanged for them.
+    - **Phase 16.7 round-robin policy is amended.** Today the lead is excluded from the generator pool entirely; under Q18.3 the lead becomes a **fallback** — preferred order is (a) idle members on-shift right now → (b) the lead. Members who are off-shift are filtered out of (a) so they don't get a wedged claim. When the only on-shift agent is the lead, the lead self-assigns; this is the Sunday / 03:00-Tuesday / sole-PO case the operator described.
+    - **Phase 16.3 LeadAutoDispatcher** continues to refuse off-shift dispatch *for the crew as a whole* in its current form — but Q18.3 changes the meaning of "the crew is on-shift": a crew with a 24×7 lead is **always** dispatchable in the routing sense (the lead can pick up); the gate now refuses only when the lead is also gone (e.g. lead is `null` or paused). The latency histogram tag `outcome: off-shift` is preserved for the no-lead case.
+    - **Phase 17.4 Sweep 2 (claim head)** today picks a member by round-robin without consulting the schedule gate. Under Q18.3 the picker filters members through `ScheduleGate.EvaluateAgent` first; if zero members survive, the lead is selected. The "queue drains regardless of wall-clock" stance from Phase 17 still holds — Sweep 2 never *parks* a row for schedule reasons; it just routes the work to whoever's actually awake.
+    - Implementation note: the lead exemption is enforced at the **agent picker** layer, not by special-casing the lead's `CrewRow.Shift`. Don't try to model "lead has shift = `always`" as a third enum value — every crew has exactly one lead and the exemption is part of the role contract, not the schedule contract.
+    - Cost ledger / payroll: the Phase 14.8 `PayrollCalculator` computes on-shift hours from the crew's schedule, not per-agent. Under Q18.3 the lead would be on-shift 24×7 (168 h/week) while members would be on-shift up to 72 h/week (12 h × 6 days). Payroll math is updated to compute per-agent hours: `member_hours = ScheduleGate.IsWithinShift(crew.Shift) windows`, `lead_hours = full clock`. Hourly × hours × level still applies — the lead on level 7 simply earns over a 168 h/week window instead of 72 h. Operators who don't want lead pay to balloon under this model can either lower the lead's level, demote them off-lead, or wait for `forge_v2.md`'s explicit on-call multiplier.
+
+### Implementation steps
+
+- [x] **18.1** **Migration** — `Forge.Api/Persistence/Phase18Migration.cs` adds `crews.Shift TEXT NOT NULL DEFAULT 'day'`. Idempotent column-add, runs after `Phase17Migration`.
+- [x] **18.2** **Domain model** — `CrewRow.Shift` (string, default `"day"`) lands in `Persistence/Entities.cs:480`. Mirror as `Crew.shift: 'day' | 'night'` in TS.
+- [x] **18.3** **`ScheduleGate.IsWithinShift`** — accepts a shift parameter; `NextTransitionLocal` computes the next transition (open / close) for either band so the live-exec banner ("Off-shift — opens at 21:00") works for both. `ScheduleGate.ShiftDay` / `ScheduleGate.ShiftNight` constants exposed for code-paths that branch on the band.
+- [x] **18.4** **CrewsEndpoints PATCH** — accept `shift` on the `PATCH /api/crews/{id}` body; persist after a `('day','night')` whitelist check.
+- [x] **18.5** **CrewsView** — render the band as a pill next to the timezone in the runtime badge group; PO-editable inline. The schedule strip on the Performance tab (Phase 14.9) reads from `ScheduleGate.Evaluate(crew, now)` directly, so the green/red ribbon updates per-band automatically.
+- [ ] **18.6** **Lead 24×7 exemption (Q18.3).** New surface area, not yet shipped:
+  - `ScheduleGate.EvaluateAgent(crew, agentId, utcNow)` — returns `Verdict.OnShift` when `agentId == crew.Lead`, otherwise delegates to `Evaluate(crew, utcNow)`. Pure, no DB.
+  - `CrewQueueWorker` Sweep 2 picker filters `members` through `ScheduleGate.EvaluateAgent` before round-robin; falls through to `crew.Lead` when zero members remain on-shift. The "exclude the lead" rule from Phase 16.7 stays as the *preference*, not the *constraint* — the lead is in the pool only as a Sunday / off-band fallback.
+  - `LeadAutoDispatcher` schedule check evaluates the lead specifically (not the crew as a whole), so Sunday-created tickets that route to the lead enqueue successfully instead of parking with `outcome: off-shift`. The `off-shift` tag remains for the (rare) `crew.Lead == null OR lead.paused` case.
+  - `PayrollCalculator` splits on-shift hours per agent: members get the schedule-gated window, lead gets the full clock. Performance tab payroll readout splits the lead's row from the members' row in the same table so the operator can see the 168 h vs 72 h difference at a glance.
+  - Tests: lead claims when no member is on-shift (Sunday + every band off); lead exemption does not change member behaviour on a Tuesday afternoon; payroll math returns 168 h/week for the lead and ≤ 72 h/week for each member.
+  - UI: the **Performance tab schedule strip** gains a small "Lead 24×7" sub-label so operators see why their crew shows green outside the band; the `CrewsView` lead row in Roster gets a permanent green dot regardless of the crew's current shift verdict.
+
+### Out of scope for v0.1 — moved to Phase R / `forge_v2.md`
+
+- **Custom shift hours** (e.g. 10:00–22:00 instead of the locked 09:00–21:00) — `ShiftStartHour` / `ShiftEndHour` stay as `ScoringConstants` constants for rubric reproducibility (Phase 14.14).
+- **Three or more shift bands per crew** (swing shifts, on-call rotations) — single-band-per-crew is the simplest model that covers the actual ask. Operators can reproduce a swing shift by spawning a third crew.
+- **Per-day shift overrides** (e.g. day shift Mon–Fri, night shift Sat) — `Shift` is a single column, not a 7-element array. Revisit if the use case lands.
+- **Per-agent schedule overrides for members** (e.g. "this engineer is on PTO Friday") — Q18.3 only carves out the lead. Per-member exceptions need a richer schedule model and are deferred.
+- **On-call multiplier in payroll** — under Q18.3 the lead's payroll grows 2.3× because of the longer on-shift window. An explicit "on-call rate" that applies a different `hourly_usd` outside the day/night band (so the 24×7 burden doesn't double the cost) is a `forge_v2.md` candidate.
+
+---
+
+## Phase 19 — Execution status & trial counter on work items
+
+> Once the queue stopped lying about state (Phase 17), the next operator complaint was "the work item card doesn't tell me whether something is *running right now*". The Plan board `ExecBadge` and the Workstreams "● N live" pill both read from the same source: `WorkItemRow.ExecutionStatus`. Phase 19 promotes that field to schema, drives every UI surface off it, and adds a `TrialCount` so the operator can see at a glance "this thing has been retried five times and still hasn't shipped".
+
+### Resolved decisions
+
+- **Q19.1 Five states, mirroring the queue but per-work-item.** `idle | queued | live | completed | failed` (and `cancelled`, used internally; not surfaced as its own pill at v0.1). The queue row is the source of truth for *routing* state; `ExecutionStatus` is the projection that's cheap to read from any UI surface without joining `task_queue`. The two are kept in sync by the `CrewQueueWorker` sweeps + `RunAgentAsync` epilogue:
+  - On boot-recovery: `live → queued`.
+  - On Sweep-2 claim: `queued → live` + `TrialCount++`.
+  - On `RunAgentAsync` happy path with PR: `live → completed`.
+  - On `RunAgentAsync` failure (delivery, agent throw, schedule out-of-shift, non-pass verdict): `live → failed`.
+  - On manual restart from the live-exec view (Phase 21): `failed | completed → queued` + new queue row.
+- **Q19.2 `TrialCount` semantics.** Bumped on **claim**, not on **enqueue**. A row that bounces between `awaiting-ack` and `awaiting-route` doesn't inflate the counter; only an actual agent invocation (`Sweep 2 → RunAgentAsync`) does. Operator can see the retry count in the work-item detail panel header — chip turns yellow at `>= 3`, red at `>= 5`.
+- **Q19.3 No automatic retry.** Once `failed`, the row stays failed; the operator clicks Restart in the live-exec view (Phase 21) to put it back on the queue. Auto-retry would mask root-cause analysis and was tried briefly during stabilization — operators preferred the explicit gate.
+
+### Implementation steps
+
+- [x] **19.1** **Migration** — `Phase19Migration.cs` adds `work_items.ExecutionStatus TEXT NOT NULL DEFAULT 'idle'` and `work_items.TrialCount INTEGER NOT NULL DEFAULT 0`. Idempotent column-adds.
+- [x] **19.2** **Domain model + TS mirror** — `WorkItemRow.ExecutionStatus` + `TrialCount`; `ExecutionStatuses` static class with `Idle`/`Queued`/`Live`/`Completed`/`Failed`/`Cancelled` constants. TS `WorkItem.executionStatus`, `WorkItem.trialCount`.
+- [x] **19.3** **CrewQueueWorker integration** — sweep + completion + failure paths set `ExecutionStatus` in lockstep with the queue state machine (`SetExecutionStatusAsync` helper). Each transition broadcasts `workitem.changed { kind: exec-{state} }` over SignalR so open tabs update without a refresh.
+- [x] **19.4** **TaskExecutionEndpoint** — `GET /api/work-items/{id}/execution` returns `executionStatus` + `trialCount` + `maxIterations` (Phase 20). The same endpoint also synthesizes a snapshot from the queue + transcript when the work-item row is missing (e.g. plan/code task enqueued before the WIT row materializes), so the live-exec view never 404s on legitimate execution rows.
+- [x] **19.5** **`ExecBadge` component** — small pill on the Plan board card + the Work Items detail panel + the Workstream card. Pulses on `live`, solid on `completed` / `failed`, hidden on `idle`. Click → `/work-items/{id}/live`. Trial-count badge to the right of the status pill, color-coded by count.
+- [x] **19.6** **Workstreams "● N live" badge** — counts work items where `ExecutionStatus = live` and the workstream's `cards` array contains the work-item id. Updates on every `workitem.changed` event.
+
+### Out of scope for v0.1
+
+- **Per-state SLA timers** ("alert me if this is `live` for > 30m") — not at v0.1; the operator gets the trial counter and the live transcript.
+- **Cross-product execution roll-up dashboard** — the existing `/crews` salary view + `/inbox` queue view already surface what the operator needs; another aggregator would just duplicate.
+
+---
+
+## Phase 20 — Runtime iteration cap & PR change-summary persistence
+
+> Two operator-driven follow-ups that landed together because they touched the same surfaces. (a) The `MaxIterations = 5` cap from `ScoringConstants` is right for most work items but wrong for spikes ("just iterate twice and stop, I want to see early output") and for hard work items where 5 isn't enough. (b) The agent's "## Change Summary" section was being parsed at PR-create time but lost if the transcript was truncated or the run was restarted; it needed to live on the deliverable row.
+
+### Resolved decisions
+
+- **Q20.1 Per-row override, not per-crew default.** `MaxIterOverride` lives on `task_queue`, not on `crews` — a crew's typical run uses `ScoringConstants.MaxIterations`, but a specific spike or rerun can be capped at 1 or relaxed to 10 without spilling that decision onto every other work item the crew picks up next. The override is read by `DeliverableLoop` at the start of `RunAsync` and clamped to `[1, 10]` server-side.
+- **Q20.2 Live override via PATCH.** The live-exec view exposes a small numeric input ("Stop after N iter"); editing it calls `PATCH /api/work-items/{id}/execution { maxIter }` which writes the override on the **active** queue row (not the historical ones). The change is reflected on the next iteration boundary — already-running iterations aren't aborted.
+- **Q20.3 Generator summary lives on the deliverable.** The `## Change Summary` heading the agent emits at the end of its final response is parsed during the PR-create step (`CrewQueueWorker.cs:978-986`) and persisted to `deliverables.GeneratorSummary` in the same transaction. Survives transcript truncation, restart, and the live-exec view's "Clear transcript" button (Phase 21). The PR body reads it from the deliverable row, not from the live transcript, so re-running PR creation against an already-passing deliverable produces the same body.
+
+### Implementation steps
+
+- [x] **20.1** **Migration** — `Phase20Migration.cs` adds `task_queue.MaxIterOverride INTEGER NULL` + `deliverables.GeneratorSummary TEXT NOT NULL DEFAULT ''`. Idempotent.
+- [x] **20.2** **`DeliverableLoop`** — `MaxIterations` becomes `Math.Clamp(request.MaxIterOverride ?? ScoringConstants.MaxIterations, 1, 10)`; resolved at start of run.
+- [x] **20.3** **`PATCH /api/work-items/{id}/execution`** — accepts `{ maxIter: int? }` (null = clear override); writes to the latest queue row. 403 unless caller is PO of the work item's product or the assigned generator agent's lead.
+- [x] **20.4** **`TaskExecutionSnapshot.MaxIterations`** — surfaces the resolved cap so the live-exec view's input renders the active value, not the constant.
+- [x] **20.5** **`CrewQueueWorker` parses `## Change Summary`** — regex-extracts the section between `## Change Summary` and the next `## ` heading (or end of message), trims to 800 chars, persists to `deliverables.GeneratorSummary` in the deliverable-loop's persistence callback.
+- [x] **20.6** **PR body uses `deliverables.GeneratorSummary`** — `CrewQueueWorker.cs:976` reads the latest deliverable's `GeneratorSummary` for the "What changed" block; if empty, falls back to "_No change summary provided._" so the PR body never has a TODO marker.
+
+### Out of scope for v0.1
+
+- **Per-iteration max-cost override** — the deliverable-loop's `MaxTaskBudgetUsd` is a single number per crew. Per-task override would let the operator say "this one's worth $5 even though the cap is $1" — Phase R candidate.
+- **Restartable budgets** — the budget pool starts fresh on a Phase 21 restart, by design (otherwise a stuck-in-loop bug becomes unblockable). Cumulative-across-restart accounting is `forge_v2.md` if the operator ever wants it.
+
+---
+
+## Phase 21 — Restart, transcript clear, and skip-soul-prompt
+
+> When a deliverable wedges (model spinning on a tool error, evaluator stuck rejecting the same change, agent ignoring the change-summary instructions) the operator wants a single button to **start over from a clean slate**. The original "delete the worktree by hand" workaround was friction at exactly the wrong moment. Phase 21 ships an in-app Restart that handles the three failure modes the operator hits most:
+
+1. **Stale transcript causing context confusion** — the live transcript holds 1000+ token-events from prior iterations; the agent reads the full transcript on each invocation. Restart clears it.
+2. **Stale deliverable row pinning the iteration counter** — the loop's "iter N of 5" reads `deliverables.Iter`. Restart clears the deliverable rows so the next run starts at iter 1.
+3. **soul.md going off-rails** — when the persona itself is producing the wedge (e.g. an evaluator soul that's overly strict), the operator wants to run the next attempt **without** the soul prompt as a diagnostic. Restart with `skipSoulPrompt=true` zeros the soul.md prefix for both generator and evaluator on the next claim.
+
+### Resolved decisions
+
+- **Q21.1 Restart is one button, three things.** The live-exec view's "Restart" button does (a) clear transcript + deliverables, (b) reset `ExecutionStatus` + queue row, (c) optionally set `SkipSoulPrompt=true`. The operator can't tease the three apart at v0.1 — every restart is a clean slate. (The `?clearTranscript` query param exists for tests / scripts but is opaque in the UI.)
+- **Q21.2 Skip-soul-prompt is per-row, not per-crew.** Lives on `task_queue.SkipSoulPrompt`. A future "always skip soul" diagnostic mode at the crew level is `forge_v2.md`; today flipping the bit on one row doesn't affect the next assignment to the same crew.
+- **Q21.3 Restart preserves work-item history.** Cards, child rows, comments, parent linkage all stay; only the execution-side rows (transcript events, deliverables, queue row) are cleared. The Restart audit trail is one `forge_actions` row; the lost transcript events are not recoverable (operator clicked the button knowing this).
+
+### Implementation steps
+
+- [x] **21.1** **Migration** — `Phase21Migration.cs` adds `task_queue.SkipSoulPrompt INTEGER NOT NULL DEFAULT 0`. Idempotent.
+- [x] **21.2** **`DELETE /api/work-items/{id}/transcript`** — clears `task_transcript_event` AND `deliverables` rows in one call so the iter counter resets cleanly. Returns `{ deleted: N, deletedDeliverables: M }`.
+- [x] **21.3** **Restart button on `LiveExecutionView`** — calls `DELETE /transcript` then re-enqueues the work item via `POST /api/work-items/{id}/restart` (or the existing `/assign` path with `skipSoulPrompt`). Confirmation modal calls out the three side-effects so the operator doesn't restart by mistake.
+- [x] **21.4** **`CrewQueueWorker.RunAgentAsync` honors `SkipSoulPrompt`** — when the queue row's flag is set, both generator and evaluator skip the `File.ReadAllTextAsync(SoulPath)` step; the system-prompt is empty and the agent runs as the bare model with only the user prompt. Transparent to the agent — no special instruction is injected to "explain that soul was suppressed".
+- [x] **21.5** **`maxTurns=30` in Copilot SDK runner** — closely related stabilization tied to restart UX: Copilot SDK occasionally never returned a `Finished` event when the agent decided to "keep working forever". A hard cap at 30 turns terminates the invocation cleanly so Restart actually has something to restart from. The cap was later raised to 500 for hard work items but kept as an explicit `Forge:Agents:CopilotMaxTurns` config knob so the operator can tighten it back down for spike work.
+
+### Out of scope for v0.1
+
+- **Restart-with-different-model** (try the same task on a different backend without manually editing the crew row) — operator asks for this occasionally; today they edit the crew + restart. Phase R candidate.
+- **Selective restart** (clear transcript but keep deliverables; clear soul but keep transcript) — every operator who asked for selective restart later admitted they really wanted a full reset. v0.1 keeps the simple form.
+- **Restart history view** — there's no "this work item has been restarted 3 times" ledger beyond `forge_actions`; the operator reads the audit log if they need it.
+
+---
+
+## Phase 22 — `AssignedAgent` field & assignment history
+
+> The original `WorkItemRow.AssignedTo` field (Phase 12.5, Q12.5 — `kind: agent | human | team`) was meant to be the WIT-level assignee that mirrors the upstream provider. In practice the queue worker has been **overloading** it: every Sweep-2 claim overwrites `AssignedToJson` with a runtime payload like `{"crewId":"…","agentId":"…","generatorAgentId":"…","evaluatorAgentId":"…","evaluatorCrewId":"…"}` so the live-exec view can resolve who's running. That conflates two concepts:
+>
+> - **WIT-level assignee** — who *owns* the work item in the tracker (a person, a team, sometimes "Engineering"). Set by the human operator or by upstream sync. Doesn't change every time an agent picks the row up.
+> - **Runtime-assigned agent** — who is *actually executing* the row right now. Set by the queue worker on claim, by reviewer-assign on PR open, by Restart on reset. Multiple agents simultaneously when the crew is paired (generator + evaluator). Empty before the first claim and after final completion.
+>
+> Phase 22 splits these into two independent fields and adds an append-only `agent_assignments` history so the operator can see "who has been on this and when". The queue worker stops writing to `AssignedTo`; everything runtime-routing flows through the new `AssignedAgent`.
+
+### Resolved decisions
+
+- **Q22.1 Two fields, two purposes — they never auto-sync.**
+  - `AssignedTo` (existing, unchanged shape) — WIT semantic. Set by the operator / provider sync. Survives every execution transition. Never touched by `CrewQueueWorker` after Phase 22 ships.
+  - `AssignedAgent` (new) — runtime fact. Set when an agent acknowledges (claims), updated on reassign / reviewer-assign, cleared on Restart and on `closed`. Empty (`null`) when nothing is in flight.
+  - Different events drive each field. The operator reassigning the WIT (PATCH `assignedTo`) does **not** kick the runtime; the queue claiming a row does **not** mutate the WIT assignee.
+
+- **Q22.2 `AssignedAgent` shape — JSON serialized into `AssignedAgentJson`.** Cardinality: 0..N agents, 0..1 team. Empty/`null` is the default state. Parsed at read time by `WorkItemMapper`:
+  ```
+  {
+    agents:      string[],   // 1..N agent ids; paired runs land 2 (generator + evaluator)
+    team:        string?,    // optional — 'Architecture' | 'Engineering' | 'Review' | 'QA'
+    crewId:      string?,    // crew this assignment routed through
+    role:        string,     // 'generator' | 'evaluator' | 'reviewer' | 'judge' | 'manual'
+    assignedAt:  string,     // ISO-8601
+    assignedBy:  string?     // 'queue-worker' | 'lead-dispatcher' | userId | null
+  }
+  ```
+
+- **Q22.3 Lifecycle — five transitions write `AssignedAgent` AND append a history row.** The runtime is forbidden from rewriting the field in place without an audit row; even cosmetic changes go through these transitions.
+
+  | # | Trigger                         | `AssignedAgent` after            | History `kind`        |
+  |---|---------------------------------|----------------------------------|-----------------------|
+  | 1 | Queue claim (Sweep 2)           | `{ generator+evaluator }`        | `claimed`             |
+  | 2 | Reassign within crew            | `{ new-member }`                 | `reassigned`          |
+  | 3 | Restart (Phase 21)              | `null`                           | `cleared-restart`     |
+  | 4 | PR opened → ExecStatus=InReview | unchanged (still the coder)      | `pr-opened`           |
+  | 5 | Reviewer assigned               | `{ reviewer agent or crew }`     | `reviewer-assigned`   |
+  | 6 | Work item closed / resolved     | `null`                           | `completed`           |
+
+  Note that step 4 records a transition without changing the field — the coder stays "the assigned agent" through review until a reviewer is explicitly assigned (step 5). This matches the operator's mental model: "until I pick someone for review, the coder still owns the row."
+
+- **Q22.4 Sticky after acknowledge.** Once an agent claims, `AssignedAgent` stays set even when the agent fails / restarts mid-run / hits a budget cap. Failed runs keep the field pinned so the operator can see *who* failed in the work-item detail strip without scrolling history. The field clears only on **explicit Restart** (Phase 21), **manual clear** (Phase 22.4 endpoint), or **work-item close** (state transition to `resolved` / `closed`).
+
+- **Q22.5 Multi-agent assignment is the rule, not the exception.** Paired crews (Phase 16.2) always land 2 agents (generator + evaluator) on claim; single-crew runs land 1; future review-time multi-reviewer scenarios may land more. UI surfaces this as a stack of avatars + a count chip when N > 2; the first agent in `agents[]` is canonical for "who's driving" (generator under `role='generator'`, reviewer under `role='reviewer'`).
+
+- **Q22.6 Queue worker writes `AssignedAgent`, not `AssignedTo`.** `CrewQueueWorker.cs:347-348` — the line that today builds `wi.AssignedToJson = "{\"crewId\":\"…\",\"agentId\":\"…\",…}"` moves to `wi.AssignedAgentJson = …`. `AssignedToJson` keeps whatever the WIT semantic value was (typically `{kind:'team', id:'Engineering'}` from sync, or `{kind:'agent', id:'XD'}` from a manual assign). The boot-recovery sweep also writes the new field on reclaim so the live-exec view has accurate runtime data after a server restart.
+
+- **Q22.7 Backfill of pre-Phase-22 data is one-shot, idempotent.** First boot after Phase 22 lands runs a migration step that walks every `WorkItemRow` whose `AssignedToJson` parses to the runtime shape (heuristic: presence of `generatorAgentId` OR `crewId` keys at the top level). For each match: copy the bytes into `AssignedAgentJson` (with `assignedBy='backfill'`); rebuild `AssignedToJson` as a WIT-shape `{kind:'team', id: crew.team, displayName: crew.team}` resolved from the embedded `crewId`. Append a `agent_assignments(kind='backfill')` row per migrated work item so the timeline shows where the field came from. Subsequent boots are no-ops.
+
+### Implementation steps
+
+- [ ] **22.1** **Migration** — `Forge.Api/Persistence/Phase22Migration.cs` (idempotent, runs after `Phase21Migration`):
+  - `work_items` adds `AssignedAgentJson TEXT NULL`.
+  - New table `agent_assignments`:
+    ```
+    Id INTEGER PK AUTOINCREMENT
+    WorkItemId TEXT NOT NULL
+    Kind TEXT NOT NULL                    -- 'claimed'|'reassigned'|'cleared-restart'|'cleared-manual'|'pr-opened'|'reviewer-assigned'|'completed'|'backfill'
+    AgentIdsJson TEXT NOT NULL DEFAULT '[]' -- snapshot at this moment
+    Team TEXT NULL
+    CrewId TEXT NULL
+    Role TEXT NULL
+    FromExecutionStatus TEXT NULL
+    ToExecutionStatus TEXT NULL
+    AssignedBy TEXT NULL                  -- 'queue-worker'|'lead-dispatcher'|userId|'backfill'|null
+    Reason TEXT NULL
+    At TEXT NOT NULL
+    ```
+  - Index `IX_agent_assignments_workitem_at` on `(WorkItemId, At DESC)` — drives the timeline read.
+
+- [ ] **22.2** **Domain model + TS mirror** — `WorkItemRow.AssignedAgentJson`; `AssignedAgent` POCO (Q22.2 shape) + `AgentAssignmentRow`. TS `WorkItem.assignedAgent: AssignedAgent | null`, `WorkItem.assignedAgentHistory?: AgentAssignmentEntry[]` (lazy-loaded by the timeline read).
+
+- [ ] **22.3** **`CrewQueueWorker.cs` — Sweep-2 claim path rewrite** (the line at `~347-348` today):
+  - Build `AssignedAgent` from the resolved `(generatorAgentId, evaluatorAgentId, crewId, evaluatorCrewId)` plus `team = crew.Team`, `role = 'generator'`, `assignedBy = 'queue-worker'`.
+  - Write `wi.AssignedAgentJson = serialize(payload)` instead of overwriting `AssignedToJson`.
+  - Append `agent_assignments(kind='claimed', AgentIdsJson, Team, CrewId, Role='generator', FromExecutionStatus='queued', ToExecutionStatus='live', AssignedBy='queue-worker', At=now)` in the same SaveChanges() call so they commit atomically.
+  - Boot-recovery sweep does the same write so a re-claim after server restart records a fresh `claimed` row (the operator sees a "re-claimed at X" row rather than a single 'claimed' row from days ago).
+
+- [ ] **22.4** **Endpoints — `AgentAssignmentsEndpoints.cs`**:
+  - `GET /api/work-items/{id}/assigned-agent` — returns the parsed `AssignedAgent` or 204 when null.
+  - `GET /api/work-items/{id}/assignments?limit=…` — paginated history, newest first. Default 50, max 500.
+  - `POST /api/work-items/{id}/assignments` body `{ agents: string[], team?, crewId?, role, reason? }` — manual override (PO of the work item's product OR crew lead). Validates that referenced agents exist; writes the field + history row with `assignedBy=userId`. Used for manual reviewer-assign (Q22.3 step 5).
+  - `DELETE /api/work-items/{id}/assigned-agent` body `{ reason? }` — clears the field. PO only. History `kind='cleared-manual'`. Use sparingly — most clears should come from Restart or completion.
+
+- [ ] **22.5** **`PATCH /api/work-items/{id}/move` integration** — when the target state transitions:
+  - `→ in-review` (PR opened): append `agent_assignments(kind='pr-opened', From=current, To='in-review')` without touching `AssignedAgentJson` (Q22.3 step 4).
+  - `→ resolved` or `→ closed`: append `agent_assignments(kind='completed')` AND null out `AssignedAgentJson` (Q22.3 step 6).
+  - These hooks live in `WorkItemsEndpoints.MoveWorkItem` so any path that drives state — UI move, queue worker post-PR transition (Phase 16.18 line 1144), provider webhook — fires the same audit.
+
+- [ ] **22.6** **Restart (Phase 21) clears `AssignedAgent`** — `DELETE /api/work-items/{id}/transcript` + the queue-restart branch null out `AssignedAgentJson` and append `agent_assignments(kind='cleared-restart', From='live'|'failed', To='queued', AssignedBy=userId)`. The next claim writes a fresh row and the timeline shows the discontinuity, not a silent overwrite.
+
+- [ ] **22.7** **Backfill migration (Q22.7)** — one-shot at first boot after Phase 22 ships, gated by a `forge_seed_state` row so re-boots skip it. Heuristic for runtime-shaped `AssignedToJson`: `JsonDocument.RootElement.TryGetProperty("generatorAgentId" | "crewId" | "agentId")` succeeds AND there's no `kind` property at the top level. For each match: copy bytes → `AssignedAgentJson` (wrapping in the Q22.2 shape if needed); rebuild `AssignedToJson` from the resolved crew's `Team`. Log a one-line summary `"Phase 22 backfill migrated N work items"` and write one `agent_assignments(kind='backfill', AssignedBy='backfill')` per migrated row.
+
+- [ ] **22.8** **UI — Work-item detail panel — new "Currently working on this" strip** below the existing Assignee row in `WorkItemDetailPanel.tsx`:
+  - **Empty state** — "Not currently assigned to an agent" + an `Assign agent` affordance (visible to PO + crew leads only) that opens a small picker (agent list filtered by team + role).
+  - **Active state** — stack of avatars (1..N) + role pill (`Generator` / `Evaluator` / `Reviewer` color-coded) + crew name + relative timestamp ("since 14m ago"). Hover shows full agent names + the `assignedBy` label.
+  - Click → opens a right-rail **Assignment history** drawer rendering the `agent_assignments` rows as a vertical timeline: `claimed → pr-opened → reviewer-assigned → completed` with timestamps + actor + reason. Reuses the styling of the Phase 14 `agent_level_history` timeline.
+
+- [ ] **22.9** **UI — Live Execution view** — the header strip's "assigned to" pill (today reads from `AssignedToJson` indirectly via the snapshot's `generatorAgentId` / `evaluatorAgentId`) now reads `AssignedAgent` directly. Pill click expands the history drawer. Empty state ("Not yet assigned — waiting for queue claim") replaces the previous "No events yet" copy when `AssignedAgent` is null AND no transcript events exist.
+
+- [ ] **22.10** **UI — Plan board card + Workstream card cells** — the agent-name cell that today reads the runtime fields out of `AssignedToJson` switches to `AssignedAgent.agents[0]` (canonical driver per Q22.5). When `AssignedAgent` is null, the cell falls back to the WIT-level assignee (`AssignedTo`), rendered with a slightly muted style so the operator can distinguish "no one's executing" from "someone's actively coding". Tooltip enumerates all `agents[]` when N > 1.
+
+- [ ] **22.11** **Tests — `Phase22AssignedAgentTests.cs`**:
+  - **Migration round-trip** — a runtime-shaped `AssignedToJson` ends up in `AssignedAgentJson`; the `AssignedToJson` becomes the resolved team shape; idempotent re-run is a no-op.
+  - **Claim writes both** — Sweep-2 produces an `AssignedAgent` payload AND a `agent_assignments(kind='claimed')` row in the same transaction.
+  - **Sticky on failure** — agent fails mid-run → `AssignedAgent` stays set, history shows a `task.failed`-derived row but no `cleared-*` row.
+  - **Restart clears** — `DELETE /transcript` nulls the field AND appends `kind='cleared-restart'`; next claim writes `claimed` again so the timeline shows three rows.
+  - **PR-open keeps the coder** — `MoveWorkItem(in-review)` appends `kind='pr-opened'` without changing `AssignedAgent.agents`.
+  - **Reviewer assigns** — `POST /assignments {role:'reviewer', agents:['R3']}` overwrites the field + appends `kind='reviewer-assigned'`.
+  - **Completed clears** — `MoveWorkItem(resolved)` nulls the field + appends `kind='completed'`.
+  - **WIT assignee is independent** — `PATCH /work-items/{id} {assignedTo: …}` does NOT mutate `AssignedAgent`, and Sweep-2 claim does NOT mutate `AssignedTo`.
+
+- [ ] **22.12** **Fidelity** — additive UI (assignment strip + history drawer + live-exec pill data source switch); exempt from the prototype screenshot diff. No new design tokens — reuses the avatar palette + the Phase 14 history-timeline styling.
+
+### Out of scope for v0.1 — Phase R / `forge_v2.md`
+
+- **Cross-product agent loaning** — an agent currently assigned on product A can't be claimed on product B simultaneously. Queue worker enforces single-assignment per agent at v0.1 by relying on the existing per-agent `MaxConcurrent` cap. Multi-product agent pools are `forge_v2.md`.
+- **Agent capacity dashboards** — "this agent is on 5 work items right now" is derivable by querying `WorkItemRow WHERE AssignedAgentJson contains @agentId` but no dedicated view ships at v0.1.
+- **History compaction** — `agent_assignments` grows append-only forever. A 90-day rollup table is `forge_v2.md` if row volume becomes a problem.
+- **Auto-assign-reviewer on PR open** — Q22.3 step 4 keeps the coder pinned until a human / PO / review-lead picks a reviewer. Auto-routing the row to a review-team lead's queue is `forge_v2.md`.
+- **Per-role assignment (claim coder, claim reviewer separately)** — at v0.1 the queue claim writes generator+evaluator together; reviewer is a *replacement* assignment, not an additive one. Composite assignments ("currently 1 coder + 2 reviewers") are deferred until the operator demonstrates need.
+
+---
+
+## Phase 23 — Scheduled work-item sync (per-repo, paginated, delta, `agent-ready` auto-assign)
+
+> Phase 5.7 + Phase 12.10 ship a 60-second polling loop that re-queries every configured repo on every tick. That works for low item counts but burns provider rate-limit budget and produces noisy logs once a tenant has thousands of work items. **Phase 23 replaces the polling with a scheduled job at a 20-minute cadence**, splits the work properly into a *first full sync* (bounded by a time window) plus *delta syncs* keyed on the upstream `ChangedDate` / `updatedAt`, paginates the upstream calls correctly, and adds an upstream-driven `agent-ready` flag that auto-routes flagged items to a default agent team (Engineering by default).
+>
+> The phase also formalizes a long-standing implementation drift: an ADO **work-item sync repo** is not the same shape as an ADO **git repo**. Work items live in a project, not in any one git repo, and the operator wants to scope sync to a *list of area paths inside the project*. Phase 23 carries that scope on the existing `Repo` row (multi-area-path JSON column) rather than introducing a new entity, so the per-product/per-repo navigation already in place keeps working.
+>
+> Three principles drive the shape:
+>
+> 1. **Time windows are explicit, not implicit.** First sync of an ADO repo pulls items changed in the last 365 days; first sync of a GitHub repo pulls the entire issue history. Both are documented constants the operator can override per-repo. Subsequent syncs are delta-bounded by `LastSyncAt`, so the cost of catching up doesn't grow as the repo ages.
+> 2. **Pagination is the runner's problem, not the caller's.** Both providers cap page size; the sync service walks the cursor until the upstream says "no more" then commits the run. A sync run that fails mid-walk leaves the cursor at the last successful page so the next run resumes cleanly.
+> 3. **The agent-ready flag is a declarative routing signal.** When upstream tags an item `agent-ready`, Forge sets `AssignedTo = {kind:'team', id: repo.AgentReadyDefaultTeam}` (default `Engineering`). This is the only field the sync writes on top of the upstream data; everything else is provider-of-truth. The runtime-side `AssignedAgent` (Phase 22) is untouched — sync only writes the WIT-semantic field, the queue worker still owns runtime assignment.
+
+### Resolved decisions
+
+- **Q23.1 Cadence — 20 minutes.** One tick every 20 minutes, jittered ±60 seconds across repos to avoid thundering-herd against a single ADO org. Configurable via `Forge:Sync:WorkItem:IntervalSeconds` (default 1200). The legacy 60-second polling for cards / PRs / pipelines is unchanged — Phase 23 adds a *separate* job for work items because their churn rate, page sizes, and rate-limit profile are different. The `WorkItemSyncJob` and `ProviderSyncService` run side-by-side; they touch different tables.
+
+- **Q23.2 Per-repo scope, parallel up to 4.** Each `Repo` row drives one sync invocation per tick. Concurrency cap = 4 (tunable via `Forge:Sync:WorkItem:MaxParallel`); rows beyond the cap wait for the next tick. Per-repo serialization: a tick that finds the previous run still in flight (`LastSyncStatus='running'` for > 19 minutes) cancels the in-flight run and starts a fresh one — better to drop a slow run than to stack them. A `LastSyncStatus='running'` marker carries an `IsRunningSince` timestamp so the cancellation rule is a wall-clock check, not a heuristic.
+
+- **Q23.3 ADO scope — `(org, project, areaPaths[])` triple, not `(org, project, gitRepo)`.** ADO work items belong to the *project*, not to any git repo, and the operator wants to scope sync to a curated list of area paths within the project. The `Repo` row carries:
+  - `AdoOrg`, `AdoProject` (existing) — the project the WIQL query runs against.
+  - `AreaPathsJson` (new) — JSON `string[]` of area-path prefixes. Empty / null = sync the whole project. Example: `["One\\AzureStack\\ASZ-Update", "One\\AzureStack\\Compute"]`. The WIQL `WHERE` clause is `[System.AreaPath] UNDER 'p1' OR [System.AreaPath] UNDER 'p2'`. ADO's `UNDER` operator includes the node and all descendants, which matches the operator's mental model of "everything under this folder".
+  - The git-side fields (`RemoteUrl`, `CloneRoot`, `DefaultBranch`) are independent — they describe the repo Forge clones for worktrees. A single `Repo` row carries both shapes; auto-clone (Phase 8.10) uses the git fields, work-item sync uses the project + area-path fields. Either set may be empty; a row with only the project + area-paths is "work-items only", a row with only the git fields is "git only", a row with both is the common case.
+
+- **Q23.4 GitHub scope — repo-native.** GitHub issues are scoped to a repo (`/repos/{owner}/{repo}/issues`), so `Repo.GhOwner` + `Repo.GhRepo` is enough; `AreaPathsJson` is ignored on GitHub repos. Pull requests come along for the ride because GitHub treats PRs as issues for the purposes of the issues endpoint — Phase 23 syncs them in the same call and the mapper splits them by `pull_request` field presence.
+
+- **Q23.5 Initial time window — ADO 365 days, GH all-time.** First sync of an ADO repo runs WIQL with `[System.ChangedDate] >= @cutoff` where `@cutoff = UtcNow - 365d`. First sync of a GitHub repo omits the `since` parameter so all issues are returned. Both windows are constants in `Forge.Api/SyncConstants.cs` so the spec-consistency test catches drift; per-repo overrides (`Repo.InitialSyncWindowDays INTEGER NULL`) ship as a follow-up if the operator hits a 50,000-item ADO project that needs trimming further.
+
+- **Q23.6 Pagination strategy — provider-specific, cursor-driven.**
+  - **ADO:** WIQL queries return up to 20,000 work-item references in a single response; `_apis/wit/workitems?ids=…&fields=…` is then called in batches of **200 IDs per request** (ADO's hard cap). The sync service splits the WIQL result client-side and walks the batches sequentially, committing each batch in its own transaction so a failure in batch N+1 doesn't roll back batch N. The cursor (`LastSyncCursor` text column) holds the last successfully-committed batch index so a resume picks up exactly where the prior run failed.
+  - **GitHub:** `/issues?per_page=100&since={LastSyncAt}` is paginated by the standard `Link: rel="next"` header. The sync service walks the chain until no `next` link is present. Cursor stores the `next` URL as opaque text so resume after failure is a single GET, no math required.
+
+- **Q23.7 Delta sync — `ChangedDate` (ADO) / `updatedAt` (GitHub).** Once `LastSyncAt IS NOT NULL`, the next run uses it as the lower bound:
+  - **ADO:** `WHERE [System.ChangedDate] >= @LastSyncAt AND ([System.AreaPath] UNDER …)`. Window is **half-open on the lower bound** (`>=`, not `>`) so an item changed exactly at the cursor instant isn't dropped; the upsert path is idempotent so the duplicate-with-same-revision is a no-op.
+  - **GitHub:** `since={LastSyncAt-toISO}`. GitHub's `since` filter is on `updated_at` and is documented as inclusive on the boundary.
+  - The cursor advances only on a fully-successful run. A run that fails mid-walk leaves `LastSyncAt` at its prior value so the next run re-fetches the same window — better to over-fetch than to miss an item.
+
+- **Q23.8 `agent-ready` flag — upstream-tag → auto-team-assign.** When sync sees an item with the `agent-ready` flag (ADO `System.Tags` contains `agent-ready`; GitHub label name `agent-ready`):
+  - If `WorkItemRow.AssignedTo` is currently null OR has the legacy runtime-shape (Q22.7), set `AssignedTo = {kind: 'team', id: repo.AgentReadyDefaultTeam, displayName: repo.AgentReadyDefaultTeam}`. Default team is `Engineering`; `repos.AgentReadyDefaultTeam TEXT NULL DEFAULT NULL` overrides per-repo.
+  - If `AssignedTo` is already a meaningful WIT-shape value (`{kind: 'agent'|'human'|'team', id: ...}`), **leave it untouched** — the operator's manual assignment beats the auto-rule. The flag still flows in (item shows `agent-ready` chip in UI) but doesn't overwrite intent.
+  - Removing the flag upstream does **not** un-assign — the assignment is a one-way ratchet at v0.1. Operators wanting to revoke an auto-assign do it manually.
+  - The auto-assign writes a `forge_actions(kind='auto-assigned-by-flag', actorUserId='sync', body: { repoId, workItemId, team })` audit row so the trail is visible at `/audit`. **Does NOT write `AssignedAgent`** (Phase 22 boundary holds — runtime assignment is the queue worker's job).
+
+- **Q23.9 Idempotency — sync runs are replayable.** Each `WorkItemRow` upsert keys on `(provider, providerRef)` so a re-fetch of the same work item produces no duplicate rows. The conflict policy from Phase 5.9 still applies: if the local row's `RemoteRevision` differs from the upstream's at upsert time, the run records a conflict but writes the upstream value (last-writer-wins) and surfaces the divergence in the work-item detail panel.
+
+### Implementation steps
+
+- [ ] **23.1** **Migration** — `Forge.Api/Persistence/Phase23Migration.cs` (idempotent, runs after `Phase22Migration`):
+  - `repos` adds:
+    - `AreaPathsJson TEXT NULL` — JSON `string[]`. Null / `[]` = whole project.
+    - `LastSyncAt TEXT NULL` — ISO-8601 cursor.
+    - `LastSyncCursor TEXT NULL` — opaque per-provider page cursor for resume.
+    - `LastSyncStatus TEXT NOT NULL DEFAULT 'idle'` — `idle | running | failed`.
+    - `LastSyncError TEXT NULL` — last error message, surfaced in the UI.
+    - `IsRunningSince TEXT NULL` — wall-clock guard for the 19-minute cancellation rule.
+    - `AgentReadyDefaultTeam TEXT NULL DEFAULT NULL` — falls back to `Engineering` constant when null.
+    - `InitialSyncWindowDays INTEGER NULL` — overrides the ADO 365-day default; ignored for GitHub.
+  - New table `work_item_sync_runs(id, repoId, kind: 'full'|'delta'|'manual', startedAt, finishedAt?, itemsAdded, itemsUpdated, itemsConflicted, errorMessage, completedSuccessfully)`. Indexed by `(repoId, startedAt DESC)`.
+  - TS mirrors in `src/forge/Forge.UI/src/types.ts`: `Repo` gets the new optional fields; new `WorkItemSyncRun` type for the history.
+
+- [ ] **23.2** **`SyncConstants.cs`** — locks the time-window defaults, page sizes, cadence, and the `agent-ready` flag literal:
+  ```
+  AdoInitialWindowDays = 365
+  AdoMaxIdsPerWorkItemBatch = 200
+  AdoMaxWiqlReferences = 20000
+  GithubPerPage = 100
+  WorkItemSyncIntervalSeconds = 1200
+  WorkItemSyncMaxParallel = 4
+  RunningTimeoutMinutes = 19
+  AgentReadyFlag = "agent-ready"
+  AgentReadyDefaultTeam = "Engineering"
+  ```
+  Spec-consistency test (`Phase23SyncConstantsTests`) parses this section of the spec and asserts the constants verbatim, mirroring Phase 14.14 / Phase 16.5.
+
+- [ ] **23.3** **`IWorkItemSyncJob` hosted service** — `Forge.Api/Services/WorkItemSyncJob.cs`. 20-min tick loop with ±60 s jitter; on each tick:
+  - Query `repos WHERE LastSyncStatus IN ('idle','failed') OR (LastSyncStatus='running' AND IsRunningSince < now-19m)` ordered by `LastSyncAt` ascending (oldest first).
+  - For each, dispatch to a `SemaphoreSlim`-bounded worker (`SyncConstants.WorkItemSyncMaxParallel = 4`).
+  - Worker calls `IWorkItemSyncRunner.RunAsync(repo, ct)`; on success sets `LastSyncAt = startedAt`, `LastSyncStatus = 'idle'`, clears `LastSyncCursor` + `LastSyncError`. On failure sets `LastSyncStatus = 'failed'` + `LastSyncError = ex.Message` and leaves `LastSyncAt` untouched.
+  - Each invocation appends a `work_item_sync_runs` row (start + end timestamps, counts, errors, success flag).
+  - Telemetry: `forge.sync.workitem.duration_ms` histogram (tagged with `kind`, `provider`, `outcome`); `forge.sync.workitem.items{kind}` counter; `forge.sync.workitem.errors` counter.
+  - Manual trigger via `POST /api/repos/{id}/sync-work-items` (existing surface from Phase 12.10) calls the same `RunAsync` with `kind='manual'`; rate-limited to 1/min/repo unless caller is PO with `?ignoreThrottle=true`.
+
+- [ ] **23.4** **`AdoWorkItemSyncRunner` — multi-area-path WIQL + 200-ID batching**:
+  - Build the WIQL `WHERE` clause from `repo.AreaPathsJson`:
+    - Empty → `[System.TeamProject] = '@project'` only.
+    - Single → `[System.AreaPath] UNDER '{p1}'`.
+    - Multi → `([System.AreaPath] UNDER '{p1}' OR [System.AreaPath] UNDER '{p2}' OR …)`.
+  - Append `[System.ChangedDate] >= '{lastSyncOrCutoff}'` where `lastSyncOrCutoff = repo.LastSyncAt ?? (UtcNow - {InitialSyncWindowDays})`.
+  - POST `_apis/wit/wiql?api-version=7.0` body `{ "query": "SELECT [System.Id] FROM workitems WHERE …" }`. Response carries up to 20,000 references (`SyncConstants.AdoMaxWiqlReferences`).
+  - Split the IDs into batches of 200; for each batch GET `_apis/wit/workitems?ids={csv}&fields={fieldList}&$expand=relations`. `fieldList` includes `System.Id`, `System.WorkItemType`, `System.Title`, `System.State`, `System.AreaPath`, `System.IterationPath`, `System.AssignedTo`, `System.Tags`, `System.ChangedDate`, `System.Parent`, `Microsoft.VSTS.Scheduling.StoryPoints`, `Microsoft.VSTS.Common.Priority`, `Microsoft.VSTS.Common.Severity`, plus the description / repro-steps fields per type.
+  - For each item: map → `WorkItemRow` via existing `AdoMapper.MapToWorkItem`, then upsert by `(provider='ado', providerRef=System.Id)`. Tags array is parsed; if `agent-ready` is present, apply Q23.8 auto-assign. Audit row written when auto-assign fires.
+  - Batch index is committed to `LastSyncCursor` after each successful batch so a mid-run failure resumes mid-stream.
+  - 429 / 503 handling: backoff per the `Retry-After` header (capped at 60s); if the third retry still fails, the runner aborts the run and leaves `LastSyncStatus='failed'`.
+
+- [ ] **23.5** **`GitHubWorkItemSyncRunner` — `since`-driven pagination**:
+  - GET `/repos/{owner}/{repo}/issues?per_page=100&state=all&since={lastSyncOrEpoch}` where `lastSyncOrEpoch = repo.LastSyncAt ?? "1970-01-01T00:00:00Z"`.
+  - Walk the `Link: rel="next"` header chain, committing each page's items in its own transaction.
+  - For each issue: distinguish issue vs. PR by presence of `pull_request` field; map to `WorkItemRow` (issues) or `PrRow` (PRs) via existing `GitHubMapper`. Labels array → tags; if `agent-ready` is present, apply Q23.8 auto-assign.
+  - Sub-issue support per Phase 12.4 — read native sub-issue parent if present, fall back to the `Parent: #N` body convention.
+  - Cursor stores the next-page URL as opaque text so resume after failure is a single GET.
+  - Rate-limit handling: read `X-RateLimit-Remaining`; when below 100, sleep until `X-RateLimit-Reset` before continuing.
+
+- [ ] **23.6** **`agent-ready` auto-assign helper** — `Forge.Api/Services/AgentReadyResolver.cs`:
+  - `Apply(WorkItemRow row, RepoRow repo, IReadOnlyList<string> tags)`:
+    - If `tags` does not contain `SyncConstants.AgentReadyFlag` → return unchanged.
+    - If `row.AssignedToJson` parses to a Phase-22 WIT-shape value (`kind` property present, `kind` ∈ `agent | human | team`) → return unchanged (Q23.8 second bullet — operator intent wins).
+    - Else set `row.AssignedToJson = serialize({kind:'team', id: repo.AgentReadyDefaultTeam ?? 'Engineering', displayName: repo.AgentReadyDefaultTeam ?? 'Engineering'})` and emit a `forge_actions(kind='auto-assigned-by-flag')` audit + a `workitem.changed` SignalR event so open tabs render the new chip without a refresh.
+  - Pure helper (no DB writes itself); the runner persists in its own transaction. Tested in isolation against the canonical (no flag, flag + null, flag + WIT-shape, flag + runtime-shape, flag + non-default team) matrix.
+
+- [ ] **23.7** **Endpoints — extension of existing Phase 12.10 surface**:
+  - `POST /api/repos/{id}/sync-work-items` body `{ ignoreThrottle?: bool, kind?: 'full'|'delta'|'auto' }` — manual trigger. `kind='full'` clears `LastSyncAt` first so the next run uses the initial window.
+  - `GET /api/repos/{id}/sync-work-items/runs?limit=20` — paginated `work_item_sync_runs` history.
+  - `GET /api/repos/{id}/sync-work-items/status` — `{ lastSyncAt, lastSyncStatus, lastSyncError, isRunningSince, queueDepth?, etaMinutes? }` for the dashboard widget.
+  - `PATCH /api/repos/{id}` accepts `areaPaths: string[]` and `agentReadyDefaultTeam: string?` for inline edit.
+
+- [ ] **23.8** **UI — `RepoSyncStatusStrip` on `/products/{id}` repo cards** + the existing `SyncDialog`:
+  - Card-level: small status dot (green idle, blue running, red failed) + "Last sync: 14m ago" + click → opens a drawer with the last 20 sync runs, items added / updated counts, errors, and a "Sync now" button.
+  - `SyncDialog` (Phase 12.10) gains an "Area paths" multi-select for ADO repos (autocomplete against `IAdoClassificationService.DiscoverAsync(kind=areas)` from Phase 15.2) and a "Default team for `agent-ready`" combobox. Save persists to the `Repo` row; SignalR `repo.changed` invalidates the form.
+  - Work-item detail panel renders an `agent-ready` pill (orange) next to existing tags when the upstream tags array contains it; tooltip shows the auto-assign timestamp + which sync run wrote it.
+
+- [ ] **23.9** **Sidebar / TopBar surfacing** — when any repo's `LastSyncStatus = 'failed'`, the active product's sidebar entry shows a small red dot; click → `/products/{id}` and the failing repo card is auto-scrolled into view. Heuristic-only — no separate alert center at v0.1.
+
+- [ ] **23.10** **Tests — `Forge.Api.Tests/Phase23WorkItemSyncTests.cs`**:
+  - **WIQL builder:** zero / one / many area paths produce the right `WHERE` clause; `>=` boundary behaviour on `ChangedDate`; project-only fallback.
+  - **Pagination — ADO:** > 200 IDs split into batches of 200; mid-batch failure leaves `LastSyncCursor` at the last successful index; resume picks up at the next index without re-fetching the prior batch (assert via `StubHttpMessageHandler` call counts).
+  - **Pagination — GitHub:** `Link: rel="next"` chain followed; mid-page failure stores the next URL; resume is a single GET.
+  - **Delta cursor:** first run uses 365-day window for ADO / no `since` for GH; second run uses `LastSyncAt`; failure path leaves `LastSyncAt` untouched.
+  - **Idempotency:** identical upsert call produces zero net changes; conflict policy (Phase 5.9) writes the upstream value + records the divergence.
+  - **Concurrency:** four repos sync in parallel; a fifth waits for the next tick; a 19-min-stale `running` row is cancelled and re-started.
+  - **`agent-ready` matrix:** flag + null `AssignedTo` → team-assigned; flag + WIT-shape → untouched; flag + runtime-shape (legacy) → team-assigned (Q22.7 backfill); non-default `AgentReadyDefaultTeam` honored; flag removed upstream → existing assignment preserved (one-way ratchet).
+  - **Schedule jitter:** 100 ticks generate 100 jittered timestamps that fall within the ±60 s envelope.
+  - **Spec-consistency:** `SyncConstants` matches the Q23.5 / Q23.6 numbers verbatim.
+
+- [ ] **23.11** **Telemetry surface** on the existing `Forge.Api.Phase16` meter (re-used; adding a new meter would fragment dashboards):
+  - `forge.sync.workitem.duration_ms` — histogram, tagged `provider`, `kind`, `outcome`.
+  - `forge.sync.workitem.items` — counter, tagged `provider`, `kind` (`added`/`updated`/`conflicted`).
+  - `forge.sync.workitem.pagination.batches` — counter, tagged `provider` — useful for spotting projects that ballooned past 20k references.
+  - `forge.sync.workitem.errors` — counter, tagged `provider`, `errorClass` (rate-limit / auth / network / shape).
+  - `forge.sync.workitem.agent_ready_assignments` — counter, tagged `team`.
+
+- [ ] **23.12** **Fidelity** — additive UI (status strip + sync drawer + agent-ready pill); exempt from prototype screenshot diff. Reuses existing tokens (status palette + the Phase 14 history-timeline). One new copy string ("agent-ready") added to the design glossary in `docs/forge/design-tokens.md`.
+
+### Out of scope for v0.1 — Phase R / `forge_v2.md`
+
+- **Push-based sync via webhooks instead of polling** — Phase 5.8 ships webhook intake; pairing webhook events with the scheduled job (so a webhook can fast-forward `LastSyncAt`) is `forge_v2.md` once we've shaken out the 20-min cadence in production.
+- **Per-area-path schedule** — at v0.1 every area path inside a repo follows the same 20-min cadence. A separate cadence per area path (e.g. high-traffic area gets 5 min, archive gets 24 h) is `forge_v2.md`.
+- **Bidirectional `agent-ready`** — Forge does not write the flag back upstream; if an operator removes the team assignment in Forge, the upstream tag stays. Phase R candidate to surface a "remove `agent-ready` upstream too" toggle.
+- **Cross-area-path move detection** — when an item's `System.AreaPath` changes from one path inside the scope to another inside the scope, the upsert path handles it. When the new path is **outside** the scope, the item stays in the local cache (orphaned). A cleanup pass that removes out-of-scope items is `forge_v2.md`.
+- **Sync of historical revisions** — Forge stores only the latest revision per work item. Time-travel UI ("show me the title as of last week") needs revision history and is `forge_v2.md`.
+- **Per-repo distinct providers in one Repo row** — a single row is one provider (Q4 still holds). A "sync work items from ADO and PRs from GitHub for the same logical project" mash-up is `forge_v2.md`.
+
+---
+
+## Phase 24 — PR state & comment-lifecycle sync
+
+> Phase 16.18 opens the PR and emits a single `task.pr-opened` event; after that the operator is on their own. In practice the PR keeps churning long after creation — reviewers leave comments, the build flips state, the agent commits more, comments get resolved (or reopened), and eventually the PR completes or gets abandoned. **Phase 24 watches the PR through that whole lifecycle**: a 20-min scheduled sync per active PR pulls upstream state + comments, persists them locally, surfaces "comments needing response" on the work item's queue, and stops polling once the PR reaches a terminal state.
+>
+> The phase also nails down a comment-authority rule that's been implicit in earlier phases but never stated: **agents post comments, only reviewers close them**. An agent cannot mark its own comment as resolved; an agent cannot mark a reviewer's comment as resolved. The thread closes when a human reviewer (or, in future, an evaluator agent acting as a reviewer per Phase 14.5 dispute path) explicitly resolves it. This protects the audit trail — when the operator reads "comment resolved at 14:32 by R3", that means a real reviewer signed off, not the coder marking their own homework.
+>
+> Three principles drive the shape:
+>
+> 1. **The PR row is the local index, the provider is the truth.** Forge persists every PR it has touched (created, sync'd, or commented on), but the upstream's `state` and `commentThread.status` are authoritative. Sync overwrites; conflict policy is last-writer-wins (Phase 5.9), with an audit row when a value changes.
+> 2. **Comments are first-class, with their own state machine.** A `pr_comments` table mirrors upstream threads + comments and carries a Forge-side `RequiresAttention` flag the agent's queue reads. Each comment maps to a commit (the one that addresses it) and/or a response (the agent's reply on the thread). Both links are nullable — the operator can have a comment with neither (just raised, not yet handled) or both (agent commit + reply).
+> 3. **Final states stop the clock.** Once a PR is `completed` (merged) or `abandoned`, the sweep skips it. The row stays in DB forever for audit; the comment history stays attached. No background work happens against a closed PR.
+
+### Resolved decisions
+
+- **Q24.1 Cadence — 20 minutes, per active PR, configurable.** One tick every 20 min, jittered ±60 s. Configurable via `Forge:Sync:Pr:IntervalSeconds` (default 1200). Concurrency cap = 8 (twice the work-item cap because PR sync is cheaper per row — small payloads, fewer items per repo). The job stops scanning a PR once `IsActive=false`; an explicit "Resync this PR" endpoint exists for operator override but defaults to never re-syncing terminal rows.
+
+- **Q24.2 Persistent PR row — keyed `(provider, providerRef)`, tracked from creation through final state.** The existing Phase 4 / Phase 6 `PrRow` is extended (not replaced):
+  - `Provider`, `ProviderRef` (existing) — composite unique key.
+  - `RepoId` (existing) — the git-side repo this PR was opened against.
+  - `WorkItemId` (existing) — set by Phase 16.18 when Forge created the PR; nullable when the PR existed upstream first and Forge picked it up via sync.
+  - **New columns** (Phase 24.1):
+    - `IsActive BIT NOT NULL DEFAULT 1` — derived but persisted: `state IN ('open','merging','review-pending')`. Sync sweep filter index keys on this.
+    - `LastSyncAt TEXT NULL`, `LastSyncStatus TEXT NOT NULL DEFAULT 'idle'`, `LastSyncError TEXT NULL`, `IsRunningSince TEXT NULL` — same shape as Phase 23 (`Repo`).
+    - `CommentSyncCursor TEXT NULL` — opaque per-provider cursor for resuming mid-page on the comment walk.
+    - `LastUpstreamUpdatedAt TEXT NULL` — upstream's `updatedAt` from the last successful sync; lets the runner skip the comment fetch entirely when nothing has changed since.
+  - **Source of PRs**: every PR Forge creates (Phase 16.18) or observes via webhook (Phase 5.8) materializes a row. Sync running over a repo whose work items reference an unknown PR also materializes one (rare — covers manually-created PRs the operator wants Forge to track).
+
+- **Q24.3 Final states — `completed | abandoned | merged-aliased-to-completed`.** Once `state` lands on either, `IsActive` flips to `false` and the sweep skips. `Conflict` and `review-required` are NOT terminal — those are normal mid-life states that may flip back to `open`. ADO `Active`/`Completed`/`Abandoned` and GitHub `open`/`closed`/`merged` are mapped uniformly:
+  - **ADO** — `Active` → `open`, `Completed` → `completed`, `Abandoned` → `abandoned`.
+  - **GitHub** — `open` → `open`, `closed && merged_at IS NOT NULL` → `completed`, `closed && merged_at IS NULL` → `abandoned`.
+  - State change at sync time emits `pr.changed { kind:'state' }` on the SignalR `pr.{prId}` channel + an audit row + (when terminal) a `pr.closed` event so any UI listener clears live indicators.
+
+- **Q24.4 Comment data model — `pr_comments` + `pr_comment_history`.** A comment is **one author message inside one thread**; threads are not their own table at v0.1 (`ThreadId` carries the upstream thread reference and is enough for grouping in the UI). Each comment has:
+  - `Id`, `PrId` (FK), `ProviderCommentId`, `ThreadId`, `ParentCommentId?` (for replies), `AuthorId`, `AuthorKind ('agent'|'human'|'system')`, `Body`, `FilePath?`, `Line?` (for inline review comments), `CreatedAt`, `UpdatedAt`.
+  - `State` — one of `active | resolved | wont-fix | closed | pending`. Mirrors ADO `commentThread.status` exactly; GitHub `pull_request_review_thread.isResolved` maps to `resolved`/`active`.
+  - `ResolvedByUserId?`, `ResolvedAt?` — populated when state moves to a closed category. Both null while the thread is open.
+  - `LinkedCommitSha?` — the commit Forge believes addresses this comment. Set by the mapping logic in Q24.6.
+  - `LinkedAgentResponseId?` — FK back into `pr_comments` pointing at the agent's reply that responded to this comment. Symmetric: a reply that addresses comment N has `ParentCommentId=N` (upstream-driven) AND comment N has `LinkedAgentResponseId=replyId` (Forge-derived).
+  - `RequiresAttention BIT` — derived: true when `State='active'` AND author is human (or `system` indicating a build-failure comment) AND the assigned agent on the work item hasn't responded since the most recent `UpdatedAt`. Cleared when `LinkedAgentResponseId` or `LinkedCommitSha` is set AND no subsequent edit/reopen has bumped `UpdatedAt`.
+
+- **Q24.5 Authority — agents post and edit; only reviewers resolve / reopen.** The write API enforces this strictly:
+  - `POST /api/prs/{prId}/comments` — any caller (agent or human) can post a new comment or reply.
+  - `PATCH /api/prs/{prId}/comments/{commentId}` — caller must be the comment's author OR a PR reviewer. Agent authors can edit their own bodies for typo fixes, nothing more.
+  - `POST /api/prs/{prId}/comments/{commentId}/resolve` body `{ resolution: 'resolved'|'wont-fix' }` — refuses with **403 + `comment.agent_cannot_resolve`** when `caller.kind='agent'`. Only humans (signed-in operators) can hit this endpoint successfully. A future evaluator-agent-as-reviewer pattern (Phase 14.5 judge path) can be allow-listed with a `?asReviewer=true` flag, but at v0.1 it's strictly a human action.
+  - `POST /api/prs/{prId}/comments/{commentId}/reopen` — same authority rule (humans only).
+  - The provider write call (ADO `PATCH /threads/{id}` or GitHub `unresolveReviewThread` mutation) is gated identically — Forge writes the upstream change as the signed-in user, not as the agent's identity, so the audit trail upstream also says "resolved by R3" or "reopened by XD".
+
+- **Q24.6 Mapping — comment → commit + comment → response.** Two complementary heuristics, both run during the comment-sync upsert:
+  - **Body parse for `Addresses comment <id>` / `Fixes comment <id>` / `CR-<id>`** — when the agent's commit message or its in-thread reply contains a recognised tag referencing a comment id, the runner sets `comments[id].LinkedCommitSha = commitSha` (commit message path) and / or `comments[id].LinkedAgentResponseId = replyId` (reply path).
+  - **Position-and-time heuristic for inline comments** — when an agent commit modifies the file + line a comment was anchored to, AND the commit lands after the comment's `CreatedAt`, AND no explicit tag is present, the runner sets `LinkedCommitSha` to that commit. False-positive guarded by the "modified the exact line" check; falls back silently when the comment was on a deleted file or a moved line.
+  - Both heuristics are deliberately conservative — when neither matches, `RequiresAttention` stays true and the operator sees the comment listed as "needs response" until they manually link it (`PATCH /comments/{id} { linkedCommitSha }`).
+
+- **Q24.7 Reopen detection — `UpdatedAt` advances ⇒ `RequiresAttention` flips back true.** Each sync pass compares the upstream `updatedAt` against the local `UpdatedAt`. When upstream is newer:
+  - The local row's `Body`, `State`, `ResolvedBy*` fields are overwritten with the upstream values.
+  - History row appended: `kind ∈ {edited, reopened, resolved}` derived from the state delta.
+  - `RequiresAttention` is recomputed (Q24.4 rule) — a reopened thread flips back to `true`, an edited thread on an already-resolved comment stays `false`.
+  - SignalR `pr.comment-reopened { prId, commentId, reason }` fires when the flag flipped from false to true so the live-exec view shows the badge update without a page refresh; the work-item's `task.{wid}` channel also gets the event so an operator on the live-exec view sees it on the same stream as the agent transcript.
+
+- **Q24.8 Un-addressed comments hook into the work-item queue.** When `RequiresAttention=true` and the work item's `ExecutionStatus = in-review`, Forge enqueues a `comment-response` task on the work item via `ITaskQueueService.EnqueueAsync(workItemId, 'crew', wi.AssignedAgent.crewId, kind='comment-response')`. The phase 17 worker treats this as a normal queue row but with the alternate runner entry path that loads "the open comments needing response" as the prompt instead of the work-item brief. **Implementation of the alternate runner is a follow-up** (24.10) — Phase 24 ships the data hooks and the queue-row creation; the runner-side prompt template is a small follow-up commit. Without it, the queue row sits as a marker the operator can act on manually (the "needs response" badge is enough at v0.1 even without auto-runner).
+
+- **Q24.9 Pagination + delta cursor — same shape as Phase 23.**
+  - **ADO:** `GET /pullRequests/{prId}/threads?api-version=7.0` returns all threads with their comments inline; total ≤ 1000 per response. Most PRs have ≤ 50 threads so a single call suffices; the cursor is only set when a multi-page response truly exceeds 1000 (extremely rare). Body parsing of comment text is done client-side.
+  - **GitHub:** review comments at `/pulls/{number}/comments?since={LastUpstreamUpdatedAt}&per_page=100` (paginated by `Link: rel="next"`); issue comments at `/issues/{number}/comments?since=…&per_page=100`. The runner walks both lists and merges by `id`.
+  - Cursor stored on `PrRow.CommentSyncCursor` as opaque text; failure leaves it at the last successful page so resume is a single GET. Cursor cleared on full success.
+
+- **Q24.10 Idempotency — comment upsert keys on `(provider, providerCommentId)`.** Same upsert shape as Phase 23 work items. Re-fetching the same comment with the same `UpdatedAt` is a no-op; with a newer `UpdatedAt` it advances the row + appends history.
+
+### Implementation steps
+
+- [ ] **24.1** **Migration** — `Forge.Api/Persistence/Phase24Migration.cs` (idempotent, runs after `Phase23Migration`):
+  - `prs` table extensions:
+    - `IsActive BIT NOT NULL DEFAULT 1`
+    - `LastSyncAt TEXT NULL`, `LastSyncStatus TEXT NOT NULL DEFAULT 'idle'`, `LastSyncError TEXT NULL`, `IsRunningSince TEXT NULL`
+    - `CommentSyncCursor TEXT NULL`
+    - `LastUpstreamUpdatedAt TEXT NULL`
+  - New table `pr_comments`:
+    ```
+    Id INTEGER PK AUTOINCREMENT
+    PrId INTEGER NOT NULL                    -- FK → prs.Id
+    ProviderCommentId TEXT NOT NULL          -- upstream's id
+    ThreadId TEXT NOT NULL
+    ParentCommentId INTEGER NULL             -- FK → pr_comments.Id
+    AuthorId TEXT NULL
+    AuthorKind TEXT NOT NULL DEFAULT 'human' -- 'agent'|'human'|'system'
+    Body TEXT NOT NULL
+    FilePath TEXT NULL
+    Line INTEGER NULL
+    State TEXT NOT NULL DEFAULT 'active'     -- 'active'|'resolved'|'wont-fix'|'closed'|'pending'
+    CreatedAt TEXT NOT NULL
+    UpdatedAt TEXT NOT NULL
+    ResolvedByUserId TEXT NULL
+    ResolvedAt TEXT NULL
+    LinkedCommitSha TEXT NULL
+    LinkedAgentResponseId INTEGER NULL       -- FK → pr_comments.Id
+    RequiresAttention BIT NOT NULL DEFAULT 0
+    ```
+    Indexes: `UNIQUE(PrId, ProviderCommentId)`, `IX_pr_comments_PrId_RequiresAttention(PrId, RequiresAttention)`, `IX_pr_comments_ThreadId(ThreadId)`.
+  - New table `pr_comment_history(Id, CommentId, Kind, FromValue?, ToValue?, ByUserId?, At, PayloadJson)` indexed `(CommentId, At)`. `Kind ∈ {opened, edited, replied, resolved, reopened, linked, unlinked, attention-flipped}`.
+  - TS mirrors in `src/forge/Forge.UI/src/types.ts`: `Pr` gains the new columns; new `PrComment`, `PrCommentHistory`, `PrCommentState`, `PrCommentAuthorKind` types.
+
+- [ ] **24.2** **`SyncConstants.cs` extension** — adds:
+  ```
+  PrSyncIntervalSeconds = 1200
+  PrSyncMaxParallel = 8
+  PrCommentPageSize = 100
+  ```
+  Spec-consistency test (existing `Phase23SyncConstantsTests` rolled into a renamed `SyncConstantsTests`) asserts these match Q24.1 / Q24.9.
+
+- [ ] **24.3** **`PrSyncJob` hosted service** — `Forge.Api/Services/PrSyncJob.cs`. 20-min tick loop, ±60 s jitter. On each tick:
+  - Query `prs WHERE IsActive=1 AND (LastSyncStatus IN ('idle','failed') OR (LastSyncStatus='running' AND IsRunningSince < now-19m))` ordered by `LastSyncAt` ascending.
+  - Bounded by `SemaphoreSlim` (`PrSyncMaxParallel = 8`). Worker dispatches to `IPrSyncRunner.RunAsync(pr, ct)`; on success sets `LastSyncAt`, clears errors, computes `IsActive` from the new state. On terminal-state transition: `IsActive=0`, fires `pr.closed` SignalR + audit. On failure: `LastSyncStatus='failed'` + records error.
+  - Each invocation appends a `pr_sync_runs` row (kind, counts, errors). Reuses the Phase 23 sync-run history table shape with a `Scope='pr'|'workitem'` discriminator. _(Phase 24.1 migration extends `work_item_sync_runs` to `sync_runs` with the discriminator OR adds a parallel `pr_sync_runs` — implementer picks the cleaner shape; spec doesn't constrain.)_
+
+- [ ] **24.4** **`AdoPrSyncRunner`**:
+  - `GET _apis/git/repositories/{repoId}/pullRequests/{prId}?api-version=7.0` — top-level state + metadata. Map state per Q24.3.
+  - When upstream `lastMergeSourceCommit` differs from local OR upstream `lastUpdatedDate` advanced: `GET /pullRequests/{prId}/threads?api-version=7.0&$top=1000`. Iterate threads + comments client-side. Each comment upserts via `(provider='ado', providerCommentId=comment.id)`.
+  - Authority signal: ADO marks the comment author with `author.uniqueName`; map known agent UPNs to `AuthorKind='agent'` via the `agents` table (matches `agent.PreferredAdoAccount` from Phase 9.11 user settings); everything else is `human`.
+  - `commentThread.status` flips → set `pr_comments.State`; if newly-resolved set `ResolvedBy*` from `lastUpdatedBy`.
+  - Apply Q24.6 mapping after upsert.
+
+- [ ] **24.5** **`GitHubPrSyncRunner`**:
+  - `GET /repos/{owner}/{repo}/pulls/{number}` — top-level state. Map per Q24.3.
+  - `GET /repos/{owner}/{repo}/pulls/{number}/comments?since={LastUpstreamUpdatedAt}&per_page=100` — review comments (inline). Walk `Link: rel="next"`.
+  - `GET /repos/{owner}/{repo}/issues/{number}/comments?since=…&per_page=100` — general comments. Walk pagination same way.
+  - **Thread resolution state**: GitHub doesn't return resolved-state on the REST comments endpoint; the runner falls back to the GraphQL `pullRequest.reviewThreads` query (single GraphQL POST, ≤ 100 threads per page) to read `isResolved` per thread, then merges back into the per-comment rows by comment id. This is the only GraphQL call in the codebase; the runner contains it cleanly so the rest of the sync stays REST-shaped.
+  - Author kind: GitHub login → `agents.PreferredGitHubAccount` lookup (Phase 9.11) → `agent` else `human`. The `github-actions[bot]` and similar bot logins map to `system`.
+
+- [ ] **24.6** **Authority enforcement endpoints** — `Forge.Api/Endpoints/PrCommentsEndpoints.cs`:
+  - `GET /api/prs/{prId}/comments?state=…&requiresAttention=…` — paginated list.
+  - `GET /api/prs/{prId}/comments/{commentId}` — single comment + history.
+  - `POST /api/prs/{prId}/comments` body `{ body, parentCommentId?, filePath?, line? }` — write a new comment. Forwards to provider as the signed-in user; agent invocations write through the same endpoint so the upstream comment shows the agent's mapped UPN/login.
+  - `PATCH /api/prs/{prId}/comments/{commentId}` body `{ body }` — edit. Author or reviewer only.
+  - `POST /api/prs/{prId}/comments/{commentId}/resolve` body `{ resolution }` — **403 + `comment.agent_cannot_resolve`** when `caller.kind='agent'`. Otherwise PATCHes upstream + sets local state.
+  - `POST /api/prs/{prId}/comments/{commentId}/reopen` — same authority. Provider call differs per-side (ADO `PATCH /threads/{id} { status: 'active' }`; GitHub `unresolveReviewThread` GraphQL mutation).
+  - All endpoints emit `pr.changed { kind: 'comment' }` on success.
+
+- [ ] **24.7** **Comment ↔ commit / response mapping** — `Forge.Api/Services/PrCommentLinker.cs`:
+  - `LinkAsync(prId, ct)` runs after every sync upsert. Scans:
+    - All un-linked comments where `LinkedCommitSha IS NULL AND LinkedAgentResponseId IS NULL`.
+    - All commits on the PR's branch since the last linker run (cursor on `PrRow.LastLinkerCommitSha NULLABLE TEXT`, added in 24.1).
+    - All replies posted since the last sync.
+  - Body-parse + position-and-time heuristic per Q24.6. Setting either link writes a `pr_comment_history(kind='linked')` audit and recomputes `RequiresAttention`.
+  - `PATCH /api/prs/{prId}/comments/{commentId}` accepts `{ linkedCommitSha?, linkedAgentResponseId? }` for manual operator override. PO + assigned-agent's-lead only.
+
+- [ ] **24.8** **Reopen detection + queue hook** — runs inline in the sync upsert path:
+  - When upstream `UpdatedAt` advances on an existing row: append history (`kind ∈ {edited, reopened, resolved}` derived from state delta).
+  - When the recomputed `RequiresAttention` flips from `false` → `true`: emit `pr.comment-reopened { prId, commentId }` on `pr.{prId}` SignalR group + emit `task.comment-needs-response { commentId }` on the work item's `task.{wid}` group.
+  - When the work item's `ExecutionStatus = in-review` AND no open `comment-response` queue row exists for it: enqueue `(workItemId, 'crew', wi.AssignedAgent.crewId, kind='comment-response')`. Q24.8 hook — the runner-side prompt-template wiring is the next bullet.
+
+- [ ] **24.9** **Queue worker `kind='comment-response'` runner path** _(follow-up — data hook ships in 24.8, runner integration here)_:
+  - `CrewQueueWorker.RunAgentAsync` branches on the queue row's `Kind` field. `kind='comment-response'` builds a different prompt: lists the open comments where `RequiresAttention=true`, includes file/line context for inline comments, asks the agent to either reply on the thread (linked via `LinkedAgentResponseId`) or commit a fix (linked via `LinkedCommitSha` heuristic).
+  - Same delivery pipeline as Phase 16.18 (auto-commit, force-push, no new PR — the existing PR receives the new commit). No fresh deliverable row; the response loop runs to completion in one iteration unless evaluator finds a new issue.
+  - Queue row completes when `RequiresAttention` is false on every comment. New comments arriving mid-run don't extend the current invocation — they enqueue a fresh `comment-response` row that picks up on the next claim.
+
+- [ ] **24.10** **UI — PR detail panel comment list** in `PrDetailPanel.tsx`:
+  - Group comments by thread (`ThreadId`); within a thread render parent + replies indented.
+  - Per-comment chip: state pill (`active` red, `resolved` green, `wont-fix` grey, `pending` blue), author avatar (agent emoji or human avatar), inline file/line tag for review comments, "needs response" amber pill when `RequiresAttention=true`.
+  - Linked-commit chip → click to open the commit on upstream.
+  - Linked-response chip → scroll to the reply within the thread.
+  - Resolve / Reopen buttons — visible only to humans; agents see a disabled tooltip "Only reviewers can resolve comments" (Q24.5).
+  - History link per comment → opens a small drawer with the `pr_comment_history` rows.
+
+- [ ] **24.11** **UI — Live Execution view "Comments" tab**:
+  - When the work item's `ExecutionStatus = in-review`, the live-exec right rail gains a fourth tab "Comments" alongside Worktree / Tokens / Progress.
+  - Lists the work item's PR's comments where `RequiresAttention=true`, newest first.
+  - Per row: file/line, body excerpt (≤ 80 chars), reviewer name, age. Click → deep-link to the comment in the PR detail panel.
+  - When the queue worker enqueues a `comment-response` task (Q24.8), a small banner at the top of the tab says "Agent is handling these (queue position: N)".
+
+- [ ] **24.12** **UI — PR card badges** in `PrCard.tsx` (used on the PR board + the workstream card):
+  - "💬 N" chip showing open-comment count when `pr_comments WHERE PrId=X AND State='active'` is non-empty.
+  - "⚠ N" amber chip when `pr_comments WHERE PrId=X AND RequiresAttention=1` is non-empty (subset of above; the operator sees both numbers).
+  - Final-state PRs (`completed`, `abandoned`) get a grey "✓ done" pill instead of comment counters.
+
+- [ ] **24.13** **Tests — `Forge.Api.Tests/Phase24PrSyncTests.cs`**:
+  - **State mapping:** ADO Active/Completed/Abandoned + GitHub open/closed×merged_at matrix produces correct `state` + `IsActive`.
+  - **Pagination:** ADO single-call (≤ 1000 threads); GitHub multi-page `Link: next` walk; mid-page failure stores cursor, resume continues.
+  - **Delta:** first sync fetches all comments; second sync skips when `LastUpstreamUpdatedAt` matches; third sync (after upstream change) fetches only comments updated since.
+  - **Authority:**
+    - Agent `POST /comments/{id}/resolve` → 403 + `comment.agent_cannot_resolve`.
+    - Human PO `POST /comments/{id}/resolve` → 200 + upstream PATCH called.
+    - Agent edits own comment → 200; agent edits reviewer's comment → 403.
+  - **Mapping:** body-parse heuristic links commit when message contains `Addresses comment 12345`; position-and-time heuristic links inline comment to the commit that modified the same line; both null when neither matches; `RequiresAttention` clears when one is set.
+  - **Reopen:** upstream `updatedAt` advances on a resolved comment → state flips back to `active` → `RequiresAttention` flips to `true` → `pr.comment-reopened` fires + `comment-response` queue row enqueued (when `ExecutionStatus=in-review`).
+  - **Final state:** sync flips to `completed` → `IsActive=0` → next tick skips the row + audit row written.
+  - **Idempotency:** re-sync identical thread → zero history rows written.
+  - **Queue hook:** un-addressed comment with no existing `comment-response` row enqueues; with one already open does NOT double-enqueue.
+  - **Spec consistency:** new `SyncConstants` values match Q24.1 / Q24.9.
+
+- [ ] **24.14** **Telemetry surface** on the existing `Forge.Api.Phase16` meter:
+  - `forge.sync.pr.duration_ms` — histogram, tagged `provider`, `outcome`.
+  - `forge.sync.pr.state_transitions` — counter, tagged `from`, `to`.
+  - `forge.sync.pr.comments` — counter, tagged `kind` (`added`/`updated`/`resolved`/`reopened`).
+  - `forge.sync.pr.attention_flips` — counter for `RequiresAttention` toggles in either direction.
+  - `forge.pr.comment.authority_refused` — counter for 403s on the resolve endpoint, tagged `actorKind`.
+  - `forge.pr.comment.linker_matched` — counter for body-parse vs position-heuristic link successes.
+
+- [ ] **24.15** **Fidelity** — additive UI (PR detail panel comment list + Live Execution Comments tab + PR card badges); exempt from prototype screenshot diff. New tokens: none — reuses Phase 14 score-chip palette for the comment state pills + the existing avatar palette + the Phase 19 attention amber.
+
+### Out of scope for v0.1 — Phase R / `forge_v2.md`
+
+- **Inline diff annotation** — comments render with file path + line number but the live-exec Comments tab doesn't display the diff hunk inline. Operator clicks through to the PR detail panel for that today; in-tab diff is a Phase R polish.
+- **Comment templates / saved replies** — agent generates each reply fresh; operator-curated reply templates are `forge_v2.md`.
+- **Cross-PR comment reuse** — when a reviewer makes the same comment on five PRs, Forge treats them as five independent rows. Deduplication / "you've answered this before" hints are `forge_v2.md`.
+- **Suggested-changes inline edits** — GitHub's "suggest a change" comments produce a one-click commit. Forge surfaces them as regular comments at v0.1; honoring the suggested patch automatically is Phase R.
+- **Webhook-driven instant sync** — Phase 5.8 ships webhook intake but the Phase 24 sweep ignores webhooks entirely (poll-only). Pairing a webhook event to fast-forward `LastSyncAt` is the same `forge_v2.md` candidate as for Phase 23.
+- **Agent-as-reviewer** — Q24.5 strictly bars agents from resolving. A future evaluator-agent-as-reviewer pattern (Phase 14.5 dispute path) gets a `?asReviewer=true` allow-list flag, but the agent identity that signs the upstream resolve action and the audit semantics are `forge_v2.md` work.
+- **Reverse mapping (commit → comment)** — Forge maps comments → commits, not commits → all-comments-they-might-affect. The reverse "show me every comment that touched this commit's files" is a Phase R query, not a sync responsibility.
+- **PR review summary scoring** — the deliverable loop (Phase 14) scores the agent's work; whether the *reviewer's* comments are good (e.g. "this PR got 12 nits and 0 substantial issues") is a separate metric and `forge_v2.md` territory.
 
 ---
 

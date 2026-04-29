@@ -2,6 +2,7 @@
 
 > **Generated:** 2026-04-27 | **Iteration:** 0 (initial run) | **AppendMode:** false
 > **Executed:** 2026-04-27 | All 10 queries attempted
+> **Re-checked:** 2026-04-29 | 0 unexecuted queries (all 17 output files exist; all contain errors due to infrastructure gaps)
 
 ## Overview
 
@@ -83,3 +84,18 @@
 1. **ETW provider not deployed** — `Microsoft-WorkflowUi-Server` EventSource not implemented; all 7 Hub `_fix` queries and their 7 originals return DB-not-found. Correcting the cluster/DB coordinates did not help because the underlying provider has never been deployed.
 2. **No `traces` table in ADX Telemetry** — App Insights data is not ingested into the ADX Telemetry database; all 3 `traces`-based queries fail with a semantic error and have no fixable equivalent table.
 3. **No `code_issues.md`** — No ISS-N issues defined for this repository; scoring is against observability gap potential, not confirmed incident root causes.
+
+---
+
+## Re-check Log (2026-04-29)
+
+All 17 query `.md` files already have corresponding output files in their `output/` subdirectories. Per the execution rules, **0 queries are unexecuted**. All 17 existing outputs contain errors that are **not retryable** — they stem from infrastructure gaps (missing ETW provider, missing `traces` table in ADX), not transient failures. Re-execution would produce identical results.
+
+| Query Group | Source Files | Output Files | Status | Re-execute? |
+|-------------|-------------|-------------|--------|-------------|
+| Hub original (Q01–Q07) | 7 | 7 ✅ | All error (DB not found / timeout) | No — ETW provider not deployed |
+| Hub _fix (Q01f–Q07f) | 7 | 7 ✅ | All error (GUID DB not found) | No — GUID DB absent on azshubsupport01 |
+| Telemetry (Q08–Q10) | 3 | 3 ✅ | All error (table 'traces' not found) | No — traces not in ADX |
+| **Total** | **17** | **17** | **17 errors** | **0 retryable** |
+
+**Execution tooling note:** `invoke-kusto.ps1`, `KustoQueryHelper.psm1`, and `execute-incident-queries.ps1` are not present in this repository. Kusto.Cli is not installed on this machine. Blob pipeline credentials (`~/.secrets/blob-pending`, `~/.secrets/blob-finished`) are available but would not help since the target databases/tables do not exist.
