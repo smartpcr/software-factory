@@ -165,7 +165,7 @@ export function LiveExecutionView(): JSX.Element {
       // 2. Clear transcript + deliverables on server.
       await forgeApi.clearWorkItemTranscript(workItemId);
       // 3. Re-enqueue with restart semantics: reset state, clear iters, skip soul prompt.
-      await forgeApi.requeueWorkItem(crewId, workItemId, { restart: true, skipSoulPrompt: true });
+      await forgeApi.requeueWorkItem(crewId, workItemId, { restart: true });
       // 4. Clear local store so the view reloads fresh.
       const store = useTaskLiveStore.getState();
       store.entries[workItemId] = {

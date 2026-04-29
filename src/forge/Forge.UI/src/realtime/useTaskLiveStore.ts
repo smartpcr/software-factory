@@ -217,7 +217,37 @@ export const useTaskLiveStore = create<TaskLiveStore>((set, get) => ({
   appendEvent: (workItemId, evt) => {
     const cur = get().entries[workItemId] ?? { snapshot: null, transcript: [], worktree: null, loading: false, lastEventId: 0, refCount: 0 };
     const next = cur.transcript.length >= TRANSCRIPT_CAP ? [...cur.transcript.slice(-TRANSCRIPT_CAP + 1), evt] : [...cur.transcript, evt];
-    set({ entries: { ...get().entries, [workItemId]: { ...cur, transcript: next, lastEventId: Math.max(cur.lastEventId, evt.id) } } });
+    // Patch snapshot agent/crew fields from lifecycle events that carry
+    // authoritative identifiers. Fixes the "—" generator glitch after
+    // restart: the initial snapshot is fetched before the agent picks up,
+    // so generatorAgentId is null. When the claim emits task.delegated or
+    // task.iteration.started, we patch the snapshot in-place so the header
+    // updates without a full re-fetch.
+    let snap = cur.snapshot;
+    if (snap && evt.payload && typeof evt.payload === 'object') {
+      const p = evt.payload as Record<string, unknown>;
+      if (evt.kind === 'task.delegated' || evt.kind === 'task.iteration.started') {
+        const patched = { ...snap };
+        let changed = false;
+        if (typeof p.generatorCrewId === 'string' && p.generatorCrewId) { patched.generatorCrewId = p.generatorCrewId; changed = true; }
+        if (typeof p.evaluatorCrewId === 'string' && p.evaluatorCrewId) { patched.evaluatorCrewId = p.evaluatorCrewId; changed = true; }
+        if (typeof p.generatorAgentId === 'string' && p.generatorAgentId) { patched.generatorAgentId = p.generatorAgentId; changed = true; }
+        if (typeof p.evaluatorAgentId === 'string' && p.evaluatorAgentId) { patched.evaluatorAgentId = p.evaluatorAgentId; changed = true; }
+        // Resolve display names from crewName/agentName if provided.
+        if (typeof p.generatorCrewName === 'string') { patched.generatorCrewName = p.generatorCrewName; changed = true; }
+        if (typeof p.evaluatorCrewName === 'string') { patched.evaluatorCrewName = p.evaluatorCrewName; changed = true; }
+        if (typeof p.generatorAgentName === 'string') { patched.generatorAgentName = p.generatorAgentName; changed = true; }
+        if (typeof p.evaluatorAgentName === 'string') { patched.evaluatorAgentName = p.evaluatorAgentName; changed = true; }
+        if (changed) snap = patched;
+      }
+      if (evt.kind === 'task.iteration.scored') {
+        const patched = { ...snap };
+        if (typeof p.score === 'number') patched.currentScore = p.score;
+        if (typeof p.verdict === 'string') patched.currentVerdict = p.verdict;
+        snap = patched;
+      }
+    }
+    set({ entries: { ...get().entries, [workItemId]: { ...cur, snapshot: snap, transcript: next, lastEventId: Math.max(cur.lastEventId, evt.id) } } });
   },
 
   applyWorktree: (workItemId, snap) => {
