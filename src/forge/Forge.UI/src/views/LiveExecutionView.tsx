@@ -138,7 +138,7 @@ export function LiveExecutionView(): JSX.Element {
       if (queueEntry) {
         await forgeApi.cancelQueue(queueEntry.id, 're-queue');
       }
-      await forgeApi.requeueWorkItem(snapshot.generatorCrewId, workItemId);
+      await forgeApi.requeueWorkItem(snapshot.generatorCrewId, workItemId, { restart: true });
       useToastStore.getState().show('Re-queued successfully', 'success');
     } catch (e) {
       useToastStore.getState().show(e instanceof Error ? e.message : 'Failed', 'danger');

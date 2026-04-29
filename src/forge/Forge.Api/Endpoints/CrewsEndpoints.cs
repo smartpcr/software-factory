@@ -1302,8 +1302,14 @@ public static class CrewsEndpoints
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
 
-        var sched = await ApplyScheduleGateAsync(ctx, db, crew, kind: "plan", ct);
-        if (sched is not null) return sched;
+        // Skip the schedule gate for explicit restart requests — the user
+        // manually clicked restart in the live-exec view, so blocking on
+        // schedule is counter-productive and breaks the UX.
+        if (!req.Restart)
+        {
+            var sched = await ApplyScheduleGateAsync(ctx, db, crew, kind: "plan", ct);
+            if (sched is not null) return sched;
+        }
 
         if (string.Equals(crew.InvokeMode, "cli", StringComparison.OrdinalIgnoreCase))
         {

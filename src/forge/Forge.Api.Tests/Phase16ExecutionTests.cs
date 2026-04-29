@@ -1824,4 +1824,131 @@ public class Phase16ExecutionTests
         }
         finally { scope.Dispose(); f.Dispose(); }
     }
+
+    // ── Server-side push regression test ──────────────────────────────────
+
+    /// <summary>
+    /// Regression: the server must push the branch to the remote after the
+    /// deliverable loop passes. Previously the code relied on the agent
+    /// having pushed (via prompt instructions), but agents frequently skip
+    /// the push, causing PR creation to fail with 400 and the task to be
+    /// marked as failed despite passing evaluation.
+    /// This test creates a local git repo with a bare remote, runs the
+    /// queue worker (local-stub agent), and verifies:
+    ///   1. The branch exists on the bare remote after execution.
+    ///   2. A <c>task.branch-pushed</c> transcript event was emitted.
+    /// </summary>
+    [Fact]
+    public async Task Server_Side_Push_Runs_Before_PR_Creation()
+    {
+        if (!GitAvailable()) return;
+
+        // ── Set up bare remote + working repo ────────────────────────
+        var testRoot = Path.Combine(Path.GetTempPath(), $"forge-push-{Guid.NewGuid():N}");
+        var bareDir = Path.Combine(testRoot, "bare.git");
+        var repoDir = Path.Combine(testRoot, "repo");
+        Directory.CreateDirectory(bareDir);
+        Directory.CreateDirectory(repoDir);
+
+        await RunGitAsync(bareDir, "init", "--bare", "-b", "main");
+        await RunGitAsync(repoDir, "init", "-b", "main");
+        await RunGitAsync(repoDir, "config", "user.email", "test@forge.local");
+        await RunGitAsync(repoDir, "config", "user.name", "Forge Test");
+        await RunGitAsync(repoDir, "remote", "add", "origin", bareDir);
+        await File.WriteAllTextAsync(Path.Combine(repoDir, "README.md"), "# Push test\n");
+        await RunGitAsync(repoDir, "add", "README.md");
+        await RunGitAsync(repoDir, "commit", "-m", "initial seed");
+        await RunGitAsync(repoDir, "push", "-u", "origin", "main");
+
+        var (f, scope, db) = await BootAsync();
+        try
+        {
+            var product = await db.Products.FirstAsync();
+            var workItemId = $"WI-PUSH-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+
+            // Crew (standalone — no evaluator, so local-stub score
+            // will cause the loop to pass in a single iteration).
+            db.Crews.Add(new CrewRow
+            {
+                Id = "push-crew", Name = "Push Crew",
+                ProductId = product.Id,
+                Lead = "push-lead", Model = "local-stub",
+                ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
+                MaxConcurrent = 5, ScheduleEnabled = false,
+            });
+            db.CrewMembers.Add(new CrewMemberRow
+            {
+                CrewId = "push-crew", AgentId = "push-agent",
+                AddedAt = DateTimeOffset.UtcNow,
+            });
+
+            db.Repos.Add(new RepoRow
+            {
+                Id = "push-repo", DisplayName = "Push Repo", Kind = "local",
+                RemoteUrl = bareDir,
+                ProductId = product.Id, CloneRoot = repoDir, DefaultBranch = "main",
+            });
+
+            db.WorkItems.Add(new WorkItemRow
+            {
+                Id = workItemId,
+                Type = "task", Track = "dev", State = "active",
+                Title = "test server-side push",
+                DescriptionMd = "Verify the server pushes the branch after a passing evaluation.",
+                RepoId = "push-repo",
+                CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+
+            // Enqueue and run queue worker
+            var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+            await queue.EnqueueAsync(workItemId, "crew", "push-crew", default);
+
+            var worker = f.Services.GetRequiredService<CrewQueueWorker>();
+            await worker.RunOnceAsync(default);
+
+            // local-stub finishes fast but RunAgentAsync is Task.Run
+            await Task.Delay(5000);
+
+            // ── ASSERT 1: Branch exists on bare remote ───────────────
+            var branchName = $"ws/{workItemId}";
+            var (lsCode, lsOut, _) = await RunGitResultAsync(
+                repoDir, "ls-remote", "--heads", "origin", branchName);
+            Assert.Equal(0, lsCode);
+            Assert.True(lsOut.Contains(branchName),
+                $"Branch '{branchName}' should exist on remote after server-side push.\n"
+                + $"ls-remote output: '{lsOut}'");
+
+            // ── ASSERT 2: task.branch-pushed transcript event ────────
+            var events = await db.TaskTranscriptEvents.AsNoTracking()
+                .Where(e => e.WorkItemId == workItemId)
+                .OrderBy(e => e.Id)
+                .ToListAsync();
+            Assert.Contains(events, e => e.Kind == "task.branch-pushed");
+
+            // ── ASSERT 3: push happened before PR attempt ────────────
+            var pushEvt = events.First(e => e.Kind == "task.branch-pushed");
+            var prEvt = events.FirstOrDefault(
+                e => e.Kind == "task.pr-opened" || e.Kind == "task.pr-failed");
+            if (prEvt is not null)
+            {
+                Assert.True(pushEvt.Id < prEvt.Id,
+                    "task.branch-pushed must precede PR creation attempt in transcript");
+            }
+        }
+        finally
+        {
+            scope.Dispose();
+            f.Dispose();
+            // Clean up worktrees, then dirs
+            try { await RunGitResultAsync(repoDir, "worktree", "prune"); } catch { }
+            try
+            {
+                var wtRoot = Path.Combine(repoDir, ".worktree");
+                if (Directory.Exists(wtRoot)) Directory.Delete(wtRoot, recursive: true);
+            }
+            catch { }
+            try { Directory.Delete(testRoot, recursive: true); } catch { }
+        }
+    }
 }

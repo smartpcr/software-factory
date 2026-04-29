@@ -870,12 +870,67 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 "Deliverable loop completed: wi={Wi} verdict={Verdict} score={Score} iters={Iters} cost={Cost}",
                 workItemId, result.FinalVerdict, result.FinalScore, result.Iterations, result.TotalCostUsd);
 
-            // (4) On pass, run a delivery-phase agent invocation. The agent
-            //     is responsible for pushing the branch and creating a PR via
-            //     the create-pr endpoint. Server-side verification ensures
-            //     both actually happened before the task is marked complete.
+            // (4) On pass, push the branch server-side and create a PR.
+            //     We don't rely on the agent having pushed — agents
+            //     frequently skip the push, causing delivery failures.
             if (result.FinalVerdict == "pass")
             {
+                // (4a) Server-side push — ensure branch exists on remote.
+                var pushCwd = !string.IsNullOrEmpty(worktreePath) && Directory.Exists(worktreePath)
+                    ? worktreePath
+                    : repoCloneRoot;
+                if (!string.IsNullOrEmpty(pushCwd) && Directory.Exists(pushCwd))
+                {
+                    // Auto-commit any uncommitted changes the agent left behind.
+                    var (statusCode, statusOut, _) = await RunGitAsync(pushCwd, "status", "--porcelain");
+                    if (statusCode == 0 && !string.IsNullOrWhiteSpace(statusOut))
+                    {
+                        this.logger.LogInformation(
+                            "Auto-committing uncommitted changes: wi={Wi}", workItemId);
+                        await RunGitAsync(pushCwd, "add", "-A");
+                        await RunGitAsync(pushCwd, "commit", "-m",
+                            $"chore: auto-commit for {workItemId}", "--allow-empty");
+                    }
+
+                    // Fetch to update tracking refs, then push.
+                    await RunGitAsync(pushCwd, "fetch", "origin", branchName).ConfigureAwait(false);
+                    this.logger.LogInformation(
+                        "Server-side push: wi={Wi} branch={Branch} cwd={Cwd}",
+                        workItemId, branchName, pushCwd);
+                    var (pushCode, _, pushErr) = await RunGitAsync(
+                        pushCwd, "push", "--force-with-lease", "origin", branchName);
+                    if (pushCode != 0)
+                    {
+                        // Retry with --force when tracking refs are stale from prior runs.
+                        this.logger.LogWarning(
+                            "force-with-lease failed, retrying with --force: {Err}", pushErr);
+                        (pushCode, _, pushErr) = await RunGitAsync(
+                            pushCwd, "push", "--force", "origin", branchName);
+                    }
+
+                    if (pushCode == 0)
+                    {
+                        this.logger.LogInformation(
+                            "Server-side push succeeded: wi={Wi} branch={Branch}",
+                            workItemId, branchName);
+                        await this.taskChannel.EmitAsync(workItemId, "task.branch-pushed", new
+                        {
+                            agentId, crewId, branch = branchName,
+                        }, crewId: crewId, ct: ct);
+                    }
+                    else
+                    {
+                        this.logger.LogWarning(
+                            "Server-side push failed: wi={Wi} exit={Code} err={Err}",
+                            workItemId, pushCode, pushErr);
+                        await this.taskChannel.EmitAsync(workItemId, "task.push-failed", new
+                        {
+                            agentId, crewId, branch = branchName, error = pushErr,
+                        }, crewId: crewId, ct: ct);
+                    }
+                }
+
+                // (4b) Create PR via provider API.
                 // Track PR creation locally — VerifyPrCreatedAsync checks ALL
                 // historical transcript events, so a task.pr-opened from a
                 // previous execution would incorrectly pass verification.
