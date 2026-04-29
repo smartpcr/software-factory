@@ -405,6 +405,9 @@ public static class TaskExecutionEndpoints
                 At = DateTimeOffset.UtcNow,
             });
             wi.AssignedAgentJson = null;
+            // Reset execution state so the item can be re-queued and re-claimed.
+            wi.ExecutionStatus = ExecutionStatuses.Queued;
+            wi.TrialCount = 0;
             await db.SaveChangesAsync(ct);
         }
 
