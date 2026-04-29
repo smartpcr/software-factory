@@ -25,7 +25,7 @@ public static class WorkItemRules
         "phase", "stage", "step",
     };
 
-    public static readonly string[] AllStates = { "proposed", "active", "resolved", "closed" };
+    public static readonly string[] AllStates = { "proposed", "active", "in-review", "resolved", "closed" };
 
     public static readonly string[] AllTracks = { "dev", "design" };
 
