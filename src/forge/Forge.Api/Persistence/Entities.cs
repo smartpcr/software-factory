@@ -683,6 +683,9 @@ public class DeliverableRow
     /// <summary>Evaluator's free-form notes (≤ 800 chars by spec, not enforced at the row level).</summary>
     public string Notes { get; set; } = string.Empty;
 
+    /// <summary>Generator's change summary from the last token output (truncated to 800 chars).</summary>
+    public string GeneratorSummary { get; set; } = string.Empty;
+
     public decimal GenCostUsd { get; set; }
 
     public decimal EvalCostUsd { get; set; }

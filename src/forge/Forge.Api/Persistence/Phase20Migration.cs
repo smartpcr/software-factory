@@ -23,6 +23,7 @@ public static class Phase20Migration
         if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync(ct);
 
         await EnsureColumnAsync(conn, "task_queue", "MaxIterOverride", "INTEGER", ct);
+        await EnsureColumnAsync(conn, "deliverables", "GeneratorSummary", "TEXT NOT NULL DEFAULT ''", ct);
     }
 
     private static async Task<bool> ColumnExistsAsync(SqliteConnection conn, string table, string column, CancellationToken ct)

@@ -250,7 +250,30 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 .Where(m => m.CrewId == crewId && m.AgentId != crew.Lead)
                 .Select(m => m.AgentId)
                 .ToListAsync(ct);
-            var picked = members.Count == 0 ? crew.Lead : members[Math.Abs(Environment.TickCount) % members.Count];
+
+            // Resume support — when a work item already has deliverables (boot-
+            // recovery just put it back on the queue), prefer the same agent
+            // that was driving it before. Without pinning, every restart spins
+            // up a fresh round-robin pick and the live transcript looks like a
+            // brand-new task instead of a continuation.
+            string? picked = null;
+            var headRow = await db.TaskQueue.AsNoTracking()
+                .Where(r => r.RoutedToCrewId == crewId && r.State == TaskQueueStates.Queued)
+                .OrderBy(r => r.PriorityRank).ThenBy(r => r.EnqueuedAt)
+                .FirstOrDefaultAsync(ct);
+            if (headRow is not null)
+            {
+                var priorAgent = await db.Deliverables.AsNoTracking()
+                    .Where(d => d.WorkItemId == headRow.WorkItemId)
+                    .OrderByDescending(d => d.Iter).ThenByDescending(d => d.CreatedAt)
+                    .Select(d => d.GeneratorAgentId)
+                    .FirstOrDefaultAsync(ct);
+                if (!string.IsNullOrEmpty(priorAgent) && members.Contains(priorAgent))
+                {
+                    picked = priorAgent;
+                }
+            }
+            picked ??= members.Count == 0 ? crew.Lead : members[Math.Abs(Environment.TickCount) % members.Count];
 
             var row = await queue.ClaimNextAsync(crewId, picked, ct);
             if (row is null)
@@ -545,9 +568,19 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // Build prompt from the work item.
             var title = wi?.Title ?? workItemId;
             var desc = wi?.DescriptionMd ?? "";
-            var prompt = string.IsNullOrWhiteSpace(desc)
+            var basePrompt = string.IsNullOrWhiteSpace(desc)
                 ? $"Work item: {title}"
                 : $"Work item: {title}\n\n{desc}";
+
+            // Append PR summary instruction so the generator's final text
+            // block can be used as the "Generator perspective" in the PR.
+            var prompt = basePrompt + "\n\n"
+                + "IMPORTANT: After completing all code changes, tests, and commits, "
+                + "end your response with a section titled '## Change Summary' that explains:\n"
+                + "1. **What** you changed (files and code paths modified)\n"
+                + "2. **Why** this fixes the problem or improves the system\n"
+                + "3. **How** the fix works (technical approach)\n"
+                + "Keep it concise (3-6 sentences). This will appear in the PR description.";
 
             this.logger.LogInformation(
                 "Starting agent invocation: wi={Wi} agent={Agent} crew={Crew} model={Model} backend={Backend} mode={Mode} worktree={Worktree}",
@@ -675,7 +708,11 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     + "2. Review the work output provided in the user message.\n"
                     + "3. End your response with a fenced JSON block:\n"
                     + "```json\n{ \"score\": <0-100>, \"notes\": \"<feedback>\" }\n```\n"
-                    + "4. Score >= 90 = pass, 70-89 = iterate, < 70 = reject.\n";
+                    + "4. Score >= 90 = pass, 70-89 = iterate, < 70 = reject.\n"
+                    + "5. Your 'notes' MUST describe WHAT was changed, WHY it fixes the problem, and HOW the fix works.\n"
+                    + "   Do NOT just say 'build clean, tests pass' — that is self-evident.\n"
+                    + "   Focus on the technical substance: which code paths were modified, what error handling was added,\n"
+                    + "   what edge cases are now covered, and whether the approach is correct.\n";
 
                 var evalContext = new AgentContext(
                     CrewId: evaluatorCrewId!,
@@ -690,12 +727,18 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 var evalPrompt = "You are a critical code reviewer scoring agent work.\n\n"
                     + "IMPORTANT: You MUST end your response with a fenced JSON block in exactly this format:\n"
                     + "```json\n"
-                    + "{ \"score\": <0-100>, \"notes\": \"<your feedback>\" }\n"
+                    + "{ \"score\": <0-100>, \"notes\": \"<your review comment>\" }\n"
                     + "```\n\n"
                     + "Scoring rubric:\n"
                     + "- score >= 90: pass (code is correct, tested, ready to merge)\n"
                     + "- score 70-89: iterate (has issues that need fixing — describe them in notes)\n"
                     + "- score < 70: reject (fundamentally wrong approach)\n\n"
+                    + "Your 'notes' field will be displayed as the **Evaluator Review** in the PR description.\n"
+                    + "Write it as a review comment that covers:\n"
+                    + "- What the change does and whether the approach is correct\n"
+                    + "- Why this fix addresses the root cause (or doesn't)\n"
+                    + "- Any remaining risks, edge cases, or suggestions\n"
+                    + "Do NOT mention build/test pass — that is assumed. Focus on technical substance.\n\n"
                     + $"Review the following work output from iteration {iter}:\n\n"
                     + genOutput.Substring(0, Math.Min(genOutput.Length, 50000));
 
@@ -813,37 +856,72 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         .ThenByDescending(d => d.CreatedAt)
                         .FirstOrDefaultAsync(ct);
                     var changeNotes = lastDeliverable?.Notes ?? string.Empty;
+                    var generatorSummary = lastDeliverable?.GeneratorSummary ?? string.Empty;
+
+                    // Extract the "## Change Summary" section from the generator output if present.
+                    var summaryIdx = generatorSummary.IndexOf("## Change Summary", StringComparison.OrdinalIgnoreCase);
+                    if (summaryIdx >= 0)
+                    {
+                        generatorSummary = generatorSummary[(summaryIdx + "## Change Summary".Length)..].Trim();
+                        // Take until the next ## heading or end
+                        var nextHeading = generatorSummary.IndexOf("\n## ", StringComparison.Ordinal);
+                        if (nextHeading > 0) generatorSummary = generatorSummary[..nextHeading].Trim();
+                    }
+                    if (generatorSummary.Length > 800) generatorSummary = generatorSummary[..800] + "...";
 
                     // Build rich PR description. Includes work item link,
                     // agent avatar (dicebear seeded by id), full name + role,
                     // change summary from evaluator notes. NO cost or token
                     // counts — the user expressly does not want PRs to leak
                     // spend numbers into the merge history.
+                    // Resolve evaluator agent for the PR header
+                    var evalAgentRow = !string.IsNullOrEmpty(evaluatorAgentId)
+                        ? await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == evaluatorAgentId, ct)
+                        : null;
+                    var evalDisplayName = evalAgentRow?.Name ?? evaluatorAgentId;
+
                     var avatarUrl = $"https://api.dicebear.com/7.x/personas/svg?seed={Uri.EscapeDataString(agentId)}";
+                    var evalAvatarUrl = !string.IsNullOrEmpty(evaluatorAgentId)
+                        ? $"https://api.dicebear.com/7.x/personas/svg?seed={Uri.EscapeDataString(evaluatorAgentId)}"
+                        : null;
                     var prBodyBuilder = new System.Text.StringBuilder();
                     prBodyBuilder.AppendLine($"## {prTitle}");
                     prBodyBuilder.AppendLine();
                     var wiLine = $"**Work Item:** {workItemId}";
                     if (wi?.ProviderRef is int provRef) wiLine += $" (ADO #{provRef})";
                     prBodyBuilder.AppendLine(wiLine);
+                    prBodyBuilder.AppendLine($"**Score:** {result.FinalScore} | **Iterations:** {result.Iterations}");
                     prBodyBuilder.AppendLine();
-                    prBodyBuilder.AppendLine($"<img src=\"{avatarUrl}\" width=\"32\" height=\"32\" align=\"left\" alt=\"{agentDisplayName}\" />");
-                    prBodyBuilder.AppendLine($"**Authored by:** {agentDisplayName} — _{agentRole}_ (crew {crewId})");
-                    prBodyBuilder.AppendLine();
-                    prBodyBuilder.AppendLine("### What changed");
-                    if (!string.IsNullOrWhiteSpace(changeNotes))
+                    prBodyBuilder.AppendLine($"<img src=\"{avatarUrl}\" width=\"32\" height=\"32\" alt=\"{agentDisplayName}\" /> **Generator:** {agentDisplayName}");
+                    if (!string.IsNullOrEmpty(evalDisplayName) && evalAvatarUrl is not null)
                     {
-                        var notes = changeNotes.Length > 800 ? changeNotes[..800] + "..." : changeNotes;
-                        prBodyBuilder.AppendLine(notes);
+                        prBodyBuilder.AppendLine($"<img src=\"{evalAvatarUrl}\" width=\"32\" height=\"32\" alt=\"{evalDisplayName}\" /> **Evaluator:** {evalDisplayName}");
                     }
-                    else if (!string.IsNullOrEmpty(wi?.DescriptionMd))
+                    prBodyBuilder.AppendLine();
+                    // Generator perspective
+                    prBodyBuilder.AppendLine($"### <img src=\"{avatarUrl}\" width=\"20\" height=\"20\" /> {agentDisplayName} (Generator)");
+                    if (!string.IsNullOrWhiteSpace(generatorSummary))
                     {
-                        var wiDesc = wi.DescriptionMd.Length > 500 ? wi.DescriptionMd[..500] + "..." : wi.DescriptionMd;
-                        prBodyBuilder.AppendLine(wiDesc);
+                        prBodyBuilder.AppendLine(generatorSummary);
                     }
                     else
                     {
-                        prBodyBuilder.AppendLine("_No change summary available._");
+                        prBodyBuilder.AppendLine("_No change summary provided._");
+                    }
+                    prBodyBuilder.AppendLine();
+                    // Evaluator perspective
+                    if (!string.IsNullOrEmpty(evalDisplayName) && evalAvatarUrl is not null)
+                    {
+                        prBodyBuilder.AppendLine($"### <img src=\"{evalAvatarUrl}\" width=\"20\" height=\"20\" /> {evalDisplayName} (Evaluator)");
+                        if (!string.IsNullOrWhiteSpace(changeNotes))
+                        {
+                            var notes = changeNotes.Length > 800 ? changeNotes[..800] + "..." : changeNotes;
+                            prBodyBuilder.AppendLine(notes);
+                        }
+                        else
+                        {
+                            prBodyBuilder.AppendLine("_No review comment provided._");
+                        }
                     }
                     prBodyBuilder.AppendLine();
                     prBodyBuilder.AppendLine("---");
@@ -947,6 +1025,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                             ? "Agent did not push branch to remote"
                             : "Agent did not create a pull request",
                     }, crewId: crewId, ct: ct);
+                    SystemNotify.AgentFailed(workItemId, !branchPushed ? "Branch not pushed" : "PR not created");
                     return; // skip the normal completion path
                 }
             }
@@ -994,6 +1073,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 score = result.FinalScore,
                 iterations = result.Iterations,
             }, crewId: crewId, ct: ct);
+            SystemNotify.AgentCompleted(workItemId, agentId, result.FinalScore);
         }
         catch (OperationCanceledException) { /* shutdown */ }
         catch (ObjectDisposedException) { /* host shutting down — scope already disposed */ }
@@ -1017,6 +1097,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
                 // Phase 19 — mark execution as failed.
                 await this.SetExecutionStatusAsync(workItemId, ExecutionStatuses.Failed, ct);
+                SystemNotify.AgentFailed(workItemId, ex.Message);
             }
             catch (ObjectDisposedException) { /* host shutting down */ }
         }

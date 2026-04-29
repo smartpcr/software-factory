@@ -429,6 +429,7 @@ function PairSide(props: {
   );
 }
 
+// @ts-expect-error — unused but kept for future budget display
 function BudgetBar(props: { label: string; spend: number; cap: number | null }): JSX.Element {
   const { label, spend, cap } = props;
   const ratio = cap && cap > 0 ? Math.min(1, spend / cap) : 0;
@@ -537,6 +538,13 @@ function renderPayload(evt: TaskTranscriptEvent): string {
   if (evt.kind === 'task.delivery-skipped') {
     const reason = typeof p.reason === 'string' ? p.reason : '';
     return reason ? `⊘ no PR — ${reason.substring(0, 150)}` : '⊘ no PR created';
+  }
+  if (evt.kind === 'task.iteration.resumed') {
+    const next = (p.nextIter as number | undefined) ?? '?';
+    const prior = (p.priorVerdict as string | undefined) ?? '';
+    const score = (p.priorScore as number | undefined);
+    const agent = (p.priorAgent as string | undefined) ?? '';
+    return `⟲ resumed at iter ${next} (prior: ${agent} → ${prior}${score != null ? ` ${score}` : ''})`;
   }
   if (evt.kind === 'task.pr-opened') {
     const prId = (p.prId as string | number | undefined) ?? '?';

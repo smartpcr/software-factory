@@ -721,6 +721,7 @@ public static class WorkItemsEndpoints
             baseBranch = req.BaseBranch,
         }, ct: ct);
 
+        Forge.Api.Services.SystemNotify.PrCreated(id, pr.Id);
         return Results.Ok(new { prId = pr.Id, prTitle = pr.Title });
     }
 

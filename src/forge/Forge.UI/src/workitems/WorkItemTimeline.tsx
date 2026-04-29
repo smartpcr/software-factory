@@ -116,6 +116,8 @@ function barStyleForState(state: WorkItemState): React.CSSProperties {
       return { background: 'var(--success-bg)', border: '1px solid var(--success-border)' };
     case 'closed':
       return { background: 'transparent', border: '1px dashed var(--border-strong)' };
+    default:
+      return {};
   }
 }
 

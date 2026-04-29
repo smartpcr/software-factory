@@ -151,7 +151,11 @@ async function ensureTaskConnection(): Promise<HubConnection> {
           headAt:      head?.at ?? null,
           truncated: p.truncated === true,
           at: msg.at ?? new Date().toISOString(),
-          branchDiff: (p.branchDiff as { added?: string[]; modified?: string[]; deleted?: string[] } | null) ?? null,
+          branchDiff: (() => {
+            const bd = p.branchDiff as { added?: string[]; modified?: string[]; deleted?: string[] } | null;
+            if (!bd) return null;
+            return { added: bd.added ?? [], modified: bd.modified ?? [], deleted: bd.deleted ?? [] };
+          })(),
         };
         useTaskLiveStore.getState().applyWorktree(msg.workItemId, snap);
       }

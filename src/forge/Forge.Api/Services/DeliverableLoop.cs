@@ -127,6 +127,34 @@ public sealed class DeliverableLoop : IDeliverableLoop
 
         var maxIter = request.MaxIterations ?? ScoringConstants.MaxIterations;
 
+        // Resume support — when boot-recovery puts a half-finished work item
+        // back on the queue, the agent invocation re-enters this loop. Seed
+        // `iter` and `notesForNext` from the most recent persisted deliverable
+        // so the next round picks up at iter+1 with the prior evaluator's
+        // feedback, instead of starting iteration 1 over from scratch.
+        // Skip the seeding for terminal verdicts ("pass" / "reject") — those
+        // mean the loop reached its end naturally; re-running would either
+        // duplicate completed work or fight a verdict the lead must triage.
+        var existingDeliverables = await this.db.Deliverables.AsNoTracking()
+            .Where(d => d.WorkItemId == request.WorkItemId)
+            .ToListAsync(ct);
+        var lastPersisted = existingDeliverables.OrderByDescending(d => d.Iter).ThenByDescending(d => d.CreatedAt).FirstOrDefault();
+        if (lastPersisted is not null
+            && lastPersisted.Verdict is "iterate" or "stalled" or "stalled-budget"
+            && lastPersisted.Iter < maxIter)
+        {
+            iter = lastPersisted.Iter;
+            notesForNext = lastPersisted.Notes ?? string.Empty;
+            await this.EmitAsync(request.WorkItemId, "task.iteration.resumed", new
+            {
+                resumeFromIter = iter,
+                nextIter = iter + 1,
+                priorVerdict = lastPersisted.Verdict,
+                priorScore = lastPersisted.Score,
+                priorAgent = lastPersisted.GeneratorAgentId,
+            }, ct);
+        }
+
         while (iter < maxIter)
         {
             // Phase 20 — re-read per-work-item override each iteration so
@@ -173,6 +201,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
             totalCost += gen.CostUsd + eval.CostUsd;
 
             // (c) persist one row per iteration
+            var genSummary = gen.OutputText.Length > 800 ? gen.OutputText[^800..] : gen.OutputText;
             var row = new DeliverableRow
             {
                 WorkItemId = request.WorkItemId,
@@ -184,6 +213,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
                 DimsJson = JsonSerializer.Serialize(lastScore.Dims),
                 Verdict = lastScore.Verdict,
                 Notes = lastScore.Notes,
+                GeneratorSummary = genSummary,
                 GenCostUsd = gen.CostUsd,
                 EvalCostUsd = eval.CostUsd,
                 CreatedAt = DateTimeOffset.UtcNow,
