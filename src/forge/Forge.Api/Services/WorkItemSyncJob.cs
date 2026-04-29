@@ -206,7 +206,7 @@ public class WorkItemSyncJob : BackgroundService
                     WorkItemSyncMetrics.PaginationBatches.Add(1, KeyVal("provider", providerLabel));
 
                     var (added, updated, conflicted) = await this.CommitBatchAsync(
-                        db, repo, batch, hub, ct);
+                        db, repo, batch, hub, scope, ct);
                     totalAdded += added;
                     totalUpdated += updated;
                     totalConflicted += conflicted;
@@ -309,6 +309,7 @@ public class WorkItemSyncJob : BackgroundService
         RepoRow repo,
         WorkItemBatch batch,
         IHubContext<ForgeHub> hub,
+        IServiceScope scope,
         CancellationToken ct)
     {
         var added = 0;
@@ -337,6 +338,14 @@ public class WorkItemSyncJob : BackgroundService
             if (!resolverResult.WasAssigned) continue;
 
             existing.AssignedToJson = resolverResult.NewAssignedToJson;
+            // Move to 'active' so the queue worker can claim it, and enqueue.
+            if (existing.State is "proposed" or "new")
+            {
+                existing.State = "active";
+            }
+            existing.ExecutionStatus = Persistence.ExecutionStatuses.Queued;
+            existing.UpdatedAt = DateTimeOffset.UtcNow;
+
             db.Audit.Add(new AuditRow
             {
                 At = DateTimeOffset.UtcNow,
@@ -365,6 +374,25 @@ public class WorkItemSyncJob : BackgroundService
                     team = resolverResult.TeamName,
                 },
                 ct);
+
+            // Enqueue into the task queue so the queue worker claims it.
+            await db.SaveChangesAsync(ct);
+            try
+            {
+                var queue = scope.ServiceProvider.GetService<ITaskQueueService>();
+                if (queue is not null)
+                {
+                    await queue.EnqueueAsync(
+                        existing.Id,
+                        "team",
+                        resolverResult.TeamName ?? SyncConstants.AgentReadyDefaultTeam,
+                        ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                this.logger.LogWarning(ex, "agent-ready enqueue failed for {WiId}", existing.Id);
+            }
         }
 
         return (added, updated, conflicted);
