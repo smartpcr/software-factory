@@ -88,6 +88,10 @@ public class ForgeDbContext : DbContext
 
     public DbSet<TaskQueueHistoryRow> TaskQueueHistory => this.Set<TaskQueueHistoryRow>();
 
+    public DbSet<PrCommentRow> PrComments => this.Set<PrCommentRow>();
+
+    public DbSet<PrCommentHistoryRow> PrCommentHistory => this.Set<PrCommentHistoryRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         mb.Entity<EpicRow>().ToTable("epics").HasKey(x => x.Id);
@@ -295,5 +299,13 @@ public class ForgeDbContext : DbContext
 
         mb.Entity<TaskQueueHistoryRow>().ToTable("task_queue_history").HasKey(x => x.Id);
         mb.Entity<TaskQueueHistoryRow>().HasIndex(x => new { x.QueueId, x.At });
+
+        // Phase 24 — PR comments + history
+        mb.Entity<PrCommentRow>().ToTable("pr_comments").HasKey(x => x.Id);
+        mb.Entity<PrCommentRow>().HasIndex(x => new { x.PrId, x.ProviderCommentId }).IsUnique();
+        mb.Entity<PrCommentRow>().HasIndex(x => new { x.PrId, x.RequiresAttention });
+        mb.Entity<PrCommentRow>().HasIndex(x => x.ThreadId);
+        mb.Entity<PrCommentHistoryRow>().ToTable("pr_comment_history").HasKey(x => x.Id);
+        mb.Entity<PrCommentHistoryRow>().HasIndex(x => new { x.CommentId, x.At });
     }
 }
