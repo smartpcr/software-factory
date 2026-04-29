@@ -370,13 +370,38 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // Phase 19 — mark live and bump trial count on claim.
                 wi.ExecutionStatus = ExecutionStatuses.Live;
                 wi.TrialCount++;
-                // Include evaluator crew + agent in the assignment so the
-                // execution endpoint can surface both sides from the start.
+                // Phase 22 — write AssignedAgentJson (not AssignedToJson).
+                // AssignedToJson retains whatever WIT-level value it had.
                 var evalAgentId = crew.DefaultEvaluatorAgentId ?? evaluatorCrew?.Lead;
-                var evalAgentJson = evalAgentId is not null ? $"\"{evalAgentId}\"" : "null";
-                var evalCrewJson = evaluatorCrew is not null ? $"\"{evaluatorCrew.Id}\"" : "null";
-                wi.AssignedToJson =
-                    $"{{\"crewId\":\"{crewId}\",\"agentId\":\"{picked}\",\"generatorAgentId\":\"{picked}\",\"evaluatorAgentId\":{evalAgentJson},\"evaluatorCrewId\":{evalCrewJson},\"by\":\"queue-worker\"}}";
+                var agents = new List<string> { picked! };
+                if (evalAgentId is not null) agents.Add(evalAgentId);
+                var now = DateTimeOffset.UtcNow;
+                var crewTeam = TeamFromCrewName(crew.Name);
+                var assignedAgent = new
+                {
+                    agents,
+                    team = crewTeam,
+                    crewId,
+                    role = "generator",
+                    assignedAt = now.ToString("o"),
+                    assignedBy = "queue-worker",
+                };
+                wi.AssignedAgentJson = System.Text.Json.JsonSerializer.Serialize(assignedAgent);
+
+                // Phase 22 — append agent_assignments history row atomically.
+                db.AgentAssignments.Add(new AgentAssignmentRow
+                {
+                    WorkItemId = wi.Id,
+                    Kind = AgentAssignmentKinds.Claimed,
+                    AgentIdsJson = System.Text.Json.JsonSerializer.Serialize(agents),
+                    Team = crewTeam,
+                    CrewId = crewId,
+                    Role = "generator",
+                    FromExecutionStatus = ExecutionStatuses.Queued,
+                    ToExecutionStatus = ExecutionStatuses.Live,
+                    AssignedBy = "queue-worker",
+                    At = now,
+                });
 
                 // Auto-link work item to a workstream so the Workstreams view
                 // shows the "● N live" badge. Find a workstream for this repo
@@ -1178,8 +1203,12 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         var wiRow = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
                         if (wiRow is not null)
                         {
+                            var prevState = wiRow.State;
                             wiRow.State = "in-review";
                             wiRow.UpdatedAt = DateTimeOffset.UtcNow;
+                            // Phase 22 — record pr-opened assignment transition.
+                            Forge.Api.Endpoints.WorkItemsEndpoints.RecordAssignmentTransition(
+                                db, wiRow, prevState, "in-review");
                             await db.SaveChangesAsync(ct);
                             await this.BroadcastWorkItemChangedAsync(wiRow, "state-changed", ct);
                         }
@@ -1814,6 +1843,21 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     /// useWorkItemsStore is never told the row moved out of "live", so the
     /// ExecBadge stays green-pulsing long after the PR is up.
     /// </summary>
+    /// <summary>
+    /// Phase 22 — resolve team name from crew name (same logic as
+    /// <c>CrewsEndpoints.TeamFromCrewName</c> duplicated here to
+    /// avoid coupling endpoint and worker packages).
+    /// </summary>
+    private static string? TeamFromCrewName(string name)
+    {
+        var n = (name ?? string.Empty).ToLowerInvariant();
+        if (n.StartsWith("arch")) return "Architecture";
+        if (n.StartsWith("eng"))  return "Engineering";
+        if (n.StartsWith("rev"))  return "Review";
+        if (n.StartsWith("qa"))   return "QA";
+        return null;
+    }
+
     private async Task BroadcastWorkItemChangedAsync(WorkItemRow row, string kind, CancellationToken ct)
     {
         try

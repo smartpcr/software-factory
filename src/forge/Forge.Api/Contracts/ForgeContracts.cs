@@ -539,6 +539,35 @@ public sealed record WorkItemAssignee(
     string Initials);
 
 /// <summary>
+/// Phase 22 — runtime-assigned agent(s). Independent of
+/// <see cref="WorkItemAssignee"/> which carries the WIT-level owner.
+/// </summary>
+public sealed record AssignedAgent(
+    IReadOnlyList<string> Agents,
+    string? Team,
+    string? CrewId,
+    string Role,
+    string AssignedAt,
+    string? AssignedBy);
+
+/// <summary>
+/// Phase 22 — a single row from the <c>agent_assignments</c> history table.
+/// </summary>
+public sealed record AgentAssignmentEntry(
+    long Id,
+    string WorkItemId,
+    string Kind,
+    IReadOnlyList<string> AgentIds,
+    string? Team,
+    string? CrewId,
+    string? Role,
+    string? FromExecutionStatus,
+    string? ToExecutionStatus,
+    string? AssignedBy,
+    string? Reason,
+    DateTimeOffset At);
+
+/// <summary>
 /// Phase 12.1 — work item record. Two parallel three-level ladders are
 /// distinguished by <see cref="Track"/> ("dev" or "design"). See Phase 12
 /// Q12.1 for the type / state matrix and parent-rank invariants.
@@ -570,7 +599,9 @@ public sealed record WorkItem(
     int? ExpectedFileChanges = null,
     // Phase 19 — execution status and trial count.
     string ExecutionStatus = "idle",
-    int TrialCount = 0);
+    int TrialCount = 0,
+    // Phase 22 — runtime-assigned agent(s).
+    AssignedAgent? AssignedAgent = null);
 
 public sealed record CreateWorkItemRequest(
     string Id,

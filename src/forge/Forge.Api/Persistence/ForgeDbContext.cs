@@ -88,6 +88,8 @@ public class ForgeDbContext : DbContext
 
     public DbSet<TaskQueueHistoryRow> TaskQueueHistory => this.Set<TaskQueueHistoryRow>();
 
+    public DbSet<AgentAssignmentRow> AgentAssignments => this.Set<AgentAssignmentRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         mb.Entity<EpicRow>().ToTable("epics").HasKey(x => x.Id);
@@ -295,5 +297,10 @@ public class ForgeDbContext : DbContext
 
         mb.Entity<TaskQueueHistoryRow>().ToTable("task_queue_history").HasKey(x => x.Id);
         mb.Entity<TaskQueueHistoryRow>().HasIndex(x => new { x.QueueId, x.At });
+
+        // Phase 22 — agent assignment history (append-only timeline).
+        mb.Entity<AgentAssignmentRow>().ToTable("agent_assignments").HasKey(x => x.Id);
+        mb.Entity<AgentAssignmentRow>().HasIndex(x => new { x.WorkItemId, x.At })
+            .HasDatabaseName("IX_agent_assignments_workitem_at");
     }
 }

@@ -90,22 +90,32 @@ public static class TaskExecutionEndpoints
                 generatorCrewId = latestQueue.RoutedToCrewId;
                 generatorAgentId = latestQueue.PickedUpByAgent;
             }
-            // Also try the work item's AssignedToJson for any still-missing fields.
+            // Also try the work item's AssignedAgentJson (Phase 22) or
+            // AssignedToJson (legacy) for any still-missing fields.
             // The queue row may set generatorCrewId but leave generatorAgentId null
             // (e.g. restart before claim), so check each field independently.
-            if (!string.IsNullOrEmpty(wi?.AssignedToJson)
+            var assignmentJson = wi?.AssignedAgentJson ?? wi?.AssignedToJson;
+            if (!string.IsNullOrEmpty(assignmentJson)
                 && (string.IsNullOrEmpty(generatorCrewId) || string.IsNullOrEmpty(generatorAgentId)
                     || string.IsNullOrEmpty(evaluatorAgentId) || string.IsNullOrEmpty(evaluatorCrewId)))
             {
                 try
                 {
-                    using var doc = JsonDocument.Parse(wi.AssignedToJson);
+                    using var doc = JsonDocument.Parse(assignmentJson);
                     if (doc.RootElement.TryGetProperty("crewId", out var c))
                         generatorCrewId ??= c.GetString();
                     if (doc.RootElement.TryGetProperty("generatorAgentId", out var g))
                         generatorAgentId ??= g.GetString();
+                    // Phase 22: agents[] array in AssignedAgentJson.
+                    if (string.IsNullOrEmpty(generatorAgentId)
+                        && doc.RootElement.TryGetProperty("agents", out var agArr) && agArr.ValueKind == JsonValueKind.Array && agArr.GetArrayLength() > 0)
+                        generatorAgentId ??= agArr[0].GetString();
                     if (doc.RootElement.TryGetProperty("evaluatorAgentId", out var e) && e.ValueKind == JsonValueKind.String)
                         evaluatorAgentId ??= e.GetString();
+                    // Phase 22: agents[1] is the evaluator in paired runs.
+                    if (string.IsNullOrEmpty(evaluatorAgentId)
+                        && doc.RootElement.TryGetProperty("agents", out var agArr2) && agArr2.ValueKind == JsonValueKind.Array && agArr2.GetArrayLength() > 1)
+                        evaluatorAgentId ??= agArr2[1].GetString();
                     if (doc.RootElement.TryGetProperty("evaluatorCrewId", out var ec) && ec.ValueKind == JsonValueKind.String)
                         evaluatorCrewId ??= ec.GetString();
                 }
@@ -353,6 +363,7 @@ public static class TaskExecutionEndpoints
     }
 
     private static async Task<IResult> ClearTranscript(
+        HttpContext ctx,
         string id,
         ForgeDbContext db,
         CancellationToken ct)
@@ -374,6 +385,26 @@ public static class TaskExecutionEndpoints
         if (deliverables.Count > 0)
         {
             db.Deliverables.RemoveRange(deliverables);
+            await db.SaveChangesAsync(ct);
+        }
+
+        // Phase 22 — clear AssignedAgent and record cleared-restart.
+        var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id, ct);
+        if (wi is not null)
+        {
+            var agentIds = Forge.Api.Endpoints.WorkItemsEndpoints.ParseAgentIds(wi.AssignedAgentJson);
+            var userId = ctx.Request.Headers.TryGetValue("X-Forge-User", out var uv) ? uv.FirstOrDefault() : null;
+            db.AgentAssignments.Add(new AgentAssignmentRow
+            {
+                WorkItemId = id,
+                Kind = AgentAssignmentKinds.ClearedRestart,
+                AgentIdsJson = System.Text.Json.JsonSerializer.Serialize(agentIds),
+                FromExecutionStatus = wi.ExecutionStatus,
+                ToExecutionStatus = ExecutionStatuses.Queued,
+                AssignedBy = userId,
+                At = DateTimeOffset.UtcNow,
+            });
+            wi.AssignedAgentJson = null;
             await db.SaveChangesAsync(ct);
         }
 
