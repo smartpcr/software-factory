@@ -317,6 +317,20 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             var runner = scope.ServiceProvider.GetRequiredService<IAgentRunner>();
             var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
 
+            // Guard: skip execution if the work item already has a delivered PR
+            // (state "in-review", "resolved", or "closed"). This prevents boot-
+            // recovery and manual re-queues from re-running already-completed items.
+            var freshWi = await db.WorkItems.AsNoTracking()
+                .FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+            if (freshWi is not null && freshWi.State is "in-review" or "resolved" or "closed")
+            {
+                this.logger.LogInformation(
+                    "Skipping agent run: wi={Wi} already in state={State}, marking completed",
+                    workItemId, freshWi.State);
+                await this.CompleteQueueRowAsync(workItemId, ct);
+                return;
+            }
+
             // Resolve the agent row for model/soul/backend overrides.
             var agent = await db.Agents.AsNoTracking()
                 .FirstOrDefaultAsync(a => a.Id == agentId, ct);
@@ -416,13 +430,14 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             var branchName = $"ws/{workItemId}";
             var baseBranch = "main";
             string? repoCloneRoot = null;
+            Persistence.RepoRow? wiRepo = null;
             if (!string.IsNullOrEmpty(wi?.RepoId))
             {
-                var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
-                if (!string.IsNullOrEmpty(repo?.DefaultBranch))
-                    baseBranch = repo.DefaultBranch;
-                if (!string.IsNullOrEmpty(repo?.CloneRoot) && Directory.Exists(repo.CloneRoot))
-                    repoCloneRoot = repo.CloneRoot;
+                wiRepo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+                if (!string.IsNullOrEmpty(wiRepo?.DefaultBranch))
+                    baseBranch = wiRepo.DefaultBranch;
+                if (!string.IsNullOrEmpty(wiRepo?.CloneRoot) && Directory.Exists(wiRepo.CloneRoot))
+                    repoCloneRoot = wiRepo.CloneRoot;
             }
 
             if (!string.IsNullOrEmpty(repoCloneRoot))
@@ -581,6 +596,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 var invocation = await runner.StartAsync(workItemId, agentId, iterPrompt, context, iterCt);
                 var output = new System.Text.StringBuilder();
                 decimal cost = 0m;
+                long inTok = 0, outTok = 0;
 
                 await foreach (var evt in invocation.Events.WithCancellation(iterCt))
                 {
@@ -608,9 +624,11 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
                     if (!string.IsNullOrEmpty(evt.Text)) output.Append(evt.Text);
                     if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;
+                    if (evt.InputTokens is > 0) inTok += evt.InputTokens.Value;
+                    if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
                 }
 
-                return new GeneratorRunOutput(output.ToString(), cost);
+                return new GeneratorRunOutput(output.ToString(), cost, inTok, outTok);
             }
 
             // Evaluator delegate: invokes the evaluator agent for critical review.
@@ -691,6 +709,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
                 var evalOutput = new System.Text.StringBuilder();
                 decimal evalCost = 0m;
+                long evalInTok = 0, evalOutTok = 0;
 
                 await foreach (var evt in invocation.Events.WithCancellation(iterCt))
                 {
@@ -718,9 +737,11 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
                     if (!string.IsNullOrEmpty(evt.Text)) evalOutput.Append(evt.Text);
                     if (evt.CostUsd.HasValue) evalCost += evt.CostUsd.Value;
+                    if (evt.InputTokens is > 0) evalInTok += evt.InputTokens.Value;
+                    if (evt.OutputTokens is > 0) evalOutTok += evt.OutputTokens.Value;
                 }
 
-                return new EvaluatorRunOutput(evalOutput.ToString(), evalCost);
+                return new EvaluatorRunOutput(evalOutput.ToString(), evalCost, evalInTok, evalOutTok);
             }
 
             var loopRequest = new DeliverableLoopRequest(
@@ -751,14 +772,61 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 var prCreatedInThisExecution = false;
                 try
                 {
-                    var provider = scope.ServiceProvider.GetRequiredService<Forge.Api.Providers.IForgeProvider>();
+                    // Resolve the correct provider based on the work item's repo kind.
+                    var providers = scope.ServiceProvider
+                        .GetRequiredService<IEnumerable<Forge.Api.Providers.IForgeProvider>>();
+                    var repoKind = !string.IsNullOrEmpty(wiRepo?.Kind) ? wiRepo.Kind : "ado";
+                    string? prRepoName = null;
+                    string? prProjectName = null;
+                    if (wiRepo is not null && repoKind == "ado")
+                    {
+                        prRepoName = ExtractAdoRepoName(wiRepo.RemoteUrl);
+                        if (!string.IsNullOrEmpty(wiRepo.AdoProject))
+                            prProjectName = wiRepo.AdoProject;
+                    }
+
+                    var provider = providers.FirstOrDefault(p => p.Kind == repoKind && p.IsConfigured)
+                        ?? providers.FirstOrDefault(p => p.IsConfigured);
+                    if (provider is null)
+                        throw new InvalidOperationException($"No configured provider for kind '{repoKind}'");
 
                     var prTitle = wi?.Title ?? workItemId;
-                    var prBody = $"Auto-generated by Forge agent {agentId} (crew {crewId}).\n\n"
-                        + $"**Score:** {result.FinalScore} | **Iterations:** {result.Iterations} | **Cost:** ${result.TotalCostUsd:F2}";
+
+                    // Resolve agent full name for PR body
+                    var agentRow = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
+                    var agentDisplayName = agentRow?.Name ?? agentId;
+
+                    // Build rich PR description
+                    var prBodyBuilder = new System.Text.StringBuilder();
+                    prBodyBuilder.AppendLine($"## {prTitle}");
+                    prBodyBuilder.AppendLine();
+                    prBodyBuilder.AppendLine($"**Work Item:** {workItemId}");
+                    if (wi?.ProviderRef is int provRef)
+                        prBodyBuilder.AppendLine($" (ADO #{provRef})");
+                    prBodyBuilder.AppendLine();
+                    prBodyBuilder.AppendLine($"**Score:** {result.FinalScore} | **Iterations:** {result.Iterations}");
+                    prBodyBuilder.AppendLine($"**Agent:** {agentDisplayName} (crew {crewId})");
+                    prBodyBuilder.AppendLine();
+                    if (!string.IsNullOrEmpty(wi?.DescriptionMd))
+                    {
+                        var wiDesc = wi.DescriptionMd.Length > 500 ? wi.DescriptionMd[..500] + "..." : wi.DescriptionMd;
+                        prBodyBuilder.AppendLine("### Description");
+                        prBodyBuilder.AppendLine(wiDesc);
+                        prBodyBuilder.AppendLine();
+                    }
+                    prBodyBuilder.AppendLine("---");
+                    prBodyBuilder.AppendLine("*Auto-generated by Forge.*");
+                    var prBody = prBodyBuilder.ToString();
+
+                    // Only pass WorkItemRef for ADO-backed work items.
+                    int? wiRef = wi?.Provider == "ado" ? wi.ProviderRef : null;
 
                     var pr = await provider.CreatePullRequestAsync(
-                        new Forge.Api.Providers.NewPullRequestRequest(branchName, baseBranch, prTitle, prBody),
+                        new Forge.Api.Providers.NewPullRequestRequest(
+                            branchName, baseBranch, prTitle, prBody,
+                            RepositoryName: prRepoName,
+                            ProjectName: prProjectName,
+                            WorkItemRef: wiRef),
                         Forge.Api.Providers.ProviderCallContext.Anonymous, ct);
 
                     await this.taskChannel.EmitAsync(workItemId, "task.pr-opened", new
