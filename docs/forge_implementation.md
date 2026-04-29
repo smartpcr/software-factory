@@ -2081,6 +2081,17 @@ State transitions that do NOT touch AssignedAgent:
 
 - **Q24.10 Idempotency — comment upsert keys on `(provider, providerCommentId)`.** Same upsert shape as Phase 23 work items. Re-fetching the same comment with the same `UpdatedAt` is a no-op; with a newer `UpdatedAt` it advances the row + appends history.
 
+- **Q24.11 Worktree cleanup on PR completion — automatic, agent-driven.** When the `PrSyncJob` detects a terminal-state transition (`→ completed` or `→ abandoned`) on a PR that has a linked `WorkItemId`, the assigned agent's worktree for that work item is removed. The cleanup uses `IGitWorktreeService.RemoveAsync(worktreePath, force: true)` and also deletes the local branch via `git branch -D ws/{workItemId}`. The worktree path is resolved from the Q2 convention: `{repo.CloneRoot}\.worktree\ws-{workItemId}`.
+  - **Implications**:
+    - The cleanup runs **inside the sync tick**, not as a separate background job — it's a single `git worktree remove` + `git branch -D` after the PR state flip, scoped to the same work item. Failure to clean up is non-fatal: the sync logs a warning, emits a `forge.worktree.cleanup_failed` counter, and moves on. The operator can clean up manually.
+    - Only PRs with a non-null `WorkItemId` trigger cleanup. PRs discovered via upstream sync (no linked work item) are left alone — there's no worktree to remove.
+    - The cleanup is idempotent: if the worktree directory is already gone (operator deleted it, or a prior cleanup succeeded), `RemoveAsync` is a no-op (the underlying `git worktree remove` exits cleanly when the path doesn't exist). If the branch doesn't exist, `git branch -D` failure is swallowed.
+    - `WorktreeChangeFeed` unsubscribes from the work item before the removal so the 1 Hz tick doesn't race against the delete.
+    - SignalR event: `task.worktree-removed { workItemId, worktreePath, branch, prState }` on the `task.{wid}` channel so the live-exec Worktree tab shows "Worktree removed — PR merged" instead of stale file data.
+    - Audit row: `forge_actions(kind='worktree-cleanup', path=worktreePath, actorUserId='pr-sync')`.
+    - `abandoned` PRs also clean up — the worktree is stale by definition; keeping it wastes disk and confuses the operator if the work item is later re-assigned to a different crew.
+    - The cleanup does NOT delete the branch on the remote — only the local worktree directory and local branch. The remote branch is the PR's source; removing it upstream would break the PR's diff view on ADO/GitHub.
+
 ### Implementation steps
 
 - [ ] **24.1** **Migration** — `Forge.Api/Persistence/Phase24Migration.cs` (idempotent, runs after `Phase23Migration`):
@@ -2198,6 +2209,19 @@ State transitions that do NOT touch AssignedAgent:
   - `forge.pr.comment.linker_matched` — counter for body-parse vs position-heuristic link successes.
 
 - [ ] **24.15** **Fidelity** — additive UI (PR detail panel comment list + Live Execution Comments tab + PR card badges); exempt from prototype screenshot diff. New tokens: none — reuses Phase 14 score-chip palette for the comment state pills + the existing avatar palette + the Phase 19 attention amber.
+
+- [ ] **24.16** **Worktree cleanup on PR terminal state (Q24.11)** — `Forge.Api/Services/PrSyncJob.cs` (or the runner invoked by the job):
+  - After `IsActive` flips to `false` on a PR row that carries a non-null `WorkItemId`:
+    1. Resolve the work item → its `RepoId` → the `Repo.CloneRoot`.
+    2. Compute `worktreePath = Path.Combine(cloneRoot, ".worktree", $"ws-{workItemId}")` and `branch = $"ws/{workItemId}"`.
+    3. Unsubscribe the work item from `WorktreeChangeFeed` (stops the 1 Hz tick racing the delete).
+    4. Call `IGitWorktreeService.RemoveAsync(worktreePath, force: true)`. Catch and log any failure — non-fatal.
+    5. Run `git branch -D {branch}` against the repo's `CloneRoot`. Catch and swallow — branch may not exist locally.
+    6. Emit `task.worktree-removed { workItemId, worktreePath, branch, prState }` on the `task.{wid}` SignalR channel.
+    7. Write `forge_actions(kind='worktree-cleanup', body: { workItemId, worktreePath, branch, prState })` audit row.
+    8. Emit `forge.worktree.cleanup` counter (tagged `outcome: success | failed`, `prState: completed | abandoned`).
+  - Idempotent: re-running against an already-cleaned-up worktree is a no-op (both `git worktree remove` and `git branch -D` exit gracefully when the target is gone).
+  - Does NOT delete the remote branch — only local worktree directory + local branch ref.
 
 ### Test scenarios
 
@@ -2396,6 +2420,22 @@ Delta:
 - [ ] Audit row written when terminal-state transition occurs.
 - [ ] `pr.closed` SignalR event fires on terminal transition.
 - [ ] Explicit "Resync this PR" endpoint can override and re-sync a terminal PR (operator override).
+
+**24.15 Worktree cleanup on PR completion (Q24.11)**
+
+- [ ] PR `→ completed` with a linked `WorkItemId` triggers `IGitWorktreeService.RemoveAsync` on `{cloneRoot}\.worktree\ws-{workItemId}`.
+- [ ] PR `→ abandoned` with a linked `WorkItemId` also triggers worktree removal (abandoned = stale).
+- [ ] PR `→ completed` WITHOUT a `WorkItemId` (upstream-discovered PR) does NOT attempt worktree removal.
+- [ ] `WorktreeChangeFeed` is unsubscribed for the work item BEFORE `RemoveAsync` runs (no race with the 1 Hz tick).
+- [ ] Local branch `ws/{workItemId}` is deleted via `git branch -D` after worktree removal.
+- [ ] Failure in `RemoveAsync` is non-fatal — sync logs a warning and continues; `forge.worktree.cleanup { outcome: failed }` counter emitted.
+- [ ] Failure in `git branch -D` (branch doesn't exist) is swallowed — no error, no crash.
+- [ ] Idempotent — running cleanup twice (worktree already removed) is a no-op; second call does not throw.
+- [ ] SignalR `task.worktree-removed { workItemId, worktreePath, branch, prState }` fires on the `task.{wid}` channel after cleanup.
+- [ ] Audit row `forge_actions(kind='worktree-cleanup')` written with the worktree path + branch + PR state.
+- [ ] Remote branch is NOT deleted — only local worktree directory + local branch ref.
+- [ ] Work item's `RepoId` is null → cleanup skipped gracefully (no `CloneRoot` to resolve).
+- [ ] `Repo.CloneRoot` is empty → cleanup skipped gracefully (repo not cloned locally).
 
 **24.15 Full lifecycle timeline (end-to-end)**
 
