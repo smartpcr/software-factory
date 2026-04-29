@@ -571,6 +571,19 @@ function StateSelect({ value, onChange }: { value: WorkItemState; onChange: (s: 
 }
 
 function PointsStepper({ value, onChange }: { value: number; onChange: (n: number) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(String(value));
+
+  function commitEdit() {
+    setEditing(false);
+    const n = parseInt(draft, 10);
+    if (!Number.isNaN(n) && n >= 0 && n !== value) onChange(n);
+    else setDraft(String(value));
+  }
+
+  // Keep draft in sync when value changes externally.
+  useEffect(() => { if (!editing) setDraft(String(value)); }, [value, editing]);
+
   return (
     <span className="wit-detail-eyebrow-meta wit-detail-edit-shell">
       <span className="lbl">Points</span>
@@ -581,7 +594,34 @@ function PointsStepper({ value, onChange }: { value: number; onChange: (n: numbe
           disabled={value <= 0}
           onClick={() => onChange(Math.max(0, value - 1))}
         >−</button>
-        <span className="val">{value || '—'}</span>
+        {editing ? (
+          <input
+            type="number"
+            min={0}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commitEdit}
+            onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') { setEditing(false); setDraft(String(value)); } }}
+            autoFocus
+            style={{
+              width: 36, textAlign: 'center', fontSize: 12,
+              fontFamily: 'var(--font-mono)', fontWeight: 600,
+              background: 'var(--bg-surface)', color: 'var(--text-primary)',
+              border: '1px solid var(--accent)', borderRadius: 2,
+              outline: 'none', padding: '0 2px',
+              MozAppearance: 'textfield',
+            }}
+          />
+        ) : (
+          <span
+            className="val"
+            onClick={() => { setDraft(String(value)); setEditing(true); }}
+            title="Click to edit points"
+            style={{ cursor: 'text' }}
+          >
+            {value || '—'}
+          </span>
+        )}
         <button
           type="button"
           aria-label="Increment points"
