@@ -29,6 +29,7 @@ export interface WorktreeSnapshot {
   headAt?: string | null;
   truncated: boolean;
   at: string;
+  branchDiff?: { added: string[]; modified: string[]; deleted: string[] } | null;
 }
 
 export interface DeliverableShape {
@@ -150,6 +151,7 @@ async function ensureTaskConnection(): Promise<HubConnection> {
           headAt:      head?.at ?? null,
           truncated: p.truncated === true,
           at: msg.at ?? new Date().toISOString(),
+          branchDiff: (p.branchDiff as { added?: string[]; modified?: string[]; deleted?: string[] } | null) ?? null,
         };
         useTaskLiveStore.getState().applyWorktree(msg.workItemId, snap);
       }

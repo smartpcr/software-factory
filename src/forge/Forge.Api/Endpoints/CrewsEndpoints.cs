@@ -1322,6 +1322,17 @@ public static class CrewsEndpoints
         var queueRow = await taskQueue.EnqueueAsync(wiId, "crew", id, ct);
         await hub.Clients.All.SendAsync("queue.changed", new { kind = "enqueued", item = queueRow }, ct);
 
+        // Phase 19 — fan out workitem.changed so the ExecBadge transitions
+        // out of "completed"/"failed" back to "queued" without a refresh.
+        var planWi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == wiId, ct);
+        if (planWi is not null)
+        {
+            await hub.Clients.All.SendAsync(
+                "workitem.changed",
+                new { kind = "exec-queued", workItem = WorkItemsEndpoints.MapWorkItemRow(planWi) },
+                ct);
+        }
+
         return Results.Ok(new { queued = true, queueId = queueRow.Id, workItemId = wiId, crewId = id, pipeline = "plan" });
     }
 
@@ -1350,6 +1361,15 @@ public static class CrewsEndpoints
 
         var queueRow = await taskQueue.EnqueueAsync(wiId, "crew", id, ct);
         await hub.Clients.All.SendAsync("queue.changed", new { kind = "enqueued", item = queueRow }, ct);
+
+        var codeWi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == wiId, ct);
+        if (codeWi is not null)
+        {
+            await hub.Clients.All.SendAsync(
+                "workitem.changed",
+                new { kind = "exec-queued", workItem = WorkItemsEndpoints.MapWorkItemRow(codeWi) },
+                ct);
+        }
 
         return Results.Ok(new { queued = true, queueId = queueRow.Id, workItemId = wiId, crewId = id, pipeline = "code" });
     }

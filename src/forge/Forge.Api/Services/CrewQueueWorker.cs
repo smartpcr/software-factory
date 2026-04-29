@@ -165,6 +165,13 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             }, crewId: row.RoutedToCrewId, ct: ct);
         }
         await db.SaveChangesAsync(ct);
+
+        // Fan out workitem.changed for each row whose ExecutionStatus we touched.
+        foreach (var row in stale)
+        {
+            var wi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == row.WorkItemId, ct);
+            if (wi is not null) await this.BroadcastWorkItemChangedAsync(wi, "exec-requeued", ct);
+        }
         return stale.Count;
     }
 
@@ -284,6 +291,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 await this.AutoLinkToWorkstreamAsync(db, wi, ct);
 
                 await db.SaveChangesAsync(ct);
+                await this.BroadcastWorkItemChangedAsync(wi, "claimed", ct);
             }
             DwellMs.Record((DateTimeOffset.UtcNow - row.EnqueuedAt).TotalMilliseconds);
             await this.taskChannel.EmitAsync(row.WorkItemId, "task.delegated", new
@@ -792,41 +800,74 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
                     var prTitle = wi?.Title ?? workItemId;
 
-                    // Resolve agent full name for PR body
+                    // Resolve agent full name + role for the PR header.
                     var agentRow = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
                     var agentDisplayName = agentRow?.Name ?? agentId;
+                    var agentRole = string.IsNullOrEmpty(agentRow?.Role) ? "agent" : agentRow!.Role;
 
-                    // Build rich PR description
+                    // Pull the latest evaluator notes so the PR description
+                    // explains what changed, not just the work item brief.
+                    var lastDeliverable = await db.Deliverables.AsNoTracking()
+                        .Where(d => d.WorkItemId == workItemId)
+                        .OrderByDescending(d => d.Iter)
+                        .ThenByDescending(d => d.CreatedAt)
+                        .FirstOrDefaultAsync(ct);
+                    var changeNotes = lastDeliverable?.Notes ?? string.Empty;
+
+                    // Build rich PR description. Includes work item link,
+                    // agent avatar (dicebear seeded by id), full name + role,
+                    // change summary from evaluator notes. NO cost or token
+                    // counts — the user expressly does not want PRs to leak
+                    // spend numbers into the merge history.
+                    var avatarUrl = $"https://api.dicebear.com/7.x/personas/svg?seed={Uri.EscapeDataString(agentId)}";
                     var prBodyBuilder = new System.Text.StringBuilder();
                     prBodyBuilder.AppendLine($"## {prTitle}");
                     prBodyBuilder.AppendLine();
-                    prBodyBuilder.AppendLine($"**Work Item:** {workItemId}");
-                    if (wi?.ProviderRef is int provRef)
-                        prBodyBuilder.AppendLine($" (ADO #{provRef})");
+                    var wiLine = $"**Work Item:** {workItemId}";
+                    if (wi?.ProviderRef is int provRef) wiLine += $" (ADO #{provRef})";
+                    prBodyBuilder.AppendLine(wiLine);
                     prBodyBuilder.AppendLine();
-                    prBodyBuilder.AppendLine($"**Score:** {result.FinalScore} | **Iterations:** {result.Iterations}");
-                    prBodyBuilder.AppendLine($"**Agent:** {agentDisplayName} (crew {crewId})");
+                    prBodyBuilder.AppendLine($"<img src=\"{avatarUrl}\" width=\"32\" height=\"32\" align=\"left\" alt=\"{agentDisplayName}\" />");
+                    prBodyBuilder.AppendLine($"**Authored by:** {agentDisplayName} — _{agentRole}_ (crew {crewId})");
                     prBodyBuilder.AppendLine();
-                    if (!string.IsNullOrEmpty(wi?.DescriptionMd))
+                    prBodyBuilder.AppendLine("### What changed");
+                    if (!string.IsNullOrWhiteSpace(changeNotes))
+                    {
+                        var notes = changeNotes.Length > 800 ? changeNotes[..800] + "..." : changeNotes;
+                        prBodyBuilder.AppendLine(notes);
+                    }
+                    else if (!string.IsNullOrEmpty(wi?.DescriptionMd))
                     {
                         var wiDesc = wi.DescriptionMd.Length > 500 ? wi.DescriptionMd[..500] + "..." : wi.DescriptionMd;
-                        prBodyBuilder.AppendLine("### Description");
                         prBodyBuilder.AppendLine(wiDesc);
-                        prBodyBuilder.AppendLine();
                     }
+                    else
+                    {
+                        prBodyBuilder.AppendLine("_No change summary available._");
+                    }
+                    prBodyBuilder.AppendLine();
                     prBodyBuilder.AppendLine("---");
                     prBodyBuilder.AppendLine("*Auto-generated by Forge.*");
                     var prBody = prBodyBuilder.ToString();
 
-                    // Only pass WorkItemRef for ADO-backed work items.
-                    int? wiRef = wi?.Provider == "ado" ? wi.ProviderRef : null;
+                    // Pre-flight validation — refuse to call the provider
+                    // when the PR would be missing required context. Same
+                    // checks the user listed: work item association,
+                    // change description, agent identity.
+                    var wiRefForLink = wi?.Provider == "ado" ? wi.ProviderRef : null;
+                    if (wiRefForLink is null && string.IsNullOrEmpty(workItemId))
+                        throw new InvalidOperationException("PR validation failed: missing work item association.");
+                    if (string.IsNullOrWhiteSpace(prBody) || !prBody.Contains("### What changed"))
+                        throw new InvalidOperationException("PR validation failed: missing change description.");
+                    if (string.IsNullOrWhiteSpace(agentDisplayName))
+                        throw new InvalidOperationException("PR validation failed: missing agent identity.");
 
                     var pr = await provider.CreatePullRequestAsync(
                         new Forge.Api.Providers.NewPullRequestRequest(
                             branchName, baseBranch, prTitle, prBody,
                             RepositoryName: prRepoName,
                             ProjectName: prProjectName,
-                            WorkItemRef: wiRef),
+                            WorkItemRef: wiRefForLink),
                         Forge.Api.Providers.ProviderCallContext.Anonymous, ct);
 
                     await this.taskChannel.EmitAsync(workItemId, "task.pr-opened", new
@@ -871,6 +912,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                             wiRow.State = "in-review";
                             wiRow.UpdatedAt = DateTimeOffset.UtcNow;
                             await db.SaveChangesAsync(ct);
+                            await this.BroadcastWorkItemChangedAsync(wiRow, "state-changed", ct);
                         }
                     }
                     catch (Exception ex)
@@ -907,6 +949,39 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     }, crewId: crewId, ct: ct);
                     return; // skip the normal completion path
                 }
+            }
+            else
+            {
+                // Non-pass verdict (stalled, stalled-budget, reject, iterate-cap):
+                // the loop completed without a deliverable worth shipping, so
+                // PR creation never happened. Surface this as "failed" rather
+                // than "completed" so the ExecBadge stops pulsing AND clearly
+                // distinguishes from the success path. Without this branch the
+                // ExecutionStatus flipped to "completed" and the operator had
+                // no signal that the run ended without a PR.
+                this.logger.LogWarning(
+                    "Deliverable loop ended without pass verdict: wi={Wi} verdict={Verdict} score={Score}",
+                    workItemId, result.FinalVerdict, result.FinalScore);
+
+                await this.taskChannel.EmitAsync(workItemId, "task.delivery-skipped", new
+                {
+                    agentId,
+                    crewId,
+                    verdict = result.FinalVerdict,
+                    score = result.FinalScore,
+                    iterations = result.Iterations,
+                    reason = $"Loop ended with verdict='{result.FinalVerdict}' (score={result.FinalScore}); no PR created.",
+                }, crewId: crewId, ct: ct);
+
+                await this.CompleteQueueRowAsync(workItemId, ct);
+                await this.SetExecutionStatusAsync(workItemId, ExecutionStatuses.Failed, ct);
+                await this.taskChannel.EmitAsync(workItemId, "task.failed", new
+                {
+                    agentId,
+                    crewId,
+                    error = $"Run ended with verdict='{result.FinalVerdict}' (score={result.FinalScore}). No PR was created.",
+                }, crewId: crewId, ct: ct);
+                return;
             }
 
             // Transition queue row: picked-up → completed.
@@ -978,6 +1053,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 wi.ExecutionStatus = ExecutionStatuses.Completed;
                 wi.UpdatedAt = DateTimeOffset.UtcNow;
                 await db.SaveChangesAsync(ct);
+                await this.BroadcastWorkItemChangedAsync(wi, "exec-completed", ct);
             }
         }
         catch (Exception ex)
@@ -1003,6 +1079,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 wi.ExecutionStatus = status;
                 wi.UpdatedAt = DateTimeOffset.UtcNow;
                 await db.SaveChangesAsync(ct);
+                await this.BroadcastWorkItemChangedAsync(wi, $"exec-{status}", ct);
             }
         }
         catch (Exception ex)
@@ -1326,7 +1403,16 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
             recovered++;
         }
-        if (recovered > 0) await db.SaveChangesAsync(ct);
+        if (recovered > 0)
+        {
+            await db.SaveChangesAsync(ct);
+            // Fan out so the UI un-pulses the "live" pill on stuck rows.
+            foreach (var row in stale)
+            {
+                var wi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == row.WorkItemId, ct);
+                if (wi is not null) await this.BroadcastWorkItemChangedAsync(wi, "exec-requeued", ct);
+            }
+        }
         return recovered;
     }
 
@@ -1344,6 +1430,28 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             state = row.State,
             crewId = row.RoutedToCrewId,
         }, crewId: row.RoutedToCrewId, ct: ct);
+    }
+
+    /// <summary>
+    /// Phase 19 — fan out a <c>workitem.changed</c> SignalR event whenever the
+    /// background worker mutates <see cref="WorkItemRow.State"/> or
+    /// <see cref="WorkItemRow.ExecutionStatus"/>. Without this the UI's
+    /// useWorkItemsStore is never told the row moved out of "live", so the
+    /// ExecBadge stays green-pulsing long after the PR is up.
+    /// </summary>
+    private async Task BroadcastWorkItemChangedAsync(WorkItemRow row, string kind, CancellationToken ct)
+    {
+        try
+        {
+            await this.hub.Clients.All.SendAsync(
+                "workitem.changed",
+                new { kind, workItem = Forge.Api.Endpoints.WorkItemsEndpoints.MapWorkItemRow(row) },
+                ct);
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogDebug(ex, "Failed to broadcast workitem.changed for {Wi}", row.Id);
+        }
     }
 
     /// <summary>Counts emitted by one tick.</summary>

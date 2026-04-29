@@ -63,7 +63,7 @@ public static class MeEndpoints
             ? null
             : await db.Users.FirstOrDefaultAsync(
                 u => u.Email == caller || u.Login == caller || u.DisplayName == caller || u.Id == caller, ct);
-        me ??= await db.Users.OrderBy(u => u.CreatedAt).FirstOrDefaultAsync(ct);
+        me ??= (await db.Users.ToListAsync(ct)).OrderBy(u => u.CreatedAt).FirstOrDefault();
         if (me is null)
         {
             return Results.Problem(title: "No user identity yet — sign in first", statusCode: 401);

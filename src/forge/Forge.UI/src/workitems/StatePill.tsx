@@ -45,8 +45,9 @@ export function StatePill({ state, size = 'md' }: Props) {
 }
 
 const STATE_PALETTE: Record<WorkItemState, { fg: string; bg: string; border: string }> = {
-  proposed: { fg: 'var(--warning)', bg: 'var(--warning-bg)', border: 'var(--warning-border)' },
-  active:   { fg: 'var(--info)',    bg: 'var(--info-bg)',    border: 'var(--info-border)' },
-  resolved: { fg: 'var(--success)', bg: 'var(--success-bg)', border: 'var(--success-border)' },
-  closed:   { fg: 'var(--text-tertiary)', bg: 'transparent', border: 'var(--border-strong)' },
+  proposed:    { fg: 'var(--warning)', bg: 'var(--warning-bg)', border: 'var(--warning-border)' },
+  active:      { fg: 'var(--info)',    bg: 'var(--info-bg)',    border: 'var(--info-border)' },
+  'in-review': { fg: 'var(--accent)',  bg: 'var(--accent-bg, rgba(139,92,246,0.1))', border: 'var(--accent-border, rgba(139,92,246,0.3))' },
+  resolved:    { fg: 'var(--success)', bg: 'var(--success-bg)', border: 'var(--success-border)' },
+  closed:      { fg: 'var(--text-tertiary)', bg: 'transparent', border: 'var(--border-strong)' },
 };

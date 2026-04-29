@@ -654,6 +654,22 @@ public static class WorkItemsEndpoints
         Forge.Api.Realtime.TaskChannel taskChannel,
         CancellationToken ct)
     {
+        if (req is null) return Results.Problem(title: "Request body is required", statusCode: 400);
+
+        // Phase 19 — required-field gate. The user explicitly listed the
+        // four conditions a Forge PR must satisfy before reaching the
+        // provider: branch + baseBranch + title + a body that explains the
+        // change. Reject early so we never push half-formed PRs to the
+        // remote and have to clean them up later.
+        if (string.IsNullOrWhiteSpace(req.Branch))
+            return Results.Problem(title: "PR validation failed: branch is required", statusCode: 400);
+        if (string.IsNullOrWhiteSpace(req.BaseBranch))
+            return Results.Problem(title: "PR validation failed: baseBranch is required", statusCode: 400);
+        if (string.IsNullOrWhiteSpace(req.Title))
+            return Results.Problem(title: "PR validation failed: title is required", statusCode: 400);
+        if (string.IsNullOrWhiteSpace(req.Body))
+            return Results.Problem(title: "PR validation failed: body (change description) is required", statusCode: 400);
+
         var wi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == id, ct);
         if (wi is null) return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
 
@@ -678,11 +694,19 @@ public static class WorkItemsEndpoints
         if (provider is null)
             return Results.Problem(title: $"No configured provider for kind '{repoKind}'", statusCode: 503);
 
-        // Resolve work item ref for linking
+        // Resolve work item ref for linking. ADO requires a numeric work
+        // item id; for ADO repos refuse to ship a PR that wouldn't be
+        // associated with the work item.
         int? wiRef = req.WorkItemId ?? wi.ProviderRef;
+        if (string.Equals(repoKind, "ado", StringComparison.OrdinalIgnoreCase) && wiRef is null)
+        {
+            return Results.Problem(
+                title: "PR validation failed: ADO PR requires a work item id (req.workItemId or wi.providerRef).",
+                statusCode: 400);
+        }
 
         var prReq = new NewPullRequestRequest(
-            req.Branch, req.BaseBranch, req.Title, req.Body ?? "",
+            req.Branch, req.BaseBranch, req.Title, req.Body!,
             RepositoryName: prRepoName, ProjectName: prProjectName,
             WorkItemRef: wiRef);
 
@@ -712,6 +736,13 @@ public static class WorkItemsEndpoints
     // ----- helpers --------------------------------------------------------
 
     private static string NewRevision() => Guid.NewGuid().ToString("N");
+
+    /// <summary>
+    /// Map a <see cref="WorkItemRow"/> to the public <see cref="WorkItem"/> contract.
+    /// Internal so background services (CrewQueueWorker) can build the same
+    /// shape when broadcasting <c>workitem.changed</c> from outside this class.
+    /// </summary>
+    internal static WorkItem MapWorkItemRow(WorkItemRow r) => MapWorkItem(r);
 
     private static WorkItem MapWorkItem(WorkItemRow r)
     {

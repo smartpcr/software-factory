@@ -19,7 +19,7 @@ export type WorkItemType =
   | 'stage'
   | 'step';
 
-export type WorkItemState = 'proposed' | 'active' | 'resolved' | 'closed';
+export type WorkItemState = 'proposed' | 'active' | 'in-review' | 'resolved' | 'closed';
 export type WorkItemPriority = 'low' | 'med' | 'high';
 export type RepoKind = 'ado' | 'github';
 
@@ -101,7 +101,7 @@ export const WORK_ITEM_TYPES: WorkItemType[] = [
   'epic', 'feature', 'task', 'bug',
   'phase', 'stage', 'step',
 ];
-export const WORK_ITEM_STATES: WorkItemState[] = ['proposed', 'active', 'resolved', 'closed'];
+export const WORK_ITEM_STATES: WorkItemState[] = ['proposed', 'active', 'in-review', 'resolved', 'closed'];
 
 /**
  * Track a type belongs to. Cleanest derivation: epic/feature/task/bug → dev;

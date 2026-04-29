@@ -355,10 +355,15 @@ public static class TaskExecutionEndpoints
         if (body.MaxIterations is int val && (val < 1 || val > 50))
             return Results.Problem(title: "maxIterations must be between 1 and 50", statusCode: 400);
 
+        // Prefer the active (non-completed) queue row so overrides land on the running task.
         var queueRow = await db.TaskQueue
-            .Where(q => q.WorkItemId == id)
-            .OrderByDescending(q => q.EnqueuedAt)
-            .FirstOrDefaultAsync(ct);
+            .Where(q => q.WorkItemId == id && q.State != "completed")
+            .OrderByDescending(q => q.Id)
+            .FirstOrDefaultAsync(ct)
+            ?? await db.TaskQueue
+                .Where(q => q.WorkItemId == id)
+                .OrderByDescending(q => q.Id)
+                .FirstOrDefaultAsync(ct);
 
         if (queueRow is null)
             return Results.Problem(title: $"No queue entry for work item {id}", statusCode: 404);

@@ -166,7 +166,7 @@ function sortValue(i: WorkItem, k: SortKey): string | number {
     case 'id': return i.id;
     case 'type': return i.type;
     case 'title': return i.title.toLowerCase();
-    case 'state': return ['proposed', 'active', 'resolved', 'closed'].indexOf(i.state);
+    case 'state': return ['proposed', 'active', 'in-review', 'resolved', 'closed'].indexOf(i.state);
     case 'iteration': return i.iterationRef;
     case 'assignee': return i.assignedTo?.displayName ?? '~~unassigned';
     case 'points': return i.points;

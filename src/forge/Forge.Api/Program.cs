@@ -263,6 +263,14 @@ app.MapAdminEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 
+// Prevent unobserved Task exceptions from crashing the process.
+// Background agent tasks (Task.Run in CrewQueueWorker) can throw
+// ObjectDisposedException on shutdown — swallow instead of crashing.
+TaskScheduler.UnobservedTaskException += (_, e) =>
+{
+    e.SetObserved();
+};
+
 app.Run();
 
 /// <summary>

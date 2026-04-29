@@ -23,13 +23,14 @@ interface Props {
   items: WorkItem[];
 }
 
-const STATE_ORDER: WorkItemState[] = ['proposed', 'active', 'resolved', 'closed'];
+const STATE_ORDER: WorkItemState[] = ['proposed', 'active', 'in-review', 'resolved', 'closed'];
 
 const STATE_COPY: Record<WorkItemState, { label: string; sub: string }> = {
-  proposed: { label: 'Proposed',  sub: 'Awaiting triage' },
-  active:   { label: 'Active',    sub: 'In flight' },
-  resolved: { label: 'Resolved',  sub: 'Awaiting close' },
-  closed:   { label: 'Closed',    sub: 'Done or removed' },
+  proposed:    { label: 'Proposed',   sub: 'Awaiting triage' },
+  active:      { label: 'Active',     sub: 'In flight' },
+  'in-review': { label: 'In Review',  sub: 'PR under review' },
+  resolved:    { label: 'Resolved',   sub: 'Awaiting close' },
+  closed:      { label: 'Closed',     sub: 'Done or removed' },
 };
 
 // Phase 12 — board mode with drag-drop between state columns. Uses dnd-kit
@@ -42,9 +43,12 @@ export function WorkItemBoard({ items }: Props) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
 
   const buckets: Record<WorkItemState, WorkItem[]> = {
-    proposed: [], active: [], resolved: [], closed: [],
+    proposed: [], active: [], 'in-review': [], resolved: [], closed: [],
   };
-  for (const i of items) buckets[i.state].push(i);
+  for (const i of items) {
+    if (buckets[i.state]) buckets[i.state].push(i);
+    else buckets.active.push(i); // unknown states fall into active
+  }
   for (const k of STATE_ORDER) {
     buckets[k].sort((a, b) => a.title.localeCompare(b.title));
   }

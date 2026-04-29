@@ -169,6 +169,17 @@ public static class QueueEndpoints
         var row = await queue.CancelAsync(id, caller, req?.Reason, ct);
         if (row is null) return Results.Problem(title: $"Queue row {id} already closed", statusCode: 409);
         await BroadcastChangedAsync(hub, row, "cancelled", ct);
+
+        // Phase 19 — also fan out workitem.changed so the ExecBadge updates
+        // immediately. CancelAsync flips ExecutionStatus to "cancelled".
+        var wi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == row.WorkItemId, ct);
+        if (wi is not null)
+        {
+            await hub.Clients.All.SendAsync(
+                "workitem.changed",
+                new { kind = "exec-cancelled", workItem = WorkItemsEndpoints.MapWorkItemRow(wi) },
+                ct);
+        }
         return Results.Ok(MapRow(row));
     }
 

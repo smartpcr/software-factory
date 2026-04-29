@@ -74,10 +74,10 @@ public sealed record DeliverableLoopRequest(
     int? MaxIterations = null);
 
 /// <summary>One generator turn's raw output + cost.</summary>
-public sealed record GeneratorRunOutput(string OutputText, decimal CostUsd);
+public sealed record GeneratorRunOutput(string OutputText, decimal CostUsd, long InputTokens = 0, long OutputTokens = 0);
 
 /// <summary>One evaluator turn's raw output + cost.</summary>
-public sealed record EvaluatorRunOutput(string AssistantText, decimal CostUsd);
+public sealed record EvaluatorRunOutput(string AssistantText, decimal CostUsd, long InputTokens = 0, long OutputTokens = 0);
 
 /// <summary>Final outcome of <see cref="IDeliverableLoop.RunAsync"/>.</summary>
 public sealed record DeliverableLoopResult(
@@ -131,11 +131,20 @@ public sealed class DeliverableLoop : IDeliverableLoop
         {
             // Phase 20 — re-read per-work-item override each iteration so
             // the lead can raise/lower the cap from the Live Execution view.
-            var queueOverride = await this.db.TaskQueue.AsNoTracking()
-                .Where(q => q.WorkItemId == request.WorkItemId && q.MaxIterOverride != null)
-                .OrderByDescending(q => q.EnqueuedAt)
+            // Prefer the active (non-completed) row, fall back to any row with an override.
+            var queueRows = await this.db.TaskQueue.AsNoTracking()
+                .Where(q => q.WorkItemId == request.WorkItemId)
+                .ToListAsync(ct);
+            var queueOverride = queueRows
+                .Where(q => q.State != "completed" && q.MaxIterOverride != null)
+                .OrderByDescending(q => q.Id)
                 .Select(q => q.MaxIterOverride)
-                .FirstOrDefaultAsync(ct);
+                .FirstOrDefault()
+                ?? queueRows
+                    .Where(q => q.MaxIterOverride != null)
+                    .OrderByDescending(q => q.Id)
+                    .Select(q => q.MaxIterOverride)
+                    .FirstOrDefault();
             if (queueOverride is int ov && ov > 0)
             {
                 maxIter = ov;
@@ -154,12 +163,12 @@ public sealed class DeliverableLoop : IDeliverableLoop
 
             // (a) generator
             var gen = await request.Generator(iter, notesForNext, ct);
-            await this.WriteUsageAsync(request.WorkItemId, request.GeneratorAgentId, request.CrewId, "generator", gen.CostUsd, ct);
+            await this.WriteUsageAsync(request.WorkItemId, request.GeneratorAgentId, request.CrewId, "generator", gen.CostUsd, gen.InputTokens, gen.OutputTokens, ct);
 
             // (b) evaluator
             var eval = await request.Evaluator(iter, gen.OutputText, ct);
             lastScore = EvaluatorScoreParser.Parse(eval.AssistantText);
-            await this.WriteUsageAsync(request.WorkItemId, pinnedEvaluator, evalCrewId, "evaluator", eval.CostUsd, ct);
+            await this.WriteUsageAsync(request.WorkItemId, pinnedEvaluator, evalCrewId, "evaluator", eval.CostUsd, eval.InputTokens, eval.OutputTokens, ct);
 
             totalCost += gen.CostUsd + eval.CostUsd;
 
@@ -264,7 +273,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// per-pair salary is reportable separately. <c>category</c> is one
     /// of <c>generator | evaluator | judge</c>.
     /// </summary>
-    private async Task WriteUsageAsync(string workItemId, string? agentId, string crewId, string category, decimal costUsd, CancellationToken ct)
+    private async Task WriteUsageAsync(string workItemId, string? agentId, string crewId, string category, decimal costUsd, long inputTokens, long outputTokens, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(agentId)) return;
         var now = DateTimeOffset.UtcNow;
@@ -274,8 +283,8 @@ public sealed class DeliverableLoop : IDeliverableLoop
             CrewId = crewId,
             TaskId = workItemId,
             Model = string.Empty,
-            InputTokens = 0,
-            OutputTokens = 0,
+            InputTokens = inputTokens,
+            OutputTokens = outputTokens,
             CostUsd = costUsd,
             StartedAt = now,
             EndedAt = now,

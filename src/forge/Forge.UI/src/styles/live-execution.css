@@ -429,17 +429,24 @@
 .live-exec__wt-author { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
 
 .live-exec__file-list {
-  margin-top: 12px;
+  margin-top: 6px;
   display: flex;
   flex-direction: column;
   gap: 2px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: 11px;
 }
-.live-exec__file-row { color: var(--text-secondary); }
+.live-exec__file-row { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .live-exec__file-row.added::before    { content: '+ '; color: var(--success); }
 .live-exec__file-row.modified::before { content: '~ '; color: var(--warning); }
 .live-exec__file-row.deleted::before  { content: '− '; color: var(--danger); }
+
+.live-exec__commits { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.live-exec__commit-group {
+  border-left: 2px solid var(--border-strong);
+  padding-left: 8px;
+}
+.live-exec__commit-group .live-exec__file-list { margin-top: 4px; }
 
 /* tokens tab */
 .live-exec__tokens-bar {
@@ -456,10 +463,34 @@
 .live-exec__cost-row {
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
   font-size: 13px;
   margin-bottom: 4px;
 }
 .live-exec__cost-row strong { font-variant-numeric: tabular-nums; color: var(--text-primary); }
+.live-exec__cost-tokens {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-left: auto;
+  margin-right: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.live-exec__cost-detail {
+  display: flex;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  margin: -2px 0 6px 0;
+  padding-left: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.live-exec__cost-total {
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+  margin-top: 4px;
+}
 
 /* progress tab */
 .live-exec__iter-list {
@@ -502,4 +533,57 @@
 @keyframes forge-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50%      { opacity: 0.55; transform: scale(1.4); }
+}
+
+/* ── Phase 19 — Iteration pager ─────────────────────────────────────── */
+.live-exec__iter-pager {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2, #1a1a18);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.live-exec__iter-pager button {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 2px 8px;
+  font: inherit;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  transition: background 100ms, border-color 100ms;
+}
+.live-exec__iter-pager button:hover:not(:disabled) {
+  background: var(--bg-3, #2a2a26);
+  border-color: var(--border);
+}
+.live-exec__iter-pager button.active {
+  background: var(--accent-bg, rgba(59,130,246,0.12));
+  border-color: var(--accent, #3b82f6);
+  color: var(--accent, #3b82f6);
+}
+.live-exec__iter-pager button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.live-exec__iter-pager-score {
+  font-size: 9px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--bg-3, #333);
+}
+.live-exec__iter-pager-score.pass { color: var(--success); }
+.live-exec__iter-pager-score.iterate { color: var(--warning); }
+.live-exec__iter-pager-score.reject { color: var(--danger); }
+.live-exec__iter-pager-label {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 10px;
 }

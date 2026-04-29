@@ -120,6 +120,12 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
                                 at = snap.HeadAt,
                             },
                             truncated = snap.Truncated,
+                            branchDiff = new
+                            {
+                                added = snap.BranchDiffAdded ?? (IReadOnlyList<string>)Array.Empty<string>(),
+                                modified = snap.BranchDiffModified ?? (IReadOnlyList<string>)Array.Empty<string>(),
+                                deleted = snap.BranchDiffDeleted ?? (IReadOnlyList<string>)Array.Empty<string>(),
+                            },
                         },
                         ct: ct);
                 }
@@ -201,6 +207,28 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
             || parsed.ModifiedPaths.Count >= MaxPathsPerCategory
             || parsed.DeletedPaths.Count  >= MaxPathsPerCategory;
 
+        // Branch diff: files changed vs. the upstream base (main/master).
+        var branchDiffAdded = new List<string>();
+        var branchDiffModified = new List<string>();
+        var branchDiffDeleted = new List<string>();
+        var diffOutput = await RunGitAsync(path, "diff --name-status main..HEAD", ct);
+        if (!string.IsNullOrEmpty(diffOutput))
+        {
+            foreach (var line in diffOutput!.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (line.Length < 2) continue;
+                var diffStatus = line[0];
+                var filePath = line.Substring(1).Trim();
+                if (string.IsNullOrEmpty(filePath)) continue;
+                switch (diffStatus)
+                {
+                    case 'A': branchDiffAdded.Add(filePath); break;
+                    case 'D': branchDiffDeleted.Add(filePath); break;
+                    default:  branchDiffModified.Add(filePath); break;
+                }
+            }
+        }
+
         return new Snapshot(
             Added:    parsed.AddedPaths.Count,
             Modified: parsed.ModifiedPaths.Count,
@@ -215,7 +243,10 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
             HeadMessage: message,
             HeadAuthor:  author,
             HeadAt:      at,
-            Truncated:   truncated);
+            Truncated:   truncated,
+            BranchDiffAdded:    branchDiffAdded,
+            BranchDiffModified: branchDiffModified,
+            BranchDiffDeleted:  branchDiffDeleted);
     }
 
     private static async Task<string?> RunGitAsync(string cwd, string args, CancellationToken ct)
@@ -333,7 +364,10 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
         string? HeadMessage,
         string? HeadAuthor,
         DateTimeOffset? HeadAt,
-        bool Truncated)
+        bool Truncated,
+        IReadOnlyList<string>? BranchDiffAdded = null,
+        IReadOnlyList<string>? BranchDiffModified = null,
+        IReadOnlyList<string>? BranchDiffDeleted = null)
     {
         // Equals(): cheap content comparison so an unchanged tick is free.
         public bool Equals(Snapshot? other) =>

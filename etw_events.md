@@ -485,6 +485,158 @@ WindowsEvents
 
 ---
 
+## Iteration 2: Forge Correctness Gaps → ILogger/SignalR Queries
+
+### Approach
+
+Iteration 2 addresses correctness issues from `forge_gaps.md` by mapping them to observable ILogger call sites and SignalR hub events. Since this repository uses `ILogger<T>` (not ETW), queries target structured log sinks (Application Insights / Seq / console JSON).
+
+### Forge Correctness Issues Mapped
+
+| Forge Gap | Issue | Observable Signal | Query |
+|-----------|-------|-------------------|-------|
+| **11.6 ↔ 11.5** | `ClaudeAgentRunner` never invokes sandbox; `tool_use` parsing absent | `AgentsEndpoints.PumpEvents` LogError on crash (line 463) | Q16 |
+| **11.5** | Claude API transient failures during SSE streaming | `AgentRunnerDispatcher` LogWarning on HTTP retry (lines 250, 259) | Q17 |
+| **11.7** | SignalR fan-out works but no UI consumer wired | `agent.event` / `agent.usage` SignalR messages to `agent.{agentId}` groups | Q18 |
+| **11.7** | TelemetryHub client attach/detach not verified | `TelemetryHub` LogInformation on attach/detach (lines 48, 69) | Q19 |
+| **11.6** | EngineEventBridge doesn't map ToolCall/ToolResult event types | `EngineEventBridge` LogWarning on unknown event type (line 45) | Q20 |
+| **11.7** | RunEvent JSONL persistence failures | `TelemetryHubSink` LogWarning on write failure (line 50) | Q21 |
+| **11.10** | Budget exceeded events not logged at app level | `AgentBudgetExceededException` propagation through PumpEvents | Q22 |
+
+### Logging Gaps Identified (Forge)
+
+| Area | Gap | Impact |
+|------|-----|--------|
+| `AgentToolHost` sandbox enforcement | Tool allowlist checks, path traversal prevention, symlink detection have NO ILogger calls | Cannot audit tool execution or detect blocked tool attempts |
+| `AgentRunnerDispatcher.RunClaudeSdk` | SSE `content_block_delta` parsing only handles `text` type; no `tool_use` parsing | ToolCall/ToolResult events never emitted; agents are chat-only |
+| `ForgeHub` | No ILogger calls in Subscribe/Unsubscribe methods | Cannot audit SignalR group membership changes |
+| Budget enforcement | `RecordTokens()` throws on budget breach but doesn't log before throwing | Silent budget enforcement; only observable through exception propagation |
+
+### Query 16: Agent Invocation Pump Crashes
+
+**Database:** Application Logs (ILogger sink)
+**Issue:** FORGE-GAP-11.6 — ClaudeAgentRunner tool_use not wired
+
+```kusto
+traces
+| where message has "pump crashed"
+| where severityLevel >= 3
+| project timestamp, message, customDimensions.Id, customDimensions.ExceptionType, customDimensions.ExceptionMessage
+| order by timestamp desc
+| limit 1000
+```
+
+**How to Interpret:** Each row is a fatal crash in the agent event pump. `ExceptionType` reveals cause: `JsonException` (unexpected SSE block like `tool_use`), `HttpRequestException` (API failure), `AgentBudgetExceededException` (budget breached).
+
+---
+
+### Query 17: Claude API HTTP Retries
+
+**Database:** Application Logs (ILogger sink)
+**Issue:** FORGE-GAP-11.5 — ClaudeAgentRunner SSE reliability
+
+```kusto
+traces
+| where message has "Claude HTTP failed" or message has "Claude returned"
+| where severityLevel >= 2
+| project timestamp, message, customDimensions.Attempt, customDimensions.Status, customDimensions.ExceptionType
+| order by timestamp desc
+| limit 1000
+```
+
+**How to Interpret:** "Claude HTTP failed" = network exception. "Claude returned {Status}" = 429 (rate limited), 503 (unavailable), 529 (overloaded). Attempt > 3 = approaching max retries.
+
+---
+
+### Query 18: SignalR Agent Event Fan-Out
+
+**Database:** Application Logs (ILogger sink)
+**Issue:** FORGE-GAP-11.7 — SignalR streaming UI hooks not wired
+
+```kusto
+traces
+| where message has "agent.event" or message has "agent.usage" or message has "agent.budget_exceeded" or message has "agent.reassigned"
+| project timestamp, message, customDimensions.agentId, customDimensions.kind, customDimensions.invocationId
+| order by timestamp desc
+| limit 1000
+```
+
+**How to Interpret:** If rows exist but UI shows no updates, server fan-out works but UI hooks are missing (confirmed gap).
+
+---
+
+### Query 19: TelemetryHub Connection Lifecycle
+
+**Database:** Application Logs (ILogger sink)
+**Issue:** FORGE-GAP-11.7 — SignalR streaming verification
+
+```kusto
+traces
+| where message has "attached to run" or message has "detached from run"
+| project timestamp, message, customDimensions.ConnectionId, customDimensions.RunId
+| summarize AttachCount=countif(message has "attached"), DetachCount=countif(message has "detached") by bin(timestamp, 1h)
+| order by timestamp desc
+| limit 1000
+```
+
+**How to Interpret:** AttachCount = 0 means no UI clients subscribing. Both > 0 = healthy; if UI still dark, issue is client-side.
+
+---
+
+### Query 20: EngineEventBridge Unknown Event Types
+
+**Database:** Application Logs (ILogger sink)
+**Issue:** FORGE-GAP-11.6 — ToolCall/ToolResult events not bridged
+
+```kusto
+traces
+| where message has "Unknown engine event type"
+| project timestamp, message, customDimensions.EventType
+| summarize Count=count() by customDimensions.EventType
+| order by Count desc
+| limit 1000
+```
+
+**How to Interpret:** EventType = "ToolCallEvent" or "ToolResultEvent" confirms tool events produced but not bridged. Expected while gap 11.6 is open.
+
+---
+
+### Query 21: RunEvent Persistence Failures
+
+**Database:** Application Logs (ILogger sink)
+**Issue:** FORGE-GAP-11.7 — SignalR streaming reliability
+
+```kusto
+traces
+| where message has "Failed to persist run event"
+| where severityLevel >= 2
+| project timestamp, message, customDimensions.RunId, customDimensions.Seq, customDimensions.ExceptionType
+| order by timestamp desc
+| limit 1000
+```
+
+**How to Interpret:** Repeated failures for same RunId = corrupted/locked history file. IOException = disk issue. JsonException = serialization failure.
+
+---
+
+### Query 22: Agent Budget Exceeded Events
+
+**Database:** Application Logs (ILogger sink)
+**Issue:** FORGE-GAP-11.10 — Budget enforcement observability
+
+```kusto
+traces
+| where message has "budget_exceeded" or message has "AgentBudgetExceededException" or message has "pump crashed"
+| where customDimensions.ExceptionType == "AgentBudgetExceededException" or message has "budget"
+| project timestamp, message, customDimensions.agentId, customDimensions.ExceptionType
+| order by timestamp desc
+| limit 1000
+```
+
+**How to Interpret:** "pump crashed" + AgentBudgetExceededException = budget exceeded mid-stream. No rows = either no breaches or silent enforcement (logging gap).
+
+---
+
 ## Logging Gaps (Updated)
 
 | Area | Gap | Impact |
@@ -494,7 +646,20 @@ WindowsEvents
 | No distributed tracing | No `ActivitySource` usage | Cannot correlate operations across services |
 | Dynamic provider discovery | Provider names not hardcoded -- discovered from ETL file content at runtime | Cannot enumerate all possible providers without sample ETL files |
 | No schema registry | Event schemas inferred from first event occurrence per type | Schema mismatches possible if first event has null payload fields |
+| AgentToolHost sandbox | Tool allowlist, path traversal, symlink, budget checks have no ILogger | Cannot audit sandbox enforcement decisions |
+| ForgeHub SignalR | No ILogger in Subscribe/Unsubscribe | Cannot audit group membership changes |
+| Budget enforcement | RecordTokens throws without logging | Budget breaches only observable through exception propagation |
 
 ---
 
-Queries generated: 15
+## Query Generation Log
+
+| Iteration | New Queries | Total Queries | Max Score | Reason |
+|-----------|-------------|---------------|-----------|--------|
+| 0 | 0 | 0 | N/A | Scanned all src/ projects. No production EventSource classes found. Repository is an ETW consumer/analyzer tool, not an ETW producer. |
+| 1 | 15 (Q1-Q15) | 15 | N/A | Shifted focus to consumed ETW providers. Scanned feature files, parsers, and ingest pipeline code for hardcoded provider names and event names. Generated queries targeting the `['ETL-{Provider}.{Event}']` table convention used by this tool. |
+| 2 | 7 (Q16-Q22) | 22 | N/A | Mapped forge_gaps.md correctness issues (11.5, 11.6, 11.7, 11.10) to ILogger call sites and SignalR hub events. Wrote Q1-Q15 to disk. Generated Q16-Q22 targeting Application Logs for agent runtime observability. |
+
+---
+
+Queries generated: 22

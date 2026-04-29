@@ -37,17 +37,26 @@ export function LiveExecutionView(): JSX.Element {
   const [promptRole, setPromptRole] = useState<'generator' | 'evaluator'>('generator');
   const [maxIter, setMaxIter] = useState<number | null>(null);
 
-  // Sync local maxIter from server snapshot on first load.
-  const effectiveMaxIter = maxIter ?? snapshot?.maxIterations ?? 5;
-
   const snapshot = entry?.snapshot ?? null;
   const transcript = entry?.transcript ?? [];
   const worktree = entry?.worktree ?? snapshot?.worktree ?? null;
+
+  // Sync local maxIter from server snapshot on first load.
+  const effectiveMaxIter = maxIter ?? snapshot?.maxIterations ?? 5;
+
   const genCrewId = snapshot?.generatorCrewId ?? null;
   const evalCrewId = snapshot?.evaluatorCrewId ?? null;
   const genAgentId = snapshot?.generatorAgentId ?? null;
   const evalAgentId = snapshot?.evaluatorAgentId ?? null;
   const filtered = useMemo(() => filterEvents(transcript, filter, genCrewId, evalCrewId, genAgentId, evalAgentId), [transcript, filter, genCrewId, evalCrewId, genAgentId, evalAgentId]);
+
+  // Phase 19 — group filtered events by iteration for paged display.
+  const iterations = useMemo(() => groupByIteration(filtered), [filtered]);
+  const totalIters = iterations.length;
+  const [selectedIter, setSelectedIter] = useState<number | null>(null);
+  // Default to the latest iteration; selectedIter===null means "follow latest".
+  const activeIter = selectedIter ?? (totalIters > 0 ? totalIters - 1 : 0);
+  const visibleEvents = totalIters > 0 ? iterations[activeIter]?.events ?? [] : filtered;
 
   // Extract latest system + user prompt from the most recent task.prompt event, per role.
   const latestPrompt = useMemo(() => {
@@ -295,8 +304,51 @@ export function LiveExecutionView(): JSX.Element {
             {copied ? '✓ Copied' : '⎘ Copy logs'}
           </button>
         </nav>
+        {totalIters > 1 && (
+          <nav className="live-exec__iter-pager" aria-label="Iteration pager">
+            <button
+              type="button"
+              disabled={activeIter === 0}
+              onClick={() => setSelectedIter(Math.max(0, activeIter - 1))}
+              title="Previous iteration"
+            >
+              ◂
+            </button>
+            {iterations.map((it, idx) => (
+              <button
+                key={idx}
+                type="button"
+                className={idx === activeIter ? 'active' : ''}
+                onClick={() => setSelectedIter(idx === totalIters - 1 ? null : idx)}
+                title={it.label}
+              >
+                {idx + 1}
+                {it.score != null && (
+                  <span className={`live-exec__iter-pager-score ${it.verdict ?? ''}`}>
+                    {it.score}
+                  </span>
+                )}
+              </button>
+            ))}
+            <button
+              type="button"
+              disabled={activeIter >= totalIters - 1}
+              onClick={() => {
+                const next = activeIter + 1;
+                setSelectedIter(next >= totalIters - 1 ? null : next);
+              }}
+              title="Next iteration"
+            >
+              ▸
+            </button>
+            <span className="live-exec__iter-pager-label">
+              Iteration {activeIter + 1} of {totalIters}
+              {selectedIter === null && ' (latest)'}
+            </span>
+          </nav>
+        )}
         <div className="live-exec__transcript" style={{ userSelect: 'text' }}>
-          {filtered.length === 0 ? (
+          {visibleEvents.length === 0 ? (
             <div className="live-exec__empty">
               {entry?.loading ? 'Loading…' : 'No events yet.'}
               {snapshot?.autoDispatchedAt == null && !entry?.loading && (
@@ -304,7 +356,7 @@ export function LiveExecutionView(): JSX.Element {
               )}
             </div>
           ) : (
-            filtered.map((evt) => <TranscriptLine key={`${evt.id}:${evt.at}`} evt={evt} generatorCrewId={genCrewId} evaluatorCrewId={evalCrewId} />)
+            visibleEvents.map((evt) => <TranscriptLine key={`${evt.id}:${evt.at}`} evt={evt} generatorCrewId={genCrewId} evaluatorCrewId={evalCrewId} />)
           )}
         </div>
       </main>
@@ -482,6 +534,23 @@ function renderPayload(evt: TaskTranscriptEvent): string {
     const err = typeof p.error === 'string' ? p.error : '';
     return err ? `✗ ${err.substring(0, 150)}` : '✗ failed';
   }
+  if (evt.kind === 'task.delivery-skipped') {
+    const reason = typeof p.reason === 'string' ? p.reason : '';
+    return reason ? `⊘ no PR — ${reason.substring(0, 150)}` : '⊘ no PR created';
+  }
+  if (evt.kind === 'task.pr-opened') {
+    const prId = (p.prId as string | number | undefined) ?? '?';
+    const branch = (p.branch as string | undefined) ?? '';
+    return branch ? `↑ PR #${prId} (${branch})` : `↑ PR #${prId}`;
+  }
+  if (evt.kind === 'task.pr-failed') {
+    const err = typeof p.error === 'string' ? p.error : '';
+    return err ? `✗ PR failed: ${err.substring(0, 150)}` : '✗ PR failed';
+  }
+  if (evt.kind === 'task.delivery-failed') {
+    const reason = typeof p.reason === 'string' ? p.reason : '';
+    return reason ? `✗ delivery failed: ${reason}` : '✗ delivery failed';
+  }
   // Fallback — compact JSON.
   try { return JSON.stringify(p); } catch { return ''; }
 }
@@ -536,14 +605,129 @@ function filterEvents(
   return events;
 }
 
+// ── Phase 19 — group events by iteration for paged display ────────────
+
+interface IterationGroup {
+  label: string;
+  score: number | null;
+  verdict: string | null;
+  events: TaskTranscriptEvent[];
+}
+
+const ITER_BOUNDARY_KINDS = new Set([
+  'task.iteration.started',
+  'task.iteration.scored',
+  'task.iteration.passed',
+  'task.iteration.rejected',
+  'task.iteration.iterated',
+  'task.iteration.stalled',
+]);
+
+function groupByIteration(events: TaskTranscriptEvent[]): IterationGroup[] {
+  if (events.length === 0) return [];
+
+  const groups: IterationGroup[] = [];
+  let current: IterationGroup = { label: 'Iteration 1', score: null, verdict: null, events: [] };
+
+  for (const evt of events) {
+    // Detect iteration start from prompt events or iteration.started
+    if (evt.kind === 'task.iteration.started') {
+      const p = evt.payload as Record<string, unknown> | null;
+      const iter = (p?.iter as number) ?? groups.length + 2;
+      // Close the current group and start a new one
+      if (current.events.length > 0) {
+        groups.push(current);
+      }
+      current = { label: `Iteration ${iter}`, score: null, verdict: null, events: [evt] };
+      continue;
+    }
+
+    // Capture score/verdict from scoring events
+    if (ITER_BOUNDARY_KINDS.has(evt.kind)) {
+      const p = evt.payload as Record<string, unknown> | null;
+      if (p?.score != null) current.score = p.score as number;
+      if (p?.verdict != null) current.verdict = p.verdict as string;
+    }
+
+    current.events.push(evt);
+  }
+
+  // Push the last group
+  if (current.events.length > 0) {
+    groups.push(current);
+  }
+
+  // If we only have 1 group and no iteration markers, it's pre-iteration
+  // or a single iteration — still return it so paging degrades gracefully.
+  return groups;
+}
+
 function WorktreeTab(props: { snap: WorktreeSnapshot | null; transcript: TaskTranscriptEvent[] }): JSX.Element {
   const { snap, transcript } = props;
   if (!snap) {
     return <div className="live-exec__empty">No worktree activity yet.</div>;
   }
-  // Pull the most recent path arrays from the latest worktree-tick payload.
+
+  // Collect commits and file changes from worktree-tick events.
+  // Dirty files accumulate before a commit; when SHA changes, those files
+  // belong to the new commit.
+  const commits = useMemo(() => {
+    const result: Array<{
+      sha: string;
+      message: string;
+      author: string;
+      at: string;
+      added: string[];
+      modified: string[];
+      deleted: string[];
+    }> = [];
+    let prevSha = '';
+    const seenShas = new Set<string>();
+    // Accumulate dirty files between commits
+    let pendingAdded = new Set<string>();
+    let pendingModified = new Set<string>();
+    let pendingDeleted = new Set<string>();
+
+    for (const evt of transcript) {
+      if (evt.kind !== 'task.worktree-tick') continue;
+      const p = evt.payload as Record<string, unknown> | null;
+      if (!p) continue;
+      const head = p.head as { sha?: string; message?: string; author?: string; at?: string } | null;
+      const paths = p.paths as { added?: string[]; modified?: string[]; deleted?: string[] } | null;
+      const sha = head?.sha ?? '';
+      if (!sha) continue;
+
+      if (sha !== prevSha && prevSha && !seenShas.has(sha)) {
+        seenShas.add(sha);
+        // The pending files are what was dirty before this commit
+        result.push({
+          sha,
+          message: head?.message ?? '',
+          author: head?.author ?? '',
+          at: head?.at ?? evt.at,
+          added: [...pendingAdded],
+          modified: [...pendingModified],
+          deleted: [...pendingDeleted],
+        });
+        pendingAdded.clear();
+        pendingModified.clear();
+        pendingDeleted.clear();
+      } else {
+        // Accumulate dirty files
+        for (const f of paths?.added ?? []) pendingAdded.add(f);
+        for (const f of paths?.modified ?? []) pendingModified.add(f);
+        for (const f of paths?.deleted ?? []) pendingDeleted.add(f);
+      }
+      prevSha = sha;
+    }
+    return result;
+  }, [transcript]);
+
+  // Also get latest dirty (uncommitted) files from the last tick
   const lastTick = [...transcript].reverse().find((e) => e.kind === 'task.worktree-tick');
-  const paths = (lastTick?.payload as { paths?: { added?: string[]; modified?: string[]; deleted?: string[] } } | null)?.paths ?? null;
+  const dirtyPaths = (lastTick?.payload as { paths?: { added?: string[]; modified?: string[]; deleted?: string[] }; dirty?: number } | null);
+  const hasDirty = (dirtyPaths?.dirty ?? 0) > 0;
+
   return (
     <div>
       <div className="live-exec__wt-summary">
@@ -554,7 +738,26 @@ function WorktreeTab(props: { snap: WorktreeSnapshot | null; transcript: TaskTra
         {snap.behind > 0 && <span className="live-exec__wt-pill ahead">↓{snap.behind}</span>}
       </div>
 
-      {snap.headSha && (
+      {commits.length > 0 && (
+        <div className="live-exec__commits">
+          {commits.map((c) => (
+            <div key={c.sha} className="live-exec__commit-group">
+              <div className="live-exec__wt-head">
+                <div className="live-exec__wt-sha">{c.sha.slice(0, 8)}</div>
+                <div className="live-exec__wt-msg">{c.message}</div>
+                <div className="live-exec__wt-author">{c.author} · {c.at ? new Date(c.at).toLocaleString() : ''}</div>
+              </div>
+              <div className="live-exec__file-list">
+                {c.added.map((p) => <div key={`a${p}`} className="live-exec__file-row added">{p}</div>)}
+                {c.modified.map((p) => <div key={`m${p}`} className="live-exec__file-row modified">{p}</div>)}
+                {c.deleted.map((p) => <div key={`d${p}`} className="live-exec__file-row deleted">{p}</div>)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {commits.length === 0 && snap.headSha && (
         <div className="live-exec__wt-head">
           <div className="live-exec__wt-sha">{snap.headSha.slice(0, 8)}</div>
           <div className="live-exec__wt-msg">{snap.headMessage ?? ''}</div>
@@ -562,11 +765,30 @@ function WorktreeTab(props: { snap: WorktreeSnapshot | null; transcript: TaskTra
         </div>
       )}
 
-      <div className="live-exec__file-list">
-        {paths?.added?.map((p) => <div key={`a${p}`} className="live-exec__file-row added">{p}</div>)}
-        {paths?.modified?.map((p) => <div key={`m${p}`} className="live-exec__file-row modified">{p}</div>)}
-        {paths?.deleted?.map((p) => <div key={`d${p}`} className="live-exec__file-row deleted">{p}</div>)}
-      </div>
+      {hasDirty && dirtyPaths?.paths && (
+        <div className="live-exec__commit-group" style={{ opacity: 0.7 }}>
+          <div className="live-exec__wt-msg" style={{ fontStyle: 'italic', fontSize: 11 }}>Uncommitted changes</div>
+          <div className="live-exec__file-list">
+            {dirtyPaths.paths.added?.map((p) => <div key={`ua${p}`} className="live-exec__file-row added">{p}</div>)}
+            {dirtyPaths.paths.modified?.map((p) => <div key={`um${p}`} className="live-exec__file-row modified">{p}</div>)}
+            {dirtyPaths.paths.deleted?.map((p) => <div key={`ud${p}`} className="live-exec__file-row deleted">{p}</div>)}
+          </div>
+        </div>
+      )}
+
+      {snap.branchDiff && (snap.branchDiff.added.length > 0 || snap.branchDiff.modified.length > 0 || snap.branchDiff.deleted.length > 0) && (
+        <div className="live-exec__commit-group">
+          <div className="live-exec__wt-msg" style={{ fontSize: 11, fontWeight: 600 }}>
+            Branch diff vs main ({snap.branchDiff.added.length + snap.branchDiff.modified.length + snap.branchDiff.deleted.length} files)
+          </div>
+          <div className="live-exec__file-list">
+            {snap.branchDiff.added.map((p) => <div key={`ba${p}`} className="live-exec__file-row added">{p}</div>)}
+            {snap.branchDiff.modified.map((p) => <div key={`bm${p}`} className="live-exec__file-row modified">{p}</div>)}
+            {snap.branchDiff.deleted.map((p) => <div key={`bd${p}`} className="live-exec__file-row deleted">{p}</div>)}
+          </div>
+        </div>
+      )}
+
       {snap.truncated && <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>list truncated at 200 paths.</div>}
     </div>
   );
@@ -578,18 +800,38 @@ function TokensTab(props: { snap: TaskTranscriptEvent extends never ? never : im
   const total = snap.generatorCostUsd + snap.evaluatorCostUsd;
   const genShare  = total > 0 ? (snap.generatorCostUsd / total) * 100 : 0;
   const evalShare = total > 0 ? (snap.evaluatorCostUsd / total) * 100 : 0;
+  const genTokens = snap.generatorInputTokens + snap.generatorOutputTokens;
+  const evalTokens = snap.evaluatorInputTokens + snap.evaluatorOutputTokens;
+  const totalTokens = genTokens + evalTokens;
+
   return (
     <div>
-      <div className="live-exec__cost-row"><span>Generator</span><strong>${snap.generatorCostUsd.toFixed(4)}</strong></div>
-      <div className="live-exec__cost-row"><span>Evaluator</span><strong>${snap.evaluatorCostUsd.toFixed(4)}</strong></div>
+      <div className="live-exec__cost-row">
+        <span>Generator</span>
+        <span className="live-exec__cost-tokens">{genTokens.toLocaleString()} tok</span>
+        <strong>${snap.generatorCostUsd.toFixed(4)}</strong>
+      </div>
+      <div className="live-exec__cost-detail">
+        <span>↓ {snap.generatorInputTokens.toLocaleString()} in</span>
+        <span>↑ {snap.generatorOutputTokens.toLocaleString()} out</span>
+      </div>
+      <div className="live-exec__cost-row">
+        <span>Evaluator</span>
+        <span className="live-exec__cost-tokens">{evalTokens.toLocaleString()} tok</span>
+        <strong>${snap.evaluatorCostUsd.toFixed(4)}</strong>
+      </div>
+      <div className="live-exec__cost-detail">
+        <span>↓ {snap.evaluatorInputTokens.toLocaleString()} in</span>
+        <span>↑ {snap.evaluatorOutputTokens.toLocaleString()} out</span>
+      </div>
       <div className="live-exec__tokens-bar" aria-hidden="true">
         <span className="gen"  style={{ width: `${genShare}%` }} />
         <span className="eval" style={{ width: `${evalShare}%` }} />
       </div>
-      <div className="live-exec__cost-row"><span>Total</span><strong>${total.toFixed(4)}</strong></div>
-      <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text-tertiary)' }}>
-        in: {snap.generatorInputTokens.toLocaleString()} / {snap.evaluatorInputTokens.toLocaleString()} ·{' '}
-        out: {snap.generatorOutputTokens.toLocaleString()} / {snap.evaluatorOutputTokens.toLocaleString()}
+      <div className="live-exec__cost-row live-exec__cost-total">
+        <span>Total</span>
+        <span className="live-exec__cost-tokens">{totalTokens.toLocaleString()} tok</span>
+        <strong>${total.toFixed(4)}</strong>
       </div>
       {snap.crewDailyBudgetUsd != null && (
         <div style={{ marginTop: 12 }}>
