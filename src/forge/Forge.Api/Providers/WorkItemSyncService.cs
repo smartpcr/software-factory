@@ -186,6 +186,13 @@ public class WorkItemSyncService
             return (false, false);
         }
 
+        // Skip when upstream ChangedDate is not newer than our last update.
+        if (remote.UpdatedAt > DateTimeOffset.MinValue
+            && existing.UpdatedAt >= remote.UpdatedAt)
+        {
+            return (false, false);
+        }
+
         var forgeOwned = existing.AutoDispatchedAt.HasValue
             || existing.ExecutionStatus != Persistence.ExecutionStatuses.Idle;
 

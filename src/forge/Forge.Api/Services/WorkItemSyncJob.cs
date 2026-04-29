@@ -475,6 +475,16 @@ public class WorkItemSyncJob : BackgroundService
             return (false, false, false);
         }
 
+        // Skip when upstream ChangedDate is not newer than our last update.
+        // This prevents a stale sync response from overwriting local edits
+        // (e.g. operator changed points/state via the detail panel between
+        // two sync ticks).
+        if (remote.UpdatedAt > DateTimeOffset.MinValue
+            && existing.UpdatedAt >= remote.UpdatedAt)
+        {
+            return (false, false, false);
+        }
+
         var hadDifferentRevision = !string.IsNullOrEmpty(existing.RemoteRevision)
             && !string.IsNullOrEmpty(remote.RemoteRevision)
             && existing.RemoteRevision != remote.RemoteRevision;

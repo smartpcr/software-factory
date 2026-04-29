@@ -609,6 +609,13 @@ public static class WorkItemsEndpoints
             return Results.Problem(title: $"Item {id} not found on the {row.Provider} side.", statusCode: 404);
         }
 
+        // Skip update when upstream ChangedDate is not newer than our last update.
+        if (remote.UpdatedAt > DateTimeOffset.MinValue
+            && row.UpdatedAt >= remote.UpdatedAt)
+        {
+            return Results.Ok(MapWorkItem(row));
+        }
+
         // Apply remote fields. Skip ParentId when remote omits one (matches
         // WorkItemSyncService — preserves operator's local re-parent).
         var forgeOwned = row.AutoDispatchedAt.HasValue
