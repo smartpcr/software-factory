@@ -613,7 +613,11 @@ public static class WorkItemsEndpoints
         // WorkItemSyncService — preserves operator's local re-parent).
         row.Track = remote.Track;
         row.Type = remote.Type;
-        row.State = remote.State;
+        // Don't overwrite state when an agent is actively working.
+        if (row.ExecutionStatus == ExecutionStatuses.Idle)
+        {
+            row.State = remote.State;
+        }
         row.Title = remote.Title;
         row.DescriptionMd = remote.DescriptionMd;
         if (!string.IsNullOrEmpty(remote.ParentId)) row.ParentId = remote.ParentId;

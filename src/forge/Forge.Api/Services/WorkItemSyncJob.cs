@@ -481,7 +481,14 @@ public class WorkItemSyncJob : BackgroundService
 
         existing.Track = remote.Track;
         existing.Type = remote.Type;
-        existing.State = remote.State;
+        // Don't regress state when the item is being actively worked on
+        // by an agent — the queue worker moves proposed→active on claim,
+        // and the agent pipeline drives active→in-review→resolved→closed.
+        // Only overwrite state from upstream when the item is idle.
+        if (existing.ExecutionStatus == Persistence.ExecutionStatuses.Idle)
+        {
+            existing.State = remote.State;
+        }
         existing.Title = remote.Title;
         existing.DescriptionMd = remote.DescriptionMd;
         if (!string.IsNullOrEmpty(remote.ParentId)) existing.ParentId = remote.ParentId;

@@ -188,7 +188,11 @@ public class WorkItemSyncService
 
         existing.Track = remote.Track;
         existing.Type = remote.Type;
-        existing.State = remote.State;
+        // Don't overwrite state when an agent is actively working.
+        if (existing.ExecutionStatus == Persistence.ExecutionStatuses.Idle)
+        {
+            existing.State = remote.State;
+        }
         existing.Title = remote.Title;
         existing.DescriptionMd = remote.DescriptionMd;
         // ParentId only updated when remote provides one — keep operator's
