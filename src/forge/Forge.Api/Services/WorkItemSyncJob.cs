@@ -168,10 +168,20 @@ public class WorkItemSyncJob : BackgroundService
         }
 
         var areaPaths = ParseAreaPaths(repo.AreaPathsJson);
+        // Resolve per-repo provider scope so this repo syncs against its own
+        // ADO project / GitHub repo even when other repos use a different
+        // global config.
+        var adoOrgUrl = !string.IsNullOrWhiteSpace(repo.AdoOrg) ? BuildAdoOrgUrl(repo.AdoOrg!) : null;
+        var ghRepo = !string.IsNullOrWhiteSpace(repo.GhOwner) && !string.IsNullOrWhiteSpace(repo.GhRepo)
+            ? $"{repo.GhOwner}/{repo.GhRepo}"
+            : null;
         var filters = new WorkItemSyncFilters(
             UpdatedFrom: updatedFrom,
             AreaPaths: areaPaths,
-            StartCursor: repo.LastSyncCursor);
+            StartCursor: repo.LastSyncCursor,
+            AdoOrgUrl: adoOrgUrl,
+            AdoProject: repo.AdoProject,
+            GitHubRepo: ghRepo);
 
         var totalAdded = 0;
         var totalUpdated = 0;
@@ -321,7 +331,7 @@ public class WorkItemSyncJob : BackgroundService
             if (existing is null) continue;
 
             var resolverResult = AgentReadyResolver.Apply(
-                existing.AssignedToJson,
+                existing.AssignedAgentJson,
                 withRepo.Tags ?? Array.Empty<string>(),
                 repo.AgentReadyDefaultTeam);
             if (!resolverResult.WasAssigned) continue;
@@ -369,6 +379,22 @@ public class WorkItemSyncJob : BackgroundService
             return arr is { Count: > 0 } ? arr : null;
         }
         catch { return null; }
+    }
+
+    /// <summary>
+    /// Build the canonical ADO org URL from the repo row's <c>AdoOrg</c>.
+    /// Accepts either a bare org name (<c>microsoft</c>) or a full URL
+    /// (<c>https://dev.azure.com/microsoft</c>) so older rows keep working.
+    /// </summary>
+    private static string BuildAdoOrgUrl(string adoOrg)
+    {
+        var trimmed = adoOrg.Trim();
+        if (trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return trimmed.TrimEnd('/');
+        }
+        return $"https://dev.azure.com/{trimmed.Trim('/')}";
     }
 
     /// <summary>

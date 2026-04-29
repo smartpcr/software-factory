@@ -533,7 +533,7 @@ public class AgentReadyAuditExtraTests
     public void Apply_Returns_Team_Name_For_Audit_Body()
     {
         var result = AgentReadyResolver.Apply(
-            assignedToJson: null,
+            assignedAgentJson: null,
             tags: new[] { "agent-ready" },
             agentReadyDefaultTeam: "Platform");
         Assert.True(result.WasAssigned);
@@ -544,7 +544,7 @@ public class AgentReadyAuditExtraTests
     public void Apply_Default_Team_When_RepoOverride_Null()
     {
         var result = AgentReadyResolver.Apply(
-            assignedToJson: null,
+            assignedAgentJson: null,
             tags: new[] { "agent-ready" },
             agentReadyDefaultTeam: null);
         Assert.True(result.WasAssigned);

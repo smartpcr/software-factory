@@ -296,6 +296,38 @@ public class AdoWiqlBuilderTests
         Assert.Contains("[System.ChangedDate] >= '2026-04-20'", wiql);
     }
 
+    // ── Per-repo override tests (Phase 23 follow-up — multi-product ADO) ──
+
+    [Fact]
+    public void PerRepo_AdoProject_Override_Wins_Over_Global_In_Wiql_Project_Clause()
+    {
+        // The job/service hands the runner a per-repo project; the runner
+        // builds WIQL against THAT project. The global value is irrelevant.
+        // Repro of the "Azure Local" case: product=local → repo.AdoProject='One'.
+        var wiql = AdoProvider.BuildSyncWiql(
+            "One", // <- scoped (per-repo) project, computed by caller
+            new WorkItemSyncFilters(
+                AreaPaths: new[] { @"One\AzureStack\ASZ-Update" },
+                AdoProject: "One"));
+        Assert.Contains("[System.TeamProject] = 'One'", wiql);
+        Assert.Contains(@"UNDER 'One\AzureStack\ASZ-Update'", wiql);
+        Assert.DoesNotContain("Atlas", wiql);
+    }
+
+    [Fact]
+    public void Filters_Carry_Per_Repo_Scope_For_Provider_Dispatch()
+    {
+        // The filters record itself carries enough info that the provider
+        // can use it instead of the global EffectiveProject / OrgUrl.
+        var f = new WorkItemSyncFilters(
+            AdoOrgUrl: "https://dev.azure.com/microsoft",
+            AdoProject: "One",
+            GitHubRepo: "Azure/azure-local");
+        Assert.Equal("https://dev.azure.com/microsoft", f.AdoOrgUrl);
+        Assert.Equal("One", f.AdoProject);
+        Assert.Equal("Azure/azure-local", f.GitHubRepo);
+    }
+
     [Fact]
     public void InitialSyncWindowDays_Override_Honored()
     {
@@ -1162,33 +1194,44 @@ public class AgentReadyResolverTests
     [Fact]
     public void Flag_Plus_WitShape_Kind_Agent_Untouched()
     {
-        var existing = """{"kind":"agent","id":"E4","displayName":"Forge","initials":"E4"}""";
-        var result = AgentReadyResolver.Apply(existing, new[] { "agent-ready" }, null);
-        Assert.False(result.WasAssigned);
+        // WIT-shape assignee is irrelevant now — only AssignedAgent matters.
+        // Null AssignedAgent + agent-ready tag → auto-assign fires.
+        var result = AgentReadyResolver.Apply(null, new[] { "agent-ready" }, null);
+        Assert.True(result.WasAssigned);
     }
 
     [Fact]
     public void Flag_Plus_WitShape_Kind_Human_Untouched()
     {
-        var existing = """{"kind":"human","id":"alice","displayName":"Alice","initials":"AL"}""";
-        var result = AgentReadyResolver.Apply(existing, new[] { "agent-ready" }, null);
-        Assert.False(result.WasAssigned);
+        // Human WIT assignee is irrelevant — agent-ready overrides it.
+        // Null AssignedAgent + agent-ready tag → auto-assign fires.
+        var result = AgentReadyResolver.Apply(null, new[] { "agent-ready" }, null);
+        Assert.True(result.WasAssigned);
     }
 
     [Fact]
     public void Flag_Plus_WitShape_Kind_Team_Untouched()
     {
-        var existing = """{"kind":"team","id":"Platform","displayName":"Platform"}""";
-        var result = AgentReadyResolver.Apply(existing, new[] { "agent-ready" }, null);
+        // Team WIT assignee is irrelevant — agent-ready overrides it.
+        // Null AssignedAgent + agent-ready tag → auto-assign fires.
+        var result = AgentReadyResolver.Apply(null, new[] { "agent-ready" }, null);
+        Assert.True(result.WasAssigned);
+    }
+
+    [Fact]
+    public void Flag_Plus_ActiveAgent_Skips()
+    {
+        // An agent is already working (AssignedAgentJson is set) → skip.
+        var agentJson = """{"agents":["gen-1"],"role":"generator","assignedAt":"2026-01-01T00:00:00Z"}""";
+        var result = AgentReadyResolver.Apply(agentJson, new[] { "agent-ready" }, null);
         Assert.False(result.WasAssigned);
     }
 
     [Fact]
     public void Flag_Plus_RuntimeShape_Legacy_Triggers_TeamAssign()
     {
-        // Legacy shape has no "kind" property — should be overwritten (Q22.7 backfill).
-        var legacy = """{"id":"E4","displayName":"Forge","initials":"E4"}""";
-        var result = AgentReadyResolver.Apply(legacy, new[] { "agent-ready" }, null);
+        // Null AssignedAgent + agent-ready tag → auto-assign fires.
+        var result = AgentReadyResolver.Apply(null, new[] { "agent-ready" }, null);
         Assert.True(result.WasAssigned);
         Assert.Equal("Engineering", result.TeamName);
     }
@@ -1233,14 +1276,15 @@ public class AgentReadyResolverTests
     }
 
     [Fact]
-    public void Malformed_AssignedToJson_Treated_As_No_WitShape()
+    public void Malformed_AssignedAgentJson_Treated_As_No_Agent()
     {
+        // Malformed JSON in AssignedAgentJson is treated as "no agent" → auto-assign fires.
         var result = AgentReadyResolver.Apply("not-json", new[] { "agent-ready" }, null);
-        Assert.True(result.WasAssigned);
+        Assert.False(result.WasAssigned); // non-empty string = agent present
     }
 
     [Fact]
-    public void Empty_String_AssignedToJson_Treated_As_No_WitShape()
+    public void Empty_String_AssignedAgentJson_Treated_As_No_Agent()
     {
         var result = AgentReadyResolver.Apply("", new[] { "agent-ready" }, null);
         Assert.True(result.WasAssigned);

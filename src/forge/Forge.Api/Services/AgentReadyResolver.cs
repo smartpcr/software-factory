@@ -36,15 +36,16 @@ public static class AgentReadyResolver
     /// Evaluate whether the <c>agent-ready</c> flag should auto-assign the
     /// item to a default team.
     /// </summary>
-    /// <param name="assignedToJson">
-    /// The current <c>WorkItemRow.AssignedToJson</c> value (may be null).
+    /// <param name="assignedAgentJson">
+    /// The current <c>WorkItemRow.AssignedAgentJson</c> value (Phase 22).
+    /// When non-null, an agent is already working — skip auto-assign.
     /// </param>
     /// <param name="tags">The tags array from the upstream work item.</param>
     /// <param name="agentReadyDefaultTeam">
     /// Per-repo override; falls back to <see cref="SyncConstants.AgentReadyDefaultTeam"/>.
     /// </param>
     public static AgentReadyResult Apply(
-        string? assignedToJson,
+        string? assignedAgentJson,
         IReadOnlyList<string> tags,
         string? agentReadyDefaultTeam)
     {
@@ -54,10 +55,9 @@ public static class AgentReadyResolver
             return new AgentReadyResult(false, null, null);
         }
 
-        // If the current assignee is a well-formed WIT-shape value
-        // (has a `kind` property ∈ {agent, human, team}), leave it
-        // untouched — the operator's manual assignment beats the auto-rule.
-        if (IsWitShapeAssignee(assignedToJson))
+        // If an agent is already working on this item (Phase 22
+        // AssignedAgent is set), skip — don't re-route mid-execution.
+        if (!string.IsNullOrWhiteSpace(assignedAgentJson))
         {
             return new AgentReadyResult(false, null, null);
         }
