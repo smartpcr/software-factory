@@ -58,6 +58,12 @@ export function LiveExecutionView(): JSX.Element {
   const activeIter = selectedIter ?? (totalIters > 0 ? totalIters - 1 : 0);
   const visibleEvents = totalIters > 0 ? iterations[activeIter]?.events ?? [] : filtered;
 
+  // Reverse-chronological: newest events on top.
+  const reversedEvents = useMemo(() => [...visibleEvents].reverse(), [visibleEvents]);
+  const transcriptTotalCount = entry?.transcriptTotalCount ?? 0;
+  const loadingOlder = entry?.loadingOlder ?? false;
+  const hasOlderEvents = transcript.length < transcriptTotalCount;
+
   // Extract latest system + user prompt from the most recent task.prompt event, per role.
   const latestPrompt = useMemo(() => {
     for (let i = transcript.length - 1; i >= 0; i--) {
@@ -172,6 +178,7 @@ export function LiveExecutionView(): JSX.Element {
         snapshot: null, transcript: [], worktree: null,
         loading: false, lastEventId: 0,
         refCount: store.entries[workItemId]?.refCount ?? 1,
+        transcriptTotalCount: 0, loadingOlder: false,
       };
       // 5. Re-hydrate from server.
       await store.ensureLoaded(workItemId);
@@ -356,7 +363,12 @@ export function LiveExecutionView(): JSX.Element {
           </nav>
         )}
         <div className="live-exec__transcript" style={{ userSelect: 'text' }}>
-          {visibleEvents.length === 0 ? (
+          {transcriptTotalCount > 0 && (
+            <div className="live-exec__transcript-count" style={{ fontSize: 11, color: 'var(--text-tertiary, #888)', padding: '4px 8px', borderBottom: '1px solid var(--border, #e5e7eb)' }}>
+              Showing 1–{transcript.length.toLocaleString()} most recent of {transcriptTotalCount.toLocaleString()} total events
+            </div>
+          )}
+          {reversedEvents.length === 0 ? (
             <div className="live-exec__empty">
               {entry?.loading ? 'Loading…' : 'No events yet.'}
               {snapshot?.autoDispatchedAt == null && !entry?.loading && (
@@ -364,7 +376,20 @@ export function LiveExecutionView(): JSX.Element {
               )}
             </div>
           ) : (
-            visibleEvents.map((evt) => <TranscriptLine key={`${evt.id}:${evt.at}`} evt={evt} generatorCrewId={genCrewId} evaluatorCrewId={evalCrewId} />)
+            reversedEvents.map((evt) => <TranscriptLine key={`${evt.id}:${evt.at}`} evt={evt} generatorCrewId={genCrewId} evaluatorCrewId={evalCrewId} />)
+          )}
+          {hasOlderEvents && (
+            <div style={{ textAlign: 'center', padding: '8px 0' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ fontSize: 11, padding: '4px 12px' }}
+                disabled={loadingOlder}
+                onClick={() => workItemId && void useTaskLiveStore.getState().loadOlderEvents(workItemId)}
+              >
+                {loadingOlder ? 'Loading…' : '↑ Load older events'}
+              </button>
+            </div>
           )}
         </div>
       </main>

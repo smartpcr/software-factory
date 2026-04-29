@@ -78,6 +78,7 @@ export interface TaskExecutionSnapshot {
   executionStatus?: string;
   trialCount?: number;
   maxIterations?: number;
+  transcriptTotalCount?: number;
 }
 
 // ─── Store (one entry per work-item) ──────────────────────────────────────
@@ -90,6 +91,8 @@ interface TaskLiveEntry {
   error?: string;
   lastEventId: number;
   refCount: number;
+  transcriptTotalCount: number;
+  loadingOlder: boolean;
 }
 
 interface TaskLiveStore {
@@ -99,6 +102,7 @@ interface TaskLiveStore {
   applyWorktree: (workItemId: string, snap: WorktreeSnapshot) => void;
   attach: (workItemId: string) => void;
   detach: (workItemId: string) => void;
+  loadOlderEvents: (workItemId: string) => Promise<void>;
 }
 
 const TRANSCRIPT_CAP = 1000;
@@ -180,7 +184,7 @@ export const useTaskLiveStore = create<TaskLiveStore>((set, get) => ({
   ensureLoaded: async (workItemId) => {
     const cur = get().entries[workItemId];
     if (cur?.snapshot) return; // already hydrated
-    set({ entries: { ...get().entries, [workItemId]: cur ? { ...cur, loading: true, error: undefined } : { snapshot: null, transcript: [], worktree: null, loading: true, lastEventId: 0, refCount: 0 } } });
+    set({ entries: { ...get().entries, [workItemId]: cur ? { ...cur, loading: true, error: undefined } : { snapshot: null, transcript: [], worktree: null, loading: true, lastEventId: 0, refCount: 0, transcriptTotalCount: 0, loadingOlder: false } } });
     try {
       const snap: TaskExecutionSnapshot = await forgeApi.getWorkItemExecution(workItemId) as TaskExecutionSnapshot;
       set({
@@ -193,6 +197,8 @@ export const useTaskLiveStore = create<TaskLiveStore>((set, get) => ({
             loading: false,
             lastEventId: 0,
             refCount: get().entries[workItemId]?.refCount ?? 0,
+            transcriptTotalCount: snap.transcriptTotalCount ?? (snap.recentTranscript?.length ?? 0),
+            loadingOlder: false,
           },
         },
       });
@@ -208,6 +214,8 @@ export const useTaskLiveStore = create<TaskLiveStore>((set, get) => ({
             error: err instanceof Error ? err.message : String(err),
             lastEventId: 0,
             refCount: get().entries[workItemId]?.refCount ?? 0,
+            transcriptTotalCount: get().entries[workItemId]?.transcriptTotalCount ?? 0,
+            loadingOlder: false,
           },
         },
       });
@@ -215,7 +223,7 @@ export const useTaskLiveStore = create<TaskLiveStore>((set, get) => ({
   },
 
   appendEvent: (workItemId, evt) => {
-    const cur = get().entries[workItemId] ?? { snapshot: null, transcript: [], worktree: null, loading: false, lastEventId: 0, refCount: 0 };
+    const cur = get().entries[workItemId] ?? { snapshot: null, transcript: [], worktree: null, loading: false, lastEventId: 0, refCount: 0, transcriptTotalCount: 0, loadingOlder: false };
     const next = cur.transcript.length >= TRANSCRIPT_CAP ? [...cur.transcript.slice(-TRANSCRIPT_CAP + 1), evt] : [...cur.transcript, evt];
     // Patch snapshot agent/crew fields from lifecycle events that carry
     // authoritative identifiers. Fixes the "—" generator glitch after
@@ -247,16 +255,16 @@ export const useTaskLiveStore = create<TaskLiveStore>((set, get) => ({
         snap = patched;
       }
     }
-    set({ entries: { ...get().entries, [workItemId]: { ...cur, snapshot: snap, transcript: next, lastEventId: Math.max(cur.lastEventId, evt.id) } } });
+    set({ entries: { ...get().entries, [workItemId]: { ...cur, snapshot: snap, transcript: next, lastEventId: Math.max(cur.lastEventId, evt.id), transcriptTotalCount: cur.transcriptTotalCount + 1 } } });
   },
 
   applyWorktree: (workItemId, snap) => {
-    const cur = get().entries[workItemId] ?? { snapshot: null, transcript: [], worktree: null, loading: false, lastEventId: 0, refCount: 0 };
+    const cur = get().entries[workItemId] ?? { snapshot: null, transcript: [], worktree: null, loading: false, lastEventId: 0, refCount: 0, transcriptTotalCount: 0, loadingOlder: false };
     set({ entries: { ...get().entries, [workItemId]: { ...cur, worktree: snap } } });
   },
 
   attach: (workItemId) => {
-    const cur = get().entries[workItemId] ?? { snapshot: null, transcript: [], worktree: null, loading: false, lastEventId: 0, refCount: 0 };
+    const cur = get().entries[workItemId] ?? { snapshot: null, transcript: [], worktree: null, loading: false, lastEventId: 0, refCount: 0, transcriptTotalCount: 0, loadingOlder: false };
     const next = { ...cur, refCount: cur.refCount + 1 };
     set({ entries: { ...get().entries, [workItemId]: next } });
     if (cur.refCount === 0) {
@@ -275,6 +283,40 @@ export const useTaskLiveStore = create<TaskLiveStore>((set, get) => ({
     set({ entries: { ...get().entries, [workItemId]: next } });
     if (next.refCount === 0 && taskConnection?.state === HubConnectionState.Connected) {
       void taskConnection.invoke('Unsubscribe', `task.${workItemId}`).catch(() => { /* ignore */ });
+    }
+  },
+
+  loadOlderEvents: async (workItemId) => {
+    const cur = get().entries[workItemId];
+    if (!cur || cur.loadingOlder) return;
+    // Find the oldest event id in the current transcript.
+    const oldestId = cur.transcript.reduce((min, e) => (typeof e.id === 'number' && e.id < min ? e.id : min), Infinity);
+    if (!isFinite(oldestId)) return;
+    set({ entries: { ...get().entries, [workItemId]: { ...cur, loadingOlder: true } } });
+    try {
+      const result = await forgeApi.getWorkItemTranscript(workItemId, { before: oldestId, limit: 500, order: 'desc' });
+      const events = (result.events ?? []) as TaskTranscriptEvent[];
+      if (events.length === 0) {
+        set({ entries: { ...get().entries, [workItemId]: { ...get().entries[workItemId]!, loadingOlder: false } } });
+        return;
+      }
+      const existing = get().entries[workItemId]!;
+      const existingIds = new Set(existing.transcript.map((e) => e.id));
+      const newEvents = events.filter((e) => !existingIds.has(e.id));
+      const merged = [...newEvents, ...existing.transcript];
+      set({
+        entries: {
+          ...get().entries,
+          [workItemId]: {
+            ...existing,
+            transcript: merged,
+            loadingOlder: false,
+            transcriptTotalCount: result.totalCount ?? existing.transcriptTotalCount,
+          },
+        },
+      });
+    } catch {
+      set({ entries: { ...get().entries, [workItemId]: { ...get().entries[workItemId]!, loadingOlder: false } } });
     }
   },
 }));

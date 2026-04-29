@@ -174,6 +174,11 @@ public static class TaskExecutionEndpoints
             }
         }
 
+        // Total transcript count for paging UI.
+        var transcriptTotalCount = await db.TaskTranscriptEvents.AsNoTracking()
+            .Where(e => e.WorkItemId == id)
+            .CountAsync(ct);
+
         // Recent transcript (last 200 events, oldest→newest for natural rendering).
         // Always include prompt + iteration boundary events so the UI can
         // show the prompt section and iteration pager even when the window
@@ -311,7 +316,8 @@ public static class TaskExecutionEndpoints
             Worktree: worktree,
             ExecutionStatus: wi?.ExecutionStatus ?? ExecutionStatuses.Idle,
             TrialCount: wi?.TrialCount ?? 0,
-            MaxIterations: latestQueue?.MaxIterOverride ?? ScoringConstants.MaxIterations);
+            MaxIterations: latestQueue?.MaxIterOverride ?? ScoringConstants.MaxIterations,
+            TranscriptTotalCount: transcriptTotalCount);
 
         return Results.Ok(snap);
     }
@@ -320,14 +326,30 @@ public static class TaskExecutionEndpoints
         string id,
         ForgeDbContext db,
         long? from,
+        long? before,
         int? limit,
+        string? order,
         CancellationToken ct)
     {
         var size = Math.Clamp(limit ?? 500, 1, 2000);
+        var totalCount = await db.TaskTranscriptEvents.AsNoTracking()
+            .Where(e => e.WorkItemId == id).CountAsync(ct);
         var query = db.TaskTranscriptEvents.AsNoTracking().Where(e => e.WorkItemId == id);
-        if (from is long cursor) query = query.Where(e => e.Id > cursor);
-        var rows = await query.OrderBy(e => e.Id).Take(size).ToListAsync(ct);
-        return Results.Ok(rows.Select(MapTranscript).ToList());
+
+        var desc = string.Equals(order, "desc", StringComparison.OrdinalIgnoreCase);
+        if (desc)
+        {
+            if (before is long cur) query = query.Where(e => e.Id < cur);
+            var rows = await query.OrderByDescending(e => e.Id).Take(size).ToListAsync(ct);
+            rows.Reverse();
+            return Results.Ok(new { events = rows.Select(MapTranscript).ToList(), totalCount });
+        }
+        else
+        {
+            if (from is long cursor) query = query.Where(e => e.Id > cursor);
+            var rows = await query.OrderBy(e => e.Id).Take(size).ToListAsync(ct);
+            return Results.Ok(new { events = rows.Select(MapTranscript).ToList(), totalCount });
+        }
     }
 
     private static async Task<IResult> ClearTranscript(

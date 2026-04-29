@@ -1182,10 +1182,12 @@ export const forgeApi = {
     return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/execution`);
   },
 
-  async getWorkItemTranscript(workItemId: string, from?: number, limit?: number): Promise<unknown[]> {
+  async getWorkItemTranscript(workItemId: string, opts?: { from?: number; before?: number; limit?: number; order?: string }): Promise<{ events: unknown[]; totalCount: number }> {
     const params = new URLSearchParams();
-    if (from != null) params.set('from', String(from));
-    if (limit != null) params.set('limit', String(limit));
+    if (opts?.from != null) params.set('from', String(opts.from));
+    if (opts?.before != null) params.set('before', String(opts.before));
+    if (opts?.limit != null) params.set('limit', String(opts.limit));
+    if (opts?.order) params.set('order', opts.order);
     const qs = params.toString();
     return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/transcript${qs ? `?${qs}` : ''}`);
   },
