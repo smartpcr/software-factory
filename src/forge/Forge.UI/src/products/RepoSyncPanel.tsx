@@ -11,9 +11,12 @@ import { createPortal } from 'react-dom';
 import type { Repo, WorkItemSyncRun } from '@/types';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
+import { useCurrentUser } from '@/state/useCurrentUserStore';
 import { relativeTime, statusDotColor } from '@/views/RepoSyncStatusStrip';
 
 type Tab = 'workitems' | 'prs' | 'history';
+
+const KNOWN_TEAMS = ['Engineering', 'Architecture', 'Review', 'QA'] as const;
 
 interface Props {
   repo: Repo;
@@ -43,31 +46,70 @@ interface PrSyncFilters {
   stateFilter: 'active' | 'all' | 'completed';
 }
 
+// ── Persistence helpers ─────────────────────────────────────────────────
+
+const STORAGE_PREFIX = 'forge-sync-filters-';
+
+function loadFilters<T>(repoId: string, kind: string, defaults: T): T {
+  try {
+    const raw = localStorage.getItem(`${STORAGE_PREFIX}${kind}-${repoId}`);
+    if (!raw) return defaults;
+    return { ...defaults, ...JSON.parse(raw) };
+  } catch { return defaults; }
+}
+
+function saveFilters(repoId: string, kind: string, filters: unknown) {
+  try {
+    localStorage.setItem(`${STORAGE_PREFIX}${kind}-${repoId}`, JSON.stringify(filters));
+  } catch { /* quota exceeded — best effort */ }
+}
+
+function isoDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function defaultFromDate(): string {
+  const d = new Date();
+  d.setDate(d.getDate() - 30);
+  return isoDate(d);
+}
+
+function defaultToDate(): string {
+  return isoDate(new Date());
+}
+
 // ── Exported Panel ──────────────────────────────────────────────────────
 
 export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
   const [tab, setTab] = useState<Tab>('workitems');
   const [saving, setSaving] = useState(false);
   const toast = useToastStore((s) => s.show);
+  const me = useCurrentUser();
 
-  // Work item sync state
-  const [wiFilters, setWiFilters] = useState<WiSyncFilters>({
+  // Work item sync state — loaded from localStorage with smart defaults
+  const wiDefaults: WiSyncFilters = {
     areaPaths: (repo.areaPaths ?? []).join('\n'),
-    assignedTo: '',
-    fromDate: '',
-    toDate: '',
-    agentReadyTeam: repo.agentReadyDefaultTeam ?? '',
+    assignedTo: me.email ?? me.displayName ?? '',
+    fromDate: defaultFromDate(),
+    toDate: defaultToDate(),
+    agentReadyTeam: repo.agentReadyDefaultTeam ?? 'Engineering',
     syncKind: 'auto',
-  });
+  };
+  const [wiFilters, setWiFilters] = useState<WiSyncFilters>(() =>
+    loadFilters(repo.id, 'wi', wiDefaults),
+  );
 
-  // PR sync state
-  const [prFilters, setPrFilters] = useState<PrSyncFilters>({
-    createdBy: '',
-    fromDate: '',
-    toDate: '',
+  // PR sync state — loaded from localStorage with smart defaults
+  const prDefaults: PrSyncFilters = {
+    createdBy: me.email ?? me.displayName ?? '',
+    fromDate: defaultFromDate(),
+    toDate: defaultToDate(),
     associatedWorkItem: '',
     stateFilter: 'active',
-  });
+  };
+  const [prFilters, setPrFilters] = useState<PrSyncFilters>(() =>
+    loadFilters(repo.id, 'pr', prDefaults),
+  );
 
   // History state
   const [runs, setRuns] = useState<WorkItemSyncRun[] | null>(null);
@@ -77,25 +119,44 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
   // Sync in progress
   const [syncing, setSyncing] = useState(false);
 
-  // Reset state when repo changes or panel opens
+  // Reset state when repo changes or panel opens — merge server-persisted
+  // values (areaPaths, agentReadyTeam) with localStorage-persisted filters
   useEffect(() => {
     if (!open) return;
-    setWiFilters({
+    const freshWiDefaults: WiSyncFilters = {
       areaPaths: (repo.areaPaths ?? []).join('\n'),
-      assignedTo: '',
-      fromDate: '',
-      toDate: '',
-      agentReadyTeam: repo.agentReadyDefaultTeam ?? '',
+      assignedTo: me.email ?? me.displayName ?? '',
+      fromDate: defaultFromDate(),
+      toDate: defaultToDate(),
+      agentReadyTeam: repo.agentReadyDefaultTeam ?? 'Engineering',
       syncKind: 'auto',
-    });
-    setPrFilters({
-      createdBy: '',
-      fromDate: '',
-      toDate: '',
+    };
+    const loaded = loadFilters(repo.id, 'wi', freshWiDefaults);
+    // Always take server-persisted values fresh from repo
+    loaded.areaPaths = (repo.areaPaths ?? []).join('\n');
+    loaded.agentReadyTeam = repo.agentReadyDefaultTeam ?? loaded.agentReadyTeam;
+    setWiFilters(loaded);
+
+    const freshPrDefaults: PrSyncFilters = {
+      createdBy: me.email ?? me.displayName ?? '',
+      fromDate: defaultFromDate(),
+      toDate: defaultToDate(),
       associatedWorkItem: '',
       stateFilter: 'active',
-    });
+    };
+    setPrFilters(loadFilters(repo.id, 'pr', freshPrDefaults));
   }, [open, repo.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Persist filters to localStorage on change
+  useEffect(() => {
+    if (!open) return;
+    saveFilters(repo.id, 'wi', wiFilters);
+  }, [open, repo.id, wiFilters]);
+
+  useEffect(() => {
+    if (!open) return;
+    saveFilters(repo.id, 'pr', prFilters);
+  }, [open, repo.id, prFilters]);
 
   // Load history when tab switches to history
   useEffect(() => {
@@ -485,14 +546,23 @@ function WorkItemSyncTab({
           label="Agent-ready default team"
           hint="Items tagged 'agent-ready' upstream auto-assign to this team."
         >
-          <input
-            type="text"
+          <select
             value={filters.agentReadyTeam}
             onChange={(e) => onChange({ ...filters, agentReadyTeam: e.target.value })}
-            placeholder="Engineering"
-            style={fieldInputStyle}
+            style={{
+              ...fieldInputStyle,
+              appearance: 'none',
+              backgroundImage: `url("data:image/svg+xml,${encodeURIComponent('<svg width="10" height="6" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M1 1l4 4 4-4" stroke="%23666" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>')}")`,
+              backgroundRepeat: 'no-repeat',
+              backgroundPosition: 'right 10px center',
+              paddingRight: 28,
+            }}
             data-testid="sync-agent-ready-team"
-          />
+          >
+            {KNOWN_TEAMS.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
         </PanelField>
       </div>
 
