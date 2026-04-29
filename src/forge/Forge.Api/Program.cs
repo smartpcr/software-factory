@@ -197,6 +197,8 @@ using (var scope = app.Services.CreateScope())
     await Phase19Migration.ApplyAsync(db);
     // Phase 20 — max-iteration override on task_queue rows.
     await Phase20Migration.ApplyAsync(db);
+    // Phase 21 — SkipSoulPrompt flag on task_queue rows.
+    await Phase21Migration.ApplyAsync(db);
     await ForgeSeed.EnsureSeededAsync(db);
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.

@@ -95,15 +95,48 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
     /// <summary>
     /// Run all five sweeps once. Public so tests can drive it deterministically.
+    /// Each sweep is isolated behind its own try/catch — a throw in one must
+    /// NOT prevent the others from running. (Without this, a SQLite EF
+    /// translation error in SweepClaims used to silently kill the whole
+    /// chain, leaving SweepLiveBadgeReconciliationAsync — the last sweep —
+    /// unable to heal stuck "live" badges.) Failures log at Warning so they
+    /// surface in normal logs instead of being buried at Debug.
     /// </summary>
     public async Task<WorkerTickResult> RunOnceAsync(CancellationToken ct)
     {
-        var ackTimeouts = await this.SweepAckTimeoutsAsync(ct);
-        var (claims, claimSkips) = await this.SweepClaimsAsync(ct);
-        var strainSignals = await this.SweepStrainAsync(ct);
-        var recovered = await this.SweepAbandonedAsync(ct);
-        var reconciled = await this.SweepLiveBadgeReconciliationAsync(ct);
+        var ackTimeouts = await this.SafeSweepAsync("SweepAckTimeoutsAsync", () => this.SweepAckTimeoutsAsync(ct), ct);
+        var claimsResult = await this.SafeSweepAsync(
+            "SweepClaimsAsync",
+            async () => { var r = await this.SweepClaimsAsync(ct); return (object?)r; },
+            ct,
+            fallback: (object?)(0, (IReadOnlyList<ClaimSkip>)Array.Empty<ClaimSkip>()));
+        var (claims, claimSkips) = ((int, IReadOnlyList<ClaimSkip>))claimsResult!;
+        var strainSignals = await this.SafeSweepAsync("SweepStrainAsync", () => this.SweepStrainAsync(ct), ct);
+        var recovered = await this.SafeSweepAsync("SweepAbandonedAsync", () => this.SweepAbandonedAsync(ct), ct);
+        var reconciled = await this.SafeSweepAsync("SweepLiveBadgeReconciliationAsync", () => this.SweepLiveBadgeReconciliationAsync(ct), ct);
         return new WorkerTickResult(ackTimeouts, claims, strainSignals, recovered, claimSkips, reconciled);
+    }
+
+    private async Task<int> SafeSweepAsync(string name, Func<Task<int>> sweep, CancellationToken ct)
+    {
+        try { return await sweep(); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            this.logger.LogWarning(ex, "Sweep {Name} threw — continuing with remaining sweeps", name);
+            return 0;
+        }
+    }
+
+    private async Task<object?> SafeSweepAsync(string name, Func<Task<object?>> sweep, CancellationToken ct, object? fallback = null)
+    {
+        try { return await sweep(); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            this.logger.LogWarning(ex, "Sweep {Name} threw — continuing with remaining sweeps", name);
+            return fallback;
+        }
     }
 
     private async Task LoopAsync(CancellationToken ct)
@@ -257,18 +290,23 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // that was driving it before. Without pinning, every restart spins
             // up a fresh round-robin pick and the live transcript looks like a
             // brand-new task instead of a continuation.
+            // SQLite EF cannot ORDER BY DateTimeOffset in-query — materialize
+            // the queued candidates and sort in memory (mirrors
+            // TaskQueueService.ClaimNextAsync at line 184).
             string? picked = null;
-            var headRow = await db.TaskQueue.AsNoTracking()
+            var headRow = (await db.TaskQueue.AsNoTracking()
                 .Where(r => r.RoutedToCrewId == crewId && r.State == TaskQueueStates.Queued)
+                .ToListAsync(ct))
                 .OrderBy(r => r.PriorityRank).ThenBy(r => r.EnqueuedAt)
-                .FirstOrDefaultAsync(ct);
+                .FirstOrDefault();
             if (headRow is not null)
             {
-                var priorAgent = await db.Deliverables.AsNoTracking()
+                var priorAgent = (await db.Deliverables.AsNoTracking()
                     .Where(d => d.WorkItemId == headRow.WorkItemId)
+                    .ToListAsync(ct))
                     .OrderByDescending(d => d.Iter).ThenByDescending(d => d.CreatedAt)
                     .Select(d => d.GeneratorAgentId)
-                    .FirstOrDefaultAsync(ct);
+                    .FirstOrDefault();
                 if (!string.IsNullOrEmpty(priorAgent) && members.Contains(priorAgent))
                 {
                     picked = priorAgent;
@@ -333,7 +371,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // runs asynchronously — the claim sweep doesn't wait for it.
             // Use CancellationToken.None so the agent isn't cancelled when the
             // sweep loop's token is disposed — the agent manages its own lifetime.
-            _ = Task.Run(() => RunAgentAsync(row.WorkItemId, crewId, picked!, crew, wi, CancellationToken.None));
+            _ = Task.Run(() => RunAgentAsync(row.WorkItemId, crewId, picked!, crew, wi, row.SkipSoulPrompt, CancellationToken.None));
         }
         return (claimed, skips);
     }
@@ -341,7 +379,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     // ── Agent runner kickoff ───────────────────────────────────────────────
     private async Task RunAgentAsync(
         string workItemId, string crewId, string agentId,
-        CrewRow crew, WorkItemRow? wi, CancellationToken ct)
+        CrewRow crew, WorkItemRow? wi, bool skipSoulPrompt, CancellationToken ct)
     {
         try
         {
@@ -380,9 +418,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             var invokeMode = string.Equals(invokeModeStr, "cli", StringComparison.OrdinalIgnoreCase)
                 ? AgentInvokeMode.Cli : AgentInvokeMode.Sdk;
 
-            // Soul.md
+            // Soul.md — skip when the queue row has SkipSoulPrompt set (force-restart).
             var soulMd = "";
-            if (!string.IsNullOrEmpty(agent?.SoulPath))
+            if (!skipSoulPrompt && !string.IsNullOrEmpty(agent?.SoulPath))
             {
                 try { soulMd = await File.ReadAllTextAsync(agent.SoulPath, ct); }
                 catch { /* best effort */ }
@@ -690,7 +728,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     ? evalAgent!.EvaluatorModel
                     : evalCrew.Model;
                 var evalSoul = "";
-                if (!string.IsNullOrEmpty(evalAgent?.SoulPath))
+                if (!skipSoulPrompt && !string.IsNullOrEmpty(evalAgent?.SoulPath))
                 {
                     try { evalSoul = await File.ReadAllTextAsync(evalAgent.SoulPath, iterCt); }
                     catch { /* best effort */ }
@@ -858,11 +896,12 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
                     // Pull the latest evaluator notes so the PR description
                     // explains what changed, not just the work item brief.
-                    var lastDeliverable = await db.Deliverables.AsNoTracking()
+                    var lastDeliverable = (await db.Deliverables.AsNoTracking()
                         .Where(d => d.WorkItemId == workItemId)
+                        .ToListAsync(ct))
                         .OrderByDescending(d => d.Iter)
                         .ThenByDescending(d => d.CreatedAt)
-                        .FirstOrDefaultAsync(ct);
+                        .FirstOrDefault();
                     var changeNotes = lastDeliverable?.Notes ?? string.Empty;
                     var generatorSummary = lastDeliverable?.GeneratorSummary ?? string.Empty;
 
@@ -906,8 +945,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         prBodyBuilder.AppendLine($"<img src=\"{evalAvatarUrl}\" width=\"32\" height=\"32\" alt=\"{evalDisplayName}\" /> **Evaluator:** {evalDisplayName}");
                     }
                     prBodyBuilder.AppendLine();
+                    prBodyBuilder.AppendLine("### What changed");
+                    prBodyBuilder.AppendLine();
                     // Generator perspective
-                    prBodyBuilder.AppendLine($"### <img src=\"{avatarUrl}\" width=\"20\" height=\"20\" /> {agentDisplayName} (Generator)");
+                    prBodyBuilder.AppendLine($"#### <img src=\"{avatarUrl}\" width=\"20\" height=\"20\" /> {agentDisplayName} (Generator)");
                     if (!string.IsNullOrWhiteSpace(generatorSummary))
                     {
                         prBodyBuilder.AppendLine(generatorSummary);
@@ -920,7 +961,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     // Evaluator perspective
                     if (!string.IsNullOrEmpty(evalDisplayName) && evalAvatarUrl is not null)
                     {
-                        prBodyBuilder.AppendLine($"### <img src=\"{evalAvatarUrl}\" width=\"20\" height=\"20\" /> {evalDisplayName} (Evaluator)");
+                        prBodyBuilder.AppendLine($"#### <img src=\"{evalAvatarUrl}\" width=\"20\" height=\"20\" /> {evalDisplayName} (Evaluator)");
                         if (!string.IsNullOrWhiteSpace(changeNotes))
                         {
                             var notes = changeNotes.Length > 800 ? changeNotes[..800] + "..." : changeNotes;
@@ -937,14 +978,14 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     var prBody = prBodyBuilder.ToString();
 
                     // Pre-flight validation — refuse to call the provider
-                    // when the PR would be missing required context. Same
-                    // checks the user listed: work item association,
-                    // change description, agent identity.
+                    // when the PR would be missing required context.
                     var wiRefForLink = wi?.Provider == "ado" ? wi.ProviderRef : null;
                     if (wiRefForLink is null && string.IsNullOrEmpty(workItemId))
                         throw new InvalidOperationException("PR validation failed: missing work item association.");
-                    if (string.IsNullOrWhiteSpace(prBody) || !prBody.Contains("### What changed"))
-                        throw new InvalidOperationException("PR validation failed: missing change description.");
+                    if (string.IsNullOrWhiteSpace(prBody))
+                        throw new InvalidOperationException("PR validation failed: empty PR body.");
+                    if (string.IsNullOrWhiteSpace(generatorSummary) && string.IsNullOrWhiteSpace(changeNotes))
+                        throw new InvalidOperationException("PR validation failed: neither generator summary nor evaluator notes are present.");
                     if (string.IsNullOrWhiteSpace(agentDisplayName))
                         throw new InvalidOperationException("PR validation failed: missing agent identity.");
 
@@ -1582,8 +1623,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 }
                 catch (Exception ex)
                 {
-                    this.logger.LogDebug(ex, "Live-badge reconcile: auto-resume failed for wi={Wi}, falling back to failed badge", wi.Id);
-                    await this.HealStuckBadgeAsync(db, wi, "exec-reconciled-failed", ct);
+                    this.logger.LogWarning(ex, "Live-badge reconcile: auto-resume EnqueueAsync failed for wi={Wi}, falling back to failed badge", wi.Id);
+                    try { await this.HealStuckBadgeAsync(db, wi, "exec-reconciled-failed", ct); }
+                    catch (Exception healEx) { this.logger.LogWarning(healEx, "Live-badge reconcile: heal-fallback also failed for wi={Wi}", wi.Id); }
                     reconciled++;
                 }
             }

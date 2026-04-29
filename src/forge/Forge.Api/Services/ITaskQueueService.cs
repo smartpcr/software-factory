@@ -28,7 +28,7 @@ public interface ITaskQueueService
     /// records it). Q17.6 idempotency: a duplicate enqueue against the same
     /// open work item returns the existing row instead of failing.
     /// </summary>
-    Task<TaskQueueRow> EnqueueAsync(string workItemId, string targetKind, string targetId, CancellationToken ct);
+    Task<TaskQueueRow> EnqueueAsync(string workItemId, string targetKind, string targetId, CancellationToken ct, bool skipSoulPrompt = false);
 
     /// <summary>
     /// Manual ack from the lead, or the auto-ack path on timeout

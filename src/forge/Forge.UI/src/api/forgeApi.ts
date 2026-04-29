@@ -1197,10 +1197,10 @@ export const forgeApi = {
     });
   },
 
-  async requeueWorkItem(crewId: string, workItemId: string): Promise<unknown> {
+  async requeueWorkItem(crewId: string, workItemId: string, opts?: { restart?: boolean; skipSoulPrompt?: boolean }): Promise<unknown> {
     return fetchJson(`/api/crews/${encodeURIComponent(crewId)}/plan`, {
       method: 'POST',
-      body: JSON.stringify({ workItemId }),
+      body: JSON.stringify({ workItemId, restart: opts?.restart ?? false, skipSoulPrompt: opts?.skipSoulPrompt ?? false }),
       headers: { 'X-Forge-User': writerHeader() },
     });
   },

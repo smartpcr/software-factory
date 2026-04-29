@@ -162,10 +162,10 @@ export function LiveExecutionView(): JSX.Element {
         useToastStore.getState().show('No crew to restart with — assign a crew first.', 'danger');
         return;
       }
-      // 2. Clear transcript on server.
+      // 2. Clear transcript + deliverables on server.
       await forgeApi.clearWorkItemTranscript(workItemId);
-      // 3. Re-enqueue to the same crew.
-      await forgeApi.requeueWorkItem(crewId, workItemId);
+      // 3. Re-enqueue with restart semantics: reset state, clear iters, skip soul prompt.
+      await forgeApi.requeueWorkItem(crewId, workItemId, { restart: true, skipSoulPrompt: true });
       // 4. Clear local store so the view reloads fresh.
       const store = useTaskLiveStore.getState();
       store.entries[workItemId] = {
@@ -545,6 +545,13 @@ function renderPayload(evt: TaskTranscriptEvent): string {
     const score = (p.priorScore as number | undefined);
     const agent = (p.priorAgent as string | undefined) ?? '';
     return `⟲ resumed at iter ${next} (prior: ${agent} → ${prior}${score != null ? ` ${score}` : ''})`;
+  }
+  if (evt.kind === 'task.auto-resumed') {
+    const fromIter = (p.resumeFromIter as number | undefined) ?? '?';
+    const verdict = (p.priorVerdict as string | undefined) ?? '';
+    const score = (p.priorScore as number | undefined);
+    const crew = (p.crewId as string | undefined) ?? '';
+    return `⟳ auto-resumed by reconciler — re-queued to ${crew} from iter ${fromIter} (${verdict}${score != null ? ` ${score}` : ''})`;
   }
   if (evt.kind === 'task.pr-opened') {
     const prId = (p.prId as string | number | undefined) ?? '?';

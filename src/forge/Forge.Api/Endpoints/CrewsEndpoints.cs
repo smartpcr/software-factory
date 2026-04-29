@@ -1291,7 +1291,7 @@ public static class CrewsEndpoints
 
     // ── Phase 13.4 / 13.5 — pipelines ──────────────────────────────────────
 
-    public sealed record PlanRequest(string? WorkItemId = null);
+    public sealed record PlanRequest(string? WorkItemId = null, bool Restart = false, bool SkipSoulPrompt = false);
     public sealed record CodeRequest(string? StepWorkItemId = null);
 
     private static async Task<IResult> PlanStub(
@@ -1317,9 +1317,36 @@ public static class CrewsEndpoints
         if (string.IsNullOrWhiteSpace(wiId))
             return Results.Problem(title: "workItemId is required", statusCode: 400);
 
+        // Phase 21 — restart semantics: clear prior iterations and reset WI
+        // state so the guard in RunAgentAsync doesn't short-circuit.
+        if (req.Restart)
+        {
+            var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == wiId, ct);
+            if (wi is not null)
+            {
+                // Reset WIT state to "active" so it appears in the active column.
+                if (wi.State is "in-review" or "resolved" or "closed")
+                {
+                    wi.State = "active";
+                }
+                wi.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(ct);
+            }
+
+            // Delete all deliverable rows so the iter counter resets to 0.
+            var deliverables = await db.Deliverables
+                .Where(d => d.WorkItemId == wiId)
+                .ToListAsync(ct);
+            if (deliverables.Count > 0)
+            {
+                db.Deliverables.RemoveRange(deliverables);
+                await db.SaveChangesAsync(ct);
+            }
+        }
+
         // Enqueue the work item into the task queue so the worker can
         // route it to the agent runner when capacity is available.
-        var queueRow = await taskQueue.EnqueueAsync(wiId, "crew", id, ct);
+        var queueRow = await taskQueue.EnqueueAsync(wiId, "crew", id, ct, skipSoulPrompt: req.SkipSoulPrompt);
         await hub.Clients.All.SendAsync("queue.changed", new { kind = "enqueued", item = queueRow }, ct);
 
         // Phase 19 — fan out workitem.changed so the ExecBadge transitions

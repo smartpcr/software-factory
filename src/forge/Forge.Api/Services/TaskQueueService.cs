@@ -29,7 +29,7 @@ public sealed class TaskQueueService : ITaskQueueService
         this.logger = logger;
     }
 
-    public async Task<TaskQueueRow> EnqueueAsync(string workItemId, string targetKind, string targetId, CancellationToken ct)
+    public async Task<TaskQueueRow> EnqueueAsync(string workItemId, string targetKind, string targetId, CancellationToken ct, bool skipSoulPrompt = false)
     {
         ArgumentException.ThrowIfNullOrEmpty(workItemId);
         ArgumentException.ThrowIfNullOrEmpty(targetKind);
@@ -69,6 +69,7 @@ public sealed class TaskQueueService : ITaskQueueService
                 : now.Add(TaskQueueDefaults.AckTimeout),
             RoutedToCrewId = string.Equals(targetKind, "crew", StringComparison.OrdinalIgnoreCase) ? targetId : null,
             LastUpdatedAt = now,
+            SkipSoulPrompt = skipSoulPrompt,
         };
         this.db.TaskQueue.Add(row);
         this.db.TaskQueueHistory.Add(new TaskQueueHistoryRow

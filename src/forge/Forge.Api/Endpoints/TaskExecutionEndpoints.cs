@@ -171,12 +171,27 @@ public static class TaskExecutionEndpoints
         }
 
         // Recent transcript (last 200 events, oldest→newest for natural rendering).
+        // Always include prompt + iteration boundary events so the UI can
+        // show the prompt section and iteration pager even when the window
+        // has scrolled past them.
         var transcriptRows = await db.TaskTranscriptEvents.AsNoTracking()
             .Where(e => e.WorkItemId == id)
             .OrderByDescending(e => e.Id)
             .Take(200)
             .ToListAsync(ct);
-        transcriptRows.Reverse();
+        var pinnedKinds = new HashSet<string>
+        {
+            "task.prompt", "task.delegated",
+            "task.iteration.started", "task.iteration.scored",
+            "task.iteration.passed", "task.iteration.rejected",
+            "task.iteration.iterated", "task.iteration.stalled",
+        };
+        var pinnedIds = new HashSet<long>(transcriptRows.Select(r => r.Id));
+        var pinnedRows = await db.TaskTranscriptEvents.AsNoTracking()
+            .Where(e => e.WorkItemId == id && pinnedKinds.Contains(e.Kind) && !pinnedIds.Contains(e.Id))
+            .ToListAsync(ct);
+        transcriptRows.AddRange(pinnedRows);
+        transcriptRows = transcriptRows.OrderBy(e => e.Id).ToList();
         var transcript = transcriptRows.Select(MapTranscript).ToList();
 
         // Worktree (best-effort): most recent task.worktree-tick payload.
@@ -274,7 +289,19 @@ public static class TaskExecutionEndpoints
             db.TaskTranscriptEvents.RemoveRange(rows);
             await db.SaveChangesAsync(ct);
         }
-        return Results.Ok(new { deleted = rows.Count });
+
+        // Phase 21 — also delete deliverable rows so the iter counter
+        // resets to 0 when the live-exec view reloads after a restart.
+        var deliverables = await db.Deliverables
+            .Where(d => d.WorkItemId == id)
+            .ToListAsync(ct);
+        if (deliverables.Count > 0)
+        {
+            db.Deliverables.RemoveRange(deliverables);
+            await db.SaveChangesAsync(ct);
+        }
+
+        return Results.Ok(new { deleted = rows.Count, deletedDeliverables = deliverables.Count });
     }
 
     private static Deliverable MapDeliverable(DeliverableRow r)

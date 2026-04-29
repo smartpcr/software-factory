@@ -864,6 +864,10 @@ public class TaskQueueRow
     /// <summary>Phase 20 — runtime override for <see cref="ScoringConstants.MaxIterations"/>. When set via
     /// PATCH /api/work-items/{id}/execution, the deliverable loop reads this each iteration.</summary>
     public int? MaxIterOverride { get; set; }
+
+    /// <summary>Phase 21 — when true, the agent runner skips loading soul.md (system prompt)
+    /// for both generator and evaluator. Used by force-restart to run lean.</summary>
+    public bool SkipSoulPrompt { get; set; }
 }
 
 /// <summary>

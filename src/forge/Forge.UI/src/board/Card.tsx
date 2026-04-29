@@ -1,6 +1,8 @@
 import { useDraggable } from '@dnd-kit/core';
 import type { Card as CardModel } from '@/types';
 import { useBoardStore } from '@/state/useBoardStore';
+import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
+import { StatePill } from '@/workitems/StatePill';
 import { avatarFor, agentTooltip } from '@/agentAvatar';
 import {
   BlockIcon,
@@ -37,6 +39,7 @@ interface CardProps {
 export function Card({ card }: CardProps) {
   const selected = useBoardStore((s) => s.selectedId === card.id);
   const setSelected = useBoardStore((s) => s.setSelected);
+  const wiState = useWorkItemsStore((s) => s.items.find((w) => w.id === card.id)?.state ?? null);
 
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: card.id,
@@ -71,6 +74,7 @@ export function Card({ card }: CardProps) {
           <span className={`card-type-icon ${card.type}`}><TypeIcon type={card.type} /></span>
           <span className="card-id">{card.id}</span>
           {card.priority !== 'low' && <span className={`card-priority ${card.priority}`} />}
+          {wiState && <StatePill state={wiState} size="sm" />}
         </div>
         <div className="card-actions">
           <button className="card-action" title="Open" data-action="open"><CardOpenIcon /></button>
