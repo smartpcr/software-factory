@@ -197,4 +197,49 @@ public class Phase18PatchShiftTests
         var body = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()).RootElement;
         Assert.Equal("day", body.GetProperty("shift").GetString());
     }
+
+    [Fact]
+    public async Task Patch_Shift_Returns_403_For_Non_PO_Caller()
+    {
+        // Phase 13.2 product-scoped PO gate is shared across the whole PATCH
+        // handler — there's no field-specific bypass for shift. This test
+        // verifies the lock applies to shift mutation by triggering it via
+        // a populated-install role-gate path: once a UserRow with role=human
+        // exists, writes from a different identity get demoted out of PO.
+        using var f = new ForgeWebApplicationFactory();
+        using var c = f.CreateClient();
+
+        // Step 1 — create the crew as the PO (no UserRow yet → gate is open).
+        c.DefaultRequestHeaders.Add("X-Forge-User", "po@forge.local");
+        await Make(c, "p-rolegate");
+
+        // Step 2 — populate a non-PO user. Now any caller other than the PO
+        // hits the human fallback in `RequireRole.CheckForProduct`.
+        using (var scope = f.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            db.Users.Add(new UserRow
+            {
+                Id = "u-non-po",
+                DisplayName = "Non PO",
+                Email = "non-po@forge.local",
+                Role = "human",
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // Step 3 — PATCH shift as the non-PO user → 403.
+        c.DefaultRequestHeaders.Remove("X-Forge-User");
+        c.DefaultRequestHeaders.Add("X-Forge-User", "non-po@forge.local");
+        var resp = await c.PatchAsJsonAsync("/api/crews/p-rolegate", new { shift = "night" }, JsonOpts);
+        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+
+        // And the row must NOT have been mutated.
+        using (var scope = f.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var row = await db.Crews.AsNoTracking().FirstAsync(x => x.Id == "p-rolegate");
+            Assert.Equal("day", row.Shift);
+        }
+    }
 }

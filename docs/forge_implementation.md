@@ -1188,19 +1188,19 @@ This is a **schema add + ScheduleGate parameter**, not a new view. UI surfaces i
 
 ### Test scenarios
 
-> Coverage matrix for Phase 18. Each scenario gets a checkbox; a checked box means the test exists. Audit performed against `Phase18LeadExemptionTests.cs`, `Phase18ScheduleGateNightBandTests.cs`, `Phase18PatchShiftTests.cs`, `Phase18WorkerIntegrationTests.cs`, `Phase14ScheduleGateTests.cs`, `Phase14PayrollTests.cs`, and adjacent suites. **Coverage status: 18.3 / 18.4 / 18.6 fully covered; 18.1, 18.2, and 18.5 remain at the migration / model / Playwright layer (deliberately out of scope for this round).**
+> Coverage matrix for Phase 18. Each scenario gets a checkbox; a checked box means the test exists and passes. Audit performed against `Phase18LeadExemptionTests.cs`, `Phase18ScheduleGateNightBandTests.cs`, `Phase18PatchShiftTests.cs`, `Phase18WorkerIntegrationTests.cs`, `Phase18MigrationAndModelTests.cs`, `Phase14ScheduleGateTests.cs`, `Phase14PayrollTests.cs`, and adjacent suites. **Coverage status: 50 / 50 Phase 18 tests pass. 18.1 / 18.2 / 18.3 / 18.4 / 18.6 fully covered. 18.5 is Playwright-only and stays at the UI layer.**
 
-**18.1 Migration**
+**18.1 Migration** (covered in `Phase18MigrationAndModelTests.cs`)
 
-- [ ] `Phase18Migration.ApplyAsync` adds the `Shift` column to a fresh DB.
-- [ ] `Phase18Migration.ApplyAsync` is idempotent — second invocation does not throw and does not duplicate the column.
-- [ ] Existing crew rows (pre-migration) backfill `Shift = 'day'` so behaviour pre/post upgrade is identical (Q18.2 strict-superset rule).
+- [x] `Phase18Migration.ApplyAsync` adds the `Shift` column to a fresh DB.
+- [x] `Phase18Migration.ApplyAsync` is idempotent — second invocation does not throw and does not duplicate the column.
+- [x] Existing crew rows (pre-migration) backfill `Shift = 'day'` so behaviour pre/post upgrade is identical (Q18.2 strict-superset rule).
 
-**18.2 Domain model**
+**18.2 Domain model** (covered in `Phase18MigrationAndModelTests.cs`)
 
-- [ ] `new CrewRow()` defaults `Shift` to `"day"`.
-- [ ] `CrewRow.Shift` round-trips through EF — write `night`, read back `night`.
-- [ ] TS `Crew.shift` type is `'day' | 'night'` (UI-side contract).
+- [x] `new CrewRow()` defaults `Shift` to `"day"`.
+- [x] `CrewRow.Shift` round-trips through EF — write `night`, read back `night`.
+- [ ] TS `Crew.shift` type is `'day' | 'night'` (UI-side contract). *(TS contract — not exercised by xUnit; falls under 18.5 UI tests.)*
 
 **18.3 `ScheduleGate.IsWithinShift` / `NextTransitionLocal` — night band + constants** (covered in `Phase18ScheduleGateNightBandTests.cs`)
 
@@ -1241,7 +1241,7 @@ Constants:
 - [x] Same-value PATCH (e.g. day → day) does NOT add a history row.
 - [x] `CreateCrewRequest.Shift` accepts an explicit band at create time and rejects unknown values with 400.
 - [x] Create without a `shift` value defaults to `"day"`.
-- [ ] Non-PO caller (or PO of a different product) gets 403 — same product-scoped gate as other patch fields. *(role gate inherits from existing PATCH gate; not yet exercised by an explicit test in this suite.)*
+- [x] Non-PO caller (or PO of a different product) gets 403 — same product-scoped gate as other patch fields. *(`Patch_Shift_Returns_403_For_Non_PO_Caller`.)*
 
 **18.5 `CrewsView` UI**
 
@@ -1272,8 +1272,8 @@ Constants:
 - [x] When zero members are on-shift, the picker selects `crew.Lead` instead of an off-shift member or `null`. *(uses a wall-clock-dependent off-shift TZ search; skips on the rare UTC instant when no such TZ exists.)*
 - [x] When some members are on-shift, the picker round-robins over only the on-shift subset and never wedges work onto an off-shift member. *(regression: members claim during the band; lead is bypassed.)*
 - [x] Lead-only crew (zero non-lead members) picks the lead — preserves the Phase 16.7 fallback after the rewrite.
-- [ ] Resume-pin honours the prior agent only if they are currently on-shift (or are the lead) — off-shift prior agents are bypassed in favour of an on-shift member or the lead. *(needs a deliverable-row + queue restart fixture; deferred.)*
-- [ ] No-lead, all-off-shift crew → `picked` is null and the sweep records `claim-cas-failed` rather than dispatching to a wedged member. *(this path is unreachable through `LeadAutoDispatcher` (no-lead crews are filtered before the schedule check), but `CrewQueueWorker` can still hit it on a manually-enqueued row; deferred until a no-lead repro fixture lands.)*
+- [x] Resume-pin honours the prior agent only if they are currently on-shift (or are the lead) — off-shift prior agents are bypassed in favour of an on-shift member or the lead. *(`SweepClaims_Resume_Pin_Bypasses_Off_Shift_Prior_Agent`.)*
+- [x] No-lead, all-off-shift crew → `picked` is null and the sweep records `no-agent-available` rather than CAS-claiming the row with a null agent id. *(`SweepClaims_No_Lead_All_Off_Shift_Records_No_Agent_Available`. Worker now short-circuits before `ClaimNextAsync(_, null)` to keep the queue row available for re-routing.)*
 
 `LeadAutoDispatcher` schedule check (covered in `Phase18WorkerIntegrationTests.cs`):
 - [x] Crew with a lead, off-shift wall-clock — dispatcher enqueues successfully and the histogram tag is `outcome: dispatched`, NOT `outcome: off-shift`.
@@ -1387,32 +1387,32 @@ Comprehensive coverage for Phase 21 restart semantics, transcript clearing, soul
 - [x] Clears all `task_transcript_event` rows for the work item.
 - [x] Clears all `deliverable` rows for the work item (iter counter resets to 0).
 - [x] Returns `{ deleted: N, deletedDeliverables: M }` with correct counts.
-- [ ] Idempotent — calling twice on the same work item returns `{ deleted: 0, deletedDeliverables: 0 }` on the second call.
-- [ ] Returns 200 for a work item with no transcript or deliverables (empty delete is a no-op, not an error).
-- [ ] Does not delete transcript events belonging to a different work item (no cross-contamination).
+- [x] Idempotent — calling twice on the same work item returns `{ deleted: 0, deletedDeliverables: 0 }` on the second call.
+- [x] Returns 200 for a work item with no transcript or deliverables (empty delete is a no-op, not an error).
+- [x] Does not delete transcript events belonging to a different work item (no cross-contamination).
 
 **21.3 Restart via `POST /api/crews/{crewId}/plan` with `restart=true`**
 
 - [x] Clears deliverables and resets iter count to 0.
 - [x] Resets WIT State from `in-review` → `active` so `RunAgentAsync` guard doesn't short-circuit.
 - [x] Resets WIT State from `resolved` → `active`.
-- [ ] Resets WIT State from `closed` → `active`.
+- [x] Resets WIT State from `closed` → `active`.
 - [x] Preserves WIT State when already `active` (no-op on State).
 - [x] Preserves WIT State when already `proposed` (no-op on State).
 - [x] Sets `ExecutionStatus` to `queued` on re-enqueue (failed → queued transition).
-- [ ] Sets `ExecutionStatus` to `queued` on re-enqueue (completed → queued transition).
+- [x] Sets `ExecutionStatus` to `queued` on re-enqueue (completed → queued transition).
 - [x] Non-restart enqueue (`restart=false`) does NOT clear deliverables.
-- [ ] Restart skips the schedule gate — a restart at Sunday 03:00 on a day crew still succeeds (no 409 `crew.off_shift`).
+- [x] Restart skips the schedule gate — a restart at Sunday 03:00 on a day crew still succeeds (no 409 `crew.off_shift`).
 - [ ] Non-restart enqueue respects the schedule gate — off-shift returns 409.
 - [ ] Restart on a non-existent work item returns an appropriate error.
-- [ ] Restart on a non-existent crew returns 404.
-- [ ] Restart cancels any existing open queue row before enqueuing a new one (idempotency — no double-queue).
+- [x] Restart on a non-existent crew returns 404.
+- [x] Restart cancels any existing open queue row before enqueuing a new one (idempotency — no double-queue).
 
 **21.4 `SkipSoulPrompt` flag**
 
 - [x] `restart=true, skipSoulPrompt=true` persists `SkipSoulPrompt=1` on the queue row.
 - [x] Normal enqueue (`skipSoulPrompt=false` or absent) persists `SkipSoulPrompt=0`.
-- [ ] `skipSoulPrompt=true` without `restart=true` still persists the flag (the two are independent controls).
+- [x] `skipSoulPrompt=true` without `restart=true` still persists the flag (the two are independent controls).
 - [ ] When `SkipSoulPrompt=true`, `RunAgentAsync` skips `File.ReadAllTextAsync(SoulPath)` — generator's `SoulMd` is empty string.
 - [ ] When `SkipSoulPrompt=true`, evaluator also skips its soul.md — evaluator's `SoulMd` is the scoring rubric only (no persona prefix).
 - [ ] When `SkipSoulPrompt=false` and `agent.SoulPath` is set, generator's `SoulMd` contains the file content.
@@ -1424,29 +1424,29 @@ Comprehensive coverage for Phase 21 restart semantics, transcript clearing, soul
 - [x] 3 points × 30 = 90 min wall-clock budget.
 - [x] 1 point × 30 = 30 min wall-clock budget.
 - [x] 0 points = null budget (falls back to global default).
-- [ ] 3 points × 30 = 90 max turns on `AgentContext.MaxTurns`.
-- [ ] 5 points × 30 = 150 max turns.
-- [ ] 1 point × 30 = 30 max turns.
-- [ ] 0 points = null max turns (falls back to global `AgentRunnerOptions.MaxTurns` default of 500).
-- [ ] `AgentRunnerDispatcher.RunCopilotSdk` uses `context.MaxTurns` when set (not the global default).
-- [ ] `AgentRunnerDispatcher.RunCopilotSdk` uses `options.MaxTurns` when `context.MaxTurns` is null.
+- [x] 3 points × 30 = 90 max turns on `AgentContext.MaxTurns`.
+- [x] 5 points × 30 = 150 max turns.
+- [x] 1 point × 30 = 30 max turns.
+- [x] 0 points = null max turns (falls back to global `AgentRunnerOptions.MaxTurns` default of 500).
+- [x] `AgentRunnerDispatcher.RunCopilotSdk` uses `context.MaxTurns` when set (not the global default).
+- [x] `AgentRunnerDispatcher.RunCopilotSdk` uses `options.MaxTurns` when `context.MaxTurns` is null.
 - [ ] Turn count increments on each `ToolExecutionCompleteEvent`; when `turnCount >= maxTurns`, the invocation terminates with `failReason = "Max turns (N) reached"`.
-- [ ] Evaluator context receives the same `maxTurns` as the generator context (both scaled by the same work item points).
-- [ ] Negative points value → treated as 0 (null budget + null maxTurns, falls back to defaults).
+- [x] Evaluator context receives the same `maxTurns` as the generator context (both scaled by the same work item points).
+- [x] Negative points value → treated as 0 (null budget + null maxTurns, falls back to defaults).
 
 **21.R Re-execution guard (related regression coverage)**
 
-- [ ] `RunAgentAsync` skips execution when WIT State is `in-review` (returns early, marks queue row completed).
-- [ ] `RunAgentAsync` skips execution when WIT State is `resolved` or `closed`.
-- [ ] After restart resets State from `in-review` → `active`, `RunAgentAsync` proceeds (does NOT skip).
+- [x] `RunAgentAsync` skips execution when WIT State is `in-review` (returns early, marks queue row completed).
+- [x] `RunAgentAsync` skips execution when WIT State is `resolved` or `closed`.
+- [x] After restart resets State from `in-review` → `active`, `RunAgentAsync` proceeds (does NOT skip).
 - [ ] Boot-recovery sweep (`picked-up` → `queued`) does not re-run items in terminal states.
 
 **21.I Independence invariants**
 
 - [x] Setting `ExecutionStatus = failed` does NOT change WIT State.
 - [x] Setting `ExecutionStatus = completed` does NOT change WIT State.
-- [ ] Restarting (clearing deliverables + resetting queue) does NOT change the work item's `AssignedTo` field (WIT-level assignee is independent of execution lifecycle).
-- [ ] Restarting does NOT delete the work item's child rows, comments, or parent linkage (Phase Q21.3 — only execution-side rows are cleared).
+- [x] Restarting (clearing deliverables + resetting queue) does NOT change the work item's `AssignedTo` field (WIT-level assignee is independent of execution lifecycle).
+- [x] Restarting does NOT delete the work item's child rows, comments, or parent linkage (Phase Q21.3 — only execution-side rows are cleared).
 
 ### Out of scope for v0.1
 

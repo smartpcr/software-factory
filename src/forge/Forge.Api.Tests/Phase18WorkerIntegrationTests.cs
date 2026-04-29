@@ -255,6 +255,122 @@ public class Phase18WorkerIntegrationTests
     }
 
     [Fact]
+    public async Task SweepClaims_Resume_Pin_Bypasses_Off_Shift_Prior_Agent()
+    {
+        // Q18.3 — the resume-pin must not hand the work back to a member who
+        // was on-shift when the deliverable was written but is now off-shift.
+        // Off-shift TZ + a lead → expected pick is the lead, not the prior
+        // member.
+        var tz = ChooseDayCrewOffShiftTimezone();
+        if (tz is null) return;
+
+        var (f, scope, db) = await BootAsync();
+        try
+        {
+            var product = await db.Products.FirstAsync();
+            db.Crews.Add(new CrewRow
+            {
+                Id = "wq-resume", Name = "Resume",
+                ProductId = product.Id,
+                Lead = "lead-resume", Model = "x",
+                ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
+                MaxConcurrent = 5, ScheduleEnabled = true,
+                Timezone = tz, Shift = "day",
+            });
+            db.CrewMembers.Add(new CrewMemberRow { CrewId = "wq-resume", AgentId = "prior-mem", AddedAt = DateTimeOffset.UtcNow });
+            db.WorkItems.Add(new WorkItemRow
+            {
+                Id = "wi-resume", Type = "step", Track = "design", State = "active", Title = "R",
+                CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+
+            // A prior deliverable from `prior-mem` would normally pin the
+            // resume back to that agent. Under Q18.3, the pin is honoured
+            // only if the prior agent is currently on-shift.
+            db.Deliverables.Add(new DeliverableRow
+            {
+                WorkItemId = "wi-resume",
+                CrewId = "wq-resume",
+                GeneratorAgentId = "prior-mem",
+                EvaluatorAgentId = "prior-mem",
+                Iter = 1,
+                Score = 75,
+                Verdict = "iterate",
+                CreatedAt = DateTimeOffset.UtcNow.AddHours(-3),
+            });
+            await db.SaveChangesAsync();
+
+            var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+            await queue.EnqueueAsync("wi-resume", "crew", "wq-resume", default);
+
+            var worker = f.Services.GetRequiredService<CrewQueueWorker>();
+            await worker.RunOnceAsync(default);
+
+            var pickedRow = await db.TaskQueue.AsNoTracking()
+                .FirstOrDefaultAsync(r => r.WorkItemId == "wi-resume" && r.State == TaskQueueStates.PickedUp);
+            Assert.NotNull(pickedRow);
+            // The off-shift prior agent must NOT be honoured; the lead is
+            // the on-shift fallback (24×7).
+            Assert.Equal("lead-resume", pickedRow!.PickedUpByAgent);
+        }
+        finally { scope.Dispose(); f.Dispose(); }
+    }
+
+    [Fact]
+    public async Task SweepClaims_No_Lead_All_Off_Shift_Records_No_Agent_Available()
+    {
+        // Q18.3 — when there's no lead to fall back on AND all members are
+        // off-shift, the picker resolves to null. The worker must skip
+        // cleanly with `no-agent-available` rather than calling
+        // ClaimNextAsync(crewId, null) and claiming the row with a null
+        // PickedUpByAgent.
+        var tz = ChooseDayCrewOffShiftTimezone();
+        if (tz is null) return;
+
+        var (f, scope, db) = await BootAsync();
+        try
+        {
+            var product = await db.Products.FirstAsync();
+            db.Crews.Add(new CrewRow
+            {
+                Id = "wq-orphan", Name = "Orphan",
+                ProductId = product.Id,
+                Lead = null, // no lead — only on-shift members can pick up
+                Model = "x",
+                ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
+                MaxConcurrent = 5, ScheduleEnabled = true,
+                Timezone = tz, Shift = "day",
+            });
+            db.CrewMembers.Add(new CrewMemberRow { CrewId = "wq-orphan", AgentId = "m-off", AddedAt = DateTimeOffset.UtcNow });
+            db.WorkItems.Add(new WorkItemRow
+            {
+                Id = "wi-orphan", Type = "step", Track = "design", State = "active", Title = "O",
+                CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+
+            var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+            await queue.EnqueueAsync("wi-orphan", "crew", "wq-orphan", default);
+
+            var worker = f.Services.GetRequiredService<CrewQueueWorker>();
+            var tick = await worker.RunOnceAsync(default);
+
+            // The row must remain queued (NOT picked-up with PickedUpByAgent=null).
+            var queuedRow = await db.TaskQueue.AsNoTracking()
+                .FirstOrDefaultAsync(r => r.WorkItemId == "wi-orphan");
+            Assert.NotNull(queuedRow);
+            Assert.Equal(TaskQueueStates.Queued, queuedRow!.State);
+
+            // And the sweep must have recorded the skip with the right reason
+            // so the operator's diagnostics surface the orphaned crew.
+            Assert.NotNull(tick.ClaimSkips);
+            Assert.Contains(tick.ClaimSkips!, s =>
+                s.CrewId == "wq-orphan" && s.Reason == "no-agent-available");
+        }
+        finally { scope.Dispose(); f.Dispose(); }
+    }
+
+    [Fact]
     public async Task SweepClaims_Lead_Only_Crew_Picks_Lead_Regression()
     {
         // Schedule-disabled lead-only crew — not strictly a 18.6 case, but

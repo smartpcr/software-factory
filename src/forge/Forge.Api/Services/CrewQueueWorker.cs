@@ -334,6 +334,17 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 ? crew.Lead
                 : onShiftMembers[Math.Abs(Environment.TickCount) % onShiftMembers.Count];
 
+            // Phase 18.6 (Q18.3) — when zero members are on-shift AND there's
+            // no lead to fall back on, picked is null. Skip cleanly rather
+            // than calling ClaimNextAsync(crewId, null), which would CAS the
+            // row to picked-up with PickedUpByAgent=null and then run the
+            // agent runner against a null agent id.
+            if (string.IsNullOrEmpty(picked))
+            {
+                skips.Add(new ClaimSkip(crewId, "no-agent-available", $"members={allMembers.Count} onShift={onShiftMembers.Count} lead={crew.Lead ?? "(null)"}"));
+                continue;
+            }
+
             var row = await queue.ClaimNextAsync(crewId, picked, ct);
             if (row is null)
             {
