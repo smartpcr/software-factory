@@ -973,8 +973,28 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                             $"chore: auto-commit for {workItemId}", "--allow-empty");
                     }
 
-                    // Fetch to update tracking refs, then push.
-                    await RunGitAsync(pushCwd, "fetch", "origin", branchName).ConfigureAwait(false);
+                    // Fetch to update tracking refs, then check if the branch
+                    // has any commits ahead of the base. If not, skip push + PR
+                    // — the agent produced no changes.
+                    await RunGitAsync(pushCwd, "fetch", "origin").ConfigureAwait(false);
+                    var (countCode, countOut, _) = await RunGitAsync(
+                        pushCwd, "rev-list", "--count", $"origin/{baseBranch}..HEAD");
+                    var commitsAhead = 0;
+                    if (countCode == 0 && int.TryParse(countOut.Trim(), out var n)) commitsAhead = n;
+
+                    if (commitsAhead == 0)
+                    {
+                        this.logger.LogWarning(
+                            "Branch has 0 commits ahead of {Base} — agent produced no changes. Skipping push + PR: wi={Wi}",
+                            baseBranch, workItemId);
+                        await this.taskChannel.EmitAsync(workItemId, "task.no-changes", new
+                        {
+                            agentId, crewId, branch = branchName,
+                            reason = $"Branch ws/{workItemId} has 0 commits ahead of {baseBranch}",
+                        }, crewId: crewId, ct: ct);
+                    }
+                    else
+                    {
                     this.logger.LogInformation(
                         "Server-side push: wi={Wi} branch={Branch} cwd={Cwd}",
                         workItemId, branchName, pushCwd);
@@ -1009,7 +1029,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                             agentId, crewId, branch = branchName, error = pushErr,
                         }, crewId: crewId, ct: ct);
                     }
-                }
+                    } // end: commitsAhead > 0
+                } // end: pushCwd exists
 
                 // (4b) Create PR via provider API.
                 // Track PR creation locally — VerifyPrCreatedAsync checks ALL
