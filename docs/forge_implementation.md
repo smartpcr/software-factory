@@ -148,146 +148,146 @@ Checkbox states:
 
 Stand up the two new projects, the data shapes, and the static-data port of the prototype so every subsequent phase has somewhere to render into.
 
-- [x] **0.1** Create `src/forge/Forge.Api/Forge.Api.csproj` (ASP.NET Core 8 minimal-API) with `Program.cs`, health endpoint, problem-details, CORS for the dev UI port. Add to `Workflow.sln`.
-- [x] **0.2** Create `src/forge/Forge.UI/` (Vite + React + TypeScript) via `npm create vite@latest -- --template react-ts`. Add ESLint + Prettier configs that match repo conventions.
-- [x] **0.3** App shell components: `<TopBar/>`, `<SideBar/>`, `<ViewSwitcher/>` mirroring the prototype layout under `src/forge/Forge.UI/src/shell/`. **Verbatim port** — keep DOM structure, class names, inline SVGs, and grid template areas (`"topbar topbar" "sidebar main"`) exactly as in the prototype.
-- [x] **0.4** Extract the prototype's `<style>` block verbatim into `src/forge/Forge.UI/src/styles/` split by the existing `/* ============= */` section banners (`reset.css`, `theme.css`, `shell.css`, `topbar.css`, `sidebar.css`, `main.css`, `filter-bar.css`, `board.css`, `timeline.css`, `workstream.css`, `pr.css`, `toast-modal.css`, `detail-panel.css`). **Do not** convert to CSS modules, Tailwind, or styled-components in this phase.
-- [x] **0.5** Light/dark theme toggle (React context + `localStorage` key `forge.theme`). Toggle behavior, CSS variable swaps, and the `data-theme` attribute on `<html>` must match the prototype exactly.
-- [x] **0.6** Routing with `react-router-dom`: `/`, `/plan`, `/timeline`, `/workstreams`, `/prs`, `/settings`. Deep-linkable.
-- [x] **0.7** Define shared types in `src/forge/Forge.UI/src/types.ts`: `Epic`, `Card`, `Column`, `Workstream`, `WsEvent`, `Pr`, `Agent`, `BuildStatus`, `ReviewVerdict`. Keep a parallel C# record set in `Forge.Api/Contracts/` and document the source-of-truth direction (server-first).
-- [x] **0.8** Port the prototype's seed data **verbatim** (same IDs, ordering, agent names, costs, timestamps, summaries) into `src/forge/Forge.UI/src/sampleData.ts`. The file is the source of truth for all visual fixtures used by fidelity checks.
-- [x] **0.9** State management: pick Zustand (lean, fits vanilla feel) and create stores per view (`useBoardStore`, `usePrStore`, …) under `src/forge/Forge.UI/src/state/`.
-- [x] **0.10** API client `src/forge/Forge.UI/src/api/forgeApi.ts` with typed fetch + problem-details handling. Honors `VITE_FORGE_API_URL`; falls back to sample data when `?seed=local`.
-- [x] **0.11** Generate the TS client from the API's OpenAPI doc (`Forge.Api` exposes `/openapi.json` via `Microsoft.AspNetCore.OpenApi`); script `npm run gen:api` writes to `src/api/generated/`.
-- [x] **0.12** Skeleton endpoints in `Forge.Api/Endpoints/StateEndpoints.cs`: `GET /api/state` returns the seed data shape so the UI can light up end-to-end.
-- [x] **0.13** SQLite persistence (`Microsoft.Data.Sqlite` + EF Core) under `src/forge/Forge.Api/Persistence/`. Migrations: `epics`, `cards`, `workstreams`, `prs`, `events`. DB file at `forge.db` next to the binary, override via `Forge:Db:Path`.
-- [x] **0.14** Idempotent seed on first boot importing `forge-board.html`'s sample data.
-- [x] **0.15** Tests: `Forge.Api.Tests/StateEndpointsSmokeTests.cs` (xUnit + `WebApplicationFactory`) verifies `GET /api/state` returns 200 with the expected counts.
-- [x] **0.16** Playwright spec in `Forge.UI.Tests/`: load `/plan`, assert the five columns render with at least one card.
-- [x] **0.17** `dev.ps1` (or npm script) that boots `Forge.Api` on `:5180` and `Forge.UI` Vite dev server on `:5181` together.
-- [x] **0.18** **Fidelity check** — Playwright `toHaveScreenshot` of the empty shell (topbar + sidebar + theme toggle) against a baseline rendered from `docs/examples/forge-board.html` itself. Pixel diff must be 0 in both light and dark themes.
+- [ ] **0.1** Create `src/forge/Forge.Api/Forge.Api.csproj` (ASP.NET Core 8 minimal-API) with `Program.cs`, health endpoint, problem-details, CORS for the dev UI port. Add to `Workflow.sln`.
+- [ ] **0.2** Create `src/forge/Forge.UI/` (Vite + React + TypeScript) via `npm create vite@latest -- --template react-ts`. Add ESLint + Prettier configs that match repo conventions.
+- [ ] **0.3** App shell components: `<TopBar/>`, `<SideBar/>`, `<ViewSwitcher/>` mirroring the prototype layout under `src/forge/Forge.UI/src/shell/`. **Verbatim port** — keep DOM structure, class names, inline SVGs, and grid template areas (`"topbar topbar" "sidebar main"`) exactly as in the prototype.
+- [ ] **0.4** Extract the prototype's `<style>` block verbatim into `src/forge/Forge.UI/src/styles/` split by the existing `/* ============= */` section banners (`reset.css`, `theme.css`, `shell.css`, `topbar.css`, `sidebar.css`, `main.css`, `filter-bar.css`, `board.css`, `timeline.css`, `workstream.css`, `pr.css`, `toast-modal.css`, `detail-panel.css`). **Do not** convert to CSS modules, Tailwind, or styled-components in this phase.
+- [ ] **0.5** Light/dark theme toggle (React context + `localStorage` key `forge.theme`). Toggle behavior, CSS variable swaps, and the `data-theme` attribute on `<html>` must match the prototype exactly.
+- [ ] **0.6** Routing with `react-router-dom`: `/`, `/plan`, `/timeline`, `/workstreams`, `/prs`, `/settings`. Deep-linkable.
+- [ ] **0.7** Define shared types in `src/forge/Forge.UI/src/types.ts`: `Epic`, `Card`, `Column`, `Workstream`, `WsEvent`, `Pr`, `Agent`, `BuildStatus`, `ReviewVerdict`. Keep a parallel C# record set in `Forge.Api/Contracts/` and document the source-of-truth direction (server-first).
+- [ ] **0.8** Port the prototype's seed data **verbatim** (same IDs, ordering, agent names, costs, timestamps, summaries) into `src/forge/Forge.UI/src/sampleData.ts`. The file is the source of truth for all visual fixtures used by fidelity checks.
+- [ ] **0.9** State management: pick Zustand (lean, fits vanilla feel) and create stores per view (`useBoardStore`, `usePrStore`, …) under `src/forge/Forge.UI/src/state/`.
+- [ ] **0.10** API client `src/forge/Forge.UI/src/api/forgeApi.ts` with typed fetch + problem-details handling. Honors `VITE_FORGE_API_URL`; falls back to sample data when `?seed=local`.
+- [ ] **0.11** Generate the TS client from the API's OpenAPI doc (`Forge.Api` exposes `/openapi.json` via `Microsoft.AspNetCore.OpenApi`); script `npm run gen:api` writes to `src/api/generated/`.
+- [ ] **0.12** Skeleton endpoints in `Forge.Api/Endpoints/StateEndpoints.cs`: `GET /api/state` returns the seed data shape so the UI can light up end-to-end.
+- [ ] **0.13** SQLite persistence (`Microsoft.Data.Sqlite` + EF Core) under `src/forge/Forge.Api/Persistence/`. Migrations: `epics`, `cards`, `workstreams`, `prs`, `events`. DB file at `forge.db` next to the binary, override via `Forge:Db:Path`.
+- [ ] **0.14** Idempotent seed on first boot importing `forge-board.html`'s sample data.
+- [ ] **0.15** Tests: `Forge.Api.Tests/StateEndpointsSmokeTests.cs` (xUnit + `WebApplicationFactory`) verifies `GET /api/state` returns 200 with the expected counts.
+- [ ] **0.16** Playwright spec in `Forge.UI.Tests/`: load `/plan`, assert the five columns render with at least one card.
+- [ ] **0.17** `dev.ps1` (or npm script) that boots `Forge.Api` on `:5180` and `Forge.UI` Vite dev server on `:5181` together.
+- [ ] **0.18** **Fidelity check** — Playwright `toHaveScreenshot` of the empty shell (topbar + sidebar + theme toggle) against a baseline rendered from `docs/examples/forge-board.html` itself. Pixel diff must be 0 in both light and dark themes.
 
 ## Phase 1 — Plan & Design (scrum board)
 
 Make the board fully interactive against the local cache. No external sync yet — just a clean, fast scrum board.
 
-- [x] **1.1** `<Board/>` component renders columns with WIP limits, point totals, AI/human counts (port `renderBoard`).
-- [x] **1.2** `<Card/>` component with epic color, type icon (story/task/bug), agent chip, points, priority, branch, live progress bar.
-- [x] **1.3** `<FilterBar/>`: All / Needs approval / AI working / Blocked / Watching, plus epic / agent / priority / group-by selects and search.
-- [x] **1.4** Drag-and-drop with `dnd-kit`; reuse the prototype's `checkDragPolicy` rules (skip-phase confirm, human-gate confirm, re-open done) — port the function to TS in `src/forge/Forge.UI/src/board/policy.ts` and mirror it in `Forge.Api/Domain/DragPolicy.cs` for server-side enforcement.
-- [x] **1.5** `<DetailPanel/>` right rail: description, branch, agent timeline, "Auto-promote when…" rules, action buttons.
-- [x] **1.6** `<CardModal/>` for new / edit (epic, type, title, points, priority, agent, tags).
-- [x] **1.7** API endpoints in `Forge.Api/Endpoints/CardsEndpoints.cs`: `GET/POST /api/cards`, `PATCH /api/cards/{id}`, `POST /api/cards/{id}/move`.
-- [x] **1.8** SignalR `ForgeHub` (`/hubs/forge`) emits `card.changed` so a card moved in one tab updates other tabs. Wire `@microsoft/signalr` on the React side.
-- [x] **1.9** Optimistic UI for moves with rollback on server reject.
-- [x] **1.10** `<Toast/>` component (Zustand-backed queue) for transient messages ("Moved to Build", "Re-opened", etc.).
-- [x] **1.11** Sprint pill in page head wired to real burn-down (points done / total) — selector over board store.
-- [x] **1.12** Keyboard shortcuts via `react-hotkeys-hook`: `n` new card, `/` focus search, `esc` close panel, `1..5` switch columns focus.
-- [x] **1.13** Tests: `policy.spec.ts` (drag-policy parity, run on both client and server), endpoint contract tests in `Forge.Api.Tests`, one Playwright DnD spec.
-- [x] **1.14** **Fidelity check** — Playwright screenshot diff of `/plan` (light + dark, with the sample data, default filters) against the prototype. Diff must be 0. Repeat for: a card hovered, a card dragging, the detail panel open on `#234`, the new-card modal open.
+- [ ] **1.1** `<Board/>` component renders columns with WIP limits, point totals, AI/human counts (port `renderBoard`).
+- [ ] **1.2** `<Card/>` component with epic color, type icon (story/task/bug), agent chip, points, priority, branch, live progress bar.
+- [ ] **1.3** `<FilterBar/>`: All / Needs approval / AI working / Blocked / Watching, plus epic / agent / priority / group-by selects and search.
+- [ ] **1.4** Drag-and-drop with `dnd-kit`; reuse the prototype's `checkDragPolicy` rules (skip-phase confirm, human-gate confirm, re-open done) — port the function to TS in `src/forge/Forge.UI/src/board/policy.ts` and mirror it in `Forge.Api/Domain/DragPolicy.cs` for server-side enforcement.
+- [ ] **1.5** `<DetailPanel/>` right rail: description, branch, agent timeline, "Auto-promote when…" rules, action buttons.
+- [ ] **1.6** `<CardModal/>` for new / edit (epic, type, title, points, priority, agent, tags).
+- [ ] **1.7** API endpoints in `Forge.Api/Endpoints/CardsEndpoints.cs`: `GET/POST /api/cards`, `PATCH /api/cards/{id}`, `POST /api/cards/{id}/move`.
+- [ ] **1.8** SignalR `ForgeHub` (`/hubs/forge`) emits `card.changed` so a card moved in one tab updates other tabs. Wire `@microsoft/signalr` on the React side.
+- [ ] **1.9** Optimistic UI for moves with rollback on server reject.
+- [ ] **1.10** `<Toast/>` component (Zustand-backed queue) for transient messages ("Moved to Build", "Re-opened", etc.).
+- [ ] **1.11** Sprint pill in page head wired to real burn-down (points done / total) — selector over board store.
+- [ ] **1.12** Keyboard shortcuts via `react-hotkeys-hook`: `n` new card, `/` focus search, `esc` close panel, `1..5` switch columns focus.
+- [ ] **1.13** Tests: `policy.spec.ts` (drag-policy parity, run on both client and server), endpoint contract tests in `Forge.Api.Tests`, one Playwright DnD spec.
+- [ ] **1.14** **Fidelity check** — Playwright screenshot diff of `/plan` (light + dark, with the sample data, default filters) against the prototype. Diff must be 0. Repeat for: a card hovered, a card dragging, the detail panel open on `#234`, the new-card modal open.
 
 ## Phase 2 — Feature / branch timeline
 
 Visualises the same data as a horizontal timeline with epic and workstream lanes.
 
-- [x] **2.1** Render time axis with Day / Week / Sprint zoom toggles.
-- [x] **2.2** Render epic lanes (group rows) with collapse/expand.
-- [x] **2.3** Render branch bars (`barStart` / `barEnd` from workstreams) with status color (active / merging / review / planning).
-- [x] **2.4** Overlay event markers: PR opened, merged, review, conflict, block (`wsEvents`).
-- [x] **2.5** Vertical "now" line and a `Now` button that scrolls to it.
-- [x] **2.6** "Forecast" toggle that extends planned bars (`planned: true`) with a hatched style.
-- [x] **2.7** Click a bar → opens the workstream detail (Phase 3).
-- [x] **2.8** Hover tooltip with branch name, ahead/behind, last-active, agents.
-- [x] **2.9** Filter chips: All / Active / Merging / Planning, plus lane toggle (Workstream vs Epic).
-- [x] **2.10** API `GET /api/timeline?from=…&to=…` returning normalized bars + events.
-- [x] **2.11** Telemetry: count timeline opens, time-on-view; structured logs `forge.timeline.*`.
-- [x] **2.12** Playwright: zoom toggle changes pixel density, "Now" scrolls to today.
-- [x] **2.13** **Fidelity check** — screenshot diff of `/timeline` against the prototype across all three zoom levels (Day / Week / Sprint), light + dark, with the sample data. Diff must be 0.
+- [ ] **2.1** Render time axis with Day / Week / Sprint zoom toggles.
+- [ ] **2.2** Render epic lanes (group rows) with collapse/expand.
+- [ ] **2.3** Render branch bars (`barStart` / `barEnd` from workstreams) with status color (active / merging / review / planning).
+- [ ] **2.4** Overlay event markers: PR opened, merged, review, conflict, block (`wsEvents`).
+- [ ] **2.5** Vertical "now" line and a `Now` button that scrolls to it.
+- [ ] **2.6** "Forecast" toggle that extends planned bars (`planned: true`) with a hatched style.
+- [ ] **2.7** Click a bar → opens the workstream detail (Phase 3).
+- [ ] **2.8** Hover tooltip with branch name, ahead/behind, last-active, agents.
+- [ ] **2.9** Filter chips: All / Active / Merging / Planning, plus lane toggle (Workstream vs Epic).
+- [ ] **2.10** API `GET /api/timeline?from=…&to=…` returning normalized bars + events.
+- [ ] **2.11** Telemetry: count timeline opens, time-on-view; structured logs `forge.timeline.*`.
+- [ ] **2.12** Playwright: zoom toggle changes pixel density, "Now" scrolls to today.
+- [ ] **2.13** **Fidelity check** — screenshot diff of `/timeline` against the prototype across all three zoom levels (Day / Week / Sprint), light + dark, with the sample data. Diff must be 0.
 
 ## Phase 3 — Workstreams
 
 A workstream = epic + branch + worktree + agents + active PRs. Operate on them as first-class entities.
 
-- [x] **3.1** Stats strip (active count, open PRs, merged today, 24h cost).
-- [x] **3.2** Workstream grid card: branch, base, ahead/behind, conflicts, last-active, summary, agents, linked PRs / cards.
-- [x] **3.3** Filter chips: All / Active / Merging / Conflicts / Idle.
-- [x] **3.4** "Sync from epics" button: re-derive workstreams from cards in Build/Review.
-- [x] **3.5** "New workstream" modal (epic, name, base branch, worktree path).
-- [x] **3.6** API endpoints in `Forge.Api/Endpoints/WorkstreamsEndpoints.cs`: `GET /api/workstreams`, `POST /api/workstreams`, `POST /api/workstreams/{id}/sync`, `DELETE` (with safety prompt).
-- [x] **3.7** Local git worktree wrapper service `IGitWorktreeService` in `Forge.Api/Services/Git/` (`git worktree add/list/remove`); guard against operating outside the configured root.
-- [x] **3.8** Compute ahead/behind/conflicts via `git rev-list --count base...branch` and `git merge-tree`.
-- [x] **3.9** Conflict surface: badge on card + "Open conflict" action that opens the file path returned by `git diff --name-only --diff-filter=U`.
-- [x] **3.10** Cross-link: clicking a card on the board with a `branch` jumps to the matching workstream; vice versa from workstream → cards.
-- [x] **3.11** Permission gate: writes (`POST/DELETE`) require an authenticated user (placeholder until Phase 5 auth).
-- [x] **3.12** Tests: `IGitWorktreeService` unit tests against a temp repo; endpoint integration tests; Playwright "create workstream" flow.
-- [x] **3.13** **Fidelity check** — screenshot diff of `/workstreams` against the prototype: stats strip, full grid, each filter chip active, and the new-workstream modal open. Diff must be 0.
+- [ ] **3.1** Stats strip (active count, open PRs, merged today, 24h cost).
+- [ ] **3.2** Workstream grid card: branch, base, ahead/behind, conflicts, last-active, summary, agents, linked PRs / cards.
+- [ ] **3.3** Filter chips: All / Active / Merging / Conflicts / Idle.
+- [ ] **3.4** "Sync from epics" button: re-derive workstreams from cards in Build/Review.
+- [ ] **3.5** "New workstream" modal (epic, name, base branch, worktree path).
+- [ ] **3.6** API endpoints in `Forge.Api/Endpoints/WorkstreamsEndpoints.cs`: `GET /api/workstreams`, `POST /api/workstreams`, `POST /api/workstreams/{id}/sync`, `DELETE` (with safety prompt).
+- [ ] **3.7** Local git worktree wrapper service `IGitWorktreeService` in `Forge.Api/Services/Git/` (`git worktree add/list/remove`); guard against operating outside the configured root.
+- [ ] **3.8** Compute ahead/behind/conflicts via `git rev-list --count base...branch` and `git merge-tree`.
+- [ ] **3.9** Conflict surface: badge on card + "Open conflict" action that opens the file path returned by `git diff --name-only --diff-filter=U`.
+- [ ] **3.10** Cross-link: clicking a card on the board with a `branch` jumps to the matching workstream; vice versa from workstream → cards.
+- [ ] **3.11** Permission gate: writes (`POST/DELETE`) require an authenticated user (placeholder until Phase 5 auth).
+- [ ] **3.12** Tests: `IGitWorktreeService` unit tests against a temp repo; endpoint integration tests; Playwright "create workstream" flow.
+- [ ] **3.13** **Fidelity check** — screenshot diff of `/workstreams` against the prototype: stats strip, full grid, each filter chip active, and the new-workstream modal open. Diff must be 0.
 
 ## Phase 4 — Pull Requests view
 
 PR board (Implementation → Build → Review → Merged) with build, review and gate state.
 
 - [~] **4.1** Four-column PR board with `pr.col` mapping (`implementation | build | review | merged`). _(prototype has 3 cols — kept 3 per fidelity constraint; spec ↔ prototype contradiction needs resolution)_
-- [x] **4.2** PR card: title, author, branch, additions/deletions, files, age, build status, review verdict, conflict + human-gate badges.
-- [x] **4.3** Build status renderer (running with %, passing, failing, queued) with a tiny progress strip.
-- [x] **4.4** Review verdict pill (approved / changes / pending) with one-line agent summary.
+- [ ] **4.2** PR card: title, author, branch, additions/deletions, files, age, build status, review verdict, conflict + human-gate badges.
+- [ ] **4.3** Build status renderer (running with %, passing, failing, queued) with a tiny progress strip.
+- [ ] **4.4** Review verdict pill (approved / changes / pending) with one-line agent summary.
 - [~] **4.5** PR detail panel: full description, diff stats, reviewer list, build log tail (last 50 lines), human-gate reason. _(description + build-log are server-side stubs; real values arrive in Phase 5/6 from ADO/GitHub)_
 - [~] **4.6** Filters: All open / Need approval / Failing / Conflicts / My reviews; selects for workstream / author. _(chips fully wired; Workstream/Author selects + search input are decorative — match the prototype but spec implies functional)_
 - [~] **4.7** API `GET /api/prs` aggregates from cache + provider; `GET /api/prs/{id}` with details. _(cache-only today; provider aggregation lands with Phase 5)_
-- [x] **4.8** Auto-merge toggle (per PR) — flag stored locally; actual merge happens via provider in Phase 6.
+- [ ] **4.8** Auto-merge toggle (per PR) — flag stored locally; actual merge happens via provider in Phase 6.
 - [~] **4.9** Re-run / cancel build buttons (UI only this phase; server stub returns 202 + plans Phase 6 hookup). _(complete-by-spec; the stubs flip cached state but no real CI is invoked)_
-- [x] **4.10** Toast on PR state transition via SignalR `pr.changed`.
-- [x] **4.11** Playwright: failing PR shows the `failing` chip; clicking opens the detail panel; auto-merge toggle persists across reloads.
-- [x] **4.12** **Fidelity check** — screenshot diff of `/prs` against the prototype: every PR card variant from the seed data (running build, queued, passing, failing, conflict, human-gate, auto-merge armed). Diff must be 0.
+- [ ] **4.10** Toast on PR state transition via SignalR `pr.changed`.
+- [ ] **4.11** Playwright: failing PR shows the `failing` chip; clicking opens the detail panel; auto-merge toggle persists across reloads.
+- [ ] **4.12** **Fidelity check** — screenshot diff of `/prs` against the prototype: every PR card variant from the seed data (running build, queued, passing, failing, conflict, human-gate, auto-merge armed). Diff must be 0.
 
 ## Phase 5 — ADO / GitHub providers (read path)
 
 Bring real work items, branches and PRs into the cache.
 
-- [x] **5.1** Add `IForgeProvider` interface in `Forge.Api/Providers/` (`ListWorkItems`, `ListPullRequests`, `ListBuilds`, `GetWorkItem`, `GetPr`, …).
-- [x] **5.2** Implement `AdoProvider` using `Microsoft.TeamFoundationServer.Client` / REST; PAT in user-secrets `Forge:Ado:Pat`. _(REST via HttpClient, not the TFS client lib — keeps deps small)_
-- [x] **5.3** Implement `GitHubProvider` using Octokit; PAT or fine-grained token in `Forge:GitHub:Pat`. _(REST via HttpClient, not Octokit — same reason)_
+- [ ] **5.1** Add `IForgeProvider` interface in `Forge.Api/Providers/` (`ListWorkItems`, `ListPullRequests`, `ListBuilds`, `GetWorkItem`, `GetPr`, …).
+- [ ] **5.2** Implement `AdoProvider` using `Microsoft.TeamFoundationServer.Client` / REST; PAT in user-secrets `Forge:Ado:Pat`. _(REST via HttpClient, not the TFS client lib — keeps deps small)_
+- [ ] **5.3** Implement `GitHubProvider` using Octokit; PAT or fine-grained token in `Forge:GitHub:Pat`. _(REST via HttpClient, not Octokit — same reason)_
 - [~] **5.4** Provider config UI page `/settings` (React): org/project (ADO), owner/repo (GitHub), PAT entry, "test connection". _(read + Test connection live; PAT entry intentionally NOT in the UI to avoid storing secrets in SQLite without an encryption story — config flows through user-secrets / env. **Superseded by Phase 9** — interactive sign-in replaces PAT entry as the primary auth path; PAT remains only as a headless / CI fallback.)_
-- [x] **5.5** Map ADO work item → `Card`: state → column, area path → epic, tags → tags, story points → pts, assigned-to → agent (human role).
-- [x] **5.6** Map GitHub issue + PR → `Card` / `Pr` (issue type by labels, PR draft status preserved).
+- [ ] **5.5** Map ADO work item → `Card`: state → column, area path → epic, tags → tags, story points → pts, assigned-to → agent (human role).
+- [ ] **5.6** Map GitHub issue + PR → `Card` / `Pr` (issue type by labels, PR draft status preserved).
 - [~] **5.7** Background sync: `IHostedService` polling on configurable interval (default 60s), with jitter + ETag/If-None-Match where supported. _(polling + jitter shipped; ETag/If-None-Match is Phase R)_ **Phase 23 splits this**: cards / PRs / pipelines stay on the 60s `ProviderSyncService` cadence; **work-item sync moves to a separate 20-min `WorkItemSyncJob`** with proper pagination, delta-cursoring, and per-area-path scope. Both jobs run side-by-side and touch different tables.
-- [x] **5.8** Webhook receiver `POST /api/webhooks/{provider}` for ADO Service Hooks and GitHub webhooks; HMAC verification; falls back to polling if webhook is silent for >5 min.
+- [ ] **5.8** Webhook receiver `POST /api/webhooks/{provider}` for ADO Service Hooks and GitHub webhooks; HMAC verification; falls back to polling if webhook is silent for >5 min.
 - [~] **5.9** Conflict policy on overlapping local + remote edits: last-writer-wins by default, with a "remote changed since" badge on the card and an explicit "discard local" / "overwrite remote" choice. _(server-side 409 + currentRevision payload + X-Forge-Overwrite header land; UI badge + choice modal is Phase R)_
-- [x] **5.10** Cache invalidation on webhook; SignalR `card.changed` fan-out.
-- [x] **5.11** Provider health on `/settings`: last sync, error rate, rate-limit budget remaining.
-- [x] **5.12** Tests: provider contract tests against recorded HTTP cassettes (WireMock.Net); webhook signature unit tests; one end-to-end test that boots the provider with a fake server and asserts cards appear. _(used a 50-line StubHttpMessageHandler instead of WireMock.Net — same coverage, no extra dep)_
+- [ ] **5.10** Cache invalidation on webhook; SignalR `card.changed` fan-out.
+- [ ] **5.11** Provider health on `/settings`: last sync, error rate, rate-limit budget remaining.
+- [ ] **5.12** Tests: provider contract tests against recorded HTTP cassettes (WireMock.Net); webhook signature unit tests; one end-to-end test that boots the provider with a fake server and asserts cards appear. _(used a 50-line StubHttpMessageHandler instead of WireMock.Net — same coverage, no extra dep)_
 
 ## Phase 6 — Write actions: WI, PR, pipelines
 
 Make every read-only surface from Phase 5 round-trippable.
 
-- [x] **6.1** Create work item (ADO) / issue (GitHub) from the New-card modal, with provider selection.
-- [x] **6.2** Update work item: status transition, assignee, iteration/sprint, tags, story points, area path.
-- [x] **6.3** Comment on a card → posts to the linked WI / issue.
-- [x] **6.4** Create PR from a workstream (`POST /api/workstreams/{id}/pr`) — pushes branch, opens PR with templated description (linked card IDs, agent summary).
-- [x] **6.5** PR review actions: approve / request-changes / comment from the detail panel; surface line-level comments where the provider supports it. **Phase 24 extends this** with a persistent comment store (`pr_comments` table), authority enforcement (agents post but don't resolve — Q24.5), and a 20-min `PrSyncJob` that watches every active PR through to its terminal state. The endpoints in Phase 6.5 stay as the write surface; Phase 24 adds the read + reconcile loop on top.
-- [x] **6.6** Trigger pipeline run (ADO Pipelines `runs` API; GitHub Actions `dispatch` / `rerun`); show queued state and stream status into the PR card.
-- [x] **6.7** Cancel and re-run failing job; tail logs into the detail panel via SignalR.
-- [x] **6.8** Auto-merge: when toggled, server enqueues a watcher that merges the PR once required checks pass and required reviewers approve.
-- [x] **6.9** Human-gate enforcement: a server-side rule list (paths, labels, file globs) that blocks merge until a human approves; surfaced as the existing `humanGate` badge.
-- [x] **6.10** Audit log table `forge_actions` (who, what, when, request body, response status). Surfaced read-only at `/audit`.
-- [x] **6.11** Permission model: per-user PAT only writes on behalf of that user; a server-wide PAT is allowed only for read-only sync.
-- [x] **6.12** Idempotency keys on every write (`Idempotency-Key` header) to make retries safe.
-- [x] **6.13** Tests: write-path provider tests against cassettes; one Playwright E2E that creates a card, opens a PR, triggers a build, and observes status changes via SignalR.
+- [ ] **6.1** Create work item (ADO) / issue (GitHub) from the New-card modal, with provider selection.
+- [ ] **6.2** Update work item: status transition, assignee, iteration/sprint, tags, story points, area path.
+- [ ] **6.3** Comment on a card → posts to the linked WI / issue.
+- [ ] **6.4** Create PR from a workstream (`POST /api/workstreams/{id}/pr`) — pushes branch, opens PR with templated description (linked card IDs, agent summary).
+- [ ] **6.5** PR review actions: approve / request-changes / comment from the detail panel; surface line-level comments where the provider supports it. **Phase 24 extends this** with a persistent comment store (`pr_comments` table), authority enforcement (agents post but don't resolve — Q24.5), and a 20-min `PrSyncJob` that watches every active PR through to its terminal state. The endpoints in Phase 6.5 stay as the write surface; Phase 24 adds the read + reconcile loop on top.
+- [ ] **6.6** Trigger pipeline run (ADO Pipelines `runs` API; GitHub Actions `dispatch` / `rerun`); show queued state and stream status into the PR card.
+- [ ] **6.7** Cancel and re-run failing job; tail logs into the detail panel via SignalR.
+- [ ] **6.8** Auto-merge: when toggled, server enqueues a watcher that merges the PR once required checks pass and required reviewers approve.
+- [ ] **6.9** Human-gate enforcement: a server-side rule list (paths, labels, file globs) that blocks merge until a human approves; surfaced as the existing `humanGate` badge.
+- [ ] **6.10** Audit log table `forge_actions` (who, what, when, request body, response status). Surfaced read-only at `/audit`.
+- [ ] **6.11** Permission model: per-user PAT only writes on behalf of that user; a server-wide PAT is allowed only for read-only sync.
+- [ ] **6.12** Idempotency keys on every write (`Idempotency-Key` header) to make retries safe.
+- [ ] **6.13** Tests: write-path provider tests against cassettes; one Playwright E2E that creates a card, opens a PR, triggers a build, and observes status changes via SignalR.
 
 ## Phase 7 — Polish, observability, packaging
 
 Make it feel like a product and easy to ship.
 
-- [x] **7.1** Command palette (`Ctrl/Cmd-K`): jump to view, jump to card / PR / workstream by ID, run actions ("Open PR for ws/oidc-rotation").
-- [x] **7.2** Keyboard map overlay (`?`) listing all shortcuts.
-- [x] **7.3** Empty states for every view (no cards, no PRs, no workstreams, no provider configured).
-- [x] **7.4** Error boundaries per view + a global "report problem" button that captures the last 50 actions + correlation id.
+- [ ] **7.1** Command palette (`Ctrl/Cmd-K`): jump to view, jump to card / PR / workstream by ID, run actions ("Open PR for ws/oidc-rotation").
+- [ ] **7.2** Keyboard map overlay (`?`) listing all shortcuts.
+- [ ] **7.3** Empty states for every view (no cards, no PRs, no workstreams, no provider configured).
+- [ ] **7.4** Error boundaries per view + a global "report problem" button that captures the last 50 actions + correlation id.
 - [~] **7.5** Telemetry: OTel spans `forge.view.*`, `forge.action.*`; counters for card moves, PRs opened, syncs failed. _(stable-name `ILogger` messages + client ring buffer ship today; full OTel SDK + metrics exporter rolled to `forge_v2.md`)_
 - [~] **7.6** Auth: pluggable, default = single-user with a local secret; optional Azure AD via `Forge:Auth:AzureAd:*`. _(single-user secret middleware ships; Azure AD JWT pipeline is config-only skeleton — wired in v2. **Phase 9** lands the real interactive sign-in flow on top of this scaffold and replaces the local-secret default on Windows.)_
-- [x] **7.7** Dockerfile per project (`Forge.Api/Dockerfile`, `Forge.UI/Dockerfile`) + root `docker-compose.yml` (api + ui static + sqlite volume + reverse proxy). Document `forge.env.sample`.
-- [x] **7.8** User guide under `docs/forge/` (setup, providers, daily flow, keyboard, FAQ); architecture note linking `Forge.UI` ↔ `Forge.Api`.
+- [ ] **7.7** Dockerfile per project (`Forge.Api/Dockerfile`, `Forge.UI/Dockerfile`) + root `docker-compose.yml` (api + ui static + sqlite volume + reverse proxy). Document `forge.env.sample`.
+- [ ] **7.8** User guide under `docs/forge/` (setup, providers, daily flow, keyboard, FAQ); architecture note linking `Forge.UI` ↔ `Forge.Api`.
 - [~] **7.9** Smoke release checklist + a tagged `v0.1.0` once Phases 0–4 are green and Phases 5–6 work against at least one real ADO project and one real GitHub repo. _(checklist shipped at `docs/forge/release.md`; the actual `v0.1.0` tag is a manual cut step the operator runs once the gate items are ticked)_
-- [x] **7.10** Backlog grooming session: cut anything not in the goals list, file a `forge_v2.md` for the rest.
+- [ ] **7.10** Backlog grooming session: cut anything not in the goals list, file a `forge_v2.md` for the rest.
 
 ---
 
@@ -295,38 +295,38 @@ Make it feel like a product and easy to ship.
 
 Promote the implicit "one product, one repo" assumption to a real first-class hierarchy so the same Forge install can drive multiple products, each owning a mix of ADO and GitHub repos.
 
-- [x] **8.1** Domain records: `Product { id, name, slug, description, ownerUserId, createdAt }` and `Repo { id, productId, kind: 'ado' | 'github', remoteUrl, displayName, defaultBranch, cloneRoot, adoOrg?, adoProject?, ghOwner?, ghRepo? }`. Mirror as TS types in `src/forge/Forge.UI/src/types.ts` and C# records under `Forge.Api/Contracts/`.
-- [x] **8.2** EF Core migration: `products`, `repos` tables; FK `repos.product_id`. Add `repo_id` (nullable in migration, NOT NULL after backfill) to `workstreams`, `cards`, `prs` so every existing artifact belongs to a repo. **Migration must be idempotent** and re-runnable in dev. _(idempotent ALTER-COLUMN + CREATE-IF-NOT-EXISTS in `Phase8Migration.cs`; runs after `EnsureCreatedAsync` so dev DBs upgrade in place; `repo_id` shipped nullable today, NOT-NULL hardening deferred to Phase R per spec)_
-- [x] **8.3** Backfill migration: create a default `Atlas` product owning a default repo derived from the existing single-repo config; assign all pre-existing cards / workstreams / PRs to it.
-- [x] **8.4** API endpoints in `Forge.Api/Endpoints/ProductsEndpoints.cs` and `ReposEndpoints.cs`: `GET/POST /api/products`, `GET/PATCH/DELETE /api/products/{id}`, `GET/POST /api/products/{id}/repos`, `DELETE /api/repos/{id}` (with safety prompt + confirm-by-name). _(repos endpoints live in the same `ProductsEndpoints.cs` for now; spec's "ReposEndpoints.cs" file split is a Phase R refactor)_
+- [ ] **8.1** Domain records: `Product { id, name, slug, description, ownerUserId, createdAt }` and `Repo { id, productId, kind: 'ado' | 'github', remoteUrl, displayName, defaultBranch, cloneRoot, adoOrg?, adoProject?, ghOwner?, ghRepo? }`. Mirror as TS types in `src/forge/Forge.UI/src/types.ts` and C# records under `Forge.Api/Contracts/`.
+- [ ] **8.2** EF Core migration: `products`, `repos` tables; FK `repos.product_id`. Add `repo_id` (nullable in migration, NOT NULL after backfill) to `workstreams`, `cards`, `prs` so every existing artifact belongs to a repo. **Migration must be idempotent** and re-runnable in dev. _(idempotent ALTER-COLUMN + CREATE-IF-NOT-EXISTS in `Phase8Migration.cs`; runs after `EnsureCreatedAsync` so dev DBs upgrade in place; `repo_id` shipped nullable today, NOT-NULL hardening deferred to Phase R per spec)_
+- [ ] **8.3** Backfill migration: create a default `Atlas` product owning a default repo derived from the existing single-repo config; assign all pre-existing cards / workstreams / PRs to it.
+- [ ] **8.4** API endpoints in `Forge.Api/Endpoints/ProductsEndpoints.cs` and `ReposEndpoints.cs`: `GET/POST /api/products`, `GET/PATCH/DELETE /api/products/{id}`, `GET/POST /api/products/{id}/repos`, `DELETE /api/repos/{id}` (with safety prompt + confirm-by-name). _(repos endpoints live in the same `ProductsEndpoints.cs` for now; spec's "ReposEndpoints.cs" file split is a Phase R refactor)_
 - [~] **8.5** "Add repo" picker (server-driven): for ADO, lists repos in the configured project via `_apis/git/repositories`; for GitHub, lists repos for the signed-in user/org via `/user/repos` or `/orgs/{org}/repos`. **Discoverable** — the user picks from a list, not free-text URL entry. _(ADO + GitHub list endpoints + UI picker shipped against the configured PAT; multi-org listing waits for Phase 9 sign-in)_
-- [x] **8.6** Validation: remote URL parses to a known provider shape; clone root is on a writable disk; warn (don't block) if disk free space < 5 GB. _(URL + provider-host shape validation lands in `Domain/RepoValidation.cs`; disk-space pre-check is best-effort and intentionally non-blocking — auto-clone surfaces the real failure)_
-- [x] **8.7** New `/products` view (sidebar entry between "Workstreams" and "Settings"): grid of product cards with repo count, active workstream count, open PR count, last activity. Click a product → drill into its repos with the same metrics per repo.
-- [x] **8.8** TopBar product switcher (replaces the existing static "Atlas Sprint 14" pill with a `<select>` populated from `/api/products`); selection persists in `localStorage` as `forge.activeProductId` and scopes every other view (Plan, Timeline, Workstreams, PRs) to the selected product.
-- [x] **8.9** All existing endpoints accept an optional `productId` (or read the active product from a header `X-Forge-Product-Id`); responses are filtered server-side. Default = active product; explicit `all` value shows cross-product when the role allows it (Phase 10). _(role gate ships in Phase 10 — today every signed-in caller may use `all`)_
-- [x] **8.10** Auto-clone hook: when a workstream is created against a repo whose `cloneRoot` is empty, `IGitWorktreeService` runs `git clone` on first use (configurable to require manual pre-clone via `Forge:Repo:AutoClone=false`). _(separate `IRepoCloneService` keeps the worktree service single-purpose; SignalR `forge.repo.clone.{started,progress,finished,failed}` events stream during the clone)_
-- [x] **8.11** Cross-link parity: clicking a repo on `/products` deep-links to `/workstreams?repo={id}`; clicking a workstream surfaces its repo name + remote URL in the detail panel. _(deep-link wired; the detail-panel "remote URL" pill is a small follow-up — out of scope for the contract)_
-- [x] **8.12** Tests: products / repos endpoint contract; backfill migration unit test against a snapshot DB; UI test for the product switcher scoping the board. _(12 xUnit tests in `ProductsEndpointsTests.cs` cover the endpoint contract + scoping + backfill; Playwright UI test deferred — fidelity exemption per 8.13)_
-- [x] **8.13** **Fidelity note**: the prototype has no products page or product switcher. `/products` and the new switcher are **forge-design-token-clean** (use the existing CSS variables from `theme.css`) but **exempt from the `forge-board.html` screenshot-diff check**. Phase R may revisit.
+- [ ] **8.6** Validation: remote URL parses to a known provider shape; clone root is on a writable disk; warn (don't block) if disk free space < 5 GB. _(URL + provider-host shape validation lands in `Domain/RepoValidation.cs`; disk-space pre-check is best-effort and intentionally non-blocking — auto-clone surfaces the real failure)_
+- [ ] **8.7** New `/products` view (sidebar entry between "Workstreams" and "Settings"): grid of product cards with repo count, active workstream count, open PR count, last activity. Click a product → drill into its repos with the same metrics per repo.
+- [ ] **8.8** TopBar product switcher (replaces the existing static "Atlas Sprint 14" pill with a `<select>` populated from `/api/products`); selection persists in `localStorage` as `forge.activeProductId` and scopes every other view (Plan, Timeline, Workstreams, PRs) to the selected product.
+- [ ] **8.9** All existing endpoints accept an optional `productId` (or read the active product from a header `X-Forge-Product-Id`); responses are filtered server-side. Default = active product; explicit `all` value shows cross-product when the role allows it (Phase 10). _(role gate ships in Phase 10 — today every signed-in caller may use `all`)_
+- [ ] **8.10** Auto-clone hook: when a workstream is created against a repo whose `cloneRoot` is empty, `IGitWorktreeService` runs `git clone` on first use (configurable to require manual pre-clone via `Forge:Repo:AutoClone=false`). _(separate `IRepoCloneService` keeps the worktree service single-purpose; SignalR `forge.repo.clone.{started,progress,finished,failed}` events stream during the clone)_
+- [ ] **8.11** Cross-link parity: clicking a repo on `/products` deep-links to `/workstreams?repo={id}`; clicking a workstream surfaces its repo name + remote URL in the detail panel. _(deep-link wired; the detail-panel "remote URL" pill is a small follow-up — out of scope for the contract)_
+- [ ] **8.12** Tests: products / repos endpoint contract; backfill migration unit test against a snapshot DB; UI test for the product switcher scoping the board. _(12 xUnit tests in `ProductsEndpointsTests.cs` cover the endpoint contract + scoping + backfill; Playwright UI test deferred — fidelity exemption per 8.13)_
+- [ ] **8.13** **Fidelity note**: the prototype has no products page or product switcher. `/products` and the new switcher are **forge-design-token-clean** (use the existing CSS variables from `theme.css`) but **exempt from the `forge-board.html` screenshot-diff check**. Phase R may revisit.
 
 ## Phase 9 — Sign-in & current user (Edge popup, real identity)
 
 Replace the hard-coded `XD / Xiaodong Li / Tech lead` placeholder with the real authenticated user, and use the Windows user's existing identity to consent into ADO and GitHub.
 
-- [x] **9.1** Server-side `IIdentityService` in `Forge.Api/Auth/`: `SignInAsync(provider)`, `SignOutAsync(provider)`, `GetCurrentUserAsync()`, `GetTokenAsync(provider, scopes)`. Each provider implementation is independent; sign-in to one does not imply sign-in to the other. _(landed as `IAuthService` in `Forge.Api/Auth/`; ADO + GitHub are independent singletons; current-user aggregation is the `/api/me` endpoint)_
-- [x] **9.2** **ADO sign-in** — MSAL.NET (`Microsoft.Identity.Client`) with the **WAM broker** enabled (`WithBroker(true)`). On Windows, this picks up the signed-in Windows account silently when the org allows it; otherwise it surfaces the standard system consent UI. App registration: tenant + client id under `Forge:Auth:Ado:*`. Scope: `499b84ac-1321-427f-aa17-267ca6975798/.default` (Azure DevOps). _(default client id is the Azure CLI well-known id, override via `Forge:Auth:AdoClientId`)_
-- [x] **9.3** **GitHub sign-in** — OAuth Authorization Code with PKCE (no client secret stored). Server hosts a localhost callback (`http://127.0.0.1:53682/forge/oauth/github/callback`); after redirect, server exchanges the code for a token. App configuration under `Forge:Auth:GitHub:*` (client id only). Scopes: `repo`, `read:user`, `read:org`. _(operator must register a GitHub OAuth App with PKCE enabled and set `Forge:Auth:GitHubClientId`; until then the button surfaces a helpful "register an OAuth App first" error)_
-- [x] **9.4** **Edge-first browser launch** on Windows: identity service spawns the consent URL via, in order, `msedge.exe --app={url}` (popup-style chromeless window) → `msedge.exe {url}` → `Process.Start({ UseShellExecute=true, FileName=url })` (system default). Behavior is configurable via `Forge:Auth:BrowserPreference=edge|default`. Non-Windows: always system default.
-- [x] **9.5** **Token storage**: DPAPI-encrypted (`ProtectedData.Protect` with `CurrentUser` scope) blob at `%LOCALAPPDATA%\Forge\tokens.dat`. Refresh tokens used silently before access-token expiry. **Never** in SQLite plaintext, never in user-secrets in production. macOS / Linux fallback uses the OS keychain via `Microsoft.Identity.Client.Extensions.Msal`. _(MSAL cache lives at `%LOCALAPPDATA%\Forge\msal-cache.bin`; GitHub token at `%LOCALAPPDATA%\Forge\github-token.bin`)_
-- [x] **9.6** `GET /api/me` returns `{ id, displayName, email, login, avatarUrl, initials, role, providers: { ado: { connected, account, expiresAt } | null, github: { connected, login, expiresAt } | null } }`. New React hook `useCurrentUser()` exposes this with SignalR-driven invalidation when sign-in state changes. _(SignalR push-invalidation deferred — UI calls `useCurrentUserStore.refresh()` from the sign-in/out handlers, which is sufficient for v0.1 since identity changes only happen through the local UI)_
-- [x] **9.7** Replace the hard-coded placeholder strings:
+- [ ] **9.1** Server-side `IIdentityService` in `Forge.Api/Auth/`: `SignInAsync(provider)`, `SignOutAsync(provider)`, `GetCurrentUserAsync()`, `GetTokenAsync(provider, scopes)`. Each provider implementation is independent; sign-in to one does not imply sign-in to the other. _(landed as `IAuthService` in `Forge.Api/Auth/`; ADO + GitHub are independent singletons; current-user aggregation is the `/api/me` endpoint)_
+- [ ] **9.2** **ADO sign-in** — MSAL.NET (`Microsoft.Identity.Client`) with the **WAM broker** enabled (`WithBroker(true)`). On Windows, this picks up the signed-in Windows account silently when the org allows it; otherwise it surfaces the standard system consent UI. App registration: tenant + client id under `Forge:Auth:Ado:*`. Scope: `499b84ac-1321-427f-aa17-267ca6975798/.default` (Azure DevOps). _(default client id is the Azure CLI well-known id, override via `Forge:Auth:AdoClientId`)_
+- [ ] **9.3** **GitHub sign-in** — OAuth Authorization Code with PKCE (no client secret stored). Server hosts a localhost callback (`http://127.0.0.1:53682/forge/oauth/github/callback`); after redirect, server exchanges the code for a token. App configuration under `Forge:Auth:GitHub:*` (client id only). Scopes: `repo`, `read:user`, `read:org`. _(operator must register a GitHub OAuth App with PKCE enabled and set `Forge:Auth:GitHubClientId`; until then the button surfaces a helpful "register an OAuth App first" error)_
+- [ ] **9.4** **Edge-first browser launch** on Windows: identity service spawns the consent URL via, in order, `msedge.exe --app={url}` (popup-style chromeless window) → `msedge.exe {url}` → `Process.Start({ UseShellExecute=true, FileName=url })` (system default). Behavior is configurable via `Forge:Auth:BrowserPreference=edge|default`. Non-Windows: always system default.
+- [ ] **9.5** **Token storage**: DPAPI-encrypted (`ProtectedData.Protect` with `CurrentUser` scope) blob at `%LOCALAPPDATA%\Forge\tokens.dat`. Refresh tokens used silently before access-token expiry. **Never** in SQLite plaintext, never in user-secrets in production. macOS / Linux fallback uses the OS keychain via `Microsoft.Identity.Client.Extensions.Msal`. _(MSAL cache lives at `%LOCALAPPDATA%\Forge\msal-cache.bin`; GitHub token at `%LOCALAPPDATA%\Forge\github-token.bin`)_
+- [ ] **9.6** `GET /api/me` returns `{ id, displayName, email, login, avatarUrl, initials, role, providers: { ado: { connected, account, expiresAt } | null, github: { connected, login, expiresAt } | null } }`. New React hook `useCurrentUser()` exposes this with SignalR-driven invalidation when sign-in state changes. _(SignalR push-invalidation deferred — UI calls `useCurrentUserStore.refresh()` from the sign-in/out handlers, which is sufficient for v0.1 since identity changes only happen through the local UI)_
+- [ ] **9.7** Replace the hard-coded placeholder strings:
   - `src/forge/Forge.UI/src/shell/TopBar.tsx:60` — `<div className="avatar" title="Xiaodong">XD</div>` reads from `useCurrentUser()`; initials fall back to first-letters of `displayName`; tooltip = full display name + email.
   - `src/forge/Forge.UI/src/shell/SideBar.tsx:154-157` — `XD` / `Xiaodong Li` / `Tech lead · Atlas` all read from `useCurrentUser()` (avatar URL preferred over initials when present).
   - When no provider is signed in, show a "Sign in" CTA in both spots instead of a name.
-- [x] **9.8** Extend `Role` (`src/forge/Forge.UI/src/types.ts:4`) to include `'product-owner' | 'tech-lead'` alongside the existing `'arch' | 'eng' | 'rev' | 'qa' | 'human'`. Server enforces role transitions; UI renders the role label after the `·` (e.g. `Product Owner · Atlas`). _(server-side role transitions land in Phase 10's role-gating middleware; today the role is set at first-sign-in and editable via direct DB write)_
-- [x] **9.9** **First-run rule**: the first user to sign in to a fresh DB is auto-assigned `product-owner` (the operator). Subsequent sign-ins default to `human` and must be promoted by a Product Owner. Bootstrap mapping for the current operator: `lingxd@gmail.com` → `product-owner` (recorded as a seed for dev convenience; not hard-coded in prod).
-- [x] **9.10** User-menu popover (anchored on the TopBar avatar): shows display name, email, signed-in providers with status pills, "Re-authenticate ADO", "Re-authenticate GitHub", "Sign out", "Switch account". _("Switch account" is implicit — re-auth opens a fresh account picker)_
-- [x] **9.11** Migrate the seed `agent: { id: 'XD', role: 'human', name: 'Xiaodong' }` references in `sampleData.ts` to `{ id: 'XD', role: 'product-owner', name: 'Xiaodong' }` so the prototype data stays valid under the new role enum.
+- [ ] **9.8** Extend `Role` (`src/forge/Forge.UI/src/types.ts:4`) to include `'product-owner' | 'tech-lead'` alongside the existing `'arch' | 'eng' | 'rev' | 'qa' | 'human'`. Server enforces role transitions; UI renders the role label after the `·` (e.g. `Product Owner · Atlas`). _(server-side role transitions land in Phase 10's role-gating middleware; today the role is set at first-sign-in and editable via direct DB write)_
+- [ ] **9.9** **First-run rule**: the first user to sign in to a fresh DB is auto-assigned `product-owner` (the operator). Subsequent sign-ins default to `human` and must be promoted by a Product Owner. Bootstrap mapping for the current operator: `lingxd@gmail.com` → `product-owner` (recorded as a seed for dev convenience; not hard-coded in prod).
+- [ ] **9.10** User-menu popover (anchored on the TopBar avatar): shows display name, email, signed-in providers with status pills, "Re-authenticate ADO", "Re-authenticate GitHub", "Sign out", "Switch account". _("Switch account" is implicit — re-auth opens a fresh account picker)_
+- [ ] **9.11** Migrate the seed `agent: { id: 'XD', role: 'human', name: 'Xiaodong' }` references in `sampleData.ts` to `{ id: 'XD', role: 'product-owner', name: 'Xiaodong' }` so the prototype data stays valid under the new role enum.
 - [~] **9.12** Tests: identity service contract test with a fake MSAL token broker; GitHub OAuth callback unit test; UI test asserts the real signed-in user replaces `XD` in TopBar + SideBar; mock Edge launch verifies the `msedge.exe --app=` invocation and the fallback chain; expired-token refresh test. _(7 xUnit smoke tests in `AuthAndMeTests.cs` cover the unauthenticated paths + 401 contracts; deeper MSAL / OAuth callback tests deferred — they need a fake MSAL broker / a test HTTP listener and aren't a release blocker)_
 - [ ] **9.13** Security review checklist: token-at-rest format, scope minimization (read-only by default; write scopes requested only when a write action is invoked), opt-in telemetry of sign-in events, DPAPI key rotation handling, behavior when the Windows account changes.
 
@@ -334,41 +334,41 @@ Replace the hard-coded `XD / Xiaodong Li / Tech lead` placeholder with the real 
 
 Make Phases 8 + 9 ergonomic by letting the user pin defaults, and give the Product Owner a real supervisory dashboard over the agent crews they oversee.
 
-- [x] **10.1** Per-user preferences table `forge_user_settings` (PK = `user_id`): `defaultAdoOrg`, `defaultAdoProject`, `defaultGithubOwner`, `defaultProductId`, `defaultRepoId`, `browserPreference`, `theme`, `notificationsEnabled`. Mirror as TS in `src/forge/Forge.UI/src/types.ts`.
-- [x] **10.2** `GET /api/me/settings` and `PATCH /api/me/settings` (idempotent partial update). Validation: referenced `productId` / `repoId` must exist and the user must have access. _(productId/repoId existence check is best-effort — UI rejects with the standard 404 if a default points at a deleted product; tightening to a server-side validator is a small follow-up)_
-- [x] **10.3** "Defaults" panel on `/settings`: combo-boxes for default ADO org + project (populated from `/api/providers/ado/orgs` and `_apis/projects` once signed in), default GitHub owner (populated from `/user/orgs` + `/user`), default product, default repo. Each row has an "Apply everywhere" checkbox that copies the value to the relevant create-flow defaults. _(text inputs land today; combo-boxes that auto-populate from the provider APIs are a Phase R polish — operator pastes the URL and project name. ADO defaults flow into AdoConfigResolver so `Sync now` immediately uses the new values. "Apply everywhere" checkbox not yet rendered.)_
+- [ ] **10.1** Per-user preferences table `forge_user_settings` (PK = `user_id`): `defaultAdoOrg`, `defaultAdoProject`, `defaultGithubOwner`, `defaultProductId`, `defaultRepoId`, `browserPreference`, `theme`, `notificationsEnabled`. Mirror as TS in `src/forge/Forge.UI/src/types.ts`.
+- [ ] **10.2** `GET /api/me/settings` and `PATCH /api/me/settings` (idempotent partial update). Validation: referenced `productId` / `repoId` must exist and the user must have access. _(productId/repoId existence check is best-effort — UI rejects with the standard 404 if a default points at a deleted product; tightening to a server-side validator is a small follow-up)_
+- [ ] **10.3** "Defaults" panel on `/settings`: combo-boxes for default ADO org + project (populated from `/api/providers/ado/orgs` and `_apis/projects` once signed in), default GitHub owner (populated from `/user/orgs` + `/user`), default product, default repo. Each row has an "Apply everywhere" checkbox that copies the value to the relevant create-flow defaults. _(text inputs land today; combo-boxes that auto-populate from the provider APIs are a Phase R polish — operator pastes the URL and project name. ADO defaults flow into AdoConfigResolver so `Sync now` immediately uses the new values. "Apply everywhere" checkbox not yet rendered.)_
 - [~] **10.4** Pre-fill new-card modal, new-workstream modal, "Create PR from workstream", and the `/products` "Add repo" picker from these defaults. The user can override per action; overrides do **not** mutate the saved default unless an "Update default" toggle is ticked. _(server-side defaults resolution lands in 10.5; UI pre-fill is a small follow-up — modals still take the user input directly today)_
 - [~] **10.5** Server-side default resolution: when an API request omits `productId` / `repoId` / `adoProject` / etc., the server falls back to the caller's saved defaults before erroring; the response includes a `defaultsApplied: [...]` array so the UI can surface which fields were auto-filled. _(ADO config-resolver path is wired — AdoProvider transparently picks up user-settings org/project. Per-endpoint `defaultsApplied: [...]` echoing is deferred — would need ProductScope-style plumbing on every write endpoint.)_
-- [x] **10.6** **Crew model**: a `Crew { id, name, productId, lead, summary, model, modelInputPricePerMTok, modelOutputPricePerMTok }` record (model + pricing per the Q3 resolution); each `Agent` gets a single `crewId` (one crew per agent — many-to-many is overkill at v0.1). Seed crews from the prototype's agent prefixes — `E*` → "Engineering", `R*` → "Review", `A*` → "Architecture", `Q*` → "QA" — so the first run has data without operator setup. Default model assignments: `Engineering` → `claude-opus-4-7`, `Review` → `claude-sonnet-4-6`, `Architecture` → `claude-opus-4-7`, `QA` → `claude-haiku-4-5` (operator overrides via `/settings/crews`).
+- [ ] **10.6** **Crew model**: a `Crew { id, name, productId, lead, summary, model, modelInputPricePerMTok, modelOutputPricePerMTok }` record (model + pricing per the Q3 resolution); each `Agent` gets a single `crewId` (one crew per agent — many-to-many is overkill at v0.1). Seed crews from the prototype's agent prefixes — `E*` → "Engineering", `R*` → "Review", `A*` → "Architecture", `Q*` → "QA" — so the first run has data without operator setup. Default model assignments: `Engineering` → `claude-opus-4-7`, `Review` → `claude-sonnet-4-6`, `Architecture` → `claude-opus-4-7`, `QA` → `claude-haiku-4-5` (operator overrides via `/settings/crews`).
 - [~] **10.7** `/crews` view (sidebar entry, visible only when current user role = `product-owner`): one row per crew with live metrics — members, cards in flight, blockers, **salary today / sprint / month** (live from the cost ledger in Phase 11.4), tokens burned (in / out split), 24h cost, last-active timestamp, open PR count, model name pill. Click a crew → drill into its agents and recent activity (re-uses the workstream detail panel layout); from there, PO can pause / resume agents, edit soul.md, or swap the crew's model. _(view ships with members + in-flight + blocked counts + model pill + pricing; live salary readouts wait for the Phase 11 cost ledger; pause / resume / soul.md editor are Phase 11 surfaces)_
-- [x] **10.8** Cross-product / cross-crew action audit: every write performed by a Product Owner against a crew or product they don't own is recorded in `forge_actions` (Phase 6.10) with a `supervising = true` flag and surfaced as a separate filter on `/audit`. _(schema lands today — `Supervising` column on `forge_actions`; AuditMiddleware doesn't yet populate it because the "owns this product" check requires Phase 10.5 productId scope to be plumbed. Schema-only readiness so the column is here when 10.5 fills it.)_
-- [x] **10.9** Role-gating middleware: `[RequireRole("product-owner")]` attribute (or minimal-API filter equivalent) protects `/api/crews/*` writes and `/products/*` admin endpoints. Read endpoints stay open to all signed-in roles. _(landed as `RequireRole.Check(ctx, db, "product-owner")` minimal-API helper used inside each handler. Single-user dev installs pass through; once a UserRow exists with a non-PO role, writes from that user return 403.)_
-- [x] **10.10** UI gating: hooks `useHasRole('product-owner')` hide `/crews` from the sidebar and disable supervisory action buttons for non-PO users (the buttons render but are disabled with a tooltip explaining the gate, rather than vanishing — discoverable). _(sidebar Crews entry is gated; CrewsView itself shows a "Restricted" empty state when the current user isn't PO. Disabled-with-tooltip pattern for individual buttons is a small follow-up.)_
+- [ ] **10.8** Cross-product / cross-crew action audit: every write performed by a Product Owner against a crew or product they don't own is recorded in `forge_actions` (Phase 6.10) with a `supervising = true` flag and surfaced as a separate filter on `/audit`. _(schema lands today — `Supervising` column on `forge_actions`; AuditMiddleware doesn't yet populate it because the "owns this product" check requires Phase 10.5 productId scope to be plumbed. Schema-only readiness so the column is here when 10.5 fills it.)_
+- [ ] **10.9** Role-gating middleware: `[RequireRole("product-owner")]` attribute (or minimal-API filter equivalent) protects `/api/crews/*` writes and `/products/*` admin endpoints. Read endpoints stay open to all signed-in roles. _(landed as `RequireRole.Check(ctx, db, "product-owner")` minimal-API helper used inside each handler. Single-user dev installs pass through; once a UserRow exists with a non-PO role, writes from that user return 403.)_
+- [ ] **10.10** UI gating: hooks `useHasRole('product-owner')` hide `/crews` from the sidebar and disable supervisory action buttons for non-PO users (the buttons render but are disabled with a tooltip explaining the gate, rather than vanishing — discoverable). _(sidebar Crews entry is gated; CrewsView itself shows a "Restricted" empty state when the current user isn't PO. Disabled-with-tooltip pattern for individual buttons is a small follow-up.)_
 - [~] **10.11** Tests: defaults round-trip endpoint test; defaults pre-fill UI test for the new-card and new-workstream modals; role-gating endpoint test (non-PO returns 403); crew aggregation unit test; cross-product audit recording test. _(9 xUnit tests in `SettingsAndCrewsTests.cs` cover round-trip / role-gate / per-repo edit / unauthorized paths; UI pre-fill test deferred until 10.4 ships; cross-product audit test deferred until 10.8 has populated `Supervising`.)_
-- [x] **10.12** **Fidelity note**: same as Phase 8 — `/crews`, the user-menu popover, the Defaults panel, and the role-aware sidebar are exempt from the `forge-board.html` screenshot diff but must use existing forge tokens. Document any new tokens in `docs/forge/design-tokens.md`.
+- [ ] **10.12** **Fidelity note**: same as Phase 8 — `/crews`, the user-menu popover, the Defaults panel, and the role-aware sidebar are exempt from the `forge-board.html` screenshot diff but must use existing forge tokens. Document any new tokens in `docs/forge/design-tokens.md`.
 
 ## Phase 11 — Agent runtime & crew economy
 
 Make the agent labels real. Forge spawns and supervises the model that backs each crew, every invocation goes through the cost ledger, and crew salary becomes a live readout instead of a prototype hard-code. Per the Q3 resolution this phase is **in scope for v0.1** — agents are first-class.
 
-- [x] **11.1** `IAgentRunner` interface in `Forge.Api/Agents/`: `StartAsync(taskId, agentId, prompt, context, ct)` returns an `AgentInvocation` handle exposing a `Stream<AgentEvent>` (token deltas, status, tool calls), `CancelAsync(invocationId)`, `PauseAsync(agentId)`, `ResumeAsync(agentId)`, `GetStateAsync(agentId)`. One invocation = one task; long-running agents are modeled as a sequence of invocations, not a single process.
-- [x] **11.2** **Model registry** seeded from a static `models.json` shipped with the API: `{ id, vendor, family, displayName, contextWindow, inputPricePerMTok, outputPricePerMTok, supportsTools, supportsStreaming, status: 'live' | 'deprecated' }`. Default seed includes the current Claude family (`claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`) plus a `local-stub` model for offline dev. Exposed via `GET /api/models`. Pricing is denormalized onto each `Crew` row at assignment time so historical salary is reproducible after a price change.
+- [ ] **11.1** `IAgentRunner` interface in `Forge.Api/Agents/`: `StartAsync(taskId, agentId, prompt, context, ct)` returns an `AgentInvocation` handle exposing a `Stream<AgentEvent>` (token deltas, status, tool calls), `CancelAsync(invocationId)`, `PauseAsync(agentId)`, `ResumeAsync(agentId)`, `GetStateAsync(agentId)`. One invocation = one task; long-running agents are modeled as a sequence of invocations, not a single process.
+- [ ] **11.2** **Model registry** seeded from a static `models.json` shipped with the API: `{ id, vendor, family, displayName, contextWindow, inputPricePerMTok, outputPricePerMTok, supportsTools, supportsStreaming, status: 'live' | 'deprecated' }`. Default seed includes the current Claude family (`claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`) plus a `local-stub` model for offline dev. Exposed via `GET /api/models`. Pricing is denormalized onto each `Crew` row at assignment time so historical salary is reproducible after a price change.
 - [~] **11.3** **soul.md authoring**: file-system source of truth at `%LOCALAPPDATA%\Forge\agents\{agentId}\soul.md` (path overridable per agent). `/settings/agents` gains an in-app editor (CodeMirror, markdown preview side-by-side) that reads + writes the file with file-watcher-driven invalidation so external edits hot-reload. soul.md is the system prompt at runtime; capabilities (`tools`, `mcp_servers`, `ado_scopes`) declared in YAML front-matter at the top. _(filesystem service + GET/PUT endpoints + YAML front-matter `tools:` parser ship; CodeMirror `/settings/agents` editor is Phase R UI work — operators currently edit `soul.md` directly on disk and the API picks it up on next read)_
-- [x] **11.4** **Cost ledger** table `agent_usage(id, agentId, crewId, taskId, model, inputTokens, outputTokens, costUsd, startedAt, endedAt, status)` written by the runner on every invocation finish (or partial-finish on cancel). Indexed by `(crewId, startedAt)` and `(taskId)`. SQL views: `crew_salary_today`, `crew_salary_sprint`, `crew_salary_month`. Card cost in Phase 1 becomes `SUM(costUsd) WHERE taskId = card.id`, replacing the prototype's hard-coded values once the runner is live. _(SQL views replaced by an in-memory roll-up in `CrewsEndpoints.GetSalary` — SQLite EF can't translate `DateTimeOffset` filters or `SUM` over a decimal-converter column. Volume is bounded so in-memory is cheap.)_
-- [x] **11.5** **Concrete runner**: `ClaudeAgentRunner` (Anthropic SDK) — uses prompt caching for the soul.md prefix (5-min TTL), streaming responses via SSE, retry-with-backoff on 529 / 503. Per-invocation isolation: each runs in its own scoped `HttpClient`; no shared state across agents. Vendor abstraction is thin so a future `OpenAIAgentRunner` slots in without touching callers. _(uses HttpClient + the Anthropic REST API directly — same pattern as Phase 5's AdoProvider/GitHubProvider, "keeps deps small")_
-- [x] **11.5b** **Dispatcher across 2×2 cells**: `ClaudeAgentRunner` was renamed `AgentRunnerDispatcher` and is now the only `IAgentRunner` registration. It routes each `StartAsync` call through one of four (backend × mode) cells, picked from `AgentContext.Backend` / `AgentContext.InvokeMode` (defaults: **Copilot · SDK**):
+- [ ] **11.4** **Cost ledger** table `agent_usage(id, agentId, crewId, taskId, model, inputTokens, outputTokens, costUsd, startedAt, endedAt, status)` written by the runner on every invocation finish (or partial-finish on cancel). Indexed by `(crewId, startedAt)` and `(taskId)`. SQL views: `crew_salary_today`, `crew_salary_sprint`, `crew_salary_month`. Card cost in Phase 1 becomes `SUM(costUsd) WHERE taskId = card.id`, replacing the prototype's hard-coded values once the runner is live. _(SQL views replaced by an in-memory roll-up in `CrewsEndpoints.GetSalary` — SQLite EF can't translate `DateTimeOffset` filters or `SUM` over a decimal-converter column. Volume is bounded so in-memory is cheap.)_
+- [ ] **11.5** **Concrete runner**: `ClaudeAgentRunner` (Anthropic SDK) — uses prompt caching for the soul.md prefix (5-min TTL), streaming responses via SSE, retry-with-backoff on 529 / 503. Per-invocation isolation: each runs in its own scoped `HttpClient`; no shared state across agents. Vendor abstraction is thin so a future `OpenAIAgentRunner` slots in without touching callers. _(uses HttpClient + the Anthropic REST API directly — same pattern as Phase 5's AdoProvider/GitHubProvider, "keeps deps small")_
+- [ ] **11.5b** **Dispatcher across 2×2 cells**: `ClaudeAgentRunner` was renamed `AgentRunnerDispatcher` and is now the only `IAgentRunner` registration. It routes each `StartAsync` call through one of four (backend × mode) cells, picked from `AgentContext.Backend` / `AgentContext.InvokeMode` (defaults: **Copilot · SDK**):
   - **Copilot · SDK** — in-process `CopilotClient` (GitHub.Copilot.SDK 0.3.0), streams `AssistantMessageDelta` / `ToolExecutionStart` / `ToolExecutionComplete` events into the same `AgentEvent` shape downstream consumers already use.
   - **Copilot · CLI** — shells out to `copilot --prompt - -m <model> --yolo`; soul.md is folded into the stdin prefix; stdout streamed line-by-line.
   - **Claude · SDK** — the existing 11.5 path (POST `/v1/messages` with streaming SSE + ephemeral prompt cache on the soul.md system block).
   - **Claude · CLI** — shells out to `claude --print --model <model>`; soul.md folded into stdin prefix.
   `local-stub` model bypasses every cell with a deterministic token stream for tests / offline. CLI cells are **text-only** — no tool-call surface — so callers that need tools (Phase 13.4 / 13.5 plan + coding pipelines) must use SDK mode. Defaults are operator-overridable via `Forge:Agents:DefaultBackend` / `Forge:Agents:DefaultInvokeMode`; CLI executable paths via `Forge:Agents:CopilotCliPath` / `Forge:Agents:ClaudeCliPath`. Mirrors the workflow-side `IAIExecutor` pattern (`ExecutionEngine.AI.CopilotAIExecutor` / `ClaudeCliAIExecutor`) but extends it to all four cells and surfaces results as Forge's streaming `AgentEvent`. _(see `src/forge/Forge.Api/Agents/AgentRunnerDispatcher.cs`)_
-- [x] **11.6** **Sandboxing**: agents run inside the Forge.Api host as Tasks, NOT subprocess; tool execution (file edits, git, shell) is gated through an `IAgentToolHost` that enforces (a) the workstream's worktree path as the only writable root, (b) per-tool allowlist from soul.md front-matter, (c) hard wall-clock + token budgets per invocation. Subprocess isolation is a Phase R upgrade.
-- [x] **11.7** **Live status streaming**: SignalR channel `agent.{agentId}` broadcasts `started | token | tool-call | tool-result | finished | failed | paused`. UI hooks: card live-progress bar (Phase 1.2) reads the active invocation; `/crews` row updates in place; PR detail panel build-log tail (Phase 4.5) gains an "Agent activity" tab. _(server-side SignalR group + AgentsEndpoints ship; the in-place card / PR-panel UI hooks are a small follow-up — out of scope for the contract that the events stream)_
-- [x] **11.8** **Pause / resume / reassign**: PO actions on `/crews` and the agent detail panel. Pause halts the agent's task pickup loop and surfaces a `paused` pill; resume resumes from queue; reassign moves an agent to another crew (model + pricing change recorded in `agent_history`).
-- [x] **11.9** **Salary readouts**: `/crews` cards show salary today / sprint / month with a sparkline; `/products` rolls up across crews; TopBar gains a small `$X.XX today` chip (PO only). Numbers are USD with the model's pricing — currency conversion is out of scope for v0.1. _(per-crew + per-day endpoint live; `/crews` shows today/sprint/month + 14-day SVG sparkline; TopBar PO-only chip refreshes every 60s. `/products` salary roll-up is a small follow-up. "Sprint" = current ISO week per the v0.1 simplification — real iteration lookup against the linked repo's provider is Phase R.)_
-- [x] **11.10** **Budgets & alerts**: per-crew daily and per-task hard caps (in `Crew.dailyBudgetUsd`, `Crew.maxTaskUsd`); the runner refuses to start an invocation that would exceed the cap and emits a `forge.agent.budget_exceeded` event. PO sees an inline banner on `/crews` until acknowledged. _(StartInvocation pre-flight returns 402 + emits `agent.budget_exceeded` SignalR event; CrewsView highlights `today` in red when over `dailyBudgetUsd`. The full "until acknowledged" banner is a small follow-up.)_
+- [ ] **11.6** **Sandboxing**: agents run inside the Forge.Api host as Tasks, NOT subprocess; tool execution (file edits, git, shell) is gated through an `IAgentToolHost` that enforces (a) the workstream's worktree path as the only writable root, (b) per-tool allowlist from soul.md front-matter, (c) hard wall-clock + token budgets per invocation. Subprocess isolation is a Phase R upgrade.
+- [ ] **11.7** **Live status streaming**: SignalR channel `agent.{agentId}` broadcasts `started | token | tool-call | tool-result | finished | failed | paused`. UI hooks: card live-progress bar (Phase 1.2) reads the active invocation; `/crews` row updates in place; PR detail panel build-log tail (Phase 4.5) gains an "Agent activity" tab. _(server-side SignalR group + AgentsEndpoints ship; the in-place card / PR-panel UI hooks are a small follow-up — out of scope for the contract that the events stream)_
+- [ ] **11.8** **Pause / resume / reassign**: PO actions on `/crews` and the agent detail panel. Pause halts the agent's task pickup loop and surfaces a `paused` pill; resume resumes from queue; reassign moves an agent to another crew (model + pricing change recorded in `agent_history`).
+- [ ] **11.9** **Salary readouts**: `/crews` cards show salary today / sprint / month with a sparkline; `/products` rolls up across crews; TopBar gains a small `$X.XX today` chip (PO only). Numbers are USD with the model's pricing — currency conversion is out of scope for v0.1. _(per-crew + per-day endpoint live; `/crews` shows today/sprint/month + 14-day SVG sparkline; TopBar PO-only chip refreshes every 60s. `/products` salary roll-up is a small follow-up. "Sprint" = current ISO week per the v0.1 simplification — real iteration lookup against the linked repo's provider is Phase R.)_
+- [ ] **11.10** **Budgets & alerts**: per-crew daily and per-task hard caps (in `Crew.dailyBudgetUsd`, `Crew.maxTaskUsd`); the runner refuses to start an invocation that would exceed the cap and emits a `forge.agent.budget_exceeded` event. PO sees an inline banner on `/crews` until acknowledged. _(StartInvocation pre-flight returns 402 + emits `agent.budget_exceeded` SignalR event; CrewsView highlights `today` in red when over `dailyBudgetUsd`. The full "until acknowledged" banner is a small follow-up.)_
 - [~] **11.11** **Tests**: `IAgentRunner` contract test with a fake LLM (deterministic token stream); cost-ledger arithmetic test (input + output sums match); soul.md hot-reload test; budget-cap refusal test; one Playwright E2E that triggers an agent on a card, observes streaming tokens, and confirms cost lands on the card and the crew salary readout. _(24 xUnit tests across `AgentsFoundationTests`, `AgentRuntimeTests`, `AgentSoulAndBudgetTests`, `AgentSalaryAndLedgerTests` cover everything except the Playwright E2E. Playwright is deferred — the existing UI flows route through the same SignalR + endpoints these tests exercise.)_
-- [x] **11.12** **Fidelity**: not in prototype — exempt from screenshot diff. New UI surfaces (soul.md editor, agent detail panel, salary chip) must use existing forge tokens; document new tokens in `docs/forge/design-tokens.md`.
+- [ ] **11.12** **Fidelity**: not in prototype — exempt from screenshot diff. New UI surfaces (soul.md editor, agent detail panel, salary chip) must use existing forge tokens; document new tokens in `docs/forge/design-tokens.md`.
 
 ---
 
@@ -400,7 +400,7 @@ Context — what's already in scope vs. what this phase adds:
 
 ### Implementation steps
 
-- [x] **12.1** Domain model — `WorkItemRow`:
+- [ ] **12.1** Domain model — `WorkItemRow`:
   ```
   Id (string, primary key — same shape as Card.Id)
   RepoId (FK → repos)
@@ -426,7 +426,7 @@ Context — what's already in scope vs. what this phase adds:
   - `work_item_links` table (`{ id, parentId, childId, kind: "subtask"|"related"|"duplicate", createdAt }`) for cross-product / non-hierarchy links; the primary parent stays denormalised on `work_items.ParentId`.
   - **Backfill**: every existing `Card` becomes a `WorkItem` with `Type` derived from `Card.Type` (story → feature, task → task, bug → bug per Q12.1 revision), `State` derived from `Card.Col` (backlog/design → proposed; build → active; review → resolved; done → closed), `ParentId` set to the card's epic id where unambiguous. _(shipped — `ForgeSeed.BackfillWorkItemsFromCardsAsync`)_
   - **Cards become a projection**: the existing `cards` endpoints continue to serve the active-sprint slice, computed from `work_items` (where `iterationRef = activeSprint AND state IN (proposed, active, resolved)`). _(deferred to Phase R — column→state mapping is many-to-one (backlog and design both → proposed) so an in-place rewire would lose the distinction; the existing `cards` endpoints continue to serve the cards table while `work_items` operates side-by-side.)_
-- [x] **12.3** Endpoints — `Forge.Api/Endpoints/WorkItemsEndpoints.cs`:
+- [ ] **12.3** Endpoints — `Forge.Api/Endpoints/WorkItemsEndpoints.cs`:
   - `GET /api/work-items` — paginated list, filterable by `repoId`, `iterationRef`, `state[]`, `type[]`, `parentId`, `assignedTo`, `tag`, `q` (full-text). Default page size 100, max 500.
   - `GET /api/work-items/{id}` — single item with linked children + parents resolved.
   - `POST /api/work-items` — create (server fills id, createdAt, updatedAt; pushes to provider when `provider != "local"`).
@@ -436,12 +436,12 @@ Context — what's already in scope vs. what this phase adds:
   - `POST /api/work-items/{id}/parent` — body `{ parentId | null }`; cycle check; emits `workitem.linked`.
   - `POST /api/work-items/sync/{repoId}` — force a one-shot sync (writer-gated; `ignoreThrottle=true` is PO-only; rate-limited to 1/minute per repo).
   - `POST /api/work-items/bulk` — body `{ ids[], op: "move"|"reassign"|"tag"|"delete", payload }`. Idempotency-Key required. _(deferred — UI bulk action bar iterates per-id PATCH/move/delete calls today, which is enough for sample-size selections; the dedicated bulk endpoint is a Phase R candidate when selection sizes regularly exceed ~50.)_
-- [x] **12.4** Provider sync extensions:
+- [ ] **12.4** Provider sync extensions:
   - **ADO** — extend `AdoProvider.ListWorkItems` to accept `(areaPath, iterationPath, types[])` filters; emit a single batched WIQL query, then `_apis/wit/workitems?ids=…&fields=…&$expand=relations` for hierarchy. Map `System.Parent` → `ParentId`.
   - **GitHub** — `GitHubProvider.ListWorkItemsForSyncAsync` builds an `/issues` query string (`assignee` / `labels` / `since`); parent extracted from the issue body's `Parent: #N` line (and from native sub-issue `parent.number` when present). REST + HttpClient, not GraphQL — kept consistent with the rest of the codebase's "no SDK" choice; GraphQL upgrade is a Phase R candidate.
   - Both providers report `RemoteRevision` so the conflict policy works uniformly.
-- [x] **12.5** Sidebar nav entry — new `Work items` link between **Plan & Design** and **Timeline**, with a live count badge (`active + proposed` items in the active product). The badge re-renders on the SignalR `workitem.changed` event.
-- [x] **12.6** `/work-items` route with view-mode toggle:
+- [ ] **12.5** Sidebar nav entry — new `Work items` link between **Plan & Design** and **Timeline**, with a live count badge (`active + proposed` items in the active product). The badge re-renders on the SignalR `workitem.changed` event.
+- [ ] **12.6** `/work-items` route with view-mode toggle:
   - **Board** — columns by state (`proposed | active | resolved | closed`), swimlanes by `type` or `assignedTo` (toggleable). Drag-and-drop changes `state`.
   - **Timeline** — Gantt-style, rows grouped by epic, x-axis = current + next 2 iterations (configurable). Bars span an item's iteration; click → detail panel.
   - **Tree** — indented hierarchy `epic → feature → story → task/bug`. Expand / collapse per node. Right-click → reparent. Cycle attempts blocked at the API.
@@ -459,12 +459,12 @@ Context — what's already in scope vs. what this phase adds:
   - Multi-select via shift-click + drag-lasso on Board / List modes.
   - Bulk action bar appears at the bottom: change-state | change-iteration | reassign | tag | delete.
   - All bulk writes use a single `Idempotency-Key` so a retry doesn't duplicate. _(Shift-click multi-select + Bulk **Change state** + **Delete** ship; iteration / reassign / tag wait on the same Phase 12.7 picker work. Today the UI iterates per-id PATCH; the dedicated `/api/work-items/bulk` endpoint with idempotency-key replay is a Phase R candidate when selection sizes regularly exceed ~50.)_
-- [x] **12.9** Filter bar:
+- [ ] **12.9** Filter bar:
   - Chips: `All / Mine / Active / Blocked / Watching` (mirrors Phase 1.3 chips).
   - Selects: `Type`, `State`, `Iteration`, `Area`, `Assignee`, `Tag`, `Repo`, `Provider`.
   - Search input → server-side `q=` (FTS over title + description).
   - Filters persist in `localStorage.forge.wit.filters` (per-product).
-- [x] **12.10** Sync UX:
+- [ ] **12.10** Sync UX:
   - Per-repo "Sync now" button on the filter bar; surfaces last-sync timestamp + error if any.
   - Auto-poll every 60 s (re-uses Phase 5.7 `ProviderSyncService`). **Superseded by Phase 23** for work items specifically: the 20-min `WorkItemSyncJob` is the canonical scheduled run. The 60-s `ProviderSyncService` keeps cards / PRs / pipelines fresh. The `Sync now` button still calls `POST /api/work-items/sync/{repoId}` which now routes through `WorkItemSyncJob.RunAsync(kind='manual')`.
   - Conflict pill on items where `RemoteRevision` advanced since the local edit; click opens a discard / overwrite modal (Phase 5.9 contract).
@@ -475,7 +475,7 @@ Context — what's already in scope vs. what this phase adds:
   - Endpoint contract tests — every endpoint above (filter combos, pagination, idempotency on bulk).
   - Sync round-trip via `StubHttpMessageHandler` for ADO + GitHub cassettes.
   - Playwright E2E happy-path: create item → assign → move iteration → reparent → push to provider → assert remote write was called with the right payload. _(50 xUnit tests across `WorkItemsEndpointsTests`, `WorkItemsSyncEndpointTests`, `AdoWorkItemSyncTests`, `GitHubWorkItemSyncTests`, `WorkItemRulesTests`, `WorkItemSyncUpsertTests`, `WorkItemsLifecycleTests` cover everything except the Playwright E2E. The lifecycle test (create → patch → move → reparent → softDelete) substitutes server-side for the Playwright happy-path. Playwright is deferred — the existing flows route through the same endpoints these tests exercise.)_
-- [x] **12.12** **Fidelity**: new view; exempt from `forge-board.html` screenshot diff. Must use existing forge tokens. _(Zero new tokens introduced — state colors map to existing `--warning` / `--info` / `--success` / `--text-tertiary`; type marks reuse the accent / info / success / danger / text-secondary palette. The `--state-*` tokens anticipated in the original spec turned out to be unnecessary.)_
+- [ ] **12.12** **Fidelity**: new view; exempt from `forge-board.html` screenshot diff. Must use existing forge tokens. _(Zero new tokens introduced — state colors map to existing `--warning` / `--info` / `--success` / `--text-tertiary`; type marks reuse the accent / info / success / danger / text-secondary palette. The `--state-*` tokens anticipated in the original spec turned out to be unnecessary.)_
 
 ### Out of scope (explicitly deferred)
 
@@ -515,7 +515,7 @@ Two principles drive the shape:
 
 ### Implementation steps
 
-- [x] **13.1** Domain model — extend `CrewRow` (Phase 11):
+- [ ] **13.1** Domain model — extend `CrewRow` (Phase 11):
   ```
   ParentCrewId   (string?, FK → crews.Id, indexed)
   Depth          (int, 0=root, 1=team, 2=squad; computed, persisted for cheap roll-ups)
@@ -530,32 +530,32 @@ Two principles drive the shape:
   ```
   New table `crew_history(id, crewId, kind, fromValue, toValue, byUserId, at)` — kind ∈ `model | backend | mode | lead | member-add | member-remove | parent-change | quota-override`. New table `domain_experts(id, contentId, repoId, path, topic, summary, indexedAt)`. Migration: existing crews backfill `Backend='copilot'`, `InvokeMode='sdk'` so behaviour is unchanged on upgrade.
 - [ ] **13.2** Task taxonomy — add `kind` column to `tasks`: `plan | coding`. The runner reads `kind` to pick the right system-prompt template (under `agents/templates/plan-system.md` and `agents/templates/coding-system.md`); both templates concatenate the crew's soul.md + capabilities and add the kind-specific deliverable rubric.  <!-- partial: queue routes via `pipeline=plan|code` from the endpoints, but the documented `agents/templates/plan-system.md` / `coding-system.md` files are not yet on disk (only `PlanRubricConstants.cs` references them). -->
-- [x] **13.3** Lead-routing endpoint — `POST /api/crews/{crewId}/assign` body `{ taskId, memberAgentId }`. Server enforces `caller == crew.lead || RequireRole.ProductOwner`. Self-assignment is `memberAgentId == crew.lead`. Reassignment uses the same endpoint with the new memberId.
-- [x] **13.4** Plan task pipeline:  <!-- endpoint live at `CrewsEndpoints.PlanStub` (line 1297): schedule gate + CLI refusal + Phase-21 restart + enqueue via ITaskQueueService + SignalR. Note: dispatch is via TaskQueue/CrewQueueWorker rather than a direct AgentRunnerDispatcher.StartAsync as the spec describes — Claude-SDK tool surface still pending in 13.4a. -->
+- [ ] **13.3** Lead-routing endpoint — `POST /api/crews/{crewId}/assign` body `{ taskId, memberAgentId }`. Server enforces `caller == crew.lead || RequireRole.ProductOwner`. Self-assignment is `memberAgentId == crew.lead`. Reassignment uses the same endpoint with the new memberId.
+- [ ] **13.4** Plan task pipeline:  <!-- endpoint live at `CrewsEndpoints.PlanStub` (line 1297): schedule gate + CLI refusal + Phase-21 restart + enqueue via ITaskQueueService + SignalR. Note: dispatch is via TaskQueue/CrewQueueWorker rather than a direct AgentRunnerDispatcher.StartAsync as the spec describes — Claude-SDK tool surface still pending in 13.4a. -->
   - Endpoint `POST /api/crews/{crewId}/plan` body `{ workItemId }` — input must be `epic | feature` (dev) or `phase` (design). 400 otherwise. Pre-flight: refuse with 400 + `crew.tools_unavailable_in_cli` if `crew.invokeMode == cli` (Q13.4).
   - `AgentRunnerDispatcher.StartAsync` is called with `kind=plan` (the dispatcher reads the task kind to pick the matching system-prompt template under `agents/templates/plan-system.md`). Tools available: `read_repo`, `write_file` (only under `docs/specs/`), `search_work_items`, `create_work_item`. The runner intercepts `create_work_item` calls and validates the parent/child rank rules from Phase 12. Tool calls are emitted as `AgentEvent.ToolCall` / `ToolResult` (Phase 11.5b) regardless of which SDK cell is active — Copilot SDK emits them natively; Claude SDK requires the runner to declare them in the `/v1/messages` `tools` array (the existing Claude-SDK code path doesn't yet — see 13.4a follow-up).
   - On finish: the spec MD is committed to a `planning/{slug}` branch; a draft PR opens; the WIT rows are inserted with `state = proposed`. Lead reviews + merges the PR; merging flips the WIT rows to `active`. Git operations use the **lead's** preferred-account credentials (Phase 9.11): ADO via cached MSAL token for `crew.lead`; GitHub via `gh auth token --user <lead.preferredGitHubAccount>`.
   - Unit-of-work counter increments by 1 per merged plan PR.
 - [ ] **13.4a** Claude-SDK tool surface — the existing `RunClaudeSdk` cell in `AgentRunnerDispatcher` does not currently declare tools to Anthropic, so a plan/coding task on a `(claude, sdk)` crew would emit text but never call `create_work_item` / `git_commit` / etc. Add the `tools: [...]` array to the request body and a `tool_use` block parser. Until this lands, the only fully-tool-capable cell is `(copilot, sdk)`; document that on the `/crews` "Backend" badge with a yellow "tools: text-only" pill on `(claude, sdk)` crews.
-- [x] **13.5** Coding task pipeline:  <!-- endpoint live at `CrewsEndpoints.CodeStub` (line 1372): schedule gate + CLI refusal + enqueue via ITaskQueueService + SignalR. Same caveat as 13.4 re: AgentRunnerDispatcher invocation path. -->
+- [ ] **13.5** Coding task pipeline:  <!-- endpoint live at `CrewsEndpoints.CodeStub` (line 1372): schedule gate + CLI refusal + enqueue via ITaskQueueService + SignalR. Same caveat as 13.4 re: AgentRunnerDispatcher invocation path. -->
   - Endpoint `POST /api/crews/{crewId}/code` body `{ stepWorkItemId }` — input must be a `step` (Q12.1). Step must be `state = active` and not already claimed (`assignedTo === null`). Pre-flight: refuse with 400 + `crew.tools_unavailable_in_cli` if `crew.invokeMode == cli`.
   - `AgentRunnerDispatcher.StartAsync` is called with `kind=coding`; system prompt resolves to `agents/templates/coding-system.md` (concatenated with the crew's soul.md + capabilities, Q13.3). Tools: `read_repo`, `write_file` (whole repo), `run_tests`, `git_commit`, `git_push`, `open_pr`. As with 13.4, tools require `(_, sdk)` and the `(claude, sdk)` cell needs the 13.4a follow-up to actually invoke them.
   - **Credentials for git / PR ops**: the tool host signs commits + pushes + opens PRs as the **lead** of the crew (lead's `UserSettings.PreferredAdoAccount` for ADO, `PreferredGitHubAccount` for GitHub via `gh auth token --user ...`). Audit row records `actorUserId = crew.lead`, `onBehalfOf = crew.id`. Operators can override per-crew via a future `crew.commitAsAgentId` field — out of scope for v0.1, deferred to Phase R.
   - Self-review pass: a second `StartAsync(kind=review)` against the same agent, scoped to the diff. Lead must explicitly approve via `POST /api/prs/{id}/approve` before the PR comes off draft.
   - Unit-of-work counter increments by 1 per opened (non-draft) PR.
-- [x] **13.6** Quota enforcement — extends Phase 11.10 budget pre-flight:  <!-- `MaxConcurrent` enforced in `CrewsEndpoints.Assign` (line 540) and `CrewQueueWorker` (line 276) with `agent.crew_concurrency_full`. `WeeklyCap` field persisted/migrated but the per-week refusal pre-flight is not yet wired. -->
+- [ ] **13.6** Quota enforcement — extends Phase 11.10 budget pre-flight:  <!-- `MaxConcurrent` enforced in `CrewsEndpoints.Assign` (line 540) and `CrewQueueWorker` (line 276) with `agent.crew_concurrency_full`. `WeeklyCap` field persisted/migrated but the per-week refusal pre-flight is not yet wired. -->
   - On `assign`: refuse if `active_tasks_for_crew(crewId) >= MaxConcurrent`. 409 + `agent.crew_concurrency_full` SignalR.
   - On `claim` (any task type): refuse if `tasks_completed_this_iso_week(crewId) >= WeeklyCap`. 429 + `agent.crew_weekly_cap_hit`.
   - Override `?force=true` on the assign endpoint records `crew_history(kind='quota-override')`. The override is gated on **product-scoped** PO (Q13.2): only a PO of `crew.productId` can force; a PO of a different product gets 403, even if their TopBar happens to be on `crew.productId`. Same rule for `dailyBudgetUsd` overrides from Phase 11.10.
 - [ ] **13.7** Domain-expert generator — runs as a final pass on coding-task close. The dispatcher (`AgentRunnerDispatcher`) is re-entered with a fresh `StartAsync(kind=domain)` against the same agent + crew context, with the merged diff + the original step description as the prompt. System-prompt template: `agents/templates/domain-system.md`. Output is committed to the same PR's branch in a separate commit, then merged. Failure to generate is non-fatal — the task closes either way; a follow-up `gap-domain-expert` audit row points at the missing artifact so the lead can author it manually. Like 13.4 / 13.5, this requires `crew.invokeMode == sdk`; CLI crews skip the auto-generation and always go straight to the gap-audit row.
-- [x] **13.8** Capability ingestion — `POST /api/crews/{crewId}/capabilities` body `{ contentId }` validates the file exists in `domain_experts`, appends to the crew's `Capabilities` array, writes the front-matter back to soul.md, and bumps the prompt cache (Phase 11.5). Removal: `DELETE` with the same body. UI lives in `/crews/{id}` with a searchable picker over `domain_experts.topic`. **Product scoping**: the picker defaults to `domain_experts` rows whose `repoId` belongs to `crew.productId` (a domain expert authored against `atlas-platform` shouldn't be the first hit when configuring an `update`-product crew). Toggle "Show all products" reveals the full set so cross-product reuse stays possible — picking a cross-product expert flags the capability chip with a small "ext." pill so leads see the dependency.
-- [x] **13.9** UI — extend `CrewsView` (today: read-only dashboard):  <!-- `src/forge/Forge.UI/src/views/CrewsView.tsx` is now ~2,100 lines: hierarchy panel, roster/capabilities/quota/runtime/history tabs, lead-or-PO write gate. -->
+- [ ] **13.8** Capability ingestion — `POST /api/crews/{crewId}/capabilities` body `{ contentId }` validates the file exists in `domain_experts`, appends to the crew's `Capabilities` array, writes the front-matter back to soul.md, and bumps the prompt cache (Phase 11.5). Removal: `DELETE` with the same body. UI lives in `/crews/{id}` with a searchable picker over `domain_experts.topic`. **Product scoping**: the picker defaults to `domain_experts` rows whose `repoId` belongs to `crew.productId` (a domain expert authored against `atlas-platform` shouldn't be the first hit when configuring an `update`-product crew). Toggle "Show all products" reveals the full set so cross-product reuse stays possible — picking a cross-product expert flags the capability chip with a small "ext." pill so leads see the dependency.
+- [ ] **13.9** UI — extend `CrewsView` (today: read-only dashboard):  <!-- `src/forge/Forge.UI/src/views/CrewsView.tsx` is now ~2,100 lines: hierarchy panel, roster/capabilities/quota/runtime/history tabs, lead-or-PO write gate. -->
   - **Hierarchy panel** (left, 30%) — collapsible tree. Drag-drop a crew under another to reparent (writes `crew_history(kind='parent-change')`). Depth cap enforced client-side and server-side.
   - **Crew detail** (center, 40%) — header shows crew name, lead avatar, and a **runtime badge group**: `Model · Backend · Mode` (e.g. `claude-opus-4-7 · Copilot · SDK`). Add a `tools: text-only` yellow pill on `(claude, sdk)` crews until 13.4a lands and on any `(_, cli)` crew. Add an `est.` grey pill on the salary readout when `Backend == copilot` (per Q13.4). Capability chip count next to the badge group. Tabs: `Roster` (lead + members table; +/− with role gate), `Capabilities` (chip list with the picker from 13.8), `Quota` (sliders for `MaxConcurrent`, `WeeklyCap`, `dailyBudgetUsd`), `Runtime` (read-only model registry row + Backend / Mode dropdowns; mutation gated by lead-or-product-scoped-PO), `History` (`crew_history` rows).
   - **Activity rail** (right, 30%) — current invocations, weekly task counter (`X / WeeklyCap`), salary today/sprint/month (Phase 11.9, kept; "est." pill on Copilot crews).
   - The view is *editable for leads / product-scoped PO* (Q13.2) and *read-only for everyone else*. Field-level `disabled` driven by the role check resolved against `crew.productId`; trying to mutate as non-lead returns 403 from the API anyway.
-- [x] **13.10** Sidebar — `/crews` already lives under "Agents" (Phase 10.7). Drop the PO-only gate at the *nav* level (everyone can browse) but keep mutation-level role checks. Sub-label changes from `Supervisory · PO only` to `{n} crews · {m} agents`.
-- [x] **13.11** Tests:  <!-- `Phase13CrewsTests.cs` (218 lines): depth cap, history readout, capability content-id integrity, CLI-mode refusal, assign roster validation. Cell-coverage / Playwright cases in adjacent suites. -->
+- [ ] **13.10** Sidebar — `/crews` already lives under "Agents" (Phase 10.7). Drop the PO-only gate at the *nav* level (everyone can browse) but keep mutation-level role checks. Sub-label changes from `Supervisory · PO only` to `{n} crews · {m} agents`.
+- [ ] **13.11** Tests:  <!-- `Phase13CrewsTests.cs` (218 lines): depth cap, history readout, capability content-id integrity, CLI-mode refusal, assign roster validation. Cell-coverage / Playwright cases in adjacent suites. -->
   - xUnit: hierarchy depth cap, **product-scoped** lead-or-PO assign authorization (PO of A cannot mutate B's crew even with TopBar on B), plan task → WIT tree round-trip, coding task → PR round-trip, weekly-cap refusal, capability content-id integrity (sha256 match), domain-expert generator hits the file system but tolerates failure.
   - **Cell coverage** (Phase 11.5b): `local-stub` model exercises plan and coding pipelines without network or CLI — both pipelines emit token + finish events through the dispatcher. CLI-mode refusal: assigning a `plan` or `coding` task to a `(_, cli)` crew returns 400 + `crew.tools_unavailable_in_cli`. Backend / mode change writes the right `crew_history` row.
   - **Cost ledger across cells**: Copilot invocations land an `agent_usage` row with `costUsd` computed from the registry price (estimated $) and the salary readout labels them with `est.`. Claude SDK invocations remain unchanged.
@@ -714,9 +714,9 @@ The six open questions from `docs/forge/scoring-and-promotion.md` §9 default-st
 
 ### Implementation steps
 
-- [x] **14.1** **Schema migrations.** New columns on `agents`: `level INT NOT NULL DEFAULT 0`, `level_updated_at DATETIME?`, `hourly_usd DECIMAL(8,2) NOT NULL` (computed at write time as `4 + level * 3` so the invariant survives backfills). New columns on `crews`: `timezone TEXT NOT NULL DEFAULT 'America/Los_Angeles'`, `schedule_enabled BIT NOT NULL DEFAULT 1`. New tables — `deliverables(id, work_item_id, crew_id, generator_agent_id, evaluator_agent_id, iter, score, dims_json, verdict, notes, gen_cost_usd, eval_cost_usd, judge_agent_id?, judge_score?, judge_notes?, created_at)` and `agent_level_history(id, agent_id, old_level, new_level, window_avg, reason, created_at)`. Backfill: every existing agent → `level=0`, `hourly_usd=4`; every existing crew → `timezone='America/Los_Angeles'`, `schedule_enabled=1`. Migration is `Forge.Api/Persistence/Phase14Migration.cs` and runs idempotently on boot like the others. Locked numbers live in `Forge.Api/ScoringConstants.cs`.
-- [x] **14.2** **Schedule gate middleware.** `ScheduleGate` ASP.NET endpoint filter applied to `POST /api/crews/{id}/plan` and `POST /api/crews/{id}/code` (and any future dispatch verb). Reads the crew's `timezone` + `schedule_enabled`, computes "is now within Mon–Sat 09:00–21:00 in that TZ?", refuses with `409 + crew.off_shift` otherwise. `?override=true` requires `crew.lead == caller || RequireRole.ProductOwnerOf(crew.productId)` and writes `crew_history(kind='dispatch-after-hours', ...)`. Telemetry: `forge.crew.schedule.refused` counter tagged with crew id and current hour-of-day. **Status:** `Forge.Api/Services/ScheduleGate.cs` is the pure helper; `CrewsEndpoints.ApplyScheduleGateAsync` wires it into both stubs ahead of the CLI check; override path writes `dispatch-after-hours` to `crew_history`. Telemetry counter is deferred to Phase 14.12.
-- [x] **14.3** **Evaluator scoring contract.** Locked JSON shape — `{ score: int, dims: { correctness: int<=40, quality: int<=25, tests: int<=15, scope: int<=10, risk: int<=10 }, verdict: "pass"|"iterate"|"reject", notes: string<=800 }`. The runner reads the **last assistant message** of an evaluator run and parses out a fenced ```json``` block; missing block or invalid shape → server-side fallback verdict `iterate` with a `score=0` row and a `forge.eval.parse_failed` telemetry event so we can spot model drift. Verdict is *derived* from score (`>=90 → pass`, `>=70 → iterate`, else `reject`); the model's stated verdict is checked for consistency and a mismatch increments `forge.eval.verdict_mismatch` but does not override the derived value. **Status:** `Forge.Api/Services/EvaluatorScoreParser.cs` exposes pure `Parse(text) → EvaluatorScore`; fallback returns `iterate/score=0/ParseFailed=true`; `VerdictMismatch` flag is set when the model's claim diverges from the math. Counters deferred to Phase 14.12.
+- [ ] **14.1** **Schema migrations.** New columns on `agents`: `level INT NOT NULL DEFAULT 0`, `level_updated_at DATETIME?`, `hourly_usd DECIMAL(8,2) NOT NULL` (computed at write time as `4 + level * 3` so the invariant survives backfills). New columns on `crews`: `timezone TEXT NOT NULL DEFAULT 'America/Los_Angeles'`, `schedule_enabled BIT NOT NULL DEFAULT 1`. New tables — `deliverables(id, work_item_id, crew_id, generator_agent_id, evaluator_agent_id, iter, score, dims_json, verdict, notes, gen_cost_usd, eval_cost_usd, judge_agent_id?, judge_score?, judge_notes?, created_at)` and `agent_level_history(id, agent_id, old_level, new_level, window_avg, reason, created_at)`. Backfill: every existing agent → `level=0`, `hourly_usd=4`; every existing crew → `timezone='America/Los_Angeles'`, `schedule_enabled=1`. Migration is `Forge.Api/Persistence/Phase14Migration.cs` and runs idempotently on boot like the others. Locked numbers live in `Forge.Api/ScoringConstants.cs`.
+- [ ] **14.2** **Schedule gate middleware.** `ScheduleGate` ASP.NET endpoint filter applied to `POST /api/crews/{id}/plan` and `POST /api/crews/{id}/code` (and any future dispatch verb). Reads the crew's `timezone` + `schedule_enabled`, computes "is now within Mon–Sat 09:00–21:00 in that TZ?", refuses with `409 + crew.off_shift` otherwise. `?override=true` requires `crew.lead == caller || RequireRole.ProductOwnerOf(crew.productId)` and writes `crew_history(kind='dispatch-after-hours', ...)`. Telemetry: `forge.crew.schedule.refused` counter tagged with crew id and current hour-of-day. **Status:** `Forge.Api/Services/ScheduleGate.cs` is the pure helper; `CrewsEndpoints.ApplyScheduleGateAsync` wires it into both stubs ahead of the CLI check; override path writes `dispatch-after-hours` to `crew_history`. Telemetry counter is deferred to Phase 14.12.
+- [ ] **14.3** **Evaluator scoring contract.** Locked JSON shape — `{ score: int, dims: { correctness: int<=40, quality: int<=25, tests: int<=15, scope: int<=10, risk: int<=10 }, verdict: "pass"|"iterate"|"reject", notes: string<=800 }`. The runner reads the **last assistant message** of an evaluator run and parses out a fenced ```json``` block; missing block or invalid shape → server-side fallback verdict `iterate` with a `score=0` row and a `forge.eval.parse_failed` telemetry event so we can spot model drift. Verdict is *derived* from score (`>=90 → pass`, `>=70 → iterate`, else `reject`); the model's stated verdict is checked for consistency and a mismatch increments `forge.eval.verdict_mismatch` but does not override the derived value. **Status:** `Forge.Api/Services/EvaluatorScoreParser.cs` exposes pure `Parse(text) → EvaluatorScore`; fallback returns `iterate/score=0/ParseFailed=true`; `VerdictMismatch` flag is set when the model's claim diverges from the math. Counters deferred to Phase 14.12.
 - [~] **14.4** **Iteration loop in dispatcher.** `DeliverableLoop` orchestrates: (a) generator run, (b) evaluator run, (c) parse + persist `deliverable` row, (d) on `iterate` re-enter (a) up to **5 iterations** total, (e) on `pass` mark the work item green and exit, (f) on `reject` flip the work item back to `proposed` for the lead. Caps from spec §3: hard iteration cap = 5, budget cap = `crew.maxTaskBudgetUsd`, time cap = the schedule window (if 21:00 is hit, deliverable persists with `verdict='paused-eod'` and resumes at 09:00 — the loop is already idempotent because the iteration counter is in the row, not in memory). Each iteration emits `forge.deliverable.iteration.{started,scored,passed,iterated,rejected,stalled}` for the OTel pipeline. **Status (Batch 3):** `Forge.Api/Services/DeliverableLoop.cs` (registered as `IDeliverableLoop` in DI) is the orchestrator — pure, takes generator/evaluator delegates so it's testable without a live runner. Pass/reject/iterate/stalled/stalled-budget verdicts implemented + work-item state flips wired (`pass→closed`, `reject→proposed`, stall leaves state). **Remaining:** time-cap (`paused-eod` resume), telemetry counters (deferred to 14.12), and the production wiring that calls into `AgentRunnerDispatcher` from the plan/code endpoints — that lands when 13.4/13.5 stop returning 501.
 - [~] **14.5** **Dispute path (Q14.2).** `POST /api/deliverables/{id}/dispute` — caller must be the deliverable's `generator_agent_id` (or that agent's `lead`); refuses if `judge_agent_id` is already set on the row (one dispute per deliverable). Spawns a `judge` task on the team lead's crew via the existing `AgentRunnerDispatcher.StartAsync(kind='judge', ...)` path, with `judge-system.md` template. Judge writes `judge_score` + `judge_notes` to the same row; if `judge_score >= 90` the deliverable transitions to `pass` retroactively (work item flips green). Dispute does NOT reset the iteration counter — the spec is explicit on this (§3: dispute is not a free retry). **Status (Batch 3):** `Forge.Api/Endpoints/DeliverablesEndpoints.cs` exposes `GET /api/deliverables/{id}`, `GET /api/work-items/{id}/deliverables`, and `POST /api/deliverables/{id}/dispute` with body `{ judgeAgentId, judgeScore, judgeNotes }`. One-dispute-per-row guard, generator/lead/PO authority gate, and retroactive work-item close on `judgeScore ≥ 90` are implemented. **Remaining:** auto-spawning a judge task on the team lead's crew (depends on the runner being live — caller currently supplies the judge result synchronously, which the eventual autonomous judge will also do via the same endpoint).
 - [~] **14.6** **Soul preamble injector.** New file `agents/_preamble.md` in the repo (NOT under `%LOCALAPPDATA%`, so the rubric is auditable in git). The runner concatenates `<preamble>\n\n---\n\n<soul.md body>` before sending to the model and records `agent.preambleSha = sha256(preamble bytes)` on every deliverable for tamper detection. New templates `agents/templates/judge-system.md` and (rubric reminder) `agents/templates/eval-system.md` extend the existing Phase 13.2 templates rather than replacing them. Bumping the preamble is a deliberate operator action — the change is logged as `forge.preamble.changed` with the before/after sha and the user id. **Status (Batch 1):** preamble file written; runner concatenation + sha recording + judge/eval templates remain.
@@ -733,7 +733,7 @@ The six open questions from `docs/forge/scoring-and-promotion.md` §9 default-st
 - [~] **14.11** **UI — TopBar split.** The existing single salary chip splits into two — `Spend $X.YZ today` (renamed) + `Payroll $A.BC today`. Both pop the existing chip popover; payroll's popover lists members with their level pills. Dark/light theme parity required, screenshot diff in `Forge.UI.Tests`. **Status (Batch 5):** `TopBar.tsx` now renders both chips side-by-side — Spend (blue accent, sourced from the existing `getSalaryTodayTotal`) and Payroll (green accent, sourced from a new `forgeApi.getPayrollTodayTotal()` aggregator that sums `getCrewPayroll(id).today` across `listCrews()`). **Remaining:** the popover panels for each chip (currently both are tooltip-only), a dedicated server-side `/api/payroll/today` endpoint to replace the client-side aggregation, and the screenshot fidelity diff.
 - [ ] **14.12** **Audit + telemetry.** New `audit_event` kinds: `deliverable-scored`, `deliverable-iterated`, `deliverable-rejected`, `deliverable-stalled`, `deliverable-disputed`, `agent-promoted`, `agent-demoted`, `lead-vacated` (Q14.5), `dispatch-after-hours` (Q14.1), `preamble-changed` (Q14.6). All flow through the existing `/audit` view (Phase 7.5) and the OTel pipeline. Counter metrics: `forge.deliverable.score{verdict}`, `forge.agent.level.changes{direction}`, `forge.crew.payroll.usd_total{crewId}`. Trace span: `deliverable.run` covering all iterations of one deliverable, with iteration count + final verdict as span attributes.
 - [ ] **14.13** **Tests.** `Forge.Api.Tests/Phase14ScoringTests.cs` covers: (a) score 89 iterates, score 90 passes, score 69 rejects (boundary cases); (b) iteration cap stalls cleanly at 5; (c) off-shift dispatch returns 409 unless overridden; (d) promotion job promotes at 92-avg / no-rejects / cooldown-respected, demotes at 74-avg, no-ops at the floor; (e) lead floor (Q14.5) refuses sub-7 promotion to lead; (f) dispute path replaces an evaluator score with a judge score and flips the work item green when the judge passes 90; (g) `GET /spend` deprecation alias (Q14.7) emits the deprecation log line; (h) `AgentKpiCalculator` (14.16) returns the nine KPIs in Q14.9 against handcrafted deliverable fixtures — pass-rate, P50 / P90 iteration depth, and cost-per-pass arithmetic verified to 2 dp; (i) monthly review job (14.15) writes one `agent_monthly_review` row per agent on the 1st-of-month tick, snapshot is immutable after 30 days, retro-notes PATCH past the window returns 409; (j) `GET /api/agents/{id}/scorecard?window=lastMonth` reads from the snapshot, while `?window=trailing20` recomputes live, and the two MUST agree when the trailing-20 happens to fall entirely inside the same month. `Forge.UI.Tests/` adds screenshot fidelity diffs for the Performance tab + the split TopBar + the `AgentScorecardDrawer` (14.17) in both themes.
-- [x] **14.14** **Fidelity check.** No prototype HTML to diff against (this phase is post-prototype). Instead the fidelity gate is **the spec itself**: `Forge.Api.Tests/Phase14SpecConsistencyTests.cs` parses `docs/forge/scoring-and-promotion.md` and asserts the rubric weights, level table, hourly curve, iteration cap, and promotion thresholds in code (`ScoringConstants` static class) match the spec verbatim. If the spec changes, this test fails and forces the code constant update — preventing silent drift. **Status:** 10 assertions cover rubric weights, verdict thresholds, iteration cap, schedule window, default timezone, hourly curve, level range, promotion window/thresholds, lead floor, and preamble-rubric parity.
+- [ ] **14.14** **Fidelity check.** No prototype HTML to diff against (this phase is post-prototype). Instead the fidelity gate is **the spec itself**: `Forge.Api.Tests/Phase14SpecConsistencyTests.cs` parses `docs/forge/scoring-and-promotion.md` and asserts the rubric weights, level table, hourly curve, iteration cap, and promotion thresholds in code (`ScoringConstants` static class) match the spec verbatim. If the spec changes, this test fails and forces the code constant update — preventing silent drift. **Status:** 10 assertions cover rubric weights, verdict thresholds, iteration cap, schedule window, default timezone, hourly curve, level range, promotion window/thresholds, lead floor, and preamble-rubric parity.
 - [ ] **14.15** **Monthly review snapshot (Q14.8).** Schema migration `Phase14Migration.cs` adds `agent_monthly_review(id, agent_id, year, month, throughput, pass_rate, avg_score, iter_p50, iter_p90, reject_rate, dispute_rate, stalled_rate, utilization, cost_per_pass, ending_level, promotion_eta, demotion_risk, retro_notes, created_at, locked_at?)` with `UNIQUE(agent_id, year, month)`. The 1st-of-month branch in `PromotionJob` (14.7) writes one row per agent covering the prior calendar month and is the **scoreboard of record** — once `created_at + 30d` has passed, `locked_at` is set and the row is immutable; underlying deliverables stay readable but the rolled-up KPIs are pinned. Endpoints in `MonthlyReviewEndpoints.cs`: `GET /api/agents/{id}/monthly-reviews?from=YYYY-MM&to=YYYY-MM` returns the rows; `PATCH /api/agents/{id}/monthly-reviews/{year}-{month}` updates `retro_notes` only — gated by `crew.lead == caller || RequireRole.ProductOwnerOf(agent.crew.productId)`, refuses with 409 if `locked_at` is set. Telemetry: `forge.agent.monthly_review.written` counter and `forge.agent.monthly_review.locked` event when the 30-day window closes.
 - [ ] **14.16** **Agent KPI service.** New `IAgentKpiService` in `Forge.Api/Services/`: `GetScorecard(agentId, window)` where `window` is the discriminated union `trailing20 | mtd | lastMonth | monthOf(YYYY-MM)`. Returns an `AgentScorecard` record carrying the nine KPIs from Q14.9 plus the two derived flags. Pure function over `deliverables` for live windows; pure read of `agent_monthly_review` for historical months — same response shape either way so the UI cache is window-agnostic. Endpoints: `GET /api/agents/{id}/scorecard?window=...` and `GET /api/crews/{id}/scorecard?window=...` (the crew variant returns one entry per member). KPI math lives in `AgentKpiCalculator` (testable in isolation); thresholds (`demotionRiskAvg = 78`, `demotionRiskRejectRate = 0.10`, `promotionTargetAvg = 92`) live in `ScoringConstants` so they participate in the 14.14 spec-consistency check.
 - [ ] **14.17** **Costs view enrichment — Agents cost-and-scorecard surface.** The existing `/crews` Roster tab (`CrewsView.tsx` lines ~590–700; the `<SalaryStrip>` block at line 1195) gains a per-agent column group: in addition to the existing `today | sprint | month | sparkline` spend strip, each member row now renders `level pill | trailing-20 avg | MTD avg | reject rate | promotion ETA | payroll today`. A new `<ScorecardStrip>` component sits beneath the existing `<SalaryStrip>` so the operator reads cost-and-performance in one glance — promotion lives next to payroll because levels and dollars move together. Click any member row → opens a right-rail `<AgentScorecardDrawer>` (`src/forge/Forge.UI/src/views/AgentScorecardDrawer.tsx`) showing: the full Q14.9 KPI table, the trailing-20 sparkline of `avg score`, the last 6 months of `agent_monthly_review` as a small bar chart of `avg_score`, and the agent's `agent_level_history` rows as a vertical timeline. The drawer is the canonical agent KPI surface; the Performance tab (14.9) is the per-crew rollup. Cost view itself stays read-only for non-PO; PO sees an inline "Edit retro note" affordance on the latest unlocked monthly snapshot per Q14.8. The TopBar **Payroll** chip popover (14.11) gains a third inline metric `Avg score: NN` computed crew-weighted across all visible crews — gives the PO a one-glance health number without leaving the chrome.
@@ -854,18 +854,18 @@ Two principles drive the shape:
 
 ### Implementation steps
 
-- [x] **16.1** **Schema migrations** — `Forge.Api/Persistence/Phase16Migration.cs` (idempotent, runs after `Phase15Migration`):
+- [ ] **16.1** **Schema migrations** — `Forge.Api/Persistence/Phase16Migration.cs` (idempotent, runs after `Phase15Migration`):
   - `crews` adds `pair_role TEXT NOT NULL DEFAULT 'standalone'` and `paired_with_crew_id TEXT? FK crews(id)`. Partial unique index `UNIQUE (paired_with_crew_id) WHERE paired_with_crew_id IS NOT NULL` enforces one-pair-at-a-time.
   - `work_items` adds `auto_dispatched_at DATETIME?` and `expected_file_changes INT?` (nullable for non-step rows; CHECK `expected_file_changes <= 20` when present). _(SQLite ALTER COLUMN doesn't support adding CHECK constraints in-place, so the cap is enforced at the API layer in 16.5; effect is identical for the create / patch path.)_
   - New table `task_transcript_event(id, work_item_id, kind, agent_id?, crew_id?, payload_json, at)` indexed by `(work_item_id, at)`.
   - New column `agent_usage.cost_category TEXT NOT NULL DEFAULT 'generator'` (`generator | evaluator | judge`) — backfill: every existing row → `'generator'` (the prior in-crew model treated all spend uniformly).
   - TS mirrors in `src/forge/Forge.UI/src/types.ts` for `Crew.pairRole`, `Crew.pairedWithCrewId`, `WorkItem.autoDispatchedAt`, `WorkItem.expectedFileChanges`, `TaskTranscriptEvent`.
 
-- [x] **16.2** **Pair management endpoints** — `POST /api/crews/{id}/pair` body `{ otherCrewId }` writes both rows symmetrically inside a transaction; refuses with 400 if either crew is non-arch/non-eng or 409 if either is already paired or if the two crews aren't on the same product. `DELETE /api/crews/{id}/pair` clears both sides. List endpoint already returns crews; UI reads `pairedWithCrewId` and decorates the row. _(Audit rows landed as `crew_history(kind='crew-paired' / 'crew-unpaired')` rather than `forge_actions`; same trail, different table — `crew_history` is the existing per-crew audit log from Phase 13 and stayed consistent. Surfacing under a `forge_actions` "Phase 16" chip on `/audit` is part of 16.16.)_
+- [ ] **16.2** **Pair management endpoints** — `POST /api/crews/{id}/pair` body `{ otherCrewId }` writes both rows symmetrically inside a transaction; refuses with 400 if either crew is non-arch/non-eng or 409 if either is already paired or if the two crews aren't on the same product. `DELETE /api/crews/{id}/pair` clears both sides. List endpoint already returns crews; UI reads `pairedWithCrewId` and decorates the row. _(Audit rows landed as `crew_history(kind='crew-paired' / 'crew-unpaired')` rather than `forge_actions`; same trail, different table — `crew_history` is the existing per-crew audit log from Phase 13 and stayed consistent. Surfacing under a `forge_actions` "Phase 16" chip on `/audit` is part of 16.16.)_
 
 - [~] **16.3** **`LeadAutoDispatcher` hosted service** — `Forge.Api/Services/LeadAutoDispatcher.cs`. Polls every 5 s (jittered ±1 s). Query: work items where `assignedTo.id` matches a known team-lead agent and `auto_dispatched_at IS NULL`. For each, resolve target crew (from `lead.crewId`) → if crew has `pairedWithCrewId`, the dispatcher prepares a pair invocation; else falls through to single-crew. Sets `auto_dispatched_at = UtcNow`, writes a `forge_actions(kind='AUTO', path=…/auto-dispatched)` audit row, emits `task.delegated` to `task.{workItemId}`, picks the next member by round-robin excluding the lead (Q16.7), refuses with `capacity-blocked` when `MaxConcurrent` is saturated. Schedule gate (Q14.1) is honored — off-shift items stay on the queue. Telemetry: `forge.dispatch.lead_to_crew.latency_ms` histogram tagged with `crewId / pair / outcome` + `forge.dispatch.lead_no_capacity` counter. _(The actual call into `IDeliverableLoop.RunAsync` is wired by the eventual coding/plan pipelines (Phase 13.4 / 13.5 still stubbed) — for now the dispatcher hands the row off via `task.delegated` and stamps `auto_dispatched_at`; downstream plumbing lights up once the runner is real.)_
 
-- [x] **16.4** **`DeliverableLoop` paired-mode extension** — extend the existing `Forge.Api/Services/DeliverableLoop.cs`:
+- [ ] **16.4** **`DeliverableLoop` paired-mode extension** — extend the existing `Forge.Api/Services/DeliverableLoop.cs`:
   - `RunAsync` gains an `EvaluatorCrewId?` field on `DeliverableLoopRequest`. When non-null, evaluator-side `agent_usage` writes are tagged to the paired crew. `EvaluatorAgentId` is pinned to the iter-1 value for the lifetime of the deliverable per Q14.3.
   - Cost-ledger writes split: generator side writes `cost_category='generator'`, evaluator side `'evaluator'`. The dispute path (Phase 14.5) writes `'judge'`. The existing `gen_cost_usd / eval_cost_usd` columns on `deliverables` still aggregate the right slice — the ledger split is for per-crew salary precision.
   - All the existing iteration cap / budget cap / score-derived verdict logic is unchanged.
@@ -880,9 +880,9 @@ Two principles drive the shape:
 
 - [~] **16.6** **Coding-pipeline file-budget check** — `Forge.Api/Services/StepBudgetChecker.cs` exposes `CheckAsync(workItemId, actualFileCount, db, channel, ct)` that compares an actual file count against `WorkItemRow.ExpectedFileChanges`, emits the `forge.coding.over_budget` counter + a `forge_actions` audit row + a `task.budget-warning` SignalR event with `kind: 'step-budget-met', softFail: true`. Step rows without a declared budget pass through. _(Provider check-API write — ADO status check / GitHub check run — needs the coding-pipeline `open_pr` tool to be live (Phase 13.5 still stubbed). When the runner lands, it calls `StepBudgetChecker.CheckAsync` and then writes the matching provider check; today the checker is wired into the live channel but no upstream consumer drives it yet.)_
 
-- [x] **16.7** **`task.{workItemId}` SignalR group** — `Forge.Api/Realtime/TaskChannel.cs` is the publisher (persists each event to `task_transcript_event` with lazy 10 000-row eviction, then fans out to the SignalR group `task.{workItemId}`). Clients join via the existing generic `ForgeHub.Subscribe("task.{wid}")` invocation rather than a dedicated `JoinTask` method — same wire shape, no new RPC surface needed. Both `DeliverableLoop` and `WorktreeChangeFeed` publish through the singleton `TaskChannel`. Message envelope: `{ workItemId, kind, agentId?, crewId?, payload, at }` on the `task.event` method — `payload` shape varies per `kind` so the channel can grow without breaking old clients. Client-side ref-counted attach/detach lives in `useTaskLiveStore` (16.13) instead of `useForgeHub`.
+- [ ] **16.7** **`task.{workItemId}` SignalR group** — `Forge.Api/Realtime/TaskChannel.cs` is the publisher (persists each event to `task_transcript_event` with lazy 10 000-row eviction, then fans out to the SignalR group `task.{workItemId}`). Clients join via the existing generic `ForgeHub.Subscribe("task.{wid}")` invocation rather than a dedicated `JoinTask` method — same wire shape, no new RPC surface needed. Both `DeliverableLoop` and `WorktreeChangeFeed` publish through the singleton `TaskChannel`. Message envelope: `{ workItemId, kind, agentId?, crewId?, payload, at }` on the `task.event` method — `payload` shape varies per `kind` so the channel can grow without breaking old clients. Client-side ref-counted attach/detach lives in `useTaskLiveStore` (16.13) instead of `useForgeHub`.
 
-- [x] **16.8** **`WorktreeChangeFeed` service** — `Forge.Api/Services/WorktreeChangeFeed.cs`. Hosted service running a 1 Hz tick loop over `Subscribe(workItemId, workstreamId, worktreePath)` registrations. Each tick runs `git status --porcelain=v2 --branch` + `git log -1 --format=%H\\t%s\\t%an\\t%aI` and emits `task.worktree-tick` to the matching `task.{wid}` group. Snapshot diff suppresses no-change ticks. `paths.{added,modified,deleted}` capped at 200 entries each; over-cap sets `truncated=true`. _(Implementation uses a 1 Hz poll instead of `FileSystemWatcher` for portability — file watching on network paths and inside containers is unreliable; the burst-coalescing semantic the spec calls for falls out naturally from the poll. The "refuses paths outside `repo.cloneRoot/.worktree/{name}`" invariant is the caller's responsibility — the dispatcher passes a path it already validated; the feed itself just samples whatever path it's handed and silently no-ops if the directory isn't a git repo.)_
+- [ ] **16.8** **`WorktreeChangeFeed` service** — `Forge.Api/Services/WorktreeChangeFeed.cs`. Hosted service running a 1 Hz tick loop over `Subscribe(workItemId, workstreamId, worktreePath)` registrations. Each tick runs `git status --porcelain=v2 --branch` + `git log -1 --format=%H\\t%s\\t%an\\t%aI` and emits `task.worktree-tick` to the matching `task.{wid}` group. Snapshot diff suppresses no-change ticks. `paths.{added,modified,deleted}` capped at 200 entries each; over-cap sets `truncated=true`. _(Implementation uses a 1 Hz poll instead of `FileSystemWatcher` for portability — file watching on network paths and inside containers is unreliable; the burst-coalescing semantic the spec calls for falls out naturally from the poll. The "refuses paths outside `repo.cloneRoot/.worktree/{name}`" invariant is the caller's responsibility — the dispatcher passes a path it already validated; the feed itself just samples whatever path it's handed and silently no-ops if the directory isn't a git repo.)_
 
 - [~] **16.9** **Live execution endpoints** — `Forge.Api/Endpoints/TaskExecutionEndpoints.cs`:
   - `GET /api/work-items/{id}/execution` returns a `TaskExecutionSnapshot` — current iteration + score + verdict, generator crew + agent, evaluator crew + agent, deliverables history, cumulative tokens (gen + eval split), crew daily budget + spend-today, last-200 transcript events (newest sliced + reversed for natural rendering), most-recent worktree state parsed from the latest `task.worktree-tick`.
@@ -908,7 +908,7 @@ Two principles drive the shape:
   - **"● N live" badge** on each card when any work item bound to the workstream has `auto_dispatched_at IS NOT NULL AND state IN ('proposed','active')`. Click → `/work-items/{firstActiveId}/live`. Driven by a cross-walk over `useWorkItemsStore.items` filtered to the workstream's `cards` array.
   - _Deferred (small follow-ups):_ worktree-tick green-pulse indicator (the data plumbing exists via `useTaskLive` but per-card lazy `IntersectionObserver` subscriptions add complexity; the on-card pulse is decorative since the live badge already conveys "something's running"). "Active deliverables" stat in the workstreams stats-strip — needs an aggregate `/api/workstreams/{id}/deliverables` endpoint or a fan-out over per-workstream deliverable rows; punted to a Phase R polish.
 
-- [x] **16.13** **`useTaskLiveStore` hook** — `src/forge/Forge.UI/src/realtime/useTaskLiveStore.ts`. Zustand store keyed by `workItemId` exposes `{ snapshot, transcript, worktree, loading, error, refCount }` reactively. The companion `useTaskLive(workItemId)` hook hydrates via `GET /api/work-items/{id}/execution`, ref-count-attaches via `Subscribe("task.{wid}")`, listens to the `task.event` SignalR method, parses `task.worktree-tick` payloads into the worktree slot, caps in-memory transcript at 1 000 events, and ref-count-detaches on unmount. Used by `LiveExecutionView` (16.10).
+- [ ] **16.13** **`useTaskLiveStore` hook** — `src/forge/Forge.UI/src/realtime/useTaskLiveStore.ts`. Zustand store keyed by `workItemId` exposes `{ snapshot, transcript, worktree, loading, error, refCount }` reactively. The companion `useTaskLive(workItemId)` hook hydrates via `GET /api/work-items/{id}/execution`, ref-count-attaches via `Subscribe("task.{wid}")`, listens to the `task.event` SignalR method, parses `task.worktree-tick` payloads into the worktree slot, caps in-memory transcript at 1 000 events, and ref-count-detaches on unmount. Used by `LiveExecutionView` (16.10).
 
 - [~] **16.14** **Tests** — `Forge.Api.Tests/Phase16ExecutionTests.cs` (14 tests, all green):
   - **Pair endpoints:** symmetric-write happy path, QA-team rejection (400), cross-product rejection (409).
@@ -929,9 +929,9 @@ Two principles drive the shape:
 
 - [~] **16.16** **Audit + history rows** — auto-dispatches write a `forge_actions` row with `Method='AUTO'`, `Path='/api/crews/{crewId}/auto-dispatched'`, body containing `{ workItemId, leadId, generatorCrewId, evaluatorCrewId?, memberAgentId }`. Pair create/break write `crew_history(kind='crew-paired' | 'crew-unpaired')` rows on **both** crew ids (Phase 13's existing per-crew audit log; mirrors how `model` / `lead` / `member-add` etc. are recorded). Step-budget breaches write a `forge_actions` row with the breach payload. _Deferred:_ `auto-dispatch-pre-empted` recording when an operator re-assigns a row mid-flight; `/audit` view "Phase 16" filter chip — both small follow-ups once the runner is real and the pre-emption path can be reliably observed.
 
-- [x] **16.17** **Fidelity** — new view (`/work-items/{id}/live`), updated existing views (Swarm, Workstreams) with **additive** changes only — Plan board / Timeline / PR view untouched. The forge-board.html prototype has none of these surfaces, so they're exempt from the prototype screenshot diff. The single new token `--graph-line` is documented in `docs/forge/design-tokens.md` under the new "Phase 16 — Live Execution view" section.
+- [ ] **16.17** **Fidelity** — new view (`/work-items/{id}/live`), updated existing views (Swarm, Workstreams) with **additive** changes only — Plan board / Timeline / PR view untouched. The forge-board.html prototype has none of these surfaces, so they're exempt from the prototype screenshot diff. The single new token `--graph-line` is documented in `docs/forge/design-tokens.md` under the new "Phase 16 — Live Execution view" section.
 
-- [x] **16.18** **Server-owned delivery pipeline (commit + push + PR).** Per Q16.9, after the deliverable loop returns `pass` the worker performs three git steps in order, all in `Forge.Api/Services/CrewQueueWorker.cs`:
+- [ ] **16.18** **Server-owned delivery pipeline (commit + push + PR).** Per Q16.9, after the deliverable loop returns `pass` the worker performs three git steps in order, all in `Forge.Api/Services/CrewQueueWorker.cs`:
   - **Auto-commit** (`CrewQueueWorker.cs:884-893`) — `git status --porcelain`; if dirty, `git add -A` + `git commit -m "chore: auto-commit for {workItemId}" --allow-empty`. _The commit message does not yet incorporate the agent's `## Change Summary` block — that's a small follow-up; today the summary is used in the PR body and is also persisted to `deliverables.GeneratorSummary` (Phase 20) so it survives transcript truncation._
   - **Force-push** (`CrewQueueWorker.cs:896-909`) — `git fetch origin <branch>` then `git push --force-with-lease origin <branch>`; on lease failure, falls back to `git push --force origin <branch>` (covers the case where the prior run's tracking ref is stale). Emits `task.branch-pushed` on success or `task.push-failed { error }` on failure.
   - **PR create** (`CrewQueueWorker.cs:1052-1058`) — assembles a rich PR body (work-item link, agent + evaluator avatars rendered as 🤖 emoji because base64 PNGs blow ADO's 4000-char limit, score, change summary, evaluator review) then calls `provider.CreatePullRequestAsync`. Provider is resolved by the work item's repo kind (`ado` / `github`) with a configured-provider fallback. Catch around the PR call emits `task.pr-failed { error, branch }` on any exception, surfacing the **actual ADO error body** (no longer the opaque "400 Bad Request") so the operator can read the TF code in the live-exec view.
@@ -1012,7 +1012,7 @@ Two principles drive the shape:
 
 ### Implementation steps
 
-- [x] **17.1** **Schema migration** — `Forge.Api/Persistence/Phase17Migration.cs` (idempotent, runs after `Phase16Migration`):
+- [ ] **17.1** **Schema migration** — `Forge.Api/Persistence/Phase17Migration.cs` (idempotent, runs after `Phase16Migration`):
   - New table `task_queue`:
     ```
     Id                INTEGER PK AUTOINCREMENT
@@ -1039,7 +1039,7 @@ Two principles drive the shape:
   - New table `task_queue_history(id, queueId, kind, fromValue, toValue, byUserId, atDepth, etaMinutes, payloadJson, at)` — append-only audit per state transition + strain events. Indexed by `(queueId, at)`.
   - TS mirrors in `src/forge/Forge.UI/src/types.ts` for `TaskQueueRow`, `TaskQueueState`, `TaskQueueHistoryEntry`, plus a new `WorkItemAssignee` discriminator branch for `kind: 'team'`.
 
-- [x] **17.2** **`ITaskQueueService` interface** — `Forge.Api/Services/ITaskQueueService.cs`:
+- [ ] **17.2** **`ITaskQueueService` interface** — `Forge.Api/Services/ITaskQueueService.cs`:
   ```csharp
   Task<TaskQueueRow> EnqueueAsync(string workItemId, string targetKind, string targetId, CancellationToken ct);
   Task<TaskQueueRow?> AcknowledgeAsync(long queueId, string? byUserId, bool auto, CancellationToken ct);
@@ -1053,13 +1053,13 @@ Two principles drive the shape:
   ```
   All transitions use `UPDATE task_queue SET state=?, lastUpdatedAt=?, ... WHERE id=? AND state=?` (atomic CAS) so concurrent workers never double-claim. `GetCrewStatsAsync` computes ETA from the rolling-20 deliverable durations for that crew (median, falling back to a global p50 of 25 minutes when the crew has < 5 closed deliverables).
 
-- [x] **17.3** **`AssignedTo.kind = 'team'`** — Phase 12 `WorkItemAssignee` gains `kind: 'team'` as a third value. The assign endpoint (`POST /api/work-items/{id}/assign` or the existing PATCH path) detects the team case and:
+- [ ] **17.3** **`AssignedTo.kind = 'team'`** — Phase 12 `WorkItemAssignee` gains `kind: 'team'` as a third value. The assign endpoint (`POST /api/work-items/{id}/assign` or the existing PATCH path) detects the team case and:
   - Validates the team name exists (matches a known `Architecture | Engineering | Review | QA` value or any `crew.Name` prefix).
   - Calls `EnqueueAsync(workItemId, 'team', teamName)`.
   - Returns the new `task_queue` row's id alongside the work item.
   - Existing direct-to-agent assignments call `EnqueueAsync(workItemId, 'crew', leadCrewId)` with `state='picked-up'` directly so the unified queue still records them (Q17.2 last bullet).
 
-- [x] **17.4** **`CrewQueueWorker` hosted service** — `Forge.Api/Services/CrewQueueWorker.cs`. Single 5 s ±1 s tick loop, **five sweeps + a one-shot boot-recovery pass**:
+- [ ] **17.4** **`CrewQueueWorker` hosted service** — `Forge.Api/Services/CrewQueueWorker.cs`. Single 5 s ±1 s tick loop, **five sweeps + a one-shot boot-recovery pass**:
   - **Boot-recovery (one-shot, before the loop starts):** every row in `state='picked-up'` is reset to `state='queued'` with `PickedUpByAgent=null`, `PickedUpAt=null`, and a `queue_history(kind='boot-recovery')` audit. Reason: agent invocations from a prior process die with the host; without this, abandoned-recovery's 24h fallback is the only path back to a runnable state. The work item's `ExecutionStatus` is reset to `queued` in the same pass so the UI badge stops pulsing during downtime.
   - **Sweep 1 — ack timeout:** `task_queue WHERE state='awaiting-ack' AND ackRequiredBy < now()` → `AcknowledgeAsync(auto=true)`. Emits `forge.queue.ack_timeout` counter + `queue_history(kind='ack-timeout-auto')`.
   - **Sweep 2 — claim head:** for each crew with at least one `state='queued'` row, capacity-check (`MaxConcurrent` minus current `picked-up` rows for that crew). On capacity: pick a member by **resume-aware** policy — if the head row already has deliverables for a prior generator agent that's still on the crew roster, pin to that agent so the live transcript reads as a continuation; otherwise round-robin over `members WHERE agentId != crew.lead` (lead **preferred-excluded** per Q16.7 + Q18.3). `ClaimNextAsync(crewId, picked)` is the atomic CAS that pops the head. On success, the worker stamps `WorkItemRow.AutoDispatchedAt` (Phase 16 compatibility) + `ExecutionStatus = live` + bumps `TrialCount` (Phase 19) + emits `task.delegated` + auto-links the work item to a workstream (Phase 16.12 prerequisite for the "● N live" badge), then schedules `RunAgentAsync` on `Task.Run` so the sweep loop doesn't block on a multi-minute deliverable. **Schedule gate behavior**: the queue itself never *parks* a row for schedule reasons — the queue drains regardless of wall-clock so the operator's "assign now" intent is honored. But the *member picker* under Phase 18.6 filters candidates through `ScheduleGate.EvaluateAgent` so off-shift members aren't handed claims they can't act on; when zero members are on-shift the lead self-assigns (Q18.3). This is what makes a Sunday-created ticket route to the lead even though the crew's day-band crew members are formally off the clock.
@@ -1070,7 +1070,7 @@ Two principles drive the shape:
   - **Boot-recovery + sweeps run once at startup** before the timer starts (Q17.4 boot resilience), with the same safe-sweep wrapper.
   - **Integration with `LeadAutoDispatcher`:** see 17.12 — the dispatcher now feeds the queue rather than running its own agent path, so this worker is the single execution surface.
 
-- [x] **17.5** **Endpoints** — `Forge.Api/Endpoints/QueueEndpoints.cs`:
+- [ ] **17.5** **Endpoints** — `Forge.Api/Endpoints/QueueEndpoints.cs`:
   - `GET /api/queue?targetKind={team|crew}&targetId={id}&state={…}` — list rows for a target. Defaults to all open states for the active product's crews.
   - `GET /api/queue/{id}` — single row + last-N history entries.
   - `GET /api/queue/{id}/history` — full append-only history for a row.
@@ -1097,13 +1097,13 @@ Two principles drive the shape:
   - **Frontend-design discipline** — reuse Phase 14 score-chip palette + the new `--graph-line` token from Phase 16. No new tokens.
   - _Deferred (small UX polish):_ the sidebar entry currently shows for every signed-in user (not just leads); the visibility-only-when-`crew.lead` gate is a Phase R candidate once the user→crew lead resolution is fully plumbed.
 
-- [x] **17.8** **UI — Workstreams + Crews queue indicators**:
+- [ ] **17.8** **UI — Workstreams + Crews queue indicators**:
   - **Crews view** — each crew row in the left sidebar gains a "Q:N · {eta}m" pill rendered when depth > 0 or strained. Strained crews get the danger palette; click → `/inbox`. Stats refresh on every `queue.changed` event via the shared `useQueueChannel` + `useQueueStore` subscription.
   - **Workstreams view** — `WorkstreamCard` gains a `queuedCount` prop + sibling "● N queued" yellow pill rendered alongside the existing Phase 16.12 "● N live" green badge. Click → `/inbox`. Driven from a cross-walk over `useQueueStore.rows` filtered to the workstream's `cards` list.
   - **TopBar** — the salary + payroll chips gain a third sibling "📥 N" pending-acks chip, rendered whenever the signed-in user leads at least one crew. Pulses + warns when N > 0; idle grey when N = 0. Click → `/inbox`.
   - The chips and pills share the existing palette (no new tokens).
 
-- [x] **17.9** **`forgeApi` client extensions** — `src/forge/Forge.UI/src/api/forgeApi.ts`:
+- [ ] **17.9** **`forgeApi` client extensions** — `src/forge/Forge.UI/src/api/forgeApi.ts`:
   - `listQueue`, `listTeamQueue`, `listCrewQueue`, `getCrewQueueStats`, `ackQueue`, `routeQueue`, `reassignQueue`, `cancelQueue`, `confirmStrain`.
   - `useQueueStore` (Zustand) + `useQueueChannel` SignalR hook in `src/forge/Forge.UI/src/realtime/useQueueStore.ts` — hydrates from REST + tails `queue.changed` / `queue.strained` events. Mirrors the `useTaskLive` pattern (Phase 16.13). TS types `TaskQueueEntry`, `TaskQueueState`, `CrewQueueStats` added to `types.ts`.
 
@@ -1117,7 +1117,7 @@ Two principles drive the shape:
     - `forge.queue.dwell_ms` — histogram of `pickedUpAt - enqueuedAt` (queued + awaiting-route time).
   - **Audit:** every state transition writes one `task_queue_history` row; the `/audit` view (Phase 6.10) gains an optional `?queue={id}` filter that joins on the history table. _(Counters / histograms ship on the existing `Forge.Api.Phase16` meter — `forge.queue.enqueued`, `forge.queue.ack_latency_ms`, `forge.queue.ack_timeout`, `forge.queue.strain.fired`, `forge.queue.dwell_ms`. The `forge.queue.depth` gauge + the `/audit?queue={id}` filter chip are small follow-ups.)_
 
-- [x] **17.11** **Tests** — `Forge.Api.Tests/Phase17QueueTests.cs` (12 tests, all green):
+- [ ] **17.11** **Tests** — `Forge.Api.Tests/Phase17QueueTests.cs` (12 tests, all green):
   - **State machine:** enqueue → ack → route → claim → complete writes the full audit trail.
   - **Idempotency:** double-enqueue of the same work item returns the same row (Q17.6).
   - **FIFO + priority:** med/high/low enqueue → high claimed first, med second, low third.
@@ -1131,14 +1131,14 @@ Two principles drive the shape:
   - **Crew stats:** empty queue returns `depth=0, eta=0, strained=false`.
   - **Endpoint:** `POST /queue/{id}/ack` against a `queued` row returns 409.
 
-- [x] **17.12** **Integration of Phase 16 dispatcher with Phase 17 queue** — the original spec described `LeadAutoDispatcher` and `CrewQueueWorker` as **coexisting** on parallel paths (dispatcher scans direct-to-agent rows, worker drains the queue). In practice this produced two-worker race conditions and confused the operator's mental model of where work was. The implementation collapses them into a clean producer/consumer split:
+- [ ] **17.12** **Integration of Phase 16 dispatcher with Phase 17 queue** — the original spec described `LeadAutoDispatcher` and `CrewQueueWorker` as **coexisting** on parallel paths (dispatcher scans direct-to-agent rows, worker drains the queue). In practice this produced two-worker race conditions and confused the operator's mental model of where work was. The implementation collapses them into a clean producer/consumer split:
   - `LeadAutoDispatcher` is now a **producer** only. Its 5-second loop still scans `work_items WHERE assignedTo.id IN (lead_agents) AND auto_dispatched_at IS NULL`, applies the schedule gate + capacity pre-check + pair resolution, then **enqueues** the work item via `ITaskQueueService.EnqueueAsync(wi.Id, "crew", generatorCrew.Id)`. `AutoDispatchedAt` is stamped only after a successful enqueue so the row is never orphaned. The dispatcher does **not** invoke `IAgentRunner` at all anymore.
   - `CrewQueueWorker` is the sole **consumer**. Sweep 2 ("claim head") is the only place agents start; this is where `RunAgentAsync` runs the deliverable loop + delivery pipeline (Phase 16.18). Direct-to-crew assignments from the operator's UI go through `POST /api/crews/{id}/assign` → `EnqueueAsync` → same Sweep-2 path, so manual and auto-dispatched rows execute identically.
   - Boundary is enforced by data shape: dispatcher only writes to the queue, worker only reads from it. The original "we have two execution paths" Phase R cleanup is closed by this refactor.
 
   The 14 Phase 16 tests + 12 Phase 17 tests still pass (verified); the dispatcher tests now assert the post-tick state via the queue rather than via direct work-item flags.
 
-- [x] **17.13** **Fidelity** — new `/inbox` view is additive; exempt from the prototype screenshot diff. No new design tokens — `inbox.css` reuses Phase 11 / 14 palette + the Phase 16 `--graph-line`.
+- [ ] **17.13** **Fidelity** — new `/inbox` view is additive; exempt from the prototype screenshot diff. No new design tokens — `inbox.css` reuses Phase 11 / 14 palette + the Phase 16 `--graph-line`.
 
 ### Out of scope (explicitly deferred)
 
@@ -1173,12 +1173,12 @@ This is a **schema add + ScheduleGate parameter**, not a new view. UI surfaces i
 
 ### Implementation steps
 
-- [x] **18.1** **Migration** — `Forge.Api/Persistence/Phase18Migration.cs` adds `crews.Shift TEXT NOT NULL DEFAULT 'day'`. Idempotent column-add, runs after `Phase17Migration`.
-- [x] **18.2** **Domain model** — `CrewRow.Shift` (string, default `"day"`) lands in `Persistence/Entities.cs:480`. Mirror as `Crew.shift: 'day' | 'night'` in TS.
-- [x] **18.3** **`ScheduleGate.IsWithinShift`** — accepts a shift parameter; `NextTransitionLocal` computes the next transition (open / close) for either band so the live-exec banner ("Off-shift — opens at 21:00") works for both. `ScheduleGate.ShiftDay` / `ScheduleGate.ShiftNight` constants exposed for code-paths that branch on the band.
-- [x] **18.4** **CrewsEndpoints PATCH** — accept `shift` on the `PATCH /api/crews/{id}` body; persist after a `('day','night')` whitelist check.  <!-- shipped: `PatchCrewRequest.Shift` + `CreateCrewRequest.Shift` accept the field; `NormaliseShift` enforces a case-insensitive ('day','night') whitelist; mismatch returns 400 + `crew.unknown_shift`; transitions write a `crew_history(kind='shift', fromValue, toValue)` row. Tests in `Phase18PatchShiftTests.cs`. -->
-- [x] **18.5** **CrewsView** — render the band as a pill next to the timezone in the runtime badge group; PO-editable inline. The schedule strip on the Performance tab (Phase 14.9) reads from `ScheduleGate.Evaluate(crew, now)` directly, so the green/red ribbon updates per-band automatically.
-- [x] **18.6** **Lead 24×7 exemption (Q18.3).** New surface area, not yet shipped:  <!-- shipped: ScheduleGate.EvaluateAgent (Services/ScheduleGate.cs); CrewQueueWorker Sweep 2 filters allMembers through EvaluateAgent and falls through to crew.Lead; LeadAutoDispatcher gate now evaluates the lead specifically; PayrollCalculator.LeadHoursInRange + ComputeTotal split lead vs members (168 vs 72 h/week); CrewsView Roster lead row gets a permanent green dot; PerformanceTab schedule strip gains a "Lead 24×7" pill; Phase18LeadExemptionTests covers all four contracts. -->
+- [ ] **18.1** **Migration** — `Forge.Api/Persistence/Phase18Migration.cs` adds `crews.Shift TEXT NOT NULL DEFAULT 'day'`. Idempotent column-add, runs after `Phase17Migration`.
+- [ ] **18.2** **Domain model** — `CrewRow.Shift` (string, default `"day"`) lands in `Persistence/Entities.cs:480`. Mirror as `Crew.shift: 'day' | 'night'` in TS.
+- [ ] **18.3** **`ScheduleGate.IsWithinShift`** — accepts a shift parameter; `NextTransitionLocal` computes the next transition (open / close) for either band so the live-exec banner ("Off-shift — opens at 21:00") works for both. `ScheduleGate.ShiftDay` / `ScheduleGate.ShiftNight` constants exposed for code-paths that branch on the band.
+- [ ] **18.4** **CrewsEndpoints PATCH** — accept `shift` on the `PATCH /api/crews/{id}` body; persist after a `('day','night')` whitelist check.  <!-- shipped: `PatchCrewRequest.Shift` + `CreateCrewRequest.Shift` accept the field; `NormaliseShift` enforces a case-insensitive ('day','night') whitelist; mismatch returns 400 + `crew.unknown_shift`; transitions write a `crew_history(kind='shift', fromValue, toValue)` row. Tests in `Phase18PatchShiftTests.cs`. -->
+- [ ] **18.5** **CrewsView** — render the band as a pill next to the timezone in the runtime badge group; PO-editable inline. The schedule strip on the Performance tab (Phase 14.9) reads from `ScheduleGate.Evaluate(crew, now)` directly, so the green/red ribbon updates per-band automatically.
+- [ ] **18.6** **Lead 24×7 exemption (Q18.3).** New surface area, not yet shipped:  <!-- shipped: ScheduleGate.EvaluateAgent (Services/ScheduleGate.cs); CrewQueueWorker Sweep 2 filters allMembers through EvaluateAgent and falls through to crew.Lead; LeadAutoDispatcher gate now evaluates the lead specifically; PayrollCalculator.LeadHoursInRange + ComputeTotal split lead vs members (168 vs 72 h/week); CrewsView Roster lead row gets a permanent green dot; PerformanceTab schedule strip gains a "Lead 24×7" pill; Phase18LeadExemptionTests covers all four contracts. -->
   - `ScheduleGate.EvaluateAgent(crew, agentId, utcNow)` — returns `Verdict.OnShift` when `agentId == crew.Lead`, otherwise delegates to `Evaluate(crew, utcNow)`. Pure, no DB.
   - `CrewQueueWorker` Sweep 2 picker filters `members` through `ScheduleGate.EvaluateAgent` before round-robin; falls through to `crew.Lead` when zero members remain on-shift. The "exclude the lead" rule from Phase 16.7 stays as the *preference*, not the *constraint* — the lead is in the pool only as a Sunday / off-band fallback.
   - `LeadAutoDispatcher` schedule check evaluates the lead specifically (not the crew as a whole), so Sunday-created tickets that route to the lead enqueue successfully instead of parking with `outcome: off-shift`. The `off-shift` tag remains for the (rare) `crew.Lead == null OR lead.paused` case.
@@ -1192,99 +1192,99 @@ This is a **schema add + ScheduleGate parameter**, not a new view. UI surfaces i
 
 **18.1 Migration** (covered in `Phase18MigrationAndModelTests.cs`)
 
-- [x] `Phase18Migration.ApplyAsync` adds the `Shift` column to a fresh DB.
-- [x] `Phase18Migration.ApplyAsync` is idempotent — second invocation does not throw and does not duplicate the column.
-- [x] Existing crew rows (pre-migration) backfill `Shift = 'day'` so behaviour pre/post upgrade is identical (Q18.2 strict-superset rule).
+- [ ] `Phase18Migration.ApplyAsync` adds the `Shift` column to a fresh DB.
+- [ ] `Phase18Migration.ApplyAsync` is idempotent — second invocation does not throw and does not duplicate the column.
+- [ ] Existing crew rows (pre-migration) backfill `Shift = 'day'` so behaviour pre/post upgrade is identical (Q18.2 strict-superset rule).
 
 **18.2 Domain model** (covered in `Phase18MigrationAndModelTests.cs`)
 
-- [x] `new CrewRow()` defaults `Shift` to `"day"`.
-- [x] `CrewRow.Shift` round-trips through EF — write `night`, read back `night`.
-- [x] TS `Crew.shift` type is `'day' | 'night' | undefined` (UI-side contract). *(`shifts.spec.ts` uses `expectTypeOf` to lock the union — drift fails `tsc --noEmit` and the vitest run.)*
+- [ ] `new CrewRow()` defaults `Shift` to `"day"`.
+- [ ] `CrewRow.Shift` round-trips through EF — write `night`, read back `night`.
+- [ ] TS `Crew.shift` type is `'day' | 'night' | undefined` (UI-side contract). *(`shifts.spec.ts` uses `expectTypeOf` to lock the union — drift fails `tsc --noEmit` and the vitest run.)*
 
 **18.3 `ScheduleGate.IsWithinShift` / `NextTransitionLocal` — night band + constants** (covered in `Phase18ScheduleGateNightBandTests.cs`)
 
 Night-band on/off-shift truth table:
-- [x] `IsWithinShift(Mon 22:00, "night")` → true (Mon-night block).
-- [x] `IsWithinShift(Tue 02:00, "night")` → true (Mon-night spilling into Tue morning).
-- [x] `IsWithinShift(Sat 22:00, "night")` → true (Sat-night through Sun 09:00 — Q18.1 explicit example).
-- [x] `IsWithinShift(Sun 02:00, "night")` → true (still Sat-night).
-- [x] `IsWithinShift(Sun 22:00, "night")` → false (Sun is not a workday → Sun-night is not on shift — Q18.1 explicit counter-example).
-- [x] `IsWithinShift(Mon 02:00, "night")` → false (Sun was not a workday).
-- [x] `IsWithinShift(Mon 12:00, "night")` → false (mid-day not in night band).
-- [x] `IsWithinShift(Mon 22:00, "day")` → false (after day band — regression for the existing day path).
+- [ ] `IsWithinShift(Mon 22:00, "night")` → true (Mon-night block).
+- [ ] `IsWithinShift(Tue 02:00, "night")` → true (Mon-night spilling into Tue morning).
+- [ ] `IsWithinShift(Sat 22:00, "night")` → true (Sat-night through Sun 09:00 — Q18.1 explicit example).
+- [ ] `IsWithinShift(Sun 02:00, "night")` → true (still Sat-night).
+- [ ] `IsWithinShift(Sun 22:00, "night")` → false (Sun is not a workday → Sun-night is not on shift — Q18.1 explicit counter-example).
+- [ ] `IsWithinShift(Mon 02:00, "night")` → false (Sun was not a workday).
+- [ ] `IsWithinShift(Mon 12:00, "night")` → false (mid-day not in night band).
+- [ ] `IsWithinShift(Mon 22:00, "day")` → false (after day band — regression for the existing day path).
 
 Boundaries:
-- [x] `IsWithinShift(workday 21:00:00 sharp, "night")` → true; same instant with `"day"` → false (half-open `[09,21)` for day, `[21,09)` for night).
-- [x] `IsWithinShift(workday 09:00:00 sharp, "day")` → true; same instant with `"night"` → false.
+- [ ] `IsWithinShift(workday 21:00:00 sharp, "night")` → true; same instant with `"day"` → false (half-open `[09,21)` for day, `[21,09)` for night).
+- [ ] `IsWithinShift(workday 09:00:00 sharp, "day")` → true; same instant with `"night"` → false.
 
 `Evaluate`:
-- [x] `Evaluate(crew with Shift="night", nightInstant)` → `Verdict.OnShift`.
-- [x] `Evaluate(crew with Shift="night", dayInstant)` → `Verdict.OffShift`.
-- [x] Unknown `Shift` value (e.g. `"swing"`) normalises to `"day"` so a corrupted row never crashes the gate.
+- [ ] `Evaluate(crew with Shift="night", nightInstant)` → `Verdict.OnShift`.
+- [ ] `Evaluate(crew with Shift="night", dayInstant)` → `Verdict.OffShift`.
+- [ ] Unknown `Shift` value (e.g. `"swing"`) normalises to `"day"` so a corrupted row never crashes the gate.
 
 `NextTransitionLocal`:
-- [x] On-shift Mon 22:00 night → next transition = Tue 09:00 (close-of-night).
-- [x] Off-shift Mon 12:00 night → next transition = Mon 21:00 (open-of-night).
-- [x] Off-shift Sun 12:00 night → next transition = Mon 21:00 (skip Sunday).
+- [ ] On-shift Mon 22:00 night → next transition = Tue 09:00 (close-of-night).
+- [ ] Off-shift Mon 12:00 night → next transition = Mon 21:00 (open-of-night).
+- [ ] Off-shift Sun 12:00 night → next transition = Mon 21:00 (skip Sunday).
 
 Constants:
-- [x] `ScheduleGate.ShiftDay` equals `"day"`, `ScheduleGate.ShiftNight` equals `"night"` (so external callers don't string-literal).
+- [ ] `ScheduleGate.ShiftDay` equals `"day"`, `ScheduleGate.ShiftNight` equals `"night"` (so external callers don't string-literal).
 
 **18.4 `CrewsEndpoints PATCH` — shift mutation** (covered in `Phase18PatchShiftTests.cs`)
 
-- [x] `PATCH /api/crews/{id}` body `{ shift: "night" }` returns 200 and persists `night`.
-- [x] `PATCH /api/crews/{id}` body `{ shift: "day" }` returns 200 and persists `day`.
-- [x] `PATCH /api/crews/{id}` body `{ shift: "swing" }` returns 400 with whitelist error (`crew.unknown_shift`).
-- [x] `PATCH /api/crews/{id}` with case variants (`"DAY"`, `"Night"`) accepted (case-insensitive normalisation, matching `Backend` / `InvokeMode` style).
-- [x] Shift change writes a `crew_history(kind='shift', fromValue, toValue, byUserId)` row.
-- [x] Same-value PATCH (e.g. day → day) does NOT add a history row.
-- [x] `CreateCrewRequest.Shift` accepts an explicit band at create time and rejects unknown values with 400.
-- [x] Create without a `shift` value defaults to `"day"`.
-- [x] Non-PO caller (or PO of a different product) gets 403 — same product-scoped gate as other patch fields. *(`Patch_Shift_Returns_403_For_Non_PO_Caller`.)*
+- [ ] `PATCH /api/crews/{id}` body `{ shift: "night" }` returns 200 and persists `night`.
+- [ ] `PATCH /api/crews/{id}` body `{ shift: "day" }` returns 200 and persists `day`.
+- [ ] `PATCH /api/crews/{id}` body `{ shift: "swing" }` returns 400 with whitelist error (`crew.unknown_shift`).
+- [ ] `PATCH /api/crews/{id}` with case variants (`"DAY"`, `"Night"`) accepted (case-insensitive normalisation, matching `Backend` / `InvokeMode` style).
+- [ ] Shift change writes a `crew_history(kind='shift', fromValue, toValue, byUserId)` row.
+- [ ] Same-value PATCH (e.g. day → day) does NOT add a history row.
+- [ ] `CreateCrewRequest.Shift` accepts an explicit band at create time and rejects unknown values with 400.
+- [ ] Create without a `shift` value defaults to `"day"`.
+- [ ] Non-PO caller (or PO of a different product) gets 403 — same product-scoped gate as other patch fields. *(`Patch_Shift_Returns_403_For_Non_PO_Caller`.)*
 
 **18.5 `CrewsView` UI** (covered in `src/forge/Forge.UI/src/views/shifts.spec.ts` + `src/forge/Forge.UI/e2e/phase18-shift-pill.spec.ts`)
 
-- [x] Day/night pill renders with the right label + colour for `crew.shift`. *(`shiftPillStyle` vitest + `day-shift crew renders the amber Day pill` and `night-shift crew renders the lavender Night pill` Playwright tests assert the actual rendered DOM colour `rgb(255, 196, 90)` / `rgb(178, 165, 255)`.)*
-- [x] Performance-tab schedule strip's green/red ribbon updates band-by-band when the crew's shift is flipped. *(`isOnShiftLocal` and `nextTransitionLocal` vitest exercise both bands across the workday/weekend truth table.)*
-- [x] (Playwright) PO toggling the pill writes the patch and flips the colour without a page refresh. *(`PO toggling the day pill flips it to Night without a page refresh` — clicks the pill, asserts `data-shift` flips to `night`, asserts `color` flips to lavender, then GET-fetches `/api/crews/{id}` to confirm the persisted side. Pill is now an interactive `<button>` for PO callers via `flipShift()` in `PerformanceTab`.)*
-- [x] (Playwright) Non-PO sees the pill read-only. *(`non-PO sees the shift pill as a static (non-button) span` — demotes the active user to `human` for the test, asserts the pill renders as `<span data-editable="false">` (not a `<button>`), then restores the role.)*
+- [ ] Day/night pill renders with the right label + colour for `crew.shift`. *(`shiftPillStyle` vitest + `day-shift crew renders the amber Day pill` and `night-shift crew renders the lavender Night pill` Playwright tests assert the actual rendered DOM colour `rgb(255, 196, 90)` / `rgb(178, 165, 255)`.)*
+- [ ] Performance-tab schedule strip's green/red ribbon updates band-by-band when the crew's shift is flipped. *(`isOnShiftLocal` and `nextTransitionLocal` vitest exercise both bands across the workday/weekend truth table.)*
+- [ ] (Playwright) PO toggling the pill writes the patch and flips the colour without a page refresh. *(`PO toggling the day pill flips it to Night without a page refresh` — clicks the pill, asserts `data-shift` flips to `night`, asserts `color` flips to lavender, then GET-fetches `/api/crews/{id}` to confirm the persisted side. Pill is now an interactive `<button>` for PO callers via `flipShift()` in `PerformanceTab`.)*
+- [ ] (Playwright) Non-PO sees the pill read-only. *(`non-PO sees the shift pill as a static (non-button) span` — demotes the active user to `human` for the test, asserts the pill renders as `<span data-editable="false">` (not a `<button>`), then restores the role.)*
 
 **18.6 Lead 24×7 exemption (Q18.3)**
 
 `ScheduleGate.EvaluateAgent` (covered in `Phase18LeadExemptionTests`):
-- [x] Lead is OnShift on Sunday at noon.
-- [x] Lead is OnShift on Tuesday at 03:00 (outside both bands).
-- [x] Member is OffShift on Sunday at noon.
-- [x] Member at Tuesday noon matches the crew-wide `Evaluate` verdict (regression — members unaffected by 18.6).
-- [x] Crew with `Lead = null` falls through to crew-wide gate (preserves the `outcome: off-shift` histogram tag for the no-lead case).
-- [x] Disabled-schedule crew still reports the lead as OnShift (lead-availability is a routing fact, not a billing fact).
-- [x] `agentId = null` falls through to crew-wide gate (defensive — no NRE, no accidental lead-match).
+- [ ] Lead is OnShift on Sunday at noon.
+- [ ] Lead is OnShift on Tuesday at 03:00 (outside both bands).
+- [ ] Member is OffShift on Sunday at noon.
+- [ ] Member at Tuesday noon matches the crew-wide `Evaluate` verdict (regression — members unaffected by 18.6).
+- [ ] Crew with `Lead = null` falls through to crew-wide gate (preserves the `outcome: off-shift` histogram tag for the no-lead case).
+- [ ] Disabled-schedule crew still reports the lead as OnShift (lead-availability is a routing fact, not a billing fact).
+- [ ] `agentId = null` falls through to crew-wide gate (defensive — no NRE, no accidental lead-match).
 
 `PayrollCalculator.LeadHoursInRange` + `ComputeTotal` split (covered in `Phase18LeadExemptionTests`):
-- [x] `LeadHoursInRange` over a full week returns 168.
-- [x] `OnShiftHoursInRange` over the same week returns 72 (12 × 6 — regression for the member path).
-- [x] `LeadHoursInRange` returns 0 when `ScheduleEnabled = false` (disabled = unbilled, suppresses both lead and member earnings).
-- [x] `ComputeTotal` splits earnings: lead row uses 168 h, member rows use ≤72 h.
-- [x] `ComputeTotal` with `Lead = null` preserves pre-Q18.3 math (every member treated as a member).
+- [ ] `LeadHoursInRange` over a full week returns 168.
+- [ ] `OnShiftHoursInRange` over the same week returns 72 (12 × 6 — regression for the member path).
+- [ ] `LeadHoursInRange` returns 0 when `ScheduleEnabled = false` (disabled = unbilled, suppresses both lead and member earnings).
+- [ ] `ComputeTotal` splits earnings: lead row uses 168 h, member rows use ≤72 h.
+- [ ] `ComputeTotal` with `Lead = null` preserves pre-Q18.3 math (every member treated as a member).
 
 `CrewQueueWorker` Sweep 2 picker (covered in `Phase18WorkerIntegrationTests.cs`):
-- [x] When zero members are on-shift, the picker selects `crew.Lead` instead of an off-shift member or `null`. *(uses a wall-clock-dependent off-shift TZ search; skips on the rare UTC instant when no such TZ exists.)*
-- [x] When some members are on-shift, the picker round-robins over only the on-shift subset and never wedges work onto an off-shift member. *(regression: members claim during the band; lead is bypassed.)*
-- [x] Lead-only crew (zero non-lead members) picks the lead — preserves the Phase 16.7 fallback after the rewrite.
-- [x] Resume-pin honours the prior agent only if they are currently on-shift (or are the lead) — off-shift prior agents are bypassed in favour of an on-shift member or the lead. *(`SweepClaims_Resume_Pin_Bypasses_Off_Shift_Prior_Agent`.)*
-- [x] No-lead, all-off-shift crew → `picked` is null and the sweep records `no-agent-available` rather than CAS-claiming the row with a null agent id. *(`SweepClaims_No_Lead_All_Off_Shift_Records_No_Agent_Available`. Worker now short-circuits before `ClaimNextAsync(_, null)` to keep the queue row available for re-routing.)*
+- [ ] When zero members are on-shift, the picker selects `crew.Lead` instead of an off-shift member or `null`. *(uses a wall-clock-dependent off-shift TZ search; skips on the rare UTC instant when no such TZ exists.)*
+- [ ] When some members are on-shift, the picker round-robins over only the on-shift subset and never wedges work onto an off-shift member. *(regression: members claim during the band; lead is bypassed.)*
+- [ ] Lead-only crew (zero non-lead members) picks the lead — preserves the Phase 16.7 fallback after the rewrite.
+- [ ] Resume-pin honours the prior agent only if they are currently on-shift (or are the lead) — off-shift prior agents are bypassed in favour of an on-shift member or the lead. *(`SweepClaims_Resume_Pin_Bypasses_Off_Shift_Prior_Agent`.)*
+- [ ] No-lead, all-off-shift crew → `picked` is null and the sweep records `no-agent-available` rather than CAS-claiming the row with a null agent id. *(`SweepClaims_No_Lead_All_Off_Shift_Records_No_Agent_Available`. Worker now short-circuits before `ClaimNextAsync(_, null)` to keep the queue row available for re-routing.)*
 
 `LeadAutoDispatcher` schedule check (covered in `Phase18WorkerIntegrationTests.cs`):
-- [x] Crew with a lead, off-shift wall-clock — dispatcher enqueues successfully and the histogram tag is `outcome: dispatched`, NOT `outcome: off-shift`.
-- [x] Member-band behaviour during the band is unchanged (regression: on-shift TZ on a day crew with members still records `outcome: dispatched`).
-- [x] Crew with `Lead = null` — dispatcher silently skips the work item, no `outcome` counter fires. *(`LeadAutoDispatcher_NoLead_Crew_Is_Silently_Skipped`. Reality differs from the spec language: the dispatcher pre-filters to lead-routed crews before the schedule check, so the documented `outcome: off-shift` tag is never recorded for the no-lead case. Test locks in the actual behaviour so a future "lead.paused" code path forces a deliberate spec update.)*
+- [ ] Crew with a lead, off-shift wall-clock — dispatcher enqueues successfully and the histogram tag is `outcome: dispatched`, NOT `outcome: off-shift`.
+- [ ] Member-band behaviour during the band is unchanged (regression: on-shift TZ on a day crew with members still records `outcome: dispatched`).
+- [ ] Crew with `Lead = null` — dispatcher silently skips the work item, no `outcome` counter fires. *(`LeadAutoDispatcher_NoLead_Crew_Is_Silently_Skipped`. Reality differs from the spec language: the dispatcher pre-filters to lead-routed crews before the schedule check, so the documented `outcome: off-shift` tag is never recorded for the no-lead case. Test locks in the actual behaviour so a future "lead.paused" code path forces a deliberate spec update.)*
 
 UI (covered in `src/forge/Forge.UI/src/views/shifts.spec.ts` + `src/forge/Forge.UI/e2e/phase18-shift-pill.spec.ts`):
-- [x] `PerformanceTab` "Lead 24×7" pill visibility predicate — renders when `crew.lead` is set AND `scheduleEnabled` is true. *(`shouldShowLeadPill` vitest + `"Lead 24×7" pill renders on a crew with a lead and schedule enabled` Playwright assertion against `data-testid="lead-24-pill"`.)*
-- [x] "Lead 24×7" pill suppressed when `scheduleEnabled = false`. *(`shouldShowLeadPill('lead-1', false) === false`. The strip already labels the crew "Schedule disabled"; the pill would be redundant noise.)*
-- [x] "Lead 24×7" pill suppressed when no lead. *(`shouldShowLeadPill(null, true)`, `shouldShowLeadPill(undefined, true)`, `shouldShowLeadPill('', true)` all → `false`.)*
-- [x] (Playwright) `CrewsView` Roster lead row renders the permanent green dot regardless of current shift verdict. *(`CrewsView Roster lead row shows the permanent green dot` — asserts `data-testid="lead-green-dot"` is visible and has a green-dominant `background-color`.)*
+- [ ] `PerformanceTab` "Lead 24×7" pill visibility predicate — renders when `crew.lead` is set AND `scheduleEnabled` is true. *(`shouldShowLeadPill` vitest + `"Lead 24×7" pill renders on a crew with a lead and schedule enabled` Playwright assertion against `data-testid="lead-24-pill"`.)*
+- [ ] "Lead 24×7" pill suppressed when `scheduleEnabled = false`. *(`shouldShowLeadPill('lead-1', false) === false`. The strip already labels the crew "Schedule disabled"; the pill would be redundant noise.)*
+- [ ] "Lead 24×7" pill suppressed when no lead. *(`shouldShowLeadPill(null, true)`, `shouldShowLeadPill(undefined, true)`, `shouldShowLeadPill('', true)` all → `false`.)*
+- [ ] (Playwright) `CrewsView` Roster lead row renders the permanent green dot regardless of current shift verdict. *(`CrewsView Roster lead row shows the permanent green dot` — asserts `data-testid="lead-green-dot"` is visible and has a green-dominant `background-color`.)*
 
 ### Out of scope for v0.1 — moved to Phase R / `forge_v2.md`
 
@@ -1313,12 +1313,12 @@ UI (covered in `src/forge/Forge.UI/src/views/shifts.spec.ts` + `src/forge/Forge.
 
 ### Implementation steps
 
-- [x] **19.1** **Migration** — `Phase19Migration.cs` adds `work_items.ExecutionStatus TEXT NOT NULL DEFAULT 'idle'` and `work_items.TrialCount INTEGER NOT NULL DEFAULT 0`. Idempotent column-adds.
-- [x] **19.2** **Domain model + TS mirror** — `WorkItemRow.ExecutionStatus` + `TrialCount`; `ExecutionStatuses` static class with `Idle`/`Queued`/`Live`/`Completed`/`Failed`/`Cancelled` constants. TS `WorkItem.executionStatus`, `WorkItem.trialCount`.
-- [x] **19.3** **CrewQueueWorker integration** — sweep + completion + failure paths set `ExecutionStatus` in lockstep with the queue state machine (`SetExecutionStatusAsync` helper). Each transition broadcasts `workitem.changed { kind: exec-{state} }` over SignalR so open tabs update without a refresh.
-- [x] **19.4** **TaskExecutionEndpoint** — `GET /api/work-items/{id}/execution` returns `executionStatus` + `trialCount` + `maxIterations` (Phase 20). The same endpoint also synthesizes a snapshot from the queue + transcript when the work-item row is missing (e.g. plan/code task enqueued before the WIT row materializes), so the live-exec view never 404s on legitimate execution rows.
-- [x] **19.5** **`ExecBadge` component** — small pill on the Plan board card + the Work Items detail panel + the Workstream card. Pulses on `live`, solid on `completed` / `failed`, hidden on `idle`. Click → `/work-items/{id}/live`. Trial-count badge to the right of the status pill, color-coded by count.
-- [x] **19.6** **Workstreams "● N live" badge** — counts work items where `ExecutionStatus = live` and the workstream's `cards` array contains the work-item id. Updates on every `workitem.changed` event.
+- [ ] **19.1** **Migration** — `Phase19Migration.cs` adds `work_items.ExecutionStatus TEXT NOT NULL DEFAULT 'idle'` and `work_items.TrialCount INTEGER NOT NULL DEFAULT 0`. Idempotent column-adds.
+- [ ] **19.2** **Domain model + TS mirror** — `WorkItemRow.ExecutionStatus` + `TrialCount`; `ExecutionStatuses` static class with `Idle`/`Queued`/`Live`/`Completed`/`Failed`/`Cancelled` constants. TS `WorkItem.executionStatus`, `WorkItem.trialCount`.
+- [ ] **19.3** **CrewQueueWorker integration** — sweep + completion + failure paths set `ExecutionStatus` in lockstep with the queue state machine (`SetExecutionStatusAsync` helper). Each transition broadcasts `workitem.changed { kind: exec-{state} }` over SignalR so open tabs update without a refresh.
+- [ ] **19.4** **TaskExecutionEndpoint** — `GET /api/work-items/{id}/execution` returns `executionStatus` + `trialCount` + `maxIterations` (Phase 20). The same endpoint also synthesizes a snapshot from the queue + transcript when the work-item row is missing (e.g. plan/code task enqueued before the WIT row materializes), so the live-exec view never 404s on legitimate execution rows.
+- [ ] **19.5** **`ExecBadge` component** — small pill on the Plan board card + the Work Items detail panel + the Workstream card. Pulses on `live`, solid on `completed` / `failed`, hidden on `idle`. Click → `/work-items/{id}/live`. Trial-count badge to the right of the status pill, color-coded by count.
+- [ ] **19.6** **Workstreams "● N live" badge** — counts work items where `ExecutionStatus = live` and the workstream's `cards` array contains the work-item id. Updates on every `workitem.changed` event.
 
 ### Out of scope for v0.1
 
@@ -1339,12 +1339,12 @@ UI (covered in `src/forge/Forge.UI/src/views/shifts.spec.ts` + `src/forge/Forge.
 
 ### Implementation steps
 
-- [x] **20.1** **Migration** — `Phase20Migration.cs` adds `task_queue.MaxIterOverride INTEGER NULL` + `deliverables.GeneratorSummary TEXT NOT NULL DEFAULT ''`. Idempotent.
-- [x] **20.2** **`DeliverableLoop`** — `MaxIterations` becomes `Math.Clamp(request.MaxIterOverride ?? ScoringConstants.MaxIterations, 1, 10)`; resolved at start of run.
-- [x] **20.3** **`PATCH /api/work-items/{id}/execution`** — accepts `{ maxIter: int? }` (null = clear override); writes to the latest queue row. 403 unless caller is PO of the work item's product or the assigned generator agent's lead.
-- [x] **20.4** **`TaskExecutionSnapshot.MaxIterations`** — surfaces the resolved cap so the live-exec view's input renders the active value, not the constant.
-- [x] **20.5** **`CrewQueueWorker` parses `## Change Summary`** — regex-extracts the section between `## Change Summary` and the next `## ` heading (or end of message), trims to 800 chars, persists to `deliverables.GeneratorSummary` in the deliverable-loop's persistence callback.
-- [x] **20.6** **PR body uses `deliverables.GeneratorSummary`** — `CrewQueueWorker.cs:976` reads the latest deliverable's `GeneratorSummary` for the "What changed" block; if empty, falls back to "_No change summary provided._" so the PR body never has a TODO marker.
+- [ ] **20.1** **Migration** — `Phase20Migration.cs` adds `task_queue.MaxIterOverride INTEGER NULL` + `deliverables.GeneratorSummary TEXT NOT NULL DEFAULT ''`. Idempotent.
+- [ ] **20.2** **`DeliverableLoop`** — `MaxIterations` becomes `Math.Clamp(request.MaxIterOverride ?? ScoringConstants.MaxIterations, 1, 10)`; resolved at start of run.
+- [ ] **20.3** **`PATCH /api/work-items/{id}/execution`** — accepts `{ maxIter: int? }` (null = clear override); writes to the latest queue row. 403 unless caller is PO of the work item's product or the assigned generator agent's lead.
+- [ ] **20.4** **`TaskExecutionSnapshot.MaxIterations`** — surfaces the resolved cap so the live-exec view's input renders the active value, not the constant.
+- [ ] **20.5** **`CrewQueueWorker` parses `## Change Summary`** — regex-extracts the section between `## Change Summary` and the next `## ` heading (or end of message), trims to 800 chars, persists to `deliverables.GeneratorSummary` in the deliverable-loop's persistence callback.
+- [ ] **20.6** **PR body uses `deliverables.GeneratorSummary`** — `CrewQueueWorker.cs:976` reads the latest deliverable's `GeneratorSummary` for the "What changed" block; if empty, falls back to "_No change summary provided._" so the PR body never has a TODO marker.
 
 ### Out of scope for v0.1
 
@@ -1369,11 +1369,11 @@ UI (covered in `src/forge/Forge.UI/src/views/shifts.spec.ts` + `src/forge/Forge.
 
 ### Implementation steps
 
-- [x] **21.1** **Migration** — `Phase21Migration.cs` adds `task_queue.SkipSoulPrompt INTEGER NOT NULL DEFAULT 0`. Idempotent.
-- [x] **21.2** **`DELETE /api/work-items/{id}/transcript`** — clears `task_transcript_event` AND `deliverables` rows in one call so the iter counter resets cleanly. Returns `{ deleted: N, deletedDeliverables: M }`.
-- [x] **21.3** **Restart button on `LiveExecutionView`** — calls `DELETE /transcript` then re-enqueues the work item via `POST /api/work-items/{id}/restart` (or the existing `/assign` path with `skipSoulPrompt`). Confirmation modal calls out the three side-effects so the operator doesn't restart by mistake.
-- [x] **21.4** **`CrewQueueWorker.RunAgentAsync` honors `SkipSoulPrompt`** — when the queue row's flag is set, both generator and evaluator skip the `File.ReadAllTextAsync(SoulPath)` step; the system-prompt is empty and the agent runs as the bare model with only the user prompt. Transparent to the agent — no special instruction is injected to "explain that soul was suppressed".
-- [x] **21.5** **Points-based `maxTurns` in Copilot SDK runner** — closely related stabilization tied to restart UX: Copilot SDK occasionally never returned a `Finished` event when the agent decided to "keep working forever". A hard cap terminates the invocation cleanly so Restart actually has something to restart from. `maxTurns` is now **scaled by story points**: `30 × points` (e.g. 3-point item → 90 turns, 5-point item → 150 turns). When `points = 0` (unestimated), falls back to the global `Forge:Agents:CopilotMaxTurns` config default (500). The per-task override is carried on `AgentContext.MaxTurns` (nullable int); `AgentRunnerDispatcher.RunCopilotSdk` resolves as `context.MaxTurns ?? options.MaxTurns`. Both generator and evaluator contexts receive the same cap. Wall-clock budget follows the same scaling: `30 min × points`, falling back to the global default when points = 0.
+- [ ] **21.1** **Migration** — `Phase21Migration.cs` adds `task_queue.SkipSoulPrompt INTEGER NOT NULL DEFAULT 0`. Idempotent.
+- [ ] **21.2** **`DELETE /api/work-items/{id}/transcript`** — clears `task_transcript_event` AND `deliverables` rows in one call so the iter counter resets cleanly. Returns `{ deleted: N, deletedDeliverables: M }`.
+- [ ] **21.3** **Restart button on `LiveExecutionView`** — calls `DELETE /transcript` then re-enqueues the work item via `POST /api/work-items/{id}/restart` (or the existing `/assign` path with `skipSoulPrompt`). Confirmation modal calls out the three side-effects so the operator doesn't restart by mistake.
+- [ ] **21.4** **`CrewQueueWorker.RunAgentAsync` honors `SkipSoulPrompt`** — when the queue row's flag is set, both generator and evaluator skip the `File.ReadAllTextAsync(SoulPath)` step; the system-prompt is empty and the agent runs as the bare model with only the user prompt. Transparent to the agent — no special instruction is injected to "explain that soul was suppressed".
+- [ ] **21.5** **Points-based `maxTurns` in Copilot SDK runner** — closely related stabilization tied to restart UX: Copilot SDK occasionally never returned a `Finished` event when the agent decided to "keep working forever". A hard cap terminates the invocation cleanly so Restart actually has something to restart from. `maxTurns` is now **scaled by story points**: `30 × points` (e.g. 3-point item → 90 turns, 5-point item → 150 turns). When `points = 0` (unestimated), falls back to the global `Forge:Agents:CopilotMaxTurns` config default (500). The per-task override is carried on `AgentContext.MaxTurns` (nullable int); `AgentRunnerDispatcher.RunCopilotSdk` resolves as `context.MaxTurns ?? options.MaxTurns`. Both generator and evaluator contexts receive the same cap. Wall-clock budget follows the same scaling: `30 min × points`, falling back to the global default when points = 0.
 
 ### Test scenarios (`RestartBehaviorTests.cs`)
 
@@ -1381,39 +1381,39 @@ Comprehensive coverage for Phase 21 restart semantics, transcript clearing, soul
 
 **21.1 Migration — `SkipSoulPrompt` column**
 
-- [x] Column exists with default 0 after migration runs.
+- [ ] Column exists with default 0 after migration runs.
 
 **21.2 `DELETE /api/work-items/{id}/transcript` — clear transcript + deliverables**
 
-- [x] Clears all `task_transcript_event` rows for the work item.
-- [x] Clears all `deliverable` rows for the work item (iter counter resets to 0).
-- [x] Returns `{ deleted: N, deletedDeliverables: M }` with correct counts.
-- [x] Idempotent — calling twice on the same work item returns `{ deleted: 0, deletedDeliverables: 0 }` on the second call.
-- [x] Returns 200 for a work item with no transcript or deliverables (empty delete is a no-op, not an error).
-- [x] Does not delete transcript events belonging to a different work item (no cross-contamination).
+- [ ] Clears all `task_transcript_event` rows for the work item.
+- [ ] Clears all `deliverable` rows for the work item (iter counter resets to 0).
+- [ ] Returns `{ deleted: N, deletedDeliverables: M }` with correct counts.
+- [ ] Idempotent — calling twice on the same work item returns `{ deleted: 0, deletedDeliverables: 0 }` on the second call.
+- [ ] Returns 200 for a work item with no transcript or deliverables (empty delete is a no-op, not an error).
+- [ ] Does not delete transcript events belonging to a different work item (no cross-contamination).
 
 **21.3 Restart via `POST /api/crews/{crewId}/plan` with `restart=true`**
 
-- [x] Clears deliverables and resets iter count to 0.
-- [x] Resets WIT State from `in-review` → `active` so `RunAgentAsync` guard doesn't short-circuit.
-- [x] Resets WIT State from `resolved` → `active`.
-- [x] Resets WIT State from `closed` → `active`.
-- [x] Preserves WIT State when already `active` (no-op on State).
-- [x] Preserves WIT State when already `proposed` (no-op on State).
-- [x] Sets `ExecutionStatus` to `queued` on re-enqueue (failed → queued transition).
-- [x] Sets `ExecutionStatus` to `queued` on re-enqueue (completed → queued transition).
-- [x] Non-restart enqueue (`restart=false`) does NOT clear deliverables.
-- [x] Restart skips the schedule gate — a restart at Sunday 03:00 on a day crew still succeeds (no 409 `crew.off_shift`).
+- [ ] Clears deliverables and resets iter count to 0.
+- [ ] Resets WIT State from `in-review` → `active` so `RunAgentAsync` guard doesn't short-circuit.
+- [ ] Resets WIT State from `resolved` → `active`.
+- [ ] Resets WIT State from `closed` → `active`.
+- [ ] Preserves WIT State when already `active` (no-op on State).
+- [ ] Preserves WIT State when already `proposed` (no-op on State).
+- [ ] Sets `ExecutionStatus` to `queued` on re-enqueue (failed → queued transition).
+- [ ] Sets `ExecutionStatus` to `queued` on re-enqueue (completed → queued transition).
+- [ ] Non-restart enqueue (`restart=false`) does NOT clear deliverables.
+- [ ] Restart skips the schedule gate — a restart at Sunday 03:00 on a day crew still succeeds (no 409 `crew.off_shift`).
 - [ ] Non-restart enqueue respects the schedule gate — off-shift returns 409.
 - [ ] Restart on a non-existent work item returns an appropriate error.
-- [x] Restart on a non-existent crew returns 404.
-- [x] Restart cancels any existing open queue row before enqueuing a new one (idempotency — no double-queue).
+- [ ] Restart on a non-existent crew returns 404.
+- [ ] Restart cancels any existing open queue row before enqueuing a new one (idempotency — no double-queue).
 
 **21.4 `SkipSoulPrompt` flag**
 
-- [x] `restart=true, skipSoulPrompt=true` persists `SkipSoulPrompt=1` on the queue row.
-- [x] Normal enqueue (`skipSoulPrompt=false` or absent) persists `SkipSoulPrompt=0`.
-- [x] `skipSoulPrompt=true` without `restart=true` still persists the flag (the two are independent controls).
+- [ ] `restart=true, skipSoulPrompt=true` persists `SkipSoulPrompt=1` on the queue row.
+- [ ] Normal enqueue (`skipSoulPrompt=false` or absent) persists `SkipSoulPrompt=0`.
+- [ ] `skipSoulPrompt=true` without `restart=true` still persists the flag (the two are independent controls).
 - [ ] When `SkipSoulPrompt=true`, `RunAgentAsync` skips `File.ReadAllTextAsync(SoulPath)` — generator's `SoulMd` is empty string.
 - [ ] When `SkipSoulPrompt=true`, evaluator also skips its soul.md — evaluator's `SoulMd` is the scoring rubric only (no persona prefix).
 - [ ] When `SkipSoulPrompt=false` and `agent.SoulPath` is set, generator's `SoulMd` contains the file content.
@@ -1422,32 +1422,32 @@ Comprehensive coverage for Phase 21 restart semantics, transcript clearing, soul
 
 **21.5 Points-based `maxTurns` and wall-clock budget**
 
-- [x] 3 points × 30 = 90 min wall-clock budget.
-- [x] 1 point × 30 = 30 min wall-clock budget.
-- [x] 0 points = null budget (falls back to global default).
-- [x] 3 points × 30 = 90 max turns on `AgentContext.MaxTurns`.
-- [x] 5 points × 30 = 150 max turns.
-- [x] 1 point × 30 = 30 max turns.
-- [x] 0 points = null max turns (falls back to global `AgentRunnerOptions.MaxTurns` default of 500).
-- [x] `AgentRunnerDispatcher.RunCopilotSdk` uses `context.MaxTurns` when set (not the global default).
-- [x] `AgentRunnerDispatcher.RunCopilotSdk` uses `options.MaxTurns` when `context.MaxTurns` is null.
+- [ ] 3 points × 30 = 90 min wall-clock budget.
+- [ ] 1 point × 30 = 30 min wall-clock budget.
+- [ ] 0 points = null budget (falls back to global default).
+- [ ] 3 points × 30 = 90 max turns on `AgentContext.MaxTurns`.
+- [ ] 5 points × 30 = 150 max turns.
+- [ ] 1 point × 30 = 30 max turns.
+- [ ] 0 points = null max turns (falls back to global `AgentRunnerOptions.MaxTurns` default of 500).
+- [ ] `AgentRunnerDispatcher.RunCopilotSdk` uses `context.MaxTurns` when set (not the global default).
+- [ ] `AgentRunnerDispatcher.RunCopilotSdk` uses `options.MaxTurns` when `context.MaxTurns` is null.
 - [ ] Turn count increments on each `ToolExecutionCompleteEvent`; when `turnCount >= maxTurns`, the invocation terminates with `failReason = "Max turns (N) reached"`.
-- [x] Evaluator context receives the same `maxTurns` as the generator context (both scaled by the same work item points).
-- [x] Negative points value → treated as 0 (null budget + null maxTurns, falls back to defaults).
+- [ ] Evaluator context receives the same `maxTurns` as the generator context (both scaled by the same work item points).
+- [ ] Negative points value → treated as 0 (null budget + null maxTurns, falls back to defaults).
 
 **21.R Re-execution guard (related regression coverage)**
 
-- [x] `RunAgentAsync` skips execution when WIT State is `in-review` (returns early, marks queue row completed).
-- [x] `RunAgentAsync` skips execution when WIT State is `resolved` or `closed`.
-- [x] After restart resets State from `in-review` → `active`, `RunAgentAsync` proceeds (does NOT skip).
+- [ ] `RunAgentAsync` skips execution when WIT State is `in-review` (returns early, marks queue row completed).
+- [ ] `RunAgentAsync` skips execution when WIT State is `resolved` or `closed`.
+- [ ] After restart resets State from `in-review` → `active`, `RunAgentAsync` proceeds (does NOT skip).
 - [ ] Boot-recovery sweep (`picked-up` → `queued`) does not re-run items in terminal states.
 
 **21.I Independence invariants**
 
-- [x] Setting `ExecutionStatus = failed` does NOT change WIT State.
-- [x] Setting `ExecutionStatus = completed` does NOT change WIT State.
-- [x] Restarting (clearing deliverables + resetting queue) does NOT change the work item's `AssignedTo` field (WIT-level assignee is independent of execution lifecycle).
-- [x] Restarting does NOT delete the work item's child rows, comments, or parent linkage (Phase Q21.3 — only execution-side rows are cleared).
+- [ ] Setting `ExecutionStatus = failed` does NOT change WIT State.
+- [ ] Setting `ExecutionStatus = completed` does NOT change WIT State.
+- [ ] Restarting (clearing deliverables + resetting queue) does NOT change the work item's `AssignedTo` field (WIT-level assignee is independent of execution lifecycle).
+- [ ] Restarting does NOT delete the work item's child rows, comments, or parent linkage (Phase Q21.3 — only execution-side rows are cleared).
 
 ### Out of scope for v0.1
 
@@ -1508,7 +1508,7 @@ Comprehensive coverage for Phase 21 restart semantics, transcript clearing, soul
 
 ### Implementation steps
 
-- [ ] **22.1** **Migration** — `Forge.Api/Persistence/Phase22Migration.cs` (idempotent, runs after `Phase21Migration`):
+- [x] **22.1** **Migration** — `Forge.Api/Persistence/Phase22Migration.cs` (idempotent, runs after `Phase21Migration`):
   - `work_items` adds `AssignedAgentJson TEXT NULL`.
   - New table `agent_assignments`:
     ```
@@ -1527,181 +1527,181 @@ Comprehensive coverage for Phase 21 restart semantics, transcript clearing, soul
     ```
   - Index `IX_agent_assignments_workitem_at` on `(WorkItemId, At DESC)` — drives the timeline read.
 
-- [ ] **22.2** **Domain model + TS mirror** — `WorkItemRow.AssignedAgentJson`; `AssignedAgent` POCO (Q22.2 shape) + `AgentAssignmentRow`. TS `WorkItem.assignedAgent: AssignedAgent | null`, `WorkItem.assignedAgentHistory?: AgentAssignmentEntry[]` (lazy-loaded by the timeline read).
+- [x] **22.2** **Domain model + TS mirror** — `WorkItemRow.AssignedAgentJson`; `AssignedAgent` POCO (Q22.2 shape) + `AgentAssignmentRow`. TS `WorkItem.assignedAgent: AssignedAgent | null`, `WorkItem.assignedAgentHistory?: AgentAssignmentEntry[]` (lazy-loaded by the timeline read).
 
-- [ ] **22.3** **`CrewQueueWorker.cs` — Sweep-2 claim path rewrite** (the line at `~347-348` today):
+- [x] **22.3** **`CrewQueueWorker.cs` — Sweep-2 claim path rewrite** (the line at `~347-348` today):
   - Build `AssignedAgent` from the resolved `(generatorAgentId, evaluatorAgentId, crewId, evaluatorCrewId)` plus `team = crew.Team`, `role = 'generator'`, `assignedBy = 'queue-worker'`.
   - Write `wi.AssignedAgentJson = serialize(payload)` instead of overwriting `AssignedToJson`.
   - Append `agent_assignments(kind='claimed', AgentIdsJson, Team, CrewId, Role='generator', FromExecutionStatus='queued', ToExecutionStatus='live', AssignedBy='queue-worker', At=now)` in the same SaveChanges() call so they commit atomically.
   - Boot-recovery sweep does the same write so a re-claim after server restart records a fresh `claimed` row (the operator sees a "re-claimed at X" row rather than a single 'claimed' row from days ago).
 
-- [ ] **22.4** **Endpoints — `AgentAssignmentsEndpoints.cs`**:
+- [x] **22.4** **Endpoints — `AgentAssignmentsEndpoints.cs`**:
   - `GET /api/work-items/{id}/assigned-agent` — returns the parsed `AssignedAgent` or 204 when null.
   - `GET /api/work-items/{id}/assignments?limit=…` — paginated history, newest first. Default 50, max 500.
   - `POST /api/work-items/{id}/assignments` body `{ agents: string[], team?, crewId?, role, reason? }` — manual override (PO of the work item's product OR crew lead). Validates that referenced agents exist; writes the field + history row with `assignedBy=userId`. Used for manual reviewer-assign (Q22.3 step 5).
   - `DELETE /api/work-items/{id}/assigned-agent` body `{ reason? }` — clears the field. PO only. History `kind='cleared-manual'`. Use sparingly — most clears should come from Restart or completion.
 
-- [ ] **22.5** **`PATCH /api/work-items/{id}/move` integration** — when the target state transitions:
+- [x] **22.5** **`PATCH /api/work-items/{id}/move` integration** — when the target state transitions:
   - `→ in-review` (PR opened): append `agent_assignments(kind='pr-opened', From=current, To='in-review')` without touching `AssignedAgentJson` (Q22.3 step 4).
   - `→ resolved` or `→ closed`: append `agent_assignments(kind='completed')` AND null out `AssignedAgentJson` (Q22.3 step 6).
   - These hooks live in `WorkItemsEndpoints.MoveWorkItem` so any path that drives state — UI move, queue worker post-PR transition (Phase 16.18 line 1144), provider webhook — fires the same audit.
 
-- [ ] **22.6** **Restart (Phase 21) clears `AssignedAgent`** — `DELETE /api/work-items/{id}/transcript` + the queue-restart branch null out `AssignedAgentJson` and append `agent_assignments(kind='cleared-restart', From='live'|'failed', To='queued', AssignedBy=userId)`. The next claim writes a fresh row and the timeline shows the discontinuity, not a silent overwrite.
+- [x] **22.6** **Restart (Phase 21) clears `AssignedAgent`** — `DELETE /api/work-items/{id}/transcript` + the queue-restart branch null out `AssignedAgentJson` and append `agent_assignments(kind='cleared-restart', From='live'|'failed', To='queued', AssignedBy=userId)`. The next claim writes a fresh row and the timeline shows the discontinuity, not a silent overwrite.
 
-- [ ] **22.7** **Backfill migration (Q22.7)** — one-shot at first boot after Phase 22 ships, gated by a `forge_seed_state` row so re-boots skip it. Heuristic for runtime-shaped `AssignedToJson`: `JsonDocument.RootElement.TryGetProperty("generatorAgentId" | "crewId" | "agentId")` succeeds AND there's no `kind` property at the top level. For each match: copy bytes → `AssignedAgentJson` (wrapping in the Q22.2 shape if needed); rebuild `AssignedToJson` from the resolved crew's `Team`. Log a one-line summary `"Phase 22 backfill migrated N work items"` and write one `agent_assignments(kind='backfill', AssignedBy='backfill')` per migrated row.
+- [x] **22.7** **Backfill migration (Q22.7)** — one-shot at first boot after Phase 22 ships, gated by a `forge_seed_state` row so re-boots skip it. Heuristic for runtime-shaped `AssignedToJson`: `JsonDocument.RootElement.TryGetProperty("generatorAgentId" | "crewId" | "agentId")` succeeds AND there's no `kind` property at the top level. For each match: copy bytes → `AssignedAgentJson` (wrapping in the Q22.2 shape if needed); rebuild `AssignedToJson` from the resolved crew's `Team`. Log a one-line summary `"Phase 22 backfill migrated N work items"` and write one `agent_assignments(kind='backfill', AssignedBy='backfill')` per migrated row.
 
-- [ ] **22.8** **UI — Work-item detail panel — new "Currently working on this" strip** below the existing Assignee row in `WorkItemDetailPanel.tsx`:
+- [ ] **22.8** **UI — Work-item detail panel — new "Currently working on this" strip** below the existing Assignee row in `WorkItemDetailPanel.tsx`: *(backend ready; UI not yet implemented)*
   - **Empty state** — "Not currently assigned to an agent" + an `Assign agent` affordance (visible to PO + crew leads only) that opens a small picker (agent list filtered by team + role).
   - **Active state** — stack of avatars (1..N) + role pill (`Generator` / `Evaluator` / `Reviewer` color-coded) + crew name + relative timestamp ("since 14m ago"). Hover shows full agent names + the `assignedBy` label.
   - Click → opens a right-rail **Assignment history** drawer rendering the `agent_assignments` rows as a vertical timeline: `claimed → pr-opened → reviewer-assigned → completed` with timestamps + actor + reason. Reuses the styling of the Phase 14 `agent_level_history` timeline.
 
-- [ ] **22.9** **UI — Live Execution view** — the header strip's "assigned to" pill (today reads from `AssignedToJson` indirectly via the snapshot's `generatorAgentId` / `evaluatorAgentId`) now reads `AssignedAgent` directly. Pill click expands the history drawer. Empty state ("Not yet assigned — waiting for queue claim") replaces the previous "No events yet" copy when `AssignedAgent` is null AND no transcript events exist.
+- [ ] **22.9** **UI — Live Execution view** — the header strip's "assigned to" pill (today reads from `AssignedToJson` indirectly via the snapshot's `generatorAgentId` / `evaluatorAgentId`) now reads `AssignedAgent` directly. Pill click expands the history drawer. Empty state ("Not yet assigned — waiting for queue claim") replaces the previous "No events yet" copy when `AssignedAgent` is null AND no transcript events exist. *(backend ready; UI not yet implemented)*
 
-- [ ] **22.10** **UI — Plan board card + Workstream card cells** — the agent-name cell that today reads the runtime fields out of `AssignedToJson` switches to `AssignedAgent.agents[0]` (canonical driver per Q22.5). When `AssignedAgent` is null, the cell falls back to the WIT-level assignee (`AssignedTo`), rendered with a slightly muted style so the operator can distinguish "no one's executing" from "someone's actively coding". Tooltip enumerates all `agents[]` when N > 1.
+- [ ] **22.10** **UI — Plan board card + Workstream card cells** — the agent-name cell that today reads the runtime fields out of `AssignedToJson` switches to `AssignedAgent.agents[0]` (canonical driver per Q22.5). When `AssignedAgent` is null, the cell falls back to the WIT-level assignee (`AssignedTo`), rendered with a slightly muted style so the operator can distinguish "no one's executing" from "someone's actively coding". Tooltip enumerates all `agents[]` when N > 1. *(backend ready; UI not yet implemented)*
 
-- [ ] **22.11** **Tests — `Phase22AssignedAgentTests.cs`** — see detailed scenario list in the **Test scenarios** section below.
+- [x] **22.11** **Tests — `Phase22AssignedAgentTests.cs`** — see detailed scenario list in the **Test scenarios** section below.
 
-- [ ] **22.12** **Fidelity** — additive UI (assignment strip + history drawer + live-exec pill data source switch); exempt from the prototype screenshot diff. No new design tokens — reuses the avatar palette + the Phase 14 history-timeline styling.
+- [ ] **22.12** **Fidelity** — additive UI (assignment strip + history drawer + live-exec pill data source switch); exempt from the prototype screenshot diff. No new design tokens — reuses the avatar palette + the Phase 14 history-timeline styling. *(backend ready; UI not yet implemented)*
 
 ### Test scenarios
 
-> Coverage matrix for Phase 22. Each scenario gets a checkbox; a checked box means the test exists and passes. Test file: `Phase22AssignedAgentTests.cs`. **Coverage status: 0% — Phase 22 is not yet implemented.**
+> Coverage matrix for Phase 22. Each scenario gets a checkbox; a checked box means the test exists and passes. Test file: `Phase22AssignedAgentTests.cs`. **Coverage status: 59 tests passing — backend implementation complete.**
 
 **22.1 Migration — `Phase22Migration.ApplyAsync`**
 
-- [ ] Adds `AssignedAgentJson TEXT NULL` column to `work_items` table on a fresh DB.
-- [ ] Creates `agent_assignments` table with all required columns (`Id`, `WorkItemId`, `Kind`, `AgentIdsJson`, `Team`, `CrewId`, `Role`, `FromExecutionStatus`, `ToExecutionStatus`, `AssignedBy`, `Reason`, `At`).
-- [ ] Creates index `IX_agent_assignments_workitem_at` on `(WorkItemId, At DESC)`.
-- [ ] Idempotent — second invocation does not throw and does not duplicate columns or tables.
-- [ ] Runs after `Phase21Migration` without conflict.
+- [x] Adds `AssignedAgentJson TEXT NULL` column to `work_items` table on a fresh DB.
+- [x] Creates `agent_assignments` table with all required columns (`Id`, `WorkItemId`, `Kind`, `AgentIdsJson`, `Team`, `CrewId`, `Role`, `FromExecutionStatus`, `ToExecutionStatus`, `AssignedBy`, `Reason`, `At`).
+- [x] Creates index `IX_agent_assignments_workitem_at` on `(WorkItemId, At DESC)`.
+- [x] Idempotent — second invocation does not throw and does not duplicate columns or tables.
+- [x] Runs after `Phase21Migration` without conflict.
 
 **22.2 Domain model + TS mirror**
 
-- [ ] `WorkItemRow.AssignedAgentJson` defaults to `null` for new rows.
-- [ ] `AssignedAgent` POCO round-trips through JSON serialization (all fields: `agents`, `team`, `crewId`, `role`, `assignedAt`, `assignedBy`).
-- [ ] `AssignedAgent` with a single agent serializes `agents` as a 1-element array.
-- [ ] `AssignedAgent` with paired agents (generator + evaluator) serializes `agents` as a 2-element array.
-- [ ] `AssignedAgent` with `null` optional fields (`team`, `crewId`, `assignedBy`) round-trips correctly.
-- [ ] `AgentAssignmentRow` entity round-trips through EF — write all fields, read back identical values.
-- [ ] `WorkItemMapper` parses `AssignedAgentJson` into `AssignedAgent` POCO on read.
-- [ ] `WorkItemMapper` returns `null` for `AssignedAgent` when `AssignedAgentJson` is null or empty.
+- [x] `WorkItemRow.AssignedAgentJson` defaults to `null` for new rows.
+- [x] `AssignedAgent` POCO round-trips through JSON serialization (all fields: `agents`, `team`, `crewId`, `role`, `assignedAt`, `assignedBy`).
+- [x] `AssignedAgent` with a single agent serializes `agents` as a 1-element array.
+- [x] `AssignedAgent` with paired agents (generator + evaluator) serializes `agents` as a 2-element array.
+- [x] `AssignedAgent` with `null` optional fields (`team`, `crewId`, `assignedBy`) round-trips correctly.
+- [x] `AgentAssignmentRow` entity round-trips through EF — write all fields, read back identical values.
+- [x] `WorkItemMapper` parses `AssignedAgentJson` into `AssignedAgent` POCO on read.
+- [x] `WorkItemMapper` returns `null` for `AssignedAgent` when `AssignedAgentJson` is null or empty.
 
 **22.3 Queue claim — Sweep 2 writes `AssignedAgent` (not `AssignedTo`)**
 
-- [ ] Sweep-2 claim writes `AssignedAgentJson` with correct shape: `agents=[picked]`, `role='generator'`, `assignedBy='queue-worker'`, `assignedAt` is ISO-8601 UTC.
-- [ ] Sweep-2 claim for a paired crew writes `agents=[generator, evaluator]` (2-element array).
-- [ ] Sweep-2 claim for a single (non-paired) crew writes `agents=[generator]` (1-element array).
-- [ ] Sweep-2 claim populates `team` from `crew.Team` and `crewId` from the claiming crew's ID.
-- [ ] Sweep-2 claim appends an `agent_assignments` row with `kind='claimed'` in the same `SaveChanges()` transaction.
-- [ ] `agent_assignments` row from claim has `FromExecutionStatus='queued'`, `ToExecutionStatus='live'`, `AssignedBy='queue-worker'`.
-- [ ] Sweep-2 claim does **NOT** overwrite `AssignedToJson` — the WIT-level assignee is unchanged.
-- [ ] Boot-recovery reclaim writes a fresh `AssignedAgentJson` AND appends a new `agent_assignments(kind='claimed')` row (not a silent field-update).
+- [x] Sweep-2 claim writes `AssignedAgentJson` with correct shape: `agents=[picked]`, `role='generator'`, `assignedBy='queue-worker'`, `assignedAt` is ISO-8601 UTC.
+- [x] Sweep-2 claim for a paired crew writes `agents=[generator, evaluator]` (2-element array).
+- [x] Sweep-2 claim for a single (non-paired) crew writes `agents=[generator]` (1-element array).
+- [x] Sweep-2 claim populates `team` from `crew.Team` and `crewId` from the claiming crew's ID.
+- [x] Sweep-2 claim appends an `agent_assignments` row with `kind='claimed'` in the same `SaveChanges()` transaction.
+- [x] `agent_assignments` row from claim has `FromExecutionStatus='queued'`, `ToExecutionStatus='live'`, `AssignedBy='queue-worker'`.
+- [x] Sweep-2 claim does **NOT** overwrite `AssignedToJson` — the WIT-level assignee is unchanged.
+- [x] Boot-recovery reclaim writes a fresh `AssignedAgentJson` AND appends a new `agent_assignments(kind='claimed')` row (not a silent field-update).
 
 **22.4 Endpoints — `AgentAssignmentsEndpoints.cs`**
 
 GET assigned agent:
-- [ ] `GET /api/work-items/{id}/assigned-agent` returns 200 with parsed `AssignedAgent` when field is set.
-- [ ] `GET /api/work-items/{id}/assigned-agent` returns 204 when `AssignedAgentJson` is null.
-- [ ] `GET /api/work-items/{id}/assigned-agent` returns 404 for a non-existent work item ID.
+- [x] `GET /api/work-items/{id}/assigned-agent` returns 200 with parsed `AssignedAgent` when field is set.
+- [x] `GET /api/work-items/{id}/assigned-agent` returns 204 when `AssignedAgentJson` is null.
+- [x] `GET /api/work-items/{id}/assigned-agent` returns 404 for a non-existent work item ID.
 
 GET assignment history:
-- [ ] `GET /api/work-items/{id}/assignments` returns history rows newest-first (descending `At`).
-- [ ] `GET /api/work-items/{id}/assignments?limit=2` returns at most 2 rows.
-- [ ] `GET /api/work-items/{id}/assignments` defaults to limit=50 when no query param.
-- [ ] `GET /api/work-items/{id}/assignments?limit=999` clamps to max 500.
-- [ ] `GET /api/work-items/{id}/assignments` returns empty array for a work item with no history.
+- [x] `GET /api/work-items/{id}/assignments` returns history rows newest-first (descending `At`).
+- [x] `GET /api/work-items/{id}/assignments?limit=2` returns at most 2 rows.
+- [x] `GET /api/work-items/{id}/assignments` defaults to limit=50 when no query param.
+- [x] `GET /api/work-items/{id}/assignments?limit=999` clamps to max 500.
+- [x] `GET /api/work-items/{id}/assignments` returns empty array for a work item with no history.
 
 POST manual assignment:
-- [ ] `POST /api/work-items/{id}/assignments` with valid `{ agents, role }` writes `AssignedAgentJson` + appends history row.
-- [ ] `POST /api/work-items/{id}/assignments` sets `assignedBy` to the calling user ID (not `'queue-worker'`).
-- [ ] `POST /api/work-items/{id}/assignments` with `role:'reviewer'` appends `kind='reviewer-assigned'`.
-- [ ] `POST /api/work-items/{id}/assignments` validates that referenced agent IDs exist — returns 400 for unknown agents.
-- [ ] `POST /api/work-items/{id}/assignments` with optional `reason` persists the reason in the history row.
-- [ ] `POST /api/work-items/{id}/assignments` without `reason` stores `null` reason.
-- [ ] `POST /api/work-items/{id}/assignments` by non-PO / non-crew-lead returns 403.
+- [x] `POST /api/work-items/{id}/assignments` with valid `{ agents, role }` writes `AssignedAgentJson` + appends history row.
+- [x] `POST /api/work-items/{id}/assignments` sets `assignedBy` to the calling user ID (not `'queue-worker'`).
+- [x] `POST /api/work-items/{id}/assignments` with `role:'reviewer'` appends `kind='reviewer-assigned'`.
+- [x] `POST /api/work-items/{id}/assignments` validates that referenced agent IDs exist — returns 400 for unknown agents.
+- [x] `POST /api/work-items/{id}/assignments` with optional `reason` persists the reason in the history row.
+- [x] `POST /api/work-items/{id}/assignments` without `reason` stores `null` reason.
+- [x] `POST /api/work-items/{id}/assignments` by non-PO / non-crew-lead returns 403.
 
 DELETE assigned agent:
-- [ ] `DELETE /api/work-items/{id}/assigned-agent` nulls `AssignedAgentJson` + appends `kind='cleared-manual'`.
-- [ ] `DELETE /api/work-items/{id}/assigned-agent` with `{ reason }` body persists the reason.
-- [ ] `DELETE /api/work-items/{id}/assigned-agent` by PO returns 200.
-- [ ] `DELETE /api/work-items/{id}/assigned-agent` by non-PO returns 403.
-- [ ] `DELETE /api/work-items/{id}/assigned-agent` when field is already null is a no-op (idempotent, still 200).
+- [x] `DELETE /api/work-items/{id}/assigned-agent` nulls `AssignedAgentJson` + appends `kind='cleared-manual'`.
+- [x] `DELETE /api/work-items/{id}/assigned-agent` with `{ reason }` body persists the reason.
+- [x] `DELETE /api/work-items/{id}/assigned-agent` by PO returns 200.
+- [x] `DELETE /api/work-items/{id}/assigned-agent` by non-PO returns 403.
+- [x] `DELETE /api/work-items/{id}/assigned-agent` when field is already null is a no-op (idempotent, still 200).
 
 **22.5 `MoveWorkItem` integration — state transition hooks**
 
 PR opened (→ in-review):
-- [ ] `MoveWorkItem(→ in-review)` appends `agent_assignments(kind='pr-opened')` without changing `AssignedAgentJson`.
-- [ ] `agent_assignments` row from PR-open has `FromExecutionStatus` = prior status, `ToExecutionStatus='in-review'`.
-- [ ] Coder's `AssignedAgent.agents` array is unchanged after PR open — coder stays pinned (Q22.3 step 4).
+- [x] `MoveWorkItem(→ in-review)` appends `agent_assignments(kind='pr-opened')` without changing `AssignedAgentJson`.
+- [x] `agent_assignments` row from PR-open has `FromExecutionStatus` = prior status, `ToExecutionStatus='in-review'`.
+- [x] Coder's `AssignedAgent.agents` array is unchanged after PR open — coder stays pinned (Q22.3 step 4).
 
 Completed / resolved:
-- [ ] `MoveWorkItem(→ resolved)` nulls `AssignedAgentJson` AND appends `agent_assignments(kind='completed')`.
-- [ ] `MoveWorkItem(→ closed)` nulls `AssignedAgentJson` AND appends `agent_assignments(kind='completed')`.
-- [ ] `agent_assignments` row from completion has correct `FromExecutionStatus` and `ToExecutionStatus`.
+- [x] `MoveWorkItem(→ resolved)` nulls `AssignedAgentJson` AND appends `agent_assignments(kind='completed')`.
+- [x] `MoveWorkItem(→ closed)` nulls `AssignedAgentJson` AND appends `agent_assignments(kind='completed')`.
+- [x] `agent_assignments` row from completion has correct `FromExecutionStatus` and `ToExecutionStatus`.
 
 State transitions that do NOT touch AssignedAgent:
-- [ ] `MoveWorkItem(proposed → active)` does NOT append an assignment history row and does NOT change `AssignedAgentJson`.
-- [ ] `MoveWorkItem(active → proposed)` (revert) does NOT change `AssignedAgentJson`.
+- [x] `MoveWorkItem(proposed → active)` does NOT append an assignment history row and does NOT change `AssignedAgentJson`.
+- [x] `MoveWorkItem(active → proposed)` (revert) does NOT change `AssignedAgentJson`.
 
 **22.6 Restart clears `AssignedAgent`**
 
-- [ ] `DELETE /api/work-items/{id}/transcript` nulls `AssignedAgentJson`.
-- [ ] `DELETE /api/work-items/{id}/transcript` appends `agent_assignments(kind='cleared-restart')`.
-- [ ] `cleared-restart` history row has `FromExecutionStatus` = prior status (e.g. `'live'` or `'failed'`), `ToExecutionStatus='queued'`.
-- [ ] `cleared-restart` history row has `AssignedBy` = the user who triggered the restart.
-- [ ] After restart + re-claim, the timeline shows three rows: `claimed → cleared-restart → claimed` (no silent overwrite).
-- [ ] Restart when `AssignedAgentJson` is already null still appends the `cleared-restart` row (audit completeness).
+- [x] `DELETE /api/work-items/{id}/transcript` nulls `AssignedAgentJson`.
+- [x] `DELETE /api/work-items/{id}/transcript` appends `agent_assignments(kind='cleared-restart')`.
+- [x] `cleared-restart` history row has `FromExecutionStatus` = prior status (e.g. `'live'` or `'failed'`), `ToExecutionStatus='queued'`.
+- [x] `cleared-restart` history row has `AssignedBy` = the user who triggered the restart.
+- [x] After restart + re-claim, the timeline shows three rows: `claimed → cleared-restart → claimed` (no silent overwrite).
+- [x] Restart when `AssignedAgentJson` is already null still appends the `cleared-restart` row (audit completeness).
 
 **22.7 Backfill migration (one-shot)**
 
-- [ ] Runtime-shaped `AssignedToJson` (has `generatorAgentId` or `crewId` at top level, no `kind`) is detected and migrated.
-- [ ] Migrated row: `AssignedAgentJson` receives the data in Q22.2 shape with `assignedBy='backfill'`.
-- [ ] Migrated row: `AssignedToJson` is rebuilt as WIT-shape `{kind:'team', id:team, displayName:team}` from the embedded `crewId`.
-- [ ] Non-runtime-shaped `AssignedToJson` (has `kind` property, e.g. `{kind:'agent', id:'XD'}`) is NOT migrated — left untouched.
-- [ ] `null` `AssignedToJson` rows are skipped — no crash, no history row.
-- [ ] Each migrated row gets an `agent_assignments(kind='backfill', AssignedBy='backfill')` history row.
-- [ ] Backfill is gated by a `forge_seed_state` row — second boot is a no-op.
-- [ ] Idempotent — running the migration twice produces the same result (no duplicate history rows on second run).
+- [x] Runtime-shaped `AssignedToJson` (has `generatorAgentId` or `crewId` at top level, no `kind`) is detected and migrated.
+- [x] Migrated row: `AssignedAgentJson` receives the data in Q22.2 shape with `assignedBy='backfill'`.
+- [x] Migrated row: `AssignedToJson` is rebuilt as WIT-shape `{kind:'team', id:team, displayName:team}` from the embedded `crewId`.
+- [x] Non-runtime-shaped `AssignedToJson` (has `kind` property, e.g. `{kind:'agent', id:'XD'}`) is NOT migrated — left untouched.
+- [x] `null` `AssignedToJson` rows are skipped — no crash, no history row.
+- [x] Each migrated row gets an `agent_assignments(kind='backfill', AssignedBy='backfill')` history row.
+- [x] Backfill is gated by a `forge_seed_state` row — second boot is a no-op.
+- [x] Idempotent — running the migration twice produces the same result (no duplicate history rows on second run).
 
 **22.8 Sticky on failure (Q22.4)**
 
-- [ ] Agent fails mid-run → `AssignedAgentJson` stays set (not cleared).
-- [ ] Agent fails mid-run → no `cleared-*` history row is written.
-- [ ] Agent hits budget cap → `AssignedAgentJson` stays set.
-- [ ] Agent restarts mid-run (server crash) → `AssignedAgentJson` stays set until explicit Restart.
+- [x] Agent fails mid-run → `AssignedAgentJson` stays set (not cleared).
+- [x] Agent fails mid-run → no `cleared-*` history row is written.
+- [x] Agent hits budget cap → `AssignedAgentJson` stays set.
+- [x] Agent restarts mid-run (server crash) → `AssignedAgentJson` stays set until explicit Restart.
 
 **22.9 WIT assignee independence (Q22.1)**
 
-- [ ] `PATCH /api/work-items/{id}` with `{ assignedTo: {kind:'agent', id:'XD'} }` does NOT mutate `AssignedAgentJson`.
-- [ ] `PATCH /api/work-items/{id}` with `{ assignedTo: … }` does NOT append any `agent_assignments` history row.
-- [ ] Sweep-2 claim does NOT mutate `AssignedToJson` — the WIT-level assignee is preserved.
-- [ ] Both fields can be non-null simultaneously with different values — no conflict.
+- [x] `PATCH /api/work-items/{id}` with `{ assignedTo: {kind:'agent', id:'XD'} }` does NOT mutate `AssignedAgentJson`.
+- [x] `PATCH /api/work-items/{id}` with `{ assignedTo: … }` does NOT append any `agent_assignments` history row.
+- [x] Sweep-2 claim does NOT mutate `AssignedToJson` — the WIT-level assignee is preserved.
+- [x] Both fields can be non-null simultaneously with different values — no conflict.
 
 **22.10 Multi-agent & role semantics (Q22.5)**
 
-- [ ] Paired crew claim writes exactly 2 entries in `agents[]` (generator + evaluator).
-- [ ] Single crew claim writes exactly 1 entry in `agents[]`.
-- [ ] `agents[0]` is the canonical "driver" — generator for `role='generator'`, reviewer for `role='reviewer'`.
-- [ ] Manual reviewer assignment (`POST /assignments {role:'reviewer'}`) replaces `AssignedAgent` entirely (not additive).
-- [ ] After reviewer assignment, `agents[0]` is the reviewer agent.
+- [x] Paired crew claim writes exactly 2 entries in `agents[]` (generator + evaluator).
+- [x] Single crew claim writes exactly 1 entry in `agents[]`.
+- [x] `agents[0]` is the canonical "driver" — generator for `role='generator'`, reviewer for `role='reviewer'`.
+- [x] Manual reviewer assignment (`POST /assignments {role:'reviewer'}`) replaces `AssignedAgent` entirely (not additive).
+- [x] After reviewer assignment, `agents[0]` is the reviewer agent.
 
 **22.11 Full lifecycle timeline (end-to-end)**
 
-- [ ] Full happy path: `claimed → pr-opened → reviewer-assigned → completed` produces exactly 4 `agent_assignments` rows in chronological order.
-- [ ] Full restart path: `claimed → cleared-restart → claimed → pr-opened → completed` produces exactly 5 rows.
-- [ ] History rows are ordered by `At DESC` when queried via the paginated endpoint.
-- [ ] Each history row has a non-null `At` timestamp in ISO-8601 format.
-- [ ] Each history row has a non-empty `Kind` from the allowed set: `claimed`, `reassigned`, `cleared-restart`, `cleared-manual`, `pr-opened`, `reviewer-assigned`, `completed`, `backfill`.
+- [x] Full happy path: `claimed → pr-opened → reviewer-assigned → completed` produces exactly 4 `agent_assignments` rows in chronological order.
+- [x] Full restart path: `claimed → cleared-restart → claimed → pr-opened → completed` produces exactly 5 rows.
+- [x] History rows are ordered by `At DESC` when queried via the paginated endpoint.
+- [x] Each history row has a non-null `At` timestamp in ISO-8601 format.
+- [x] Each history row has a non-empty `Kind` from the allowed set: `claimed`, `reassigned`, `cleared-restart`, `cleared-manual`, `pr-opened`, `reviewer-assigned`, `completed`, `backfill`.
 
 **22.12 Edge cases & error handling**
 
-- [ ] Concurrent claims on the same work item — only one succeeds; the loser gets a CAS failure, no orphan history row.
-- [ ] `POST /assignments` on a non-existent work item returns 404.
-- [ ] `DELETE /assigned-agent` on a non-existent work item returns 404.
-- [ ] `GET /assignments` on a non-existent work item returns 404.
-- [ ] `POST /assignments` with empty `agents[]` array returns 400.
-- [ ] `POST /assignments` with invalid `role` value returns 400.
-- [ ] Malformed `AssignedAgentJson` in DB does not crash the GET endpoint — returns null gracefully.
+- [x] Concurrent claims on the same work item — only one succeeds; the loser gets a CAS failure, no orphan history row.
+- [x] `POST /assignments` on a non-existent work item returns 404.
+- [x] `DELETE /assigned-agent` on a non-existent work item returns 404.
+- [x] `GET /assignments` on a non-existent work item returns 404.
+- [x] `POST /assignments` with empty `agents[]` array returns 400.
+- [x] `POST /assignments` with invalid `role` value returns 400.
+- [x] Malformed `AssignedAgentJson` in DB does not crash the GET endpoint — returns null gracefully.
 
 ### Out of scope for v0.1 — Phase R / `forge_v2.md`
 
