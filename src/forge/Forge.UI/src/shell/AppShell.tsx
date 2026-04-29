@@ -10,6 +10,7 @@ import { useProductsStore } from '@/state/useProductsStore';
 import { useProductFavicon } from '@/products/useProductFavicon';
 import { logView } from '@/telemetry';
 import { GlobalAgentEditor } from '@/agents/AgentEditModal';
+import { useForgeHub } from '@/realtime/useForgeHub';
 
 // Maps each route to the breadcrumb labels the prototype shows in the topbar.
 const breadcrumbs: Record<string, { section: string; current: string }> = {
@@ -34,6 +35,7 @@ export function AppShell() {
     [products, activeProductId],
   );
   useProductFavicon(activeProduct);
+  useForgeHub();
 
   useEffect(() => { logView(pathname); }, [pathname]);
 
