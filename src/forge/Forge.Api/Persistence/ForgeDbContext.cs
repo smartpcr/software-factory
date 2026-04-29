@@ -88,6 +88,8 @@ public class ForgeDbContext : DbContext
 
     public DbSet<TaskQueueHistoryRow> TaskQueueHistory => this.Set<TaskQueueHistoryRow>();
 
+    public DbSet<WorkItemSyncRunRow> WorkItemSyncRuns => this.Set<WorkItemSyncRunRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         mb.Entity<EpicRow>().ToTable("epics").HasKey(x => x.Id);
@@ -194,6 +196,10 @@ public class ForgeDbContext : DbContext
         mb.Entity<WorkItemLinkRow>().ToTable("work_item_links").HasKey(x => x.Id);
         mb.Entity<WorkItemLinkRow>().HasIndex(x => x.FromId);
         mb.Entity<WorkItemLinkRow>().HasIndex(x => x.ToId);
+
+        // Phase 23 — work_item_sync_runs history table.
+        mb.Entity<WorkItemSyncRunRow>().ToTable("work_item_sync_runs").HasKey(x => x.Id);
+        mb.Entity<WorkItemSyncRunRow>().HasIndex(x => new { x.RepoId, x.StartedAt });
 
         // Phase 14.1 — agent level + payroll columns on agents.
         mb.Entity<AgentRow>().Property(x => x.HourlyUsd).HasConversion<double>();

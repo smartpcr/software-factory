@@ -979,6 +979,32 @@ public class RepoRow
     public string? GhOwner { get; set; }
 
     public string? GhRepo { get; set; }
+
+    // -- Phase 23 — scheduled work-item sync fields --------------------------
+
+    /// <summary>JSON <c>string[]</c> of ADO area-path prefixes. Null / empty = whole project (Q23.3).</summary>
+    public string? AreaPathsJson { get; set; }
+
+    /// <summary>ISO-8601 cursor: the start time of the last successful sync run (Q23.7).</summary>
+    public string? LastSyncAt { get; set; }
+
+    /// <summary>Opaque per-provider page cursor for mid-run resume (Q23.6).</summary>
+    public string? LastSyncCursor { get; set; }
+
+    /// <summary>One of: idle, running, failed (Q23.2).</summary>
+    public string LastSyncStatus { get; set; } = "idle";
+
+    /// <summary>Last error message, surfaced in the UI (Q23.3).</summary>
+    public string? LastSyncError { get; set; }
+
+    /// <summary>Wall-clock guard for the 19-minute cancellation rule (Q23.2).</summary>
+    public string? IsRunningSince { get; set; }
+
+    /// <summary>Overrides the default "Engineering" team for <c>agent-ready</c> auto-assign (Q23.8).</summary>
+    public string? AgentReadyDefaultTeam { get; set; }
+
+    /// <summary>Overrides the ADO 365-day initial sync window; ignored for GitHub (Q23.5).</summary>
+    public int? InitialSyncWindowDays { get; set; }
 }
 
 /// <summary>
@@ -1242,4 +1268,36 @@ public class ProductSavedPrefixRow
 
     /// <summary>JSON <c>{ added, removed, renamed }</c> from the most recent refresh.</summary>
     public string LastDeltaJson { get; set; } = "{\"added\":0,\"removed\":0,\"renamed\":0}";
+}
+
+/// <summary>
+/// Phase 23 — one row per sync invocation. Captures run-level metrics
+/// (items added/updated/conflicted) and the success/error outcome. The
+/// <c>/api/repos/{id}/sync-work-items/runs</c> endpoint surfaces the last
+/// 20 rows as a simple history view.
+/// </summary>
+public class WorkItemSyncRunRow
+{
+    public string Id { get; set; } = string.Empty;
+
+    public string RepoId { get; set; } = string.Empty;
+
+    /// <summary>One of: full, delta, manual.</summary>
+    public string Kind { get; set; } = "delta";
+
+    /// <summary>ISO-8601 timestamp when the run started.</summary>
+    public string StartedAt { get; set; } = string.Empty;
+
+    /// <summary>ISO-8601 timestamp when the run finished (null if still running).</summary>
+    public string? FinishedAt { get; set; }
+
+    public int ItemsAdded { get; set; }
+
+    public int ItemsUpdated { get; set; }
+
+    public int ItemsConflicted { get; set; }
+
+    public string? ErrorMessage { get; set; }
+
+    public bool CompletedSuccessfully { get; set; }
 }
