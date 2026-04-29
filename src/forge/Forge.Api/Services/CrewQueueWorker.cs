@@ -935,6 +935,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // historical transcript events, so a task.pr-opened from a
                 // previous execution would incorrectly pass verification.
                 var prCreatedInThisExecution = false;
+                string? prErrorDetail = null;
                 try
                 {
                     // Resolve the correct provider based on the work item's repo kind.
@@ -1127,6 +1128,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 catch (Exception ex)
                 {
                     this.logger.LogWarning(ex, "PR creation failed for wi={Wi}", workItemId);
+                    prErrorDetail = ex.Message;
                     await this.taskChannel.EmitAsync(workItemId, "task.pr-failed", new
                     {
                         error = ex.Message,
@@ -1164,18 +1166,21 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 }
                 else
                 {
+                    var deliveryReason = !branchPushed
+                        ? "Branch not pushed to remote"
+                        : !string.IsNullOrEmpty(prErrorDetail)
+                            ? $"PR creation failed: {prErrorDetail}"
+                            : "PR not created";
                     this.logger.LogWarning(
-                        "Delivery verification failed: wi={Wi} branchPushed={Pushed} prCreated={Pr}",
-                        workItemId, branchPushed, prCreated);
+                        "Delivery verification failed: wi={Wi} branchPushed={Pushed} prCreated={Pr} detail={Detail}",
+                        workItemId, branchPushed, prCreated, deliveryReason);
                     await this.taskChannel.EmitAsync(workItemId, "task.delivery-failed", new
                     {
                         agentId,
                         crewId,
                         branchPushed,
                         prCreated,
-                        reason = !branchPushed
-                            ? "Branch not pushed to remote"
-                            : "PR not created",
+                        reason = deliveryReason,
                     }, crewId: crewId, ct: ct);
 
                     // Mark as failed — delivery is incomplete.
@@ -1185,11 +1190,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     {
                         agentId,
                         crewId,
-                        error = !branchPushed
-                            ? "Agent did not push branch to remote"
-                            : "Agent did not create a pull request",
+                        error = deliveryReason,
                     }, crewId: crewId, ct: ct);
-                    SystemNotify.AgentFailed(workItemId, !branchPushed ? "Branch not pushed" : "PR not created");
+                    SystemNotify.AgentFailed(workItemId, deliveryReason);
                     return; // skip the normal completion path
                 }
             }

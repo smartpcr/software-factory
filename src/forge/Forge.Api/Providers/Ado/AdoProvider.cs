@@ -338,8 +338,15 @@ public class AdoProvider : IForgeProvider
         };
         var resp = await client.SendAsync(msg, ct);
         this.health.RecordResponse(resp);
-        resp.EnsureSuccessStatusCode();
-        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+        var responseBody = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode)
+        {
+            // Surface the ADO error details (e.g. duplicate PR, missing branch)
+            // instead of the generic "400 (Bad Request)" from EnsureSuccessStatusCode.
+            throw new HttpRequestException(
+                $"ADO PR creation failed ({(int)resp.StatusCode}): {responseBody}");
+        }
+        using var doc = JsonDocument.Parse(responseBody);
         return AdoMapper.ToPr(doc.RootElement, this.EffectiveProject);
     }
 
