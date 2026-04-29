@@ -186,28 +186,33 @@ public class WorkItemSyncService
             return (false, false);
         }
 
+        var forgeOwned = existing.AutoDispatchedAt.HasValue
+            || existing.ExecutionStatus != Persistence.ExecutionStatuses.Idle;
+
+        // Always sync upstream-sourced metadata.
         existing.Track = remote.Track;
         existing.Type = remote.Type;
-        // Don't overwrite state when an agent is actively working.
-        if (existing.ExecutionStatus == Persistence.ExecutionStatuses.Idle)
-        {
-            existing.State = remote.State;
-        }
         existing.Title = remote.Title;
         existing.DescriptionMd = remote.DescriptionMd;
-        // ParentId only updated when remote provides one — keep operator's
-        // local re-parent if they set one before the upstream caught up.
         if (!string.IsNullOrEmpty(remote.ParentId)) existing.ParentId = remote.ParentId;
         existing.IterationRef = remote.IterationRef;
         existing.AreaPath = remote.AreaPath;
-        existing.AssignedToJson = remote.AssignedTo is null
-            ? existing.AssignedToJson
-            : JsonSerializer.Serialize(remote.AssignedTo, JsonOpts);
-        existing.Points = remote.Points > 0 ? remote.Points : 2;
-        existing.Priority = remote.Priority;
         existing.TagsJson = JsonSerializer.Serialize(remote.Tags, JsonOpts);
-        existing.UpdatedAt = remote.UpdatedAt;
         existing.RemoteRevision = remote.RemoteRevision;
+
+        // Only overwrite Forge-owned fields when Forge hasn't touched the item.
+        if (!forgeOwned)
+        {
+            existing.State = remote.State;
+            if (remote.AssignedTo is not null)
+            {
+                existing.AssignedToJson = JsonSerializer.Serialize(remote.AssignedTo, JsonOpts);
+            }
+            existing.Points = remote.Points > 0 ? remote.Points : 2;
+            existing.Priority = remote.Priority;
+        }
+
+        existing.UpdatedAt = remote.UpdatedAt;
         return (false, true);
     }
 

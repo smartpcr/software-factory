@@ -479,29 +479,37 @@ public class WorkItemSyncJob : BackgroundService
             && !string.IsNullOrEmpty(remote.RemoteRevision)
             && existing.RemoteRevision != remote.RemoteRevision;
 
+        // Once Forge has touched the item (AutoDispatchedAt is set OR
+        // executionStatus is not idle), it owns the runtime-lifecycle fields.
+        // Sync only updates upstream-sourced metadata; Forge-owned fields
+        // (state, assignedTo, points, priority) are protected.
+        var forgeOwned = existing.AutoDispatchedAt.HasValue
+            || existing.ExecutionStatus != Persistence.ExecutionStatuses.Idle;
+
+        // Always sync upstream-sourced metadata.
         existing.Track = remote.Track;
         existing.Type = remote.Type;
-        // Don't regress state when the item is being actively worked on
-        // by an agent — the queue worker moves proposed→active on claim,
-        // and the agent pipeline drives active→in-review→resolved→closed.
-        // Only overwrite state from upstream when the item is idle.
-        if (existing.ExecutionStatus == Persistence.ExecutionStatuses.Idle)
-        {
-            existing.State = remote.State;
-        }
         existing.Title = remote.Title;
         existing.DescriptionMd = remote.DescriptionMd;
         if (!string.IsNullOrEmpty(remote.ParentId)) existing.ParentId = remote.ParentId;
         existing.IterationRef = remote.IterationRef;
         existing.AreaPath = remote.AreaPath;
-        existing.AssignedToJson = remote.AssignedTo is null
-            ? existing.AssignedToJson
-            : JsonSerializer.Serialize(remote.AssignedTo, JsonOpts);
-        existing.Points = remote.Points > 0 ? remote.Points : 2;
-        existing.Priority = remote.Priority;
         existing.TagsJson = JsonSerializer.Serialize(remote.Tags, JsonOpts);
-        existing.UpdatedAt = remote.UpdatedAt;
         existing.RemoteRevision = remote.RemoteRevision;
+
+        // Only overwrite Forge-owned fields when Forge hasn't touched the item.
+        if (!forgeOwned)
+        {
+            existing.State = remote.State;
+            if (remote.AssignedTo is not null)
+            {
+                existing.AssignedToJson = JsonSerializer.Serialize(remote.AssignedTo, JsonOpts);
+            }
+            existing.Points = remote.Points > 0 ? remote.Points : 2;
+            existing.Priority = remote.Priority;
+        }
+
+        existing.UpdatedAt = remote.UpdatedAt;
         return (false, true, hadDifferentRevision);
     }
 

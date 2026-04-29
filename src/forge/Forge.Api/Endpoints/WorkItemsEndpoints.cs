@@ -611,27 +611,33 @@ public static class WorkItemsEndpoints
 
         // Apply remote fields. Skip ParentId when remote omits one (matches
         // WorkItemSyncService — preserves operator's local re-parent).
+        var forgeOwned = row.AutoDispatchedAt.HasValue
+            || row.ExecutionStatus != ExecutionStatuses.Idle;
+
+        // Always sync upstream-sourced metadata.
         row.Track = remote.Track;
         row.Type = remote.Type;
-        // Don't overwrite state when an agent is actively working.
-        if (row.ExecutionStatus == ExecutionStatuses.Idle)
-        {
-            row.State = remote.State;
-        }
         row.Title = remote.Title;
         row.DescriptionMd = remote.DescriptionMd;
         if (!string.IsNullOrEmpty(remote.ParentId)) row.ParentId = remote.ParentId;
         row.IterationRef = remote.IterationRef;
         row.AreaPath = remote.AreaPath;
-        if (remote.AssignedTo is not null)
-        {
-            row.AssignedToJson = JsonSerializer.Serialize(remote.AssignedTo, JsonOpts);
-        }
-        row.Points = remote.Points > 0 ? remote.Points : 2;
-        row.Priority = remote.Priority;
         row.TagsJson = JsonSerializer.Serialize(remote.Tags, JsonOpts);
-        row.UpdatedAt = remote.UpdatedAt > DateTimeOffset.MinValue ? remote.UpdatedAt : DateTimeOffset.UtcNow;
         row.RemoteRevision = remote.RemoteRevision ?? NewRevision();
+
+        // Only overwrite Forge-owned fields when Forge hasn't touched the item.
+        if (!forgeOwned)
+        {
+            row.State = remote.State;
+            if (remote.AssignedTo is not null)
+            {
+                row.AssignedToJson = JsonSerializer.Serialize(remote.AssignedTo, JsonOpts);
+            }
+            row.Points = remote.Points > 0 ? remote.Points : 2;
+            row.Priority = remote.Priority;
+        }
+
+        row.UpdatedAt = remote.UpdatedAt > DateTimeOffset.MinValue ? remote.UpdatedAt : DateTimeOffset.UtcNow;
 
         await db.SaveChangesAsync(ct);
         await hub.Clients.All.SendAsync("workitem.changed",
