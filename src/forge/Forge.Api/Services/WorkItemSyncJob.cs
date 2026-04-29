@@ -490,7 +490,7 @@ public class WorkItemSyncJob : BackgroundService
         existing.AssignedToJson = remote.AssignedTo is null
             ? existing.AssignedToJson
             : JsonSerializer.Serialize(remote.AssignedTo, JsonOpts);
-        existing.Points = remote.Points;
+        existing.Points = remote.Points > 0 ? remote.Points : 2;
         existing.Priority = remote.Priority;
         existing.TagsJson = JsonSerializer.Serialize(remote.Tags, JsonOpts);
         existing.UpdatedAt = remote.UpdatedAt;

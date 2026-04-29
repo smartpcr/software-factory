@@ -77,10 +77,23 @@ public class WorkItemSyncService
             return new SyncResult(0, 0, 0, 0, $"Provider '{repo.Kind}' is not configured.");
         }
 
+        // Per-repo provider scope (Phase 23 follow-up). Without this each
+        // repo's manual sync would hit the global Forge:Ado config — wrong
+        // when more than one product/repo is attached.
+        var scopedFilters = filters with
+        {
+            AdoOrgUrl = filters.AdoOrgUrl ?? (string.IsNullOrWhiteSpace(repo.AdoOrg) ? null : BuildAdoOrgUrl(repo.AdoOrg!)),
+            AdoProject = filters.AdoProject ?? repo.AdoProject,
+            GitHubRepo = filters.GitHubRepo ?? (
+                !string.IsNullOrWhiteSpace(repo.GhOwner) && !string.IsNullOrWhiteSpace(repo.GhRepo)
+                    ? $"{repo.GhOwner}/{repo.GhRepo}"
+                    : null),
+        };
+
         IReadOnlyList<WorkItem> remote;
         try
         {
-            remote = await provider.ListWorkItemsForSyncAsync(filters, ct);
+            remote = await provider.ListWorkItemsForSyncAsync(scopedFilters, ct);
         }
         catch (Exception ex)
         {
@@ -186,7 +199,7 @@ public class WorkItemSyncService
         existing.AssignedToJson = remote.AssignedTo is null
             ? existing.AssignedToJson
             : JsonSerializer.Serialize(remote.AssignedTo, JsonOpts);
-        existing.Points = remote.Points;
+        existing.Points = remote.Points > 0 ? remote.Points : 2;
         existing.Priority = remote.Priority;
         existing.TagsJson = JsonSerializer.Serialize(remote.Tags, JsonOpts);
         existing.UpdatedAt = remote.UpdatedAt;
@@ -196,4 +209,19 @@ public class WorkItemSyncService
 
     /// <summary>Test hook — clear the throttle window for a repo.</summary>
     public void ResetThrottle(string repoId) => this.lastSyncByRepo.TryRemove(repoId, out _);
+
+    /// <summary>
+    /// Same shape as <c>WorkItemSyncJob.BuildAdoOrgUrl</c> — accepts either a
+    /// bare org name or a full URL.
+    /// </summary>
+    private static string BuildAdoOrgUrl(string adoOrg)
+    {
+        var trimmed = adoOrg.Trim();
+        if (trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return trimmed.TrimEnd('/');
+        }
+        return $"https://dev.azure.com/{trimmed.Trim('/')}";
+    }
 }

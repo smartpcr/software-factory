@@ -623,7 +623,7 @@ public static class WorkItemsEndpoints
         {
             row.AssignedToJson = JsonSerializer.Serialize(remote.AssignedTo, JsonOpts);
         }
-        row.Points = remote.Points;
+        row.Points = remote.Points > 0 ? remote.Points : 2;
         row.Priority = remote.Priority;
         row.TagsJson = JsonSerializer.Serialize(remote.Tags, JsonOpts);
         row.UpdatedAt = remote.UpdatedAt > DateTimeOffset.MinValue ? remote.UpdatedAt : DateTimeOffset.UtcNow;
