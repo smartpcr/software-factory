@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Endpoints;
 
+using System.IO;
 using System.Text.Json;
 using Forge.Api.Contracts;
 using Forge.Api.Persistence;
@@ -425,12 +426,28 @@ public static class TaskExecutionEndpoints
             r.JudgeAgentId, r.JudgeScore, r.JudgeNotes, r.CreatedAt);
     }
 
+    /// <summary>
+    /// Per-event payload cap shipped via <c>/execution</c>. The full payload
+    /// stays in <c>task_transcript_events</c> and is fetchable per-event via
+    /// <c>/transcript</c>; the snapshot only ships a trimmed view so a long
+    /// run with many <c>task.prompt</c> events (each carrying a multi-KB
+    /// system prompt) doesn't balloon a single response into hundreds of KB.
+    /// </summary>
+    private const int SnapshotPayloadByteCap = 4096;
+
     private static TaskTranscriptEvent MapTranscript(TaskTranscriptEventRow r)
     {
         JsonElement payload;
+        var raw = string.IsNullOrEmpty(r.PayloadJson) ? "{}" : r.PayloadJson;
+        if (raw.Length > SnapshotPayloadByteCap && r.Kind is "task.prompt" or "task.tool-call" or "task.tool-result" or "task.iteration.scored")
+        {
+            // Replace bulky text fields with truncation markers so the UI
+            // still renders the row but doesn't tax the wire.
+            raw = TruncateBulkyFields(raw);
+        }
         try
         {
-            using var doc = JsonDocument.Parse(string.IsNullOrEmpty(r.PayloadJson) ? "{}" : r.PayloadJson);
+            using var doc = JsonDocument.Parse(raw);
             payload = doc.RootElement.Clone();
         }
         catch
@@ -439,6 +456,47 @@ public static class TaskExecutionEndpoints
             payload = doc.RootElement.Clone();
         }
         return new TaskTranscriptEvent(r.Id, r.WorkItemId, r.Kind, r.AgentId, r.CrewId, payload, r.At);
+    }
+
+    /// <summary>
+    /// Strip / abbreviate the bulky string fields the live-exec view never
+    /// renders inline (system prompts, full tool results). The full text is
+    /// still available via <c>/api/work-items/{id}/transcript?from=…</c>.
+    /// </summary>
+    private static string TruncateBulkyFields(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            using var ms = new MemoryStream();
+            using (var w = new Utf8JsonWriter(ms))
+            {
+                w.WriteStartObject();
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind == JsonValueKind.String
+                        && (prop.NameEquals("systemPrompt") || prop.NameEquals("userPrompt")
+                            || prop.NameEquals("text") || prop.NameEquals("result")
+                            || prop.NameEquals("notes") || prop.NameEquals("toolPayload")
+                            || prop.NameEquals("content") || prop.NameEquals("body")))
+                    {
+                        var s = prop.Value.GetString() ?? string.Empty;
+                        if (s.Length > 320)
+                        {
+                            w.WriteString(prop.Name, s[..320] + $"…[truncated {s.Length} → 320, GET /transcript/{{id}} for full]");
+                            continue;
+                        }
+                    }
+                    prop.WriteTo(w);
+                }
+                w.WriteEndObject();
+            }
+            return System.Text.Encoding.UTF8.GetString(ms.ToArray());
+        }
+        catch
+        {
+            return json;
+        }
     }
 
     private static WorktreeSnapshot? ParseWorktreeTick(JsonElement el, DateTimeOffset at)

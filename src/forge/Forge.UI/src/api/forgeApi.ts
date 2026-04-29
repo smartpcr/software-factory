@@ -1289,6 +1289,14 @@ export const forgeApi = {
       headers: { 'X-Forge-User': writerHeader() },
     });
   },
+
+  async clearAgentAssignment(workItemId: string, reason?: string): Promise<void> {
+    await fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/assigned-agent`, {
+      method: 'DELETE',
+      body: reason ? JSON.stringify({ reason }) : undefined,
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
 };
 
 function buildLocalTimeline(from: number, to: number): TimelineResponse {

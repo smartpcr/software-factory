@@ -114,6 +114,40 @@ export function LiveExecutionView(): JSX.Element {
     return <div className="live-exec__empty">Pick a work item to watch.</div>;
   }
 
+  // Surface API-offline / load-failure state instead of showing an empty
+  // shell forever. The store keeps `entry.error` populated when the GET
+  // /execution call fails or when SignalR negotiation 500s.
+  const apiOfflineBanner = entry?.error ? (
+    <div
+      role="alert"
+      data-testid="live-exec-api-offline"
+      style={{
+        background: 'color-mix(in srgb, rgb(220, 38, 38) 14%, transparent)',
+        border: '1px solid rgb(220, 38, 38)',
+        color: 'rgb(220, 38, 38)',
+        padding: '8px 14px',
+        fontSize: 12,
+        margin: '8px 0',
+        borderRadius: 'var(--radius-sm)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+      }}
+    >
+      <span>⚠ Forge API is unreachable.</span>
+      <span style={{ flex: 1, color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+        {entry.error}
+      </span>
+      <button
+        type="button"
+        className="btn btn-secondary"
+        onClick={() => { void useTaskLiveStore.getState().ensureLoaded(workItemId); }}
+      >
+        Retry
+      </button>
+    </div>
+  ) : null;
+
   async function cancelAndRequeue() {
     if (!workItemId) return;
     setBusy(true);
@@ -192,6 +226,7 @@ export function LiveExecutionView(): JSX.Element {
 
   return (
     <div className="live-exec">
+      {apiOfflineBanner}
       <header className="live-exec__header">
         <div className="live-exec__title">
           <Link to="/work-items" style={{ color: 'inherit', textDecoration: 'none' }}>

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { WorkItem, WorkItemAssignee, WorkItemPriority, WorkItemState, WorkItemType } from './workItemTypes';
+import type { WorkItem, WorkItemAssignee, WorkItemPriority, WorkItemState, WorkItemType, AssignedAgent } from './workItemTypes';
 import { typeLabel, WORK_ITEM_STATES, WORK_ITEM_TYPES } from './workItemTypes';
 import { useWitStore } from './useWitStore';
 import { useWorkItemsStore } from './useWorkItemsStore';
@@ -337,6 +337,23 @@ export function WorkItemDetailPanel({ item }: Props) {
           crews={crews}
           onOpen={ensureAgentsLoaded}
           onChange={setAssignee}
+        />
+      </section>
+
+      {/* Phase 22 — runtime agent assignment. Dispatch to team/crew to start
+           the message queue; lead delegates to an agent via the queue system. */}
+      <section className="wit-detail-section">
+        <div className="wit-detail-section-title">Agent Assignment</div>
+        <AgentAssignmentSection
+          value={item.assignedAgent ?? null}
+          crews={crews}
+          onDispatch={setAssignee}
+          onClear={() => {
+            void forgeApi.clearAgentAssignment(item.id, 'cleared from detail panel')
+              .then(() => reload())
+              .catch(() => {});
+          }}
+          onOpen={ensureAgentsLoaded}
         />
       </section>
 
@@ -1064,6 +1081,281 @@ function AssigneePicker({ value, agents, crews, onOpen, onChange }: {
               </button>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Phase 22 — interactive agent assignment section. Shows the current runtime
+ * agent assignment and lets the operator dispatch to a team or crew (which
+ * enqueues via the task queue and lets the lead delegate).
+ */
+function AgentAssignmentSection({ value, crews, onDispatch, onClear, onOpen }: {
+  value: AssignedAgent | null;
+  crews: Crew[];
+  onDispatch: (target: WorkItemAssignee) => void;
+  onClear: () => void;
+  onOpen: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e: MouseEvent) {
+      const t = e.target as Node;
+      if (triggerRef.current?.contains(t)) return;
+      if (popoverRef.current?.contains(t)) return;
+      setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false); }
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const filteredCrews = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return crews;
+    return crews.filter((c) =>
+      c.id.toLowerCase().includes(q)
+      || c.name.toLowerCase().includes(q)
+      || (c.lead ?? '').toLowerCase().includes(q),
+    );
+  }, [crews, query]);
+
+  function pickTeam(name: string) {
+    onDispatch({
+      kind: 'team',
+      id: name,
+      displayName: name,
+      initials: name.slice(0, 2).toUpperCase(),
+    });
+    setOpen(false); setQuery('');
+  }
+
+  function pickCrew(c: Crew) {
+    const initials = (c.name.match(/[A-Z]/g)?.join('') ?? c.name.slice(0, 2)).slice(0, 2).toUpperCase();
+    onDispatch({
+      kind: 'crew',
+      id: c.id,
+      displayName: c.name,
+      initials,
+    });
+    setOpen(false); setQuery('');
+  }
+
+  function openPicker() {
+    setOpen(true);
+    void onOpen();
+  }
+
+  const agentList = value?.agents?.join(', ') || null;
+  const ts = value?.assignedAt
+    ? new Date(value.assignedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : null;
+
+  return (
+    <div style={{ position: 'relative' }}>
+      {/* Current assignment display */}
+      {value ? (
+        <div style={{
+          padding: '6px 8px',
+          border: '1px solid var(--border)',
+          borderRadius: 4,
+          fontSize: 12,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 4,
+          marginBottom: 6,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {value.agents?.map((agentId) => {
+              const url = avatarFor(agentId, null);
+              return url ? (
+                <img key={agentId} src={url} alt={agentId}
+                  style={{ width: 22, height: 22, borderRadius: 999 }}
+                  title={agentId}
+                />
+              ) : (
+                <span key={agentId} style={{
+                  width: 22, height: 22, borderRadius: 999,
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'var(--bg-sunken, #2a2a2a)', color: 'var(--text-secondary)',
+                  fontFamily: 'var(--font-mono, monospace)', fontSize: 10,
+                }}>{agentId.slice(0, 2)}</span>
+              );
+            })}
+            <span style={{ fontWeight: 600, flex: 1 }}>{agentList}</span>
+            {value.role && (
+              <span style={{
+                fontSize: 9.5, padding: '1px 6px', borderRadius: 999,
+                border: '1px solid var(--accent)', color: 'var(--accent)',
+                fontFamily: 'var(--font-mono, monospace)', fontWeight: 400,
+              }}>{value.role}</span>
+            )}
+            <button
+              type="button"
+              onClick={onClear}
+              style={{
+                background: 'transparent', border: 'none', color: 'var(--danger, #e55)',
+                cursor: 'pointer', fontSize: 11, fontFamily: 'var(--font-mono, monospace)',
+              }}
+              title="Clear agent assignment"
+            >✕</button>
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--text-tertiary)', display: 'flex', gap: 8 }}>
+            {value.team && <span>team: {value.team}</span>}
+            {value.crewId && <span>crew: {value.crewId}</span>}
+            {value.assignedBy && <span>by: {value.assignedBy}</span>}
+            {ts && <span>at: {ts}</span>}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Dispatch button */}
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={() => (open ? setOpen(false) : openPicker())}
+        className="wit-detail-assignee"
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          width: '100%', padding: 6, border: '1px solid var(--border)',
+          borderRadius: 4, background: 'transparent', cursor: 'pointer',
+          color: 'inherit', textAlign: 'left',
+        }}
+        title="Dispatch to team or crew — starts the message queue"
+      >
+        <span style={{
+          width: 22, height: 22, borderRadius: 6,
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          background: 'color-mix(in srgb, var(--warning) 15%, transparent)',
+          border: '1px solid var(--warning)',
+          color: 'var(--warning)',
+          fontSize: 12,
+        }}>⚡</span>
+        <span style={{ flex: 1, fontSize: 12, color: 'var(--text-secondary)' }}>
+          {value ? 'Re-dispatch to team / crew…' : 'Dispatch to team / crew…'}
+        </span>
+        <span aria-hidden style={{ color: 'var(--text-tertiary)', fontSize: 10 }}>▾</span>
+      </button>
+
+      {/* Picker popover */}
+      {open && (
+        <div
+          ref={popoverRef}
+          style={{
+            position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 30,
+            maxHeight: 320, overflow: 'auto',
+            background: 'var(--bg-elevated, #1c1c1c)',
+            border: '1px solid var(--border)', borderRadius: 6,
+            boxShadow: '0 6px 20px rgba(0,0,0,0.35)',
+          }}
+        >
+          <div style={{ position: 'sticky', top: 0, background: 'inherit', padding: 6, borderBottom: '1px solid var(--border)' }}>
+            <input
+              type="text"
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search teams or crews…"
+              style={{
+                width: '100%', padding: '4px 8px', fontSize: 11.5,
+                background: 'var(--bg-base, transparent)', color: 'var(--text-primary)',
+                border: '1px solid var(--border-strong)', borderRadius: 4,
+              }}
+            />
+          </div>
+
+          {/* Teams */}
+          {(() => {
+            const q = query.trim().toLowerCase();
+            const teams = TEAMS.filter((t) => !q || t.toLowerCase().includes(q));
+            if (teams.length === 0) return null;
+            return (
+              <>
+                <div style={pickerSectionHeaderStyle}>Teams · routes via queue</div>
+                {teams.map((t) => (
+                  <button
+                    key={`team:${t}`}
+                    type="button"
+                    onClick={() => pickTeam(t)}
+                    style={pickerRowStyle(false)}
+                    title={`Dispatch to ${t} team. Lead has 10s to ack → routes to crew.`}
+                  >
+                    <span style={{
+                      width: 26, height: 26, borderRadius: 6,
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      background: 'color-mix(in srgb, var(--warning) 15%, transparent)',
+                      border: '1px solid var(--warning)',
+                      color: 'var(--warning)',
+                      fontFamily: 'var(--font-mono, monospace)', fontSize: 11, fontWeight: 600,
+                    }}>{t.slice(0, 2).toUpperCase()}</span>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 12.5 }}>
+                        {t}
+                        <span style={{
+                          marginLeft: 6, fontSize: 9, padding: '1px 5px', borderRadius: 999,
+                          border: '1px solid var(--warning)', color: 'var(--warning)',
+                          fontFamily: 'var(--font-mono, monospace)',
+                        }}>queue</span>
+                      </div>
+                      <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+                        lead acks → routes to the matching crew
+                      </div>
+                    </span>
+                  </button>
+                ))}
+              </>
+            );
+          })()}
+
+          {/* Crews */}
+          {filteredCrews.length > 0 && (
+            <>
+              <div style={pickerSectionHeaderStyle}>Crews · direct (skip queue)</div>
+              {filteredCrews.map((c) => {
+                const initials = (c.name.match(/[A-Z]/g)?.join('') ?? c.name.slice(0, 2)).slice(0, 2).toUpperCase();
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => pickCrew(c)}
+                    style={pickerRowStyle(false)}
+                    title={c.summary || c.name}
+                  >
+                    <TeamAvatar lead={c.lead} initials={initials} size={26} />
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 12.5 }}>
+                        {c.name}
+                        <span style={{
+                          marginLeft: 6, fontSize: 9, padding: '1px 5px', borderRadius: 999,
+                          border: '1px solid var(--accent)', color: 'var(--accent)',
+                          fontFamily: 'var(--font-mono, monospace)',
+                        }}>crew</span>
+                      </div>
+                      <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+                        {c.lead ? `lead ${c.lead}` : 'no lead'}
+                        {c.summary ? ` · ${c.summary}` : ''}
+                      </div>
+                    </span>
+                  </button>
+                );
+              })}
+            </>
+          )}
+
+          {filteredCrews.length === 0 && query.trim() && (
+            <div style={{ padding: 12, fontSize: 11, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>No matches.</div>
+          )}
         </div>
       )}
     </div>

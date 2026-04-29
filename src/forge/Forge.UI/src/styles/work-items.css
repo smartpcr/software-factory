@@ -437,9 +437,17 @@
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  cursor: pointer;
+  /* Drag-and-drop affordance: the card is both clickable AND draggable.
+     `grab` signals "press and drag" instead of `pointer` which reads as
+     "click target only". Flipped to `grabbing` while a drag is active
+     by .dragging below. */
+  cursor: grab;
+  user-select: none;
   transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
   text-align: left;
+}
+.wit-board-card:active {
+  cursor: grabbing;
 }
 .wit-board-card:hover {
   border-color: var(--border-strong);

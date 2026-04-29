@@ -38,6 +38,20 @@ export interface WorkItemAssignee {
   initials: string;
 }
 
+/**
+ * Phase 22 — runtime-assigned agent(s). Independent of the WIT-level
+ * `assignedTo` which carries the ADO/human assignee. Set by the queue
+ * worker when an agent claims the task; cleared on completion or restart.
+ */
+export interface AssignedAgent {
+  agents: string[];
+  team?: string | null;
+  crewId?: string | null;
+  role: string;
+  assignedAt: string;
+  assignedBy?: string | null;
+}
+
 export interface WorkItem {
   id: string;
   /** Null when the item isn't yet pinned to a repo (rare; mostly local-only). */
@@ -61,6 +75,8 @@ export interface WorkItem {
   iterationRef: string;
   areaPath: string;
   assignedTo: WorkItemAssignee | null;
+  /** Phase 22 — runtime agent assignment (set by queue worker, independent of WIT assignee). */
+  assignedAgent?: AssignedAgent | null;
   points: number;
   priority: WorkItemPriority;
   tags: string[];

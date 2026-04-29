@@ -39,7 +39,11 @@ const STATE_COPY: Record<WorkItemState, { label: string; sub: string }> = {
 // /api/work-items/{id}/move).
 export function WorkItemBoard({ items }: Props) {
   const setItemStateApi = useWorkItemsStore((s) => s.setState);
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+  // 8-pixel activation threshold — far enough to avoid accidental drags on
+  // a sticky-trackpad click, close enough that a deliberate move starts the
+  // drag immediately. Below 6 the drag mis-fires as a select on jittery
+  // mice; above 12 it feels unresponsive.
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
   const [draggingId, setDraggingId] = useState<string | null>(null);
 
   const buckets: Record<WorkItemState, WorkItem[]> = {

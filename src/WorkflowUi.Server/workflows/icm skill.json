@@ -98,7 +98,9 @@
         "confidence": 70,
         "maxTokens": 4096,
         "inputBindings": "{\"incidentFolderPath\":\"incidentFolder\",\"incident_folder\":\"incidentFolder\",\"repos_catalog\":\"repoMdFile\"}",
-        "workingDirectory": "global.incidentFolder"
+        "workingDirectory": "global.incidentFolder",
+        "timeoutRetries": 1,
+        "continueOnTimeoutExhausted": true
       },
       "joinType": "All",
       "priority": "Normal",
@@ -305,7 +307,7 @@
       "nodeName": "While",
       "description": "",
       "configuration": {
-        "conditionExpression": "{queryLoopCount} < 20 && {queryScore} < 90",
+        "conditionExpression": "{queryLoopCount} < 5 && {queryScore} < 90",
         "maxIterations": 1000
       },
       "joinType": "Any",
