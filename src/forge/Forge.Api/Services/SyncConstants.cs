@@ -7,9 +7,9 @@
 namespace Forge.Api.Services;
 
 /// <summary>
-/// Phase 23 — canonical constants for the scheduled work-item sync job.
-/// Values are pinned here so the spec-consistency test (<c>Phase23SyncConstantsTests</c>)
-/// can assert them verbatim against the prose in <c>forge_implementation.md</c>.
+/// Phase 23 + 24 — canonical constants for the scheduled sync jobs.
+/// Values are pinned here so the spec-consistency tests can assert them
+/// verbatim against the prose in <c>forge_implementation.md</c>.
 /// </summary>
 public static class SyncConstants
 {
@@ -39,4 +39,13 @@ public static class SyncConstants
 
     /// <summary>Default team name when <c>Repo.AgentReadyDefaultTeam</c> is null (Q23.8).</summary>
     public const string AgentReadyDefaultTeam = "Engineering";
+
+    /// <summary>Phase 24 — base tick interval for the PR sync loop (20 min).</summary>
+    public const int PrSyncIntervalSeconds = 1200;
+
+    /// <summary>Phase 24 — max parallel PR sync operations per tick.</summary>
+    public const int PrSyncMaxParallel = 8;
+
+    /// <summary>Phase 24 — comment page size per provider request.</summary>
+    public const int PrCommentPageSize = 100;
 }

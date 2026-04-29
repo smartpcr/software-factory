@@ -230,6 +230,96 @@ public class PrRow
     public bool Blocked { get; set; }
 
     public string? ImplJson { get; set; }
+
+    /// <summary>Phase 16.18 — work item this PR was created for. Null for externally-discovered PRs.</summary>
+    public string? WorkItemId { get; set; }
+
+    /// <summary>Phase 24 — false when PR reaches terminal state (completed/abandoned). Sweep skips inactive PRs.</summary>
+    public bool IsActive { get; set; } = true;
+
+    /// <summary>Phase 24 — ISO-8601 cursor for last successful sync.</summary>
+    public string? LastSyncAt { get; set; }
+
+    /// <summary>Phase 24 — idle | running | failed.</summary>
+    public string LastSyncStatus { get; set; } = "idle";
+
+    /// <summary>Phase 24 — last error message from sync.</summary>
+    public string? LastSyncError { get; set; }
+
+    /// <summary>Phase 24 — wall-clock guard for stale-running detection.</summary>
+    public string? IsRunningSince { get; set; }
+
+    /// <summary>Phase 24 — opaque per-provider cursor for comment pagination.</summary>
+    public string? CommentSyncCursor { get; set; }
+
+    /// <summary>Phase 24 — upstream's updatedAt from last successful sync.</summary>
+    public string? LastUpstreamUpdatedAt { get; set; }
+
+    /// <summary>Phase 24 — one of: ado, github. Null for seed data.</summary>
+    public string? Provider { get; set; }
+
+    /// <summary>Phase 24 — provider's PR id/number.</summary>
+    public string? ProviderRef { get; set; }
+}
+
+/// <summary>Phase 24 — mirrors upstream PR comment threads + individual comments.</summary>
+public class PrCommentRow
+{
+    public long Id { get; set; }
+
+    public string PrId { get; set; } = string.Empty;
+
+    public string ProviderCommentId { get; set; } = string.Empty;
+
+    public string ThreadId { get; set; } = string.Empty;
+
+    public long? ParentCommentId { get; set; }
+
+    public string? AuthorId { get; set; }
+
+    public string AuthorKind { get; set; } = "human";
+
+    public string Body { get; set; } = string.Empty;
+
+    public string? FilePath { get; set; }
+
+    public int? Line { get; set; }
+
+    public string State { get; set; } = "active";
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public string? ResolvedByUserId { get; set; }
+
+    public DateTimeOffset? ResolvedAt { get; set; }
+
+    public string? LinkedCommitSha { get; set; }
+
+    public long? LinkedAgentResponseId { get; set; }
+
+    public bool RequiresAttention { get; set; }
+}
+
+/// <summary>Phase 24 — append-only audit per comment state transition.</summary>
+public class PrCommentHistoryRow
+{
+    public long Id { get; set; }
+
+    public long CommentId { get; set; }
+
+    public string Kind { get; set; } = string.Empty;
+
+    public string? FromValue { get; set; }
+
+    public string? ToValue { get; set; }
+
+    public string? ByUserId { get; set; }
+
+    public DateTimeOffset At { get; set; } = DateTimeOffset.UtcNow;
+
+    public string? PayloadJson { get; set; }
 }
 
 public class WsStatRow

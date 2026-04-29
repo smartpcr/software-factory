@@ -126,6 +126,9 @@ builder.Services.AddScoped<Forge.Api.Services.ITaskQueueService, Forge.Api.Servi
 // Phase 17.4 — queue worker hosted service (boot scan + 5s tick).
 builder.Services.AddSingleton<Forge.Api.Services.CrewQueueWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.CrewQueueWorker>());
+// Phase 24 — PR state & comment sync sweep.
+builder.Services.AddSingleton<Forge.Api.Services.PrSyncJob>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.PrSyncJob>());
 builder.Services.AddSingleton<AutoMergeWatcher>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoMergeWatcher>());
 builder.Services.AddHttpContextAccessor();
@@ -206,6 +209,8 @@ using (var scope = app.Services.CreateScope())
     await Phase22Migration.ApplyAsync(db);
     // Phase 23 — scheduled work-item sync columns + sync-runs table.
     await Phase23Migration.ApplyAsync(db);
+    // Phase 24 — PR sync + comment lifecycle tables and columns.
+    await Phase24Migration.ApplyAsync(db);
     await ForgeSeed.EnsureSeededAsync(db);
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.
@@ -271,6 +276,8 @@ app.MapQueueEndpoints();
 app.MapAdminEndpoints();
 // Phase 22 — assigned-agent + assignment history endpoints.
 app.MapAgentAssignmentsEndpoints();
+// Phase 24 — PR comment CRUD + resolve/reopen endpoints.
+app.MapPrCommentsEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 
