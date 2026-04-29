@@ -99,6 +99,9 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<ProviderSyncServic
 // to resolve a fresh ForgeDbContext per sync call.
 builder.Services.AddSingleton<WorkItemSyncService>();
 
+// Phase 23 — scheduled work-item sync job (20-min cadence).
+builder.Services.AddHostedService<Forge.Api.Services.WorkItemSyncJob>();
+
 // Phase 6 — write-side: human-gate, auto-merge watcher, audit + idempotency, user context.
 builder.Services.Configure<HumanGateOptions>(builder.Configuration.GetSection(HumanGateOptions.SectionName));
 builder.Services.AddSingleton<IHumanGateEvaluator, HumanGateEvaluator>();
@@ -201,6 +204,8 @@ using (var scope = app.Services.CreateScope())
     await Phase21Migration.ApplyAsync(db);
     // Phase 22 — AssignedAgent field + agent_assignments history + backfill.
     await Phase22Migration.ApplyAsync(db);
+    // Phase 23 — scheduled work-item sync columns + sync-runs table.
+    await Phase23Migration.ApplyAsync(db);
     await ForgeSeed.EnsureSeededAsync(db);
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.

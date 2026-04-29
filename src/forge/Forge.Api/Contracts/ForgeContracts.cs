@@ -424,7 +424,10 @@ public sealed record UpdateRepoRequest(
     string? AdoOrg = null,
     string? AdoProject = null,
     string? GhOwner = null,
-    string? GhRepo = null);
+    string? GhRepo = null,
+    // Phase 23 — scheduled sync configuration.
+    IReadOnlyList<string>? AreaPaths = null,
+    string? AgentReadyDefaultTeam = null);
 
 /// <summary>
 /// Phase 11.3 — agent listing payload.

@@ -10,6 +10,7 @@ using Forge.Api.Auth;
 using Forge.Api.Contracts;
 using Forge.Api.Domain;
 using Forge.Api.Persistence;
+using Forge.Api.Providers;
 using Forge.Api.Realtime;
 using Forge.Api.Services.Git;
 using Microsoft.AspNetCore.Http;
@@ -46,6 +47,11 @@ public static class ProductsEndpoints
         repos.MapPatch("/{id}", PatchRepo).WithName("PatchRepo");
         repos.MapPost("/{id}/clone", CloneRepo).WithName("CloneRepo");
         repos.MapDelete("/{id}", DeleteRepo).WithName("DeleteRepo");
+
+        // Phase 23 — scheduled sync endpoints.
+        repos.MapPost("/{id}/sync-work-items", TriggerRepoSync).WithName("TriggerRepoSync");
+        repos.MapGet("/{id}/sync-work-items/runs", GetRepoSyncRuns).WithName("GetRepoSyncRuns");
+        repos.MapGet("/{id}/sync-work-items/status", GetRepoSyncStatus).WithName("GetRepoSyncStatus");
 
         return app;
     }
@@ -84,6 +90,18 @@ public static class ProductsEndpoints
         if (req.AdoProject is not null) row.AdoProject = NullIfEmpty(req.AdoProject);
         if (req.GhOwner is not null)    row.GhOwner    = NullIfEmpty(req.GhOwner);
         if (req.GhRepo is not null)     row.GhRepo     = NullIfEmpty(req.GhRepo);
+
+        // Phase 23 — area-path scope + agent-ready default team.
+        if (req.AreaPaths is not null)
+        {
+            row.AreaPathsJson = req.AreaPaths.Count == 0
+                ? null
+                : System.Text.Json.JsonSerializer.Serialize(req.AreaPaths);
+        }
+        if (req.AgentReadyDefaultTeam is not null)
+        {
+            row.AgentReadyDefaultTeam = NullIfEmpty(req.AgentReadyDefaultTeam);
+        }
 
         await db.SaveChangesAsync();
         var repo = MapRepo(row);
@@ -479,5 +497,135 @@ public static class ProductsEndpoints
             else if (ch is ' ' or '-' or '_') b.Append('-');
         }
         return b.ToString().Trim('-');
+    }
+
+    // ----- Phase 23 — scheduled sync endpoints ----------------------------
+
+    public sealed record TriggerSyncRequest(
+        bool IgnoreThrottle = false,
+        string Kind = "auto");
+
+    private static async Task<IResult> TriggerRepoSync(
+        HttpContext ctx,
+        string id,
+        [FromBody] TriggerSyncRequest? req,
+        ForgeDbContext db,
+        WorkItemSyncService syncService,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == id, ct);
+        if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+
+        var ignoreThrottle = req?.IgnoreThrottle ?? false;
+        if (ignoreThrottle)
+        {
+            var gate = RequireRole.Check(ctx, db, RequireRole.ProductOwner);
+            if (gate is not null) return gate;
+        }
+
+        // kind='full' clears the delta cursor so the next run uses the initial window.
+        var kind = req?.Kind ?? "auto";
+        if (string.Equals(kind, "full", StringComparison.OrdinalIgnoreCase))
+        {
+            repo.LastSyncAt = null;
+            await db.SaveChangesAsync(ct);
+        }
+
+        // Build filters from the repo's sync state.
+        DateTimeOffset? updatedFrom = null;
+        if (!string.IsNullOrEmpty(repo.LastSyncAt)
+            && DateTimeOffset.TryParse(repo.LastSyncAt, out var lastSync))
+        {
+            updatedFrom = lastSync;
+        }
+
+        var filters = new WorkItemSyncFilters(UpdatedFrom: updatedFrom);
+        var result = await syncService.SyncAsync(repo, filters, ignoreThrottle, ct);
+
+        if (result.Error is not null && result.Pulled == 0 && result.Inserted == 0)
+        {
+            var status = result.Error.StartsWith("Rate limit", StringComparison.OrdinalIgnoreCase) ? 429
+                : result.Error.Contains("not configured", StringComparison.OrdinalIgnoreCase) ? 400
+                : 502;
+            return Results.Problem(title: result.Error, statusCode: status);
+        }
+
+        // Record the sync run.
+        db.WorkItemSyncRuns.Add(new WorkItemSyncRunRow
+        {
+            Id = $"sr-{Guid.NewGuid():N}",
+            RepoId = id,
+            Kind = "manual",
+            StartedAt = DateTimeOffset.UtcNow.ToString("o"),
+            FinishedAt = DateTimeOffset.UtcNow.ToString("o"),
+            ItemsAdded = result.Inserted,
+            ItemsUpdated = result.Updated,
+            ErrorMessage = result.Error,
+            CompletedSuccessfully = result.Error is null,
+        });
+        await db.SaveChangesAsync(ct);
+
+        return Results.Ok(new
+        {
+            repoId = id,
+            pulled = result.Pulled,
+            inserted = result.Inserted,
+            updated = result.Updated,
+            skipped = result.Skipped,
+            error = result.Error,
+        });
+    }
+
+    private static async Task<IResult> GetRepoSyncRuns(
+        HttpContext ctx,
+        string id,
+        ForgeDbContext db,
+        [FromQuery] int? limit,
+        CancellationToken ct)
+    {
+        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+        if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+
+        var max = Math.Clamp(limit ?? 20, 1, 100);
+        var runs = await db.WorkItemSyncRuns
+            .Where(r => r.RepoId == id)
+            .OrderByDescending(r => r.StartedAt)
+            .Take(max)
+            .Select(r => new
+            {
+                r.Id,
+                r.Kind,
+                r.StartedAt,
+                r.FinishedAt,
+                r.ItemsAdded,
+                r.ItemsUpdated,
+                r.ItemsConflicted,
+                r.ErrorMessage,
+                r.CompletedSuccessfully,
+            })
+            .ToListAsync(ct);
+
+        return Results.Ok(runs);
+    }
+
+    private static async Task<IResult> GetRepoSyncStatus(
+        HttpContext ctx,
+        string id,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+        if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+
+        return Results.Ok(new
+        {
+            lastSyncAt = repo.LastSyncAt,
+            lastSyncStatus = repo.LastSyncStatus,
+            lastSyncError = repo.LastSyncError,
+            isRunningSince = repo.IsRunningSince,
+        });
     }
 }
