@@ -700,13 +700,16 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 var evalBackend = string.Equals(evalBackendStr, "claude", StringComparison.OrdinalIgnoreCase)
                     ? AgentBackend.Claude : AgentBackend.Copilot;
 
-                // The evaluator uses SDK mode but with a system message that
-                // explicitly forbids tool use and demands structured JSON output.
-                // This ensures the response is text-only with a parseable score.
+                // The evaluator inspects the worktree directly using read-only
+                // tools (view, grep, git diff). No generator output is stuffed into
+                // the prompt — the evaluator sees the actual deliverable, not
+                // a parroted narration of how the generator produced it.
                 var evalSoulForScoring = (string.IsNullOrEmpty(evalSoul) ? "" : evalSoul + "\n\n---\n\n")
                     + "CRITICAL RULES FOR THIS SESSION:\n"
-                    + "1. Do NOT call any tools. Do NOT use grep, view, edit, or any other tool.\n"
-                    + "2. Review the work output provided in the user message.\n"
+                    + "1. Use tools (view, grep, powershell) to inspect the worktree and understand what changed.\n"
+                    + "   Run `git diff HEAD~1 --stat -p` to see the actual code changes.\n"
+                    + "   Read modified files to verify correctness.\n"
+                    + "2. Do NOT modify any files. Do NOT commit, push, or run builds. Read-only inspection only.\n"
                     + "3. End your response with a fenced JSON block:\n"
                     + "```json\n{ \"score\": <0-100>, \"notes\": \"<feedback>\" }\n```\n"
                     + "4. Score >= 90 = pass, 70-89 = iterate, < 70 = reject.\n"
@@ -725,59 +728,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     Backend: evalBackend,
                     InvokeMode: AgentInvokeMode.Sdk);
 
-                // Build focused evaluator input: git diff (actual changes) + cleaned
-                // summary. The raw genOutput includes verbose tool-call narration from
-                // the Copilot CLI that wastes evaluator tokens and dilutes focus.
-                var reviewContent = new System.Text.StringBuilder();
-
-                // 1. Git diff — the primary artifact for code review.
-                if (!string.IsNullOrEmpty(worktreePath) && Directory.Exists(worktreePath))
-                {
-                    try
-                    {
-                        var psi = new System.Diagnostics.ProcessStartInfo("git", "diff HEAD~1 --stat -p")
-                        {
-                            WorkingDirectory = worktreePath,
-                            RedirectStandardOutput = true,
-                            RedirectStandardError = true,
-                            UseShellExecute = false,
-                            CreateNoWindow = true,
-                        };
-                        using var proc = System.Diagnostics.Process.Start(psi);
-                        if (proc is not null)
-                        {
-                            var diff = await proc.StandardOutput.ReadToEndAsync(iterCt);
-                            await proc.WaitForExitAsync(iterCt);
-                            if (proc.ExitCode == 0 && diff.Length > 10)
-                            {
-                                reviewContent.AppendLine("## Git Diff (actual changes)");
-                                reviewContent.AppendLine("```diff");
-                                reviewContent.AppendLine(diff.Length > 30000 ? diff[..30000] + "\n... (truncated)" : diff);
-                                reviewContent.AppendLine("```");
-                                reviewContent.AppendLine();
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        this.logger.LogDebug(ex, "Git diff for evaluator failed for wi={Wi}", workItemId);
-                    }
-                }
-
-                // 2. Cleaned generator summary — strip tool-call narration and noise.
-                var cleanedOutput = CleanGeneratorOutput(genOutput);
-                if (cleanedOutput.Length > 0)
-                {
-                    reviewContent.AppendLine("## Agent Summary");
-                    reviewContent.AppendLine(cleanedOutput.Length > 15000
-                        ? cleanedOutput[..15000] + "\n... (truncated)"
-                        : cleanedOutput);
-                }
-
-                var reviewText = reviewContent.Length > 0
-                    ? reviewContent.ToString()
-                    : genOutput.Substring(0, Math.Min(genOutput.Length, 50000));
-
+                // The evaluator prompt is lean — just the task context + work item
+                // title. The evaluator uses tools to inspect the worktree itself.
+                var wiTitle = wi?.Title ?? workItemId;
                 var evalPrompt = "You are a critical code reviewer scoring agent work.\n\n"
                     + "IMPORTANT: You MUST end your response with a fenced JSON block in exactly this format:\n"
                     + "```json\n"
@@ -793,8 +746,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     + "- Why this fix addresses the root cause (or doesn't)\n"
                     + "- Any remaining risks, edge cases, or suggestions\n"
                     + "Do NOT mention build/test pass — that is assumed. Focus on technical substance.\n\n"
-                    + $"Review the following work output from iteration {iter}:\n\n"
-                    + reviewText;
+                    + $"Review iteration {iter} for work item: **{wiTitle}**\n\n"
+                    + "Start by running `git diff HEAD~1 --stat -p` to see what was changed, "
+                    + "then read the modified files to verify the approach is correct.";
 
                 var invocation = await runner.StartAsync(workItemId, evaluatorAgentId, evalPrompt, evalContext, iterCt);
 
@@ -1594,10 +1548,12 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             if (hasOpenRow) continue;
 
             // No open queue row + executionStatus=live → stuck badge.
-            var lastDeliv = await db.Deliverables.AsNoTracking()
+            var delivCandidates = await db.Deliverables.AsNoTracking()
                 .Where(d => d.WorkItemId == wi.Id)
+                .ToListAsync(ct);
+            var lastDeliv = delivCandidates
                 .OrderByDescending(d => d.Iter).ThenByDescending(d => d.CreatedAt)
-                .FirstOrDefaultAsync(ct);
+                .FirstOrDefault();
 
             var canResume = lastDeliv is not null
                 && lastDeliv.Verdict is "iterate" or "stalled" or "stalled-budget"
@@ -1761,52 +1717,5 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             return segs[gitIdx + 1].TrimEnd('/');
         }
         return null;
-    }
-
-    /// <summary>
-    /// Strip tool-call narration, system notifications, and filler text from
-    /// the generator's raw output so the evaluator sees only substantive content.
-    /// </summary>
-    private static string CleanGeneratorOutput(string raw)
-    {
-        if (string.IsNullOrEmpty(raw)) return string.Empty;
-
-        var sb = new System.Text.StringBuilder(raw.Length / 2);
-        var inNotification = false;
-
-        foreach (var line in raw.Split('\n'))
-        {
-            var trimmed = line.TrimStart();
-
-            // Skip <system_notification> blocks
-            if (trimmed.StartsWith("<system_notification>", StringComparison.Ordinal))
-            {
-                inNotification = !trimmed.Contains("</system_notification>");
-                continue;
-            }
-
-            if (inNotification)
-            {
-                if (trimmed.Contains("</system_notification>")) inNotification = false;
-                continue;
-            }
-
-            // Skip tool-call narration patterns
-            if (trimmed.StartsWith("Let me ", StringComparison.OrdinalIgnoreCase)
-                || trimmed.StartsWith("Now let me ", StringComparison.OrdinalIgnoreCase)
-                || trimmed.StartsWith("I'll ", StringComparison.OrdinalIgnoreCase)
-                || trimmed.StartsWith("Still waiting on ", StringComparison.OrdinalIgnoreCase)
-                || trimmed.StartsWith("Perfect! Now ", StringComparison.OrdinalIgnoreCase)
-                || trimmed.StartsWith("Good! Now ", StringComparison.OrdinalIgnoreCase)
-                || trimmed.StartsWith("Excellent! ", StringComparison.OrdinalIgnoreCase)
-                || trimmed.StartsWith("Perfect! Let me ", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            sb.AppendLine(line);
-        }
-
-        return sb.ToString().Trim();
     }
 }
