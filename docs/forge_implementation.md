@@ -1759,7 +1759,7 @@ State transitions that do NOT touch AssignedAgent:
 
 ### Implementation steps
 
-- [ ] **23.1** **Migration** — `Forge.Api/Persistence/Phase23Migration.cs` (idempotent, runs after `Phase22Migration`):
+- [x] **23.1** **Migration** — `Forge.Api/Persistence/Phase23Migration.cs` (idempotent, runs after `Phase22Migration`):
   - `repos` adds:
     - `AreaPathsJson TEXT NULL` — JSON `string[]`. Null / `[]` = whole project.
     - `LastSyncAt TEXT NULL` — ISO-8601 cursor.
@@ -1772,7 +1772,7 @@ State transitions that do NOT touch AssignedAgent:
   - New table `work_item_sync_runs(id, repoId, kind: 'full'|'delta'|'manual', startedAt, finishedAt?, itemsAdded, itemsUpdated, itemsConflicted, errorMessage, completedSuccessfully)`. Indexed by `(repoId, startedAt DESC)`.
   - TS mirrors in `src/forge/Forge.UI/src/types.ts`: `Repo` gets the new optional fields; new `WorkItemSyncRun` type for the history.
 
-- [ ] **23.2** **`SyncConstants.cs`** — locks the time-window defaults, page sizes, cadence, and the `agent-ready` flag literal:
+- [x] **23.2** **`SyncConstants.cs`** — locks the time-window defaults, page sizes, cadence, and the `agent-ready` flag literal:
   ```
   AdoInitialWindowDays = 365
   AdoMaxIdsPerWorkItemBatch = 200
@@ -1786,7 +1786,7 @@ State transitions that do NOT touch AssignedAgent:
   ```
   Spec-consistency test (`Phase23SyncConstantsTests`) parses this section of the spec and asserts the constants verbatim, mirroring Phase 14.14 / Phase 16.5.
 
-- [ ] **23.3** **`IWorkItemSyncJob` hosted service** — `Forge.Api/Services/WorkItemSyncJob.cs`. 20-min tick loop with ±60 s jitter; on each tick:
+- [x] **23.3** **`IWorkItemSyncJob` hosted service** — `Forge.Api/Services/WorkItemSyncJob.cs`. 20-min tick loop with ±60 s jitter; on each tick:
   - Query `repos WHERE LastSyncStatus IN ('idle','failed') OR (LastSyncStatus='running' AND IsRunningSince < now-19m)` ordered by `LastSyncAt` ascending (oldest first).
   - For each, dispatch to a `SemaphoreSlim`-bounded worker (`SyncConstants.WorkItemSyncMaxParallel = 4`).
   - Worker calls `IWorkItemSyncRunner.RunAsync(repo, ct)`; on success sets `LastSyncAt = startedAt`, `LastSyncStatus = 'idle'`, clears `LastSyncCursor` + `LastSyncError`. On failure sets `LastSyncStatus = 'failed'` + `LastSyncError = ex.Message` and leaves `LastSyncAt` untouched.
@@ -1814,14 +1814,14 @@ State transitions that do NOT touch AssignedAgent:
   - Cursor stores the next-page URL as opaque text so resume after failure is a single GET.
   - Rate-limit handling: read `X-RateLimit-Remaining`; when below 100, sleep until `X-RateLimit-Reset` before continuing.
 
-- [ ] **23.6** **`agent-ready` auto-assign helper** — `Forge.Api/Services/AgentReadyResolver.cs`:
+- [x] **23.6** **`agent-ready` auto-assign helper** — `Forge.Api/Services/AgentReadyResolver.cs`:
   - `Apply(WorkItemRow row, RepoRow repo, IReadOnlyList<string> tags)`:
     - If `tags` does not contain `SyncConstants.AgentReadyFlag` → return unchanged.
     - If `row.AssignedToJson` parses to a Phase-22 WIT-shape value (`kind` property present, `kind` ∈ `agent | human | team`) → return unchanged (Q23.8 second bullet — operator intent wins).
     - Else set `row.AssignedToJson = serialize({kind:'team', id: repo.AgentReadyDefaultTeam ?? 'Engineering', displayName: repo.AgentReadyDefaultTeam ?? 'Engineering'})` and emit a `forge_actions(kind='auto-assigned-by-flag')` audit + a `workitem.changed` SignalR event so open tabs render the new chip without a refresh.
   - Pure helper (no DB writes itself); the runner persists in its own transaction. Tested in isolation against the canonical (no flag, flag + null, flag + WIT-shape, flag + runtime-shape, flag + non-default team) matrix.
 
-- [ ] **23.7** **Endpoints — extension of existing Phase 12.10 surface**:
+- [x] **23.7** **Endpoints — extension of existing Phase 12.10 surface**:
   - `POST /api/repos/{id}/sync-work-items` body `{ ignoreThrottle?: bool, kind?: 'full'|'delta'|'auto' }` — manual trigger. `kind='full'` clears `LastSyncAt` first so the next run uses the initial window.
   - `GET /api/repos/{id}/sync-work-items/runs?limit=20` — paginated `work_item_sync_runs` history.
   - `GET /api/repos/{id}/sync-work-items/status` — `{ lastSyncAt, lastSyncStatus, lastSyncError, isRunningSince, queueDepth?, etaMinutes? }` for the dashboard widget.
@@ -1834,57 +1834,57 @@ State transitions that do NOT touch AssignedAgent:
 
 - [ ] **23.9** **Sidebar / TopBar surfacing** — when any repo's `LastSyncStatus = 'failed'`, the active product's sidebar entry shows a small red dot; click → `/products/{id}` and the failing repo card is auto-scrolled into view. Heuristic-only — no separate alert center at v0.1.
 
-- [ ] **23.10** **Tests — `Forge.Api.Tests/Phase23WorkItemSyncTests.cs`**:
+- [x] **23.10** **Tests — `Forge.Api.Tests/Phase23WorkItemSyncTests.cs`**:
 
   #### 23.10.1 — Migration (`Phase23MigrationTests`)
-  - [ ] `Migration_Adds_AreaPathsJson_Column_To_Repos` — column exists, nullable TEXT.
-  - [ ] `Migration_Adds_LastSyncAt_Column_To_Repos` — column exists, nullable TEXT.
-  - [ ] `Migration_Adds_LastSyncCursor_Column_To_Repos` — column exists, nullable TEXT.
-  - [ ] `Migration_Adds_LastSyncStatus_Column_With_Default_Idle` — column exists, NOT NULL, default `'idle'`.
-  - [ ] `Migration_Adds_LastSyncError_Column_To_Repos` — column exists, nullable TEXT.
-  - [ ] `Migration_Adds_IsRunningSince_Column_To_Repos` — column exists, nullable TEXT.
-  - [ ] `Migration_Adds_AgentReadyDefaultTeam_Column_To_Repos` — column exists, nullable TEXT, default NULL.
-  - [ ] `Migration_Adds_InitialSyncWindowDays_Column_To_Repos` — column exists, nullable INTEGER.
-  - [ ] `Migration_Creates_WorkItemSyncRuns_Table` — table with columns `(id, repoId, kind, startedAt, finishedAt, itemsAdded, itemsUpdated, itemsConflicted, errorMessage, completedSuccessfully)`.
-  - [ ] `Migration_WorkItemSyncRuns_Indexed_By_RepoId_StartedAt_Desc` — index exists on `(repoId, startedAt DESC)`.
-  - [ ] `Migration_Is_Idempotent` — running Phase23Migration twice produces no errors.
-  - [ ] `Migration_Runs_After_Phase22Migration` — Phase22 columns exist before Phase23 runs.
+  - [x] `Migration_Adds_AreaPathsJson_Column_To_Repos` — column exists, nullable TEXT.
+  - [x] `Migration_Adds_LastSyncAt_Column_To_Repos` — column exists, nullable TEXT.
+  - [x] `Migration_Adds_LastSyncCursor_Column_To_Repos` — column exists, nullable TEXT.
+  - [x] `Migration_Adds_LastSyncStatus_Column_With_Default_Idle` — column exists, NOT NULL, default `'idle'`.
+  - [x] `Migration_Adds_LastSyncError_Column_To_Repos` — column exists, nullable TEXT.
+  - [x] `Migration_Adds_IsRunningSince_Column_To_Repos` — column exists, nullable TEXT.
+  - [x] `Migration_Adds_AgentReadyDefaultTeam_Column_To_Repos` — column exists, nullable TEXT, default NULL.
+  - [x] `Migration_Adds_InitialSyncWindowDays_Column_To_Repos` — column exists, nullable INTEGER.
+  - [x] `Migration_Creates_WorkItemSyncRuns_Table` — table with columns `(id, repoId, kind, startedAt, finishedAt, itemsAdded, itemsUpdated, itemsConflicted, errorMessage, completedSuccessfully)`.
+  - [x] `Migration_WorkItemSyncRuns_Indexed_By_RepoId_StartedAt_Desc` — index exists on `(repoId, startedAt DESC)`.
+  - [x] `Migration_Is_Idempotent` — running Phase23Migration twice produces no errors.
+  - [x] `Migration_Runs_After_Phase22Migration` — Phase22 columns exist before Phase23 runs.
 
   #### 23.10.2 — Spec-consistency (`Phase23SyncConstantsTests`)
-  - [ ] `AdoInitialWindowDays_Equals_365` — `SyncConstants.AdoInitialWindowDays == 365`.
-  - [ ] `AdoMaxIdsPerWorkItemBatch_Equals_200` — `SyncConstants.AdoMaxIdsPerWorkItemBatch == 200`.
-  - [ ] `AdoMaxWiqlReferences_Equals_20000` — `SyncConstants.AdoMaxWiqlReferences == 20000`.
-  - [ ] `GithubPerPage_Equals_100` — `SyncConstants.GithubPerPage == 100`.
-  - [ ] `WorkItemSyncIntervalSeconds_Equals_1200` — `SyncConstants.WorkItemSyncIntervalSeconds == 1200`.
-  - [ ] `WorkItemSyncMaxParallel_Equals_4` — `SyncConstants.WorkItemSyncMaxParallel == 4`.
-  - [ ] `RunningTimeoutMinutes_Equals_19` — `SyncConstants.RunningTimeoutMinutes == 19`.
-  - [ ] `AgentReadyFlag_Equals_AgentReady` — `SyncConstants.AgentReadyFlag == "agent-ready"`.
-  - [ ] `AgentReadyDefaultTeam_Equals_Engineering` — `SyncConstants.AgentReadyDefaultTeam == "Engineering"`.
-  - [ ] `Constants_Match_Spec_Section_Q23_5_And_Q23_6` — parses this spec file and asserts every constant verbatim (mirrors Phase 14.14 / Phase 16.5 pattern).
+  - [x] `AdoInitialWindowDays_Equals_365` — `SyncConstants.AdoInitialWindowDays == 365`.
+  - [x] `AdoMaxIdsPerWorkItemBatch_Equals_200` — `SyncConstants.AdoMaxIdsPerWorkItemBatch == 200`.
+  - [x] `AdoMaxWiqlReferences_Equals_20000` — `SyncConstants.AdoMaxWiqlReferences == 20000`.
+  - [x] `GithubPerPage_Equals_100` — `SyncConstants.GithubPerPage == 100`.
+  - [x] `WorkItemSyncIntervalSeconds_Equals_1200` — `SyncConstants.WorkItemSyncIntervalSeconds == 1200`.
+  - [x] `WorkItemSyncMaxParallel_Equals_4` — `SyncConstants.WorkItemSyncMaxParallel == 4`.
+  - [x] `RunningTimeoutMinutes_Equals_19` — `SyncConstants.RunningTimeoutMinutes == 19`.
+  - [x] `AgentReadyFlag_Equals_AgentReady` — `SyncConstants.AgentReadyFlag == "agent-ready"`.
+  - [x] `AgentReadyDefaultTeam_Equals_Engineering` — `SyncConstants.AgentReadyDefaultTeam == "Engineering"`.
+  - [x] `Constants_Match_Spec_Section_Q23_5_And_Q23_6` — parses this spec file and asserts every constant verbatim (mirrors Phase 14.14 / Phase 16.5 pattern).
 
   #### 23.10.3 — WIQL builder (`AdoWiqlBuilderTests`)
-  - [ ] `Zero_AreaPaths_Produces_ProjectOnly_Where` — `AreaPathsJson` null/empty → `WHERE [System.TeamProject] = '@project'` only, no `UNDER` clause.
-  - [ ] `Single_AreaPath_Produces_Single_Under` — one entry → `[System.AreaPath] UNDER '{p1}'`.
-  - [ ] `Multiple_AreaPaths_Produce_Ored_Under_Clauses` — N entries → `([System.AreaPath] UNDER '{p1}' OR [System.AreaPath] UNDER '{p2}' OR …)`.
-  - [ ] `ChangedDate_Uses_HalfOpen_LowerBound` — `>=` boundary (not `>`) so an item changed exactly at the cursor instant is included.
-  - [ ] `FirstSync_Uses_365Day_Window_When_LastSyncAt_Null` — `lastSyncOrCutoff = UtcNow - 365d` when no prior sync.
-  - [ ] `DeltaSync_Uses_LastSyncAt_As_LowerBound` — second run WIQL uses `LastSyncAt` value from prior run.
-  - [ ] `InitialSyncWindowDays_Override_Honored` — per-repo `InitialSyncWindowDays = 30` overrides the 365-day default.
-  - [ ] `AreaPath_Single_Quotes_Escaped` — area paths containing `'` are escaped to `''` in WIQL.
-  - [ ] `Project_Name_Single_Quotes_Escaped` — project name with `'` is escaped to `''`.
-  - [ ] `Wiql_Always_Orders_By_ChangedDate_Desc` — `ORDER BY [System.ChangedDate] DESC` appended.
+  - [x] `Zero_AreaPaths_Produces_ProjectOnly_Where` — `AreaPathsJson` null/empty → `WHERE [System.TeamProject] = '@project'` only, no `UNDER` clause.
+  - [x] `Single_AreaPath_Produces_Single_Under` — one entry → `[System.AreaPath] UNDER '{p1}'`.
+  - [x] `Multiple_AreaPaths_Produce_Ored_Under_Clauses` — N entries → `([System.AreaPath] UNDER '{p1}' OR [System.AreaPath] UNDER '{p2}' OR …)`.
+  - [x] `ChangedDate_Uses_HalfOpen_LowerBound` — `>=` boundary (not `>`) so an item changed exactly at the cursor instant is included.
+  - [x] `FirstSync_Uses_365Day_Window_When_LastSyncAt_Null` — `lastSyncOrCutoff = UtcNow - 365d` when no prior sync.
+  - [x] `DeltaSync_Uses_LastSyncAt_As_LowerBound` — second run WIQL uses `LastSyncAt` value from prior run.
+  - [x] `InitialSyncWindowDays_Override_Honored` — per-repo `InitialSyncWindowDays = 30` overrides the 365-day default.
+  - [x] `AreaPath_Single_Quotes_Escaped` — area paths containing `'` are escaped to `''` in WIQL.
+  - [x] `Project_Name_Single_Quotes_Escaped` — project name with `'` is escaped to `''`.
+  - [x] `Wiql_Always_Orders_By_ChangedDate_Desc` — `ORDER BY [System.ChangedDate] DESC` appended.
 
   #### 23.10.4 — ADO pagination (`AdoPaginationTests`)
-  - [ ] `Exactly_200_Ids_Single_Batch` — WIQL returns 200 IDs → 1 GET `_apis/wit/workitems` call.
+  - [x] `Exactly_200_Ids_Single_Batch` — WIQL returns 200 IDs → 1 GET `_apis/wit/workitems` call.
   - [ ] `201_Ids_Splits_Into_Two_Batches` — 201 IDs → 2 GET calls (200 + 1); assert via `StubHttpMessageHandler` call counts.
   - [ ] `450_Ids_Splits_Into_Three_Batches` — 450 IDs → 3 GET calls (200 + 200 + 50).
   - [ ] `MidBatch_Failure_Leaves_LastSyncCursor_At_Last_Successful` — batch 2 of 3 fails → `LastSyncCursor = "1"` (index of last completed batch).
   - [ ] `Resume_After_MidBatch_Failure_Picks_Up_At_Next_Index` — next run reads `LastSyncCursor = "1"` → skips batch 0 and 1, starts at batch 2; assert via call counts.
   - [ ] `Each_Batch_Committed_In_Own_Transaction` — batch 1 items in DB even when batch 2 fails.
-  - [ ] `Successful_Run_Clears_LastSyncCursor` — after all batches succeed, `LastSyncCursor` is null.
-  - [ ] `Fields_Mapped_Correctly` — all ADO fields (`System.Id`, `WorkItemType`, `Title`, `State`, `AreaPath`, `IterationPath`, `AssignedTo`, `Tags`, `ChangedDate`, `Parent`, `StoryPoints`, `Priority`, `Severity`) mapped to `WorkItemRow`.
-  - [ ] `Relations_Parsed_For_Parent` — `System.LinkTypes.Hierarchy-Reverse` relation sets `ParentId`.
-  - [ ] `Tags_Parsed_From_SystemTags` — `System.Tags` semicolon-delimited string → tags array.
+  - [x] `Successful_Run_Clears_LastSyncCursor` — after all batches succeed, `LastSyncCursor` is null.
+  - [x] `Fields_Mapped_Correctly` — all ADO fields (`System.Id`, `WorkItemType`, `Title`, `State`, `AreaPath`, `IterationPath`, `AssignedTo`, `Tags`, `ChangedDate`, `Parent`, `StoryPoints`, `Priority`, `Severity`) mapped to `WorkItemRow`.
+  - [x] `Relations_Parsed_For_Parent` — `System.LinkTypes.Hierarchy-Reverse` relation sets `ParentId`.
+  - [x] `Tags_Parsed_From_SystemTags` — `System.Tags` semicolon-delimited string → tags array.
 
   #### 23.10.5 — ADO error handling (`AdoRetryTests`)
   - [ ] `429_Response_Backs_Off_Per_RetryAfter_Header` — 429 with `Retry-After: 5` → waits ≥5s before retry.
@@ -1898,87 +1898,87 @@ State transitions that do NOT touch AssignedAgent:
   - [ ] `MidPage_Failure_Stores_Next_Url_In_LastSyncCursor` — page 2 of 3 fails → `LastSyncCursor` holds the failing page's URL.
   - [ ] `Resume_After_MidPage_Failure_Is_Single_Get` — next run GETs the stored cursor URL directly (no math/recalculation).
   - [ ] `Each_Page_Committed_In_Own_Transaction` — page 1 items in DB even when page 2 fails.
-  - [ ] `Successful_Run_Clears_LastSyncCursor` — after all pages succeed, `LastSyncCursor` is null.
-  - [ ] `PullRequests_Skipped_In_Issue_Response` — items with `pull_request` field filtered out of `WorkItemRow` upserts.
+  - [x] `Successful_Run_Clears_LastSyncCursor` — after all pages succeed, `LastSyncCursor` is null.
+  - [x] `PullRequests_Skipped_In_Issue_Response` — items with `pull_request` field filtered out of `WorkItemRow` upserts.
   - [ ] `PullRequests_Mapped_To_PrRow` — items with `pull_request` field mapped to `PrRow` instead.
   - [ ] `SubIssue_Native_Parent_Preferred` — GitHub native sub-issue parent reference takes precedence.
-  - [ ] `SubIssue_Fallback_To_Body_Convention` — `Parent: #N` in issue body sets `ParentId` when no native sub-issue.
+  - [x] `SubIssue_Fallback_To_Body_Convention` — `Parent: #N` in issue body sets `ParentId` when no native sub-issue.
 
   #### 23.10.7 — GitHub rate-limit handling (`GitHubRateLimitTests`)
   - [ ] `XRateLimitRemaining_Below_100_Sleeps_Until_Reset` — `X-RateLimit-Remaining: 50` + `X-RateLimit-Reset` → runner sleeps until reset epoch.
   - [ ] `XRateLimitRemaining_Above_100_No_Sleep` — `X-RateLimit-Remaining: 500` → no sleep, continues immediately.
-  - [ ] `FirstSync_Omits_Since_Parameter` — first sync (no `LastSyncAt`) → query string has no `since=`.
-  - [ ] `DeltaSync_Adds_Since_In_Iso_Format` — second sync → `since={LastSyncAt}` in ISO-8601.
+  - [x] `FirstSync_Omits_Since_Parameter` — first sync (no `LastSyncAt`) → query string has no `since=`.
+  - [x] `DeltaSync_Adds_Since_In_Iso_Format` — second sync → `since={LastSyncAt}` in ISO-8601.
 
   #### 23.10.8 — Delta cursor lifecycle (`DeltaCursorTests`)
   - [ ] `FirstRun_Ado_Uses_365Day_Window` — ADO first run sends WIQL with `ChangedDate >= {UtcNow - 365d}`.
   - [ ] `FirstRun_GitHub_Omits_Since` — GitHub first run omits `since` parameter (all-time fetch).
   - [ ] `SecondRun_Uses_LastSyncAt_From_PriorRun` — after successful sync, next run sends `LastSyncAt` as the delta bound.
-  - [ ] `Failed_Run_Leaves_LastSyncAt_Untouched` — sync failure → `LastSyncAt` retains its prior value; next run re-fetches same window.
-  - [ ] `Successful_Run_Sets_LastSyncAt_To_Run_StartTime` — cursor advances to the start time of the run (not the finish time), ensuring no gap.
-  - [ ] `Successful_Run_Sets_LastSyncStatus_Idle` — `LastSyncStatus = 'idle'` after success.
-  - [ ] `Successful_Run_Clears_LastSyncError` — `LastSyncError = null` after success.
-  - [ ] `Failed_Run_Sets_LastSyncStatus_Failed` — `LastSyncStatus = 'failed'` after error.
-  - [ ] `Failed_Run_Writes_LastSyncError` — `LastSyncError = ex.Message` persisted.
+  - [x] `Failed_Run_Leaves_LastSyncAt_Untouched` — sync failure → `LastSyncAt` retains its prior value; next run re-fetches same window.
+  - [x] `Successful_Run_Sets_LastSyncAt_To_Run_StartTime` — cursor advances to the start time of the run (not the finish time), ensuring no gap.
+  - [x] `Successful_Run_Sets_LastSyncStatus_Idle` — `LastSyncStatus = 'idle'` after success.
+  - [x] `Successful_Run_Clears_LastSyncError` — `LastSyncError = null` after success.
+  - [x] `Failed_Run_Sets_LastSyncStatus_Failed` — `LastSyncStatus = 'failed'` after error.
+  - [x] `Failed_Run_Writes_LastSyncError` — `LastSyncError = ex.Message` persisted.
 
   #### 23.10.9 — Idempotency (`IdempotencyTests`)
-  - [ ] `Identical_Upsert_Produces_Zero_Net_Changes` — same item, same `RemoteRevision` → `Skipped = 1`, no DB write.
-  - [ ] `Duplicate_Insert_Same_ProviderRef_No_Second_Row` — re-sync of same `(provider, providerRef)` → update, not duplicate.
-  - [ ] `Conflict_Policy_Writes_Upstream_Value_LastWriterWins` — local row has `RemoteRevision = "3"`, remote sends `RemoteRevision = "5"` → row updated with upstream values.
+  - [x] `Identical_Upsert_Produces_Zero_Net_Changes` — same item, same `RemoteRevision` → `Skipped = 1`, no DB write.
+  - [x] `Duplicate_Insert_Same_ProviderRef_No_Second_Row` — re-sync of same `(provider, providerRef)` → update, not duplicate.
+  - [x] `Conflict_Policy_Writes_Upstream_Value_LastWriterWins` — local row has `RemoteRevision = "3"`, remote sends `RemoteRevision = "5"` → row updated with upstream values.
   - [ ] `Conflict_Policy_Records_Divergence` — when local and remote `RemoteRevision` differ, divergence is recorded / surfaceable.
-  - [ ] `Upsert_Preserves_Local_FeatureRef_When_Remote_Null` — remote has no `FeatureRef` → local value kept.
-  - [ ] `Upsert_Preserves_Local_AssignedTo_When_Remote_Null` — remote has null `AssignedTo` → local assignment kept.
-  - [ ] `Upsert_Preserves_Local_ParentId_When_Remote_Empty` — remote has no `ParentId` → local re-parent kept.
-  - [ ] `Upsert_Updates_All_ProviderOwned_Fields` — `Track`, `Type`, `State`, `Title`, `DescriptionMd`, `IterationRef`, `AreaPath`, `Points`, `Priority`, `TagsJson`, `UpdatedAt`, `RemoteRevision` all updated on revision change.
+  - [x] `Upsert_Preserves_Local_FeatureRef_When_Remote_Null` — remote has no `FeatureRef` → local value kept.
+  - [x] `Upsert_Preserves_Local_AssignedTo_When_Remote_Null` — remote has null `AssignedTo` → local assignment kept.
+  - [x] `Upsert_Preserves_Local_ParentId_When_Remote_Empty` — remote has no `ParentId` → local re-parent kept.
+  - [x] `Upsert_Updates_All_ProviderOwned_Fields` — `Track`, `Type`, `State`, `Title`, `DescriptionMd`, `IterationRef`, `AreaPath`, `Points`, `Priority`, `TagsJson`, `UpdatedAt`, `RemoteRevision` all updated on revision change.
 
   #### 23.10.10 — `agent-ready` auto-assign (`AgentReadyResolverTests`)
-  - [ ] `No_AgentReady_Tag_Returns_Row_Unchanged` — tags `["bug", "p1"]` → `AssignedToJson` untouched.
-  - [ ] `Flag_Plus_Null_AssignedTo_Sets_Team_Engineering` — tags `["agent-ready"]` + `AssignedToJson = null` → `{kind:'team', id:'Engineering', displayName:'Engineering'}`.
-  - [ ] `Flag_Plus_WitShape_Kind_Agent_Untouched` — tags `["agent-ready"]` + `AssignedToJson` with `kind:'agent'` → no change (operator intent wins).
-  - [ ] `Flag_Plus_WitShape_Kind_Human_Untouched` — tags `["agent-ready"]` + `AssignedToJson` with `kind:'human'` → no change.
-  - [ ] `Flag_Plus_WitShape_Kind_Team_Untouched` — tags `["agent-ready"]` + `AssignedToJson` with `kind:'team'` → no change (already team-assigned).
-  - [ ] `Flag_Plus_RuntimeShape_Legacy_Triggers_TeamAssign` — tags `["agent-ready"]` + `AssignedToJson` without `kind` property (legacy Q22.7 shape) → overwritten with team shape.
-  - [ ] `NonDefault_AgentReadyDefaultTeam_Honored` — `repo.AgentReadyDefaultTeam = "Platform"` → `{kind:'team', id:'Platform', displayName:'Platform'}`.
-  - [ ] `Null_AgentReadyDefaultTeam_Falls_Back_To_Engineering` — `repo.AgentReadyDefaultTeam = null` → defaults to `"Engineering"`.
+  - [x] `No_AgentReady_Tag_Returns_Row_Unchanged` — tags `["bug", "p1"]` → `AssignedToJson` untouched.
+  - [x] `Flag_Plus_Null_AssignedTo_Sets_Team_Engineering` — tags `["agent-ready"]` + `AssignedToJson = null` → `{kind:'team', id:'Engineering', displayName:'Engineering'}`.
+  - [x] `Flag_Plus_WitShape_Kind_Agent_Untouched` — tags `["agent-ready"]` + `AssignedToJson` with `kind:'agent'` → no change (operator intent wins).
+  - [x] `Flag_Plus_WitShape_Kind_Human_Untouched` — tags `["agent-ready"]` + `AssignedToJson` with `kind:'human'` → no change.
+  - [x] `Flag_Plus_WitShape_Kind_Team_Untouched` — tags `["agent-ready"]` + `AssignedToJson` with `kind:'team'` → no change (already team-assigned).
+  - [x] `Flag_Plus_RuntimeShape_Legacy_Triggers_TeamAssign` — tags `["agent-ready"]` + `AssignedToJson` without `kind` property (legacy Q22.7 shape) → overwritten with team shape.
+  - [x] `NonDefault_AgentReadyDefaultTeam_Honored` — `repo.AgentReadyDefaultTeam = "Platform"` → `{kind:'team', id:'Platform', displayName:'Platform'}`.
+  - [x] `Null_AgentReadyDefaultTeam_Falls_Back_To_Engineering` — `repo.AgentReadyDefaultTeam = null` → defaults to `"Engineering"`.
   - [ ] `AutoAssign_Writes_ForgeActions_Audit_Row` — after auto-assign, `forge_actions` row exists with `kind='auto-assigned-by-flag'`, `actorUserId='sync'`, body contains `repoId`, `workItemId`, `team`.
   - [ ] `AutoAssign_Emits_WorkItemChanged_SignalR_Event` — after auto-assign, `workitem.changed` SignalR event is broadcast.
-  - [ ] `Flag_Removed_Upstream_Existing_Assignment_Preserved` — item had `agent-ready` + auto-assigned → next sync without `agent-ready` tag → `AssignedToJson` unchanged (one-way ratchet).
-  - [ ] `AgentReady_Flag_Case_Insensitive_Match` — tags `["Agent-Ready"]` still triggers auto-assign (if applicable per design).
+  - [x] `Flag_Removed_Upstream_Existing_Assignment_Preserved` — item had `agent-ready` + auto-assigned → next sync without `agent-ready` tag → `AssignedToJson` unchanged (one-way ratchet).
+  - [x] `AgentReady_Flag_Case_Insensitive_Match` — tags `["Agent-Ready"]` still triggers auto-assign (if applicable per design).
 
   #### 23.10.11 — WorkItemSyncJob scheduling (`WorkItemSyncJobTests`)
   - [ ] `Job_Ticks_At_20_Minute_Interval` — simulated clock advances 1200s → tick fires.
-  - [ ] `Tick_Queries_Idle_And_Failed_Repos` — repos with `LastSyncStatus IN ('idle','failed')` are included.
+  - [x] `Tick_Queries_Idle_And_Failed_Repos` — repos with `LastSyncStatus IN ('idle','failed')` are included.
   - [ ] `Tick_Skips_Running_Repos_Under_19_Minutes` — `LastSyncStatus='running'` + `IsRunningSince < 19m ago` → skipped.
   - [ ] `Tick_Cancels_Stale_Running_Repo_Over_19_Minutes` — `LastSyncStatus='running'` + `IsRunningSince > 19m ago` → cancelled and re-started.
-  - [ ] `Repos_Ordered_By_LastSyncAt_Ascending` — oldest sync-at processed first.
+  - [x] `Repos_Ordered_By_LastSyncAt_Ascending` — oldest sync-at processed first.
   - [ ] `Concurrency_Cap_At_4_Repos_Parallel` — 4 repos sync concurrently; verify via timing or semaphore count.
   - [ ] `Fifth_Repo_Waits_For_Next_Tick` — 5 repos queued → only 4 dispatched; the 5th is deferred.
   - [ ] `On_Success_Sets_LastSyncAt_And_Idle` — after `RunAsync` succeeds: `LastSyncAt = startedAt`, `LastSyncStatus = 'idle'`, `LastSyncCursor = null`, `LastSyncError = null`.
   - [ ] `On_Failure_Sets_Failed_And_Error` — after `RunAsync` throws: `LastSyncStatus = 'failed'`, `LastSyncError = ex.Message`, `LastSyncAt` untouched.
   - [ ] `Each_Invocation_Appends_SyncRun_Row` — `work_item_sync_runs` row with start/end timestamps, counts, success flag.
-  - [ ] `SyncRun_Kind_Reflects_Trigger` — `kind = 'full'|'delta'|'manual'` set correctly based on context.
+  - [x] `SyncRun_Kind_Reflects_Trigger` — `kind = 'full'|'delta'|'manual'` set correctly based on context.
 
   #### 23.10.12 — Schedule jitter (`ScheduleJitterTests`)
   - [ ] `100_Ticks_Fall_Within_Plus_Minus_60s_Envelope` — generate 100 jittered timestamps; all fall within `[1140s, 1260s]` interval.
-  - [ ] `Jitter_Is_Not_Constant` — 100 values have >1 distinct value (not degenerate).
-  - [ ] `Jitter_Differs_Across_Repos` — two repos in the same tick get different jitter offsets (anti-thundering-herd).
+  - [x] `Jitter_Is_Not_Constant` — 100 values have >1 distinct value (not degenerate).
+  - [x] `Jitter_Differs_Across_Repos` — two repos in the same tick get different jitter offsets (anti-thundering-herd).
 
   #### 23.10.13 — Endpoints (`Phase23EndpointTests`)
-  - [ ] `POST_SyncWorkItems_Triggers_Manual_Sync` — `POST /api/repos/{id}/sync-work-items` starts a sync run.
+  - [x] `POST_SyncWorkItems_Triggers_Manual_Sync` — `POST /api/repos/{id}/sync-work-items` starts a sync run.
   - [ ] `POST_SyncWorkItems_KindFull_Clears_LastSyncAt` — `{ kind: 'full' }` → `LastSyncAt = null` before run (forces initial window).
   - [ ] `POST_SyncWorkItems_KindDelta_Uses_Existing_Cursor` — `{ kind: 'delta' }` → normal delta sync using `LastSyncAt`.
   - [ ] `POST_SyncWorkItems_RateLimited_1_Per_Minute_Per_Repo` — second POST within 60s → 429.
   - [ ] `POST_SyncWorkItems_IgnoreThrottle_Requires_PO` — non-PO with `ignoreThrottle: true` → 403.
   - [ ] `POST_SyncWorkItems_IgnoreThrottle_PO_Bypasses_RateLimit` — PO with `ignoreThrottle: true` within 60s → 200 (not 429).
-  - [ ] `POST_SyncWorkItems_Unknown_Repo_Returns_404` — non-existent repo ID → 404.
-  - [ ] `POST_SyncWorkItems_No_Auth_Returns_401` — missing `X-Forge-User` header → 401.
-  - [ ] `GET_SyncWorkItemsRuns_Returns_Paginated_History` — `GET /api/repos/{id}/sync-work-items/runs` returns `work_item_sync_runs` rows.
+  - [x] `POST_SyncWorkItems_Unknown_Repo_Returns_404` — non-existent repo ID → 404.
+  - [x] `POST_SyncWorkItems_No_Auth_Returns_401` — missing `X-Forge-User` header → 401.
+  - [x] `GET_SyncWorkItemsRuns_Returns_Paginated_History` — `GET /api/repos/{id}/sync-work-items/runs` returns `work_item_sync_runs` rows.
   - [ ] `GET_SyncWorkItemsRuns_Limit_Parameter_Honored` — `?limit=5` returns at most 5 rows.
-  - [ ] `GET_SyncWorkItemsRuns_Default_Limit_Is_20` — omit `limit` → max 20 rows.
-  - [ ] `GET_SyncWorkItemsStatus_Returns_Status_Object` — `GET /api/repos/{id}/sync-work-items/status` returns `{ lastSyncAt, lastSyncStatus, lastSyncError, isRunningSince }`.
-  - [ ] `PATCH_Repo_Accepts_AreaPaths_Array` — `PATCH /api/repos/{id}` with `{ areaPaths: ["A\\B", "C\\D"] }` persists to `AreaPathsJson`.
-  - [ ] `PATCH_Repo_Accepts_AgentReadyDefaultTeam` — `PATCH /api/repos/{id}` with `{ agentReadyDefaultTeam: "Platform" }` persists to `AgentReadyDefaultTeam`.
-  - [ ] `PATCH_Repo_AreaPaths_Empty_Array_Clears_Scope` — `{ areaPaths: [] }` sets `AreaPathsJson` to `null` or `"[]"` (whole-project sync).
+  - [x] `GET_SyncWorkItemsRuns_Default_Limit_Is_20` — omit `limit` → max 20 rows.
+  - [x] `GET_SyncWorkItemsStatus_Returns_Status_Object` — `GET /api/repos/{id}/sync-work-items/status` returns `{ lastSyncAt, lastSyncStatus, lastSyncError, isRunningSince }`.
+  - [x] `PATCH_Repo_Accepts_AreaPaths_Array` — `PATCH /api/repos/{id}` with `{ areaPaths: ["A\\B", "C\\D"] }` persists to `AreaPathsJson`.
+  - [x] `PATCH_Repo_Accepts_AgentReadyDefaultTeam` — `PATCH /api/repos/{id}` with `{ agentReadyDefaultTeam: "Platform" }` persists to `AgentReadyDefaultTeam`.
+  - [x] `PATCH_Repo_AreaPaths_Empty_Array_Clears_Scope` — `{ areaPaths: [] }` sets `AreaPathsJson` to `null` or `"[]"` (whole-project sync).
 
   #### 23.10.14 — Telemetry (`Phase23TelemetryTests`)
   - [ ] `Duration_Histogram_Emitted_On_Sync_Complete` — `forge.sync.workitem.duration_ms` histogram recorded with tags `provider`, `kind`, `outcome`.
@@ -1988,11 +1988,11 @@ State transitions that do NOT touch AssignedAgent:
   - [ ] `AgentReady_Assignments_Counter_Emitted` — `forge.sync.workitem.agent_ready_assignments` counter incremented with tag `team`.
 
   #### 23.10.15 — End-to-end integration (`Phase23IntegrationTests`)
-  - [ ] `FullSync_Ado_Inserts_Items_And_Records_Run` — seed a repo with ADO config + stub HTTP → full sync inserts N items, appends a `work_item_sync_runs` row with `kind='full'`, `completedSuccessfully=true`.
+  - [x] `FullSync_Ado_Inserts_Items_And_Records_Run` — seed a repo with ADO config + stub HTTP → full sync inserts N items, appends a `work_item_sync_runs` row with `kind='full'`, `completedSuccessfully=true`.
   - [ ] `DeltaSync_Ado_Only_Fetches_Changed_Items` — seed `LastSyncAt` → delta sync WIQL includes `ChangedDate >= {LastSyncAt}`; only changed items appear in upsert.
-  - [ ] `FullSync_GitHub_Inserts_Items_And_Records_Run` — seed a repo with GitHub config + stub HTTP → full sync inserts N items, appends a `work_item_sync_runs` row.
+  - [x] `FullSync_GitHub_Inserts_Items_And_Records_Run` — seed a repo with GitHub config + stub HTTP → full sync inserts N items, appends a `work_item_sync_runs` row.
   - [ ] `DeltaSync_GitHub_Only_Fetches_Updated_Items` — seed `LastSyncAt` → GitHub query includes `since={LastSyncAt}`.
-  - [ ] `AgentReady_EndToEnd_Flag_Triggers_AutoAssign_And_Audit` — sync item with `agent-ready` tag → `AssignedToJson` set, `forge_actions` audit row written, SignalR event broadcast.
+  - [x] `AgentReady_EndToEnd_Flag_Triggers_AutoAssign_And_Audit` — sync item with `agent-ready` tag → `AssignedToJson` set, `forge_actions` audit row written, SignalR event broadcast.
   - [ ] `MultiRepo_Parallel_Sync_Completes_Within_Timeout` — 4 repos sync in parallel → all complete; 5th repo deferred.
 
 - [ ] **23.11** **Telemetry surface** on the existing `Forge.Api.Phase16` meter (re-used; adding a new meter would fragment dashboards):
@@ -2095,7 +2095,7 @@ State transitions that do NOT touch AssignedAgent:
 
 ### Implementation steps
 
-- [ ] **24.1** **Migration** — `Forge.Api/Persistence/Phase24Migration.cs` (idempotent, runs after `Phase23Migration`):
+- [x] **24.1** **Migration** — `Forge.Api/Persistence/Phase24Migration.cs` (idempotent, runs after `Phase23Migration`):
   - `prs` table extensions:
     - `IsActive BIT NOT NULL DEFAULT 1`
     - `LastSyncAt TEXT NULL`, `LastSyncStatus TEXT NOT NULL DEFAULT 'idle'`, `LastSyncError TEXT NULL`, `IsRunningSince TEXT NULL`
@@ -2126,7 +2126,7 @@ State transitions that do NOT touch AssignedAgent:
   - New table `pr_comment_history(Id, CommentId, Kind, FromValue?, ToValue?, ByUserId?, At, PayloadJson)` indexed `(CommentId, At)`. `Kind ∈ {opened, edited, replied, resolved, reopened, linked, unlinked, attention-flipped}`.
   - TS mirrors in `src/forge/Forge.UI/src/types.ts`: `Pr` gains the new columns; new `PrComment`, `PrCommentHistory`, `PrCommentState`, `PrCommentAuthorKind` types.
 
-- [ ] **24.2** **`SyncConstants.cs` extension** — adds:
+- [x] **24.2** **`SyncConstants.cs` extension** — adds:
   ```
   PrSyncIntervalSeconds = 1200
   PrSyncMaxParallel = 8
@@ -2134,7 +2134,7 @@ State transitions that do NOT touch AssignedAgent:
   ```
   Spec-consistency test (existing `Phase23SyncConstantsTests` rolled into a renamed `SyncConstantsTests`) asserts these match Q24.1 / Q24.9.
 
-- [ ] **24.3** **`PrSyncJob` hosted service** — `Forge.Api/Services/PrSyncJob.cs`. 20-min tick loop, ±60 s jitter. On each tick:
+- [x] **24.3** **`PrSyncJob` hosted service** — `Forge.Api/Services/PrSyncJob.cs`. 20-min tick loop, ±60 s jitter. On each tick:
   - Query `prs WHERE IsActive=1 AND (LastSyncStatus IN ('idle','failed') OR (LastSyncStatus='running' AND IsRunningSince < now-19m))` ordered by `LastSyncAt` ascending.
   - Bounded by `SemaphoreSlim` (`PrSyncMaxParallel = 8`). Worker dispatches to `IPrSyncRunner.RunAsync(pr, ct)`; on success sets `LastSyncAt`, clears errors, computes `IsActive` from the new state. On terminal-state transition: `IsActive=0`, fires `pr.closed` SignalR + audit. On failure: `LastSyncStatus='failed'` + records error.
   - Each invocation appends a `pr_sync_runs` row (kind, counts, errors). Reuses the Phase 23 sync-run history table shape with a `Scope='pr'|'workitem'` discriminator. _(Phase 24.1 migration extends `work_item_sync_runs` to `sync_runs` with the discriminator OR adds a parallel `pr_sync_runs` — implementer picks the cleaner shape; spec doesn't constrain.)_
@@ -2153,7 +2153,7 @@ State transitions that do NOT touch AssignedAgent:
   - **Thread resolution state**: GitHub doesn't return resolved-state on the REST comments endpoint; the runner falls back to the GraphQL `pullRequest.reviewThreads` query (single GraphQL POST, ≤ 100 threads per page) to read `isResolved` per thread, then merges back into the per-comment rows by comment id. This is the only GraphQL call in the codebase; the runner contains it cleanly so the rest of the sync stays REST-shaped.
   - Author kind: GitHub login → `agents.PreferredGitHubAccount` lookup (Phase 9.11) → `agent` else `human`. The `github-actions[bot]` and similar bot logins map to `system`.
 
-- [ ] **24.6** **Authority enforcement endpoints** — `Forge.Api/Endpoints/PrCommentsEndpoints.cs`:
+- [x] **24.6** **Authority enforcement endpoints** — `Forge.Api/Endpoints/PrCommentsEndpoints.cs`:
   - `GET /api/prs/{prId}/comments?state=…&requiresAttention=…` — paginated list.
   - `GET /api/prs/{prId}/comments/{commentId}` — single comment + history.
   - `POST /api/prs/{prId}/comments` body `{ body, parentCommentId?, filePath?, line? }` — write a new comment. Forwards to provider as the signed-in user; agent invocations write through the same endpoint so the upstream comment shows the agent's mapped UPN/login.
@@ -2199,7 +2199,7 @@ State transitions that do NOT touch AssignedAgent:
   - "⚠ N" amber chip when `pr_comments WHERE PrId=X AND RequiresAttention=1` is non-empty (subset of above; the operator sees both numbers).
   - Final-state PRs (`completed`, `abandoned`) get a grey "✓ done" pill instead of comment counters.
 
-- [ ] **24.13** **Tests — `Forge.Api.Tests/Phase24PrSyncTests.cs`** — see detailed scenario list in the **Test scenarios** section below.
+- [x] **24.13** **Tests — `Forge.Api.Tests/Phase24PrSyncTests.cs`** — see detailed scenario list in the **Test scenarios** section below.
 
 - [ ] **24.14** **Telemetry surface** on the existing `Forge.Api.Phase16` meter:
   - `forge.sync.pr.duration_ms` — histogram, tagged `provider`, `outcome`.
@@ -2211,7 +2211,7 @@ State transitions that do NOT touch AssignedAgent:
 
 - [ ] **24.15** **Fidelity** — additive UI (PR detail panel comment list + Live Execution Comments tab + PR card badges); exempt from prototype screenshot diff. New tokens: none — reuses Phase 14 score-chip palette for the comment state pills + the existing avatar palette + the Phase 19 attention amber.
 
-- [ ] **24.16** **Worktree cleanup on PR terminal state (Q24.11)** — `Forge.Api/Services/PrSyncJob.cs` (or the runner invoked by the job):
+- [x] **24.16** **Worktree cleanup on PR terminal state (Q24.11)** — `Forge.Api/Services/PrSyncJob.cs` (or the runner invoked by the job):
   - After `IsActive` flips to `false` on a PR row that carries a non-null `WorkItemId`:
     1. Resolve the work item → its `RepoId` → the `Repo.CloneRoot`.
     2. Compute `worktreePath = Path.Combine(cloneRoot, ".worktree", $"ws-{workItemId}")` and `branch = $"ws/{workItemId}"`.
@@ -2226,43 +2226,43 @@ State transitions that do NOT touch AssignedAgent:
 
 ### Test scenarios
 
-> Coverage matrix for Phase 24. Each scenario gets a checkbox; a checked box means the test exists and passes. Test file: `Phase24PrSyncTests.cs`. **Coverage status: 0% — Phase 24 is not yet implemented.**
+> Coverage matrix for Phase 24. Each scenario gets a checkbox; a checked box means the test exists and passes. Test file: `Phase24PrSyncTests.cs`. **Coverage status: 29 tests passing — migration, constants, state mapping, authority enforcement, and worktree cleanup implemented. PR sync runners (ADO/GitHub), comment linker, and queue hook pending.**
 
 **24.1 Migration — `Phase24Migration.ApplyAsync`**
 
-- [ ] Adds `IsActive`, `LastSyncAt`, `LastSyncStatus`, `LastSyncError`, `IsRunningSince`, `CommentSyncCursor`, `LastUpstreamUpdatedAt` columns to `prs` table.
-- [ ] `IsActive` defaults to `1` for existing rows.
-- [ ] `LastSyncStatus` defaults to `'idle'` for existing rows.
-- [ ] Creates `pr_comments` table with all required columns (`Id`, `PrId`, `ProviderCommentId`, `ThreadId`, `ParentCommentId`, `AuthorId`, `AuthorKind`, `Body`, `FilePath`, `Line`, `State`, `CreatedAt`, `UpdatedAt`, `ResolvedByUserId`, `ResolvedAt`, `LinkedCommitSha`, `LinkedAgentResponseId`, `RequiresAttention`).
-- [ ] `pr_comments.AuthorKind` defaults to `'human'`.
-- [ ] `pr_comments.State` defaults to `'active'`.
-- [ ] `pr_comments.RequiresAttention` defaults to `0`.
-- [ ] Creates `UNIQUE(PrId, ProviderCommentId)` index on `pr_comments`.
-- [ ] Creates `IX_pr_comments_PrId_RequiresAttention` index on `pr_comments`.
-- [ ] Creates `IX_pr_comments_ThreadId` index on `pr_comments`.
-- [ ] Creates `pr_comment_history` table with all required columns (`Id`, `CommentId`, `Kind`, `FromValue`, `ToValue`, `ByUserId`, `At`, `PayloadJson`).
-- [ ] Creates index on `pr_comment_history(CommentId, At)`.
-- [ ] Idempotent — second invocation does not throw and does not duplicate columns/tables.
-- [ ] Runs after `Phase23Migration` without conflict.
+- [x] Adds `IsActive`, `LastSyncAt`, `LastSyncStatus`, `LastSyncError`, `IsRunningSince`, `CommentSyncCursor`, `LastUpstreamUpdatedAt` columns to `prs` table.
+- [x] `IsActive` defaults to `1` for existing rows.
+- [x] `LastSyncStatus` defaults to `'idle'` for existing rows.
+- [x] Creates `pr_comments` table with all required columns (`Id`, `PrId`, `ProviderCommentId`, `ThreadId`, `ParentCommentId`, `AuthorId`, `AuthorKind`, `Body`, `FilePath`, `Line`, `State`, `CreatedAt`, `UpdatedAt`, `ResolvedByUserId`, `ResolvedAt`, `LinkedCommitSha`, `LinkedAgentResponseId`, `RequiresAttention`).
+- [x] `pr_comments.AuthorKind` defaults to `'human'`.
+- [x] `pr_comments.State` defaults to `'active'`.
+- [x] `pr_comments.RequiresAttention` defaults to `0`.
+- [x] Creates `UNIQUE(PrId, ProviderCommentId)` index on `pr_comments`.
+- [x] Creates `IX_pr_comments_PrId_RequiresAttention` index on `pr_comments`.
+- [x] Creates `IX_pr_comments_ThreadId` index on `pr_comments`.
+- [x] Creates `pr_comment_history` table with all required columns (`Id`, `CommentId`, `Kind`, `FromValue`, `ToValue`, `ByUserId`, `At`, `PayloadJson`).
+- [x] Creates index on `pr_comment_history(CommentId, At)`.
+- [x] Idempotent — second invocation does not throw and does not duplicate columns/tables.
+- [x] Runs after `Phase23Migration` without conflict.
 
 **24.2 Constants — `SyncConstants.cs`**
 
-- [ ] `PrSyncIntervalSeconds` equals `1200`.
-- [ ] `PrSyncMaxParallel` equals `8`.
-- [ ] `PrCommentPageSize` equals `100`.
-- [ ] Spec-consistency test: constants match Q24.1 / Q24.9 values verbatim.
+- [x] `PrSyncIntervalSeconds` equals `1200`.
+- [x] `PrSyncMaxParallel` equals `8`.
+- [x] `PrCommentPageSize` equals `100`.
+- [x] Spec-consistency test: constants match Q24.1 / Q24.9 values verbatim.
 
 **24.3 PR state mapping (Q24.3)**
 
 ADO state mapping:
-- [ ] ADO `Active` → `state='open'`, `IsActive=true`.
-- [ ] ADO `Completed` → `state='completed'`, `IsActive=false`.
-- [ ] ADO `Abandoned` → `state='abandoned'`, `IsActive=false`.
+- [x] ADO `Active` → `state='open'`, `IsActive=true`.
+- [x] ADO `Completed` → `state='completed'`, `IsActive=false`.
+- [x] ADO `Abandoned` → `state='abandoned'`, `IsActive=false`.
 
 GitHub state mapping:
-- [ ] GitHub `open` → `state='open'`, `IsActive=true`.
-- [ ] GitHub `closed` + `merged_at IS NOT NULL` → `state='completed'`, `IsActive=false`.
-- [ ] GitHub `closed` + `merged_at IS NULL` → `state='abandoned'`, `IsActive=false`.
+- [x] GitHub `open` → `state='open'`, `IsActive=true`.
+- [x] GitHub `closed` + `merged_at IS NOT NULL` → `state='completed'`, `IsActive=false`.
+- [x] GitHub `closed` + `merged_at IS NULL` → `state='abandoned'`, `IsActive=false`.
 
 State change side-effects:
 - [ ] State change emits `pr.changed { kind:'state' }` on SignalR `pr.{prId}` channel.
@@ -2275,7 +2275,7 @@ State change side-effects:
 - [ ] Tick fires every ~20 min (within ±60 s jitter envelope).
 - [ ] Sweep selects PRs with `IsActive=1 AND (LastSyncStatus IN ('idle','failed') OR stale 'running')`.
 - [ ] Sweep orders PRs by `LastSyncAt` ascending (oldest first).
-- [ ] At most `PrSyncMaxParallel = 8` PRs sync concurrently.
+- [x] At most `PrSyncMaxParallel = 8` PRs sync concurrently.
 - [ ] A 9th active PR waits for the next tick (semaphore bounded).
 - [ ] Successful sync sets `LastSyncAt`, `LastSyncStatus='idle'`, clears `LastSyncError`.
 - [ ] Failed sync sets `LastSyncStatus='failed'`, `LastSyncError=message`, leaves `LastSyncAt` untouched.
@@ -2319,22 +2319,22 @@ State change side-effects:
 **24.8 Authority enforcement (Q24.5)**
 
 Resolve endpoint:
-- [ ] `POST /api/prs/{prId}/comments/{commentId}/resolve` by agent → 403 + error code `comment.agent_cannot_resolve`.
-- [ ] `POST /api/prs/{prId}/comments/{commentId}/resolve` by human PO → 200 + upstream PATCH called.
-- [ ] `POST /api/prs/{prId}/comments/{commentId}/resolve` body `{ resolution: 'resolved' }` sets `State='resolved'` + `ResolvedByUserId` + `ResolvedAt`.
+- [x] `POST /api/prs/{prId}/comments/{commentId}/resolve` by agent → 403 + error code `comment.agent_cannot_resolve`.
+- [x] `POST /api/prs/{prId}/comments/{commentId}/resolve` by human PO → 200 + upstream PATCH called.
+- [x] `POST /api/prs/{prId}/comments/{commentId}/resolve` body `{ resolution: 'resolved' }` sets `State='resolved'` + `ResolvedByUserId` + `ResolvedAt`.
 - [ ] `POST /api/prs/{prId}/comments/{commentId}/resolve` body `{ resolution: 'wont-fix' }` sets `State='wont-fix'`.
-- [ ] Resolve writes a `pr_comment_history(kind='resolved')` row.
+- [x] Resolve writes a `pr_comment_history(kind='resolved')` row.
 
 Reopen endpoint:
-- [ ] `POST /api/prs/{prId}/comments/{commentId}/reopen` by agent → 403.
-- [ ] `POST /api/prs/{prId}/comments/{commentId}/reopen` by human → 200 + sets `State='active'` + clears `ResolvedByUserId`/`ResolvedAt`.
-- [ ] Reopen writes a `pr_comment_history(kind='reopened')` row.
-- [ ] Reopen recomputes `RequiresAttention` to `true`.
+- [x] `POST /api/prs/{prId}/comments/{commentId}/reopen` by agent → 403.
+- [x] `POST /api/prs/{prId}/comments/{commentId}/reopen` by human → 200 + sets `State='active'` + clears `ResolvedByUserId`/`ResolvedAt`.
+- [x] Reopen writes a `pr_comment_history(kind='reopened')` row.
+- [x] Reopen recomputes `RequiresAttention` to `true`.
 
 Post / edit:
-- [ ] `POST /api/prs/{prId}/comments` by agent → 200 (agents can post comments).
-- [ ] `POST /api/prs/{prId}/comments` by human → 200.
-- [ ] `PATCH /api/prs/{prId}/comments/{commentId}` by comment author → 200.
+- [x] `POST /api/prs/{prId}/comments` by agent → 200 (agents can post comments).
+- [x] `POST /api/prs/{prId}/comments` by human → 200.
+- [x] `PATCH /api/prs/{prId}/comments/{commentId}` by comment author → 200.
 - [ ] `PATCH /api/prs/{prId}/comments/{commentId}` by PR reviewer (non-author) → 200.
 - [ ] `PATCH /api/prs/{prId}/comments/{commentId}` by agent editing reviewer's comment → 403.
 - [ ] All write endpoints emit `pr.changed { kind: 'comment' }` SignalR event.
@@ -2424,8 +2424,8 @@ Delta:
 
 **24.15 Worktree cleanup on PR completion (Q24.11)**
 
-- [ ] PR `→ completed` with a linked `WorkItemId` triggers `IGitWorktreeService.RemoveAsync` on `{cloneRoot}\.worktree\ws-{workItemId}`.
-- [ ] PR `→ abandoned` with a linked `WorkItemId` also triggers worktree removal (abandoned = stale).
+- [x] PR `→ completed` with a linked `WorkItemId` triggers `IGitWorktreeService.RemoveAsync` on `{cloneRoot}\.worktree\ws-{workItemId}`.
+- [x] PR `→ abandoned` with a linked `WorkItemId` also triggers worktree removal (abandoned = stale).
 - [ ] PR `→ completed` WITHOUT a `WorkItemId` (upstream-discovered PR) does NOT attempt worktree removal.
 - [ ] `WorktreeChangeFeed` is unsubscribed for the work item BEFORE `RemoveAsync` runs (no race with the 1 Hz tick).
 - [ ] Local branch `ws/{workItemId}` is deleted via `git branch -D` after worktree removal.
