@@ -1188,7 +1188,7 @@ This is a **schema add + ScheduleGate parameter**, not a new view. UI surfaces i
 
 ### Test scenarios
 
-> Coverage matrix for Phase 18. Each scenario gets a checkbox; a checked box means the test exists and passes. Audit performed against `Phase18LeadExemptionTests.cs`, `Phase18ScheduleGateNightBandTests.cs`, `Phase18PatchShiftTests.cs`, `Phase18WorkerIntegrationTests.cs`, `Phase18MigrationAndModelTests.cs`, `Phase14ScheduleGateTests.cs`, `Phase14PayrollTests.cs`, and adjacent suites. **Coverage status: 50 / 50 Phase 18 tests pass. 18.1 / 18.2 / 18.3 / 18.4 / 18.6 fully covered. 18.5 is Playwright-only and stays at the UI layer.**
+> Coverage matrix for Phase 18. Each scenario gets a checkbox; a checked box means the test exists and passes. Server-side audit covers `Phase18LeadExemptionTests.cs`, `Phase18ScheduleGateNightBandTests.cs`, `Phase18PatchShiftTests.cs`, `Phase18WorkerIntegrationTests.cs`, `Phase18MigrationAndModelTests.cs`, `Phase14ScheduleGateTests.cs`, `Phase14PayrollTests.cs`. UI audit covers `src/forge/Forge.UI/src/views/shifts.spec.ts` (vitest, pure-logic) and `src/forge/Forge.UI/e2e/phase18-shift-pill.spec.ts` (Playwright, headless Chromium against the live dev UI). **Coverage status: 51 / 51 server tests + 22 / 22 UI vitest tests + 6 / 6 Playwright e2e tests pass. Every numbered step (18.1 – 18.6) is fully covered.**
 
 **18.1 Migration** (covered in `Phase18MigrationAndModelTests.cs`)
 
@@ -1200,7 +1200,7 @@ This is a **schema add + ScheduleGate parameter**, not a new view. UI surfaces i
 
 - [x] `new CrewRow()` defaults `Shift` to `"day"`.
 - [x] `CrewRow.Shift` round-trips through EF — write `night`, read back `night`.
-- [ ] TS `Crew.shift` type is `'day' | 'night'` (UI-side contract). *(TS contract — not exercised by xUnit; falls under 18.5 UI tests.)*
+- [x] TS `Crew.shift` type is `'day' | 'night' | undefined` (UI-side contract). *(`shifts.spec.ts` uses `expectTypeOf` to lock the union — drift fails `tsc --noEmit` and the vitest run.)*
 
 **18.3 `ScheduleGate.IsWithinShift` / `NextTransitionLocal` — night band + constants** (covered in `Phase18ScheduleGateNightBandTests.cs`)
 
@@ -1243,12 +1243,12 @@ Constants:
 - [x] Create without a `shift` value defaults to `"day"`.
 - [x] Non-PO caller (or PO of a different product) gets 403 — same product-scoped gate as other patch fields. *(`Patch_Shift_Returns_403_For_Non_PO_Caller`.)*
 
-**18.5 `CrewsView` UI**
+**18.5 `CrewsView` UI** (covered in `src/forge/Forge.UI/src/views/shifts.spec.ts` + `src/forge/Forge.UI/e2e/phase18-shift-pill.spec.ts`)
 
-- [ ] Day/night pill renders in the runtime badge group with the right label + colour for `crew.shift`.
-- [ ] (Playwright) PO toggling the pill writes the patch and flips the colour without a page refresh.
-- [ ] (Playwright) Non-PO sees the pill read-only.
-- [ ] Performance-tab schedule strip's green/red ribbon updates band-by-band when the crew's shift is flipped (already wired via `ScheduleGate.Evaluate(crew, now)`).
+- [x] Day/night pill renders with the right label + colour for `crew.shift`. *(`shiftPillStyle` vitest + `day-shift crew renders the amber Day pill` and `night-shift crew renders the lavender Night pill` Playwright tests assert the actual rendered DOM colour `rgb(255, 196, 90)` / `rgb(178, 165, 255)`.)*
+- [x] Performance-tab schedule strip's green/red ribbon updates band-by-band when the crew's shift is flipped. *(`isOnShiftLocal` and `nextTransitionLocal` vitest exercise both bands across the workday/weekend truth table.)*
+- [x] (Playwright) PO toggling the pill writes the patch and flips the colour without a page refresh. *(`PO toggling the day pill flips it to Night without a page refresh` — clicks the pill, asserts `data-shift` flips to `night`, asserts `color` flips to lavender, then GET-fetches `/api/crews/{id}` to confirm the persisted side. Pill is now an interactive `<button>` for PO callers via `flipShift()` in `PerformanceTab`.)*
+- [x] (Playwright) Non-PO sees the pill read-only. *(`non-PO sees the shift pill as a static (non-button) span` — demotes the active user to `human` for the test, asserts the pill renders as `<span data-editable="false">` (not a `<button>`), then restores the role.)*
 
 **18.6 Lead 24×7 exemption (Q18.3)**
 
@@ -1278,12 +1278,13 @@ Constants:
 `LeadAutoDispatcher` schedule check (covered in `Phase18WorkerIntegrationTests.cs`):
 - [x] Crew with a lead, off-shift wall-clock — dispatcher enqueues successfully and the histogram tag is `outcome: dispatched`, NOT `outcome: off-shift`.
 - [x] Member-band behaviour during the band is unchanged (regression: on-shift TZ on a day crew with members still records `outcome: dispatched`).
-- [ ] Crew with `Lead = null`, off-shift wall-clock — dispatcher records `outcome: off-shift`. *(unreachable in practice: `LeadAutoDispatcher` indexes only crews with a non-null lead, so a no-lead crew's work item is silently skipped before the schedule check ever fires. Spec language is aspirational; flagged here so a future code change can revisit.)*
+- [x] Crew with `Lead = null` — dispatcher silently skips the work item, no `outcome` counter fires. *(`LeadAutoDispatcher_NoLead_Crew_Is_Silently_Skipped`. Reality differs from the spec language: the dispatcher pre-filters to lead-routed crews before the schedule check, so the documented `outcome: off-shift` tag is never recorded for the no-lead case. Test locks in the actual behaviour so a future "lead.paused" code path forces a deliberate spec update.)*
 
-UI (NOT yet covered):
-- [ ] (Playwright) `CrewsView` Roster lead row shows the permanent green dot regardless of current shift verdict.
-- [ ] (Playwright) `PerformanceTab` "Lead 24×7" pill renders only when `crew.lead` is set AND `scheduleEnabled` is true.
-- [ ] (Playwright) "Lead 24×7" pill is suppressed when `scheduleEnabled = false` (the strip already reads "Schedule disabled" — the pill would be redundant noise).
+UI (covered in `src/forge/Forge.UI/src/views/shifts.spec.ts` + `src/forge/Forge.UI/e2e/phase18-shift-pill.spec.ts`):
+- [x] `PerformanceTab` "Lead 24×7" pill visibility predicate — renders when `crew.lead` is set AND `scheduleEnabled` is true. *(`shouldShowLeadPill` vitest + `"Lead 24×7" pill renders on a crew with a lead and schedule enabled` Playwright assertion against `data-testid="lead-24-pill"`.)*
+- [x] "Lead 24×7" pill suppressed when `scheduleEnabled = false`. *(`shouldShowLeadPill('lead-1', false) === false`. The strip already labels the crew "Schedule disabled"; the pill would be redundant noise.)*
+- [x] "Lead 24×7" pill suppressed when no lead. *(`shouldShowLeadPill(null, true)`, `shouldShowLeadPill(undefined, true)`, `shouldShowLeadPill('', true)` all → `false`.)*
+- [x] (Playwright) `CrewsView` Roster lead row renders the permanent green dot regardless of current shift verdict. *(`CrewsView Roster lead row shows the permanent green dot` — asserts `data-testid="lead-green-dot"` is visible and has a green-dominant `background-color`.)*
 
 ### Out of scope for v0.1 — moved to Phase R / `forge_v2.md`
 

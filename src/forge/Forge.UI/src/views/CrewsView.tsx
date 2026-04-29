@@ -363,7 +363,7 @@ export function CrewsView() {
                   <QuotaTab crew={selected} canEdit={isPO} onChange={applyCrewUpdate} onError={setError} />
                 )}
                 {tab === 'performance' && (
-                  <PerformanceTab crew={selected} allAgents={agents} onEditAgent={openAgent} onError={setError} />
+                  <PerformanceTab crew={selected} allAgents={agents} canEdit={isPO} onChange={applyCrewUpdate} onEditAgent={openAgent} onError={setError} />
                 )}
                 {tab === 'history' && <HistoryTab crewId={selected.id} />}
               </div>
@@ -473,6 +473,7 @@ function RosterTab({ crew, allAgents, canEdit, onChange, onError, onEditAgent }:
             {/* Phase 18.6 (Q18.3) — leads are 24×7. Permanent green dot
                 regardless of crew shift / current verdict. */}
             <span
+              data-testid="lead-green-dot"
               style={{
                 width: 8, height: 8, borderRadius: 999,
                 background: 'var(--success, rgb(34, 197, 94))',
@@ -1264,12 +1265,29 @@ function hourlyForLevel(level: number): number {
   return HOURLY_BASE + clamped * HOURLY_STEP;
 }
 
-function PerformanceTab({ crew, allAgents, onEditAgent, onError }: {
+function PerformanceTab({ crew, allAgents, canEdit, onChange, onEditAgent, onError }: {
   crew: Crew;
   allAgents: AgentDetail[];
+  canEdit: boolean;
+  onChange: (next: Crew) => void;
   onEditAgent: (id: string) => void;
   onError: (msg: string | null) => void;
 }) {
+  // Phase 18.5 — inline shift toggle (PO-editable). Tracked as `busy` so
+  // a double-click during the in-flight patch doesn't fire two requests.
+  const [shiftBusy, setShiftBusy] = useState(false);
+  async function flipShift(next: 'day' | 'night') {
+    if (!canEdit || shiftBusy || next === crew.shift) return;
+    setShiftBusy(true); onError(null);
+    try {
+      const updated = await forgeApi.patchCrew(crew.id, { shift: next });
+      onChange(updated);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setShiftBusy(false);
+    }
+  }
   const [payroll, setPayroll] = useState<CrewPayroll | null>(null);
   const [spend, setSpend] = useState<CrewSalary | null>(null);
   const [now, setNow] = useState<Date>(() => new Date());
@@ -1350,22 +1368,55 @@ function PerformanceTab({ crew, allAgents, onEditAgent, onError }: {
             : 'var(--text-tertiary)' }}>
             {!scheduleEnabled ? 'Schedule disabled' : (onShift ? 'On shift' : 'Off shift')}
           </strong>
-          <span style={{
-            marginLeft: 8,
-            padding: '1px 6px',
-            borderRadius: 4,
-            fontSize: 10,
-            fontWeight: 600,
-            letterSpacing: 0.4,
-            textTransform: 'uppercase',
-            color: shift === 'night' ? 'rgb(178, 165, 255)' : 'rgb(255, 196, 90)',
-            background: shift === 'night'
-              ? 'color-mix(in srgb, rgb(178, 165, 255) 14%, transparent)'
-              : 'color-mix(in srgb, rgb(255, 196, 90) 14%, transparent)',
-            border: `1px solid ${shift === 'night' ? 'rgb(178, 165, 255)' : 'rgb(255, 196, 90)'}`,
-          }}>
-            {shift === 'night' ? 'Night' : 'Day'}
-          </span>
+          {(() => {
+            const pill = shiftPillStyle(shift);
+            const next = shift === 'day' ? 'night' : 'day';
+            const interactive = canEdit && !shiftBusy;
+            const baseStyle = {
+              marginLeft: 8,
+              padding: '1px 6px',
+              borderRadius: 4,
+              fontSize: 10,
+              fontWeight: 600,
+              letterSpacing: 0.4,
+              textTransform: 'uppercase' as const,
+              color: pill.color,
+              background: pill.background,
+              border: pill.border,
+            };
+            if (!canEdit) {
+              return (
+                <span
+                  data-testid="shift-pill"
+                  data-shift={shift}
+                  data-editable="false"
+                  title="PO-editable inline (Phase 18.5)"
+                  style={baseStyle}
+                >
+                  {pill.label}
+                </span>
+              );
+            }
+            return (
+              <button
+                type="button"
+                data-testid="shift-pill"
+                data-shift={shift}
+                data-editable="true"
+                disabled={shiftBusy}
+                onClick={() => void flipShift(next)}
+                title={`Click to flip to ${next}`}
+                style={{
+                  ...baseStyle,
+                  cursor: interactive ? 'pointer' : 'wait',
+                  opacity: interactive ? 1 : 0.6,
+                  font: 'inherit',
+                }}
+              >
+                {pill.label}
+              </button>
+            );
+          })()}
           <span style={{ color: 'var(--text-tertiary)', marginLeft: 8, fontSize: 11.5 }}>
             {tz} · {scheduleEnabled ? bandLabel : 'always available'}
           </span>
@@ -1373,8 +1424,9 @@ function PerformanceTab({ crew, allAgents, onEditAgent, onError }: {
               crew may show green / dispatchable outside the band: the lead
               is exempt from the schedule gate and can pick up work on
               Sunday or in the dead hours. */}
-          {crew.lead && scheduleEnabled && (
+          {shouldShowLeadPill(crew.lead, scheduleEnabled) && (
             <span
+              data-testid="lead-24-pill"
               title="Lead exempt from schedule gate — always on shift (Q18.3)"
               style={{
                 marginLeft: 8,
@@ -1587,7 +1639,40 @@ function fmtDate(iso: string): string {
 
 // ── Schedule helpers (mirror server-side ScheduleGate). ────────────────
 
-function isOnShiftLocal(nowUtc: Date, tz: string, scheduleEnabled: boolean, shift: 'day' | 'night' = 'day'): boolean {
+/**
+ * Phase 18.5 — visual pill styling for the day/night band. Pure: takes
+ * the band, returns the label + colour palette the runtime badge group
+ * renders. Exported so tests can lock in the contract that 'day' lights
+ * up amber and 'night' lights up purple. Touch this and the test breaks
+ * before the operator sees the wrong colour in production.
+ */
+export function shiftPillStyle(shift: 'day' | 'night'): {
+  label: 'Day' | 'Night';
+  color: string;
+  background: string;
+  border: string;
+} {
+  const color = shift === 'night' ? 'rgb(178, 165, 255)' : 'rgb(255, 196, 90)';
+  return {
+    label: shift === 'night' ? 'Night' : 'Day',
+    color,
+    background: `color-mix(in srgb, ${color} 14%, transparent)`,
+    border: `1px solid ${color}`,
+  };
+}
+
+/**
+ * Phase 18.6 (Q18.3) — predicate for the "Lead 24×7" pill on the
+ * Performance-tab schedule strip. The pill should render when there *is*
+ * a lead AND the schedule is enabled (an unbilled / disabled crew is
+ * already labelled "Schedule disabled" in the strip; the pill would be
+ * redundant noise there).
+ */
+export function shouldShowLeadPill(lead: string | null | undefined, scheduleEnabled: boolean): boolean {
+  return !!lead && scheduleEnabled;
+}
+
+export function isOnShiftLocal(nowUtc: Date, tz: string, scheduleEnabled: boolean, shift: 'day' | 'night' = 'day'): boolean {
   if (!scheduleEnabled) return true; // bypassed = always available
   const local = inTimezone(nowUtc, tz);
   const dow = local.getDay(); // 0=Sun..6=Sat
@@ -1605,7 +1690,7 @@ function isOnShiftLocal(nowUtc: Date, tz: string, scheduleEnabled: boolean, shif
   return hour >= 9 && hour < 21;
 }
 
-function nextTransitionLocal(nowUtc: Date, tz: string, shift: 'day' | 'night' = 'day'): string | null {
+export function nextTransitionLocal(nowUtc: Date, tz: string, shift: 'day' | 'night' = 'day'): string | null {
   try {
     const local = inTimezone(nowUtc, tz);
     const onShift = isOnShiftLocal(nowUtc, tz, true, shift);

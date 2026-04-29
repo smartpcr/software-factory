@@ -5,3 +5,7 @@ dist-ssr
 .vite
 src/api/generated/*.ts
 !src/api/generated/.gitkeep
+# Playwright e2e artefacts
+e2e/.role-snapshot.json
+test-results/
+playwright-report/

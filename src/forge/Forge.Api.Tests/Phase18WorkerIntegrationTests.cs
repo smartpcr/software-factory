@@ -371,6 +371,61 @@ public class Phase18WorkerIntegrationTests
     }
 
     [Fact]
+    public async Task LeadAutoDispatcher_NoLead_Crew_Is_Silently_Skipped()
+    {
+        // Q18.3 spec language: "the off-shift tag remains for the (rare)
+        // crew.Lead == null OR lead.paused case." In the v0.1 dispatcher,
+        // crews with crew.Lead == null are filtered out of `crewsByLead`
+        // entirely (LeadAutoDispatcher only indexes lead-routed work),
+        // so they never reach the schedule check — no `outcome: off-shift`
+        // is recorded. This test locks in that observable behaviour so a
+        // future refactor that *does* change it (e.g. adding a paused-lead
+        // codepath) breaks here and forces a deliberate spec update.
+        var (f, scope, db) = await BootAsync();
+        try
+        {
+            var product = await db.Products.FirstAsync();
+            // No-lead crew with a work item assigned via crewId. Schedule
+            // disabled so wall-clock can't accidentally trigger a different
+            // outcome — the dispatcher should ignore the row regardless.
+            db.Crews.Add(new CrewRow
+            {
+                Id = "ad-no-lead", Name = "NoLead",
+                ProductId = product.Id,
+                Lead = null,
+                Model = "x",
+                ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
+                MaxConcurrent = 5, ScheduleEnabled = false,
+            });
+            db.CrewMembers.Add(new CrewMemberRow { CrewId = "ad-no-lead", AgentId = "m-only", AddedAt = DateTimeOffset.UtcNow });
+            db.WorkItems.Add(new WorkItemRow
+            {
+                Id = "wi-no-lead",
+                Type = "step", Track = "design", State = "active", Title = "NL",
+                AssignedToJson = "{\"kind\":\"crew\",\"crewId\":\"ad-no-lead\"}",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+
+            var dispatcher = f.Services.GetRequiredService<LeadAutoDispatcher>();
+            var result = await dispatcher.RunOnceAsync(CancellationToken.None);
+
+            // Documented "silently skipped" behaviour — none of the four
+            // counters fire because the crew is filtered before the loop.
+            Assert.Equal(0, result.Dispatched);
+            Assert.Equal(0, result.OffShift);
+            Assert.Equal(0, result.CapacityBlocked);
+
+            // The work item must remain unstamped — the dispatcher did
+            // nothing with it.
+            var wi = await db.WorkItems.AsNoTracking().FirstAsync(w => w.Id == "wi-no-lead");
+            Assert.Null(wi.AutoDispatchedAt);
+        }
+        finally { scope.Dispose(); f.Dispose(); }
+    }
+
+    [Fact]
     public async Task SweepClaims_Lead_Only_Crew_Picks_Lead_Regression()
     {
         // Schedule-disabled lead-only crew — not strictly a 18.6 case, but

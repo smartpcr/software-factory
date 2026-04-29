@@ -183,3 +183,5 @@ src/WorkflowUI/dist/
 src/WorkflowUI/coverage/
 src/WorkflowUI/node_modules/
 forge.env
+
+.worktree/
