@@ -164,7 +164,11 @@ public sealed class LeadAutoDispatcher : IHostedService, IDisposable
             }
 
             // 4. Schedule gate (Phase 14.1 / Q14.1) — off-shift parks the row.
-            var sched = ScheduleGate.Evaluate(generatorCrew, DateTimeOffset.UtcNow);
+            //    Phase 18.6 (Q18.3) — evaluate the lead specifically, not the
+            //    crew as a whole. A crew with a 24×7 lead is always
+            //    dispatchable in the routing sense (the lead can pick up); the
+            //    gate now refuses only when the lead is also gone (null).
+            var sched = ScheduleGate.EvaluateAgent(generatorCrew, generatorCrew.Lead, DateTimeOffset.UtcNow);
             if (sched.Verdict == ScheduleGate.Verdict.OffShift)
             {
                 LatencyMs.Record(Elapsed(wi), KeyVal("crewId", generatorCrew.Id), KeyVal("pair", evaluatorCrew is not null), KeyVal("outcome", "off-shift"));

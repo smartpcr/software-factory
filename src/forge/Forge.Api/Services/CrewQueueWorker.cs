@@ -280,10 +280,22 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             }
 
             // Pick a member from the roster (round-robin over non-lead members).
-            var members = await db.CrewMembers.AsNoTracking()
+            var allMembers = await db.CrewMembers.AsNoTracking()
                 .Where(m => m.CrewId == crewId && m.AgentId != crew.Lead)
                 .Select(m => m.AgentId)
                 .ToListAsync(ct);
+
+            // Phase 18.6 (Q18.3) — filter members through the schedule gate
+            // before round-robin so off-shift members don't get a wedged
+            // claim. The lead becomes a fallback when zero members are
+            // currently on shift (Sunday / 03:00-Tuesday / sole-PO case).
+            // The "exclude the lead" rule from Phase 16.7 stays as the
+            // *preference*, not the *constraint* — the lead is in the pool
+            // only as a Sunday / off-band fallback.
+            var nowUtc = DateTimeOffset.UtcNow;
+            var onShiftMembers = allMembers
+                .Where(id => ScheduleGate.EvaluateAgent(crew, id, nowUtc).Verdict != ScheduleGate.Verdict.OffShift)
+                .ToList();
 
             // Resume support — when a work item already has deliverables (boot-
             // recovery just put it back on the queue), prefer the same agent
@@ -307,17 +319,25 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
                     .Select(d => d.GeneratorAgentId)
                     .FirstOrDefault();
-                if (!string.IsNullOrEmpty(priorAgent) && members.Contains(priorAgent))
+                // Honor the prior agent only if they're currently on shift
+                // (or are the lead, which is always on shift). Without this,
+                // a resume after midnight would hand the work back to a member
+                // who is now off-shift.
+                if (!string.IsNullOrEmpty(priorAgent)
+                    && (onShiftMembers.Contains(priorAgent)
+                        || string.Equals(priorAgent, crew.Lead, StringComparison.Ordinal)))
                 {
                     picked = priorAgent;
                 }
             }
-            picked ??= members.Count == 0 ? crew.Lead : members[Math.Abs(Environment.TickCount) % members.Count];
+            picked ??= onShiftMembers.Count == 0
+                ? crew.Lead
+                : onShiftMembers[Math.Abs(Environment.TickCount) % onShiftMembers.Count];
 
             var row = await queue.ClaimNextAsync(crewId, picked, ct);
             if (row is null)
             {
-                skips.Add(new ClaimSkip(crewId, "claim-cas-failed", $"members={members.Count} lead={crew.Lead ?? "(null)"} picked={picked ?? "(null)"}"));
+                skips.Add(new ClaimSkip(crewId, "claim-cas-failed", $"members={allMembers.Count} onShift={onShiftMembers.Count} lead={crew.Lead ?? "(null)"} picked={picked ?? "(null)"}"));
                 continue;
             }
             claimed++;
@@ -626,16 +646,20 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 + "Keep the summary concise (3-6 sentences). This will appear in the PR description.\n"
                 + "You MUST push before finishing — the server creates the PR automatically after you push.";
 
-            // Phase 21 — per-task wall-clock budget: 30 min per story point.
-            // Falls back to the global default when points = 0.
+            // Phase 21 — per-task budgets scaled by story points.
+            // Wall-clock: 30 min per point. Max turns: 30 turns per point.
+            // Falls back to the global defaults when points = 0.
             var points = wi?.Points ?? 0;
             TimeSpan? taskBudget = points > 0
                 ? TimeSpan.FromMinutes(points * 30)
                 : null;
+            int? taskMaxTurns = points > 0
+                ? points * 30
+                : null;
 
             this.logger.LogInformation(
-                "Starting agent invocation: wi={Wi} agent={Agent} crew={Crew} model={Model} backend={Backend} mode={Mode} worktree={Worktree} budget={Budget}m",
-                workItemId, agentId, crewId, model, backend, invokeMode, worktreePath, taskBudget?.TotalMinutes ?? 10);
+                "Starting agent invocation: wi={Wi} agent={Agent} crew={Crew} model={Model} backend={Backend} mode={Mode} worktree={Worktree} budget={Budget}m maxTurns={MaxTurns}",
+                workItemId, agentId, crewId, model, backend, invokeMode, worktreePath, taskBudget?.TotalMinutes ?? 10, taskMaxTurns ?? 0);
 
             // Emit the system + user prompts so the live execution view shows
             // what the agent is being asked to do.
@@ -662,7 +686,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 MaxTaskBudgetUsd: crew.MaxTaskBudgetUsd,
                 Backend: backend,
                 InvokeMode: invokeMode,
-                WallClockBudget: taskBudget);
+                WallClockBudget: taskBudget,
+                MaxTurns: taskMaxTurns);
 
             // (2) Resolve evaluator crew + agent for the gen-eval loop.
             CrewRow? evalCrew = null;
@@ -778,7 +803,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     MaxTaskBudgetUsd: evalCrew.MaxTaskBudgetUsd,
                     Backend: evalBackend,
                     InvokeMode: AgentInvokeMode.Sdk,
-                    WallClockBudget: taskBudget);
+                    WallClockBudget: taskBudget,
+                    MaxTurns: taskMaxTurns);
 
                 // The evaluator prompt is lean — just the task context + work item
                 // title. The evaluator uses tools to inspect the worktree itself.

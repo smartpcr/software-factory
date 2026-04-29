@@ -69,6 +69,28 @@ public static class ScheduleGate
     }
 
     /// <summary>
+    /// Phase 18.6 (Q18.3) — per-agent overload. The crew lead is exempt from
+    /// the day/night band and the Mon–Sat filter: <see cref="Verdict.OnShift"/>
+    /// is returned whenever <paramref name="agentId"/> equals
+    /// <see cref="CrewRow.Lead"/>. Members fall through to the existing
+    /// <see cref="Evaluate(CrewRow, DateTimeOffset)"/> path so the day/night/
+    /// work-day logic is unchanged for them. Pure — no DB, no clock.
+    /// </summary>
+    public static Result EvaluateAgent(CrewRow crew, string? agentId, DateTimeOffset utcNow)
+    {
+        if (!string.IsNullOrEmpty(agentId)
+            && !string.IsNullOrEmpty(crew.Lead)
+            && string.Equals(agentId, crew.Lead, StringComparison.Ordinal))
+        {
+            var tz = ResolveTimeZone(crew.Timezone);
+            var local = TimeZoneInfo.ConvertTime(utcNow, tz);
+            var shift = NormaliseShift(crew.Shift);
+            return new Result(Verdict.OnShift, local, tz, NextTransitionLocal(local, shift));
+        }
+        return Evaluate(crew, utcNow);
+    }
+
+    /// <summary>
     /// True iff <paramref name="local"/> is within the crew's shift band.
     /// Day band is half-open <c>[09:00, 21:00)</c> on Mon–Sat. Night band
     /// is <c>[21:00, 24:00)</c> when today is a work day, or

@@ -82,18 +82,41 @@ public static class PayrollCalculator
     }
 
     /// <summary>
-    /// Compute payroll for one crew over a half-open UTC range. Sums
-    /// <c>HourlyUsd × OnShiftHoursInRange</c> across every passed-in member.
-    /// The caller is responsible for resolving membership at the time of
-    /// the period (v0.1 simplification: assumes the agent was a member for
-    /// the full window).
+    /// Phase 18.6 (Q18.3) — clock hours in the half-open UTC range,
+    /// regardless of work-day or shift-band filters. The crew lead is
+    /// always on shift (24×7), so payroll for the lead uses this full-clock
+    /// number instead of <see cref="OnShiftHoursInRange"/>. Returns 0 when
+    /// <see cref="CrewRow.ScheduleEnabled"/> is false (unbilled crew) so a
+    /// disabled schedule still suppresses both lead and member earnings.
+    /// </summary>
+    public static int LeadHoursInRange(CrewRow crew, DateTimeOffset fromUtc, DateTimeOffset toUtc)
+    {
+        if (!crew.ScheduleEnabled) return 0;
+        if (toUtc <= fromUtc) return 0;
+        return (int)(toUtc - fromUtc).TotalHours;
+    }
+
+    /// <summary>
+    /// Compute payroll for one crew over a half-open UTC range. Each member
+    /// contributes <c>HourlyUsd × hours</c> where <c>hours</c> is
+    /// <see cref="LeadHoursInRange"/> for the crew lead (24×7 per Q18.3) and
+    /// <see cref="OnShiftHoursInRange"/> for everyone else. The caller is
+    /// responsible for resolving membership at the time of the period (v0.1
+    /// simplification: assumes the agent was a member for the full window).
     /// </summary>
     public static decimal ComputeTotal(CrewRow crew, IReadOnlyList<AgentRow> members, DateTimeOffset fromUtc, DateTimeOffset toUtc)
     {
-        var hours = OnShiftHoursInRange(crew, fromUtc, toUtc);
-        if (hours == 0) return 0m;
+        var memberHours = OnShiftHoursInRange(crew, fromUtc, toUtc);
+        var leadHours = LeadHoursInRange(crew, fromUtc, toUtc);
+        if (memberHours == 0 && leadHours == 0) return 0m;
         decimal total = 0;
-        for (var i = 0; i < members.Count; i++) total += members[i].HourlyUsd * hours;
+        for (var i = 0; i < members.Count; i++)
+        {
+            var isLead = !string.IsNullOrEmpty(crew.Lead)
+                && string.Equals(members[i].Id, crew.Lead, StringComparison.Ordinal);
+            var hours = isLead ? leadHours : memberHours;
+            if (hours > 0) total += members[i].HourlyUsd * hours;
+        }
         return total;
     }
 }

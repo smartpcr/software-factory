@@ -470,6 +470,17 @@ function RosterTab({ crew, allAgents, canEdit, onChange, onError, onEditAgent }:
             >
               <AgentChip id={crew.lead} agents={allAgents} />
             </button>
+            {/* Phase 18.6 (Q18.3) — leads are 24×7. Permanent green dot
+                regardless of crew shift / current verdict. */}
+            <span
+              style={{
+                width: 8, height: 8, borderRadius: 999,
+                background: 'var(--success, rgb(34, 197, 94))',
+                boxShadow: '0 0 0 3px color-mix(in srgb, var(--success, rgb(34, 197, 94)) 30%, transparent)',
+                marginLeft: 6,
+              }}
+              title="Lead is on shift 24×7 (Q18.3)"
+            />
             <span style={leadCrownStyle}>★ lead</span>
           </div>
         )}
@@ -1358,6 +1369,29 @@ function PerformanceTab({ crew, allAgents, onEditAgent, onError }: {
           <span style={{ color: 'var(--text-tertiary)', marginLeft: 8, fontSize: 11.5 }}>
             {tz} · {scheduleEnabled ? bandLabel : 'always available'}
           </span>
+          {/* Phase 18.6 (Q18.3) — lead-24×7 sub-label. Surfaces *why* the
+              crew may show green / dispatchable outside the band: the lead
+              is exempt from the schedule gate and can pick up work on
+              Sunday or in the dead hours. */}
+          {crew.lead && scheduleEnabled && (
+            <span
+              title="Lead exempt from schedule gate — always on shift (Q18.3)"
+              style={{
+                marginLeft: 8,
+                padding: '1px 6px',
+                borderRadius: 4,
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: 0.4,
+                textTransform: 'uppercase',
+                color: 'var(--success, rgb(34, 197, 94))',
+                background: 'color-mix(in srgb, var(--success, rgb(34, 197, 94)) 12%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--success, rgb(34, 197, 94)) 50%, transparent)',
+              }}
+            >
+              Lead 24×7
+            </span>
+          )}
         </div>
         {scheduleEnabled && next && (
           <span style={{ fontSize: 11, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono, monospace)' }}>

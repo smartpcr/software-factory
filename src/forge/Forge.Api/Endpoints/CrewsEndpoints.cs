@@ -212,7 +212,9 @@ public static class CrewsEndpoints
         string? Backend = null,
         string? InvokeMode = null,
         int? MaxConcurrent = null,
-        int? WeeklyCap = null);
+        int? WeeklyCap = null,
+        // Phase 18.4 — initial shift band ('day' default, or 'night').
+        string? Shift = null);
 
     private static async Task<IResult> Create(
         HttpContext ctx,
@@ -246,6 +248,18 @@ public static class CrewsEndpoints
 
         var backend  = NormaliseBackend(req.Backend) ?? "copilot";
         var mode     = NormaliseMode(req.InvokeMode) ?? "sdk";
+        // Phase 18.4 — explicit unknown-value rejection. When Shift is
+        // present but neither 'day' nor 'night', refuse 400 rather than
+        // silently coercing to 'day' (the create path otherwise would).
+        if (req.Shift is not null && NormaliseShift(req.Shift) is null)
+        {
+            return Results.Problem(
+                type: "crew.unknown_shift",
+                title: $"Unknown shift '{req.Shift}'",
+                detail: "Allowed values: 'day' | 'night'.",
+                statusCode: 400);
+        }
+        var shift = NormaliseShift(req.Shift) ?? "day";
 
         var maxSort = await db.Crews.Select(c => (int?)c.Sort).MaxAsync(ct) ?? -1;
         var row = new CrewRow
@@ -267,6 +281,7 @@ public static class CrewsEndpoints
             InvokeMode = mode,
             MaxConcurrent = req.MaxConcurrent ?? 2,
             WeeklyCap = req.WeeklyCap ?? 20,
+            Shift = shift,
         };
         db.Crews.Add(row);
         await db.SaveChangesAsync(ct);
@@ -291,7 +306,9 @@ public static class CrewsEndpoints
         // Phase 13b — default pair (generator + evaluator). Empty string clears.
         string? DefaultGeneratorAgentId = null,
         string? DefaultEvaluatorAgentId = null,
-        string? EvaluatorModel = null);
+        string? EvaluatorModel = null,
+        // Phase 18.4 — flip the crew between 'day' and 'night' bands.
+        string? Shift = null);
 
     private static async Task<IResult> Patch(
         HttpContext ctx,
@@ -353,6 +370,25 @@ public static class CrewsEndpoints
             {
                 db.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "mode", FromValue = row.InvokeMode, ToValue = nm, ByUserId = caller });
                 row.InvokeMode = nm;
+            }
+        }
+
+        // Phase 18.4 — shift band ('day' | 'night'). Whitelist + audit row.
+        if (req.Shift is not null)
+        {
+            var ns = NormaliseShift(req.Shift);
+            if (ns is null)
+            {
+                return Results.Problem(
+                    type: "crew.unknown_shift",
+                    title: $"Unknown shift '{req.Shift}'",
+                    detail: "Allowed values: 'day' | 'night'.",
+                    statusCode: 400);
+            }
+            if (ns != row.Shift)
+            {
+                db.CrewHistory.Add(new CrewHistoryRow { CrewId = id, Kind = "shift", FromValue = row.Shift, ToValue = ns, ByUserId = caller });
+                row.Shift = ns;
             }
         }
 
@@ -1522,6 +1558,19 @@ public static class CrewsEndpoints
     {
         "sdk" => "sdk",
         "cli" => "cli",
+        null or "" => null,
+        _ => null,
+    };
+
+    /// <summary>
+    /// Phase 18.4 — case-insensitive whitelist for the <c>shift</c> field.
+    /// Returns null for unknown values so the caller can return 400; callers
+    /// that want a default should fall back via <c>?? "day"</c>.
+    /// </summary>
+    private static string? NormaliseShift(string? s) => s?.ToLowerInvariant() switch
+    {
+        "day" => "day",
+        "night" => "night",
         null or "" => null,
         _ => null,
     };

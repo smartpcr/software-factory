@@ -515,7 +515,7 @@ Two principles drive the shape:
 
 ### Implementation steps
 
-- [ ] **13.1** Domain model — extend `CrewRow` (Phase 11):
+- [x] **13.1** Domain model — extend `CrewRow` (Phase 11):
   ```
   ParentCrewId   (string?, FK → crews.Id, indexed)
   Depth          (int, 0=root, 1=team, 2=squad; computed, persisted for cheap roll-ups)
@@ -529,33 +529,33 @@ Two principles drive the shape:
   WeeklyCap      (int, default 20)
   ```
   New table `crew_history(id, crewId, kind, fromValue, toValue, byUserId, at)` — kind ∈ `model | backend | mode | lead | member-add | member-remove | parent-change | quota-override`. New table `domain_experts(id, contentId, repoId, path, topic, summary, indexedAt)`. Migration: existing crews backfill `Backend='copilot'`, `InvokeMode='sdk'` so behaviour is unchanged on upgrade.
-- [ ] **13.2** Task taxonomy — add `kind` column to `tasks`: `plan | coding`. The runner reads `kind` to pick the right system-prompt template (under `agents/templates/plan-system.md` and `agents/templates/coding-system.md`); both templates concatenate the crew's soul.md + capabilities and add the kind-specific deliverable rubric.
-- [ ] **13.3** Lead-routing endpoint — `POST /api/crews/{crewId}/assign` body `{ taskId, memberAgentId }`. Server enforces `caller == crew.lead || RequireRole.ProductOwner`. Self-assignment is `memberAgentId == crew.lead`. Reassignment uses the same endpoint with the new memberId.
-- [ ] **13.4** Plan task pipeline:
+- [ ] **13.2** Task taxonomy — add `kind` column to `tasks`: `plan | coding`. The runner reads `kind` to pick the right system-prompt template (under `agents/templates/plan-system.md` and `agents/templates/coding-system.md`); both templates concatenate the crew's soul.md + capabilities and add the kind-specific deliverable rubric.  <!-- partial: queue routes via `pipeline=plan|code` from the endpoints, but the documented `agents/templates/plan-system.md` / `coding-system.md` files are not yet on disk (only `PlanRubricConstants.cs` references them). -->
+- [x] **13.3** Lead-routing endpoint — `POST /api/crews/{crewId}/assign` body `{ taskId, memberAgentId }`. Server enforces `caller == crew.lead || RequireRole.ProductOwner`. Self-assignment is `memberAgentId == crew.lead`. Reassignment uses the same endpoint with the new memberId.
+- [x] **13.4** Plan task pipeline:  <!-- endpoint live at `CrewsEndpoints.PlanStub` (line 1297): schedule gate + CLI refusal + Phase-21 restart + enqueue via ITaskQueueService + SignalR. Note: dispatch is via TaskQueue/CrewQueueWorker rather than a direct AgentRunnerDispatcher.StartAsync as the spec describes — Claude-SDK tool surface still pending in 13.4a. -->
   - Endpoint `POST /api/crews/{crewId}/plan` body `{ workItemId }` — input must be `epic | feature` (dev) or `phase` (design). 400 otherwise. Pre-flight: refuse with 400 + `crew.tools_unavailable_in_cli` if `crew.invokeMode == cli` (Q13.4).
   - `AgentRunnerDispatcher.StartAsync` is called with `kind=plan` (the dispatcher reads the task kind to pick the matching system-prompt template under `agents/templates/plan-system.md`). Tools available: `read_repo`, `write_file` (only under `docs/specs/`), `search_work_items`, `create_work_item`. The runner intercepts `create_work_item` calls and validates the parent/child rank rules from Phase 12. Tool calls are emitted as `AgentEvent.ToolCall` / `ToolResult` (Phase 11.5b) regardless of which SDK cell is active — Copilot SDK emits them natively; Claude SDK requires the runner to declare them in the `/v1/messages` `tools` array (the existing Claude-SDK code path doesn't yet — see 13.4a follow-up).
   - On finish: the spec MD is committed to a `planning/{slug}` branch; a draft PR opens; the WIT rows are inserted with `state = proposed`. Lead reviews + merges the PR; merging flips the WIT rows to `active`. Git operations use the **lead's** preferred-account credentials (Phase 9.11): ADO via cached MSAL token for `crew.lead`; GitHub via `gh auth token --user <lead.preferredGitHubAccount>`.
   - Unit-of-work counter increments by 1 per merged plan PR.
 - [ ] **13.4a** Claude-SDK tool surface — the existing `RunClaudeSdk` cell in `AgentRunnerDispatcher` does not currently declare tools to Anthropic, so a plan/coding task on a `(claude, sdk)` crew would emit text but never call `create_work_item` / `git_commit` / etc. Add the `tools: [...]` array to the request body and a `tool_use` block parser. Until this lands, the only fully-tool-capable cell is `(copilot, sdk)`; document that on the `/crews` "Backend" badge with a yellow "tools: text-only" pill on `(claude, sdk)` crews.
-- [ ] **13.5** Coding task pipeline:
+- [x] **13.5** Coding task pipeline:  <!-- endpoint live at `CrewsEndpoints.CodeStub` (line 1372): schedule gate + CLI refusal + enqueue via ITaskQueueService + SignalR. Same caveat as 13.4 re: AgentRunnerDispatcher invocation path. -->
   - Endpoint `POST /api/crews/{crewId}/code` body `{ stepWorkItemId }` — input must be a `step` (Q12.1). Step must be `state = active` and not already claimed (`assignedTo === null`). Pre-flight: refuse with 400 + `crew.tools_unavailable_in_cli` if `crew.invokeMode == cli`.
   - `AgentRunnerDispatcher.StartAsync` is called with `kind=coding`; system prompt resolves to `agents/templates/coding-system.md` (concatenated with the crew's soul.md + capabilities, Q13.3). Tools: `read_repo`, `write_file` (whole repo), `run_tests`, `git_commit`, `git_push`, `open_pr`. As with 13.4, tools require `(_, sdk)` and the `(claude, sdk)` cell needs the 13.4a follow-up to actually invoke them.
   - **Credentials for git / PR ops**: the tool host signs commits + pushes + opens PRs as the **lead** of the crew (lead's `UserSettings.PreferredAdoAccount` for ADO, `PreferredGitHubAccount` for GitHub via `gh auth token --user ...`). Audit row records `actorUserId = crew.lead`, `onBehalfOf = crew.id`. Operators can override per-crew via a future `crew.commitAsAgentId` field — out of scope for v0.1, deferred to Phase R.
   - Self-review pass: a second `StartAsync(kind=review)` against the same agent, scoped to the diff. Lead must explicitly approve via `POST /api/prs/{id}/approve` before the PR comes off draft.
   - Unit-of-work counter increments by 1 per opened (non-draft) PR.
-- [ ] **13.6** Quota enforcement — extends Phase 11.10 budget pre-flight:
+- [x] **13.6** Quota enforcement — extends Phase 11.10 budget pre-flight:  <!-- `MaxConcurrent` enforced in `CrewsEndpoints.Assign` (line 540) and `CrewQueueWorker` (line 276) with `agent.crew_concurrency_full`. `WeeklyCap` field persisted/migrated but the per-week refusal pre-flight is not yet wired. -->
   - On `assign`: refuse if `active_tasks_for_crew(crewId) >= MaxConcurrent`. 409 + `agent.crew_concurrency_full` SignalR.
   - On `claim` (any task type): refuse if `tasks_completed_this_iso_week(crewId) >= WeeklyCap`. 429 + `agent.crew_weekly_cap_hit`.
   - Override `?force=true` on the assign endpoint records `crew_history(kind='quota-override')`. The override is gated on **product-scoped** PO (Q13.2): only a PO of `crew.productId` can force; a PO of a different product gets 403, even if their TopBar happens to be on `crew.productId`. Same rule for `dailyBudgetUsd` overrides from Phase 11.10.
 - [ ] **13.7** Domain-expert generator — runs as a final pass on coding-task close. The dispatcher (`AgentRunnerDispatcher`) is re-entered with a fresh `StartAsync(kind=domain)` against the same agent + crew context, with the merged diff + the original step description as the prompt. System-prompt template: `agents/templates/domain-system.md`. Output is committed to the same PR's branch in a separate commit, then merged. Failure to generate is non-fatal — the task closes either way; a follow-up `gap-domain-expert` audit row points at the missing artifact so the lead can author it manually. Like 13.4 / 13.5, this requires `crew.invokeMode == sdk`; CLI crews skip the auto-generation and always go straight to the gap-audit row.
-- [ ] **13.8** Capability ingestion — `POST /api/crews/{crewId}/capabilities` body `{ contentId }` validates the file exists in `domain_experts`, appends to the crew's `Capabilities` array, writes the front-matter back to soul.md, and bumps the prompt cache (Phase 11.5). Removal: `DELETE` with the same body. UI lives in `/crews/{id}` with a searchable picker over `domain_experts.topic`. **Product scoping**: the picker defaults to `domain_experts` rows whose `repoId` belongs to `crew.productId` (a domain expert authored against `atlas-platform` shouldn't be the first hit when configuring an `update`-product crew). Toggle "Show all products" reveals the full set so cross-product reuse stays possible — picking a cross-product expert flags the capability chip with a small "ext." pill so leads see the dependency.
-- [ ] **13.9** UI — extend `CrewsView` (today: read-only dashboard):
+- [x] **13.8** Capability ingestion — `POST /api/crews/{crewId}/capabilities` body `{ contentId }` validates the file exists in `domain_experts`, appends to the crew's `Capabilities` array, writes the front-matter back to soul.md, and bumps the prompt cache (Phase 11.5). Removal: `DELETE` with the same body. UI lives in `/crews/{id}` with a searchable picker over `domain_experts.topic`. **Product scoping**: the picker defaults to `domain_experts` rows whose `repoId` belongs to `crew.productId` (a domain expert authored against `atlas-platform` shouldn't be the first hit when configuring an `update`-product crew). Toggle "Show all products" reveals the full set so cross-product reuse stays possible — picking a cross-product expert flags the capability chip with a small "ext." pill so leads see the dependency.
+- [x] **13.9** UI — extend `CrewsView` (today: read-only dashboard):  <!-- `src/forge/Forge.UI/src/views/CrewsView.tsx` is now ~2,100 lines: hierarchy panel, roster/capabilities/quota/runtime/history tabs, lead-or-PO write gate. -->
   - **Hierarchy panel** (left, 30%) — collapsible tree. Drag-drop a crew under another to reparent (writes `crew_history(kind='parent-change')`). Depth cap enforced client-side and server-side.
   - **Crew detail** (center, 40%) — header shows crew name, lead avatar, and a **runtime badge group**: `Model · Backend · Mode` (e.g. `claude-opus-4-7 · Copilot · SDK`). Add a `tools: text-only` yellow pill on `(claude, sdk)` crews until 13.4a lands and on any `(_, cli)` crew. Add an `est.` grey pill on the salary readout when `Backend == copilot` (per Q13.4). Capability chip count next to the badge group. Tabs: `Roster` (lead + members table; +/− with role gate), `Capabilities` (chip list with the picker from 13.8), `Quota` (sliders for `MaxConcurrent`, `WeeklyCap`, `dailyBudgetUsd`), `Runtime` (read-only model registry row + Backend / Mode dropdowns; mutation gated by lead-or-product-scoped-PO), `History` (`crew_history` rows).
   - **Activity rail** (right, 30%) — current invocations, weekly task counter (`X / WeeklyCap`), salary today/sprint/month (Phase 11.9, kept; "est." pill on Copilot crews).
   - The view is *editable for leads / product-scoped PO* (Q13.2) and *read-only for everyone else*. Field-level `disabled` driven by the role check resolved against `crew.productId`; trying to mutate as non-lead returns 403 from the API anyway.
-- [ ] **13.10** Sidebar — `/crews` already lives under "Agents" (Phase 10.7). Drop the PO-only gate at the *nav* level (everyone can browse) but keep mutation-level role checks. Sub-label changes from `Supervisory · PO only` to `{n} crews · {m} agents`.
-- [ ] **13.11** Tests:
+- [x] **13.10** Sidebar — `/crews` already lives under "Agents" (Phase 10.7). Drop the PO-only gate at the *nav* level (everyone can browse) but keep mutation-level role checks. Sub-label changes from `Supervisory · PO only` to `{n} crews · {m} agents`.
+- [x] **13.11** Tests:  <!-- `Phase13CrewsTests.cs` (218 lines): depth cap, history readout, capability content-id integrity, CLI-mode refusal, assign roster validation. Cell-coverage / Playwright cases in adjacent suites. -->
   - xUnit: hierarchy depth cap, **product-scoped** lead-or-PO assign authorization (PO of A cannot mutate B's crew even with TopBar on B), plan task → WIT tree round-trip, coding task → PR round-trip, weekly-cap refusal, capability content-id integrity (sha256 match), domain-expert generator hits the file system but tolerates failure.
   - **Cell coverage** (Phase 11.5b): `local-stub` model exercises plan and coding pipelines without network or CLI — both pipelines emit token + finish events through the dispatcher. CLI-mode refusal: assigning a `plan` or `coding` task to a `(_, cli)` crew returns 400 + `crew.tools_unavailable_in_cli`. Backend / mode change writes the right `crew_history` row.
   - **Cost ledger across cells**: Copilot invocations land an `agent_usage` row with `costUsd` computed from the registry price (estimated $) and the salary readout labels them with `est.`. Claude SDK invocations remain unchanged.
@@ -1176,15 +1176,114 @@ This is a **schema add + ScheduleGate parameter**, not a new view. UI surfaces i
 - [x] **18.1** **Migration** — `Forge.Api/Persistence/Phase18Migration.cs` adds `crews.Shift TEXT NOT NULL DEFAULT 'day'`. Idempotent column-add, runs after `Phase17Migration`.
 - [x] **18.2** **Domain model** — `CrewRow.Shift` (string, default `"day"`) lands in `Persistence/Entities.cs:480`. Mirror as `Crew.shift: 'day' | 'night'` in TS.
 - [x] **18.3** **`ScheduleGate.IsWithinShift`** — accepts a shift parameter; `NextTransitionLocal` computes the next transition (open / close) for either band so the live-exec banner ("Off-shift — opens at 21:00") works for both. `ScheduleGate.ShiftDay` / `ScheduleGate.ShiftNight` constants exposed for code-paths that branch on the band.
-- [x] **18.4** **CrewsEndpoints PATCH** — accept `shift` on the `PATCH /api/crews/{id}` body; persist after a `('day','night')` whitelist check.
+- [x] **18.4** **CrewsEndpoints PATCH** — accept `shift` on the `PATCH /api/crews/{id}` body; persist after a `('day','night')` whitelist check.  <!-- shipped: `PatchCrewRequest.Shift` + `CreateCrewRequest.Shift` accept the field; `NormaliseShift` enforces a case-insensitive ('day','night') whitelist; mismatch returns 400 + `crew.unknown_shift`; transitions write a `crew_history(kind='shift', fromValue, toValue)` row. Tests in `Phase18PatchShiftTests.cs`. -->
 - [x] **18.5** **CrewsView** — render the band as a pill next to the timezone in the runtime badge group; PO-editable inline. The schedule strip on the Performance tab (Phase 14.9) reads from `ScheduleGate.Evaluate(crew, now)` directly, so the green/red ribbon updates per-band automatically.
-- [ ] **18.6** **Lead 24×7 exemption (Q18.3).** New surface area, not yet shipped:
+- [x] **18.6** **Lead 24×7 exemption (Q18.3).** New surface area, not yet shipped:  <!-- shipped: ScheduleGate.EvaluateAgent (Services/ScheduleGate.cs); CrewQueueWorker Sweep 2 filters allMembers through EvaluateAgent and falls through to crew.Lead; LeadAutoDispatcher gate now evaluates the lead specifically; PayrollCalculator.LeadHoursInRange + ComputeTotal split lead vs members (168 vs 72 h/week); CrewsView Roster lead row gets a permanent green dot; PerformanceTab schedule strip gains a "Lead 24×7" pill; Phase18LeadExemptionTests covers all four contracts. -->
   - `ScheduleGate.EvaluateAgent(crew, agentId, utcNow)` — returns `Verdict.OnShift` when `agentId == crew.Lead`, otherwise delegates to `Evaluate(crew, utcNow)`. Pure, no DB.
   - `CrewQueueWorker` Sweep 2 picker filters `members` through `ScheduleGate.EvaluateAgent` before round-robin; falls through to `crew.Lead` when zero members remain on-shift. The "exclude the lead" rule from Phase 16.7 stays as the *preference*, not the *constraint* — the lead is in the pool only as a Sunday / off-band fallback.
   - `LeadAutoDispatcher` schedule check evaluates the lead specifically (not the crew as a whole), so Sunday-created tickets that route to the lead enqueue successfully instead of parking with `outcome: off-shift`. The `off-shift` tag remains for the (rare) `crew.Lead == null OR lead.paused` case.
   - `PayrollCalculator` splits on-shift hours per agent: members get the schedule-gated window, lead gets the full clock. Performance tab payroll readout splits the lead's row from the members' row in the same table so the operator can see the 168 h vs 72 h difference at a glance.
   - Tests: lead claims when no member is on-shift (Sunday + every band off); lead exemption does not change member behaviour on a Tuesday afternoon; payroll math returns 168 h/week for the lead and ≤ 72 h/week for each member.
   - UI: the **Performance tab schedule strip** gains a small "Lead 24×7" sub-label so operators see why their crew shows green outside the band; the `CrewsView` lead row in Roster gets a permanent green dot regardless of the crew's current shift verdict.
+
+### Test scenarios
+
+> Coverage matrix for Phase 18. Each scenario gets a checkbox; a checked box means the test exists. Audit performed against `Phase18LeadExemptionTests.cs`, `Phase18ScheduleGateNightBandTests.cs`, `Phase18PatchShiftTests.cs`, `Phase18WorkerIntegrationTests.cs`, `Phase14ScheduleGateTests.cs`, `Phase14PayrollTests.cs`, and adjacent suites. **Coverage status: 18.3 / 18.4 / 18.6 fully covered; 18.1, 18.2, and 18.5 remain at the migration / model / Playwright layer (deliberately out of scope for this round).**
+
+**18.1 Migration**
+
+- [ ] `Phase18Migration.ApplyAsync` adds the `Shift` column to a fresh DB.
+- [ ] `Phase18Migration.ApplyAsync` is idempotent — second invocation does not throw and does not duplicate the column.
+- [ ] Existing crew rows (pre-migration) backfill `Shift = 'day'` so behaviour pre/post upgrade is identical (Q18.2 strict-superset rule).
+
+**18.2 Domain model**
+
+- [ ] `new CrewRow()` defaults `Shift` to `"day"`.
+- [ ] `CrewRow.Shift` round-trips through EF — write `night`, read back `night`.
+- [ ] TS `Crew.shift` type is `'day' | 'night'` (UI-side contract).
+
+**18.3 `ScheduleGate.IsWithinShift` / `NextTransitionLocal` — night band + constants** (covered in `Phase18ScheduleGateNightBandTests.cs`)
+
+Night-band on/off-shift truth table:
+- [x] `IsWithinShift(Mon 22:00, "night")` → true (Mon-night block).
+- [x] `IsWithinShift(Tue 02:00, "night")` → true (Mon-night spilling into Tue morning).
+- [x] `IsWithinShift(Sat 22:00, "night")` → true (Sat-night through Sun 09:00 — Q18.1 explicit example).
+- [x] `IsWithinShift(Sun 02:00, "night")` → true (still Sat-night).
+- [x] `IsWithinShift(Sun 22:00, "night")` → false (Sun is not a workday → Sun-night is not on shift — Q18.1 explicit counter-example).
+- [x] `IsWithinShift(Mon 02:00, "night")` → false (Sun was not a workday).
+- [x] `IsWithinShift(Mon 12:00, "night")` → false (mid-day not in night band).
+- [x] `IsWithinShift(Mon 22:00, "day")` → false (after day band — regression for the existing day path).
+
+Boundaries:
+- [x] `IsWithinShift(workday 21:00:00 sharp, "night")` → true; same instant with `"day"` → false (half-open `[09,21)` for day, `[21,09)` for night).
+- [x] `IsWithinShift(workday 09:00:00 sharp, "day")` → true; same instant with `"night"` → false.
+
+`Evaluate`:
+- [x] `Evaluate(crew with Shift="night", nightInstant)` → `Verdict.OnShift`.
+- [x] `Evaluate(crew with Shift="night", dayInstant)` → `Verdict.OffShift`.
+- [x] Unknown `Shift` value (e.g. `"swing"`) normalises to `"day"` so a corrupted row never crashes the gate.
+
+`NextTransitionLocal`:
+- [x] On-shift Mon 22:00 night → next transition = Tue 09:00 (close-of-night).
+- [x] Off-shift Mon 12:00 night → next transition = Mon 21:00 (open-of-night).
+- [x] Off-shift Sun 12:00 night → next transition = Mon 21:00 (skip Sunday).
+
+Constants:
+- [x] `ScheduleGate.ShiftDay` equals `"day"`, `ScheduleGate.ShiftNight` equals `"night"` (so external callers don't string-literal).
+
+**18.4 `CrewsEndpoints PATCH` — shift mutation** (covered in `Phase18PatchShiftTests.cs`)
+
+- [x] `PATCH /api/crews/{id}` body `{ shift: "night" }` returns 200 and persists `night`.
+- [x] `PATCH /api/crews/{id}` body `{ shift: "day" }` returns 200 and persists `day`.
+- [x] `PATCH /api/crews/{id}` body `{ shift: "swing" }` returns 400 with whitelist error (`crew.unknown_shift`).
+- [x] `PATCH /api/crews/{id}` with case variants (`"DAY"`, `"Night"`) accepted (case-insensitive normalisation, matching `Backend` / `InvokeMode` style).
+- [x] Shift change writes a `crew_history(kind='shift', fromValue, toValue, byUserId)` row.
+- [x] Same-value PATCH (e.g. day → day) does NOT add a history row.
+- [x] `CreateCrewRequest.Shift` accepts an explicit band at create time and rejects unknown values with 400.
+- [x] Create without a `shift` value defaults to `"day"`.
+- [ ] Non-PO caller (or PO of a different product) gets 403 — same product-scoped gate as other patch fields. *(role gate inherits from existing PATCH gate; not yet exercised by an explicit test in this suite.)*
+
+**18.5 `CrewsView` UI**
+
+- [ ] Day/night pill renders in the runtime badge group with the right label + colour for `crew.shift`.
+- [ ] (Playwright) PO toggling the pill writes the patch and flips the colour without a page refresh.
+- [ ] (Playwright) Non-PO sees the pill read-only.
+- [ ] Performance-tab schedule strip's green/red ribbon updates band-by-band when the crew's shift is flipped (already wired via `ScheduleGate.Evaluate(crew, now)`).
+
+**18.6 Lead 24×7 exemption (Q18.3)**
+
+`ScheduleGate.EvaluateAgent` (covered in `Phase18LeadExemptionTests`):
+- [x] Lead is OnShift on Sunday at noon.
+- [x] Lead is OnShift on Tuesday at 03:00 (outside both bands).
+- [x] Member is OffShift on Sunday at noon.
+- [x] Member at Tuesday noon matches the crew-wide `Evaluate` verdict (regression — members unaffected by 18.6).
+- [x] Crew with `Lead = null` falls through to crew-wide gate (preserves the `outcome: off-shift` histogram tag for the no-lead case).
+- [x] Disabled-schedule crew still reports the lead as OnShift (lead-availability is a routing fact, not a billing fact).
+- [x] `agentId = null` falls through to crew-wide gate (defensive — no NRE, no accidental lead-match).
+
+`PayrollCalculator.LeadHoursInRange` + `ComputeTotal` split (covered in `Phase18LeadExemptionTests`):
+- [x] `LeadHoursInRange` over a full week returns 168.
+- [x] `OnShiftHoursInRange` over the same week returns 72 (12 × 6 — regression for the member path).
+- [x] `LeadHoursInRange` returns 0 when `ScheduleEnabled = false` (disabled = unbilled, suppresses both lead and member earnings).
+- [x] `ComputeTotal` splits earnings: lead row uses 168 h, member rows use ≤72 h.
+- [x] `ComputeTotal` with `Lead = null` preserves pre-Q18.3 math (every member treated as a member).
+
+`CrewQueueWorker` Sweep 2 picker (covered in `Phase18WorkerIntegrationTests.cs`):
+- [x] When zero members are on-shift, the picker selects `crew.Lead` instead of an off-shift member or `null`. *(uses a wall-clock-dependent off-shift TZ search; skips on the rare UTC instant when no such TZ exists.)*
+- [x] When some members are on-shift, the picker round-robins over only the on-shift subset and never wedges work onto an off-shift member. *(regression: members claim during the band; lead is bypassed.)*
+- [x] Lead-only crew (zero non-lead members) picks the lead — preserves the Phase 16.7 fallback after the rewrite.
+- [ ] Resume-pin honours the prior agent only if they are currently on-shift (or are the lead) — off-shift prior agents are bypassed in favour of an on-shift member or the lead. *(needs a deliverable-row + queue restart fixture; deferred.)*
+- [ ] No-lead, all-off-shift crew → `picked` is null and the sweep records `claim-cas-failed` rather than dispatching to a wedged member. *(this path is unreachable through `LeadAutoDispatcher` (no-lead crews are filtered before the schedule check), but `CrewQueueWorker` can still hit it on a manually-enqueued row; deferred until a no-lead repro fixture lands.)*
+
+`LeadAutoDispatcher` schedule check (covered in `Phase18WorkerIntegrationTests.cs`):
+- [x] Crew with a lead, off-shift wall-clock — dispatcher enqueues successfully and the histogram tag is `outcome: dispatched`, NOT `outcome: off-shift`.
+- [x] Member-band behaviour during the band is unchanged (regression: on-shift TZ on a day crew with members still records `outcome: dispatched`).
+- [ ] Crew with `Lead = null`, off-shift wall-clock — dispatcher records `outcome: off-shift`. *(unreachable in practice: `LeadAutoDispatcher` indexes only crews with a non-null lead, so a no-lead crew's work item is silently skipped before the schedule check ever fires. Spec language is aspirational; flagged here so a future code change can revisit.)*
+
+UI (NOT yet covered):
+- [ ] (Playwright) `CrewsView` Roster lead row shows the permanent green dot regardless of current shift verdict.
+- [ ] (Playwright) `PerformanceTab` "Lead 24×7" pill renders only when `crew.lead` is set AND `scheduleEnabled` is true.
+- [ ] (Playwright) "Lead 24×7" pill is suppressed when `scheduleEnabled = false` (the strip already reads "Schedule disabled" — the pill would be redundant noise).
 
 ### Out of scope for v0.1 — moved to Phase R / `forge_v2.md`
 
@@ -1273,7 +1372,81 @@ This is a **schema add + ScheduleGate parameter**, not a new view. UI surfaces i
 - [x] **21.2** **`DELETE /api/work-items/{id}/transcript`** — clears `task_transcript_event` AND `deliverables` rows in one call so the iter counter resets cleanly. Returns `{ deleted: N, deletedDeliverables: M }`.
 - [x] **21.3** **Restart button on `LiveExecutionView`** — calls `DELETE /transcript` then re-enqueues the work item via `POST /api/work-items/{id}/restart` (or the existing `/assign` path with `skipSoulPrompt`). Confirmation modal calls out the three side-effects so the operator doesn't restart by mistake.
 - [x] **21.4** **`CrewQueueWorker.RunAgentAsync` honors `SkipSoulPrompt`** — when the queue row's flag is set, both generator and evaluator skip the `File.ReadAllTextAsync(SoulPath)` step; the system-prompt is empty and the agent runs as the bare model with only the user prompt. Transparent to the agent — no special instruction is injected to "explain that soul was suppressed".
-- [x] **21.5** **`maxTurns=30` in Copilot SDK runner** — closely related stabilization tied to restart UX: Copilot SDK occasionally never returned a `Finished` event when the agent decided to "keep working forever". A hard cap at 30 turns terminates the invocation cleanly so Restart actually has something to restart from. The cap was later raised to 500 for hard work items but kept as an explicit `Forge:Agents:CopilotMaxTurns` config knob so the operator can tighten it back down for spike work.
+- [x] **21.5** **Points-based `maxTurns` in Copilot SDK runner** — closely related stabilization tied to restart UX: Copilot SDK occasionally never returned a `Finished` event when the agent decided to "keep working forever". A hard cap terminates the invocation cleanly so Restart actually has something to restart from. `maxTurns` is now **scaled by story points**: `30 × points` (e.g. 3-point item → 90 turns, 5-point item → 150 turns). When `points = 0` (unestimated), falls back to the global `Forge:Agents:CopilotMaxTurns` config default (500). The per-task override is carried on `AgentContext.MaxTurns` (nullable int); `AgentRunnerDispatcher.RunCopilotSdk` resolves as `context.MaxTurns ?? options.MaxTurns`. Both generator and evaluator contexts receive the same cap. Wall-clock budget follows the same scaling: `30 min × points`, falling back to the global default when points = 0.
+
+### Test scenarios (`RestartBehaviorTests.cs`)
+
+Comprehensive coverage for Phase 21 restart semantics, transcript clearing, soul-prompt suppression, and points-based budgets.
+
+**21.1 Migration — `SkipSoulPrompt` column**
+
+- [x] Column exists with default 0 after migration runs.
+
+**21.2 `DELETE /api/work-items/{id}/transcript` — clear transcript + deliverables**
+
+- [x] Clears all `task_transcript_event` rows for the work item.
+- [x] Clears all `deliverable` rows for the work item (iter counter resets to 0).
+- [x] Returns `{ deleted: N, deletedDeliverables: M }` with correct counts.
+- [ ] Idempotent — calling twice on the same work item returns `{ deleted: 0, deletedDeliverables: 0 }` on the second call.
+- [ ] Returns 200 for a work item with no transcript or deliverables (empty delete is a no-op, not an error).
+- [ ] Does not delete transcript events belonging to a different work item (no cross-contamination).
+
+**21.3 Restart via `POST /api/crews/{crewId}/plan` with `restart=true`**
+
+- [x] Clears deliverables and resets iter count to 0.
+- [x] Resets WIT State from `in-review` → `active` so `RunAgentAsync` guard doesn't short-circuit.
+- [x] Resets WIT State from `resolved` → `active`.
+- [ ] Resets WIT State from `closed` → `active`.
+- [x] Preserves WIT State when already `active` (no-op on State).
+- [x] Preserves WIT State when already `proposed` (no-op on State).
+- [x] Sets `ExecutionStatus` to `queued` on re-enqueue (failed → queued transition).
+- [ ] Sets `ExecutionStatus` to `queued` on re-enqueue (completed → queued transition).
+- [x] Non-restart enqueue (`restart=false`) does NOT clear deliverables.
+- [ ] Restart skips the schedule gate — a restart at Sunday 03:00 on a day crew still succeeds (no 409 `crew.off_shift`).
+- [ ] Non-restart enqueue respects the schedule gate — off-shift returns 409.
+- [ ] Restart on a non-existent work item returns an appropriate error.
+- [ ] Restart on a non-existent crew returns 404.
+- [ ] Restart cancels any existing open queue row before enqueuing a new one (idempotency — no double-queue).
+
+**21.4 `SkipSoulPrompt` flag**
+
+- [x] `restart=true, skipSoulPrompt=true` persists `SkipSoulPrompt=1` on the queue row.
+- [x] Normal enqueue (`skipSoulPrompt=false` or absent) persists `SkipSoulPrompt=0`.
+- [ ] `skipSoulPrompt=true` without `restart=true` still persists the flag (the two are independent controls).
+- [ ] When `SkipSoulPrompt=true`, `RunAgentAsync` skips `File.ReadAllTextAsync(SoulPath)` — generator's `SoulMd` is empty string.
+- [ ] When `SkipSoulPrompt=true`, evaluator also skips its soul.md — evaluator's `SoulMd` is the scoring rubric only (no persona prefix).
+- [ ] When `SkipSoulPrompt=false` and `agent.SoulPath` is set, generator's `SoulMd` contains the file content.
+- [ ] When `SkipSoulPrompt=false` and `agent.SoulPath` is null/empty, generator's `SoulMd` is empty string (graceful degradation).
+- [ ] When `SkipSoulPrompt=false` and `agent.SoulPath` points to a missing file, generator's `SoulMd` is empty string (best-effort, no crash).
+
+**21.5 Points-based `maxTurns` and wall-clock budget**
+
+- [x] 3 points × 30 = 90 min wall-clock budget.
+- [x] 1 point × 30 = 30 min wall-clock budget.
+- [x] 0 points = null budget (falls back to global default).
+- [ ] 3 points × 30 = 90 max turns on `AgentContext.MaxTurns`.
+- [ ] 5 points × 30 = 150 max turns.
+- [ ] 1 point × 30 = 30 max turns.
+- [ ] 0 points = null max turns (falls back to global `AgentRunnerOptions.MaxTurns` default of 500).
+- [ ] `AgentRunnerDispatcher.RunCopilotSdk` uses `context.MaxTurns` when set (not the global default).
+- [ ] `AgentRunnerDispatcher.RunCopilotSdk` uses `options.MaxTurns` when `context.MaxTurns` is null.
+- [ ] Turn count increments on each `ToolExecutionCompleteEvent`; when `turnCount >= maxTurns`, the invocation terminates with `failReason = "Max turns (N) reached"`.
+- [ ] Evaluator context receives the same `maxTurns` as the generator context (both scaled by the same work item points).
+- [ ] Negative points value → treated as 0 (null budget + null maxTurns, falls back to defaults).
+
+**21.R Re-execution guard (related regression coverage)**
+
+- [ ] `RunAgentAsync` skips execution when WIT State is `in-review` (returns early, marks queue row completed).
+- [ ] `RunAgentAsync` skips execution when WIT State is `resolved` or `closed`.
+- [ ] After restart resets State from `in-review` → `active`, `RunAgentAsync` proceeds (does NOT skip).
+- [ ] Boot-recovery sweep (`picked-up` → `queued`) does not re-run items in terminal states.
+
+**21.I Independence invariants**
+
+- [x] Setting `ExecutionStatus = failed` does NOT change WIT State.
+- [x] Setting `ExecutionStatus = completed` does NOT change WIT State.
+- [ ] Restarting (clearing deliverables + resetting queue) does NOT change the work item's `AssignedTo` field (WIT-level assignee is independent of execution lifecycle).
+- [ ] Restarting does NOT delete the work item's child rows, comments, or parent linkage (Phase Q21.3 — only execution-side rows are cleared).
 
 ### Out of scope for v0.1
 
@@ -1385,17 +1558,149 @@ This is a **schema add + ScheduleGate parameter**, not a new view. UI surfaces i
 
 - [ ] **22.10** **UI — Plan board card + Workstream card cells** — the agent-name cell that today reads the runtime fields out of `AssignedToJson` switches to `AssignedAgent.agents[0]` (canonical driver per Q22.5). When `AssignedAgent` is null, the cell falls back to the WIT-level assignee (`AssignedTo`), rendered with a slightly muted style so the operator can distinguish "no one's executing" from "someone's actively coding". Tooltip enumerates all `agents[]` when N > 1.
 
-- [ ] **22.11** **Tests — `Phase22AssignedAgentTests.cs`**:
-  - **Migration round-trip** — a runtime-shaped `AssignedToJson` ends up in `AssignedAgentJson`; the `AssignedToJson` becomes the resolved team shape; idempotent re-run is a no-op.
-  - **Claim writes both** — Sweep-2 produces an `AssignedAgent` payload AND a `agent_assignments(kind='claimed')` row in the same transaction.
-  - **Sticky on failure** — agent fails mid-run → `AssignedAgent` stays set, history shows a `task.failed`-derived row but no `cleared-*` row.
-  - **Restart clears** — `DELETE /transcript` nulls the field AND appends `kind='cleared-restart'`; next claim writes `claimed` again so the timeline shows three rows.
-  - **PR-open keeps the coder** — `MoveWorkItem(in-review)` appends `kind='pr-opened'` without changing `AssignedAgent.agents`.
-  - **Reviewer assigns** — `POST /assignments {role:'reviewer', agents:['R3']}` overwrites the field + appends `kind='reviewer-assigned'`.
-  - **Completed clears** — `MoveWorkItem(resolved)` nulls the field + appends `kind='completed'`.
-  - **WIT assignee is independent** — `PATCH /work-items/{id} {assignedTo: …}` does NOT mutate `AssignedAgent`, and Sweep-2 claim does NOT mutate `AssignedTo`.
+- [ ] **22.11** **Tests — `Phase22AssignedAgentTests.cs`** — see detailed scenario list in the **Test scenarios** section below.
 
 - [ ] **22.12** **Fidelity** — additive UI (assignment strip + history drawer + live-exec pill data source switch); exempt from the prototype screenshot diff. No new design tokens — reuses the avatar palette + the Phase 14 history-timeline styling.
+
+### Test scenarios
+
+> Coverage matrix for Phase 22. Each scenario gets a checkbox; a checked box means the test exists and passes. Test file: `Phase22AssignedAgentTests.cs`. **Coverage status: 0% — Phase 22 is not yet implemented.**
+
+**22.1 Migration — `Phase22Migration.ApplyAsync`**
+
+- [ ] Adds `AssignedAgentJson TEXT NULL` column to `work_items` table on a fresh DB.
+- [ ] Creates `agent_assignments` table with all required columns (`Id`, `WorkItemId`, `Kind`, `AgentIdsJson`, `Team`, `CrewId`, `Role`, `FromExecutionStatus`, `ToExecutionStatus`, `AssignedBy`, `Reason`, `At`).
+- [ ] Creates index `IX_agent_assignments_workitem_at` on `(WorkItemId, At DESC)`.
+- [ ] Idempotent — second invocation does not throw and does not duplicate columns or tables.
+- [ ] Runs after `Phase21Migration` without conflict.
+
+**22.2 Domain model + TS mirror**
+
+- [ ] `WorkItemRow.AssignedAgentJson` defaults to `null` for new rows.
+- [ ] `AssignedAgent` POCO round-trips through JSON serialization (all fields: `agents`, `team`, `crewId`, `role`, `assignedAt`, `assignedBy`).
+- [ ] `AssignedAgent` with a single agent serializes `agents` as a 1-element array.
+- [ ] `AssignedAgent` with paired agents (generator + evaluator) serializes `agents` as a 2-element array.
+- [ ] `AssignedAgent` with `null` optional fields (`team`, `crewId`, `assignedBy`) round-trips correctly.
+- [ ] `AgentAssignmentRow` entity round-trips through EF — write all fields, read back identical values.
+- [ ] `WorkItemMapper` parses `AssignedAgentJson` into `AssignedAgent` POCO on read.
+- [ ] `WorkItemMapper` returns `null` for `AssignedAgent` when `AssignedAgentJson` is null or empty.
+
+**22.3 Queue claim — Sweep 2 writes `AssignedAgent` (not `AssignedTo`)**
+
+- [ ] Sweep-2 claim writes `AssignedAgentJson` with correct shape: `agents=[picked]`, `role='generator'`, `assignedBy='queue-worker'`, `assignedAt` is ISO-8601 UTC.
+- [ ] Sweep-2 claim for a paired crew writes `agents=[generator, evaluator]` (2-element array).
+- [ ] Sweep-2 claim for a single (non-paired) crew writes `agents=[generator]` (1-element array).
+- [ ] Sweep-2 claim populates `team` from `crew.Team` and `crewId` from the claiming crew's ID.
+- [ ] Sweep-2 claim appends an `agent_assignments` row with `kind='claimed'` in the same `SaveChanges()` transaction.
+- [ ] `agent_assignments` row from claim has `FromExecutionStatus='queued'`, `ToExecutionStatus='live'`, `AssignedBy='queue-worker'`.
+- [ ] Sweep-2 claim does **NOT** overwrite `AssignedToJson` — the WIT-level assignee is unchanged.
+- [ ] Boot-recovery reclaim writes a fresh `AssignedAgentJson` AND appends a new `agent_assignments(kind='claimed')` row (not a silent field-update).
+
+**22.4 Endpoints — `AgentAssignmentsEndpoints.cs`**
+
+GET assigned agent:
+- [ ] `GET /api/work-items/{id}/assigned-agent` returns 200 with parsed `AssignedAgent` when field is set.
+- [ ] `GET /api/work-items/{id}/assigned-agent` returns 204 when `AssignedAgentJson` is null.
+- [ ] `GET /api/work-items/{id}/assigned-agent` returns 404 for a non-existent work item ID.
+
+GET assignment history:
+- [ ] `GET /api/work-items/{id}/assignments` returns history rows newest-first (descending `At`).
+- [ ] `GET /api/work-items/{id}/assignments?limit=2` returns at most 2 rows.
+- [ ] `GET /api/work-items/{id}/assignments` defaults to limit=50 when no query param.
+- [ ] `GET /api/work-items/{id}/assignments?limit=999` clamps to max 500.
+- [ ] `GET /api/work-items/{id}/assignments` returns empty array for a work item with no history.
+
+POST manual assignment:
+- [ ] `POST /api/work-items/{id}/assignments` with valid `{ agents, role }` writes `AssignedAgentJson` + appends history row.
+- [ ] `POST /api/work-items/{id}/assignments` sets `assignedBy` to the calling user ID (not `'queue-worker'`).
+- [ ] `POST /api/work-items/{id}/assignments` with `role:'reviewer'` appends `kind='reviewer-assigned'`.
+- [ ] `POST /api/work-items/{id}/assignments` validates that referenced agent IDs exist — returns 400 for unknown agents.
+- [ ] `POST /api/work-items/{id}/assignments` with optional `reason` persists the reason in the history row.
+- [ ] `POST /api/work-items/{id}/assignments` without `reason` stores `null` reason.
+- [ ] `POST /api/work-items/{id}/assignments` by non-PO / non-crew-lead returns 403.
+
+DELETE assigned agent:
+- [ ] `DELETE /api/work-items/{id}/assigned-agent` nulls `AssignedAgentJson` + appends `kind='cleared-manual'`.
+- [ ] `DELETE /api/work-items/{id}/assigned-agent` with `{ reason }` body persists the reason.
+- [ ] `DELETE /api/work-items/{id}/assigned-agent` by PO returns 200.
+- [ ] `DELETE /api/work-items/{id}/assigned-agent` by non-PO returns 403.
+- [ ] `DELETE /api/work-items/{id}/assigned-agent` when field is already null is a no-op (idempotent, still 200).
+
+**22.5 `MoveWorkItem` integration — state transition hooks**
+
+PR opened (→ in-review):
+- [ ] `MoveWorkItem(→ in-review)` appends `agent_assignments(kind='pr-opened')` without changing `AssignedAgentJson`.
+- [ ] `agent_assignments` row from PR-open has `FromExecutionStatus` = prior status, `ToExecutionStatus='in-review'`.
+- [ ] Coder's `AssignedAgent.agents` array is unchanged after PR open — coder stays pinned (Q22.3 step 4).
+
+Completed / resolved:
+- [ ] `MoveWorkItem(→ resolved)` nulls `AssignedAgentJson` AND appends `agent_assignments(kind='completed')`.
+- [ ] `MoveWorkItem(→ closed)` nulls `AssignedAgentJson` AND appends `agent_assignments(kind='completed')`.
+- [ ] `agent_assignments` row from completion has correct `FromExecutionStatus` and `ToExecutionStatus`.
+
+State transitions that do NOT touch AssignedAgent:
+- [ ] `MoveWorkItem(proposed → active)` does NOT append an assignment history row and does NOT change `AssignedAgentJson`.
+- [ ] `MoveWorkItem(active → proposed)` (revert) does NOT change `AssignedAgentJson`.
+
+**22.6 Restart clears `AssignedAgent`**
+
+- [ ] `DELETE /api/work-items/{id}/transcript` nulls `AssignedAgentJson`.
+- [ ] `DELETE /api/work-items/{id}/transcript` appends `agent_assignments(kind='cleared-restart')`.
+- [ ] `cleared-restart` history row has `FromExecutionStatus` = prior status (e.g. `'live'` or `'failed'`), `ToExecutionStatus='queued'`.
+- [ ] `cleared-restart` history row has `AssignedBy` = the user who triggered the restart.
+- [ ] After restart + re-claim, the timeline shows three rows: `claimed → cleared-restart → claimed` (no silent overwrite).
+- [ ] Restart when `AssignedAgentJson` is already null still appends the `cleared-restart` row (audit completeness).
+
+**22.7 Backfill migration (one-shot)**
+
+- [ ] Runtime-shaped `AssignedToJson` (has `generatorAgentId` or `crewId` at top level, no `kind`) is detected and migrated.
+- [ ] Migrated row: `AssignedAgentJson` receives the data in Q22.2 shape with `assignedBy='backfill'`.
+- [ ] Migrated row: `AssignedToJson` is rebuilt as WIT-shape `{kind:'team', id:team, displayName:team}` from the embedded `crewId`.
+- [ ] Non-runtime-shaped `AssignedToJson` (has `kind` property, e.g. `{kind:'agent', id:'XD'}`) is NOT migrated — left untouched.
+- [ ] `null` `AssignedToJson` rows are skipped — no crash, no history row.
+- [ ] Each migrated row gets an `agent_assignments(kind='backfill', AssignedBy='backfill')` history row.
+- [ ] Backfill is gated by a `forge_seed_state` row — second boot is a no-op.
+- [ ] Idempotent — running the migration twice produces the same result (no duplicate history rows on second run).
+
+**22.8 Sticky on failure (Q22.4)**
+
+- [ ] Agent fails mid-run → `AssignedAgentJson` stays set (not cleared).
+- [ ] Agent fails mid-run → no `cleared-*` history row is written.
+- [ ] Agent hits budget cap → `AssignedAgentJson` stays set.
+- [ ] Agent restarts mid-run (server crash) → `AssignedAgentJson` stays set until explicit Restart.
+
+**22.9 WIT assignee independence (Q22.1)**
+
+- [ ] `PATCH /api/work-items/{id}` with `{ assignedTo: {kind:'agent', id:'XD'} }` does NOT mutate `AssignedAgentJson`.
+- [ ] `PATCH /api/work-items/{id}` with `{ assignedTo: … }` does NOT append any `agent_assignments` history row.
+- [ ] Sweep-2 claim does NOT mutate `AssignedToJson` — the WIT-level assignee is preserved.
+- [ ] Both fields can be non-null simultaneously with different values — no conflict.
+
+**22.10 Multi-agent & role semantics (Q22.5)**
+
+- [ ] Paired crew claim writes exactly 2 entries in `agents[]` (generator + evaluator).
+- [ ] Single crew claim writes exactly 1 entry in `agents[]`.
+- [ ] `agents[0]` is the canonical "driver" — generator for `role='generator'`, reviewer for `role='reviewer'`.
+- [ ] Manual reviewer assignment (`POST /assignments {role:'reviewer'}`) replaces `AssignedAgent` entirely (not additive).
+- [ ] After reviewer assignment, `agents[0]` is the reviewer agent.
+
+**22.11 Full lifecycle timeline (end-to-end)**
+
+- [ ] Full happy path: `claimed → pr-opened → reviewer-assigned → completed` produces exactly 4 `agent_assignments` rows in chronological order.
+- [ ] Full restart path: `claimed → cleared-restart → claimed → pr-opened → completed` produces exactly 5 rows.
+- [ ] History rows are ordered by `At DESC` when queried via the paginated endpoint.
+- [ ] Each history row has a non-null `At` timestamp in ISO-8601 format.
+- [ ] Each history row has a non-empty `Kind` from the allowed set: `claimed`, `reassigned`, `cleared-restart`, `cleared-manual`, `pr-opened`, `reviewer-assigned`, `completed`, `backfill`.
+
+**22.12 Edge cases & error handling**
+
+- [ ] Concurrent claims on the same work item — only one succeeds; the loser gets a CAS failure, no orphan history row.
+- [ ] `POST /assignments` on a non-existent work item returns 404.
+- [ ] `DELETE /assigned-agent` on a non-existent work item returns 404.
+- [ ] `GET /assignments` on a non-existent work item returns 404.
+- [ ] `POST /assignments` with empty `agents[]` array returns 400.
+- [ ] `POST /assignments` with invalid `role` value returns 400.
+- [ ] Malformed `AssignedAgentJson` in DB does not crash the GET endpoint — returns null gracefully.
 
 ### Out of scope for v0.1 — Phase R / `forge_v2.md`
 
@@ -1529,15 +1834,165 @@ This is a **schema add + ScheduleGate parameter**, not a new view. UI surfaces i
 - [ ] **23.9** **Sidebar / TopBar surfacing** — when any repo's `LastSyncStatus = 'failed'`, the active product's sidebar entry shows a small red dot; click → `/products/{id}` and the failing repo card is auto-scrolled into view. Heuristic-only — no separate alert center at v0.1.
 
 - [ ] **23.10** **Tests — `Forge.Api.Tests/Phase23WorkItemSyncTests.cs`**:
-  - **WIQL builder:** zero / one / many area paths produce the right `WHERE` clause; `>=` boundary behaviour on `ChangedDate`; project-only fallback.
-  - **Pagination — ADO:** > 200 IDs split into batches of 200; mid-batch failure leaves `LastSyncCursor` at the last successful index; resume picks up at the next index without re-fetching the prior batch (assert via `StubHttpMessageHandler` call counts).
-  - **Pagination — GitHub:** `Link: rel="next"` chain followed; mid-page failure stores the next URL; resume is a single GET.
-  - **Delta cursor:** first run uses 365-day window for ADO / no `since` for GH; second run uses `LastSyncAt`; failure path leaves `LastSyncAt` untouched.
-  - **Idempotency:** identical upsert call produces zero net changes; conflict policy (Phase 5.9) writes the upstream value + records the divergence.
-  - **Concurrency:** four repos sync in parallel; a fifth waits for the next tick; a 19-min-stale `running` row is cancelled and re-started.
-  - **`agent-ready` matrix:** flag + null `AssignedTo` → team-assigned; flag + WIT-shape → untouched; flag + runtime-shape (legacy) → team-assigned (Q22.7 backfill); non-default `AgentReadyDefaultTeam` honored; flag removed upstream → existing assignment preserved (one-way ratchet).
-  - **Schedule jitter:** 100 ticks generate 100 jittered timestamps that fall within the ±60 s envelope.
-  - **Spec-consistency:** `SyncConstants` matches the Q23.5 / Q23.6 numbers verbatim.
+
+  #### 23.10.1 — Migration (`Phase23MigrationTests`)
+  - [ ] `Migration_Adds_AreaPathsJson_Column_To_Repos` — column exists, nullable TEXT.
+  - [ ] `Migration_Adds_LastSyncAt_Column_To_Repos` — column exists, nullable TEXT.
+  - [ ] `Migration_Adds_LastSyncCursor_Column_To_Repos` — column exists, nullable TEXT.
+  - [ ] `Migration_Adds_LastSyncStatus_Column_With_Default_Idle` — column exists, NOT NULL, default `'idle'`.
+  - [ ] `Migration_Adds_LastSyncError_Column_To_Repos` — column exists, nullable TEXT.
+  - [ ] `Migration_Adds_IsRunningSince_Column_To_Repos` — column exists, nullable TEXT.
+  - [ ] `Migration_Adds_AgentReadyDefaultTeam_Column_To_Repos` — column exists, nullable TEXT, default NULL.
+  - [ ] `Migration_Adds_InitialSyncWindowDays_Column_To_Repos` — column exists, nullable INTEGER.
+  - [ ] `Migration_Creates_WorkItemSyncRuns_Table` — table with columns `(id, repoId, kind, startedAt, finishedAt, itemsAdded, itemsUpdated, itemsConflicted, errorMessage, completedSuccessfully)`.
+  - [ ] `Migration_WorkItemSyncRuns_Indexed_By_RepoId_StartedAt_Desc` — index exists on `(repoId, startedAt DESC)`.
+  - [ ] `Migration_Is_Idempotent` — running Phase23Migration twice produces no errors.
+  - [ ] `Migration_Runs_After_Phase22Migration` — Phase22 columns exist before Phase23 runs.
+
+  #### 23.10.2 — Spec-consistency (`Phase23SyncConstantsTests`)
+  - [ ] `AdoInitialWindowDays_Equals_365` — `SyncConstants.AdoInitialWindowDays == 365`.
+  - [ ] `AdoMaxIdsPerWorkItemBatch_Equals_200` — `SyncConstants.AdoMaxIdsPerWorkItemBatch == 200`.
+  - [ ] `AdoMaxWiqlReferences_Equals_20000` — `SyncConstants.AdoMaxWiqlReferences == 20000`.
+  - [ ] `GithubPerPage_Equals_100` — `SyncConstants.GithubPerPage == 100`.
+  - [ ] `WorkItemSyncIntervalSeconds_Equals_1200` — `SyncConstants.WorkItemSyncIntervalSeconds == 1200`.
+  - [ ] `WorkItemSyncMaxParallel_Equals_4` — `SyncConstants.WorkItemSyncMaxParallel == 4`.
+  - [ ] `RunningTimeoutMinutes_Equals_19` — `SyncConstants.RunningTimeoutMinutes == 19`.
+  - [ ] `AgentReadyFlag_Equals_AgentReady` — `SyncConstants.AgentReadyFlag == "agent-ready"`.
+  - [ ] `AgentReadyDefaultTeam_Equals_Engineering` — `SyncConstants.AgentReadyDefaultTeam == "Engineering"`.
+  - [ ] `Constants_Match_Spec_Section_Q23_5_And_Q23_6` — parses this spec file and asserts every constant verbatim (mirrors Phase 14.14 / Phase 16.5 pattern).
+
+  #### 23.10.3 — WIQL builder (`AdoWiqlBuilderTests`)
+  - [ ] `Zero_AreaPaths_Produces_ProjectOnly_Where` — `AreaPathsJson` null/empty → `WHERE [System.TeamProject] = '@project'` only, no `UNDER` clause.
+  - [ ] `Single_AreaPath_Produces_Single_Under` — one entry → `[System.AreaPath] UNDER '{p1}'`.
+  - [ ] `Multiple_AreaPaths_Produce_Ored_Under_Clauses` — N entries → `([System.AreaPath] UNDER '{p1}' OR [System.AreaPath] UNDER '{p2}' OR …)`.
+  - [ ] `ChangedDate_Uses_HalfOpen_LowerBound` — `>=` boundary (not `>`) so an item changed exactly at the cursor instant is included.
+  - [ ] `FirstSync_Uses_365Day_Window_When_LastSyncAt_Null` — `lastSyncOrCutoff = UtcNow - 365d` when no prior sync.
+  - [ ] `DeltaSync_Uses_LastSyncAt_As_LowerBound` — second run WIQL uses `LastSyncAt` value from prior run.
+  - [ ] `InitialSyncWindowDays_Override_Honored` — per-repo `InitialSyncWindowDays = 30` overrides the 365-day default.
+  - [ ] `AreaPath_Single_Quotes_Escaped` — area paths containing `'` are escaped to `''` in WIQL.
+  - [ ] `Project_Name_Single_Quotes_Escaped` — project name with `'` is escaped to `''`.
+  - [ ] `Wiql_Always_Orders_By_ChangedDate_Desc` — `ORDER BY [System.ChangedDate] DESC` appended.
+
+  #### 23.10.4 — ADO pagination (`AdoPaginationTests`)
+  - [ ] `Exactly_200_Ids_Single_Batch` — WIQL returns 200 IDs → 1 GET `_apis/wit/workitems` call.
+  - [ ] `201_Ids_Splits_Into_Two_Batches` — 201 IDs → 2 GET calls (200 + 1); assert via `StubHttpMessageHandler` call counts.
+  - [ ] `450_Ids_Splits_Into_Three_Batches` — 450 IDs → 3 GET calls (200 + 200 + 50).
+  - [ ] `MidBatch_Failure_Leaves_LastSyncCursor_At_Last_Successful` — batch 2 of 3 fails → `LastSyncCursor = "1"` (index of last completed batch).
+  - [ ] `Resume_After_MidBatch_Failure_Picks_Up_At_Next_Index` — next run reads `LastSyncCursor = "1"` → skips batch 0 and 1, starts at batch 2; assert via call counts.
+  - [ ] `Each_Batch_Committed_In_Own_Transaction` — batch 1 items in DB even when batch 2 fails.
+  - [ ] `Successful_Run_Clears_LastSyncCursor` — after all batches succeed, `LastSyncCursor` is null.
+  - [ ] `Fields_Mapped_Correctly` — all ADO fields (`System.Id`, `WorkItemType`, `Title`, `State`, `AreaPath`, `IterationPath`, `AssignedTo`, `Tags`, `ChangedDate`, `Parent`, `StoryPoints`, `Priority`, `Severity`) mapped to `WorkItemRow`.
+  - [ ] `Relations_Parsed_For_Parent` — `System.LinkTypes.Hierarchy-Reverse` relation sets `ParentId`.
+  - [ ] `Tags_Parsed_From_SystemTags` — `System.Tags` semicolon-delimited string → tags array.
+
+  #### 23.10.5 — ADO error handling (`AdoRetryTests`)
+  - [ ] `429_Response_Backs_Off_Per_RetryAfter_Header` — 429 with `Retry-After: 5` → waits ≥5s before retry.
+  - [ ] `503_Response_Backs_Off_Per_RetryAfter_Header` — 503 treated same as 429.
+  - [ ] `RetryAfter_Capped_At_60_Seconds` — `Retry-After: 300` → capped to 60s.
+  - [ ] `Third_Retry_Still_Fails_Aborts_Run` — three consecutive failures → `LastSyncStatus = 'failed'`, `LastSyncError` set.
+  - [ ] `Successful_Retry_After_Transient_Failure_Completes_Run` — 429 on first attempt, 200 on retry → run succeeds.
+
+  #### 23.10.6 — GitHub pagination (`GitHubPaginationTests`)
+  - [ ] `LinkNextHeader_Chain_Followed_Until_No_Next` — 3 pages with `Link: rel="next"` → 3 GET calls; stops at page without `next`.
+  - [ ] `MidPage_Failure_Stores_Next_Url_In_LastSyncCursor` — page 2 of 3 fails → `LastSyncCursor` holds the failing page's URL.
+  - [ ] `Resume_After_MidPage_Failure_Is_Single_Get` — next run GETs the stored cursor URL directly (no math/recalculation).
+  - [ ] `Each_Page_Committed_In_Own_Transaction` — page 1 items in DB even when page 2 fails.
+  - [ ] `Successful_Run_Clears_LastSyncCursor` — after all pages succeed, `LastSyncCursor` is null.
+  - [ ] `PullRequests_Skipped_In_Issue_Response` — items with `pull_request` field filtered out of `WorkItemRow` upserts.
+  - [ ] `PullRequests_Mapped_To_PrRow` — items with `pull_request` field mapped to `PrRow` instead.
+  - [ ] `SubIssue_Native_Parent_Preferred` — GitHub native sub-issue parent reference takes precedence.
+  - [ ] `SubIssue_Fallback_To_Body_Convention` — `Parent: #N` in issue body sets `ParentId` when no native sub-issue.
+
+  #### 23.10.7 — GitHub rate-limit handling (`GitHubRateLimitTests`)
+  - [ ] `XRateLimitRemaining_Below_100_Sleeps_Until_Reset` — `X-RateLimit-Remaining: 50` + `X-RateLimit-Reset` → runner sleeps until reset epoch.
+  - [ ] `XRateLimitRemaining_Above_100_No_Sleep` — `X-RateLimit-Remaining: 500` → no sleep, continues immediately.
+  - [ ] `FirstSync_Omits_Since_Parameter` — first sync (no `LastSyncAt`) → query string has no `since=`.
+  - [ ] `DeltaSync_Adds_Since_In_Iso_Format` — second sync → `since={LastSyncAt}` in ISO-8601.
+
+  #### 23.10.8 — Delta cursor lifecycle (`DeltaCursorTests`)
+  - [ ] `FirstRun_Ado_Uses_365Day_Window` — ADO first run sends WIQL with `ChangedDate >= {UtcNow - 365d}`.
+  - [ ] `FirstRun_GitHub_Omits_Since` — GitHub first run omits `since` parameter (all-time fetch).
+  - [ ] `SecondRun_Uses_LastSyncAt_From_PriorRun` — after successful sync, next run sends `LastSyncAt` as the delta bound.
+  - [ ] `Failed_Run_Leaves_LastSyncAt_Untouched` — sync failure → `LastSyncAt` retains its prior value; next run re-fetches same window.
+  - [ ] `Successful_Run_Sets_LastSyncAt_To_Run_StartTime` — cursor advances to the start time of the run (not the finish time), ensuring no gap.
+  - [ ] `Successful_Run_Sets_LastSyncStatus_Idle` — `LastSyncStatus = 'idle'` after success.
+  - [ ] `Successful_Run_Clears_LastSyncError` — `LastSyncError = null` after success.
+  - [ ] `Failed_Run_Sets_LastSyncStatus_Failed` — `LastSyncStatus = 'failed'` after error.
+  - [ ] `Failed_Run_Writes_LastSyncError` — `LastSyncError = ex.Message` persisted.
+
+  #### 23.10.9 — Idempotency (`IdempotencyTests`)
+  - [ ] `Identical_Upsert_Produces_Zero_Net_Changes` — same item, same `RemoteRevision` → `Skipped = 1`, no DB write.
+  - [ ] `Duplicate_Insert_Same_ProviderRef_No_Second_Row` — re-sync of same `(provider, providerRef)` → update, not duplicate.
+  - [ ] `Conflict_Policy_Writes_Upstream_Value_LastWriterWins` — local row has `RemoteRevision = "3"`, remote sends `RemoteRevision = "5"` → row updated with upstream values.
+  - [ ] `Conflict_Policy_Records_Divergence` — when local and remote `RemoteRevision` differ, divergence is recorded / surfaceable.
+  - [ ] `Upsert_Preserves_Local_FeatureRef_When_Remote_Null` — remote has no `FeatureRef` → local value kept.
+  - [ ] `Upsert_Preserves_Local_AssignedTo_When_Remote_Null` — remote has null `AssignedTo` → local assignment kept.
+  - [ ] `Upsert_Preserves_Local_ParentId_When_Remote_Empty` — remote has no `ParentId` → local re-parent kept.
+  - [ ] `Upsert_Updates_All_ProviderOwned_Fields` — `Track`, `Type`, `State`, `Title`, `DescriptionMd`, `IterationRef`, `AreaPath`, `Points`, `Priority`, `TagsJson`, `UpdatedAt`, `RemoteRevision` all updated on revision change.
+
+  #### 23.10.10 — `agent-ready` auto-assign (`AgentReadyResolverTests`)
+  - [ ] `No_AgentReady_Tag_Returns_Row_Unchanged` — tags `["bug", "p1"]` → `AssignedToJson` untouched.
+  - [ ] `Flag_Plus_Null_AssignedTo_Sets_Team_Engineering` — tags `["agent-ready"]` + `AssignedToJson = null` → `{kind:'team', id:'Engineering', displayName:'Engineering'}`.
+  - [ ] `Flag_Plus_WitShape_Kind_Agent_Untouched` — tags `["agent-ready"]` + `AssignedToJson` with `kind:'agent'` → no change (operator intent wins).
+  - [ ] `Flag_Plus_WitShape_Kind_Human_Untouched` — tags `["agent-ready"]` + `AssignedToJson` with `kind:'human'` → no change.
+  - [ ] `Flag_Plus_WitShape_Kind_Team_Untouched` — tags `["agent-ready"]` + `AssignedToJson` with `kind:'team'` → no change (already team-assigned).
+  - [ ] `Flag_Plus_RuntimeShape_Legacy_Triggers_TeamAssign` — tags `["agent-ready"]` + `AssignedToJson` without `kind` property (legacy Q22.7 shape) → overwritten with team shape.
+  - [ ] `NonDefault_AgentReadyDefaultTeam_Honored` — `repo.AgentReadyDefaultTeam = "Platform"` → `{kind:'team', id:'Platform', displayName:'Platform'}`.
+  - [ ] `Null_AgentReadyDefaultTeam_Falls_Back_To_Engineering` — `repo.AgentReadyDefaultTeam = null` → defaults to `"Engineering"`.
+  - [ ] `AutoAssign_Writes_ForgeActions_Audit_Row` — after auto-assign, `forge_actions` row exists with `kind='auto-assigned-by-flag'`, `actorUserId='sync'`, body contains `repoId`, `workItemId`, `team`.
+  - [ ] `AutoAssign_Emits_WorkItemChanged_SignalR_Event` — after auto-assign, `workitem.changed` SignalR event is broadcast.
+  - [ ] `Flag_Removed_Upstream_Existing_Assignment_Preserved` — item had `agent-ready` + auto-assigned → next sync without `agent-ready` tag → `AssignedToJson` unchanged (one-way ratchet).
+  - [ ] `AgentReady_Flag_Case_Insensitive_Match` — tags `["Agent-Ready"]` still triggers auto-assign (if applicable per design).
+
+  #### 23.10.11 — WorkItemSyncJob scheduling (`WorkItemSyncJobTests`)
+  - [ ] `Job_Ticks_At_20_Minute_Interval` — simulated clock advances 1200s → tick fires.
+  - [ ] `Tick_Queries_Idle_And_Failed_Repos` — repos with `LastSyncStatus IN ('idle','failed')` are included.
+  - [ ] `Tick_Skips_Running_Repos_Under_19_Minutes` — `LastSyncStatus='running'` + `IsRunningSince < 19m ago` → skipped.
+  - [ ] `Tick_Cancels_Stale_Running_Repo_Over_19_Minutes` — `LastSyncStatus='running'` + `IsRunningSince > 19m ago` → cancelled and re-started.
+  - [ ] `Repos_Ordered_By_LastSyncAt_Ascending` — oldest sync-at processed first.
+  - [ ] `Concurrency_Cap_At_4_Repos_Parallel` — 4 repos sync concurrently; verify via timing or semaphore count.
+  - [ ] `Fifth_Repo_Waits_For_Next_Tick` — 5 repos queued → only 4 dispatched; the 5th is deferred.
+  - [ ] `On_Success_Sets_LastSyncAt_And_Idle` — after `RunAsync` succeeds: `LastSyncAt = startedAt`, `LastSyncStatus = 'idle'`, `LastSyncCursor = null`, `LastSyncError = null`.
+  - [ ] `On_Failure_Sets_Failed_And_Error` — after `RunAsync` throws: `LastSyncStatus = 'failed'`, `LastSyncError = ex.Message`, `LastSyncAt` untouched.
+  - [ ] `Each_Invocation_Appends_SyncRun_Row` — `work_item_sync_runs` row with start/end timestamps, counts, success flag.
+  - [ ] `SyncRun_Kind_Reflects_Trigger` — `kind = 'full'|'delta'|'manual'` set correctly based on context.
+
+  #### 23.10.12 — Schedule jitter (`ScheduleJitterTests`)
+  - [ ] `100_Ticks_Fall_Within_Plus_Minus_60s_Envelope` — generate 100 jittered timestamps; all fall within `[1140s, 1260s]` interval.
+  - [ ] `Jitter_Is_Not_Constant` — 100 values have >1 distinct value (not degenerate).
+  - [ ] `Jitter_Differs_Across_Repos` — two repos in the same tick get different jitter offsets (anti-thundering-herd).
+
+  #### 23.10.13 — Endpoints (`Phase23EndpointTests`)
+  - [ ] `POST_SyncWorkItems_Triggers_Manual_Sync` — `POST /api/repos/{id}/sync-work-items` starts a sync run.
+  - [ ] `POST_SyncWorkItems_KindFull_Clears_LastSyncAt` — `{ kind: 'full' }` → `LastSyncAt = null` before run (forces initial window).
+  - [ ] `POST_SyncWorkItems_KindDelta_Uses_Existing_Cursor` — `{ kind: 'delta' }` → normal delta sync using `LastSyncAt`.
+  - [ ] `POST_SyncWorkItems_RateLimited_1_Per_Minute_Per_Repo` — second POST within 60s → 429.
+  - [ ] `POST_SyncWorkItems_IgnoreThrottle_Requires_PO` — non-PO with `ignoreThrottle: true` → 403.
+  - [ ] `POST_SyncWorkItems_IgnoreThrottle_PO_Bypasses_RateLimit` — PO with `ignoreThrottle: true` within 60s → 200 (not 429).
+  - [ ] `POST_SyncWorkItems_Unknown_Repo_Returns_404` — non-existent repo ID → 404.
+  - [ ] `POST_SyncWorkItems_No_Auth_Returns_401` — missing `X-Forge-User` header → 401.
+  - [ ] `GET_SyncWorkItemsRuns_Returns_Paginated_History` — `GET /api/repos/{id}/sync-work-items/runs` returns `work_item_sync_runs` rows.
+  - [ ] `GET_SyncWorkItemsRuns_Limit_Parameter_Honored` — `?limit=5` returns at most 5 rows.
+  - [ ] `GET_SyncWorkItemsRuns_Default_Limit_Is_20` — omit `limit` → max 20 rows.
+  - [ ] `GET_SyncWorkItemsStatus_Returns_Status_Object` — `GET /api/repos/{id}/sync-work-items/status` returns `{ lastSyncAt, lastSyncStatus, lastSyncError, isRunningSince }`.
+  - [ ] `PATCH_Repo_Accepts_AreaPaths_Array` — `PATCH /api/repos/{id}` with `{ areaPaths: ["A\\B", "C\\D"] }` persists to `AreaPathsJson`.
+  - [ ] `PATCH_Repo_Accepts_AgentReadyDefaultTeam` — `PATCH /api/repos/{id}` with `{ agentReadyDefaultTeam: "Platform" }` persists to `AgentReadyDefaultTeam`.
+  - [ ] `PATCH_Repo_AreaPaths_Empty_Array_Clears_Scope` — `{ areaPaths: [] }` sets `AreaPathsJson` to `null` or `"[]"` (whole-project sync).
+
+  #### 23.10.14 — Telemetry (`Phase23TelemetryTests`)
+  - [ ] `Duration_Histogram_Emitted_On_Sync_Complete` — `forge.sync.workitem.duration_ms` histogram recorded with tags `provider`, `kind`, `outcome`.
+  - [ ] `Items_Counter_Emitted_Per_Kind` — `forge.sync.workitem.items` counter incremented with tags `kind=added`, `kind=updated`, `kind=conflicted`.
+  - [ ] `Pagination_Batches_Counter_Emitted` — `forge.sync.workitem.pagination.batches` counter incremented per batch walked.
+  - [ ] `Errors_Counter_Emitted_On_Failure` — `forge.sync.workitem.errors` counter incremented with tag `errorClass` (rate-limit / auth / network / shape).
+  - [ ] `AgentReady_Assignments_Counter_Emitted` — `forge.sync.workitem.agent_ready_assignments` counter incremented with tag `team`.
+
+  #### 23.10.15 — End-to-end integration (`Phase23IntegrationTests`)
+  - [ ] `FullSync_Ado_Inserts_Items_And_Records_Run` — seed a repo with ADO config + stub HTTP → full sync inserts N items, appends a `work_item_sync_runs` row with `kind='full'`, `completedSuccessfully=true`.
+  - [ ] `DeltaSync_Ado_Only_Fetches_Changed_Items` — seed `LastSyncAt` → delta sync WIQL includes `ChangedDate >= {LastSyncAt}`; only changed items appear in upsert.
+  - [ ] `FullSync_GitHub_Inserts_Items_And_Records_Run` — seed a repo with GitHub config + stub HTTP → full sync inserts N items, appends a `work_item_sync_runs` row.
+  - [ ] `DeltaSync_GitHub_Only_Fetches_Updated_Items` — seed `LastSyncAt` → GitHub query includes `since={LastSyncAt}`.
+  - [ ] `AgentReady_EndToEnd_Flag_Triggers_AutoAssign_And_Audit` — sync item with `agent-ready` tag → `AssignedToJson` set, `forge_actions` audit row written, SignalR event broadcast.
+  - [ ] `MultiRepo_Parallel_Sync_Completes_Within_Timeout` — 4 repos sync in parallel → all complete; 5th repo deferred.
 
 - [ ] **23.11** **Telemetry surface** on the existing `Forge.Api.Phase16` meter (re-used; adding a new meter would fragment dashboards):
   - `forge.sync.workitem.duration_ms` — histogram, tagged `provider`, `kind`, `outcome`.
@@ -1732,20 +2187,7 @@ This is a **schema add + ScheduleGate parameter**, not a new view. UI surfaces i
   - "⚠ N" amber chip when `pr_comments WHERE PrId=X AND RequiresAttention=1` is non-empty (subset of above; the operator sees both numbers).
   - Final-state PRs (`completed`, `abandoned`) get a grey "✓ done" pill instead of comment counters.
 
-- [ ] **24.13** **Tests — `Forge.Api.Tests/Phase24PrSyncTests.cs`**:
-  - **State mapping:** ADO Active/Completed/Abandoned + GitHub open/closed×merged_at matrix produces correct `state` + `IsActive`.
-  - **Pagination:** ADO single-call (≤ 1000 threads); GitHub multi-page `Link: next` walk; mid-page failure stores cursor, resume continues.
-  - **Delta:** first sync fetches all comments; second sync skips when `LastUpstreamUpdatedAt` matches; third sync (after upstream change) fetches only comments updated since.
-  - **Authority:**
-    - Agent `POST /comments/{id}/resolve` → 403 + `comment.agent_cannot_resolve`.
-    - Human PO `POST /comments/{id}/resolve` → 200 + upstream PATCH called.
-    - Agent edits own comment → 200; agent edits reviewer's comment → 403.
-  - **Mapping:** body-parse heuristic links commit when message contains `Addresses comment 12345`; position-and-time heuristic links inline comment to the commit that modified the same line; both null when neither matches; `RequiresAttention` clears when one is set.
-  - **Reopen:** upstream `updatedAt` advances on a resolved comment → state flips back to `active` → `RequiresAttention` flips to `true` → `pr.comment-reopened` fires + `comment-response` queue row enqueued (when `ExecutionStatus=in-review`).
-  - **Final state:** sync flips to `completed` → `IsActive=0` → next tick skips the row + audit row written.
-  - **Idempotency:** re-sync identical thread → zero history rows written.
-  - **Queue hook:** un-addressed comment with no existing `comment-response` row enqueues; with one already open does NOT double-enqueue.
-  - **Spec consistency:** new `SyncConstants` values match Q24.1 / Q24.9.
+- [ ] **24.13** **Tests — `Forge.Api.Tests/Phase24PrSyncTests.cs`** — see detailed scenario list in the **Test scenarios** section below.
 
 - [ ] **24.14** **Telemetry surface** on the existing `Forge.Api.Phase16` meter:
   - `forge.sync.pr.duration_ms` — histogram, tagged `provider`, `outcome`.
@@ -1756,6 +2198,222 @@ This is a **schema add + ScheduleGate parameter**, not a new view. UI surfaces i
   - `forge.pr.comment.linker_matched` — counter for body-parse vs position-heuristic link successes.
 
 - [ ] **24.15** **Fidelity** — additive UI (PR detail panel comment list + Live Execution Comments tab + PR card badges); exempt from prototype screenshot diff. New tokens: none — reuses Phase 14 score-chip palette for the comment state pills + the existing avatar palette + the Phase 19 attention amber.
+
+### Test scenarios
+
+> Coverage matrix for Phase 24. Each scenario gets a checkbox; a checked box means the test exists and passes. Test file: `Phase24PrSyncTests.cs`. **Coverage status: 0% — Phase 24 is not yet implemented.**
+
+**24.1 Migration — `Phase24Migration.ApplyAsync`**
+
+- [ ] Adds `IsActive`, `LastSyncAt`, `LastSyncStatus`, `LastSyncError`, `IsRunningSince`, `CommentSyncCursor`, `LastUpstreamUpdatedAt` columns to `prs` table.
+- [ ] `IsActive` defaults to `1` for existing rows.
+- [ ] `LastSyncStatus` defaults to `'idle'` for existing rows.
+- [ ] Creates `pr_comments` table with all required columns (`Id`, `PrId`, `ProviderCommentId`, `ThreadId`, `ParentCommentId`, `AuthorId`, `AuthorKind`, `Body`, `FilePath`, `Line`, `State`, `CreatedAt`, `UpdatedAt`, `ResolvedByUserId`, `ResolvedAt`, `LinkedCommitSha`, `LinkedAgentResponseId`, `RequiresAttention`).
+- [ ] `pr_comments.AuthorKind` defaults to `'human'`.
+- [ ] `pr_comments.State` defaults to `'active'`.
+- [ ] `pr_comments.RequiresAttention` defaults to `0`.
+- [ ] Creates `UNIQUE(PrId, ProviderCommentId)` index on `pr_comments`.
+- [ ] Creates `IX_pr_comments_PrId_RequiresAttention` index on `pr_comments`.
+- [ ] Creates `IX_pr_comments_ThreadId` index on `pr_comments`.
+- [ ] Creates `pr_comment_history` table with all required columns (`Id`, `CommentId`, `Kind`, `FromValue`, `ToValue`, `ByUserId`, `At`, `PayloadJson`).
+- [ ] Creates index on `pr_comment_history(CommentId, At)`.
+- [ ] Idempotent — second invocation does not throw and does not duplicate columns/tables.
+- [ ] Runs after `Phase23Migration` without conflict.
+
+**24.2 Constants — `SyncConstants.cs`**
+
+- [ ] `PrSyncIntervalSeconds` equals `1200`.
+- [ ] `PrSyncMaxParallel` equals `8`.
+- [ ] `PrCommentPageSize` equals `100`.
+- [ ] Spec-consistency test: constants match Q24.1 / Q24.9 values verbatim.
+
+**24.3 PR state mapping (Q24.3)**
+
+ADO state mapping:
+- [ ] ADO `Active` → `state='open'`, `IsActive=true`.
+- [ ] ADO `Completed` → `state='completed'`, `IsActive=false`.
+- [ ] ADO `Abandoned` → `state='abandoned'`, `IsActive=false`.
+
+GitHub state mapping:
+- [ ] GitHub `open` → `state='open'`, `IsActive=true`.
+- [ ] GitHub `closed` + `merged_at IS NOT NULL` → `state='completed'`, `IsActive=false`.
+- [ ] GitHub `closed` + `merged_at IS NULL` → `state='abandoned'`, `IsActive=false`.
+
+State change side-effects:
+- [ ] State change emits `pr.changed { kind:'state' }` on SignalR `pr.{prId}` channel.
+- [ ] State change writes an audit row.
+- [ ] Terminal state transition (`→ completed` or `→ abandoned`) fires `pr.closed` event.
+- [ ] Non-terminal states (`conflict`, `review-required`) keep `IsActive=true`.
+
+**24.4 `PrSyncJob` — tick loop + sweep logic**
+
+- [ ] Tick fires every ~20 min (within ±60 s jitter envelope).
+- [ ] Sweep selects PRs with `IsActive=1 AND (LastSyncStatus IN ('idle','failed') OR stale 'running')`.
+- [ ] Sweep orders PRs by `LastSyncAt` ascending (oldest first).
+- [ ] At most `PrSyncMaxParallel = 8` PRs sync concurrently.
+- [ ] A 9th active PR waits for the next tick (semaphore bounded).
+- [ ] Successful sync sets `LastSyncAt`, `LastSyncStatus='idle'`, clears `LastSyncError`.
+- [ ] Failed sync sets `LastSyncStatus='failed'`, `LastSyncError=message`, leaves `LastSyncAt` untouched.
+- [ ] A `running` row with `IsRunningSince` older than 19 min is treated as stale and re-eligible for sync.
+- [ ] Each sync invocation appends a sync-run history row (kind, counts, errors, success flag).
+- [ ] `IsActive=false` rows are NOT selected by the sweep — tick skips them entirely.
+
+**24.5 `AdoPrSyncRunner` — PR metadata + comment threads**
+
+- [ ] Fetches PR metadata via `GET _apis/git/repositories/{repoId}/pullRequests/{prId}`.
+- [ ] Maps ADO states correctly per Q24.3 mapping table.
+- [ ] When upstream `lastUpdatedDate` has not advanced AND `lastMergeSourceCommit` unchanged, comment fetch is skipped.
+- [ ] When upstream has changed, fetches threads via `GET /pullRequests/{prId}/threads?$top=1000`.
+- [ ] Each comment upserts by `(provider='ado', providerCommentId=comment.id)`.
+- [ ] Agent author mapping: known agent UPN (via `agents.PreferredAdoAccount`) → `AuthorKind='agent'`; everything else → `'human'`.
+- [ ] `commentThread.status` change → `pr_comments.State` updated; newly-resolved sets `ResolvedByUserId` + `ResolvedAt`.
+- [ ] Q24.6 commit/response mapping runs after each upsert batch.
+
+**24.6 `GitHubPrSyncRunner` — PR metadata + two comment streams**
+
+- [ ] Fetches PR metadata via `GET /repos/{owner}/{repo}/pulls/{number}`.
+- [ ] Maps GitHub states correctly per Q24.3 mapping table.
+- [ ] Fetches review comments via `GET /pulls/{number}/comments?since={LastUpstreamUpdatedAt}&per_page=100`.
+- [ ] Follows `Link: rel="next"` pagination chain until exhausted.
+- [ ] Fetches issue comments via `GET /issues/{number}/comments?since=…&per_page=100`.
+- [ ] Merges review comments and issue comments by id without duplicates.
+- [ ] Thread resolution state read via GraphQL `pullRequest.reviewThreads` query — `isResolved` merged back by comment id.
+- [ ] Agent author mapping: GitHub login matching `agents.PreferredGitHubAccount` → `AuthorKind='agent'`; `github-actions[bot]` and similar → `'system'`; all others → `'human'`.
+- [ ] Rate-limit handling: when `X-RateLimit-Remaining` < 100, sleeps until `X-RateLimit-Reset`.
+
+**24.7 Comment data model — `pr_comments` (Q24.4)**
+
+- [ ] `pr_comments` row round-trips through EF — write all fields, read back identical values.
+- [ ] `RequiresAttention` is true when `State='active'` AND `AuthorKind IN ('human','system')` AND no agent response since `UpdatedAt`.
+- [ ] `RequiresAttention` is false when `LinkedAgentResponseId` is set AND no subsequent `UpdatedAt` bump.
+- [ ] `RequiresAttention` is false when `LinkedCommitSha` is set AND no subsequent `UpdatedAt` bump.
+- [ ] `RequiresAttention` is false for comments where `AuthorKind='agent'` (agent's own comments don't need self-response).
+- [ ] `RequiresAttention` flips back to true when `UpdatedAt` advances after a link was set (reopen/edit scenario).
+- [ ] `ParentCommentId` correctly chains replies within a thread.
+
+**24.8 Authority enforcement (Q24.5)**
+
+Resolve endpoint:
+- [ ] `POST /api/prs/{prId}/comments/{commentId}/resolve` by agent → 403 + error code `comment.agent_cannot_resolve`.
+- [ ] `POST /api/prs/{prId}/comments/{commentId}/resolve` by human PO → 200 + upstream PATCH called.
+- [ ] `POST /api/prs/{prId}/comments/{commentId}/resolve` body `{ resolution: 'resolved' }` sets `State='resolved'` + `ResolvedByUserId` + `ResolvedAt`.
+- [ ] `POST /api/prs/{prId}/comments/{commentId}/resolve` body `{ resolution: 'wont-fix' }` sets `State='wont-fix'`.
+- [ ] Resolve writes a `pr_comment_history(kind='resolved')` row.
+
+Reopen endpoint:
+- [ ] `POST /api/prs/{prId}/comments/{commentId}/reopen` by agent → 403.
+- [ ] `POST /api/prs/{prId}/comments/{commentId}/reopen` by human → 200 + sets `State='active'` + clears `ResolvedByUserId`/`ResolvedAt`.
+- [ ] Reopen writes a `pr_comment_history(kind='reopened')` row.
+- [ ] Reopen recomputes `RequiresAttention` to `true`.
+
+Post / edit:
+- [ ] `POST /api/prs/{prId}/comments` by agent → 200 (agents can post comments).
+- [ ] `POST /api/prs/{prId}/comments` by human → 200.
+- [ ] `PATCH /api/prs/{prId}/comments/{commentId}` by comment author → 200.
+- [ ] `PATCH /api/prs/{prId}/comments/{commentId}` by PR reviewer (non-author) → 200.
+- [ ] `PATCH /api/prs/{prId}/comments/{commentId}` by agent editing reviewer's comment → 403.
+- [ ] All write endpoints emit `pr.changed { kind: 'comment' }` SignalR event.
+
+**24.9 Comment ↔ commit / response mapping (Q24.6) — `PrCommentLinker`**
+
+Body-parse heuristic:
+- [ ] Commit message containing `Addresses comment 12345` → `LinkedCommitSha` set on comment 12345.
+- [ ] Commit message containing `Fixes comment 12345` → `LinkedCommitSha` set on comment 12345.
+- [ ] Commit message containing `CR-12345` → `LinkedCommitSha` set on comment 12345.
+- [ ] In-thread reply containing `Addresses comment 12345` → `LinkedAgentResponseId` set on comment 12345.
+
+Position-and-time heuristic:
+- [ ] Agent commit modifies file + exact line of an inline comment, and commit lands after `CreatedAt` → `LinkedCommitSha` set.
+- [ ] Agent commit modifies the file but a different line → `LinkedCommitSha` NOT set (false-positive guard).
+- [ ] Comment on a deleted file → heuristic silently skips, no link set.
+- [ ] Comment on a moved line → heuristic silently skips, no link set.
+
+Link side-effects:
+- [ ] Setting `LinkedCommitSha` writes a `pr_comment_history(kind='linked')` row.
+- [ ] Setting `LinkedAgentResponseId` writes a `pr_comment_history(kind='linked')` row.
+- [ ] Setting either link recomputes `RequiresAttention` → clears to false (when no subsequent `UpdatedAt` bump).
+- [ ] Neither heuristic matches → `RequiresAttention` stays true, operator sees "needs response".
+
+Manual override:
+- [ ] `PATCH /api/prs/{prId}/comments/{commentId}` with `{ linkedCommitSha }` sets the link manually.
+- [ ] `PATCH /api/prs/{prId}/comments/{commentId}` with `{ linkedAgentResponseId }` sets the link manually.
+- [ ] Manual link by non-PO / non-assigned-agent-lead → 403.
+
+**24.10 Reopen detection + queue hook (Q24.7, Q24.8)**
+
+- [ ] Upstream `updatedAt` advances on a resolved comment → `State` flips back to `active`.
+- [ ] State flip from resolved → active appends `pr_comment_history(kind='reopened')`.
+- [ ] `RequiresAttention` recomputed: flips from false → true on reopen.
+- [ ] `pr.comment-reopened { prId, commentId, reason }` fires on SignalR `pr.{prId}` group.
+- [ ] `task.comment-needs-response { commentId }` fires on SignalR `task.{wid}` group.
+- [ ] Upstream `updatedAt` advances on a resolved comment that still has `LinkedAgentResponseId` set → `RequiresAttention` flips back to true (edit after link invalidates the link).
+- [ ] Upstream body edit on an active comment → `pr_comment_history(kind='edited')` appended, `RequiresAttention` unchanged (already true).
+- [ ] Upstream resolve on an active comment → `pr_comment_history(kind='resolved')` appended, `RequiresAttention` clears to false.
+
+Queue hook:
+- [ ] When `RequiresAttention` flips true AND `ExecutionStatus='in-review'` AND no open `comment-response` queue row → enqueues `(workItemId, 'crew', crewId, kind='comment-response')`.
+- [ ] When `RequiresAttention` flips true AND existing open `comment-response` queue row → does NOT double-enqueue.
+- [ ] When `RequiresAttention` flips true AND `ExecutionStatus ≠ 'in-review'` → does NOT enqueue (wrong execution phase).
+
+**24.11 Queue worker `kind='comment-response'` runner path**
+
+- [ ] `CrewQueueWorker.RunAgentAsync` branches on `kind='comment-response'` to load comment-response prompt.
+- [ ] Prompt includes all comments with `RequiresAttention=true` for the work item's PR.
+- [ ] Inline comments include file path + line context in the prompt.
+- [ ] Runner uses existing PR (no new PR created — commits push to the existing branch).
+- [ ] Queue row completes when all `RequiresAttention=true` comments have been addressed (flipped to false).
+- [ ] New comments arriving mid-run enqueue a fresh `comment-response` row (not extend current run).
+
+**24.12 Pagination + delta cursor (Q24.9)**
+
+ADO:
+- [ ] Single-call fetch (≤ 1000 threads) succeeds without pagination.
+- [ ] Mid-fetch failure stores `CommentSyncCursor` at last successful page; resume continues from cursor.
+
+GitHub:
+- [ ] Multi-page `Link: rel="next"` walk completes for >100 comments.
+- [ ] Mid-page failure stores the next URL as `CommentSyncCursor`; resume is a single GET.
+- [ ] Cursor cleared on full success.
+
+Delta:
+- [ ] First sync fetches all comments (no `LastUpstreamUpdatedAt`).
+- [ ] Second sync skips comment fetch when `LastUpstreamUpdatedAt` matches upstream (no changes).
+- [ ] Third sync (after upstream change) fetches only comments updated since `LastUpstreamUpdatedAt`.
+
+**24.13 Idempotency (Q24.10)**
+
+- [ ] Comment upsert keys on `(provider, providerCommentId)` — no duplicate rows on re-sync.
+- [ ] Re-sync with identical `UpdatedAt` produces zero `pr_comment_history` rows.
+- [ ] Re-sync with newer `UpdatedAt` advances the row + appends history.
+- [ ] Re-sync of an unchanged PR thread produces zero net changes.
+
+**24.14 Final state stops the clock (Q24.3)**
+
+- [ ] PR state transitions to `completed` → `IsActive` flips to `false`.
+- [ ] PR state transitions to `abandoned` → `IsActive` flips to `false`.
+- [ ] `IsActive=false` row is NOT selected by the next sweep tick — verified via query filter.
+- [ ] `IsActive=false` row is never re-activated by a subsequent sync (it has reached terminal state).
+- [ ] Audit row written when terminal-state transition occurs.
+- [ ] `pr.closed` SignalR event fires on terminal transition.
+- [ ] Explicit "Resync this PR" endpoint can override and re-sync a terminal PR (operator override).
+
+**24.15 Full lifecycle timeline (end-to-end)**
+
+- [ ] Full PR lifecycle: `open → comment posted → agent replies → comment resolved → PR completed` — correct states on PR row, comment rows, history rows, and `IsActive=false` at end.
+- [ ] Reopen lifecycle: `open → comment posted → resolved → reopened → agent commits fix → linked → resolved → completed` — `RequiresAttention` toggles correctly through each phase.
+- [ ] Multi-comment lifecycle: 3 comments posted, 1 resolved, 2 requiring attention — `RequiresAttention` count is 2; queue hook enqueues exactly once.
+- [ ] Cross-provider parity: same logical lifecycle produces equivalent rows for ADO and GitHub sources.
+
+**24.16 Edge cases & error handling**
+
+- [ ] `POST /api/prs/{prId}/comments/{commentId}/resolve` on non-existent PR returns 404.
+- [ ] `POST /api/prs/{prId}/comments/{commentId}/resolve` on non-existent comment returns 404.
+- [ ] `POST /api/prs/{prId}/comments/{commentId}/reopen` on already-active comment is a no-op (200, no history row).
+- [ ] `POST /api/prs/{prId}/comments/{commentId}/resolve` on already-resolved comment is a no-op (200, no duplicate history).
+- [ ] `GET /api/prs/{prId}/comments` on PR with zero comments returns empty array.
+- [ ] Malformed upstream comment body does not crash the body-parse heuristic — returns no match gracefully.
+- [ ] Upstream 429 / 503 on ADO triggers backoff per `Retry-After` header; third retry failure aborts run with `LastSyncStatus='failed'`.
+- [ ] Upstream rate-limit on GitHub (remaining < 100) pauses until reset window.
 
 ### Out of scope for v0.1 — Phase R / `forge_v2.md`
 

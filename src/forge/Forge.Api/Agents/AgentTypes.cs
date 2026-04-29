@@ -123,4 +123,5 @@ public sealed record AgentContext(
     decimal? MaxTaskBudgetUsd = null,
     AgentBackend Backend = AgentBackend.Copilot,
     AgentInvokeMode InvokeMode = AgentInvokeMode.Sdk,
-    TimeSpan? WallClockBudget = null);
+    TimeSpan? WallClockBudget = null,
+    int? MaxTurns = null);

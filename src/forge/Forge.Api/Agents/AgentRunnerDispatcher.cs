@@ -543,7 +543,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         long outputTokens = 0;
         string? failReason = null;
         int turnCount = 0;
-        var maxTurns = this.options.Value.MaxTurns;
+        var maxTurns = context.MaxTurns ?? this.options.Value.MaxTurns;
 
         // Hard wall-clock timeout — per-invocation override from work item
         // points takes precedence over the global default.
