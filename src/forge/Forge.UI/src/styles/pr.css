@@ -233,6 +233,47 @@
 }
 
 .pr-card-body { padding: 10px 12px 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+.pr-card-info-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+}
+.pr-card-info-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 50%;
+}
+.pr-card-info-branch {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 50%;
+}
+.pr-card-comment-chip {
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+.pr-card-attention-chip {
+  background: color-mix(in srgb, rgb(234, 88, 12) 14%, transparent);
+  color: rgb(234, 88, 12);
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: 600;
+}
 .pr-card-changes {
   display: flex;
   align-items: center;

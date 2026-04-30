@@ -636,6 +636,29 @@ function renderPayload(evt: TaskTranscriptEvent): string {
     const reason = typeof p.reason === 'string' ? p.reason : '';
     return reason ? `✗ delivery failed: ${reason}` : '✗ delivery failed';
   }
+  // Phase 26 — build/test gate events.
+  if (evt.kind === 'task.build-started') {
+    const cmd = typeof p.command === 'string' ? p.command : '';
+    return cmd ? `🔨 building: ${cmd}` : '🔨 building…';
+  }
+  if (evt.kind === 'task.build-passed') return '✓ build passed';
+  if (evt.kind === 'task.build-failed') {
+    const reason = typeof p.reason === 'string' ? p.reason : '';
+    const stderr = typeof p.stderr === 'string' ? p.stderr : '';
+    const detail = reason || stderr.substring(0, 200) || 'build failed';
+    return `✗ ${detail}`;
+  }
+  if (evt.kind === 'task.test-started') {
+    const cmd = typeof p.command === 'string' ? p.command : '';
+    return cmd ? `🧪 testing: ${cmd}` : '🧪 testing…';
+  }
+  if (evt.kind === 'task.test-passed') return '✓ tests passed';
+  if (evt.kind === 'task.test-failed') {
+    const reason = typeof p.reason === 'string' ? p.reason : '';
+    const stderr = typeof p.stderr === 'string' ? p.stderr : '';
+    const detail = reason || stderr.substring(0, 200) || 'tests failed';
+    return `✗ ${detail}`;
+  }
   // Fallback — compact JSON.
   try { return JSON.stringify(p); } catch { return ''; }
 }

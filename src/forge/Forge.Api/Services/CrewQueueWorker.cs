@@ -995,6 +995,139 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     }
                     else
                     {
+                    // ── Phase 26 — build/test gate ────────────────────────────
+                    // Run the repo's build + test commands before pushing the
+                    // branch. If either fails the delivery is aborted so we
+                    // never push broken code or create a PR that can't build.
+                    var buildTestPassed = true;
+                    if (wiRepo is not null
+                        && (!string.IsNullOrWhiteSpace(wiRepo.BuildCommand)
+                            || !string.IsNullOrWhiteSpace(wiRepo.TestCommand)))
+                    {
+                        // (3a) Build gate
+                        if (!string.IsNullOrWhiteSpace(wiRepo.BuildCommand))
+                        {
+                            this.logger.LogInformation(
+                                "Running build gate: wi={Wi} cmd={Cmd}", workItemId, wiRepo.BuildCommand);
+                            await this.taskChannel.EmitAsync(workItemId, "task.build-started", new
+                            {
+                                agentId, crewId, command = wiRepo.BuildCommand,
+                            }, crewId: crewId, ct: ct);
+
+                            var (buildCode, buildOut, buildErr, buildTimedOut) = await RunCommandAsync(
+                                pushCwd, wiRepo.BuildCommand, wiRepo.BuildTimeoutSec);
+
+                            if (buildCode == 0)
+                            {
+                                this.logger.LogInformation("Build passed: wi={Wi}", workItemId);
+                                await this.taskChannel.EmitAsync(workItemId, "task.build-passed", new
+                                {
+                                    agentId, crewId, durationHint = "completed",
+                                }, crewId: crewId, ct: ct);
+                            }
+                            else
+                            {
+                                buildTestPassed = false;
+                                var detail = buildTimedOut
+                                    ? $"Build timed out after {wiRepo.BuildTimeoutSec ?? DefaultCommandTimeoutSec}s"
+                                    : $"Build failed (exit {buildCode})";
+                                this.logger.LogWarning(
+                                    "Build gate failed: wi={Wi} exit={Code} timedOut={TimedOut}",
+                                    workItemId, buildCode, buildTimedOut);
+                                await this.taskChannel.EmitAsync(workItemId, "task.build-failed", new
+                                {
+                                    agentId, crewId,
+                                    exitCode = buildCode,
+                                    timedOut = buildTimedOut,
+                                    stdout = buildOut.Length > 4000 ? buildOut[^4000..] : buildOut,
+                                    stderr = buildErr.Length > 4000 ? buildErr[^4000..] : buildErr,
+                                    reason = detail,
+                                }, crewId: crewId, ct: ct);
+                            }
+                        }
+
+                        // (3b) Test gate — only run if build passed
+                        if (buildTestPassed && !string.IsNullOrWhiteSpace(wiRepo.TestCommand))
+                        {
+                            this.logger.LogInformation(
+                                "Running test gate: wi={Wi} cmd={Cmd}", workItemId, wiRepo.TestCommand);
+                            await this.taskChannel.EmitAsync(workItemId, "task.test-started", new
+                            {
+                                agentId, crewId, command = wiRepo.TestCommand,
+                            }, crewId: crewId, ct: ct);
+
+                            var (testCode, testOut, testErr, testTimedOut) = await RunCommandAsync(
+                                pushCwd, wiRepo.TestCommand, wiRepo.TestTimeoutSec);
+
+                            if (testCode == 0)
+                            {
+                                this.logger.LogInformation("Tests passed: wi={Wi}", workItemId);
+                                await this.taskChannel.EmitAsync(workItemId, "task.test-passed", new
+                                {
+                                    agentId, crewId, durationHint = "completed",
+                                }, crewId: crewId, ct: ct);
+                            }
+                            else
+                            {
+                                buildTestPassed = false;
+                                var detail = testTimedOut
+                                    ? $"Tests timed out after {wiRepo.TestTimeoutSec ?? DefaultCommandTimeoutSec}s"
+                                    : $"Tests failed (exit {testCode})";
+                                this.logger.LogWarning(
+                                    "Test gate failed: wi={Wi} exit={Code} timedOut={TimedOut}",
+                                    workItemId, testCode, testTimedOut);
+                                await this.taskChannel.EmitAsync(workItemId, "task.test-failed", new
+                                {
+                                    agentId, crewId,
+                                    exitCode = testCode,
+                                    timedOut = testTimedOut,
+                                    stdout = testOut.Length > 4000 ? testOut[^4000..] : testOut,
+                                    stderr = testErr.Length > 4000 ? testErr[^4000..] : testErr,
+                                    reason = detail,
+                                }, crewId: crewId, ct: ct);
+                            }
+                        }
+
+                        // After build/test, re-check for any newly modified
+                        // files (e.g., generated code, lockfiles) and auto-commit.
+                        if (buildTestPassed)
+                        {
+                            var (postStatus, postOut2, _) = await RunGitAsync(pushCwd, "status", "--porcelain");
+                            if (postStatus == 0 && !string.IsNullOrWhiteSpace(postOut2))
+                            {
+                                this.logger.LogInformation(
+                                    "Auto-committing post-build/test changes: wi={Wi}", workItemId);
+                                await RunGitAsync(pushCwd, "add", "-A");
+                                await RunGitAsync(pushCwd, "commit", "-m",
+                                    $"chore: post-build auto-commit for {workItemId}", "--allow-empty");
+                            }
+                        }
+                    }
+
+                    if (!buildTestPassed)
+                    {
+                        // Abort delivery — build or tests failed.
+                        await this.CompleteQueueRowAsync(workItemId, ct);
+                        await this.SetExecutionStatusAsync(workItemId, ExecutionStatuses.Failed, ct);
+                        await this.taskChannel.EmitAsync(workItemId, "task.delivery-failed", new
+                        {
+                            agentId,
+                            crewId,
+                            branchPushed = false,
+                            prCreated = false,
+                            reason = "Build or tests failed — PR not created.",
+                        }, crewId: crewId, ct: ct);
+                        await this.taskChannel.EmitAsync(workItemId, "task.failed", new
+                        {
+                            agentId, crewId,
+                            error = "Build or tests failed — PR not created.",
+                        }, crewId: crewId, ct: ct);
+                        SystemNotify.AgentFailed(workItemId, "Build or tests failed");
+                        return;
+                    }
+
+                    // ── End Phase 26 gate ─────────────────────────────────────
+
                     this.logger.LogInformation(
                         "Server-side push: wi={Wi} branch={Branch} cwd={Cwd}",
                         workItemId, branchName, pushCwd);
@@ -2034,6 +2167,109 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         var stderr = await proc.StandardError.ReadToEndAsync();
         await proc.WaitForExitAsync();
         return (proc.ExitCode, stdout, stderr);
+    }
+
+    // ── Phase 26 — general-purpose command runner for build/test gate ────
+
+    private const int DefaultCommandTimeoutSec = 600;
+    private const int MaxOutputChars = 16_384;
+
+    /// <summary>
+    /// Runs an arbitrary command in the given working directory with a
+    /// configurable timeout. On timeout the entire process tree is killed.
+    /// Returns exit code and truncated stdout + stderr.
+    /// </summary>
+    /// <param name="cwd">Working directory.</param>
+    /// <param name="command">
+    ///   Full command string (e.g., <c>dotnet build Workflow.sln</c>). The
+    ///   first token is the executable; remaining tokens are arguments,
+    ///   parsed via <see cref="System.Diagnostics.ProcessStartInfo.ArgumentList"/>.
+    /// </param>
+    /// <param name="timeoutSeconds">
+    ///   Kill the process tree after this many seconds. Null → <see cref="DefaultCommandTimeoutSec"/>.
+    /// </param>
+    internal static async Task<(int code, string stdout, string stderr, bool timedOut)> RunCommandAsync(
+        string cwd, string command, int? timeoutSeconds = null)
+    {
+        var timeout = timeoutSeconds ?? DefaultCommandTimeoutSec;
+        var parts = ParseCommandLine(command);
+        if (parts.Length == 0) return (-1, "", "Empty command", false);
+
+        var psi = new System.Diagnostics.ProcessStartInfo(parts[0])
+        {
+            WorkingDirectory = cwd,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        for (var i = 1; i < parts.Length; i++) psi.ArgumentList.Add(parts[i]);
+
+        using var proc = System.Diagnostics.Process.Start(psi)!;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeout));
+        var timedOut = false;
+        try
+        {
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync(cts.Token);
+            var stderrTask = proc.StandardError.ReadToEndAsync(cts.Token);
+            await proc.WaitForExitAsync(cts.Token);
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+            return (proc.ExitCode, TruncateOutput(stdout), TruncateOutput(stderr), false);
+        }
+        catch (OperationCanceledException)
+        {
+            timedOut = true;
+            try { proc.Kill(entireProcessTree: true); } catch { /* best effort */ }
+
+            // Collect whatever output is available.
+            string partialOut = "", partialErr = "";
+            try
+            {
+                using var readCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                partialOut = await proc.StandardOutput.ReadToEndAsync(readCts.Token);
+                partialErr = await proc.StandardError.ReadToEndAsync(readCts.Token);
+            }
+            catch { /* best effort */ }
+
+            return (-1, TruncateOutput(partialOut), TruncateOutput(partialErr + "\n[TIMED OUT]"), timedOut);
+        }
+    }
+
+    /// <summary>Truncate command output to <see cref="MaxOutputChars"/>, keeping the tail.</summary>
+    private static string TruncateOutput(string output)
+    {
+        if (string.IsNullOrEmpty(output) || output.Length <= MaxOutputChars) return output;
+        return "…[truncated]\n" + output[^MaxOutputChars..];
+    }
+
+    /// <summary>
+    /// Splits a command string into executable + arguments, respecting double-quoted tokens.
+    /// E.g., <c>dotnet test --filter "DisplayName~Foo bar"</c> →
+    /// <c>["dotnet", "test", "--filter", "DisplayName~Foo bar"]</c>.
+    /// </summary>
+    internal static string[] ParseCommandLine(string command)
+    {
+        var result = new List<string>();
+        var current = new System.Text.StringBuilder();
+        var inQuotes = false;
+        foreach (var ch in command)
+        {
+            if (ch == '"')
+            {
+                inQuotes = !inQuotes;
+            }
+            else if (ch == ' ' && !inQuotes)
+            {
+                if (current.Length > 0) { result.Add(current.ToString()); current.Clear(); }
+            }
+            else
+            {
+                current.Append(ch);
+            }
+        }
+        if (current.Length > 0) result.Add(current.ToString());
+        return result.ToArray();
     }
 
     /// <summary>

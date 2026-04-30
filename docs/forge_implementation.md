@@ -2470,6 +2470,39 @@ Delta:
 
 ---
 
+## Phase 26 — Build & test gate before PR creation
+
+> Phase 16.18 creates PRs after the deliverable loop passes, but it never verifies that the code actually **builds** and **tests pass** in the workstream branch. The agent is instructed to run build/tests, but this isn't enforced server-side. **Phase 26 adds a server-side verification gate**: after auto-commit but before push + PR, the worker runs the repo's configured build and test commands. If either fails, the delivery is aborted and the work item is marked failed — no broken code reaches the remote, no PR is opened on a red build.
+
+### Resolved decisions
+
+- **Q26.1 Gate runs before push.** Build and test run in the worktree after auto-commit. If either fails, the branch is never pushed and no PR is created. This ensures the remote branch always represents a buildable, tested state.
+- **Q26.2 Commands are per-repo configuration.** `repos.BuildCommand` and `repos.TestCommand` are nullable strings (e.g., `dotnet build Workflow.sln`). When null/empty, the gate is skipped (backward compatible). Commands are parsed respecting double-quoted tokens and executed via `ProcessStartInfo.ArgumentList` — no shell execution.
+- **Q26.3 Configurable timeout with process tree kill.** Each repo has optional `BuildTimeoutSec` and `TestTimeoutSec` (default 600s / 10 min). On timeout, `Process.Kill(entireProcessTree: true)` ensures child processes (e.g., `testhost.dll`) are cleaned up.
+- **Q26.4 Post-gate auto-commit.** After build/test pass, the worker re-checks `git status --porcelain`. If build/test modified tracked files (generated code, lockfiles, snapshots), they are auto-committed before push so the pushed state matches the validated state.
+- **Q26.5 Output is truncated.** Build/test stdout + stderr are capped at 16 KB (keeping the tail) in transcript events and 4 KB in the live-exec view payload. This prevents large test logs from bloating the DB or the UI.
+
+### Implementation steps
+
+- [x] **26.1** **Schema migration** — `Forge.Api/Persistence/Phase26Migration.cs`. Adds `BuildCommand TEXT NULL`, `TestCommand TEXT NULL`, `BuildTimeoutSec INTEGER NULL`, `TestTimeoutSec INTEGER NULL` to `repos` table. Idempotent via `pragma_table_info` check.
+- [x] **26.2** **Entity + contract update** — `RepoRow` gains four properties; `Repo` and `UpdateRepoRequest` contracts gain matching fields; `MapRepo` and `PatchRepo` map them through the API.
+- [x] **26.3** **`RunCommandAsync` helper** — `CrewQueueWorker.RunCommandAsync(cwd, command, timeoutSec)`. Parses command string into executable + args via `ParseCommandLine` (handles double-quoted tokens). Uses `ProcessStartInfo` with `UseShellExecute=false`. On timeout, kills entire process tree. Returns `(exitCode, stdout, stderr, timedOut)` with output truncated to 16 KB.
+- [x] **26.4** **Delivery gate** — in `CrewQueueWorker.RunAgentAsync`, after auto-commit + commits-ahead check, before push: runs build command → test command → post-gate auto-commit → push → PR. On failure emits `task.build-failed` / `task.test-failed` + `task.delivery-failed` + `task.failed`, sets execution status to failed, returns early.
+- [x] **26.5** **Live Execution view** — `LiveExecutionView.tsx` `renderPayload` handles `task.build-started` (🔨), `task.build-passed` (✓), `task.build-failed` (✗), `task.test-started` (🧪), `task.test-passed` (✓), `task.test-failed` (✗).
+
+### Transcript events
+
+| Event | Payload | When |
+|-------|---------|------|
+| `task.build-started` | `{ agentId, crewId, command }` | Build command begins |
+| `task.build-passed` | `{ agentId, crewId }` | Build exits 0 |
+| `task.build-failed` | `{ agentId, crewId, exitCode, timedOut, stdout, stderr, reason }` | Build exits non-zero or times out |
+| `task.test-started` | `{ agentId, crewId, command }` | Test command begins |
+| `task.test-passed` | `{ agentId, crewId }` | Tests exit 0 |
+| `task.test-failed` | `{ agentId, crewId, exitCode, timedOut, stdout, stderr, reason }` | Tests exit non-zero or time out |
+
+---
+
 ## Phase R — Post-implementation refactor (deferred)
 
 > **Do not start until every checkbox in Phases 0–7 is ticked and all fidelity checks are green.** This phase exists only to record the deferred design debt so reviewers know it is acknowledged, not forgotten.

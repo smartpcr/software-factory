@@ -104,6 +104,16 @@ public static class ProductsEndpoints
             row.AgentReadyDefaultTeam = NullIfEmpty(req.AgentReadyDefaultTeam);
         }
 
+        // Phase 26 — build/test gate configuration.
+        if (req.BuildCommand is not null)
+            row.BuildCommand = NullIfEmpty(req.BuildCommand);
+        if (req.TestCommand is not null)
+            row.TestCommand = NullIfEmpty(req.TestCommand);
+        if (req.BuildTimeoutSec is not null)
+            row.BuildTimeoutSec = req.BuildTimeoutSec > 0 ? req.BuildTimeoutSec : null;
+        if (req.TestTimeoutSec is not null)
+            row.TestTimeoutSec = req.TestTimeoutSec > 0 ? req.TestTimeoutSec : null;
+
         await db.SaveChangesAsync();
         var repo = MapRepo(row);
         await hub.Clients.All.SendAsync("repo.changed", new { kind = "patched", repo });
@@ -498,7 +508,8 @@ public static class ProductsEndpoints
             r.Id, r.ProductId, r.Kind, r.RemoteUrl, r.DisplayName, r.DefaultBranch, r.CloneRoot,
             r.AdoOrg, r.AdoProject, r.GhOwner, r.GhRepo,
             areaPaths, r.LastSyncAt, r.LastSyncCursor, r.LastSyncStatus, r.LastSyncError,
-            r.IsRunningSince, r.AgentReadyDefaultTeam, r.InitialSyncWindowDays);
+            r.IsRunningSince, r.AgentReadyDefaultTeam, r.InitialSyncWindowDays,
+            r.BuildCommand, r.TestCommand, r.BuildTimeoutSec, r.TestTimeoutSec);
     }
 
     private static string Slugify(string name)

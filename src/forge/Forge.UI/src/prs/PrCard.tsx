@@ -35,7 +35,7 @@ function roleFor(id: string): string {
 
 // Verbatim port of the prototype's renderPRCard (lines 3970-4089).
 // Phase 25 — redesigned for richer visuals with sparse ADO/GitHub data.
-export function PrCard({ pr, onOpen, onApprove, onRequestChanges }: Props) {
+export function PrCard({ pr, onOpen }: Props) {
   const total = pr.additions + pr.deletions || 1;
   const addPct = (pr.additions / total) * 100;
   const delPct = (pr.deletions / total) * 100;
@@ -48,6 +48,9 @@ export function PrCard({ pr, onOpen, onApprove, onRequestChanges }: Props) {
     pr.conflicts ? 'conflicts' : '',
   ].filter(Boolean).join(' ');
 
+  const openComments = pr.openCommentCount ?? 0;
+  const attentionComments = pr.attentionCommentCount ?? 0;
+
   return (
     <div className={cls} data-pr-id={pr.id} onClick={() => onOpen(pr)}>
       {/* Accent stripe — left edge color by column */}
@@ -57,28 +60,42 @@ export function PrCard({ pr, onOpen, onApprove, onRequestChanges }: Props) {
         <div className="pr-card-id-row">
           <span className="pr-card-id">{pr.id}</span>
           {pr.provider && <ProviderPill kind={pr.provider} />}
-          <span className={`pr-card-epic ${pr.epicColor}`}>{pr.epic}</span>
-          <PrCommentBadges pr={pr} />
           <span className={`pr-card-age ${ageClass}`} title={`Created ${pr.age} ago`}>{pr.age}</span>
         </div>
         <div className="pr-card-title">{pr.title || '(untitled)'}</div>
-        {(pr.branch || pr.base) && (
-          <div className="pr-card-branch">
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-              <circle cx="2.5" cy="2" r="1" stroke="currentColor" strokeWidth="1.2" fill="none" />
-              <circle cx="2.5" cy="7.5" r="1" stroke="currentColor" strokeWidth="1.2" fill="none" />
-              <circle cx="7.5" cy="5" r="1" stroke="currentColor" strokeWidth="1.2" fill="none" />
-              <line x1="2.5" y1="3" x2="2.5" y2="6.5" stroke="currentColor" strokeWidth="1.2" />
-              <path d="M7.5 4 V 3.5 a 1.5 1.5 0 0 0 -1.5 -1.5 H 3.5" stroke="currentColor" strokeWidth="1.2" fill="none" />
-            </svg>
-            <span className="pr-card-branch-name">{pr.branch}</span>
-            {pr.base && <><span className="arrow">→</span><span className="pr-card-branch-base">{pr.base}</span></>}
-            {pr.conflicts && <span className="conflict-badge">conflict</span>}
-          </div>
-        )}
       </div>
 
       <div className="pr-card-body">
+        {/* Author + branch row — always visible */}
+        <div className="pr-card-info-row">
+          <span className="pr-card-info-author" title={pr.author.name}>
+            <AgentChip id={pr.author.id} name={pr.author.name} role={roleFor(pr.author.id)} />
+            {pr.author.name}
+          </span>
+          {pr.branch && (
+            <span className="pr-card-info-branch" title={`${pr.branch} → ${pr.base}`}>
+              {pr.branch}
+            </span>
+          )}
+        </div>
+
+        {/* Comment badges */}
+        {(openComments > 0 || attentionComments > 0) && (
+          <div className="pr-card-info-row">
+            {openComments > 0 && (
+              <span className="pr-card-comment-chip" title={`${openComments} open comment${openComments === 1 ? '' : 's'}`}>
+                💬 {openComments}
+              </span>
+            )}
+            {attentionComments > 0 && (
+              <span className="pr-card-attention-chip" data-testid="pr-card-attention"
+                title={`${attentionComments} need response`}>
+                ⚠ {attentionComments}
+              </span>
+            )}
+          </div>
+        )}
+
         {hasChanges && (
           <div className="pr-card-changes">
             <div className="pr-changes-bar">
@@ -123,55 +140,9 @@ export function PrCard({ pr, onOpen, onApprove, onRequestChanges }: Props) {
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
             <path d="M6 1 L 3 5 H 5 L 4 9 L 7 5 H 5 L 6 1" stroke="currentColor" strokeWidth="1.2" fill="none" strokeLinejoin="round" />
           </svg>
-          Auto-merge armed · waiting for green CI
+          Auto-merge armed
         </div>
       )}
-
-      <div className="pr-card-foot">
-        <div className="pr-card-foot-left">
-          <AgentChip id={pr.author.id} name={pr.author.name} role={roleFor(pr.author.id)} />
-          <span className="pr-card-author-name">{pr.author.name}</span>
-        </div>
-        <div className="pr-card-foot-right">
-          {pr.col === 'review' && pr.humanGate ? (
-            <>
-              <button
-                className="pr-card-action primary"
-                title="Approve & merge"
-                onClick={(e) => { e.stopPropagation(); onApprove?.(pr); }}
-              >
-                <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-                  <path d="M2 5.5 L 4.5 8 L 9 3" stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round" />
-                </svg>
-              </button>
-              <button
-                className="pr-card-action"
-                title="Request changes"
-                onClick={(e) => { e.stopPropagation(); onRequestChanges?.(pr); }}
-              >
-                <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-                  <path d="M2 5.5 H 9 M 5 2.5 L 2 5.5 L 5 8.5" stroke="currentColor" strokeWidth="1.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </button>
-            </>
-          ) : (
-            <>
-              <button className="pr-card-action" title="Open" onClick={(e) => { e.stopPropagation(); onOpen(pr); }}>
-                <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-                  <path d="M4 2 H 2 V 9 H 9 V 7 M 6 2 H 9 V 5 M 9 2 L 5 6" stroke="currentColor" strokeWidth="1.2" fill="none" strokeLinecap="round" />
-                </svg>
-              </button>
-              <button className="pr-card-action" title="More" onClick={(e) => e.stopPropagation()}>
-                <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-                  <circle cx="2.5" cy="5.5" r="0.9" fill="currentColor" />
-                  <circle cx="5.5" cy="5.5" r="0.9" fill="currentColor" />
-                  <circle cx="8.5" cy="5.5" r="0.9" fill="currentColor" />
-                </svg>
-              </button>
-            </>
-          )}
-        </div>
-      </div>
     </div>
   );
 }
@@ -205,61 +176,7 @@ function ageUrgency(age: string): string {
   return 'age-fresh';
 }
 
-// Phase 24.12 — comment + sync badges on the PR card.
-function PrCommentBadges({ pr }: { pr: Pr }) {
-  const isTerminal = pr.col === 'merged' || pr.isActive === false;
-  if (isTerminal) {
-    return (
-      <span
-        className="pr-card-done-pill"
-        title="PR closed (completed or abandoned)"
-        style={{
-          background: 'var(--bg-sunken)',
-          color: 'var(--text-tertiary)',
-          padding: '0 6px',
-          borderRadius: 'var(--radius-sm)',
-          fontSize: 10,
-          fontWeight: 600,
-        }}
-      >
-        ✓ done
-      </span>
-    );
-  }
-  const open = pr.openCommentCount ?? 0;
-  const attention = pr.attentionCommentCount ?? 0;
-  if (open === 0 && attention === 0) return null;
-  return (
-    <span style={{ display: 'inline-flex', gap: 4 }}>
-      {open > 0 && (
-        <span
-          className="pr-card-comment-chip"
-          title={`${open} open comment${open === 1 ? '' : 's'}`}
-          style={{ fontSize: 10, color: 'var(--text-secondary)' }}
-        >
-          💬 {open}
-        </span>
-      )}
-      {attention > 0 && (
-        <span
-          className="pr-card-attention-chip"
-          data-testid="pr-card-attention"
-          title={`${attention} comment${attention === 1 ? '' : 's'} needs response`}
-          style={{
-            background: 'color-mix(in srgb, rgb(234, 88, 12) 14%, transparent)',
-            color: 'rgb(234, 88, 12)',
-            padding: '0 5px',
-            borderRadius: 'var(--radius-sm)',
-            fontSize: 10,
-            fontWeight: 600,
-          }}
-        >
-          ⚠ {attention}
-        </span>
-      )}
-    </span>
-  );
-}
+// Phase 24.12 — comment + sync badges (now inlined in PrCard body).
 
 function PrBuildStrip({ build }: { build: NonNullable<Pr['build']> }) {
   return (

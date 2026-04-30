@@ -248,7 +248,12 @@ public sealed record Repo(
     string? LastSyncError = null,
     string? IsRunningSince = null,
     string? AgentReadyDefaultTeam = null,
-    int? InitialSyncWindowDays = null);
+    int? InitialSyncWindowDays = null,
+    // Phase 26 — build/test gate before PR creation.
+    string? BuildCommand = null,
+    string? TestCommand = null,
+    int? BuildTimeoutSec = null,
+    int? TestTimeoutSec = null);
 
 /// <summary>
 /// POST /api/products body.
@@ -444,7 +449,12 @@ public sealed record UpdateRepoRequest(
     string? GhRepo = null,
     // Phase 23 — scheduled sync configuration.
     IReadOnlyList<string>? AreaPaths = null,
-    string? AgentReadyDefaultTeam = null);
+    string? AgentReadyDefaultTeam = null,
+    // Phase 26 — build/test gate before PR creation.
+    string? BuildCommand = null,
+    string? TestCommand = null,
+    int? BuildTimeoutSec = null,
+    int? TestTimeoutSec = null);
 
 /// <summary>
 /// Phase 11.3 — agent listing payload.

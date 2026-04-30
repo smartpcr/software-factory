@@ -1042,7 +1042,9 @@ public class TaskTranscriptEventRow
     /// task.iteration.scored | task.iteration.iterated | task.iteration.passed |
     /// task.iteration.rejected | task.token | task.tool-call | task.tool-result |
     /// task.commit | task.file-changed | task.pr-opened | task.budget-warning |
-    /// task.worktree-tick</c>.
+    /// task.worktree-tick | task.build-started | task.build-passed |
+    /// task.build-failed | task.test-started | task.test-passed |
+    /// task.test-failed</c>.
     /// </summary>
     public string Kind { get; set; } = string.Empty;
 
@@ -1113,6 +1115,28 @@ public class RepoRow
 
     /// <summary>Overrides the ADO 365-day initial sync window; ignored for GitHub (Q23.5).</summary>
     public int? InitialSyncWindowDays { get; set; }
+
+    // -- Phase 26 — build/test gate before PR creation ------------------------
+
+    /// <summary>
+    /// Build command to run before creating a PR (e.g., <c>dotnet build Workflow.sln</c>).
+    /// When null/empty the build gate is skipped. The first token is the executable;
+    /// the rest are arguments passed via <see cref="System.Diagnostics.ProcessStartInfo.ArgumentList"/>.
+    /// </summary>
+    public string? BuildCommand { get; set; }
+
+    /// <summary>
+    /// Test command to run before creating a PR (e.g., <c>dotnet test src/Foo.Tests/Foo.Tests.csproj</c>).
+    /// When null/empty the test gate is skipped. The first token is the executable;
+    /// the rest are arguments passed via <see cref="System.Diagnostics.ProcessStartInfo.ArgumentList"/>.
+    /// </summary>
+    public string? TestCommand { get; set; }
+
+    /// <summary>Build command timeout in seconds. Defaults to 600 (10 min) when null.</summary>
+    public int? BuildTimeoutSec { get; set; }
+
+    /// <summary>Test command timeout in seconds. Defaults to 600 (10 min) when null.</summary>
+    public int? TestTimeoutSec { get; set; }
 }
 
 /// <summary>
