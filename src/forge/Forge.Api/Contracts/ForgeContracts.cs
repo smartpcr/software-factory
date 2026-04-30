@@ -621,7 +621,10 @@ public sealed record WorkItem(
     string ExecutionStatus = "idle",
     int TrialCount = 0,
     // Phase 22 — runtime-assigned agent(s).
-    AssignedAgent? AssignedAgent = null);
+    AssignedAgent? AssignedAgent = null,
+    // Phase 25 — primary linked PR id and phase (implementation/review/build/merged).
+    string? PrimaryPrId = null,
+    string? PrimaryPrStatus = null);
 
 public sealed record CreateWorkItemRequest(
     string Id,

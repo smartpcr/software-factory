@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { WorkItemPriority, WorkItemState, WorkItemType } from './workItemTypes';
 
-export type WitMode = 'board' | 'timeline' | 'tree' | 'list';
+export type WitMode = 'board' | 'exec' | 'timeline' | 'tree' | 'list';
 
 export type WitChip = 'all' | 'mine' | 'active' | 'blocked' | 'watching';
 
@@ -62,7 +62,7 @@ const DEFAULT_FILTERS: WitFilters = {
 function loadMode(): WitMode {
   if (typeof window === 'undefined') return 'board';
   const raw = window.localStorage.getItem(MODE_KEY);
-  return raw === 'timeline' || raw === 'tree' || raw === 'list' || raw === 'board' ? raw : 'board';
+  return raw === 'exec' || raw === 'timeline' || raw === 'tree' || raw === 'list' || raw === 'board' ? raw : 'board';
 }
 
 function loadFilters(): WitFilters {

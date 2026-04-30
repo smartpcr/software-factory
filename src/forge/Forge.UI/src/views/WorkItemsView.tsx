@@ -5,6 +5,7 @@ import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 import type { WitMode } from '@/workitems/useWitStore';
 import { WorkItemFilterBar } from '@/workitems/WorkItemFilterBar';
 import { WorkItemBoard } from '@/workitems/WorkItemBoard';
+import { ExecBoard } from '@/workitems/ExecBoard';
 import { WorkItemTimeline } from '@/workitems/WorkItemTimeline';
 import { WorkItemTree } from '@/workitems/WorkItemTree';
 import { WorkItemList } from '@/workitems/WorkItemList';
@@ -23,15 +24,19 @@ const MODES: Array<{ id: WitMode; idx: string; label: string; sub: string; icon:
     icon: (<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden><rect x="1" y="2" width="3" height="10" rx="0.5" stroke="currentColor" strokeWidth="1.2" /><rect x="5.5" y="2" width="3" height="6" rx="0.5" stroke="currentColor" strokeWidth="1.2" /><rect x="10" y="2" width="3" height="8" rx="0.5" stroke="currentColor" strokeWidth="1.2" /></svg>),
   },
   {
-    id: 'timeline', idx: '02', label: 'Timeline', sub: 'iteration spans',
+    id: 'exec', idx: '02', label: 'Exec', sub: 'agent status',
+    icon: (<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden><circle cx="7" cy="5" r="2.5" stroke="currentColor" strokeWidth="1.2" /><path d="M3 12c0-2.2 1.8-4 4-4s4 1.8 4 4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" /><circle cx="10.5" cy="3.5" r="1.5" fill="currentColor" opacity="0.5" /></svg>),
+  },
+  {
+    id: 'timeline', idx: '03', label: 'Timeline', sub: 'iteration spans',
     icon: (<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden><line x1="1" y1="3" x2="9" y2="3" stroke="currentColor" strokeWidth="1.2" /><line x1="3" y1="7" x2="13" y2="7" stroke="currentColor" strokeWidth="1.2" /><line x1="2" y1="11" x2="8" y2="11" stroke="currentColor" strokeWidth="1.2" /><circle cx="9" cy="3" r="1.1" fill="currentColor" /><circle cx="13" cy="7" r="1.1" fill="currentColor" /><circle cx="8" cy="11" r="1.1" fill="currentColor" /></svg>),
   },
   {
-    id: 'tree', idx: '03', label: 'Tree', sub: 'parent → child',
+    id: 'tree', idx: '04', label: 'Tree', sub: 'parent → child',
     icon: (<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden><path d="M3 2 V 12 M 3 5 H 8 M 3 8 H 8 M 3 11 H 6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" /><circle cx="3" cy="2" r="1" fill="currentColor" /><circle cx="9" cy="5" r="1" fill="currentColor" /><circle cx="9" cy="8" r="1" fill="currentColor" /><circle cx="7" cy="11" r="1" fill="currentColor" /></svg>),
   },
   {
-    id: 'list', idx: '04', label: 'List', sub: 'dense table',
+    id: 'list', idx: '05', label: 'List', sub: 'dense table',
     icon: (<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden><line x1="2" y1="3" x2="12" y2="3" stroke="currentColor" strokeWidth="1.2" /><line x1="2" y1="7" x2="12" y2="7" stroke="currentColor" strokeWidth="1.2" /><line x1="2" y1="11" x2="12" y2="11" stroke="currentColor" strokeWidth="1.2" /></svg>),
   },
 ];
@@ -147,6 +152,7 @@ export function WorkItemsView() {
       >
         <main className="wit-canvas-main">
           {mode === 'board'    && <WorkItemBoard    items={visible} />}
+          {mode === 'exec'     && <ExecBoard        items={visible} onOpen={(id) => useWitStore.getState().focus(id)} />}
           {mode === 'timeline' && <WorkItemTimeline items={visible} />}
           {mode === 'tree'     && <WorkItemTree     items={visible} />}
           {mode === 'list'     && <WorkItemList     items={visible} />}

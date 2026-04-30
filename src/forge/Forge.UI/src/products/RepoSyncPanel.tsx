@@ -8,7 +8,7 @@
 
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { Repo, WorkItemSyncRun } from '@/types';
+import type { Repo, WorkItemSyncRun, SyncRunItem } from '@/types';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
 import { useCurrentUser } from '@/state/useCurrentUserStore';
@@ -235,6 +235,26 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
     }
   }
 
+  async function triggerPrSync() {
+    setSyncing(true);
+    try {
+      const result = await forgeApi.syncPrs({
+        repoId: repo.id,
+        provider: repo.kind,
+        createdBy: prFilters.createdBy || null,
+        status: prFilters.stateFilter === 'all' ? null : prFilters.stateFilter,
+        fromDate: prFilters.fromDate || null,
+        toDate: prFilters.toDate || null,
+      });
+      const summary = `${result.pulled} pulled · ${result.inserted} new · ${result.updated} updated`;
+      toast(`PR sync completed · ${summary}`, 'success');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'PR sync failed', 'danger');
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   return createPortal(
     <>
       {/* Backdrop */}
@@ -439,6 +459,8 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
               filters={prFilters}
               onChange={setPrFilters}
               isAdo={isAdo}
+              syncing={syncing}
+              onSync={triggerPrSync}
             />
           )}
           {tab === 'history' && (
@@ -627,16 +649,19 @@ function WorkItemSyncTab({
 // ═══════════════════════════════════════════════════════════════════════════
 
 function PrSyncTab({
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   repo: _repo,
   filters,
   onChange,
   isAdo,
+  syncing,
+  onSync,
 }: {
   repo: Repo;
   filters: PrSyncFilters;
   onChange: (f: PrSyncFilters) => void;
   isAdo: boolean;
+  syncing: boolean;
+  onSync: () => void;
 }) {
   return (
     <div style={{ display: 'grid', gap: 20 }}>
@@ -719,6 +744,46 @@ function PrSyncTab({
         </PanelField>
       </div>
 
+      {/* Sync action */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        padding: 14,
+        background: 'var(--accent-bg)',
+        borderRadius: 'var(--radius-md)',
+        border: '1px solid var(--accent)',
+      }}>
+        <button
+          type="button"
+          onClick={onSync}
+          disabled={syncing}
+          style={{
+            padding: '7px 16px',
+            fontSize: 12,
+            fontWeight: 600,
+            fontFamily: 'var(--font-body)',
+            color: 'var(--text-on-accent)',
+            background: 'var(--accent)',
+            border: 'none',
+            borderRadius: 'var(--radius-sm)',
+            cursor: syncing ? 'wait' : 'pointer',
+            opacity: syncing ? 0.7 : 1,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+          }}
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M2 6 a 4 4 0 0 1 7 -2.5 M 10 6 a 4 4 0 0 1 -7 2.5 M 9 1.5 V 3.5 H 7 M 3 10.5 V 8.5 H 5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          {syncing ? 'Syncing…' : `Sync PRs from ${isAdo ? 'ADO' : 'GitHub'}`}
+        </button>
+        <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+          Pull PRs matching filters above into local cache
+        </span>
+      </div>
+
       {/* PR sync status summary */}
       <div style={{
         padding: 14,
@@ -730,7 +795,7 @@ function PrSyncTab({
         lineHeight: 1.6,
       }}>
         <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4, fontSize: 11.5 }}>
-          PR sync runs automatically every 20 minutes
+          PR sync also runs automatically every 20 minutes
         </div>
         Active PRs are tracked until they reach a terminal state (completed or abandoned).
         Comments are synced along with PR metadata. The sync cadence is configurable
@@ -907,6 +972,10 @@ function HistoryTab({
                       <span style={detailValueStyle}>{run.itemsConflicted}</span>
                     </div>
 
+                    {(run.itemsAdded > 0 || run.itemsUpdated > 0) && (
+                      <SyncRunItemList repoId={_repoId} runId={run.id} />
+                    )}
+
                     {!ok && run.errorMessage && (
                       <div style={{
                         marginTop: 10,
@@ -947,6 +1016,130 @@ function HistoryTab({
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Sync Run Item List (Phase 25) ─────────────────────────────────────────
+
+const ACTION_STYLE: Record<string, { color: string; label: string; icon: string }> = {
+  added:   { color: 'var(--success)', label: 'Added',   icon: '+' },
+  updated: { color: 'var(--info)',    label: 'Updated', icon: '~' },
+  removed: { color: 'var(--danger)',  label: 'Removed', icon: '−' },
+};
+
+function SyncRunItemList({ repoId, runId }: { repoId: string; runId: string }) {
+  const [items, setItems] = useState<SyncRunItem[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/repos/${encodeURIComponent(repoId)}/sync-work-items/runs/${encodeURIComponent(runId)}/items`)
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((data: SyncRunItem[]) => { if (!cancelled) setItems(data); })
+      .catch((e: Error) => { if (!cancelled) setError(e.message); });
+    return () => { cancelled = true; };
+  }, [repoId, runId]);
+
+  if (error) {
+    return (
+      <div style={{ marginTop: 10, fontSize: 10.5, color: 'var(--text-tertiary)' }}>
+        Could not load details
+      </div>
+    );
+  }
+  if (items === null) {
+    return (
+      <div style={{ marginTop: 10, fontSize: 10.5, color: 'var(--text-tertiary)' }}>
+        Loading items…
+      </div>
+    );
+  }
+  if (items.length === 0) return null;
+
+  // Group by action
+  const grouped = new Map<string, SyncRunItem[]>();
+  for (const item of items) {
+    const list = grouped.get(item.action) ?? [];
+    list.push(item);
+    grouped.set(item.action, list);
+  }
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{
+        fontWeight: 600,
+        fontSize: 10,
+        textTransform: 'uppercase',
+        letterSpacing: 0.4,
+        color: 'var(--text-tertiary)',
+        marginBottom: 6,
+      }}>
+        Changed items
+      </div>
+      {['added', 'updated', 'removed'].map((action) => {
+        const group = grouped.get(action);
+        if (!group || group.length === 0) return null;
+        const style = ACTION_STYLE[action] ?? ACTION_STYLE.updated;
+        return (
+          <div key={action} style={{ marginBottom: 6 }}>
+            <div style={{
+              fontSize: 10,
+              fontWeight: 600,
+              color: style.color,
+              textTransform: 'uppercase',
+              letterSpacing: 0.3,
+              marginBottom: 3,
+            }}>
+              {style.label} ({group.length})
+            </div>
+            {group.map((item) => (
+              <div
+                key={`${item.entityKind}-${item.entityId}`}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '3px 0',
+                  fontSize: 11,
+                  lineHeight: 1.4,
+                }}
+              >
+                <span style={{
+                  width: 14, height: 14,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: 3,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  fontFamily: 'var(--font-mono)',
+                  background: item.entityKind === 'pr' ? 'var(--accent-bg)' : 'var(--bg-surface-2)',
+                  color: item.entityKind === 'pr' ? 'var(--accent)' : 'var(--text-tertiary)',
+                  border: `1px solid ${item.entityKind === 'pr' ? 'var(--accent)' : 'var(--border)'}`,
+                  flexShrink: 0,
+                }}>
+                  {item.entityKind === 'pr' ? 'P' : 'W'}
+                </span>
+                <span style={{ color: style.color, fontFamily: 'var(--font-mono)', fontSize: 10, flexShrink: 0 }}>
+                  {style.icon}
+                </span>
+                <span style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', fontSize: 10, flexShrink: 0 }}>
+                  {item.providerRef ? `#${item.providerRef}` : item.entityId}
+                </span>
+                <span style={{
+                  color: 'var(--text-primary)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}>
+                  {item.title}
+                </span>
+              </div>
+            ))}
+          </div>
+        );
+      })}
     </div>
   );
 }

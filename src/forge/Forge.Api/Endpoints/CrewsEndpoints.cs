@@ -1396,9 +1396,10 @@ public static class CrewsEndpoints
         var planWi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == wiId, ct);
         if (planWi is not null)
         {
+            var (prId, prCol) = await WorkItemsEndpoints.LookupPrimaryPrAsync(db, wiId, ct);
             await hub.Clients.All.SendAsync(
                 "workitem.changed",
-                new { kind = "exec-queued", workItem = WorkItemsEndpoints.MapWorkItemRow(planWi) },
+                new { kind = "exec-queued", workItem = WorkItemsEndpoints.MapWorkItemRow(planWi, prId, prCol) },
                 ct);
         }
 
@@ -1434,9 +1435,10 @@ public static class CrewsEndpoints
         var codeWi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == wiId, ct);
         if (codeWi is not null)
         {
+            var (prId, prCol) = await WorkItemsEndpoints.LookupPrimaryPrAsync(db, wiId, ct);
             await hub.Clients.All.SendAsync(
                 "workitem.changed",
-                new { kind = "exec-queued", workItem = WorkItemsEndpoints.MapWorkItemRow(codeWi) },
+                new { kind = "exec-queued", workItem = WorkItemsEndpoints.MapWorkItemRow(codeWi, prId, prCol) },
                 ct);
         }
 

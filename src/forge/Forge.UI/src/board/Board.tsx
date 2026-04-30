@@ -10,6 +10,19 @@ import { StoryPicker } from './StoryPicker';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
 
+const COLLAPSED_KEY = 'forge.board.collapsed';
+
+function loadCollapsed(): Set<string> {
+  try {
+    const raw = window.localStorage.getItem(COLLAPSED_KEY);
+    return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
+  } catch { return new Set(); }
+}
+
+function saveCollapsed(set: Set<string>) {
+  window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...set]));
+}
+
 export function Board() {
   const apiState = useStateStore((s) => s.state);
   const legacyEpics = apiState?.epics ?? sampleState.epics;
@@ -54,6 +67,18 @@ export function Board() {
 
   // Story picker state for assigning orphan cards to a story.
   const [storyPickerOpen, setStoryPickerOpen] = useState(false);
+
+  // Swimlane collapse state — persisted per-lane in localStorage.
+  const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
+  const toggleCollapse = useCallback((laneId: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(laneId)) next.delete(laneId);
+      else next.add(laneId);
+      saveCollapsed(next);
+      return next;
+    });
+  }, []);
 
   const assignOrphanCards = useCallback(async (storyId: string) => {
     if (!storyId) return;
@@ -118,66 +143,94 @@ export function Board() {
 
       {swimlanes.map((lane) => {
         const isNoGroup = lane.id === '__none__';
+        const isCollapsed = collapsed.has(lane.id);
+        const laneCards = columns.flatMap((c) => lane.cardFilter(filtered, c.id));
+        const laneCardCount = laneCards.length;
+        const lanePts = laneCards.reduce((s, x) => s + x.pts, 0);
         return (
           <FragmentRow key={lane.id}>
             <div
-              className="swimlane-head"
-              style={isNoGroup ? { position: 'relative' } : undefined}
-              onDoubleClick={isNoGroup ? () => setStoryPickerOpen(true) : undefined}
-              title={isNoGroup ? 'Double-click to assign cards to a story' : undefined}
+              className={`swimlane-head${isCollapsed ? ' swimlane-collapsed' : ''}`}
+              style={{
+                ...(isNoGroup ? { position: 'relative' } : {}),
+                ...(isCollapsed ? { gridColumn: '1 / -1', minHeight: 'auto' } : {}),
+              }}
+              onDoubleClick={isNoGroup && !isCollapsed ? () => setStoryPickerOpen(true) : undefined}
+              onClick={isCollapsed ? () => toggleCollapse(lane.id) : undefined}
+              title={isCollapsed ? 'Click to expand' : isNoGroup ? 'Double-click to assign cards to a story' : undefined}
             >
               <div className="swimlane-epic">
                 <span className="swimlane-epic-id">{lane.id}</span>
-                <button className="swimlane-collapse" title="Collapse">
-                  <svg width="8" height="8" viewBox="0 0 8 8"><path d="M1.5 3 L4 5 L6.5 3" stroke="currentColor" fill="none" strokeWidth="1.3" strokeLinecap="round" /></svg>
+                <button
+                  className={`swimlane-collapse${isCollapsed ? ' collapsed' : ''}`}
+                  title={isCollapsed ? 'Expand' : 'Collapse'}
+                  onClick={() => toggleCollapse(lane.id)}
+                >
+                  <svg width="8" height="8" viewBox="0 0 8 8">
+                    <path
+                      d={isCollapsed ? 'M3 1.5 L5 4 L3 6.5' : 'M1.5 3 L4 5 L6.5 3'}
+                      stroke="currentColor" fill="none" strokeWidth="1.3" strokeLinecap="round"
+                    />
+                  </svg>
                 </button>
               </div>
-              <div className="swimlane-name">{lane.name}</div>
-              {lane.progress != null && (
-                <div className="swimlane-progress">
-                  <div className="swimlane-progress-bar"><div className={`swimlane-progress-fill ${lane.status ?? 'planning'}`} style={{ width: `${lane.progress}%` }} /></div>
-                  <div className="swimlane-progress-row"><span>{lane.status ?? ''}</span><span>{lane.progress}%</span></div>
+              {isCollapsed ? (
+                <div className="swimlane-collapsed-summary">
+                  <span className="swimlane-name" style={{ fontSize: 12 }}>{lane.name}</span>
+                  <span className="swimlane-collapsed-stats">
+                    {laneCardCount} item{laneCardCount !== 1 ? 's' : ''} · {lanePts}pt
+                  </span>
                 </div>
-              )}
-              <div className="swimlane-foot">
-                <div className="swimlane-crew">
-                  {(lane.crew ?? []).map((id) => {
-                    const role = crewRoleFor(id);
-                    const av = avatarFor(id);
-                    const tip = agentTooltip(id, undefined, role);
-                    return av ? (
-                      <img
-                        key={id}
-                        src={av}
-                        alt={id}
-                        className={`agent-chip-avatar ${role}`}
-                        style={{ marginLeft: -3, borderColor: 'var(--bg-sunken)', width: 17, height: 17 }}
-                        title={tip}
-                      />
-                    ) : (
-                      <span
-                        key={id}
-                        className={`agent-chip ${role}`}
-                        style={{ marginLeft: -3, borderColor: 'var(--bg-sunken)', width: 17, height: 17, fontSize: 7 }}
-                        title={tip}
-                      >
-                        {id}
-                      </span>
-                    );
-                  })}
-                </div>
-                {lane.cost != null && <span className="swimlane-cost">${lane.cost.toFixed(2)}</span>}
-              </div>
-              {isNoGroup && (
-                <StoryPicker
-                  open={storyPickerOpen}
-                  currentStory=""
-                  onSelect={(epicId) => void assignOrphanCards(epicId)}
-                  onClose={() => setStoryPickerOpen(false)}
-                />
+              ) : (
+                <>
+                  <div className="swimlane-name">{lane.name}</div>
+                  {lane.progress != null && (
+                    <div className="swimlane-progress">
+                      <div className="swimlane-progress-bar"><div className={`swimlane-progress-fill ${lane.status ?? 'planning'}`} style={{ width: `${lane.progress}%` }} /></div>
+                      <div className="swimlane-progress-row"><span>{lane.status ?? ''}</span><span>{lane.progress}%</span></div>
+                    </div>
+                  )}
+                  <div className="swimlane-foot">
+                    <div className="swimlane-crew">
+                      {(lane.crew ?? []).map((id) => {
+                        const role = crewRoleFor(id);
+                        const av = avatarFor(id);
+                        const tip = agentTooltip(id, undefined, role);
+                        return av ? (
+                          <img
+                            key={id}
+                            src={av}
+                            alt={id}
+                            className={`agent-chip-avatar ${role}`}
+                            style={{ marginLeft: -3, borderColor: 'var(--bg-sunken)', width: 17, height: 17 }}
+                            title={tip}
+                          />
+                        ) : (
+                          <span
+                            key={id}
+                            className={`agent-chip ${role}`}
+                            style={{ marginLeft: -3, borderColor: 'var(--bg-sunken)', width: 17, height: 17, fontSize: 7 }}
+                            title={tip}
+                          >
+                            {id}
+                          </span>
+                        );
+                      })}
+                    </div>
+                    {lane.cost != null && <span className="swimlane-cost">${lane.cost.toFixed(2)}</span>}
+                  </div>
+                  {isNoGroup && (
+                    <StoryPicker
+                      open={storyPickerOpen}
+                      currentStory=""
+                      onSelect={(epicId) => void assignOrphanCards(epicId)}
+                      onClose={() => setStoryPickerOpen(false)}
+                    />
+                  )}
+                </>
               )}
             </div>
-            {columns.map((c) => {
+            {!isCollapsed && columns.map((c) => {
               const cellCards = lane.cardFilter(filtered, c.id);
               return <SwimlaneCell key={c.id} epic={lane.asEpic} col={c.id} cards={cellCards} />;
             })}

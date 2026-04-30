@@ -92,6 +92,8 @@ public class ForgeDbContext : DbContext
 
     public DbSet<WorkItemSyncRunRow> WorkItemSyncRuns => this.Set<WorkItemSyncRunRow>();
 
+    public DbSet<SyncRunItemRow> SyncRunItems => this.Set<SyncRunItemRow>();
+
     public DbSet<PrCommentRow> PrComments => this.Set<PrCommentRow>();
 
     public DbSet<PrCommentHistoryRow> PrCommentHistory => this.Set<PrCommentHistoryRow>();
@@ -206,6 +208,10 @@ public class ForgeDbContext : DbContext
         // Phase 23 — work_item_sync_runs history table.
         mb.Entity<WorkItemSyncRunRow>().ToTable("work_item_sync_runs").HasKey(x => x.Id);
         mb.Entity<WorkItemSyncRunRow>().HasIndex(x => new { x.RepoId, x.StartedAt });
+
+        // Phase 25 — per-item detail for sync runs.
+        mb.Entity<SyncRunItemRow>().ToTable("sync_run_items").HasKey(x => x.Id);
+        mb.Entity<SyncRunItemRow>().HasIndex(x => x.RunId);
 
         // Phase 14.1 — agent level + payroll columns on agents.
         mb.Entity<AgentRow>().Property(x => x.HourlyUsd).HasConversion<double>();

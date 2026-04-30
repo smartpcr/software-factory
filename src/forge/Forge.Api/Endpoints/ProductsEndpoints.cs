@@ -51,6 +51,7 @@ public static class ProductsEndpoints
         // Phase 23 — scheduled sync endpoints.
         repos.MapPost("/{id}/sync-work-items", TriggerRepoSync).WithName("TriggerRepoSync");
         repos.MapGet("/{id}/sync-work-items/runs", GetRepoSyncRuns).WithName("GetRepoSyncRuns");
+        repos.MapGet("/{id}/sync-work-items/runs/{runId}/items", GetSyncRunItems).WithName("GetSyncRunItems");
         repos.MapGet("/{id}/sync-work-items/status", GetRepoSyncStatus).WithName("GetRepoSyncStatus");
 
         return app;
@@ -622,6 +623,35 @@ public static class ProductsEndpoints
             .ToListAsync(ct);
 
         return Results.Ok(runs);
+    }
+
+    private static async Task<IResult> GetSyncRunItems(
+        HttpContext ctx,
+        string id,
+        string runId,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var run = await db.WorkItemSyncRuns.AsNoTracking()
+            .FirstOrDefaultAsync(r => r.Id == runId && r.RepoId == id, ct);
+        if (run is null) return Results.Problem(title: $"Sync run {runId} not found", statusCode: 404);
+
+        var items = await db.SyncRunItems
+            .Where(i => i.RunId == runId)
+            .OrderBy(i => i.Action)
+            .ThenBy(i => i.EntityKind)
+            .ThenBy(i => i.Title)
+            .Select(i => new
+            {
+                i.EntityKind,
+                i.EntityId,
+                i.Title,
+                i.Action,
+                i.ProviderRef,
+            })
+            .ToListAsync(ct);
+
+        return Results.Ok(items);
     }
 
     private static async Task<IResult> GetRepoSyncStatus(

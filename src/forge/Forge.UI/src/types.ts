@@ -330,6 +330,15 @@ export interface WorkItemSyncRun {
   completedSuccessfully: boolean;
 }
 
+/** Phase 25 — per-item detail for a sync run. */
+export interface SyncRunItem {
+  entityKind: 'workitem' | 'pr';
+  entityId: string;
+  title: string;
+  action: 'added' | 'updated' | 'removed';
+  providerRef?: number | null;
+}
+
 export interface DiscoverableRepo {
   kind: RepoKind;
   displayName: string;

@@ -566,6 +566,22 @@ export const forgeApi = {
     });
   },
 
+  /** POST /api/prs/sync — pull PRs from provider into local cache. */
+  async syncPrs(body: {
+    repoId: string;
+    provider: string;
+    createdBy?: string | null;
+    status?: string | null;
+    fromDate?: string | null;
+    toDate?: string | null;
+  }): Promise<{ pulled: number; inserted: number; updated: number }> {
+    return fetchJson('/api/prs/sync', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   /** GET /api/providers — last-known health snapshot for every provider. */
   async listProviders(): Promise<ProviderHealth[]> {
     if (useLocalSeed()) return [];

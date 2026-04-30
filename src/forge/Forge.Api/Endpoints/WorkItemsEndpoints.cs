@@ -173,7 +173,16 @@ public static class WorkItemsEndpoints
         var size = Math.Clamp(pageSize ?? 100, 1, 500);
         var paged = rows.Skip((p - 1) * size).Take(size).ToList();
 
-        return Results.Ok(paged.Select(MapWorkItem).ToList());
+        // Phase 25 — batch-lookup linked PRs for the page so the UI gets
+        // primaryPrId / primaryPrStatus without N+1 queries.
+        var pagedIds = paged.Select(r => r.Id).ToList();
+        var prMap = await LookupPrimaryPrsAsync(db, pagedIds, ct);
+
+        return Results.Ok(paged.Select(r =>
+        {
+            prMap.TryGetValue(r.Id, out var pr);
+            return MapWorkItem(r, pr.PrId, pr.PrCol);
+        }).ToList());
     }
 
     // ----- GET ------------------------------------------------------------
@@ -181,9 +190,9 @@ public static class WorkItemsEndpoints
     private static async Task<IResult> Get(string id, ForgeDbContext db, CancellationToken ct)
     {
         var row = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == id, ct);
-        return row is null
-            ? Results.Problem(title: $"Work item {id} not found", statusCode: 404)
-            : Results.Ok(MapWorkItem(row));
+        if (row is null) return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
+        var (prId, prCol) = await LookupPrimaryPrAsync(db, id, ct);
+        return Results.Ok(MapWorkItem(row, prId, prCol));
     }
 
     // ----- CREATE ---------------------------------------------------------
@@ -415,8 +424,9 @@ public static class WorkItemsEndpoints
         row.RemoteRevision = NewRevision();
         await db.SaveChangesAsync(ct);
 
-        await hub.Clients.All.SendAsync("workitem.changed", new { kind = "updated", workItem = MapWorkItem(row) }, ct);
-        return Results.Ok(MapWorkItem(row));
+        var (prId, prCol) = await LookupPrimaryPrAsync(db, row.Id, ct);
+        await hub.Clients.All.SendAsync("workitem.changed", new { kind = "updated", workItem = MapWorkItem(row, prId, prCol) }, ct);
+        return Results.Ok(MapWorkItem(row, prId, prCol));
     }
 
     // ----- DELETE ---------------------------------------------------------
@@ -465,8 +475,9 @@ public static class WorkItemsEndpoints
         row.UpdatedAt = DateTimeOffset.UtcNow;
         row.RemoteRevision = NewRevision();
         await db.SaveChangesAsync(ct);
-        await hub.Clients.All.SendAsync("workitem.changed", new { kind = "closed", workItem = MapWorkItem(row) }, ct);
-        return Results.Ok(MapWorkItem(row));
+        var (prId, prCol) = await LookupPrimaryPrAsync(db, row.Id, ct);
+        await hub.Clients.All.SendAsync("workitem.changed", new { kind = "closed", workItem = MapWorkItem(row, prId, prCol) }, ct);
+        return Results.Ok(MapWorkItem(row, prId, prCol));
     }
 
     // ----- MOVE -----------------------------------------------------------
@@ -504,8 +515,9 @@ public static class WorkItemsEndpoints
         row.UpdatedAt = DateTimeOffset.UtcNow;
         row.RemoteRevision = NewRevision();
         await db.SaveChangesAsync(ct);
-        await hub.Clients.All.SendAsync("workitem.changed", new { kind = "moved", workItem = MapWorkItem(row) }, ct);
-        return Results.Ok(MapWorkItem(row));
+        var (prId, prCol) = await LookupPrimaryPrAsync(db, row.Id, ct);
+        await hub.Clients.All.SendAsync("workitem.changed", new { kind = "moved", workItem = MapWorkItem(row, prId, prCol) }, ct);
+        return Results.Ok(MapWorkItem(row, prId, prCol));
     }
 
     // ----- REPARENT -------------------------------------------------------
@@ -550,7 +562,8 @@ public static class WorkItemsEndpoints
         await db.SaveChangesAsync(ct);
 
         await hub.Clients.All.SendAsync("workitem.linked", new { id = row.Id, parentId = row.ParentId }, ct);
-        return Results.Ok(MapWorkItem(row));
+        var (prId, prCol) = await LookupPrimaryPrAsync(db, row.Id, ct);
+        return Results.Ok(MapWorkItem(row, prId, prCol));
     }
 
     // ----- RESYNC (per-item, bypasses WIQL change filter + revision skip) -
@@ -613,7 +626,8 @@ public static class WorkItemsEndpoints
         if (remote.UpdatedAt > DateTimeOffset.MinValue
             && row.UpdatedAt >= remote.UpdatedAt)
         {
-            return Results.Ok(MapWorkItem(row));
+            var (prId0, prCol0) = await LookupPrimaryPrAsync(db, row.Id, ct);
+            return Results.Ok(MapWorkItem(row, prId0, prCol0));
         }
 
         // Apply remote fields. Skip ParentId when remote omits one (matches
@@ -647,10 +661,11 @@ public static class WorkItemsEndpoints
         row.UpdatedAt = remote.UpdatedAt > DateTimeOffset.MinValue ? remote.UpdatedAt : DateTimeOffset.UtcNow;
 
         await db.SaveChangesAsync(ct);
+        var (prId, prCol) = await LookupPrimaryPrAsync(db, row.Id, ct);
         await hub.Clients.All.SendAsync("workitem.changed",
-            new { kind = "updated", workItem = MapWorkItem(row) }, ct);
+            new { kind = "updated", workItem = MapWorkItem(row, prId, prCol) }, ct);
 
-        return Results.Ok(MapWorkItem(row));
+        return Results.Ok(MapWorkItem(row, prId, prCol));
     }
 
     // ----- Phase 19 — agent-callable PR creation --------------------------
@@ -767,9 +782,99 @@ public static class WorkItemsEndpoints
     /// Internal so background services (CrewQueueWorker) can build the same
     /// shape when broadcasting <c>workitem.changed</c> from outside this class.
     /// </summary>
-    internal static WorkItem MapWorkItemRow(WorkItemRow r) => MapWorkItem(r);
+    internal static WorkItem MapWorkItemRow(WorkItemRow r, string? primaryPrId = null, string? primaryPrStatus = null)
+        => MapWorkItem(r, primaryPrId, primaryPrStatus);
 
-    private static WorkItem MapWorkItem(WorkItemRow r)
+    /// <summary>
+    /// Look up the primary linked PR for a single work item. Returns (prId, prCol)
+    /// or (null, null) when no PR is linked. Falls back to transcript events when
+    /// no PrRow exists (covers agent-created PRs that haven't been synced yet).
+    /// </summary>
+    internal static async Task<(string? PrId, string? PrCol)> LookupPrimaryPrAsync(
+        ForgeDbContext db, string workItemId, CancellationToken ct = default)
+    {
+        var pr = await db.Prs.AsNoTracking()
+            .Where(p => p.WorkItemId == workItemId)
+            .OrderByDescending(p => p.Sort)
+            .Select(p => new { p.Id, p.Col })
+            .FirstOrDefaultAsync(ct);
+        if (pr is not null) return (pr.Id, pr.Col);
+
+        // Fallback: check transcript for task.pr-opened events (agent created
+        // a PR on the remote but it hasn't been synced into the local prs table).
+        var evt = await db.TaskTranscriptEvents.AsNoTracking()
+            .Where(e => e.WorkItemId == workItemId && e.Kind == "task.pr-opened")
+            .OrderByDescending(e => e.At)
+            .Select(e => e.PayloadJson)
+            .FirstOrDefaultAsync(ct);
+        if (evt is not null)
+        {
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(evt);
+                var prId = doc.RootElement.TryGetProperty("prId", out var pid) ? pid.GetString() : null;
+                // Work item is in-review = PR exists; default to "review" phase.
+                return (prId, "review");
+            }
+            catch { /* malformed payload */ }
+        }
+        return (null, null);
+    }
+
+    /// <summary>
+    /// Batch-lookup primary PRs for a set of work item IDs. Returns a dictionary
+    /// keyed by work-item ID → (prId, prCol). Falls back to transcript events for
+    /// items without a linked PrRow.
+    /// </summary>
+    internal static async Task<Dictionary<string, (string PrId, string PrCol)>> LookupPrimaryPrsAsync(
+        ForgeDbContext db, IEnumerable<string> workItemIds, CancellationToken ct = default)
+    {
+        var ids = workItemIds.ToList();
+        if (ids.Count == 0) return new Dictionary<string, (string, string)>();
+
+        var prRows = await db.Prs.AsNoTracking()
+            .Where(p => p.WorkItemId != null && ids.Contains(p.WorkItemId))
+            .Select(p => new { p.WorkItemId, p.Id, p.Col, p.Sort })
+            .ToListAsync(ct);
+
+        var result = prRows
+            .GroupBy(p => p.WorkItemId!)
+            .ToDictionary(
+                g => g.Key,
+                g =>
+                {
+                    var best = g.OrderByDescending(p => p.Sort).First();
+                    return (best.Id, best.Col);
+                });
+
+        // Fallback: for items not found in prs, check transcript events.
+        var missing = ids.Where(id => !result.ContainsKey(id)).ToList();
+        if (missing.Count > 0)
+        {
+            var events = await db.TaskTranscriptEvents.AsNoTracking()
+                .Where(e => missing.Contains(e.WorkItemId) && e.Kind == "task.pr-opened")
+                .ToListAsync(ct);
+
+            foreach (var grp in events.GroupBy(e => e.WorkItemId))
+            {
+                var latest = grp.OrderByDescending(e => e.At).First();
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(latest.PayloadJson);
+                    var prId = doc.RootElement.TryGetProperty("prId", out var pid) ? pid.GetString() : null;
+                    if (prId is not null)
+                    {
+                        result[grp.Key] = (prId, "review");
+                    }
+                }
+                catch { /* skip malformed */ }
+            }
+        }
+
+        return result;
+    }
+
+    private static WorkItem MapWorkItem(WorkItemRow r, string? primaryPrId = null, string? primaryPrStatus = null)
     {
         var assignee = r.AssignedToJson is null
             ? null
@@ -788,7 +893,7 @@ public static class WorkItemsEndpoints
             r.Title, r.DescriptionMd, r.ParentId, r.FeatureRef, r.IterationRef, r.AreaPath,
             assignee, r.Points, r.Priority, tags, r.CreatedAt, r.UpdatedAt, r.RemoteRevision,
             r.AutoDispatchedAt, r.ExpectedFileChanges, r.ExecutionStatus, r.TrialCount,
-            assignedAgent);
+            assignedAgent, primaryPrId, primaryPrStatus);
     }
 
     private static bool MatchesAssignee(string? json, string filter)

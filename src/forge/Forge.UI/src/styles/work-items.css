@@ -437,10 +437,7 @@
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  /* Drag-and-drop affordance: the card is both clickable AND draggable.
-     `grab` signals "press and drag" instead of `pointer` which reads as
-     "click target only". Flipped to `grabbing` while a drag is active
-     by .dragging below. */
+  overflow: hidden;
   cursor: grab;
   user-select: none;
   transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
@@ -517,13 +514,15 @@
 .wit-board-card-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-tertiary);
+  flex-wrap: wrap;
+  overflow: hidden;
 }
-.wit-board-card-id { color: var(--text-secondary); font-weight: 600; }
-.wit-board-card-spacer { flex: 1; }
+.wit-board-card-id { color: var(--text-secondary); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 90px; }
+.wit-board-card-spacer { flex: 1; min-width: 4px; }
 .wit-board-card-pts {
   font-family: var(--font-mono);
   font-size: 10px;
@@ -595,6 +594,34 @@
 }
 .wit-board-card-blocked .dot {
   width: 6px; height: 6px; border-radius: 999px; background: var(--danger);
+}
+
+/* ====================================================
+ * EXEC BOARD (agent execution status columns)
+ * ==================================================== */
+.wit-exec-board {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(180px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+.wit-exec-card {
+  cursor: pointer;
+}
+.wit-exec-card:hover {
+  border-color: var(--accent);
+}
+/* Column accent — top border color per execution status */
+.wit-exec-col-idle      { border-top-color: var(--text-tertiary); }
+.wit-exec-col-queued    { border-top-color: var(--warning); }
+.wit-exec-col-live      { border-top-color: #10b981; }
+.wit-exec-col-completed { border-top-color: var(--success); }
+.wit-exec-col-failed    { border-top-color: var(--danger); }
+.wit-exec-col-cancelled { border-top-color: var(--text-tertiary); }
+
+/* PR status badge — compact inline pill */
+.pr-status-badge svg {
+  flex-shrink: 0;
 }
 
 /* ====================================================
@@ -1872,6 +1899,9 @@
   }
   .wit-board {
     grid-template-columns: repeat(2, minmax(220px, 1fr));
+  }
+  .wit-exec-board {
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
   }
 }
 

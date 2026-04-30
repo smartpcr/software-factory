@@ -114,70 +114,68 @@ export function PrDetailPanel() {
             <div className="detail-section">
               <div className="detail-section-title">Description</div>
               <div className="detail-desc">
-                {loading ? 'Loading…' : details?.description ?? '—'}
+                {loading ? 'Loading…' : details?.description || pr.title}
               </div>
             </div>
 
-            <div className="detail-section">
-              <div className="detail-section-title">
-                <span>Reviewers</span>
-                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>
-                  {details?.reviewers.length ?? 0}
-                </span>
-              </div>
-              {details?.reviewers.length ? (
+            {(details?.reviewers?.length ?? 0) > 0 && (
+              <div className="detail-section">
+                <div className="detail-section-title">
+                  <span>Reviewers</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>
+                    {details!.reviewers.length}
+                  </span>
+                </div>
                 <ul className="detail-criteria" style={{ marginTop: 6 }}>
-                  {details.reviewers.map((r) => (
+                  {details!.reviewers.map((r) => (
                     <li key={r}>{r}</li>
                   ))}
                 </ul>
-              ) : (
-                <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
-                  No reviewers yet
-                </div>
-              )}
-            </div>
-
-            <div className="detail-section">
-              <div className="detail-section-title">
-                <span>Build log</span>
-                {liveLog.length > 0 && (
-                  <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--success)', fontSize: 10 }}>
-                    live · {liveLog.length}
-                  </span>
-                )}
               </div>
-              <pre
-                style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: 11,
-                  background: 'var(--bg-sunken)',
-                  padding: 10,
-                  borderRadius: 'var(--radius-sm)',
-                  overflowX: 'auto',
-                  margin: 0,
-                  color: 'var(--text-secondary)',
-                }}
-              >
-                {[...(details?.buildLogTail ?? []), ...liveLog].join('\n')}
-              </pre>
-            </div>
+            )}
 
-            <div className="detail-section">
-              <div className="detail-section-title">
-                <span>Comments</span>
-                {(pr.openCommentCount ?? 0) > 0 && (
+            {(details?.buildLogTail?.length ?? 0) > 0 || liveLog.length > 0 ? (
+              <div className="detail-section">
+                <div className="detail-section-title">
+                  <span>Build log</span>
+                  {liveLog.length > 0 && (
+                    <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--success)', fontSize: 10 }}>
+                      live · {liveLog.length}
+                    </span>
+                  )}
+                </div>
+                <pre
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 11,
+                    background: 'var(--bg-sunken)',
+                    padding: 10,
+                    borderRadius: 'var(--radius-sm)',
+                    overflowX: 'auto',
+                    margin: 0,
+                    color: 'var(--text-secondary)',
+                  }}
+                >
+                  {[...(details?.buildLogTail ?? []), ...liveLog].join('\n')}
+                </pre>
+              </div>
+            ) : null}
+
+            {(pr.openCommentCount ?? 0) > 0 && (
+              <div className="detail-section">
+                <div className="detail-section-title">
+                  <span>Comments</span>
                   <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>
                     {pr.openCommentCount} open
                     {(pr.attentionCommentCount ?? 0) > 0 && ` · ${pr.attentionCommentCount} need response`}
                   </span>
-                )}
+                </div>
+                <PrCommentsList prId={pr.id} />
               </div>
-              <PrCommentsList prId={pr.id} />
-            </div>
+            )}
 
             <div className="detail-section">
-              <div className="detail-section-title">Comment / review</div>
+              <div className="detail-section-title">Add a comment</div>
               <textarea
                 value={composer}
                 onChange={(e) => setComposer(e.target.value)}

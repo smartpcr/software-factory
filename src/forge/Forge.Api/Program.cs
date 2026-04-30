@@ -216,6 +216,8 @@ using (var scope = app.Services.CreateScope())
     await Phase23Migration.ApplyAsync(db);
     // Phase 24 — PR sync + comment lifecycle tables and columns.
     await Phase24Migration.ApplyAsync(db);
+    // Phase 25 — sync run item details.
+    await Phase25Migration.ApplyAsync(db);
     await ForgeSeed.EnsureSeededAsync(db);
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.

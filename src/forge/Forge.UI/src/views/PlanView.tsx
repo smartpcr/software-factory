@@ -9,6 +9,7 @@ import { Board } from '@/board/Board';
 import { FilterBar } from '@/board/FilterBar';
 import { WorkItemDetailPanel } from '@/workitems/WorkItemDetailPanel';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
+import { ExecBoard } from '@/workitems/ExecBoard';
 import { CardModal } from '@/board/CardModal';
 import { NewStoryModal } from '@/board/NewStoryModal';
 import { StoryList } from '@/board/StoryList';
@@ -45,7 +46,7 @@ export function PlanView() {
   const [modalOpen, setModalOpen] = useState(false);
   const [storyModalOpen, setStoryModalOpen] = useState(false);
   const [focusedCol, setFocusedCol] = useState<ColumnId | null>(null);
-  const [viewMode, setViewMode] = useState<'board' | 'stories'>('board');
+  const [viewMode, setViewMode] = useState<'board' | 'stories' | 'exec'>('board');
 
   // Phase 15 — sprint picker + area path filter state. The active product
   // comes from the global TopBar selector; iterations/areas come from the
@@ -185,6 +186,13 @@ export function PlanView() {
             Board
           </button>
           <button
+            className={`btn ${viewMode === 'exec' ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => setViewMode('exec')}
+          >
+            <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="5" r="2.5" stroke="currentColor" strokeWidth="1.2" /><path d="M3 12c0-2.2 1.8-4 4-4s4 1.8 4 4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" /><circle cx="10.5" cy="3.5" r="1.5" fill="currentColor" opacity="0.5" /></svg>
+            Exec
+          </button>
+          <button
             className={`btn ${viewMode === 'stories' ? 'btn-primary' : 'btn-secondary'}`}
             onClick={() => setViewMode('stories')}
           >
@@ -206,7 +214,7 @@ export function PlanView() {
 
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <div className="board-wrap" style={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
-          {cards.length === 0 ? (
+          {cards.length === 0 && viewMode !== 'exec' ? (
             <div className="empty-state">
               <div className="title">No cards in this sprint</div>
               <div className="sub">
@@ -217,6 +225,11 @@ export function PlanView() {
                 <button className="btn btn-primary" onClick={() => setModalOpen(true)}>New card</button>
               </div>
             </div>
+          ) : viewMode === 'exec' ? (
+            <ExecBoard
+              items={wiItems}
+              onOpen={(id) => setSelected(id)}
+            />
           ) : viewMode === 'stories' ? (
             <StoryList />
           ) : (

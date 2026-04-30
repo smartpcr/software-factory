@@ -175,9 +175,10 @@ public static class QueueEndpoints
         var wi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == row.WorkItemId, ct);
         if (wi is not null)
         {
+            var (prId, prCol) = await WorkItemsEndpoints.LookupPrimaryPrAsync(db, row.WorkItemId, ct);
             await hub.Clients.All.SendAsync(
                 "workitem.changed",
-                new { kind = "exec-cancelled", workItem = WorkItemsEndpoints.MapWorkItemRow(wi) },
+                new { kind = "exec-cancelled", workItem = WorkItemsEndpoints.MapWorkItemRow(wi, prId, prCol) },
                 ct);
         }
         return Results.Ok(MapRow(row));

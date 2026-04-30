@@ -1473,3 +1473,30 @@ public class WorkItemSyncRunRow
 
     public bool CompletedSuccessfully { get; set; }
 }
+
+/// <summary>
+/// Phase 25 — per-item detail for a sync run. Records each work item or PR
+/// that was created, updated, or removed so the sync history drawer can show
+/// exactly what changed.
+/// </summary>
+public class SyncRunItemRow
+{
+    public long Id { get; set; }
+
+    public string RunId { get; set; } = string.Empty;
+
+    /// <summary>"workitem" or "pr".</summary>
+    public string EntityKind { get; set; } = "workitem";
+
+    /// <summary>The work item or PR id.</summary>
+    public string EntityId { get; set; } = string.Empty;
+
+    /// <summary>Title at the time of sync.</summary>
+    public string Title { get; set; } = string.Empty;
+
+    /// <summary>"added", "updated", or "removed".</summary>
+    public string Action { get; set; } = "updated";
+
+    /// <summary>Optional — the provider reference number (ADO WIT id or GitHub issue #).</summary>
+    public int? ProviderRef { get; set; }
+}

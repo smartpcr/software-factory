@@ -1,4 +1,4 @@
-import type { IterationRef, RepoLite, WorkItem, WorkItemAssignee } from './workItemTypes';
+import type { IterationRef, PrStatus, RepoLite, WorkItem, WorkItemAssignee } from './workItemTypes';
 
 // Phase 12 mockup — sample registry that exercises every view + filter and
 // both ladders (Q12.1):
@@ -84,6 +84,8 @@ export const SAMPLE_WORK_ITEMS: WorkItem[] = [
     assignedTo: PEOPLE.E7,
     points: 1, priority: 'med',
     tags: ['config'],
+    executionStatus: 'completed', trialCount: 1,
+    primaryPrId: 'PR-401', primaryPrStatus: 'merged' as PrStatus,
   }),
   wi({
     id: 'TASK-236', track: 'dev', type: 'task', state: 'active',
@@ -96,6 +98,8 @@ export const SAMPLE_WORK_ITEMS: WorkItem[] = [
     points: 2, priority: 'high',
     tags: ['security'],
     watching: true,
+    executionStatus: 'live', trialCount: 1,
+    primaryPrId: 'PR-402', primaryPrStatus: 'implementation' as PrStatus,
   }),
   wi({
     id: 'BUG-237', track: 'dev', type: 'bug', state: 'active',
@@ -108,6 +112,8 @@ export const SAMPLE_WORK_ITEMS: WorkItem[] = [
     points: 3, priority: 'high',
     tags: ['security', 'bug'],
     blocked: true,
+    executionStatus: 'failed', trialCount: 2,
+    primaryPrId: 'PR-403', primaryPrStatus: 'review' as PrStatus,
   }),
   wi({
     id: 'FEAT-102', track: 'dev', type: 'feature', state: 'active',
@@ -130,6 +136,8 @@ export const SAMPLE_WORK_ITEMS: WorkItem[] = [
     assignedTo: PEOPLE.A2,
     points: 3, priority: 'med',
     tags: ['schema'],
+    executionStatus: 'completed', trialCount: 1,
+    primaryPrId: 'PR-404', primaryPrStatus: 'merged' as PrStatus,
   }),
   wi({
     id: 'TASK-241', track: 'dev', type: 'task', state: 'active',
@@ -142,6 +150,8 @@ export const SAMPLE_WORK_ITEMS: WorkItem[] = [
     points: 3, priority: 'med',
     tags: ['ui'],
     watching: true,
+    executionStatus: 'live', trialCount: 1,
+    primaryPrId: 'PR-405', primaryPrStatus: 'implementation' as PrStatus,
   }),
   wi({
     id: 'EPIC-021', track: 'dev', type: 'epic', state: 'active',
@@ -175,6 +185,7 @@ export const SAMPLE_WORK_ITEMS: WorkItem[] = [
     assignedTo: PEOPLE.A1,
     points: 2, priority: 'med',
     tags: ['observability'],
+    executionStatus: 'queued', trialCount: 0,
   }),
   wi({
     id: 'BUG-823', track: 'dev', type: 'bug', state: 'active',
@@ -187,6 +198,8 @@ export const SAMPLE_WORK_ITEMS: WorkItem[] = [
     points: 3, priority: 'high',
     tags: ['bug', 'observability'],
     blocked: true,
+    executionStatus: 'failed', trialCount: 3,
+    primaryPrId: 'PR-406', primaryPrStatus: 'build' as PrStatus,
   }),
   wi({
     id: 'BUG-832', track: 'dev', type: 'bug', state: 'resolved',
@@ -198,6 +211,8 @@ export const SAMPLE_WORK_ITEMS: WorkItem[] = [
     assignedTo: PEOPLE.E7,
     points: 2, priority: 'high',
     tags: ['bug'],
+    executionStatus: 'completed', trialCount: 1,
+    primaryPrId: 'PR-407', primaryPrStatus: 'merged' as PrStatus,
   }),
   wi({
     id: 'FEAT-202', track: 'dev', type: 'feature', state: 'proposed',
@@ -233,6 +248,7 @@ export const SAMPLE_WORK_ITEMS: WorkItem[] = [
     assignedTo: PEOPLE.E4,
     points: 1, priority: 'low',
     tags: ['design'],
+    executionStatus: 'queued', trialCount: 0,
   }),
   wi({
     id: 'TASK-901', track: 'dev', type: 'task', state: 'closed',
@@ -244,6 +260,8 @@ export const SAMPLE_WORK_ITEMS: WorkItem[] = [
     assignedTo: PEOPLE.R3,
     points: 1, priority: 'low',
     tags: ['cleanup'],
+    executionStatus: 'completed', trialCount: 1,
+    primaryPrId: 'PR-408', primaryPrStatus: 'merged' as PrStatus,
   }),
   wi({
     id: 'BUG-902', track: 'dev', type: 'bug', state: 'proposed',
@@ -256,6 +274,8 @@ export const SAMPLE_WORK_ITEMS: WorkItem[] = [
     points: 2, priority: 'med',
     tags: ['bug', 'ui'],
     watching: true,
+    executionStatus: 'live', trialCount: 1,
+    primaryPrId: 'PR-409', primaryPrStatus: 'review' as PrStatus,
   }),
 
   // ============================================================
@@ -293,6 +313,7 @@ export const SAMPLE_WORK_ITEMS: WorkItem[] = [
     assignedTo: PEOPLE.A1,
     points: 1, priority: 'low',
     tags: ['design'],
+    executionStatus: 'completed', trialCount: 1,
   }),
   wi({
     id: 'STEP-311', track: 'design', type: 'step', state: 'active',
@@ -304,6 +325,7 @@ export const SAMPLE_WORK_ITEMS: WorkItem[] = [
     assignedTo: PEOPLE.A1,
     points: 2, priority: 'med',
     tags: ['design'],
+    executionStatus: 'live', trialCount: 1,
   }),
   wi({
     id: 'STAGE-302', track: 'design', type: 'stage', state: 'proposed',

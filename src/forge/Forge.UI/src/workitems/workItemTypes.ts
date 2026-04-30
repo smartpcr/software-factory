@@ -23,6 +23,11 @@ export type WorkItemState = 'proposed' | 'active' | 'in-review' | 'resolved' | '
 export type WorkItemPriority = 'low' | 'med' | 'high';
 export type RepoKind = 'ado' | 'github';
 
+export type ExecStatus = 'idle' | 'queued' | 'live' | 'completed' | 'failed' | 'cancelled';
+export const EXEC_STATUSES: ExecStatus[] = ['idle', 'queued', 'live', 'completed', 'failed', 'cancelled'];
+
+export type PrStatus = 'implementation' | 'review' | 'build' | 'merged';
+
 export interface WorkItemAssignee {
   /**
    * `agent` = a single roster member (individual). `human` = a real
@@ -96,6 +101,10 @@ export interface WorkItem {
   executionStatus?: string;
   /** Phase 19 — number of times execution has been attempted. */
   trialCount?: number;
+  /** Primary linked PR id (at most one canonical PR per work item). */
+  primaryPrId?: string | null;
+  /** Primary linked PR phase: implementation | review | build | merged. */
+  primaryPrStatus?: PrStatus | null;
 }
 
 export interface IterationRef {

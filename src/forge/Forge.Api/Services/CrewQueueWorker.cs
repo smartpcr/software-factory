@@ -204,7 +204,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         foreach (var row in stale)
         {
             var wi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == row.WorkItemId, ct);
-            if (wi is not null) await this.BroadcastWorkItemChangedAsync(wi, "exec-requeued", ct);
+            if (wi is not null) await this.BroadcastWorkItemChangedAsync(wi, "exec-requeued", ct, db);
         }
         return stale.Count;
     }
@@ -416,7 +416,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 await this.AutoLinkToWorkstreamAsync(db, wi, ct);
 
                 await db.SaveChangesAsync(ct);
-                await this.BroadcastWorkItemChangedAsync(wi, "claimed", ct);
+                await this.BroadcastWorkItemChangedAsync(wi, "claimed", ct, db);
             }
             DwellMs.Record((DateTimeOffset.UtcNow - row.EnqueuedAt).TotalMilliseconds);
             await this.taskChannel.EmitAsync(row.WorkItemId, "task.delegated", new
@@ -1213,6 +1213,37 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     prCreatedInThisExecution = true;
                     this.logger.LogInformation(
                         "PR created: wi={Wi} pr={Pr} branch={Branch}", workItemId, pr.Id, branchName);
+
+                    // Phase 25 — upsert a local PrRow so the work-item card shows the
+                    // PR badge immediately (before the periodic PR sync discovers it).
+                    try
+                    {
+                        var existingPr = await db.Prs.FirstOrDefaultAsync(p => p.Id == pr.Id, ct);
+                        if (existingPr is null)
+                        {
+                            db.Prs.Add(new Persistence.PrRow
+                            {
+                                Id = pr.Id,
+                                Col = "implementation",
+                                Branch = branchName,
+                                Base = baseBranch,
+                                Title = pr.Title,
+                                WorkItemId = workItemId,
+                                RepoId = wiRepo?.Id,
+                                IsActive = true,
+                                LastSyncStatus = "idle",
+                            });
+                        }
+                        else
+                        {
+                            existingPr.WorkItemId ??= workItemId;
+                        }
+                        await db.SaveChangesAsync(ct);
+                    }
+                    catch (Exception prRowEx)
+                    {
+                        this.logger.LogDebug(prRowEx, "Failed to upsert local PrRow for wi={Wi} pr={Pr}", workItemId, pr.Id);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -1249,7 +1280,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                             Forge.Api.Endpoints.WorkItemsEndpoints.RecordAssignmentTransition(
                                 db, wiRow, prevState, "in-review");
                             await db.SaveChangesAsync(ct);
-                            await this.BroadcastWorkItemChangedAsync(wiRow, "state-changed", ct);
+                            await this.BroadcastWorkItemChangedAsync(wiRow, "state-changed", ct, db);
                         }
                     }
                     catch (Exception ex)
@@ -1394,7 +1425,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 wi.ExecutionStatus = ExecutionStatuses.Completed;
                 wi.UpdatedAt = DateTimeOffset.UtcNow;
                 await db.SaveChangesAsync(ct);
-                await this.BroadcastWorkItemChangedAsync(wi, "exec-completed", ct);
+                await this.BroadcastWorkItemChangedAsync(wi, "exec-completed", ct, db);
             }
         }
         catch (Exception ex)
@@ -1420,7 +1451,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 wi.ExecutionStatus = status;
                 wi.UpdatedAt = DateTimeOffset.UtcNow;
                 await db.SaveChangesAsync(ct);
-                await this.BroadcastWorkItemChangedAsync(wi, $"exec-{status}", ct);
+                await this.BroadcastWorkItemChangedAsync(wi, $"exec-{status}", ct, db);
             }
         }
         catch (Exception ex)
@@ -1805,7 +1836,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             foreach (var row in stale)
             {
                 var wi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == row.WorkItemId, ct);
-                if (wi is not null) await this.BroadcastWorkItemChangedAsync(wi, "exec-requeued", ct);
+                if (wi is not null) await this.BroadcastWorkItemChangedAsync(wi, "exec-requeued", ct, db);
             }
         }
         return recovered;
@@ -1883,7 +1914,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     }, crewId: lastDeliv.CrewId, ct: ct);
                     // EnqueueAsync sets ExecutionStatus=Queued; broadcast it.
                     var refreshed = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == wi.Id, ct);
-                    if (refreshed is not null) await this.BroadcastWorkItemChangedAsync(refreshed, "exec-auto-resumed", ct);
+                    if (refreshed is not null) await this.BroadcastWorkItemChangedAsync(refreshed, "exec-auto-resumed", ct, db);
                     reconciled++;
                 }
                 catch (Exception ex)
@@ -1908,7 +1939,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         wi.ExecutionStatus = ExecutionStatuses.Failed;
         wi.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
-        await this.BroadcastWorkItemChangedAsync(wi, broadcastKind, ct);
+        await this.BroadcastWorkItemChangedAsync(wi, broadcastKind, ct, db);
         this.logger.LogInformation(
             "Live-badge reconcile: healed stuck badge wi={Wi} state={State} → failed", wi.Id, wi.State);
     }
@@ -1951,13 +1982,19 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         return null;
     }
 
-    private async Task BroadcastWorkItemChangedAsync(WorkItemRow row, string kind, CancellationToken ct)
+    private async Task BroadcastWorkItemChangedAsync(WorkItemRow row, string kind, CancellationToken ct, ForgeDbContext? db = null)
     {
         try
         {
+            string? prId = null;
+            string? prCol = null;
+            if (db is not null)
+            {
+                (prId, prCol) = await Forge.Api.Endpoints.WorkItemsEndpoints.LookupPrimaryPrAsync(db, row.Id, ct);
+            }
             await this.hub.Clients.All.SendAsync(
                 "workitem.changed",
-                new { kind, workItem = Forge.Api.Endpoints.WorkItemsEndpoints.MapWorkItemRow(row) },
+                new { kind, workItem = Forge.Api.Endpoints.WorkItemsEndpoints.MapWorkItemRow(row, prId, prCol) },
                 ct);
         }
         catch (Exception ex)

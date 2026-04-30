@@ -206,7 +206,7 @@ public class WorkItemSyncJob : BackgroundService
                     WorkItemSyncMetrics.PaginationBatches.Add(1, KeyVal("provider", providerLabel));
 
                     var (added, updated, conflicted) = await this.CommitBatchAsync(
-                        db, repo, batch, hub, scope, ct);
+                        db, repo, batch, hub, scope, runId, ct);
                     totalAdded += added;
                     totalUpdated += updated;
                     totalConflicted += conflicted;
@@ -310,6 +310,7 @@ public class WorkItemSyncJob : BackgroundService
         WorkItemBatch batch,
         IHubContext<ForgeHub> hub,
         IServiceScope scope,
+        string runId,
         CancellationToken ct)
     {
         var added = 0;
@@ -320,8 +321,32 @@ public class WorkItemSyncJob : BackgroundService
         {
             var withRepo = w with { RepoId = repo.Id };
             var (didInsert, didUpdate, didConflict) = await UpsertAsync(db, withRepo, ct);
-            if (didInsert) added++;
-            else if (didUpdate) updated++;
+            if (didInsert)
+            {
+                added++;
+                db.SyncRunItems.Add(new SyncRunItemRow
+                {
+                    RunId = runId,
+                    EntityKind = "workitem",
+                    EntityId = withRepo.Id ?? $"{withRepo.Provider}:{withRepo.ProviderRef}",
+                    Title = withRepo.Title ?? string.Empty,
+                    Action = "added",
+                    ProviderRef = withRepo.ProviderRef,
+                });
+            }
+            else if (didUpdate)
+            {
+                updated++;
+                db.SyncRunItems.Add(new SyncRunItemRow
+                {
+                    RunId = runId,
+                    EntityKind = "workitem",
+                    EntityId = withRepo.Id ?? $"{withRepo.Provider}:{withRepo.ProviderRef}",
+                    Title = withRepo.Title ?? string.Empty,
+                    Action = "updated",
+                    ProviderRef = withRepo.ProviderRef,
+                });
+            }
             if (didConflict) conflicted++;
 
             // Phase 23.6 / 23.8 — apply agent-ready auto-team-assign after
