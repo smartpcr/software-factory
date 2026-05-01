@@ -13,6 +13,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using Forge.Api.Auth;
 using GitHub.Copilot.SDK;
 using Microsoft.Extensions.Options;
 
@@ -48,6 +49,7 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
     private readonly IModelRegistry models;
     private readonly IOptions<AgentRunnerOptions> options;
     private readonly CopilotServerManager copilotServer;
+    private readonly IAuthService? ghAuth;
     private readonly ILogger<AgentRunnerDispatcher> log;
 
     private readonly ConcurrentDictionary<string, AgentState> agentStates = new();
@@ -58,12 +60,14 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         IModelRegistry models,
         IOptions<AgentRunnerOptions> options,
         CopilotServerManager copilotServer,
+        IEnumerable<IAuthService> authServices,
         ILogger<AgentRunnerDispatcher> log)
     {
         this.http = http;
         this.models = models;
         this.options = options;
         this.copilotServer = copilotServer;
+        this.ghAuth = authServices.FirstOrDefault(a => a.Kind == "github");
         this.log = log;
     }
 
@@ -568,10 +572,21 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         CopilotClient? client = null;
         try
         {
+            // Resolve a GitHub token for per-session auth. When connecting to
+            // the shared server via CliUrl the SDK cannot discover auth on its
+            // own — we must supply it explicitly.
+            string? ghToken = null;
+            if (this.ghAuth is not null)
+            {
+                try { ghToken = await this.ghAuth.GetAccessTokenAsync(effectiveCt); }
+                catch (Exception ex) { this.log.LogWarning(ex, "Failed to obtain GitHub token for Copilot session"); }
+            }
+
             var sessionConfig = new SessionConfig
             {
                 Model = context.Model,
                 OnPermissionRequest = PermissionHandler.ApproveAll,
+                GitHubToken = ghToken,
             };
             if (!string.IsNullOrEmpty(context.WorktreePath))
             {

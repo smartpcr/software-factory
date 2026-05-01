@@ -23,6 +23,19 @@ using Microsoft.EntityFrameworkCore;
 // they can't pile up as orphans across restarts.
 ChildProcessTracker.Initialize();
 
+// ── Global crash diagnostics ──────────────────────────────────────────────
+// Log unhandled exceptions that would otherwise kill the process silently.
+AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+{
+    var ex = e.ExceptionObject as Exception;
+    Console.Error.WriteLine($"[Forge] FATAL UnhandledException (isTerminating={e.IsTerminating}): {ex}");
+    Console.Error.Flush();
+};
+AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+{
+    Console.WriteLine($"[Forge] ProcessExit at {DateTime.UtcNow:O}");
+};
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.UseUrls("http://localhost:5180");
@@ -81,6 +94,12 @@ builder.Services.AddCors(options =>
         opt.UseSqlite($"Data Source={dbPath}");
     });
 }
+
+// Prevent a single BackgroundService failure from tearing down the host.
+builder.Services.Configure<HostOptions>(opts =>
+{
+    opts.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore;
+});
 
 // OpenAPI / Swagger.
 builder.Services.AddEndpointsApiExplorer();
@@ -398,9 +417,10 @@ app.MapGet("/api/avatars/{filename}", (string filename) =>
 
 // Prevent unobserved Task exceptions from crashing the process.
 // Background agent tasks (Task.Run in CrewQueueWorker) can throw
-// ObjectDisposedException on shutdown — swallow instead of crashing.
+// ObjectDisposedException on shutdown — log and swallow instead of crashing.
 TaskScheduler.UnobservedTaskException += (_, e) =>
 {
+    Console.Error.WriteLine($"[Forge] UnobservedTaskException: {e.Exception}");
     e.SetObserved();
 };
 

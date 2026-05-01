@@ -54,7 +54,8 @@ public class WorkItemSyncJob : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Wait a short bit so the rest of the app can finish starting.
-        await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+        try { await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken); }
+        catch (OperationCanceledException) { return; }
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -71,7 +72,8 @@ public class WorkItemSyncJob : BackgroundService
                 this.logger.LogError(ex, "WorkItemSyncJob tick failed");
             }
 
-            await Task.Delay(this.NextJitteredInterval(), stoppingToken);
+            try { await Task.Delay(this.NextJitteredInterval(), stoppingToken); }
+            catch (OperationCanceledException) { break; }
         }
     }
 

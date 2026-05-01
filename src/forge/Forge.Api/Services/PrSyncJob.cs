@@ -54,7 +54,8 @@ public sealed class PrSyncJob : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Initial delay to let the app start up
-        await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
+        try { await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken); }
+        catch (OperationCanceledException) { return; }
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -74,7 +75,8 @@ public sealed class PrSyncJob : BackgroundService
             // 20 min ± 60s jitter
             var jitter = RandomNumberGenerator.GetInt32(-60, 61);
             var delay = TimeSpan.FromSeconds(SyncConstants.PrSyncIntervalSeconds + jitter);
-            await Task.Delay(delay, stoppingToken);
+            try { await Task.Delay(delay, stoppingToken); }
+            catch (OperationCanceledException) { break; }
         }
     }
 

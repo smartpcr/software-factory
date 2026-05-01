@@ -60,7 +60,8 @@ public sealed class BuildSyncJob : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken);
+        try { await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken); }
+        catch (OperationCanceledException) { return; }
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -76,7 +77,8 @@ public sealed class BuildSyncJob : BackgroundService
 
             // 20 min ± 60 s jitter (Q27.1).
             var jitter = RandomNumberGenerator.GetInt32(-60, 61);
-            await Task.Delay(TimeSpan.FromSeconds(SyncConstants.BuildSyncIntervalSeconds + jitter), stoppingToken);
+            try { await Task.Delay(TimeSpan.FromSeconds(SyncConstants.BuildSyncIntervalSeconds + jitter), stoppingToken); }
+            catch (OperationCanceledException) { break; }
         }
     }
 
