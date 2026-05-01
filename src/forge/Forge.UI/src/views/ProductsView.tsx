@@ -264,9 +264,18 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, on
       </header>
 
       <div className="ws-card-stats">
-        <div><span className="num">{repos.length}</span><span className="lbl">repo{repos.length === 1 ? '' : 's'}</span></div>
-        <div><span className="num">{stats?.activeWorkstreams ?? 0}</span><span className="lbl">workstreams</span></div>
-        <div><span className="num">{stats?.openPrs ?? 0}</span><span className="lbl">open PRs</span></div>
+        <div className="ws-stat">
+          <div className="ws-stat-label">Repos</div>
+          <div className="ws-stat-val">{repos.length}</div>
+        </div>
+        <div className="ws-stat">
+          <div className="ws-stat-label">Workstreams</div>
+          <div className="ws-stat-val">{stats?.activeWorkstreams ?? 0}</div>
+        </div>
+        <div className="ws-stat">
+          <div className="ws-stat-label">Open PRs</div>
+          <div className="ws-stat-val">{stats?.openPrs ?? 0}</div>
+        </div>
       </div>
 
       <div className="ws-card-body">
@@ -275,142 +284,79 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, on
         )}
         {repos.map((r) => (
           <div key={r.id}>
-            <div className="repo-row" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <button
-              type="button"
-              onClick={() => navigate(`/workstreams?repo=${encodeURIComponent(r.id)}`)}
-              title={`Open workstreams for ${r.displayName} (${r.kind === 'ado' ? 'Azure DevOps' : 'GitHub'})`}
-              style={{
-                flex: 1,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                background: 'transparent',
-                border: 'none',
-                color: 'inherit',
-                font: 'inherit',
-                textAlign: 'left',
-                cursor: 'pointer',
-                padding: 0,
-                minWidth: 0,
-              }}
-            >
-              <RepoIcon kind={r.kind} size={16} />
-              <span className="name" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {r.displayName}
-              </span>
-              <span className="src" style={{ marginLeft: 'auto' }}>
-                {r.kind === 'ado' ? 'ADO' : 'GH'}
-              </span>
-            </button>
-            {/* Phase 23.8 — sync status strip + drawer. Click → shows the
-                last 20 sync runs with errors and a "Sync now" button. */}
-            <RepoSyncStatusStrip
-              repo={r}
-              onSyncNow={async (repoId) => {
-                try { await forgeApi.syncRepoWorkItems(repoId); }
-                catch { /* surfaced inside the drawer */ }
-              }}
-            />
+            <div className="repo-row" style={{ display: 'grid', gap: 4, padding: '6px 0' }}>
+              {/* Row 1: Repo name + badges */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => navigate(`/workstreams?repo=${encodeURIComponent(r.id)}`)}
+                  title={`Open workstreams for ${r.displayName}`}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    background: 'transparent', border: 'none', color: 'inherit',
+                    font: 'inherit', textAlign: 'left', cursor: 'pointer', padding: 0,
+                    minWidth: 0, flex: 1,
+                  }}
+                >
+                  <RepoIcon kind={r.kind} size={18} />
+                  <span style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {r.displayName}
+                  </span>
+                </button>
+                <span style={{ fontSize: 9, fontWeight: 600, padding: '1px 5px', borderRadius: 3, background: 'color-mix(in srgb, var(--text-tertiary) 12%, transparent)', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                  {r.kind === 'ado' ? 'ADO' : 'GH'}
+                </span>
+                <RepoSyncStatusStrip
+                  repo={r}
+                  onSyncNow={async (repoId) => {
+                    try { await forgeApi.syncRepoWorkItems(repoId); }
+                    catch { /* surfaced inside the drawer */ }
+                  }}
+                />
+                {(r.initCommand || r.restoreCommand || r.buildCommand || r.testCommand) ? (
+                  <span
+                    title={[
+                      r.initCommand ? `Init: ${r.initCommand}` : null,
+                      r.restoreCommand ? `Restore: ${r.restoreCommand}` : null,
+                      r.buildCommand ? `Build: ${r.buildCommand}` : null,
+                      r.testCommand ? `Test: ${r.testCommand}` : null,
+                    ].filter(Boolean).join('\n')}
+                    style={{ fontSize: 9, fontWeight: 600, padding: '1px 5px', borderRadius: 3, background: 'color-mix(in srgb, var(--accent) 15%, transparent)', color: 'var(--accent)', whiteSpace: 'nowrap', letterSpacing: 0.3 }}
+                  >🔨 gated</span>
+                ) : (
+                  <span title="No build pipeline configured" style={{ fontSize: 9, fontWeight: 500, padding: '1px 5px', borderRadius: 3, background: 'color-mix(in srgb, var(--text-tertiary) 10%, transparent)', color: 'var(--text-tertiary)', whiteSpace: 'nowrap', letterSpacing: 0.3 }}>no gate</span>
+                )}
+              </div>
 
-            {/* Phase 26/29 — build pipeline gate status pill. */}
-            {(r.initCommand || r.restoreCommand || r.buildCommand || r.testCommand) ? (
-              <span
-                title={[
-                  r.initCommand ? `Init: ${r.initCommand}` : null,
-                  r.restoreCommand ? `Restore: ${r.restoreCommand}` : null,
-                  r.buildCommand ? `Build: ${r.buildCommand}` : null,
-                  r.testCommand ? `Test: ${r.testCommand}` : null,
-                ].filter(Boolean).join('\n')}
-                style={{
-                  fontSize: 9,
-                  fontWeight: 600,
-                  padding: '1px 5px',
-                  borderRadius: 3,
-                  background: 'color-mix(in srgb, var(--accent) 15%, transparent)',
-                  color: 'var(--accent)',
-                  whiteSpace: 'nowrap',
-                  letterSpacing: 0.3,
-                }}
-              >
-                🔨 gated
-              </span>
-            ) : (
-              <span
-                title="No build pipeline configured. Click edit to set up."
-                style={{
-                  fontSize: 9,
-                  fontWeight: 500,
-                  padding: '1px 5px',
-                  borderRadius: 3,
-                  background: 'color-mix(in srgb, var(--text-tertiary) 10%, transparent)',
-                  color: 'var(--text-tertiary)',
-                  whiteSpace: 'nowrap',
-                  letterSpacing: 0.3,
-                }}
-              >
-                no gate
-              </span>
-            )}
+              {/* Row 2: Action buttons — icon + label both clickable */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 2, paddingLeft: 26 }}>
+                <button type="button" className="icon-btn" onClick={() => setExpandedRepoId(expandedRepoId === r.id ? null : r.id)} title={`${expandedRepoId === r.id ? 'Hide' : 'Show'} build & sync history for ${r.displayName}`} style={{ display: 'flex', alignItems: 'center', gap: 4, width: 'auto', height: 22, padding: '0 6px', color: expandedRepoId === r.id ? 'var(--accent)' : 'var(--text-tertiary)' }}>
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.3" /><path d="M8 4.5V8l2.5 1.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                  <span style={{ fontSize: 9 }}>History</span>
+                </button>
 
-            {/* History toggle — opens inline detail panel */}
-            <button
-              type="button"
-              className="icon-btn"
-              onClick={() => setExpandedRepoId(expandedRepoId === r.id ? null : r.id)}
-              title={`${expandedRepoId === r.id ? 'Hide' : 'Show'} build & sync history for ${r.displayName}`}
-              aria-label={`Toggle history for ${r.displayName}`}
-              style={{
-                width: 22, height: 22,
-                color: expandedRepoId === r.id ? 'var(--accent)' : 'var(--text-tertiary)',
-                transition: 'color 150ms',
-              }}
-            >
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-                <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.3" />
-                <path d="M8 4.5V8l2.5 1.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </button>
+                <span style={{ width: 1, height: 12, background: 'var(--border-subtle)', margin: '0 2px' }} />
 
-            <button
-              type="button"
-              className="icon-btn"
-              onClick={() => onSyncRepo(r)}
-              title={`Manage sync for ${r.displayName}`}
-              aria-label={`Manage sync for ${r.displayName}`}
-              style={{ width: 22, height: 22, color: 'var(--accent)' }}
-            >
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-                <path d="M2 8a6 6 0 0 1 10.2-4.3M14 8a6 6 0 0 1-10.2 4.3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                <path d="M12 1v3.5h-3.5M4 15v-3.5h3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </button>
+                <button type="button" className="icon-btn" onClick={() => onSyncRepo(r)} title={`Manage sync settings for ${r.displayName}`} style={{ display: 'flex', alignItems: 'center', gap: 4, width: 'auto', height: 22, padding: '0 6px', color: 'var(--accent)' }}>
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M2 8a6 6 0 0 1 10.2-4.3M14 8a6 6 0 0 1-10.2 4.3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><path d="M12 1v3.5h-3.5M4 15v-3.5h3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  <span style={{ fontSize: 9 }}>Sync</span>
+                </button>
 
-            <button
-              type="button"
-              className="icon-btn"
-              onClick={() => onEditRepo(r)}
-              title={`Edit ${r.displayName} (path, branch, pipeline)`}
-              aria-label={`Edit ${r.displayName}`}
-              style={{ width: 22, height: 22, color: 'var(--text-tertiary)' }}
-            >
-              <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
-                <path d="M8 1.5 L10.5 4 L4 10.5 L1.5 10.5 L1.5 8 Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              className="icon-btn"
-              onClick={() => void detachRepo(r)}
-              title={`Detach ${r.displayName}`}
-              aria-label={`Detach ${r.displayName}`}
-              style={{ width: 22, height: 22, color: 'var(--text-tertiary)' }}
-            >
-              <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
-                <path d="M3 3 L 9 9 M 9 3 L 3 9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-              </svg>
-            </button>
-          </div>
+                <span style={{ width: 1, height: 12, background: 'var(--border-subtle)', margin: '0 2px' }} />
+
+                <button type="button" className="icon-btn" onClick={() => onEditRepo(r)} title={`Edit ${r.displayName} (path, branch, pipeline)`} style={{ display: 'flex', alignItems: 'center', gap: 4, width: 'auto', height: 22, padding: '0 6px', color: 'var(--text-tertiary)' }}>
+                  <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M8 1.5 L10.5 4 L4 10.5 L1.5 10.5 L1.5 8 Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" /></svg>
+                  <span style={{ fontSize: 9 }}>Edit</span>
+                </button>
+
+                <span style={{ width: 1, height: 12, background: 'var(--border-subtle)', margin: '0 2px' }} />
+
+                <button type="button" className="icon-btn" onClick={() => void detachRepo(r)} title={`Detach ${r.displayName} from this product`} style={{ display: 'flex', alignItems: 'center', gap: 4, width: 'auto', height: 22, padding: '0 6px', color: 'var(--text-tertiary)' }}>
+                  <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M3 3 L 9 9 M 9 3 L 3 9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
+                  <span style={{ fontSize: 9 }}>Detach</span>
+                </button>
+              </div>
+            </div>
 
           {/* Inline detail panel — full width, slides open below the repo row */}
           {expandedRepoId === r.id && <RepoDetailPanel repo={r} />}

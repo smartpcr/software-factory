@@ -155,8 +155,8 @@ export function PrCard({ pr, onOpen }: Props) {
           )}
         </div>
 
-        {/* Comment badges */}
-        {(openComments > 0 || attentionComments > 0) && (
+        {/* Comment + build badges (Phase 24 / 27 chips). */}
+        {(openComments > 0 || attentionComments > 0 || (pr.failedBuildCount ?? 0) > 0 || (pr.runningBuildCount ?? 0) > 0) && (
           <div className="pr-card-info-row">
             {openComments > 0 && (
               <span className="pr-card-comment-chip" title={`${openComments} open comment${openComments === 1 ? '' : 's'}`}>
@@ -167,6 +167,18 @@ export function PrCard({ pr, onOpen }: Props) {
               <span className="pr-card-attention-chip" data-testid="pr-card-attention"
                 title={`${attentionComments} need response`}>
                 ⚠ {attentionComments}
+              </span>
+            )}
+            {(pr.failedBuildCount ?? 0) > 0 && (
+              <span className="pr-card-build-chip pr-card-build-chip--failed" data-testid="pr-card-build-failed"
+                title={`${pr.failedBuildCount} failed build${(pr.failedBuildCount ?? 0) === 1 ? '' : 's'}`}>
+                🔴 Build #{pr.latestFailedBuildId ?? ''} failed
+              </span>
+            )}
+            {(pr.runningBuildCount ?? 0) > 0 && (
+              <span className="pr-card-build-chip pr-card-build-chip--running" data-testid="pr-card-build-running"
+                title={`${pr.runningBuildCount} running build${(pr.runningBuildCount ?? 0) === 1 ? '' : 's'}`}>
+                ⚙ Build running
               </span>
             )}
           </div>

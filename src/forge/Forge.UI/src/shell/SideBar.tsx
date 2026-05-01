@@ -6,6 +6,7 @@ import { useCurrentUser } from '@/state/useCurrentUserStore';
 import { ProductIcon } from '@/products/ProductIcon';
 import { UserMenu } from '@/shell/UserMenu';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
+import { useWorkstreamsStore } from '@/state/useWorkstreamsStore';
 
 // Verbatim port of the prototype's <aside class="sidebar">. The only
 // React-required changes: NavLink in place of <a data-view>, className
@@ -18,6 +19,18 @@ export function SideBar() {
   const loadProducts = useProductsStore((s) => s.load);
   const loadRepos = useProductsStore((s) => s.loadReposFor);
   const me = useCurrentUser();
+  const allWorkstreams = useWorkstreamsStore((s) => s.workstreams);
+  const allWsWorkItems = useWorkItemsStore((s) => s.items);
+  const wsActiveCount = useMemo(() => {
+    return allWorkstreams.filter((w) => {
+      if (w.status !== 'active' && w.status !== 'review') return false;
+      // Exclude workstreams with zero activity
+      if (w.commits === 0 && w.ahead === 0 && w.prs.length === 0
+        && !allWsWorkItems.some((wi) => w.cards.includes(wi.id) && wi.executionStatus === 'live')) return false;
+      return true;
+    }).length;
+  }, [allWorkstreams, allWsWorkItems]);
+  const wsConflictCount = useMemo(() => allWorkstreams.filter((w) => w.conflicts > 0).length, [allWorkstreams]);
 
   useEffect(() => { void loadProducts(); }, [loadProducts]);
 
@@ -172,7 +185,7 @@ export function SideBar() {
             <svg className="icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="4" cy="4" r="1.5" stroke="currentColor" strokeWidth="1.3" /><circle cx="4" cy="12" r="1.5" stroke="currentColor" strokeWidth="1.3" /><circle cx="12" cy="8" r="1.5" stroke="currentColor" strokeWidth="1.3" /><path d="M4 5.5 V 10.5 M 5.5 4 Q 12 4 12 6.5 M 5.5 12 Q 12 12 12 9.5" stroke="currentColor" strokeWidth="1.1" fill="none" /></svg>
             <div className="label-block">
               <span className="label">Workstreams</span>
-              <span className="sub">5 active · 1 conflict</span>
+              <span className="sub">{wsActiveCount} active · {wsConflictCount} conflict{wsConflictCount === 1 ? '' : 's'}</span>
             </div>
             <span className="badge">8</span>
             <span className="tooltip">Workstreams</span>

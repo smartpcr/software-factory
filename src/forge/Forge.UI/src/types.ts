@@ -6,7 +6,7 @@ export type CardType = 'story' | 'task' | 'bug';
 export type ColumnId = 'backlog' | 'design' | 'build' | 'review' | 'done';
 export type Priority = 'low' | 'med' | 'high';
 export type EpicStatus = 'active' | 'merging' | 'planning';
-export type WorkstreamStatus = 'active' | 'merging' | 'review' | 'planning';
+export type WorkstreamStatus = 'active' | 'merging' | 'review' | 'planning' | 'idle';
 
 export interface Agent {
   id: string;
@@ -153,6 +153,12 @@ export interface Pr {
   openCommentCount?: number;
   /** Subset of openCommentCount that need an agent response. */
   attentionCommentCount?: number;
+  /** forge_implementation.md Phase 27 — # of failed-terminal builds with no superseding success. */
+  failedBuildCount?: number;
+  /** Phase 27 — # of currently-running builds for this PR. */
+  runningBuildCount?: number;
+  /** Phase 27 — most-recent failed build id; click target for the chip. */
+  latestFailedBuildId?: number | null;
   /** ISO-8601 of the most-recent successful sync; null when never synced. */
   lastSyncAt?: string | null;
   /** idle | running | failed. */
@@ -169,6 +175,8 @@ export interface Pr {
   createdAt?: string | null;
   /** Phase 27 — PR last updated timestamp (ISO-8601). */
   updatedAt?: string | null;
+  /** Phase 29 — repo this PR belongs to (for filtering). */
+  repoId?: string | null;
 }
 
 // Phase 24 — comment lifecycle types -----------------------------------------
@@ -792,7 +800,24 @@ export type TaskQueueState =
   | 'picked-up'
   | 'completed'
   | 'cancelled'
-  | 'reassigned';
+  | 'reassigned'
+  | 'blocked'
+  | 'reject'
+  | 'stalled'
+  | 'stalled-budget';
+
+/**
+ * Phase 17 / 24 / 27 — discriminator on every queue row.
+ * - `work` — the original Phase 17 work-item-pipeline kind.
+ * - `coding` — the implementation-pipeline alias used by Sweep 2.
+ * - `comment-response` — Phase 24 PR-comment fix loop.
+ * - `build-fix` — Phase 27 CI-failure fix loop.
+ */
+export type TaskQueueKind =
+  | 'work'
+  | 'coding'
+  | 'comment-response'
+  | 'build-fix';
 
 /** Phase 17 — one row in the unified task queue. */
 export interface TaskQueueEntry {
@@ -802,6 +827,8 @@ export interface TaskQueueEntry {
   targetKind: string;
   targetId: string;
   state: TaskQueueState;
+  /** Phase 24/27 — queue kind discriminator. */
+  kind?: TaskQueueKind;
   /** 0 = high, 1 = med, 2 = low. */
   priorityRank: number;
   enqueuedAt: string;
@@ -814,6 +841,86 @@ export interface TaskQueueEntry {
   pickedUpByAgent?: string | null;
   completedAt?: string | null;
   lastUpdatedAt: string;
+}
+
+/** Phase 27 — canonical state of a CI build run. */
+export type CiBuildState =
+  | 'queued'
+  | 'running'
+  | 'not-started'
+  | 'succeeded'
+  | 'failed'
+  | 'partially-succeeded'
+  | 'canceled';
+
+/** Phase 27 — one row per upstream pipeline run, mirrors `BuildRow`. */
+export interface Build {
+  id: number;
+  provider: 'ado' | 'github';
+  providerBuildId: string;
+  prId: string | null;
+  repoId: string;
+  pipelineId?: string | null;
+  pipelineName?: string | null;
+  state: CiBuildState;
+  result?: string | null;
+  triggeringCommit?: string | null;
+  branch?: string | null;
+  webUrl?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  isActive: boolean;
+}
+
+/** Phase 27 — one row per failed leaf stage of a build. */
+export interface BuildStage {
+  id: number;
+  buildId: number;
+  providerStageRef: string;
+  stageName: string;
+  stageOrder: number;
+  state: string;
+  result?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  logRef?: string | null;
+  logTailHash?: string | null;
+}
+
+/** Phase 27 — tail-truncated log content for a stage. */
+export interface BuildStageLog {
+  stageId: number;
+  logIndex: number;
+  content: string;
+  sizeBytes: number;
+  truncatedFromBytes: number;
+  fetchedAt: string;
+}
+
+/** Phase 27 — extracted artifact metadata. */
+export interface BuildArtifact {
+  id: number;
+  buildId: number;
+  name: string;
+  downloadUrl?: string | null;
+  sizeBytes: number;
+  extractedPath?: string | null;
+  fetchedAt?: string | null;
+  expiredAt?: string | null;
+}
+
+/** Phase 27 — parsed FailurePoint row from the build failure parser. */
+export interface BuildFailurePoint {
+  id: number;
+  stageId: number;
+  kind: string;
+  filePath?: string | null;
+  line?: number | null;
+  column?: number | null;
+  message: string;
+  sourceLogTailOffset: number;
+  severity?: string | null;
+  payloadJson?: string | null;
 }
 
 /** Phase 17 — per-crew queue stats + strain flag. */

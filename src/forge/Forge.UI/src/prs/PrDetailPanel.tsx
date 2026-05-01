@@ -33,12 +33,11 @@ export function PrDetailPanel() {
   const pr = usePrsStore((s) => s.prs.find((p) => p.id === s.selectedId)) ?? null;
   const setSelected = usePrsStore((s) => s.setSelected);
   const toggleAutoMerge = usePrsStore((s) => s.toggleAutoMerge);
-  const rerun = usePrsStore((s) => s.rerun);
-  const cancel = usePrsStore((s) => s.cancel);
+
   const approve = usePrsStore((s) => s.approve);
   const requestChanges = usePrsStore((s) => s.requestChanges);
   const comment = usePrsStore((s) => s.comment);
-  const merge = usePrsStore((s) => s.merge);
+
 
   // Selector MUST return a stable reference — otherwise Zustand's
   // useSyncExternalStore re-renders forever (the "fresh []" trap).
@@ -428,11 +427,7 @@ export function PrDetailPanel() {
             >
               Approve
             </button>
-            <button className="btn btn-secondary" onClick={() => void merge(pr.id)} data-testid="pr-merge">
-              Merge
-            </button>
-            <button className="btn btn-secondary" onClick={() => void rerun(pr.id)}>Re-run build</button>
-            <button className="btn btn-secondary" onClick={() => void cancel(pr.id)}>Cancel build</button>
+
             <button
               className="btn btn-ghost"
               onClick={() => void toggleAutoMerge(pr.id)}

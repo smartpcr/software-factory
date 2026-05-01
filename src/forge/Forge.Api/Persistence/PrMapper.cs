@@ -10,7 +10,13 @@ using Forge.Api.Contracts;
 
 public static class PrMapper
 {
-    public static Pr ToContract(PrRow r, int? openCommentCount = null, int? attentionCommentCount = null) => new(
+    public static Pr ToContract(
+        PrRow r,
+        int? openCommentCount = null,
+        int? attentionCommentCount = null,
+        int? failedBuildCount = null,
+        int? runningBuildCount = null,
+        long? latestFailedBuildId = null) => new(
         r.Id, r.Col, r.Epic, r.EpicColor, r.Workstream, r.Base, r.Branch, r.Title,
         CardMapper.Deserialize<Agent>(r.AuthorJson) ?? new("", "", ""),
         r.Additions, r.Deletions, r.Files, r.Commits, r.Age,
@@ -32,5 +38,11 @@ public static class PrMapper
         Description: string.IsNullOrEmpty(r.Description) ? null : r.Description,
         WebUrl: r.WebUrl,
         CreatedAt: r.CreatedAt,
-        UpdatedAt: r.UpdatedAt);
+        UpdatedAt: r.UpdatedAt,
+        // Phase 29 — repo association for filtering.
+        RepoId: r.RepoId,
+        // forge_implementation.md Phase 27 — build chip counts.
+        FailedBuildCount: failedBuildCount,
+        RunningBuildCount: runningBuildCount,
+        LatestFailedBuildId: latestFailedBuildId);
 }

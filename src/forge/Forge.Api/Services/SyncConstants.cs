@@ -54,4 +54,51 @@ public static class SyncConstants
 
     /// <summary>Phase 24 — comment page size per provider request.</summary>
     public const int PrCommentPageSize = 100;
+
+    // ─── forge_implementation.md Phase 27 — build sync ────────────────────
+
+    /// <summary>Phase 27 Q27.1 — build sync tick interval, default 20 min.</summary>
+    public const int BuildSyncIntervalSeconds = 1200;
+
+    /// <summary>Phase 27 Q27.1 — max parallel build syncs per tick.</summary>
+    public const int BuildSyncMaxParallel = 8;
+
+    /// <summary>Phase 27 Q27.4 — per-stage log tail in bytes (256 KB).</summary>
+    public const int BuildLogTailBytes = 262144;
+
+    /// <summary>Phase 27 Q27.5 — per-artifact size cap, megabytes.</summary>
+    public const int BuildArtifactSizeCapMb = 256;
+
+    /// <summary>Phase 27 Q27.5 — per-host artifact storage cap, gigabytes.</summary>
+    public const int BuildArtifactStorageCapGb = 10;
+
+    /// <summary>Phase 27 Q27.5 — artifact retention, days. Janitor evicts older rows.</summary>
+    public const int BuildArtifactRetentionDays = 30;
+
+    /// <summary>
+    /// Phase 27 Q27.6 — locked failure-detection regex patterns. The
+    /// spec-consistency test pulls Phase 27 §Q27.6 prose and asserts each
+    /// entry verbatim. Order is significant — the parser stops at the first
+    /// match per line, so the more specific patterns precede the general
+    /// "Error … at file:line" stack-trace fallback.
+    /// </summary>
+    public static readonly string[] BuildFailurePatterns =
+    {
+        // .NET compile errors: "error CS1234: identifier not found [path/to/file.cs:42]"
+        @"error CS\d+:\s+(.+?) \[(.+?):(\d+)\]",
+        // cmake / make: "FAILED: src/foo.o"
+        @"FAILED:?\s+(.+?)$",
+        // generic stack-trace: "Error: foo at /path/file.cs:42"
+        @"Error:?\s+(.+?)\sat\s+(.+?):(\d+)",
+        // test framework assertion: "assert.fail at test/foo.spec.ts:88"
+        @"assert.*?fail.*?at\s+(.+?):(\d+)",
+        // npm: "npm ERR! code ELIFECYCLE"
+        @"npm ERR! code (.+?)$",
+    };
+
+    /// <summary>
+    /// Phase 27 — `task.iteration.*` budget for the build-fix loop. Same hard
+    /// 5-iter cap as the implementation pipeline (Q27.8).
+    /// </summary>
+    public const int BuildFixMaxIterations = 5;
 }

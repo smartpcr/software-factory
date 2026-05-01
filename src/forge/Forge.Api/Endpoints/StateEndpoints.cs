@@ -258,7 +258,8 @@ public static class StateEndpoints
         r.BuildJson is null ? null : Deserialize<BuildStatus>(r.BuildJson),
         r.ReviewJson is null ? null : Deserialize<ReviewVerdict>(r.ReviewJson),
         r.Conflicts, r.HumanGate, r.GateReason, r.ConflictPaths, r.AutoMerge, r.Blocked,
-        r.ImplJson is null ? null : Deserialize<ImplStatus>(r.ImplJson));
+        r.ImplJson is null ? null : Deserialize<ImplStatus>(r.ImplJson),
+        RepoId: r.RepoId);
 
     private static WsStat MapWsStat(WsStatRow r) => new(r.Label, r.Val, r.Unit, r.Trend, r.TrendVal);
 

@@ -171,7 +171,16 @@ public sealed record Pr(
     string? UpdatedAt = null,
     // -- Phase 28 — iteration count ("Updates" tab) --
     /// <summary>Phase 28 — number of updates / iterations on the PR (ADO "Updates" tab count). 0 when unknown.</summary>
-    int Updates = 0);
+    int Updates = 0,
+    // -- Phase 29 — repo association for filtering --
+    string? RepoId = null,
+    // -- forge_implementation.md Phase 27 — build chip counts --
+    /// <summary>Phase 27 — # of failed-terminal builds with no superseding success.</summary>
+    int? FailedBuildCount = null,
+    /// <summary>Phase 27 — # of currently-running builds for this PR.</summary>
+    int? RunningBuildCount = null,
+    /// <summary>Phase 27 — most-recent failed build id; click target for the chip.</summary>
+    long? LatestFailedBuildId = null);
 
 /// <summary>
 /// Stat tile shown at the top of the workstreams view.

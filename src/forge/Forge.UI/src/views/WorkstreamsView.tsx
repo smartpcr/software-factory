@@ -10,6 +10,8 @@ import { StatsStrip } from '@/workstreams/StatsStrip';
 import { WorkstreamCard } from '@/workstreams/WorkstreamCard';
 import { NewWorkstreamCta } from '@/workstreams/NewWorkstreamCta';
 import { NewWorkstreamModal } from '@/workstreams/NewWorkstreamModal';
+import { SpawnStoryModal } from '@/workstreams/SpawnStoryModal';
+import { StoryCard } from '@/workstreams/StoryCard';
 import { Toaster } from '@/board/Toaster';
 import { forgeApi } from '@/api/forgeApi';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
@@ -52,6 +54,9 @@ export function WorkstreamsView() {
   const repoFilter = searchParams.get('repo');
 
   const [modalOpen, setModalOpen] = useState(false);
+  // forge_implementation.md Phase 28 — story-driven spawn modal + tracked story ids.
+  const [spawnStoryOpen, setSpawnStoryOpen] = useState(false);
+  const [spawnedStories, setSpawnedStories] = useState<string[]>([]);
   const [repoFilterLocal, setRepoFilterLocal] = useState('');
   const [teamFilter, setTeamFilter] = useState('');
   const [storyFilter, setStoryFilter] = useState('');
@@ -109,13 +114,18 @@ export function WorkstreamsView() {
     }
     return next;
   }, [workstreams, filter, repoFilter, repoFilterLocal, teamFilter, storyFilter]);
+  // Derive whether a workstream marked 'active' is truly active or idle.
+  const isEffectivelyIdle = (w: Workstream) =>
+    w.status === 'active' && w.commits === 0 && w.ahead === 0 && w.prs.length === 0
+    && !allWorkItems.some((wi) => w.cards.includes(wi.id) && wi.executionStatus === 'live');
+
   const counts = useMemo(() => ({
     all:       workstreams.length,
-    active:    workstreams.filter((w) => w.status === 'active' || w.status === 'review').length,
+    active:    workstreams.filter((w) => (w.status === 'active' || w.status === 'review') && !isEffectivelyIdle(w)).length,
     merging:   workstreams.filter((w) => w.status === 'merging').length,
     conflicts: workstreams.filter((w) => w.conflicts > 0).length,
-    idle:      workstreams.filter((w) => Math.abs(w.lastActive) >= 1).length,
-  }), [workstreams]);
+    idle:      workstreams.filter((w) => isEffectivelyIdle(w) || Math.abs(w.lastActive) >= 1).length,
+  }), [workstreams, allWorkItems]);
 
   function onOpen(ws: Workstream) {
     setFocused(ws.id);
@@ -173,11 +183,17 @@ export function WorkstreamsView() {
             </svg>
             Sync from epics
           </button>
-          <button className="btn btn-primary" onClick={() => setModalOpen(true)}>
+          <button className="btn btn-secondary" onClick={() => setModalOpen(true)}>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
               <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
             </svg>
             New workstream
+          </button>
+          <button className="btn btn-primary" onClick={() => setSpawnStoryOpen(true)} title="Spawn a multi-team delivery from a Feature / PBI">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <path d="M2 6 L 5 9 L 10 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            Spawn story
           </button>
         </div>
       </div>
@@ -216,8 +232,29 @@ export function WorkstreamsView() {
         </div>
       </div>
 
-      <StatsStrip stats={wsStats} />
+      {/* Compute accurate stats strip from live data */}
+      <StatsStrip stats={wsStats.map((s) => {
+        if (s.label.toLowerCase().includes('active workstream')) {
+          return { ...s, val: String(counts.active), unit: `of ${workstreams.length}` };
+        }
+        return s;
+      })} />
 
+      {spawnedStories.length > 0 && (
+        <div style={{ display: 'grid', gap: 8, marginBottom: 16 }}>
+          <div style={{
+            fontSize: 10,
+            textTransform: 'uppercase',
+            letterSpacing: 0.6,
+            color: 'var(--text-tertiary)',
+          }}>
+            Spawned stories ({spawnedStories.length})
+          </div>
+          {spawnedStories.map((sid) => (
+            <StoryCard key={sid} storyId={sid} defaultExpanded />
+          ))}
+        </div>
+      )}
       <div className="workstream-grid-wrap">
         {workstreams.length === 0 && (
           <div className="empty-state">
@@ -234,13 +271,10 @@ export function WorkstreamsView() {
         )}
         <div className="workstream-grid" id="workstream-grid">
           {filtered.map((ws) => {
-            // Phase 16.12 — count work items bound to this workstream that are
-            // auto-dispatched and still in flight. The workstream's CardsJson
-            // already lists the bound ids; we cross-walk into the WIT store.
+            // Phase 16.12 — count work items bound to this workstream whose
+            // execution is actually live (agent running right now).
             const liveItems = allWorkItems.filter(
-              (w) => ws.cards.includes(w.id)
-                  && w.autoDispatchedAt != null
-                  && (w.state === 'proposed' || w.state === 'active'),
+              (w) => ws.cards.includes(w.id) && w.executionStatus === 'live',
             );
             const liveCount = liveItems.length;
             const liveWorkItemId = liveItems[0]?.id ?? null;
@@ -248,6 +282,16 @@ export function WorkstreamsView() {
             const queuedCount = Object.values(queueRows)
               .filter((r) => r.state === 'queued' && ws.cards.includes(r.workItemId))
               .length;
+            // Derive effective status: if the workstream has no real activity,
+            // show 'idle' instead of 'active'.
+            const effectiveStatus = ws.status === 'active'
+              && ws.commits === 0 && ws.ahead === 0
+              && liveCount === 0 && ws.prs.length === 0
+              ? 'idle' as const
+              : ws.status;
+            const effectiveWs = effectiveStatus !== ws.status
+              ? { ...ws, status: effectiveStatus }
+              : ws;
             return (
               <div
                 key={ws.id}
@@ -255,7 +299,7 @@ export function WorkstreamsView() {
                 style={focusedId === ws.id ? { outline: '2px solid var(--accent)', borderRadius: 'var(--radius-lg)' } : undefined}
               >
                 <WorkstreamCard
-                  ws={ws}
+                  ws={effectiveWs}
                   epic={epics.find((e) => e.id === ws.epic)}
                   prs={allPrs}
                   cards={allCards}
@@ -277,6 +321,11 @@ export function WorkstreamsView() {
       </div>
 
       <NewWorkstreamModal open={modalOpen} onClose={() => setModalOpen(false)} />
+      <SpawnStoryModal
+        open={spawnStoryOpen}
+        onClose={() => setSpawnStoryOpen(false)}
+        onSpawned={(storyId) => setSpawnedStories((prev) => prev.includes(storyId) ? prev : [...prev, storyId])}
+      />
       <Toaster />
     </section>
   );

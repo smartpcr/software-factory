@@ -29,7 +29,7 @@ public sealed class TaskQueueService : ITaskQueueService
         this.logger = logger;
     }
 
-    public async Task<TaskQueueRow> EnqueueAsync(string workItemId, string targetKind, string targetId, CancellationToken ct, bool skipSoulPrompt = false, string kind = TaskQueueKinds.Work)
+    public async Task<TaskQueueRow> EnqueueAsync(string workItemId, string targetKind, string targetId, CancellationToken ct, bool skipSoulPrompt = false, string kind = TaskQueueKinds.Work, string? preferredAgentId = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(workItemId);
         ArgumentException.ThrowIfNullOrEmpty(targetKind);
@@ -73,6 +73,7 @@ public sealed class TaskQueueService : ITaskQueueService
             LastUpdatedAt = now,
             SkipSoulPrompt = skipSoulPrompt,
             Kind = kind,
+            PreferredAgentId = string.IsNullOrEmpty(preferredAgentId) ? null : preferredAgentId,
         };
         this.db.TaskQueue.Add(row);
         this.db.TaskQueueHistory.Add(new TaskQueueHistoryRow
@@ -230,7 +231,11 @@ public sealed class TaskQueueService : ITaskQueueService
         if (!changed) return null;
         await this.WriteHistoryAsync(queueId, kind: "completed",
             from: TaskQueueStates.PickedUp, to: TaskQueueStates.Completed, ct: ct);
-        return await this.db.TaskQueue.FirstOrDefaultAsync(r => r.Id == queueId, ct);
+        var row = await this.db.TaskQueue.FirstOrDefaultAsync(r => r.Id == queueId, ct);
+        // Phase 27 Q27.12 — terminal completion drains the build_fix_pending
+        // row for this work item (auto-promote on completion / cancel).
+        if (row is not null) await this.PromotePendingBuildFixIfAnyAsync(row.WorkItemId, ct);
+        return row;
     }
 
     public async Task<TaskQueueRow?> ReassignAsync(long queueId, string newCrewId, string byUserId, CancellationToken ct)
@@ -259,6 +264,27 @@ public sealed class TaskQueueService : ITaskQueueService
         return row;
     }
 
+    public async Task<TaskQueueRow?> BlockAsync(long queueId, string error, string? reason, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(error);
+        var row = await this.db.TaskQueue.FirstOrDefaultAsync(r => r.Id == queueId, ct);
+        if (row is null) return null;
+        // Only queued rows can transition to blocked — picked-up rows have
+        // an active invocation; cancellation is the right tool there.
+        if (row.State != TaskQueueStates.Queued) return null;
+        var fromState = row.State;
+        row.State = TaskQueueStates.Blocked;
+        row.LastError = error;
+        row.LastUpdatedAt = DateTimeOffset.UtcNow;
+        await this.db.SaveChangesAsync(ct);
+
+        await this.WriteHistoryAsync(queueId, kind: "blocked",
+            from: fromState, to: TaskQueueStates.Blocked,
+            payload: new { error, reason = reason ?? string.Empty },
+            ct: ct);
+        return row;
+    }
+
     public async Task<TaskQueueRow?> CancelAsync(long queueId, string byUserId, string? reason, CancellationToken ct)
     {
         var row = await this.db.TaskQueue.FirstOrDefaultAsync(r => r.Id == queueId, ct);
@@ -283,7 +309,105 @@ public sealed class TaskQueueService : ITaskQueueService
             byUserId: byUserId,
             payload: new { reason = reason ?? string.Empty },
             ct: ct);
+        // Phase 27 Q27.12 — promote any pending build-fix on terminal cancel.
+        await this.PromotePendingBuildFixIfAnyAsync(row.WorkItemId, ct);
         return row;
+    }
+
+    /// <summary>
+    /// Phase 27 Q27.12 — when the blocking row (comment-response / coding /
+    /// work) reaches a terminal state, drain the pending build-fix row by
+    /// promoting it into a real <c>task_queue</c> row (kind='build-fix',
+    /// preferred-agent pin preserved). Idempotent — re-running on a clean
+    /// table is a no-op.
+    /// </summary>
+    private async Task PromotePendingBuildFixIfAnyAsync(string workItemId, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(workItemId)) return;
+
+        // No promotion if any other open queue row blocks it.
+        var openStates = TaskQueueStates.OpenStates.ToList();
+        var stillBlocked = await this.db.TaskQueue.AnyAsync(r =>
+            r.WorkItemId == workItemId
+            && (r.Kind == TaskQueueKinds.CommentResponse
+                || r.Kind == TaskQueueKinds.Coding
+                || r.Kind == TaskQueueKinds.Work
+                || r.Kind == TaskQueueKinds.BuildFix)
+            && openStates.Contains(r.State), ct);
+        if (stillBlocked) return;
+
+        var pending = await this.db.BuildFixPending.FirstOrDefaultAsync(p => p.WorkItemId == workItemId, ct);
+        if (pending is null) return;
+
+        // Need crew + preferred agent from the work item's AssignedAgentJson.
+        var wi = await this.db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+        if (wi is null)
+        {
+            // Stale pending — work item gone. Clean up.
+            this.db.BuildFixPending.Remove(pending);
+            await this.db.SaveChangesAsync(ct);
+            return;
+        }
+        var crewId = ResolveCrewId(wi.AssignedAgentJson);
+        var preferredAgentId = ResolvePreferredAgentId(wi.AssignedAgentJson);
+        if (string.IsNullOrEmpty(crewId)) return;
+
+        // Enqueue a new build-fix row.
+        await this.EnqueueAsync(
+            workItemId,
+            "crew",
+            crewId!,
+            ct,
+            kind: TaskQueueKinds.BuildFix,
+            preferredAgentId: preferredAgentId);
+
+        // Drain the pending staging row.
+        this.db.BuildFixPending.Remove(pending);
+        await this.db.SaveChangesAsync(ct);
+    }
+
+    private static string? ResolveCrewId(string? json)
+    {
+        if (string.IsNullOrEmpty(json)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("crewId", out var c) && c.ValueKind == JsonValueKind.String)
+                return c.GetString();
+            if (doc.RootElement.TryGetProperty("CrewId", out var c2) && c2.ValueKind == JsonValueKind.String)
+                return c2.GetString();
+        }
+        catch { /* ignore */ }
+        return null;
+    }
+
+    private static string? ResolvePreferredAgentId(string? json)
+    {
+        if (string.IsNullOrEmpty(json)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (TryFirstString(doc.RootElement, "agents", out var lower)) return lower;
+            if (TryFirstString(doc.RootElement, "Agents", out var upper)) return upper;
+        }
+        catch { /* ignore */ }
+        return null;
+
+        static bool TryFirstString(JsonElement root, string name, out string? value)
+        {
+            value = null;
+            if (!root.TryGetProperty(name, out var arr)) return false;
+            if (arr.ValueKind != JsonValueKind.Array) return false;
+            foreach (var el in arr.EnumerateArray())
+            {
+                if (el.ValueKind == JsonValueKind.String)
+                {
+                    value = el.GetString();
+                    return !string.IsNullOrEmpty(value);
+                }
+            }
+            return false;
+        }
     }
 
     public async Task<IReadOnlyList<TaskQueueRow>> GetQueueAsync(string targetKind, string targetId, IReadOnlyList<string>? states, CancellationToken ct)

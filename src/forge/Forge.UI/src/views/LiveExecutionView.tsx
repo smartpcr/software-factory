@@ -21,7 +21,7 @@ const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: 'commits',   label: 'Commits' },
 ];
 
-type RailTab = 'worktree' | 'tokens' | 'progress' | 'comments';
+type RailTab = 'worktree' | 'tokens' | 'progress' | 'comments' | 'builds';
 
 export function LiveExecutionView(): JSX.Element {
   const params = useParams<{ id: string }>();
@@ -435,12 +435,14 @@ export function LiveExecutionView(): JSX.Element {
           <button type="button" className={`live-exec__tab${tab === 'tokens'   ? ' active' : ''}`} onClick={() => setTab('tokens')}>Tokens</button>
           <button type="button" className={`live-exec__tab${tab === 'progress' ? ' active' : ''}`} onClick={() => setTab('progress')}>Progress</button>
           <button type="button" className={`live-exec__tab${tab === 'comments' ? ' active' : ''}`} onClick={() => setTab('comments')}>Comments</button>
+          <button type="button" className={`live-exec__tab${tab === 'builds'   ? ' active' : ''}`} onClick={() => setTab('builds')}>Builds</button>
         </div>
         <div className="live-exec__tab-body">
           {tab === 'worktree' && <WorktreeTab snap={worktree} transcript={transcript} />}
           {tab === 'tokens'   && <TokensTab snap={snapshot} />}
           {tab === 'progress' && <ProgressTab snap={snapshot} />}
           {tab === 'comments' && <CommentsTab workItemId={workItemId} />}
+          {tab === 'builds'   && <BuildsTab workItemId={workItemId} />}
         </div>
       </aside>
     </div>
@@ -1106,6 +1108,193 @@ function CommentsTab({ workItemId }: { workItemId: string | null }): JSX.Element
                 </div>
               </div>
             ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Phase 27 Q27.11 — Builds tab on the Live Execution right rail.
+// Lists the work item's PR builds newest-first. When a `build-fix` queue row
+// exists for this work item, a banner at the top says
+// "Agent is fixing this (queue position: N · iter M of 5)".
+function BuildsTab({ workItemId }: { workItemId: string | null }): JSX.Element {
+  const [builds, setBuilds] = useState<import('@/types').Build[]>([]);
+  const [prId, setPrId] = useState<string | null>(null);
+  const [queuePos, setQueuePos] = useState<number | null>(null);
+  const [activeIter, setActiveIter] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [details, setDetails] = useState<Record<number, {
+    stages: import('@/types').BuildStage[];
+    failurePoints: import('@/types').BuildFailurePoint[];
+  }>>({});
+
+  useEffect(() => {
+    if (!workItemId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const state = await forgeApi.getState();
+        const linkedPr = state.prs.find((p: { id?: string }) => (p as { workItemId?: string | null }).workItemId === workItemId)
+          ?? state.prs.find((p) => p.workstream && p.workstream.endsWith(workItemId));
+        if (cancelled) return;
+        if (!linkedPr) { setBuilds([]); setPrId(null); return; }
+        setPrId(linkedPr.id);
+        const resp = await forgeApi.listPrBuilds(linkedPr.id, { limit: 50 });
+        if (cancelled) return;
+        setBuilds(resp.items);
+
+        const queue = await forgeApi.listQueue();
+        const my = queue.find((q: { workItemId?: string; kind?: string; state?: string }) =>
+          q.workItemId === workItemId && q.kind === 'build-fix' && q.state !== 'completed' && q.state !== 'cancelled');
+        if (cancelled) return;
+        setQueuePos(my ? queue.indexOf(my) + 1 : null);
+      } catch (e: unknown) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [workItemId]);
+
+  // Subscribe to live iteration progress for the build-fix banner.
+  useEffect(() => {
+    const off = useTaskLiveStore.subscribe((s) => {
+      if (!workItemId) return;
+      const entry = s.entries[workItemId];
+      if (!entry || !entry.snapshot) return;
+      setActiveIter(entry.snapshot.currentIteration ?? null);
+    });
+    return off;
+  }, [workItemId]);
+
+  async function toggleExpand(id: number): Promise<void> {
+    if (expandedId === id) { setExpandedId(null); return; }
+    setExpandedId(id);
+    if (!details[id]) {
+      try {
+        const d = await forgeApi.getBuild(id);
+        setDetails((prev) => ({ ...prev, [id]: { stages: d.stages, failurePoints: d.failurePoints } }));
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to load build');
+      }
+    }
+  }
+
+  return (
+    <div className="live-exec__pane live-exec__pane--builds">
+      {error && <div style={{ color: 'var(--danger)', fontSize: 11.5 }}>Error: {error}</div>}
+      {queuePos !== null && (
+        <div
+          style={{
+            background: 'var(--info-bg)',
+            border: '1px solid var(--info-border)',
+            color: 'var(--info)',
+            padding: '6px 10px',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: 11.5,
+            marginBottom: 8,
+          }}
+          data-testid="build-fix-banner"
+        >
+          Agent is fixing this (queue position: {queuePos}{activeIter !== null ? ` · iter ${activeIter} of 5` : ''})
+        </div>
+      )}
+      {!prId ? (
+        <div style={{ color: 'var(--text-tertiary)', fontSize: 11.5, fontStyle: 'italic' }}>
+          No PR linked to this work item yet.
+        </div>
+      ) : builds.length === 0 ? (
+        <div style={{ color: 'var(--text-tertiary)', fontSize: 11.5, fontStyle: 'italic' }}>
+          No builds for this PR yet.
+        </div>
+      ) : (
+        <div data-testid="live-exec-builds">
+          {builds.map((b) => {
+            const det = details[b.id];
+            const expanded = expandedId === b.id;
+            return (
+              <div
+                key={b.id}
+                style={{
+                  borderTop: '1px solid var(--border-subtle)',
+                  padding: '6px 0',
+                  fontSize: 11.5,
+                }}
+              >
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <span
+                    title={b.state}
+                    style={{
+                      display: 'inline-block',
+                      padding: '1px 6px',
+                      borderRadius: 'var(--radius-sm)',
+                      fontSize: 10,
+                      fontWeight: 600,
+                      background: b.state === 'failed' ? 'var(--danger-bg)' :
+                                  b.state === 'succeeded' ? 'var(--success-bg)' :
+                                  b.state === 'running' ? 'var(--info-bg)' : 'var(--surface-subtle)',
+                      color: b.state === 'failed' ? 'var(--danger)' :
+                             b.state === 'succeeded' ? 'var(--success)' :
+                             b.state === 'running' ? 'var(--info)' : 'var(--text-secondary)',
+                    }}
+                  >
+                    #{b.id} {b.state}
+                  </span>
+                  <span style={{ flex: 1, color: 'var(--text-primary)', cursor: 'pointer' }} onClick={() => toggleExpand(b.id)}>
+                    {b.pipelineName ?? b.providerBuildId}
+                  </span>
+                  {b.webUrl && (
+                    <a
+                      href={b.webUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: 'var(--info)', fontSize: 10 }}
+                    >
+                      Open in {b.provider}
+                    </a>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 6, color: 'var(--text-tertiary)', fontSize: 10, marginTop: 2 }}>
+                  {b.startedAt && <span>started {new Date(b.startedAt).toLocaleString()}</span>}
+                  {b.triggeringCommit && <span>commit {b.triggeringCommit.slice(0, 7)}</span>}
+                </div>
+                {expanded && det && (
+                  <div style={{ marginTop: 6, paddingLeft: 8, borderLeft: '2px solid var(--border-subtle)' }}>
+                    {det.stages.map((s) => (
+                      <div key={s.id} style={{ marginBottom: 6 }}>
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                          <span
+                            style={{
+                              display: 'inline-block',
+                              padding: '1px 4px',
+                              borderRadius: 'var(--radius-sm)',
+                              fontSize: 9,
+                              background: s.result === 'failed' || s.result === 'failure'
+                                ? 'var(--danger-bg)' : 'var(--surface-subtle)',
+                              color: s.result === 'failed' || s.result === 'failure'
+                                ? 'var(--danger)' : 'var(--text-secondary)',
+                            }}
+                          >
+                            {s.state}
+                          </span>
+                          <span>{s.stageName}</span>
+                        </div>
+                        {det.failurePoints.filter((f) => f.stageId === s.id).map((f) => (
+                          <div key={f.id} style={{ marginLeft: 12, fontSize: 10, color: 'var(--text-secondary)' }}>
+                            <span style={{ fontFamily: 'var(--font-mono)' }}>
+                              [{f.kind}] {f.filePath}{f.line != null ? `:${f.line}` : ''}
+                            </span>
+                            <div style={{ marginLeft: 4 }}>{f.message}</div>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

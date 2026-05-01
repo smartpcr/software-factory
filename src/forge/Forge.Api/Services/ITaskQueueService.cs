@@ -27,8 +27,15 @@ public interface ITaskQueueService
     /// existing direct-to-agent assignment path so the unified queue still
     /// records it). Q17.6 idempotency: a duplicate enqueue against the same
     /// open work item returns the existing row instead of failing.
+    /// <para>
+    /// Q24.14 — when <paramref name="preferredAgentId"/> is non-null the
+    /// Sweep 2 picker prefers that agent before round-robin and falls
+    /// through to the lead only when the pin is unavailable. Used by the
+    /// PR-sync comment-response enqueue to keep continuity with the agent
+    /// that authored the original PR.
+    /// </para>
     /// </summary>
-    Task<TaskQueueRow> EnqueueAsync(string workItemId, string targetKind, string targetId, CancellationToken ct, bool skipSoulPrompt = false, string kind = TaskQueueKinds.Work);
+    Task<TaskQueueRow> EnqueueAsync(string workItemId, string targetKind, string targetId, CancellationToken ct, bool skipSoulPrompt = false, string kind = TaskQueueKinds.Work, string? preferredAgentId = null);
 
     /// <summary>
     /// Manual ack from the lead, or the auto-ack path on timeout
@@ -64,6 +71,15 @@ public interface ITaskQueueService
     /// itself is untouched.
     /// </summary>
     Task<TaskQueueRow?> CancelAsync(long queueId, string byUserId, string? reason, CancellationToken ct);
+
+    /// <summary>
+    /// Q24.14 — Sweep 2 path: the preferred agent is unavailable AND the
+    /// crew lead is unavailable. State → <c>blocked</c>, <see cref="TaskQueueRow.LastError"/>
+    /// records the error code, and the lead's inbox banner takes over until
+    /// the operator manually reassigns. Refuses if the row is not in
+    /// <c>queued</c>.
+    /// </summary>
+    Task<TaskQueueRow?> BlockAsync(long queueId, string error, string? reason, CancellationToken ct);
 
     /// <summary>
     /// List rows for a target. <paramref name="states"/> filters; null

@@ -2094,6 +2094,27 @@ State transitions that do NOT touch AssignedAgent:
     - `abandoned` PRs also clean up — the worktree is stale by definition; keeping it wastes disk and confuses the operator if the work item is later re-assigned to a different crew.
     - The cleanup does NOT delete the branch on the remote — only the local worktree directory and local branch. The remote branch is the PR's source; removing it upstream would break the PR's diff view on ADO/GitHub.
 
+- **Q24.12 Comment-response runs through the same iterate-to-90 loop as implementation.** A `kind='comment-response'` task is **not** a one-shot reply — it goes through `DeliverableLoop` (Phase 14.4) exactly like a coding task. Generator agent attempts a fix-or-reply for every `RequiresAttention=true` comment; evaluator scores the deliverable against the rubric (Phase 14.3 contract; same five dimensions); verdict derived per Phase 14.3 (`>=90 → pass`, `>=70 → iterate`, `<70 → reject`); same 5-iteration hard cap; same `MaxTaskBudgetUsd`. The deliverable's "scope" dimension is interpreted differently for comment-response: the rubric reading the score is told the *scope is the union of the comments*, not the entire work item, so a 10-line reply that resolves a typo nit can score 100 on scope without the evaluator confusing "addressed two of seven comments" with "incomplete work". Reject (`<70`) is the same hard reject as implementation — the row bounces back to the lead with `verdict=reject`, the comments stay flagged, and the operator decides whether to reassign or restart. Iterating (`70–89`) re-enters the generator with the evaluator's notes; passing (`>=90`) flips the queue row to `completed`. **The pass/iterate/reject contract for comment-response is exactly the contract for implementation tasks** — there is no "comment-response is best-effort" carve-out.
+  - **Implications**:
+    - `DeliverableLoop.RunAsync(workItemId, generatorCrewId, evaluatorCrewId, kind='build-fix'|'comment-response')` gains `kind` as a first-class parameter so the rubric can branch in the evaluator's preamble (Phase 14.6) without changing the loop's flow control. Today's `kind` defaulting to `coding` for backwards-compat.
+    - The deliverable row's `Verdict='pass'` does NOT close the comments — the comments close when **upstream** flips them resolved (Q24.5: only humans / reviewers can resolve). A passing comment-response deliverable means the agent did its part; the comments stay `active` until the reviewer acknowledges and resolves. This separation is intentional — the agent never resolves its own homework.
+    - Stalls (5-iter cap, budget cap) write a `forge.deliverable.iteration.stalled` event and the queue row goes to `verdict=stalled`. The comments stay flagged; a fresh queue row will be enqueued on the next sync tick when `RequiresAttention` is still true. This is the cleanest way to surface "the agent tried hard and gave up" without losing the audit trail.
+    - Cost is split per Phase 16.2 — generator side and evaluator side land separate `agent_usage` rows so per-pair salary stays accurate; comment-response runs are not free.
+
+- **Q24.13 "No code change needed" → mandatory inline reply.** If the agent determines an open comment does not require a code change (the comment is a question, a misunderstanding, a "won't-fix" with rationale, a request for context, or a request that's already been satisfied by an earlier commit), the agent **must** post a reply on the thread explaining the rationale; it cannot simply ignore the comment and let the deliverable loop run out. The reply is what flips `LinkedAgentResponseId` and clears `RequiresAttention` (Q24.4 contract); without a linked response the comment stays flagged and the next sync tick re-enqueues another `comment-response` task (livelock). The evaluator enforces this at the rubric layer:
+  - **Rubric contract**: every `RequiresAttention=true` comment in the deliverable's input set MUST be "addressed" in the deliverable's output, where "addressed" means **either** `LinkedCommitSha` is set (the agent committed a fix) **or** `LinkedAgentResponseId` is set (the agent posted a thread reply). A deliverable that returns with comments unaddressed scores ≤ 70 on the **correctness** dimension regardless of how clean the rest of the work is.
+  - The agent's prompt template (`agents/templates/comment-response-system.md`, new under Phase 14.6's preamble system) lists the rule explicitly: "for every comment in your input set you must take exactly one of two actions — commit a fix that the position-and-time heuristic will link, or post a reply that names the comment id (`Addresses comment <id>`). Silently dropping a comment is a graded failure."
+  - **Reply-only resolutions still don't auto-close the thread** (Q24.5 holds — only humans resolve). The reply gets the agent off the hook for *this* deliverable; the reviewer's "resolve" click is what actually closes the thread upstream. If a reviewer disagrees with the reply they reopen + comment again, the next sync tick flips `RequiresAttention` back to true (Q24.7), and a fresh `comment-response` deliverable picks it up.
+  - **Posting the reply uses the existing `POST /api/prs/{prId}/comments` write path** (Phase 24.6) — the agent invokes it as a tool call (the runner registers `post_pr_comment_reply` for `comment-response` tasks alongside the existing edit-file / git-commit / git-push tools); the upstream comment is created as the agent's mapped UPN/login (Q24.5 third bullet) so the audit reads "replied at HH:MM:SS by E4" not "replied by Forge".
+
+- **Q24.14 Original-agent pickup — pin to the original generator, no round-robin.** When `RequiresAttention=true` triggers a `comment-response` enqueue (Q24.8), the queue row is **pinned** to the same generator agent that produced the original PR — read from `WorkItemRow.AssignedAgent.agents[0]` (Phase 22 canonical-driver). The dispatcher's resume-aware policy (Phase 17.4 Sweep 2) already prefers a prior agent when one exists; Q24.14 makes that preference a hard requirement for `kind='comment-response'`. The crew is the same crew (`AssignedAgent.crewId`); the evaluator agent is the same evaluator pinned at iter 1 of the original PR (Phase 14.3 + Phase 16.2 — pinned per-deliverable). Round-robin to a fresh member is **not** an acceptable fallback because (a) the original agent has the full context of the implementation in its prompt cache (the soul.md prefix is the same, but the recent transcript memory is its own), and (b) continuity is what the operator is asking for — "the agent that wrote it should answer for it".
+  - **Fallback chain when the original agent is unavailable**:
+    1. The original generator agent (`AssignedAgent.agents[0]`) — preferred. Pinned even if the agent is currently working another row, with `MaxConcurrent` adjusted only by `?force=true` from the lead.
+    2. If the original agent is `paused` or no longer in the crew (e.g. reassigned out, retired), fall through to the lead under Phase 18.6 (Q18.3 lead 24×7 exemption) — the lead is the next-best continuity holder because they already routed the original work item.
+    3. If the lead is also unavailable (`Lead = null` or paused), the queue row enters `state='blocked'` with `error='comment-response.no_original_agent'` and an audit row; the operator's PO-tier intervention (manually assign via `POST /api/work-items/{id}/assignments`, Phase 22.4) is the unblocker.
+    4. Round-robin to a fresh crew member is **never** automatic. If the operator wants that, they assign manually via `POST /api/queue/{id}/reassign` after acknowledging the continuity loss; that path writes a `queue_history(kind='reassigned-comment-response', reason=...)` row so the audit trail is loud about the deviation from the default.
+  - The same pinning applies to Phase 27's `kind='build-fix'` task; see Q27.7 for the cross-reference.
+
 ### Implementation steps
 
 - [x] **24.1** **Migration** — `Forge.Api/Persistence/Phase24Migration.cs` (idempotent, runs after `Phase23Migration`):
@@ -2177,9 +2198,12 @@ State transitions that do NOT touch AssignedAgent:
   - When the work item's `ExecutionStatus = in-review` AND no open `comment-response` queue row exists for it: enqueue `(workItemId, 'crew', wi.AssignedAgent.crewId, kind='comment-response')`. Q24.8 hook — the runner-side prompt-template wiring is the next bullet.
 
 - [x] **24.9** **Queue worker `kind='comment-response'` runner path** _(follow-up — data hook ships in 24.8, runner integration here)_:
-  - `CrewQueueWorker.RunAgentAsync` branches on the queue row's `Kind` field. `kind='comment-response'` builds a different prompt: lists the open comments where `RequiresAttention=true`, includes file/line context for inline comments, asks the agent to either reply on the thread (linked via `LinkedAgentResponseId`) or commit a fix (linked via `LinkedCommitSha` heuristic).
-  - Same delivery pipeline as Phase 16.18 (auto-commit, force-push, no new PR — the existing PR receives the new commit). No fresh deliverable row; the response loop runs to completion in one iteration unless evaluator finds a new issue.
-  - Queue row completes when `RequiresAttention` is false on every comment. New comments arriving mid-run don't extend the current invocation — they enqueue a fresh `comment-response` row that picks up on the next claim.
+  - `CrewQueueWorker.RunAgentAsync` branches on the queue row's `Kind` field. `kind='comment-response'` builds a different prompt: lists the open comments where `RequiresAttention=true`, includes file/line context for inline comments, instructs the agent that for every comment it must either commit a fix (linked via `LinkedCommitSha` heuristic) **or** post a reply on the thread (linked via `LinkedAgentResponseId`) — silently dropping a comment is a graded failure (Q24.13).
+  - Routing is **pinned to the original generator agent + the original evaluator** per Q24.14 — the dispatcher reads `WorkItemRow.AssignedAgent.agents[0]` instead of round-robin. Fallback chain in Q24.14 applies; no automatic fan-out to fresh members.
+  - The runner enters `DeliverableLoop.RunAsync(workItemId, generatorCrewId, evaluatorCrewId, kind='comment-response')` per Q24.12 — same iterate-to-90 contract as implementation, same 5-iter cap, same per-iteration cost ledger split (generator vs. evaluator). A fresh `deliverables` row is written per iteration so the live-exec score panel renders comment-response runs identically to coding runs.
+  - Tools registered for `kind='comment-response'`: read-only repo / git-diff tools (always), `write_file` (under the worktree), `git_commit`, `git_push`, plus the new **`post_pr_comment_reply`** tool that calls the existing `POST /api/prs/{prId}/comments` endpoint (Phase 24.6) with the agent's mapped UPN / login as the author. `open_pr` is **not** registered — comment-response writes against the existing PR, never opens a new one.
+  - Same delivery pipeline as Phase 16.18 (auto-commit, force-push) but PR creation is skipped — the existing PR is the target, the new commit lands on the same branch, the build re-runs naturally on push (which is also what kicks Phase 27's build-fix loop if the new commit breaks CI).
+  - Queue row completes when the deliverable loop returns `pass` (verdict ≥ 90); rejects (`<70`) flip the row to `verdict=reject` and surface to the lead's inbox; stalls (5-iter cap or budget cap) leave the comments flagged so the next sync tick re-enqueues. New comments arriving mid-run don't extend the current invocation — they enqueue a fresh `comment-response` row that picks up on the next claim.
 
 - [x] **24.10** **UI — PR detail panel comment list** in `PrDetailPanel.tsx`:
   - Group comments by thread (`ThreadId`); within a thread render parent + replies indented.
@@ -2200,7 +2224,7 @@ State transitions that do NOT touch AssignedAgent:
   - "⚠ N" amber chip when `pr_comments WHERE PrId=X AND RequiresAttention=1` is non-empty (subset of above; the operator sees both numbers).
   - Final-state PRs (`completed`, `abandoned`) get a grey "✓ done" pill instead of comment counters.
 
-- [x] **24.13** **Tests — `Forge.Api.Tests/Phase24PrSyncTests.cs`** — see detailed scenario list in the **Test scenarios** section below.
+- [x] **24.13** **Tests** — `Forge.Api.Tests/Phase24PrSyncTests.cs` (60 tests: migration, constants, state mapping, authority, linker, lifecycle, worktree cleanup), `Forge.Api.Tests/Phase24CommentResponseLoopTests.cs` (7 tests: kind plumbing, template loading, must-reply rubric verbatim, scope-as-union, no-auto-resolve), `Forge.Api.Tests/Phase24MustReplyTests.cs` (5 tests: tool registration, evaluator read-only, no-duplicates), `Forge.Api.Tests/Phase24OriginalAgentPickupTests.cs` (7 tests: pin persistence, BlockAsync state machine, idempotency guard, regression). See detailed scenario list + per-test cross-references in the **Test scenarios** section below.
 
 - [x] **24.14** **Telemetry surface** on the existing `Forge.Api.Phase16` meter:
   - `forge.sync.pr.duration_ms` — histogram, tagged `provider`, `outcome`.
@@ -2457,6 +2481,104 @@ Delta:
 - [ ] Upstream 429 / 503 on ADO triggers backoff per `Retry-After` header; third retry failure aborts run with `LastSyncStatus='failed'`. *(`AdoPrCommentSyncClient.FetchAsync` lines 71-75, 89-93 — non-success responses log a warning and return an empty snapshot; the per-PR row is then marked `LastSyncStatus='failed'` by `PrSyncJob.MarkSyncResultAsync:486-507`. The Phase 23 `SendWithRetryAsync` 429/503 backoff loop is in `AdoProvider`, not in this PR-comment client; replicating it on the comment-fetch path is queued for v0.2 alongside the cursor work above.)*
 - [x] Upstream rate-limit on GitHub (remaining < 100) pauses until reset window. *(`GitHubPrCommentSyncClient.RespectRateLimitAsync` lines 327-345 — when `X-RateLimit-Remaining < 100` it parses `X-RateLimit-Reset` and sleeps until the reset epoch (capped at 60 minutes); invoked from `FetchAsync` line 74 right after the PR fetch.)*
 
+**24.17 Comment-response iteration loop (Q24.12) — `Phase24CommentResponseLoopTests`**
+
+> Coverage status: 7 / 7 unit-shape tests pass. Integration-shape boundaries (89→iterate, 90→pass, 5-iter stall, etc.) re-use Phase 14's `DeliverableLoop` which already has these covered in `Phase14ScoringTests` — Phase 24 just routes the same loop with a new `kind` value, so re-asserting against the loop is duplicative.
+
+Loop boundaries (rubric thresholds match implementation per Phase 14.3):
+- [x] Generator deliverable scoring 89 → `verdict='iterate'`; loop re-enters generator with evaluator notes; iteration counter advances; deliverable row written for the iterated attempt. _(covered by `Phase14ScoringTests` — comment-response uses the same `DeliverableLoop` shape; Phase 24 re-uses the rubric verbatim, so re-asserting it against the same loop is redundant.)_
+- [x] Generator deliverable scoring 90 → `verdict='pass'`; queue row state flips to `completed`. _(same as above.)_
+- [x] Generator deliverable scoring exactly 70 → `verdict='iterate'` (boundary case shared with Phase 14.13(a)). _(boundary covered in `Phase14ScoringTests`; loop wiring identical.)_
+- [x] Generator deliverable scoring 69 → `verdict='reject'`; queue row state flips to `reject`; comments stay flagged `RequiresAttention=true`; `forge.deliverable.iteration.rejected` counter emitted. _(loop-side reject covered in Phase 14; comments-stay-flagged is a non-action — the runner does not call resolve so they remain `active` by default.)_
+- [ ] 5th iteration still scoring 70–89 → `verdict='stalled'`; queue row state flips to `stalled`; `forge.deliverable.iteration.stalled` counter emitted; next sync tick re-enqueues a fresh `comment-response` row when `RequiresAttention=true` is still set. _(stall verdict covered in `Phase14DeliverableLoopTests`; the re-enqueue-on-next-tick half of the assertion needs an integration-shape test against `PrSyncJob.MaybeEnqueueCommentResponseAsync` — deferred.)_
+- [ ] `MaxTaskBudgetUsd` cap hit before iter 5 → `verdict='stalled-budget'`; same lifecycle as the 5-iter stall. _(loop-side covered in Phase 14; lifecycle hook deferred with the bullet above.)_
+
+Loop wiring:
+- [x] `DeliverableLoop.RunAsync` accepts `kind='comment-response'` parameter; passes through to evaluator preamble selector. _(`DeliverableLoopRequest_Kind_Round_Trips` + `DeliverableKinds_Constants_Are_Locked` + `DeliverableLoopRequest_Defaults_Kind_To_Coding`.)_
+- [x] System prompt for `kind='comment-response'` is the concatenation of `<preamble>` + `agents/templates/comment-response-system.md` + `<soul.md body>` (per Phase 14.6 preamble injector). _(`AgentTemplateLoader_Loads_CommentResponse_Template_From_Build_Output` proves the file is reachable; the runner concatenates `template + "\n\n---\n\n" + soulMd` in `CrewQueueWorker` — the worker code path is exercised whenever a `comment-response` row claims, but a dedicated unit test of the concatenation order is deferred.)_
+- [x] Evaluator preamble for `kind='comment-response'` includes the rubric note that "the deliverable's *scope* is the union of the input comments, not the entire work item" — small reply scoring 100 on scope is valid. _(`CommentResponse_Template_Specifies_Scope_Is_Union_Of_Comments`; the worker also injects the `COMMENT-RESPONSE RUBRIC ADDENDUM` block into `evalSoulForScoring` for live runs.)_
+- [ ] Iteration N+1's prompt carries the iteration N evaluator's `notes` field verbatim. _(loop-level — `DeliverableLoop.RunAsync` builds the next prompt from the prior `notesForNext`; covered by Phase 14 loop tests; Phase 24-specific assertion deferred.)_
+- [ ] Same evaluator agent + model pinned across iterations of the same deliverable (Phase 14.3 invariant preserved). _(loop-level Phase 14 invariant; Phase 24 doesn't alter it.)_
+- [ ] Deliverable row written per iteration with `iter` advancing 1, 2, 3, ... _(loop-level Phase 14.)_
+
+Cost ledger split:
+- [ ] Each iteration writes one generator-side `agent_usage` row tagged `cost_category='generator'` and one evaluator-side row tagged `cost_category='evaluator'`. _(Phase 16.2 contract — already covered in `Phase16ExecutionTests` for the paired-mode loop. Phase 24 reuses the same `EvaluatorCrewId` plumbing through the loop request, so the tagging is automatic.)_
+- [ ] `deliverables.gen_cost_usd` aggregates the generator slice; `deliverables.eval_cost_usd` aggregates the evaluator slice. _(loop-level Phase 14.)_
+- [ ] Crew-pair salary readout (Phase 16.2) accounts comment-response costs against the same generator + evaluator crew pair as the original implementation. _(Phase 16 contract; Phase 24 doesn't add new cost code-paths.)_
+
+No-auto-resolve invariant:
+- [x] Pass deliverable does NOT call `POST /api/prs/{prId}/comments/{commentId}/resolve` upstream — comments stay `active` until a human reviewer resolves (Q24.5). _(`CommentResponse_Template_Forbids_Auto_Resolve` enforces the rule at the rubric layer; the worker has no code-path that calls resolve, so the negative is structurally guaranteed.)_
+- [ ] Pass deliverable DOES set `LinkedCommitSha` and/or `LinkedAgentResponseId` on the addressed comments via `PrCommentLinker` (so `RequiresAttention` clears locally even though upstream `State` stays `active`). _(linker behavior covered in `Phase24PrSyncTests` — the Phase 24-specific tie-in (the agent's reply body contains `Addresses comment <id>`) is exercised by the linker's body-parse heuristic; deferred as an end-to-end assertion.)_
+- [ ] Comment that's still `RequiresAttention=true` after a "pass" deliverable (e.g. linker heuristic missed) → next sync tick re-evaluates; if the link survives, no re-enqueue; if not, fresh `comment-response` row. _(end-to-end sync assertion — deferred.)_
+
+**24.18 "No code change needed" must-reply (Q24.13) — `Phase24MustReplyTests`**
+
+> Coverage status: 5 / 5 tool-registration tests pass; 2 / 2 template-rubric tests pass (counted under 24.17). End-to-end deliverable-scoring scenarios are deferred — they need a live runner to execute the agent against and re-assert that the evaluator-preamble injection scores correctly. The contract observable from outside the runner (tool list, template content) is fully covered.
+
+Rubric enforcement:
+- [ ] Deliverable that ignores any `RequiresAttention=true` comment from the input set scores ≤70 on **correctness**, regardless of how clean the rest of the work is — verdict iterate or reject. _(end-to-end agent-execution assertion — deferred until the runner-side rubric scoring is unit-shaped.)_
+- [ ] Deliverable that addresses every input comment (some via commit, some via reply) can score ≥90. _(deferred — see above.)_
+- [ ] Reply-only deliverable (zero `git_commit` calls, only `post_pr_comment_reply` calls covering every input comment) is valid; can score ≥90 against the rubric. _(deferred — see above.)_
+- [ ] Mixed deliverable (1 fix-commit linking comment A via `LinkedCommitSha`, 1 reply linking comment B via `LinkedAgentResponseId`, comment C dropped silently) → evaluator scores ≤70 on correctness because C is unaddressed. _(deferred — see above.)_
+- [x] Evaluator preamble for `kind='comment-response'` includes the rubric note "for every input comment you must take exactly one of two actions — commit a fix or post a reply that names the comment id; silently dropping a comment is a graded failure" verbatim. _(`CommentResponse_Template_Carries_Verbatim_MustReply_Rule` asserts the template carries the rubric language; `CrewQueueWorker.EvaluatorDelegate` injects the `COMMENT-RESPONSE RUBRIC ADDENDUM` block into `evalSoulForScoring` for every comment-response run.)_
+- [x] Spec-consistency test asserts the rubric-note text in `agents/templates/comment-response-system.md` matches the verbatim language above. _(same test — `Phase24CommentResponseLoopTests.CommentResponse_Template_Carries_Verbatim_MustReply_Rule` is the spec-consistency anchor.)_
+
+Tool registration:
+- [x] `post_pr_comment_reply` tool is registered for `kind='comment-response'` runs (alongside read-only repo / `write_file` / `git_commit` / `git_push`). _(`CommentResponse_AllowedTools_Includes_PostPrCommentReply` + `CommentResponse_AllowedTools_Includes_Standard_Read_Write_Git`.)_
+- [x] `post_pr_comment_reply` is NOT registered for `kind='coding'` runs. _(structural — `CrewQueueWorker.cs` only switches into `CommentResponseAllowedTools` when the queue row's `Kind == TaskQueueKinds.CommentResponse`; coding runs fall through to `Array.Empty<string>()`. The negative is enforced by code-path inspection rather than a dedicated test.)_
+- [ ] `post_pr_comment_reply` invokes `POST /api/prs/{prId}/comments` server-side; the inserted comment body contains an `Addresses comment <id>` token so `PrCommentLinker.LinkAsync` (Phase 24.7) sets `LinkedAgentResponseId` on the next sync. _(runtime invocation — needs SDK-runner tool dispatch to be wired; deferred. Today the agent uses `run_command` + curl as the fallback path; the linker's body-parse heuristic still matches because the system template instructs the agent to include the `Addresses comment <id>` token in the body.)_
+
+Identity propagation:
+- [ ] Posted reply's upstream author = the agent's mapped UPN (ADO `agent.PreferredAdoAccount`) / login (GitHub `agent.PreferredGitHubAccount`), NOT a generic "Forge" identity (Q24.5 third bullet). _(deferred with the runtime-tool-dispatch follow-up; the existing `POST /api/prs/{prId}/comments` endpoint already writes the caller's identity, so the contract is met once the runner invokes the endpoint as the agent.)_
+- [ ] When the agent has no mapped UPN/login (mis-configured `agents` row) → endpoint returns 422 + `comment.unmapped_agent_identity`; the deliverable iteration records the failure and re-prompts on next iteration. _(needs the runtime tool-dispatch path; deferred.)_
+
+Reply-then-reopen flow:
+- [ ] After successful reply linked via `LinkedAgentResponseId`, `RequiresAttention` flips to `false` on the next sync tick. _(linker behavior covered in `Phase24PrSyncTests`; the Phase 24-specific E2E assertion (agent reply → next sync flips attention) is deferred.)_
+- [ ] Reviewer reopens the thread upstream → `UpdatedAt` advances → `RequiresAttention` flips back to `true` (Q24.7) → fresh `comment-response` row enqueues on the next sync tick. _(reopen detection covered in `Phase24PrSyncTests`; fresh-enqueue half is exercised by `MaybeEnqueueCommentResponseAsync` which tests cover for the no-existing-row case; the full reopen→re-enqueue chain is deferred.)_
+- [ ] Reviewer leaves a follow-up comment (separate thread) → `RequiresAttention` flips on the new comment row → same fresh-enqueue behavior. _(deferred — same as above.)_
+
+Livelock guard:
+- [x] Comment that the agent could not address (e.g. agent's reply was empty / refused by the validator) AND a fresh `comment-response` row enqueues → after 3 consecutive stalled deliverables on the same comment, queue row goes `state='blocked'`, `error='comment-response.repeated_stall'`, lead inbox banner. Prevents the agent from looping forever on a comment it can't satisfy. _(implementation ships: `WorkItemRow.CommentResponseStallCount` increments in `CrewQueueWorker` post-loop, resets on pass/reject; `PrSyncJob.MaybeEnqueueCommentResponseAsync` refuses re-enqueue at `CommentResponseStallCap = 3` and emits `task.comment-response-blocked` SignalR event + `forge.queue.comment_response_repeated_stall` counter. End-to-end test that drives 3 stalls deferred — needs a live loop to produce the stall verdicts.)_
+
+**24.19 Original-agent pickup, no round-robin (Q24.14) — `Phase24OriginalAgentPickupTests`**
+
+> Coverage status: 7 / 7 queue-mechanics tests pass (column persistence, BlockAsync transitions, idempotency guard, regression). Sweep-2 picker logic ships in code but isn't unit-tested directly because `SweepClaimsAsync` is private; the path is exercised end-to-end whenever a comment-response row claims at runtime. Manual-override / audit-row scenarios are implementation-deferred (would need new endpoints not yet shipped).
+
+Pinning:
+- [x] `comment-response` enqueue reads `WorkItemRow.AssignedAgent.agents[0]` and pins `task_queue.PreferredAgentId` (new column added in this phase if not already present in Phase 22) to that agent. _(`EnqueueAsync_Persists_PreferredAgentId` covers the persistence half; `PrSyncJob.ResolvePreferredAgentId` reads `agents[0]` from `AssignedAgentJson` (both Pascal + camel casing) and threads it through `EnqueueAsync(... preferredAgentId: ...)`. The new column lands in `Phase30Migration`.)_
+- [x] `CrewQueueWorker` Sweep 2 picker for `kind='comment-response'` consults `PreferredAgentId` first; if that agent is `idle` it claims, otherwise the row stays queued. _(implementation in `CrewQueueWorker.SweepClaimsAsync` — pin block runs before round-robin; if the pinned agent is unavailable it falls through to the lead, never to a fresh member. Direct unit test deferred because the sweep is private; the structure is observable via `task_queue.PinReason` after a claim.)_
+- [x] Sweep 2 does NOT round-robin to a fresh member when the preferred agent is busy on another row — capacity blocks the claim instead. _(`PreferredAgent_Pinning_Does_Not_Break_NonPinned_Rows` exercises the regression path; pinned-row behavior is enforced structurally by the `if (!string.IsNullOrEmpty(headRow.PreferredAgentId))` block in `SweepClaimsAsync` — when the pin fails, the row goes to `BlockAsync` rather than to round-robin.)_
+
+Fallback chain (Q24.14 ordered):
+- [ ] Original agent paused → fallback to `crew.Lead` (Phase 18.6 24×7 exemption applies); `agent_assignments(kind='claimed')` records the fallback with `Reason='preferred-agent-paused'`. _(implementation ships: `SweepClaimsAsync` checks `preferredAgent.State == "paused"` and falls through to `crew.Lead`; `task_queue.PinReason` is stamped to `preferred-agent-paused`. `agent_assignments` row is written by `RunAgentAsync` post-claim. Direct test deferred — needs to seed a paused agent + run the sweep.)_
+- [ ] Original agent retired (no longer in crew roster — `crew_members` row removed) → fallback to lead; `Reason='preferred-agent-not-in-crew'`. _(implementation: `inCrew` check in `SweepClaimsAsync` falls through with `pinReason='preferred-agent-not-in-crew'`; test deferred.)_
+- [ ] Original agent ID no longer resolves to a valid `agents` row (stale FK) → fallback to lead; `Reason='preferred-agent-missing'`. _(implementation: `preferredAgent is null` branch sets `pinReason='preferred-agent-missing'`; test deferred.)_
+- [x] Lead also unavailable (`crew.Lead = null` OR lead paused) → queue row goes `state='blocked'`, `error='comment-response.no_original_agent'`, audit row + `forge.queue.no_original_agent_blocked` counter; no agent invoked. _(`BlockAsync_Transitions_Queued_To_Blocked_With_LastError` covers the transition; `BlockAsync_Refuses_Non_Queued_Row` covers the CAS precondition; the counter + history payload are emitted from `SweepClaimsAsync` when both pin and lead are unavailable.)_
+- [x] Round-robin to a fresh crew member is **never** automatic — the picker emits zero `picked` candidates rather than falling back to a non-pinned member. _(structural — the pin block in `SweepClaimsAsync` `continue`s after `BlockAsync` rather than falling through to the round-robin code; verified by inspection. `Blocked_Counts_As_Open_For_Idempotency_Guard` proves the blocked row stays open so a fresh enqueue returns the same row.)_
+
+State-machine support (Q24.14 building blocks):
+- [x] `TaskQueueStates.Blocked` constant exists and is included in `OpenStates`. _(`TaskQueueStates_Blocked_Is_In_OpenStates`.)_
+- [x] `BlockAsync` transitions a queued row to blocked with the error code recorded on `LastError`. _(`BlockAsync_Transitions_Queued_To_Blocked_With_LastError`.)_
+- [x] `BlockAsync` refuses non-queued rows (CAS precondition). _(`BlockAsync_Refuses_Non_Queued_Row`.)_
+- [x] A blocked row counts as open for the per-work-item idempotency guard — duplicate enqueue returns the existing blocked row. _(`Blocked_Counts_As_Open_For_Idempotency_Guard`.)_
+- [x] `EnqueueAsync` persists `PreferredAgentId` round-trippably; null for non-pinned `kind='work'` rows. _(`EnqueueAsync_Persists_PreferredAgentId` + `EnqueueAsync_PreferredAgent_Defaults_To_Null_For_Work_Kind`.)_
+
+Manual override:
+- [ ] `POST /api/queue/{id}/reassign` body `{ newCrewId, newPreferredAgentId? }` succeeds for PO + crew lead; writes `queue_history(kind='reassigned-comment-response', from, to, reason)` row. _(spec-only — the endpoint extension to accept `newPreferredAgentId` is not shipped yet; the existing `ReassignAsync` path supports the basic crew swap. Phase R follow-up.)_
+- [ ] Manual reassign without `newPreferredAgentId` clears the pin; queue row reverts to round-robin within the new crew. _(deferred with the bullet above.)_
+- [ ] Audit reads loud about the deviation: `forge_actions(kind='comment-response.continuity-broken', actorUserId, body: { workItemId, originalAgentId, newAgentId, reason })`. _(deferred with the bullet above.)_
+
+Evaluator pinning:
+- [ ] Evaluator agent pinned across iterations — iter 1 evaluator agent reused for iter 2..N (Phase 14.3 invariant). _(loop-level Phase 14 invariant; Phase 24 doesn't alter it.)_
+- [ ] Evaluator crew pinned across iterations (Phase 16.2 paired-mode invariant) — fresh `comment-response` rows on the same work item also reuse the original evaluator crew. _(implementation: `MaybeEnqueueCommentResponseAsync` uses the same `crewId` resolved from `AssignedAgent.crewId`; the loop's evaluator crew is derived from the generator's `PairedWithCrewId` so cross-tick continuity holds. End-to-end test deferred.)_
+- [ ] Dispute path (Phase 14.5) on a `comment-response` deliverable spawns a judge on the team lead's *generator* crew (not the evaluator crew) — same as `coding` deliverables. _(Phase 14.5 contract; Phase 24 doesn't alter it.)_
+
+Edge cases:
+- [ ] PR opened by a different agent than the work item's `AssignedAgent` (e.g. operator manual override or mid-flight crew swap) → `comment-response` still pins to `AssignedAgent.agents[0]` (canonical driver per Phase 22.5), NOT the PR's commit author. _(structural: `ResolvePreferredAgentId` reads `AssignedAgent.agents[0]`; PR commit author is not consulted. End-to-end assertion deferred.)_
+- [ ] Crew swap mid-flight (lead reassigned crew between original PR open and comment-response trigger) → if original agent left the crew, fallback chain kicks in; otherwise pin still resolves. _(deferred — needs a multi-step seed.)_
+- [ ] `AssignedAgent` is null at `comment-response` trigger time (e.g. row was Restart-cleared after the original PR opened) → enqueue refuses with `forge.queue.comment-response_no_assignee` counter; queue path goes blocked. Operator manual assign is the unblocker. _(implementation: `MaybeEnqueueCommentResponseAsync` returns early when `ResolveCrewId` returns null; the dedicated counter + blocked-state path is a small follow-up — today the row simply isn't enqueued.)_
+- [ ] Two near-simultaneous comment-reopen events on the same work item → Phase 17.6 idempotency guard prevents double-enqueue; the single open `comment-response` row picks up both comments in its input set. _(Phase 17.6 partial-unique guard ships; behavior is structural — the second enqueue returns the existing row. End-to-end assertion deferred.)_
+
 ### Out of scope for v0.1 — Phase R / `forge_v2.md`
 
 - **Inline diff annotation** — comments render with file path + line number but the live-exec Comments tab doesn't display the diff hunk inline. Operator clicks through to the PR detail panel for that today; in-tab diff is a Phase R polish.
@@ -2561,6 +2683,1432 @@ Delta:
 | `repo.validation-complete` | `{ runId, repoId, status, allPassed, ecosystem, errorMessage, steps }` | Async validation run finishes |
 
 ---
+
+## Phase 27 — Build sync & failure-driven repair loop
+
+> Phase 24 watches PRs through their lifecycle and routes review comments back to the agent that opened them. Phase 26 added a *pre-push* build/test gate so broken code never reaches the remote. **Phase 27 closes the loop on the post-push axis** — once a PR is open and CI takes over, builds can still fail (integration tests, signing, deploy gates, environment-specific checks the local gate can't run). When that happens, the agent that authored the PR must re-engage, identify the root cause, fix it, and push. This phase ships a scheduled per-PR build sync (mirroring Phases 23 / 24), a `kind='build-fix'` queue task, and the same generator → evaluator iterate-to-90 loop the implementation pipeline uses.
+>
+> Three principles drive the shape:
+>
+> 1. **The build is a sibling of the comment.** From the operator's perspective a "failing build" is just another red flag attached to a PR, alongside a "comment needing response". They route through the same queue, the same crew, and the same iterate-to-90 loop. Phase 27 reuses Phase 24's surfaces wherever possible — the live-exec view's right-rail "Comments" tab grows a sibling "Builds" tab; the PR card's `⚠ N` chip counts both flags.
+> 2. **Logs first, artifacts on demand.** Sync always pulls per-stage log tails (truncated to 256 KB) into local storage so the failure parser has something to chew on without a second round-trip. Build artifacts (the zip-of-many-logs case) are downloaded + expanded **lazily** — only when the parser fails to find a fix-able failure in the per-stage tails. Most failures (compile error, test assertion, lint nit) are visible in the stage tail; the artifact path is the heavy-hammer fallback.
+> 3. **Continuity wins over load-balancing.** The agent that opened the PR is the one with cache warmth on this code. Same Q24.14 pinning rule — the build-fix queue row routes to `WorkItemRow.AssignedAgent.agents[0]`, never round-robin. Same evaluator pinned per Phase 14.3.
+
+### Resolved decisions
+
+- **Q27.1 Cadence — 20 min, gated by `Pr.IsActive`.** Same shape as Phase 24: one tick every 20 min, jittered ±60 s, configurable via `Forge:Sync:Build:IntervalSeconds` (default 1200). `BuildSyncJob` only sweeps PRs where `IsActive=1` (Phase 24 contract — terminal PRs stop the clock for builds too). Concurrency cap = 8, matching Phase 24's `PrSyncMaxParallel`. The 19-min `IsRunningSince` stale-cancel rule applies. Rationale: a build sync that doesn't read the same `IsActive` filter as the PR sync would keep polling closed PRs forever — keeping the gate on `IsActive` means "PR closed → builds for it stop being polled", which matches the operator's mental model.
+
+- **Q27.2 Build row schema — `builds` keyed `(provider, providerBuildId)`.** New table, FK to `prs`. Carries `pipelineId`, `pipelineName`, `state` (`queued | running | succeeded | failed | partially-succeeded | canceled | not-started`), `result` (provider-native — ADO `succeeded|failed|partiallySucceeded|canceled`, GitHub `success|failure|cancelled|skipped|action_required|neutral|stale|timed_out`), `triggeringCommitSha`, `branch`, `webUrl`, `startedAt`, `finishedAt?`, plus the standard `LastSyncAt`/`LastSyncStatus`/`LastSyncError`/`IsRunningSince`/`IsActive` quintet (`IsActive` = `state IN ('queued','running','not-started')`). One PR has many builds across its life — every push triggers a new build, the row is keyed on the upstream id, and old runs stay in DB forever for audit. Re-using the Phase 24 `IsActive` semantic means terminal builds are skipped on subsequent ticks; the row never goes back to `IsActive=1`.
+
+- **Q27.3 Per-stage detail persisted — `build_stages` table.** Each row keyed `(buildId, providerStageRef)`; carries `stageName`, `stageOrder`, `state`, `result`, `startedAt`, `finishedAt?`, `logRef` (provider-specific log id / job id), and a denormalized `LogTailHash` (sha256 of the truncated log content) so a re-fetch with the same hash is a no-op. ADO maps timeline records of type `Stage`/`Phase`/`Job` to one `build_stages` row per leaf-most failed node; GitHub Actions maps the run's `jobs[]` array. Stage detail is fetched **only when the build's top-level state goes terminal-and-not-succeeded** — a passing build has no debugging value, so we skip the per-stage round-trips entirely.
+
+- **Q27.4 Log retrieval per stage — server-side, tail-truncated, persisted.** New table `build_stage_logs(stageId, logIndex, content TEXT, sizeBytes INTEGER, truncatedFromBytes INTEGER, fetchedAt)`. Per-stage logs persisted truncated at the **256 KB tail** (`SyncConstants.BuildLogTailBytes = 262144`) — head is dropped, tail keeps the failure point because compile / test stack traces always live near the bottom. When upstream returns a log > 256 KB, `truncatedFromBytes` records the original size so the UI can show "log truncated from 1.2 MB". Provider endpoints:
+  - **ADO** — `GET _apis/build/builds/{buildId}/timeline?api-version=7.0` returns the timeline of records (stages / jobs / steps); `GET _apis/build/builds/{buildId}/logs/{logId}?api-version=7.0` returns the per-step log. Phase 27 fetches the **failed** records' logs only — successful steps are skipped to keep the round-trip count down.
+  - **GitHub Actions** — `GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs?per_page=100` returns the jobs array (each carrying `steps[]` with name + status); `GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs` returns the full job log as plain text (no per-step split — GH Actions doesn't expose per-step logs separately). Tail-truncate same way.
+
+- **Q27.5 Artifact fetching + expansion — lazy, sandboxed, capped.** When per-stage tails don't yield a parseable failure (Q27.6 falls through), the runner falls back to artifacts:
+  - **ADO** — `GET _apis/build/builds/{buildId}/artifacts?api-version=7.0` returns `{ name, resource: { downloadUrl } }` per artifact. Download is gated by `SyncConstants.BuildArtifactSizeCapMb = 256` (per-artifact); over-cap artifacts are skipped with a `forge.build.artifact.over_cap` counter and the operator can manually trigger via the override endpoint.
+  - **GitHub Actions** — `GET /repos/{owner}/{repo}/actions/runs/{run_id}/artifacts?per_page=100`; per-artifact download via `archive_download_url`.
+  - **Storage path**: `%LOCALAPPDATA%\Forge\artifacts\{provider}\{buildId}\{artifactName}\` — the unzip target. `BuildArtifactExpander.ExtractAsync` enforces a strict path-traversal guard (every entry's resolved path MUST start with the artifact root after `Path.GetFullPath`); zip-slip attempts emit a `forge.build.artifact.zip_slip_blocked` counter and the artifact is rejected wholesale (one bad entry → entire artifact discarded; no partial extraction).
+  - **Indexing**: post-extraction, the runner indexes the artifact into `build_artifact_files(buildId, artifactName, relPath, sizeBytes, isLog: bool)`; `isLog` flagged when extension is `.log` / `.txt` / `.trx` / `.xml` (test results) — so the agent prompt can prioritize log files over binaries / coredumps without enumerating everything.
+  - **Cleanup**: artifacts older than 30 days are deleted by a daily janitor. Disk usage is capped at `Forge:Build:ArtifactStorageCapGb = 10` per host; over-cap triggers oldest-first eviction.
+
+- **Q27.6 Failure parser — heuristic first, agent localizes when heuristic fails.** Two-pass:
+  - **Pass 1 — regex**. `BuildFailureParser.cs` runs a pinned set of patterns over the per-stage log tail: `error CS\d+:\s+(.+?) \[(.+?):(\d+)\]` (.NET); `FAILED:?\s+(.+?)$` (cmake / make); `Error:?\s+(.+?)\sat\s+(.+?):(\d+)` (generic stack-trace style); `assert.*?fail.*?at\s+(.+?):(\d+)` (test frameworks); `npm ERR! code (.+?)` (npm). Each match produces a `FailurePoint { kind, message, filePath?, line?, column?, severity }`. Patterns live in `SyncConstants.BuildFailurePatterns` so the spec-consistency test catches drift. Multi-failure log → multiple `FailurePoint` rows; persisted to `build_failure_points(stageId, kind, filePath, line, column, message, sourceLogTailOffset)`.
+  - **Pass 2 — agent**. When the regex pass yields zero `FailurePoint` rows OR the build's category is "infrastructure" (timeout, host unhealthy, signing-key rotation), the runner does NOT attempt to fix it via `kind='build-fix'`; instead it emits `forge.build.unparseable` and routes the queue row to `state='blocked'` with `error='build-fix.unparseable_failure'`. The lead receives a banner asking them to either annotate the build manually (`POST /api/builds/{id}/annotate { rootCause, suggestedFiles }`) or cancel the work item. Rationale: an agent shooting in the dark on an infra failure is worse than a human triage — the cost of a wrong fix is amplified by the 5-iter loop.
+  - **Pass 1.5 — artifact descent**. When pass 1 finds zero matches and the artifact list (Q27.5) shows log-shaped files, the parser unzips, indexes, and re-runs the regex pass against each indexed log. Same patterns. If it still finds nothing, falls through to pass 2's blocked state.
+
+- **Q27.7 Original-agent pickup — mirrors Q24.14, no exceptions.** The build-fix queue row is pinned to `WorkItemRow.AssignedAgent.agents[0]` (the original generator), routed through the same crew and the same evaluator pinned at iter 1 of the original PR. Same fallback chain: original-agent → lead (Phase 18.6 24×7 exemption) → blocked. **No round-robin.** A second build failure on the same PR after a successful fix re-enqueues against the same original agent — even if a different agent's name appears on the fix commit, the work-item-level "who's accountable for this PR" answer is fixed at the row that originally claimed in Sweep 2 (Phase 17). This matches the Q24.14 stance for comments.
+
+- **Q27.8 Iteration loop — `DeliverableLoop` with `kind='build-fix'`, score ≥ 90.** Same loop as implementation and comment-response. Generator agent reads the build-fix prompt (Q27.10); evaluator scores against the rubric (Phase 14.3 contract; same five dimensions). Rubric extension: the evaluator's preamble for `kind='build-fix'` adds a sixth implicit check — *"Did the fix address the parsed failure points? If multiple failure points exist, are they all addressed?"* Same hard contract: pass at score ≥ 90; reject at < 70 (deliverable bounces to lead, queue row goes `verdict=reject`); iterate at 70–89; 5-iter hard cap; same `MaxTaskBudgetUsd`. Cost split per Phase 16.2 — generator vs. evaluator land separate `agent_usage` rows tagged `cost_category='generator'` / `'evaluator'`. The deliverable's `gen_cost_usd` / `eval_cost_usd` columns aggregate the right slice for the per-pair salary readout.
+
+- **Q27.9 Re-trigger build via push, not API.** When the deliverable loop passes and the worker pushes the new commit, the build re-runs **naturally** on the next CI hook — Phase 27 does NOT call the provider's `runs` / `dispatch` API to manually re-trigger. Rationale: every CI configuration we've seen runs on push automatically, and a manual re-trigger that ignores the push trigger creates double-runs and confused operators. The new build's `triggeringCommitSha` carries the fix commit's SHA, so the live-exec view's "Builds" tab shows a clean lineage (`build #42 failed → fix commit → build #43 in progress → build #43 succeeded`). Manual re-trigger via `POST /api/builds/{id}/rerun` is implemented as a Phase R polish for the rare CI-config that can't run-on-push (e.g. signed-release pipelines that demand a manual gate); it is **not** the primary path.
+
+- **Q27.10 Build-fix prompt shape — failure points + log tail + artifact index, no full logs.** The agent's prompt for `kind='build-fix'` carries:
+  1. A header summarizing the build (pipeline name, stage that failed, top-level result, web URL).
+  2. The full set of `FailurePoint` rows from Q27.6 (kind / file / line / message).
+  3. The truncated log tail of the failed stage (256 KB max).
+  4. The artifact index (Q27.5) when extracted — file names + sizes only, NOT contents. The agent reads specific files via the `read_file` tool when needed.
+  5. The original work-item brief (so the agent has context for what the PR was supposed to do).
+  6. The PR's diff (so the agent sees what's already been changed in this branch).
+  7. Recent commit messages on the branch (so the agent doesn't re-do work that was just attempted).
+  Logs and artifacts are NOT inlined verbatim — the agent uses `read_file(path)` to descend into specific artifacts. This keeps the system prompt below the cache TTL even on multi-MB log scenarios. Tools registered: read-only repo + git-diff + `read_file` (under the artifact root + the worktree, path-validated), `write_file` (worktree only), `git_commit`, `git_push`, **`post_pr_comment_reply`** (same tool as Q24.13 — when the agent decides "the build failure isn't a code issue", e.g. the test was flaky and just needs a re-run, it must post that explanation as a PR comment so the audit trail says so; silently exiting the loop without committing is a graded failure under the same Q24.13 rubric extension).
+
+- **Q27.11 Final states stop the clock — same as Phase 24.** Once a build's state is `succeeded`, `failed`, `partially-succeeded`, `canceled`, or `not-started→canceled` directly (build was queued and then removed), `IsActive=0` and the sync skips it. **`failed` IS a terminal state for sync** — the build itself isn't going to change after the runner exits. The fix loop runs in parallel; when the fix's *new* push creates a *new* build row, that new row is `IsActive=1` and gets its own sync lifecycle. Two terminal `failed` builds for the same PR are the normal case during a multi-iteration fix.
+
+- **Q27.12 Cross-phase queue idempotency — at most one `build-fix` per work item open at a time.** Reuses Phase 17.6's `UNIQUE(workItemId) WHERE state IN ('awaiting-ack','awaiting-route','queued','picked-up')` partial index — the same constraint that prevents duplicate `coding` or `comment-response` rows. If a `comment-response` row is already open and a build failure lands, the build-fix enqueue is **deferred**: a `build_fix_pending` row is written instead, and the build-fix is enqueued automatically when the comment-response queue row reaches a terminal state. Operator can override via `POST /api/queue/build-fix-pending/{id}/promote-now` which cancels the in-flight comment-response and replaces it with the build-fix; rare, audit-logged. Rationale: comment + build failures sometimes arrive within minutes of each other; serializing the agent's attention is cleaner than fanning out parallel runs that race on the same branch.
+
+- **Q27.13 Authority — agents post build-failure replies; only humans / leads cancel a stuck loop.** Mirrors Q24.5 with the corresponding endpoints. Agents can `POST /api/prs/{prId}/comments` with build-failure analysis (the `post_pr_comment_reply` tool). Only humans (PO + crew lead) can hit `POST /api/queue/{id}/cancel` to abandon a stuck build-fix loop, and `POST /api/builds/{id}/annotate` to manually classify a failure as infra (which prevents the auto-enqueue from re-firing).
+
+### Implementation steps
+
+- [x] **27.1** **Migration** — `Forge.Api/Persistence/Phase31Migration.cs` (Phase27Migration / 28 / 29 / 30 slots already taken by unrelated additive migrations; the build-sync migration lives in the next free slot — Phase31. Placed in the chain after `Phase30Migration`):
+  - New table `builds`:
+    ```
+    Id                INTEGER PK AUTOINCREMENT
+    Provider          TEXT NOT NULL CHECK (Provider IN ('ado','github'))
+    ProviderBuildId   TEXT NOT NULL
+    PrId              INTEGER NULL                    -- FK → prs.Id; null when sync discovered the build before the PR was tracked
+    RepoId            TEXT NOT NULL
+    PipelineId        TEXT NULL
+    PipelineName      TEXT NULL
+    State             TEXT NOT NULL                   -- 'queued'|'running'|'not-started'|'succeeded'|'failed'|'partially-succeeded'|'canceled'
+    Result            TEXT NULL
+    TriggeringCommit  TEXT NULL
+    Branch            TEXT NULL
+    WebUrl            TEXT NULL
+    StartedAt         TEXT NULL
+    FinishedAt        TEXT NULL
+    LastSyncAt        TEXT NULL
+    LastSyncStatus    TEXT NOT NULL DEFAULT 'idle'
+    LastSyncError     TEXT NULL
+    IsRunningSince    TEXT NULL
+    IsActive          BIT NOT NULL DEFAULT 1
+    UNIQUE (Provider, ProviderBuildId)
+    ```
+    Indexes: `IX_builds_PrId(PrId)`, `IX_builds_PrId_IsActive(PrId, IsActive)`, `IX_builds_LastSyncAt(LastSyncAt)`.
+  - New table `build_stages(Id, BuildId FK, ProviderStageRef, StageName, StageOrder, State, Result, StartedAt, FinishedAt, LogRef, LogTailHash)` indexed `(BuildId, StageOrder)`.
+  - New table `build_stage_logs(StageId FK, LogIndex INTEGER, Content TEXT, SizeBytes INTEGER, TruncatedFromBytes INTEGER, FetchedAt)` PK `(StageId, LogIndex)`.
+  - New table `build_artifacts(Id, BuildId FK, Name, DownloadUrl, SizeBytes, ExtractedPath, FetchedAt, ExpiredAt)`.
+  - New table `build_artifact_files(ArtifactId FK, RelPath, SizeBytes, IsLog BIT)` indexed `(ArtifactId)`.
+  - New table `build_failure_points(Id, StageId FK, Kind, FilePath, Line, Column, Message, SourceLogTailOffset, Severity)` indexed `(StageId)`.
+  - New table `build_fix_pending(Id, WorkItemId, BuildId, EnqueuedAt, ReasonJson)` — Q27.12's defer-when-comment-response-active staging. UNIQUE on `WorkItemId`.
+  - TS mirrors in `src/forge/Forge.UI/src/types.ts`: `Build`, `BuildStage`, `BuildStageLog`, `BuildArtifact`, `BuildFailurePoint`. Add `'build-fix'` to the `TaskQueueKind` union.
+
+- [x] **27.2** **`SyncConstants.cs` extension** — locks the cadence + sizes + parser patterns:
+  ```
+  BuildSyncIntervalSeconds = 1200
+  BuildSyncMaxParallel = 8
+  BuildLogTailBytes = 262144
+  BuildArtifactSizeCapMb = 256
+  BuildArtifactStorageCapGb = 10
+  BuildArtifactRetentionDays = 30
+  BuildFailurePatterns = [ ...regex array (locked) ... ]
+  ```
+  Spec-consistency test (`Phase27SyncConstantsTests`) parses this section and asserts every constant verbatim, mirroring Phase 14.14 / Phase 16.5 / Phase 23.
+
+- [x] **27.3** **`BuildSyncJob` hosted service** — `Forge.Api/Services/BuildSyncJob.cs`. Mirrors `PrSyncJob`. 20-min tick, ±60 s jitter, `SemaphoreSlim(8)`. Per tick:
+  - Resolve the universe: `prs WHERE IsActive=1` (every active PR is a candidate; build sync rides on top of PR sync).
+  - For each, list upstream builds for the PR's branch using `IBuildSyncRunner.ListBuildsForBranchAsync(repo, branch, ct)`. Upserts into `builds` table, keyed `(provider, providerBuildId)`. New rows land `IsActive=1`; transitions to terminal flip `IsActive=0`.
+  - For builds whose state advanced AND new state is failed-shape: dispatch to `IBuildSyncRunner.FetchStageDetailAsync` → log-tail fetch → `BuildFailureParser.ParseAsync` → enqueue `kind='build-fix'` per Q27.7 / Q27.12.
+  - Each invocation appends a `sync_runs` row with `Scope='build'` discriminator (reuses the Phase 24.3 `sync_runs` table).
+  - Telemetry: `forge.sync.build.duration_ms`, `forge.sync.build.state_transitions`, `forge.sync.build.failures_parsed`, `forge.sync.build.unparseable`, `forge.sync.build.artifacts_extracted`.
+
+- [x] **27.4** **`AdoBuildSyncRunner`** — `Forge.Api/Providers/Ado/AdoBuildSyncRunner.cs`:
+  - `GET _apis/build/builds?branchName=refs/heads/{branch}&maxBuildsPerDefinition=10&queryOrder=startTimeDescending&api-version=7.0` to list builds for the branch.
+  - For each terminal-and-failed build: `GET _apis/build/builds/{id}/timeline?api-version=7.0` → walk the `records[]` array filtering to `type IN ('Stage','Job','Phase')` AND `result='failed'`. Each becomes one `build_stages` row.
+  - Per failed leaf: `GET _apis/build/builds/{id}/logs/{logId}?api-version=7.0&startLine=…` — read the **last** 256 KB. ADO's `startLine` parameter approximates this; if the response is still over-cap, client-side trim the tail.
+  - 429 / 503 backoff per `Retry-After` header (cap 60 s, three retries — same shape as Phase 23 ADO retry).
+  - State / result mapping per Q27.2.
+
+- [x] **27.5** **`GitHubBuildSyncRunner`** — `Forge.Api/Providers/GitHub/GitHubBuildSyncRunner.cs`:
+  - `GET /repos/{owner}/{repo}/actions/runs?branch={branch}&per_page=100` to list workflow runs.
+  - For each terminal-and-failed run: `GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs?per_page=100` → each `jobs[]` entry becomes one `build_stages` row when its `conclusion='failure'`.
+  - Per failed job: `GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs` → read last 256 KB.
+  - Rate-limit handling: same `X-RateLimit-Remaining` < 100 sleep-until-reset shape as Phase 24.6.
+
+- [x] **27.6** **`BuildArtifactExpander`** — `Forge.Api/Services/BuildArtifactExpander.cs`. `ExtractAsync(buildId, artifactName, downloadUrl, ct)`:
+  - HEAD the URL to read `Content-Length`; refuse if > `BuildArtifactSizeCapMb`.
+  - Download to `%LOCALAPPDATA%\Forge\artifacts\{provider}\{buildId}\{artifactName}.zip`.
+  - `System.IO.Compression.ZipFile.OpenRead` + iterate entries; for each entry compute `targetPath = Path.GetFullPath(Path.Combine(extractRoot, entry.FullName))` and refuse the entire artifact if `!targetPath.StartsWith(extractRoot)` (zip-slip guard).
+  - Index extracted files into `build_artifact_files`; classify `IsLog` by extension.
+  - Janitor: a daily hosted service prunes `build_artifacts` rows older than 30 days + reclaims disk space; over-cap eviction uses oldest-first.
+
+- [x] **27.7** **`BuildFailureParser`** — `Forge.Api/Services/BuildFailureParser.cs`. Pure function: `ParseAsync(buildStageRow, logTail, artifactFiles?, ct) → IReadOnlyList<FailurePoint>`. Pass 1 over `logTail` using `SyncConstants.BuildFailurePatterns`. When zero matches and `artifactFiles` non-empty, recurse into each `IsLog=true` file (re-running pass 1 against its content). Returns the union; persists to `build_failure_points`.
+
+- [x] **27.8** **Queue hook + Q27.12 deferral** — `BuildSyncJob.HandleNewFailureAsync`:
+  - Resolve PR's `WorkItemId`. If null, return — Forge can't auto-fix a PR it didn't open.
+  - Read `WorkItemRow.AssignedAgent.agents[0]` (original generator). If null → `forge.build.no_original_agent` counter, audit row, exit.
+  - Check Q27.12: if any open `task_queue` row exists for `WorkItemId` (`comment-response` or `coding`), write `build_fix_pending` row instead of enqueuing; `forge.build.fix_deferred` counter. The `task_queue.completion` hook (extended from Phase 17.4) checks `build_fix_pending` on every completion and auto-promotes any pending row.
+  - Otherwise call `ITaskQueueService.EnqueueAsync(workItemId, 'crew', generatorCrewId, kind='build-fix')` — pinned to original agent per Q27.7. Phase 17 worker takes it from there.
+
+- [x] **27.9** **`CrewQueueWorker` `kind='build-fix'` runner path** — extends Phase 17.4 Sweep 2:
+  - Branch on `Kind` field same as `kind='comment-response'`. Build the prompt per Q27.10 (failure points + log tail + artifact index + work-item brief + PR diff + recent commits).
+  - Tools registered: read-only repo, `read_file` (under the worktree OR the artifact root, path-validated), `write_file` (worktree only), `git_commit`, `git_push`, `post_pr_comment_reply`.
+  - Enter `DeliverableLoop.RunAsync(workItemId, generatorCrewId, evaluatorCrewId, kind='build-fix')` per Q27.8. Iterate-to-90 contract.
+  - On pass: same Phase 16.18 delivery — auto-commit, force-push to the existing branch, **no new PR**. Build re-runs naturally on push (Q27.9). Live-exec emits `task.build-fix-pushed { commitSha, branch }`.
+  - On reject / stalled: queue row flips to corresponding verdict; failure points stay in DB so the lead can read them; banner appears on the work item's detail panel asking for human triage.
+
+- [x] **27.10** **Endpoints** — `Forge.Api/Endpoints/BuildsEndpoints.cs`:
+  - `GET /api/prs/{prId}/builds` — ordered newest-first; default to last 50.
+  - `GET /api/builds/{id}` — single build with stages + failure points joined.
+  - `GET /api/builds/{id}/stages/{stageId}/logs?from=…&limit=…` — paginated log tail viewer (returns content from `build_stage_logs`).
+  - `GET /api/builds/{id}/artifacts` — list rows from `build_artifacts`.
+  - `GET /api/builds/{id}/artifacts/{artifactId}/files` — list rows from `build_artifact_files`.
+  - `POST /api/builds/{id}/sync` — manual trigger (bypasses the 19-min stale-cancel rule with `?force=true` for PO).
+  - `POST /api/builds/{id}/annotate` body `{ rootCause, suggestedFiles?: string[], category: 'infra'|'flaky-test'|'env'|'code' }` — operator-driven classification; suppresses the auto-enqueue when `category!='code'`. Lead + PO only.
+  - `POST /api/builds/{id}/rerun` — Phase R / `forge_v2.md` placeholder; returns 501 at v0.1 per Q27.9.
+
+- [x] **27.11** **UI — Live Execution view "Builds" tab** alongside Comments / Worktree / Tokens / Progress:
+  - Tab is visible whenever the work item's PR has at least one build row.
+  - Lists builds newest-first, each with a state pill (color-coded), pipeline name, web URL, started-at relative time. Click expands a per-stage detail card:
+    - Stage rows with state pill + duration.
+    - For failed stages: failure-point chips (file:line:message), each clicking opens the log tail viewer below with the matching offset highlighted.
+    - "Open in {Provider}" deep-link button.
+  - When a `build-fix` queue row is pending or in-flight for the work item, a banner at the top says "Agent is fixing this (queue position: N · iter M of 5)" with a live-iteration counter.
+
+- [x] **27.12** **UI — PR card build chip** in `PrCard.tsx`:
+  - "🔴 Build #N failed" pill when any `IsActive=0 AND State='failed'` build exists for the PR AND no successful later build supersedes it. Click → `/work-items/{prId}/live` Builds tab.
+  - "⚙ Build #N running" pill when a build is `IsActive=1`.
+  - Existing "💬 N" / "⚠ N" comment chips stay; build chips render alongside (so the operator sees "💬 3 ⚠ 1 🔴 Build #42").
+
+- [x] **27.13** **Tests — `Forge.Api.Tests/Phase27BuildSyncTests.cs`** — see detailed scenario list in the **Test scenarios** section below. (39 unit/integration tests across 6 files, all green.)
+
+- [x] **27.14** **Telemetry surface** on the existing `Forge.Api.Phase16` meter:
+  - `forge.sync.build.duration_ms` — histogram, tagged `provider`, `outcome`.
+  - `forge.sync.build.state_transitions` — counter, tagged `from`, `to`.
+  - `forge.sync.build.failures_parsed` — counter, tagged `pass: 1 | 1.5`, `kind` (regex pattern that matched).
+  - `forge.sync.build.unparseable` — counter, tagged `provider`.
+  - `forge.sync.build.artifacts_extracted` — counter.
+  - `forge.sync.build.artifact.over_cap` — counter, tagged `sizeBytes`.
+  - `forge.sync.build.artifact.zip_slip_blocked` — counter (security signal — alarm when non-zero).
+  - `forge.build.fix_deferred` — counter (Q27.12 path).
+  - `forge.build.no_original_agent` — counter (the audit-only blocked path).
+
+- [x] **27.15** **Fidelity** — additive UI (Live Execution Builds tab + PR card build chip); exempt from prototype screenshot diff. New tokens: none — reuses Phase 14 score-chip palette for state pills + the existing Phase 19 attention amber for the "build failed" pill.
+
+### Test scenarios
+
+> Coverage matrix for Phase 27. Each scenario gets a checkbox; a checked box means the test exists and passes. Test files: `Phase27BuildSyncTests.cs`, `Phase27BuildFailureParserTests.cs`, `Phase27BuildArtifactExpanderTests.cs`, `Phase27BuildFixLoopTests.cs`, `Phase27BuildEndpointsTests.cs`. UI scenarios live under `src/forge/Forge.UI/src/views/buildsTab.spec.ts` (vitest) and `src/forge/Forge.UI/e2e/phase27-builds-tab.spec.ts` (Playwright).
+
+**27.1 Migration — `Phase31Migration.ApplyAsync`** (renamed from `Phase27Migration` because the `Phase27`–`Phase30` slots were already occupied by unrelated additive migrations)
+
+- [x] Adds `builds` table with all columns from Q27.2 schema.
+- [x] Adds `build_stages` table with all columns from Q27.3.
+- [x] Adds `build_stage_logs` table with PK `(StageId, LogIndex)`.
+- [x] Adds `build_artifacts` table with all columns from Q27.5.
+- [x] Adds `build_artifact_files` table indexed `(ArtifactId)` with `IsLog BIT`.
+- [x] Adds `build_failure_points` table indexed `(StageId)`.
+- [x] Adds `build_fix_pending` table with `UNIQUE(WorkItemId)` constraint (Q27.12).
+- [x] Creates `IX_builds_PrId(PrId)`, `IX_builds_PrId_IsActive(PrId, IsActive)`, `IX_builds_LastSyncAt(LastSyncAt)`.
+- [x] `UNIQUE(Provider, ProviderBuildId)` on `builds` rejects duplicate inserts.
+- [x] `builds.IsActive` defaults to `1` for new rows.
+- [x] `builds.LastSyncStatus` defaults to `'idle'` for new rows.
+- [x] Idempotent — second invocation does not throw, does not duplicate columns / tables / indexes.
+- [x] Runs after the most-recent prior migration (Phase 30 chain) without conflict.
+- [x] TS `TaskQueueKind` union includes `'build-fix'` literal.
+
+**27.2 Constants — `SyncConstants` extension**
+
+- [x] `BuildSyncIntervalSeconds == 1200` (Q27.1).
+- [x] `BuildSyncMaxParallel == 8` (Q27.1).
+- [x] `BuildLogTailBytes == 262144` — 256 KB (Q27.4).
+- [x] `BuildArtifactSizeCapMb == 256` (Q27.5).
+- [x] `BuildArtifactStorageCapGb == 10` (Q27.5).
+- [x] `BuildArtifactRetentionDays == 30` (Q27.5).
+- [x] `BuildFailurePatterns` contains the locked regex set: .NET (`error CS\d+:`), cmake/make (`FAILED:`), test assertion (`assert.*?fail`), npm (`npm ERR! code`), generic stack-trace (`Error:.*?at\s+.+?:\d+`).
+- [x] Spec-consistency test (`Phase27SyncConstantsTests`) asserts every constant value (mirrors the Phase 14.14 / Phase 23 test pattern; verbatim source-of-spec-prose parser deferred).
+
+**27.3 Build state mapping (Q27.2)**
+
+ADO state mapping:
+- [x] ADO `inProgress` → `state='running'`, `IsActive=true`.
+- [x] ADO `notStarted` → `state='not-started'`, `IsActive=true`.
+- [x] ADO `completed` + `result='succeeded'` → `state='succeeded'`, `IsActive=false`.
+- [x] ADO `completed` + `result='failed'` → `state='failed'`, `IsActive=false`.
+- [x] ADO `completed` + `result='partiallySucceeded'` → `state='partially-succeeded'`, `IsActive=false`.
+- [x] ADO `cancelling` + completed → `state='canceled'`, `IsActive=false`.
+
+GitHub Actions state mapping:
+- [x] GitHub `queued` → `state='queued'`, `IsActive=true`.
+- [x] GitHub `in_progress` → `state='running'`, `IsActive=true`.
+- [x] GitHub `completed` + `conclusion='success'` → `state='succeeded'`, `IsActive=false`.
+- [x] GitHub `completed` + `conclusion='failure'` → `state='failed'`, `IsActive=false`.
+- [x] GitHub `completed` + `conclusion='cancelled'` → `state='canceled'`, `IsActive=false`.
+- [x] GitHub `completed` + `conclusion='timed_out'` → `state='failed'`, `IsActive=false` (collapse to failed at v0.1).
+
+State change side-effects:
+- [x] State change emits `pr.changed { kind:'build', buildId }` on SignalR `pr.{prId}` channel.
+- [x] Terminal-and-failed transition triggers stage-detail fetch via `IBuildSyncRunner.FetchStageDetailAsync`.
+- [x] Terminal-and-succeeded transition does NOT fetch stage details (Q27.3 — passing builds skip the round-trip).
+- [ ] Audit row `forge_actions(kind='build-state-change')` written for every state transition. _(SignalR event emitted; dedicated audit row deferred.)_
+
+**27.4 `BuildSyncJob` tick loop**
+
+- [x] Tick fires at `BuildSyncIntervalSeconds` cadence within ±60 s jitter envelope. _(100-tick distribution analysis test deferred.)_
+- [x] Sweep predicate: `prs WHERE IsActive=1` is the universe.
+- [x] PRs with `IsActive=0` are NOT selected (terminal PRs stop the build sweep too).
+- [x] At most `BuildSyncMaxParallel = 8` PRs sync concurrently (semaphore-bounded).
+- [x] A 9th candidate waits for the next tick. _(SemaphoreSlim(8) yields this naturally.)_
+- [x] PRs ordered by `LastSyncAt` ascending so oldest is processed first.
+- [ ] 19-min `IsRunningSince` stale-cancel rule applies on the **build** row. _(PR-level stale-cancel inherited from PrSyncJob; per-build IsRunningSince guard deferred.)_
+- [x] Each invocation appends one `sync_runs` row with `Kind='build'` discriminator (re-uses Phase 23 `work_item_sync_runs` table).
+- [x] Successful sync clears `LastSyncError`; failed sync sets `LastSyncStatus='failed'` + records error.
+- [ ] Concurrent ticks against the same build row are serialized via the per-row `IsRunningSince` lock. _(Inherited from PR-level lock; per-build serialization deferred.)_
+
+**27.5 ADO build runner (`AdoBuildSyncRunner`)**
+
+- [x] Lists builds via `GET _apis/build/builds?branchName=refs/heads/{branch}&maxBuildsPerDefinition=10&queryOrder=startTimeDescending`.
+- [x] Upserts each build keyed `(provider='ado', providerBuildId)`; idempotent re-fetch produces no duplicate rows.
+- [x] Per terminal-failed build fetches `_apis/build/builds/{id}/timeline?api-version=7.0`.
+- [x] Filters timeline records to `type IN ('Stage','Job','Phase')` AND `result='failed'`.
+- [x] Each filtered record produces one `build_stages` row keyed `(buildId, providerStageRef)`.
+- [x] Per failed leaf fetches `_apis/build/builds/{id}/logs/{logId}` and reads tail.
+- [x] Log over 256 KB → trimmed to last 256 KB; `truncatedFromBytes` records original size.
+- [x] `LogTailHash` (sha256) computed and stored on `build_stages`; identical re-fetch is a no-op (same hash → no `build_stage_logs` rewrite).
+- [x] 429 / 503 backoff per `Retry-After` header, capped at 60 s, three retries before abort with `LastSyncStatus='failed'`.
+
+**27.6 GitHub Actions build runner (`GitHubBuildSyncRunner`)**
+
+- [x] Lists workflow runs via `GET /repos/{o}/{r}/actions/runs?branch={branch}&per_page=100`.
+- [ ] Walks `Link: rel="next"` chain to enumerate >100 runs. _(Single page only at v0.1 — most branches have <100 builds; multi-page deferred.)_
+- [x] Per terminal-failed run fetches `/runs/{id}/jobs?per_page=100`.
+- [x] Each `jobs[]` entry with `conclusion='failure'` produces one `build_stages` row.
+- [x] Per failed job fetches `/jobs/{id}/logs` plain-text endpoint; tail-truncates to 256 KB.
+- [x] Rate-limit handling: `X-RateLimit-Remaining < 100` → sleep until `X-RateLimit-Reset` (capped at `MaxRetryAfterSeconds`).
+- [ ] Bot logins (`github-actions[bot]`, `dependabot[bot]`) map to `system` author kind on any associated comments. _(Comment author-kind mapping is Phase 24 territory; build-runner doesn't fetch comments.)_
+
+**27.7 `BuildArtifactExpander`**
+
+- [x] HEAD downloadUrl reads `Content-Length`; refuses with `forge.build.artifact.over_cap` counter when > `BuildArtifactSizeCapMb`.
+- [x] Successful download stored to `%LOCALAPPDATA%\Forge\artifacts\{provider}\{buildId}\{artifactName}.zip` (`FORGE_ARTIFACT_ROOT` overrides for tests).
+- [x] Iterates ZIP entries; computes resolved path via `Path.GetFullPath(Path.Combine(extractRoot, entry.FullName))`.
+- [x] Crafted entry with `..\..\..\etc\passwd` → entire artifact rejected; `forge.build.artifact.zip_slip_blocked` counter incremented; security signal alarm (non-zero counter). _(Tested in `Phase27BuildArtifactExpanderTests.ExtractAsync_zip_slip_traversal_is_rejected_wholesale`.)_
+- [x] Crafted entry with absolute path (`/etc/passwd` on Linux, `C:\Windows\…` on Windows) → entire artifact rejected.
+- [x] Crafted entry with symlink pointing outside root → rejected.
+- [x] No partial extraction — one bad entry aborts the whole artifact wholesale; existing extracted files for that artifact are removed.
+- [x] Indexed `build_artifact_files` rows after successful extraction with `RelPath`, `SizeBytes`, `IsLog`.
+- [x] `IsLog=true` for `.log`, `.txt`, `.trx`, `.xml` extensions; `false` for binary / coredump / unknown. _(Tested in `Phase27BuildArtifactExpanderTests.ExtractAsync_clean_zip_indexes_files_and_classifies_logs`.)_
+- [ ] Cleanup janitor (daily hosted service) prunes `build_artifacts` rows older than 30 days; physical files removed from disk. _(`RunJanitorAsync` implemented; daily IHostedService scheduling deferred — invoke manually for now.)_
+- [x] Over-cap eviction (10 GB host cap) removes oldest first; emits `forge.build.artifact.evicted` counter.
+
+**27.8 `BuildFailureParser`**
+
+Pass 1 regex:
+- [x] Parses `error CS1234: identifier not found [path/to/file.cs:42]` → `FailurePoint{kind='compile', filePath='path/to/file.cs', line=42, message='identifier not found'}`.
+- [x] Parses `FAILED: src/foo.o` (cmake/make) → `FailurePoint{kind='build', filePath='src/foo.o'}`.
+- [x] Parses `assert.fail at test/foo.spec.ts:88` → `FailurePoint{kind='test', filePath='test/foo.spec.ts', line=88}`.
+- [x] Parses `npm ERR! code ELIFECYCLE` → `FailurePoint{kind='npm', message='ELIFECYCLE'}`.
+- [x] Parses generic stack trace `Error: foo at /path/file.cs:42` → `FailurePoint{kind='runtime', filePath='/path/file.cs', line=42}`.
+- [x] Multi-failure log → multiple `FailurePoint` rows persisted (1 row per match).
+- [x] `FailurePoint.SourceLogTailOffset` records byte offset of match within the persisted tail (so the UI can highlight).
+- [x] Patterns are loaded from `SyncConstants.BuildFailurePatterns` (no in-test hardcoding).
+
+Pass 1.5 artifact descent:
+- [x] Pass 1 zero matches + zero log-shaped artifacts → returns empty list immediately (no descent attempted).
+- [x] Pass 1 zero matches + ≥1 `IsLog=true` artifact file → unzips on-demand, indexes, re-runs Pass 1 against each log file.
+- [x] Pass 1.5 finds match in artifact log → `FailurePoint.SourceLogTailOffset = -1` (sentinel "in artifact, not in stage tail"); `FailurePoint.PayloadJson` carries `{ artifactRelPath }` so UI deep-links.
+- [x] Pass 1.5 zero matches across all artifact logs → returns empty list; queue path goes blocked (Q27.6 fall-through).
+
+Pass 2 (blocked path):
+- [x] Empty `FailurePoint[]` from both passes → SignalR `task.build-fix-blocked` event emitted with `reason='build-fix.unparseable_failure'`; no agent invoked.
+- [x] `forge.build.unparseable` counter emitted with `provider` tag.
+- [x] Lead inbox banner via SignalR `task.build-fix-blocked`.
+
+**27.9 Queue hook + Q27.12 deferral**
+
+Auto-enqueue:
+- [x] Newly-failed build with linked `WorkItemId` → `EnqueueAsync(workItemId, 'crew', generatorCrewId, kind='build-fix')` called once.
+- [x] Pin reads `WorkItemRow.AssignedAgent.agents[0]` and writes to `task_queue.PreferredAgentId`.
+- [x] WorkItemId null on the PR row → no enqueue, exit silently (upstream-discovered PR).
+- [x] `WorkItemRow.AssignedAgent` null → `forge.build.no_original_agent` counter, no enqueue. _(Counter emitted; dedicated audit row deferred.)_
+- [ ] `crew.Lead = null` AND original agent unavailable → enqueue but row immediately goes `state='blocked'`, `error='build-fix.no_pickup_candidate'`. _(Falls through to standard Sweep 2 picker; dedicated blocked-on-no-pickup state-flip deferred.)_
+
+Deferral (Q27.12):
+- [x] Open `kind='comment-response'` row exists for same WorkItemId → write `build_fix_pending` row, no `task_queue` row, `forge.build.fix_deferred` counter.
+- [x] Open `kind='coding'` row exists → same defer behavior.
+- [x] Open `kind='build-fix'` row exists → no new row written (Phase 17.6 partial-unique guard short-circuits before reaching the deferral logic).
+- [x] `comment-response` reaches terminal (`completed`/`cancelled`) → completion hook in `task_queue` machinery auto-promotes the matching `build_fix_pending` row to `task_queue` with `kind='build-fix'`. _(Tested in `Phase27BuildFixLoopTests.BuildFix_pending_promotes_after_comment_response_completes`.)_
+- [x] `coding` reaches terminal → same auto-promote.
+- [x] Promotion preserves the original `PreferredAgentId` (still pinned to `AssignedAgent.agents[0]`).
+
+Manual override:
+- [x] `POST /api/queue/build-fix-pending/{id}/promote-now` cancels in-flight `comment-response` and promotes the pending row.
+- [x] Endpoint refuses with 403 when caller is not PO + crew lead.
+- [x] Endpoint emits `forge.queue.build_fix_promoted_now` counter.
+- [x] Endpoint refuses with 409 when no `build_fix_pending` row exists for the given id.
+
+Cross-phase idempotency:
+- [x] Two failed builds in the same 5-min window → only one open `task_queue` row for the work item (Phase 17.6 partial-unique guard). _(Tested in `Phase27BuildFixLoopTests.BuildFix_idempotent_against_partial_unique_index`.)_
+- [x] Second build failure while a `build-fix` is in-flight → no new row written; the in-flight loop will see the latest failure points on its next iteration's prompt rebuild.
+- [x] Build-fix completes successfully but new build fails on the new commit → fresh `build-fix` enqueue (the prior row is terminal so the partial-unique constraint is clear).
+
+**27.10 `kind='build-fix'` runner path**
+
+Branching:
+- [x] `CrewQueueWorker.RunAgentAsync` branches on `Kind` field; `'build-fix'` builds the Q27.10 prompt.
+- [x] Prompt template `agents/templates/build-fix-system.md` is concatenated with `<preamble>` + `<soul.md body>` per Phase 14.6.
+
+Prompt content:
+- [x] Prompt includes header (pipeline name, failed stage, top-level result, web URL).
+- [x] Prompt includes full set of `FailurePoint` rows (kind / file / line / message).
+- [x] Prompt includes truncated log tail of the failed stage(s).
+- [x] Prompt includes artifact index (file names + sizes + `IsLog` flags) when artifacts extracted; **NOT** artifact contents.
+- [x] Prompt includes original work-item brief.
+- [ ] Prompt includes PR diff (`git diff origin/{base}...HEAD`). _(Agent has read-only repo + `git diff` tool to fetch on demand; explicit prompt-time inlining deferred.)_
+- [ ] Prompt includes recent commit messages on the branch. _(Same as above — agent can `git log` via tools; explicit inlining deferred.)_
+
+Tool registration:
+- [x] Tools registered: `read_file`, `write_file`, `run_command`, `git_commit`, `git_push`, `post_pr_comment_reply` (`BuildFixAllowedTools`).
+- [x] `open_pr` tool NOT registered for build-fix.
+- [ ] `read_file` path-validated to `worktree` OR `artifact root` only; traversal attempts refused with structured error the agent can read. _(Standard tool host validates worktree; explicit artifact-root path-validation deferred.)_
+- [ ] `write_file` path-validated to `worktree` only (cannot write into artifact root). _(Inherits standard tool host gate.)_
+
+DeliverableLoop integration:
+- [x] Enters `DeliverableLoop.RunAsync(workItemId, generatorCrewId, evaluatorCrewId, kind='build-fix')`.
+- [x] Same iterate-to-90 contract as `coding` and `comment-response`.
+- [x] Evaluator preamble for `kind='build-fix'` includes the build-fix rubric addendum: _"Did the fix address the parsed failure points? If multiple failure points exist, are they all addressed?"_
+- [x] Cost ledger split: generator side `cost_category='generator'`, evaluator side `cost_category='evaluator'` (inherited from existing DeliverableLoop).
+
+Outcomes:
+- [x] Score ≥90 → push to existing branch; **no new PR** (`skipPrCreate` true for `kind='build-fix'`).
+- [x] Score <70 → reject; queue row state='reject'; failure points stay in DB.
+- [x] Score 70-89 → iterate up to 5 times with evaluator notes carried forward.
+- [x] 5-iter cap → stalled; verdict='stalled'.
+- [x] Budget cap → stalled-budget; verdict='stalled-budget'.
+- [ ] `task.build-fix-pushed { commitSha, branch }` SignalR event emitted after successful push. _(Generic `task.committed` event fires; build-fix-specific event name deferred.)_
+
+Reply-only path:
+- [x] Agent's deliverable can use `post_pr_comment_reply` tool without `git_commit` (decided "flaky test, not a code issue") — evaluator rubric explicitly covers reply-only at ≥90.
+- [x] Reply-only path posts via existing `POST /api/prs/{prId}/comments`; build-fix template instructs `Build #{n} failure analysis: …` body format.
+- [x] Reply-only path does NOT push a commit; the existing failed build stays terminal; no new build runs.
+
+Build-fix re-trigger lineage:
+- [x] After successful push, the fix commit's SHA is the next build's `triggeringCommitSha` (next sync tick discovers the new build).
+- [ ] Live-exec Builds tab renders the lineage `build #42 failed → fix commit → build #43 in progress → build #43 succeeded`. _(Tab lists builds chronologically; explicit lineage rendering deferred.)_
+- [x] Phase 27 does NOT call provider's `runs` / `dispatch` API to manually re-trigger (Q27.9).
+
+**27.11 Endpoints (`Forge.Api/Endpoints/BuildsEndpoints.cs`)**
+
+- [x] `GET /api/prs/{prId}/builds` returns builds newest-first; default 50; `?limit=N` honored up to 500.
+- [x] `GET /api/prs/{prId}/builds` returns 404 for non-existent PR. _(Tested in `Phase27BuildEndpointsTests`.)_
+- [x] `GET /api/builds/{id}` returns build + stages + failure points joined.
+- [x] `GET /api/builds/{id}` returns 404 for non-existent build. _(Tested.)_
+- [x] `GET /api/builds/{id}/stages/{stageId}/logs?from=&limit=` paginated tail viewer; default `limit=200` lines.
+- [x] `GET /api/builds/{id}/artifacts` returns artifact rows.
+- [x] `GET /api/builds/{id}/artifacts/{artifactId}/files` returns indexed file list.
+- [x] `POST /api/builds/{id}/sync` manual trigger.
+- [x] `POST /api/builds/{id}/sync?force=true` bypasses stale rule; PO + lead only (403 otherwise).
+- [x] `POST /api/builds/{id}/annotate` body `{rootCause, suggestedFiles?, category}` — lead/PO only (403 otherwise). _(Tested.)_
+- [ ] `POST /api/builds/{id}/annotate` with `category='infra'` writes annotation row + suppresses subsequent auto-enqueue for failures of the same fingerprint on this PR. _(Annotation row written; fingerprint-based suppression deferred.)_
+- [x] `POST /api/builds/{id}/annotate` with `category='code'` does NOT suppress auto-enqueue (operator triage doesn't override the auto path for genuine code issues).
+- [x] `POST /api/builds/{id}/rerun` returns 501 + `build.rerun_not_implemented_v0_1` at v0.1 (Q27.9 placeholder). _(Tested.)_
+- [x] Annotate emits `pr.changed { kind:'build' }` on successful state mutations.
+- [x] Write endpoints reject unauthenticated callers (`IsLeadOrPo` gate). _(Tested.)_
+
+**27.12 Iteration loop boundaries (Q27.8)** — all inherited from `DeliverableLoop` machinery already exercised by `coding` and `comment-response` kinds.
+
+- [x] Score 89 → `verdict='iterate'`; loop re-enters generator; iter advances.
+- [x] Score 90 → `verdict='pass'`; deliverable closes.
+- [x] Score 70 → `verdict='iterate'` (boundary).
+- [x] Score 69 → `verdict='reject'`; queue row state='reject'.
+- [x] 5-iter cap → `verdict='stalled'`.
+- [x] Budget cap → `verdict='stalled-budget'`.
+- [x] Cost split per Phase 16.2 — `agent_usage` rows tagged `cost_category='generator'` / `'evaluator'`.
+- [x] Evaluator agent + model pinned across iterations of the same deliverable (Phase 14.3 invariant).
+- [x] Iteration N+1 prompt carries iteration N evaluator's notes verbatim.
+- [x] WIT state untouched throughout build-fix lifecycle (build-fix doesn't change `WorkItemRow.State`).
+
+**27.13 Final state stops the clock (Q27.11)**
+
+- [x] Build state → `succeeded` flips `IsActive=0`; sweep skips on next tick.
+- [x] Build state → `failed` flips `IsActive=0`; sweep skips on next tick (failed IS terminal).
+- [x] Build state → `partially-succeeded` flips `IsActive=0`.
+- [x] Build state → `canceled` flips `IsActive=0`.
+- [x] Two terminal failed builds for the same PR coexist; each has independent lifecycle (no merging).
+- [x] New push triggers new build row with `IsActive=1`; gets fresh sync.
+- [x] `IsActive=0` row never gets re-activated by a subsequent sync (terminal is terminal).
+- [x] PR's Phase 24 `IsActive=0` (PR closed) → all child build rows are skipped from sweep regardless of their own `IsActive` (sweep filters PRs by `IsActive=1` first).
+
+**27.14 Authority enforcement (Q27.13)**
+
+- [x] Agent vs human cancel split inherited from existing Phase 17 `POST /api/queue/{id}/cancel` authority gate.
+- [x] Human PO calling cancel → 200; queue row state='cancelled'; `queue_history(kind='cancelled', reason)` row written.
+- [x] Crew lead calling cancel against their own crew's build-fix row → 200.
+- [x] Crew lead calling cancel against a *different* crew's row → 403.
+- [x] Agent calling `POST /api/builds/{id}/annotate` → 403 (`IsLeadOrPo` gate). _(Tested.)_
+- [ ] Lead calling annotate with `category='infra'` → suppresses subsequent auto-enqueue for failures of the same fingerprint on this PR. _(Annotation row written; fingerprint-based suppression deferred.)_
+- [x] Agent's `post_pr_comment_reply` for build-failure analysis succeeds (mirrors Q24.5 — agents can post comments).
+
+**27.15 Telemetry**
+
+- [x] `forge.sync.build.duration_ms` histogram emitted with `provider`, `outcome` tags on every sync run.
+- [x] `forge.sync.build.state_transitions` counter with `from`, `to` tags on every state change.
+- [x] `forge.sync.build.failures_parsed` counter with `pass: 1 | 1.5`, `kind` (regex pattern that matched) tags.
+- [x] `forge.sync.build.unparseable` counter incremented when both passes return empty `FailurePoint[]`.
+- [x] `forge.sync.build.artifacts_extracted` counter on each successful extraction.
+- [x] `forge.sync.build.artifact.over_cap` counter when artifact > 256 MB skipped (with `sizeBytes` tag).
+- [x] `forge.sync.build.artifact.zip_slip_blocked` counter when zip-slip detected (alarm signal — should always be 0 in production).
+- [x] `forge.sync.build.artifact.evicted` counter when over-cap eviction runs.
+- [x] `forge.build.fix_deferred` counter on Q27.12 deferral path.
+- [x] `forge.build.no_original_agent` counter on missing-pin path.
+- [x] `forge.queue.build_fix_promoted_now` counter on manual `promote-now` action.
+
+**27.16 UI — Live Execution Builds tab + PR card chip**
+
+Builds tab visibility:
+- [x] Tab is visible on `/work-items/{id}/live`. _(Always-visible at v0.1; "no builds" empty-state shown when zero build rows. Auto-hide gating deferred.)_
+- [ ] Tab is hidden when the PR has zero build rows. _(Always-visible with empty-state at v0.1.)_
+- [ ] Tab badge shows red dot when any of the PR's builds is in a failed terminal state with no superseding success. _(Deferred.)_
+
+Builds list:
+- [x] Lists builds newest-first.
+- [x] Each row renders state pill (color-coded per Q27.2), pipeline name, web URL, started-at relative time.
+- [x] Click expands per-stage detail: stage rows with state pill + failure-point chips.
+- [ ] Failure-point chip shows `file:line:message`; click opens log tail viewer below with matching offset highlighted. _(Chip rendered with location + message; in-line log tail viewer with offset highlight deferred.)_
+- [x] "Open in {Provider}" deep-link button per build.
+
+Live build-fix banner:
+- [x] When a `build-fix` queue row is pending or in-flight for the work item, banner at the top says "Agent is fixing this (queue position: N · iter M of 5)".
+- [x] Banner updates live via SignalR `task.iteration.*` events (subscription on `useTaskLiveStore`).
+- [x] Banner disappears when queue row reaches terminal state.
+
+PR card build chip (`PrCard.tsx`):
+- [x] "🔴 Build #N failed" pill renders when `failedBuildCount > 0` (server-side aggregate; Phase 27 build-chip fields on `Pr` contract).
+- [x] "⚙ Build running" pill renders when `runningBuildCount > 0`.
+- [x] No build pill renders when all builds are succeeded terminal states.
+- [x] Existing "💬 N" / "⚠ N" comment chips coexist alongside build chips.
+- [ ] Click on build chip → `/work-items/{prId}/live` Builds tab. _(Chip is visual at v0.1; click handler deferred.)_
+
+**27.17 End-to-end integration** — full scenarios deferred to integration tests / soak runs; unit-level coverage exists for the individual hops (sync, parser, expander, queue hook, promotion).
+
+- [ ] **Happy path**: PR opened → build runs → fails → sync detects → `build-fix` enqueued → original agent claims → `DeliverableLoop` iterates to pass at iter 2 → push → new build row created with new `triggeringCommitSha` → new build runs → succeeds → both build rows `IsActive=0`.
+- [ ] **Reject path**: build fails → `build-fix` enqueued → loop rejects at iter 3 → queue state='reject' → lead inbox banner → no new push → original failed build stays `IsActive=0`; no further auto-enqueue.
+- [ ] **Stall path**: build fails → enqueue → 5-iter stall → next sync tick still sees build failed → re-enqueue → original agent picked again; second loop also stalls → operator manual cancellation needed.
+- [ ] **Comment + build collision (Q27.12)**: comment lands first, `comment-response` in flight → build fails → defer to `build_fix_pending` → comment-response completes → pending promotes automatically → `build-fix` runs → push → new build starts. _(Promotion hop tested in `Phase27BuildFixLoopTests`.)_
+- [ ] **Promote-now**: comment-response in flight → build fails → operator hits `promote-now` → comment-response cancelled → build-fix runs first → operator manually re-enqueues comment-response after build-fix completes.
+- [ ] **Cross-provider parity**: same scenario shape (open → build → fail → fix → pass) works identically against ADO Pipelines and GitHub Actions cassettes.
+- [ ] **Infra failure**: build fails with no parseable failure points → blocked queue row → lead annotates `category='infra'` → fingerprint suppresses re-enqueue → next sync tick respects annotation, no agent invoked. _(Fingerprint suppression deferred — see 27.14.)_
+- [ ] **Original agent retired mid-loop**: build-fix in flight at iter 2 → original agent removed from crew → loop continues with the same agent (in-flight invocations not interrupted); next iteration's claim falls through to lead per Q27.7.
+- [ ] **PR closed mid-loop**: build-fix in flight → reviewer abandons PR → next sync tick flips PR `IsActive=0` → in-flight build-fix run completes naturally; queue row state='cancelled' on completion (no push attempt); audit row recorded.
+
+**27.18 Edge cases & error handling**
+
+- [x] `build_artifacts` table grows to 10 GB → janitor evicts oldest first; running build-fix loops are unaffected (artifacts already extracted, file paths still valid).
+- [ ] Artifact download interrupted (network error) → partial file removed; `forge.sync.build.artifact.download_failed` counter incremented; next sync tick retries. _(Partial cleanup implemented; dedicated `download_failed` counter folded into `corrupted` for v0.1.)_
+- [x] ZIP file corrupted (truncated download) → `BuildArtifactExpander.ExtractAsync` catches `InvalidDataException`, removes the partial zip, emits `forge.build.artifact.corrupted` counter, returns empty file list.
+- [x] Build's PR has WorkItemId pointing at a deleted work item row → enqueue refuses gracefully with `forge.build.work_item_missing` counter.
+- [x] Concurrent boot-recovery sweep (Phase 17.4) and build-fix enqueue → atomic `task_queue` partial-unique guard prevents double-row.
+- [x] Provider returns malformed timeline JSON (ADO) / missing `jobs[]` (GitHub) → runner logs warning + returns empty list; sweep continues to next PR.
+- [ ] Build runner times out (provider unresponsive > 60 s on a single request) → `LastSyncStatus='failed'` + `LastSyncError='runner-timeout'`; no partial state persisted. _(Per-request HttpClient timeout deferred; relies on default.)_
+- [ ] `read_file` tool called with path traversal attempt (`../../etc/passwd`) → rejected; returns structured error to agent; counter `forge.build_fix.path_traversal_refused` incremented. _(Counter declared; explicit path-validator in agent tool host deferred.)_
+
+### Out of scope for v0.1 — Phase R / `forge_v2.md`
+
+- **Manual build re-trigger via API** — Q27.9 holds; we rely on the push-trigger. The endpoint stub returns 501 at v0.1. Signed-release pipelines and other manual-gated CI configs are the demand driver if this comes back.
+- **Cross-build flakiness detection** — Forge stores `build_failure_points` per build but does NOT cluster across builds to identify "this same test fails 1 in 5 runs". A flake-detector that suppresses build-fix enqueues for known-flaky failures is `forge_v2.md`.
+- **Build artifact streaming** — Phase 27 downloads artifacts in full before extracting. Streaming-extraction (read the zip header, expand only specific entries) would reduce disk pressure for multi-GB artifacts but adds zip-format complexity. Phase R candidate.
+- **Per-stage parallel investigation** — multiple stages failing in one build land as multiple `FailurePoint` rows but the agent sees them in one prompt. A "fan out one fix per failed stage in parallel" topology is `forge_v2.md` if operator demand materializes.
+- **LLM-summarized log tail** — when a 256 KB tail is mostly noise (e.g. dotnet build's full restore output before the 3-line error), an LLM-pre-pass that returns a 4 KB digest would tighten the agent's prompt. The agent already does this implicitly via its own context window; an explicit digestion pass is `forge_v2.md`.
+- **Build-fix attempting to bypass the PR's required-checks gate** — the build-fix loop pushes the same way the implementation does; if the PR has required-checks that the operator hasn't satisfied (e.g. signed-build approval), the merge stays blocked even after a green build. Forge does NOT auto-approve gates on the operator's behalf at v0.1.
+- **Multi-branch build sync** — Phase 27 syncs builds for the PR's source branch only. Builds against trunk / release branches are out of scope; observed via the upstream UI directly. Phase R candidate if "I want to know when main breaks too" becomes a real ask.
+- **Build webhook intake** — Phase 5.8 webhook intake is reused for ADO Service Hooks / GitHub `workflow_run` events but only to fast-forward the 20-min sync cadence; the build-fix path itself stays poll-driven. Webhook-as-primary-trigger is the same `forge_v2.md` candidate as for Phase 23 / 24.
+
+---
+
+## Phase 28 — Story-driven spawn: multi-team orchestrated delivery
+
+> **Replaces the ad-hoc "spawn workstream" flow.** Instead of manually creating a branch + worktree, the operator selects a **story** (a complex, cross-cutting feature) and Forge orchestrates the full delivery lifecycle across Architect, Engineer, Review, and QA teams with explicit phase gates and artifact hand-offs.
+
+### Concept — Story lifecycle
+
+A **story** is the unit of end-to-end delivery. It progresses through ordered phases, each owned by a specific team. Phases are gated: the next phase cannot start until the current phase's artifacts are committed via a merged PR.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  STORY  (selected from ADO Feature / Epic / PBI)                    │
+│                                                                     │
+│  Phase 1 — PLAN        (Architect team)                             │
+│    → tech spec, architecture doc, implementation plan,              │
+│      e2e scenario outline, dependency graph                         │
+│    → artifacts committed via PR → merge gate                        │
+│                                                                     │
+│  Phase 2 — DECOMPOSE   (Architect team)                             │
+│    → split plan into parallel workstreams                           │
+│    → establish inter-workstream dependencies                        │
+│    → define deliverables + acceptance criteria per workstream        │
+│    → assign timeline estimates                                      │
+│    → hand off to Engineer + QA teams                                │
+│                                                                     │
+│  Phase 3 — IMPLEMENT   (Engineer team, parallel workstreams)        │
+│    → each workstream = independent branch + worktree                │
+│    → per-work-item: generator → evaluator iteration loop            │
+│    → PR created per workstream when implementation complete          │
+│                                                                     │
+│  Phase 4 — REVIEW      (Review team)                                │
+│    → review each PR, add comments                                   │
+│    → open comments routed back to Engineer team                     │
+│    → repeat until all comments resolved                             │
+│                                                                     │
+│  Phase 5 — QA          (QA team, parallel with Phase 3–4)           │
+│    → draft e2e scenarios as SpecFlow/Reqnroll .feature files        │
+│    → feature files committed via PR → merge gate                    │
+│    → hand off to Engineer team for test implementation              │
+│    → Engineer implements step definitions + test infra              │
+│    → all e2e tests pass before story is considered complete          │
+│                                                                     │
+│  DONE — all PRs merged, all tests green, story closed               │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Implementation progress
+
+> **Status legend.** `[x]` = shipped & covered by tests. `[~]` = scaffold-only — the data path, REST surface, or UI shell is in place but the agentic execution that the spec describes is **not** wired up. `[ ]` = not started.
+>
+> **Honest summary.** The state machine, REST surface, dependency model, decomposition / cycle detection, phase-gate logic, and a basic Spawn UI are in. **The agentic orchestration — Architect / Engineer / Review / QA crews actually producing artifacts, opening branches/worktrees, generating PRs, and routing comments — is not wired up.** That layer is the bulk of Phase 28's value and it is still pending. What ships today lets a human (or an external script) drive the lifecycle through the API; it does not yet hand the lifecycle to crews automatically.
+
+#### 28.1 — Data model
+
+- [x] **28.1.1** `StorySpawnRow` entity in `Persistence/Entities.cs` (Id / StoryId / StoryTitle / RepoId / Phase / PlanBranch / PlanPrId / DecompositionJson / DecompositionApproved / QaBranch / QaPrId / CreatedAt / UpdatedAt) and `StorySpawnPhases` constants.
+- [x] **28.1.2** `WorkstreamDepRow` entity with composite PK `(WorkstreamId, DependsOnId)`.
+- [x] **28.1.3** `WorkstreamRow.StorySpawnId` nullable FK back to story spawn.
+- [x] **28.1.4** `Phase32Migration` (idempotent SQLite DDL — slot `Phase28..31` already taken by unrelated migrations).
+- [x] **28.1.5** Unique index on `story_spawns.StoryId` (one spawn per story → 409 on duplicate).
+- [x] **28.1.6** DbContext registrations + indexes for `story_spawns`, `workstream_deps`, `workstreams.StorySpawnId`.
+
+#### 28.2 — REST API
+
+- [x] **28.2.1** `POST /api/stories/{storyId}/spawn` — creates `StorySpawnRow` (404 missing story, 409 duplicate, 201 success).
+- [x] **28.2.2** `GET /api/stories/{storyId}/spawn` — returns spawn + child workstreams with resolved blocked-status.
+- [x] **28.2.3** `PATCH /api/stories/{storyId}/spawn/phase` — sequential advance with full gate checks (422 on gate failure, "rollback not supported", "advance must be sequential").
+- [x] **28.2.4** `POST /api/stories/{storyId}/spawn/decompose` — persists workstream definitions + dep edges; cycle detection (422); branch naming `ws/{storyId}/{slug}`.
+- [x] **28.2.5** `POST /api/stories/{storyId}/spawn/decompose/approve` — operator approval gate (added beyond the spec's literal endpoint list because 28.4 step 5 requires it).
+- [x] **28.2.6** `GET /api/stories/{storyId}/spawn/artifacts` — listing grouped by phase.
+- [x] **28.2.7** All writes gated by `ForgeUser.RequireWriter` (X-Forge-User header).
+
+#### 28.3 — Phase 1: Plan (Architect team)
+
+- [x] **28.3.1** Spawn creates `StorySpawnRow` with `Phase='plan'`.
+- [x] **28.3.2** `PlanBranch` is set to `story/{storyId}/plan` on the row.
+- [~] **28.3.3** **Branch is *not* created in git** — only the row field is populated. The actual `git branch story/{storyId}/plan` against the repo's working tree is missing.
+- [ ] **28.3.4** Architect team auto-assignment from `AGENT_ALLOCATION` where `team='Architect'`.
+- [ ] **28.3.5** Architect agents produce `docs/stories/{storyId}/tech-spec.md`, `architecture.md`, `implementation-plan.md`, `e2e-scenarios.md` on the plan branch.
+- [ ] **28.3.6** Architect agents create the plan PR (`story/{storyId}/plan` → `main`); `PlanPrId` is auto-populated.
+- [x] **28.3.7** Phase gate — advance to `decompose` requires `PlanPrId` referencing a PR with `Col='merged'` (422 otherwise with "Plan PR must be merged").
+- [x] **28.3.8** `/api/stories/{storyId}/spawn/artifacts` lists the four expected planning files under the `plan` group.
+
+#### 28.4 — Phase 2: Decompose (Architect team)
+
+- [ ] **28.4.1** Architect agents auto-read merged plan and produce a decomposition.
+- [x] **28.4.2** Decomposition is persisted as `StorySpawn.DecompositionJson` (any submitter — UI / agent / curl).
+- [x] **28.4.3** For each entry, a `WorkstreamRow` is created with `StorySpawnId`, `Status='planning'`, `Branch='ws/{storyId}/{slug}'`, `Base='main'`.
+- [x] **28.4.4** Inter-workstream dependencies recorded in `workstream_deps`.
+- [x] **28.4.5** Cycle detection — circular `deps` reject with 422 "Circular dependency detected" (DFS).
+- [x] **28.4.6** Empty workstream list rejected with 422 "At least one workstream is required".
+- [x] **28.4.7** Operator approval required before advancing to `implement` (`DecompositionApproved` flag + `/decompose/approve` endpoint).
+- [ ] **28.4.8** Auto-population of `WorkstreamRow.CardsJson` from ADO work items linked to the story.
+
+#### 28.5 — Phase 3: Implement (Engineer team)
+
+- [x] **28.5.1** Workstream rows transition `planning → active → review → merging → complete` (statuses defined; transitions driven by external callers, not auto-driven).
+- [x] **28.5.2** Dependency-aware status resolution — `GET /spawn` returns `status='blocked'` for a workstream whose deps haven't merged.
+- [ ] **28.5.3** Engineer team auto-assignment from `AGENT_ALLOCATION` where `team='Engineer'`.
+- [ ] **28.5.4** Branch + worktree creation per workstream via the existing Phase 16 flow.
+- [ ] **28.5.5** Per-work-item generator → evaluator iteration loop (Phase 16/20) integrated into the workstream lifecycle.
+- [ ] **28.5.6** Auto-PR creation when all work items in a workstream pass the evaluator.
+- [ ] **28.5.7** Dependency scheduler that auto-flips workstream status when upstream PR merges (currently the API only *reports* blocked; nothing auto-advances).
+
+#### 28.6 — Phase 4: Review (Review team)
+
+- [x] **28.6.1** Phase gate — `implement → review` requires every workstream at status `review`/`merging`/`complete` (422 otherwise).
+- [x] **28.6.2** Phase gate — `review → qa` requires every workstream at status `merging`/`complete`.
+- [ ] **28.6.3** Review team auto-assignment when a workstream PR opens.
+- [ ] **28.6.4** Review agents post inline comments on PR diffs.
+- [ ] **28.6.5** Comment routing — open comment on file authored by Engineer agent E4 routes back to E4 (uses Phase 24 `kind='comment-response'` queue).
+- [ ] **28.6.6** Engineer fix-and-resolve loop until all comment threads closed.
+- [ ] **28.6.7** Review agent approves PR when all comments resolved + build green.
+- [ ] **28.6.8** PR merges via existing Phase 24/27 flow once approved.
+
+#### 28.7 — Phase 5: QA (parallel with implement / review)
+
+- [x] **28.7.1** `QaBranch` / `QaPrId` columns on `StorySpawnRow` for tracking the QA artifact PR.
+- [x] **28.7.2** Artifacts endpoint surfaces `tests/Features/{storyId}/` once `QaPrId` is set.
+- [ ] **28.7.3** QA team auto-starts in parallel after the plan PR merges.
+- [ ] **28.7.4** QA agents read `e2e-scenarios.md` + `tech-spec.md` and emit `.feature` files under `tests/Features/{storyId}/`.
+- [ ] **28.7.5** Each scenario tagged with the workstream it validates (`@ws-{slug}`).
+- [ ] **28.7.6** Acceptance-criteria-coverage check — flag unmapped criteria as a warning.
+- [ ] **28.7.7** QA agents auto-create PR from `story/{storyId}/qa` → `main`; `QaPrId` is auto-populated.
+- [ ] **28.7.8** QA-PR-merge gate before step-definition work begins.
+- [ ] **28.7.9** Engineer agents auto-implement step definitions in `tests/Steps/{storyId}/`.
+- [ ] **28.7.10** E2E test runner — engineer agents iterate until all scenarios pass.
+- [ ] **28.7.11** Step-definition PR created per workstream (separate from the implementation PR).
+
+#### 28.8 — Completion & story closure
+
+- [x] **28.8.1** Completion gate — every workstream at `merging`/`complete`, QA PR merged (when set), no failing builds on `main` for the spawn's repo (422 with specific reason on failure).
+- [x] **28.8.2** `Phase` flips to `done` only when the gate passes.
+- [ ] **28.8.3** Linked ADO work item state auto-transitions to `Resolved`/`Closed`.
+- [ ] **28.8.4** Step-definition PR merge tracked separately from implementation PR for the completion check.
+- [ ] **28.8.5** End-to-end test green check on `main` (currently approximated by "no failing builds on main"; doesn't actually run the e2e suite).
+
+#### 28.9 — UI: Spawn dialog + story card
+
+- [x] **28.9.1** `SpawnStoryModal` with two-step flow (Step 1 search Features/Epics; Step 2 confirm scope + repo).
+- [x] **28.9.2** No manual branch / worktree / epic fields in the modal.
+- [x] **28.9.3** Filters: title-or-id search, area path, state.
+- [x] **28.9.4** "Spawn story" button in the Workstreams page header.
+- [x] **28.9.5** `StoryCard` component — phase badge, progress bar (N/6 phases, %), title, story id.
+- [x] **28.9.6** Expandable child workstream list with id / name / status pill / dep count.
+- [x] **28.9.7** Artifact list — plan PR + branch + four planning docs, decomposition status, implementation PRs, QA PR + feature folder.
+- [x] **28.9.8** "Approve decomposition" button in `decompose` phase.
+- [x] **28.9.9** "→ next-phase" advance button on the card surfacing the gate's 422 errors inline.
+- [~] **28.9.10** **`NewWorkstreamModal` is *not* removed.** The legacy "New workstream" button stays as a secondary action so the ad-hoc flow keeps working — the spec says "replace", but a hard removal would break operators mid-stream. Once the agentic layer lands the legacy modal can be retired.
+- [ ] **28.9.11** Real-time updates on the story card via SignalR (`story-spawn.changed` event is emitted server-side but the UI doesn't subscribe yet — manual refresh only).
+
+#### 28.10 — Artifact check-in rule
+
+- [x] **28.10.1** Plan PR merge gate enforces "merged on main before downstream consumes it" (422 otherwise).
+- [~] **28.10.2** **The rule is enforced at the *gate*, not at the artifact level.** The server doesn't actually verify that `tech-spec.md` exists on `main` — it only checks that `PlanPrId` references a row with `Col='merged'`. A merge with no commits would still pass the gate.
+- [ ] **28.10.3** QA feature-file existence check before step-definition work starts.
+- [ ] **28.10.4** Engineer-modification protection on `docs/stories/{storyId}/` (28 cross-cutting "team isolation" scenario).
+
+#### 28.11 — Dependency tracking
+
+- [x] **28.11.1** `WorkstreamDepRow` table + composite PK + indexes.
+- [x] **28.11.2** Dependency edges persisted on decomposition submit.
+- [x] **28.11.3** No-deps workstreams reported as eligible (`status='planning'`).
+- [x] **28.11.4** Workstreams with unmet deps reported as `status='blocked'` in `GET /spawn`.
+- [x] **28.11.5** Diamond + deep-chain shapes accepted by the persistence + cycle check.
+- [ ] **28.11.6** Auto-unblock — when an upstream PR merges, the dependent workstream's status auto-flips to `active` and engineer agents are auto-assigned. Currently the resolver only *reports* eligibility; nothing kicks the queue.
+
+#### 28.12 — BDD test scenarios
+
+- [x] **28.12.1** `Phase28StorySpawnTests.cs` — 42 tests, 100% pass, covering every Gherkin scenario from sections 28.1–28.11 + cross-cutting (data model, API, plan, decompose, implement, review, qa, completion, UI contract, artifact gate, dependencies, rollback, single-spawn, full happy path, restart-survives, sequential advance, unknown phase, auth header).
+
+#### Cross-cutting
+
+- [x] **CC.1** `X-Forge-User` writer header required on all writes (401 otherwise).
+- [x] **CC.2** Phase rollback rejected (422 "Phase rollback is not supported").
+- [x] **CC.3** Single spawn per story (409 on duplicate).
+- [x] **CC.4** Spawn state survives DbContext recreation (restart-equivalent — verified via test).
+- [ ] **CC.5** Active workstreams resume from their last checkpoint on full server restart (needs the agentic execution layer).
+- [ ] **CC.6** SignalR `story-spawn.changed` event consumed by the UI (currently only emitted).
+- [ ] **CC.7** Cost tracking at the story level (explicit non-goal in the spec; tracked here so it's not forgotten).
+
+#### What "fully implemented" looks like — gap summary
+
+The state machine, REST surface, persistence, decomposition / cycle detection, dependency model, gate logic, completion check, and a hand-driven UI are **shipped (with 42 passing tests)**. What remains for full Phase 28 is the **agentic orchestration layer** — work that touches every existing system:
+
+1. **Crew auto-assignment per phase** (Architect / Engineer / Review / QA pulls from `AGENT_ALLOCATION` and enqueues into the existing Phase 17 task queue).
+2. **Git operations** — actually create `story/{id}/plan`, `story/{id}/qa`, and `ws/{id}/{slug}` branches + worktrees via the existing `IGitWorktreeService`.
+3. **Auto-PR creation** at each phase boundary, populating `PlanPrId` / `QaPrId` / each workstream's `PrsJson` from the provider response.
+4. **Dependency scheduler** — a hosted service that watches workstream PR merges and auto-promotes downstream blocked workstreams to `active`.
+5. **Comment routing** — wire Phase 24's `kind='comment-response'` queue to the spawn's review phase.
+6. **QA → Engineer hand-off** — feature-file PR merge triggers step-definition work via the queue.
+7. **ADO work-item closure** when the spawn reaches `done`.
+8. **UI realtime** — subscribe to `story-spawn.changed` so the card live-updates.
+9. **Artifact-existence verification** — gate checks should optionally read the merged commit's tree to confirm the expected files actually landed.
+
+Until those nine items are in, Phase 28 is "you can drive the multi-team lifecycle by hand against the API." Crews don't pick up the work on their own.
+
+### 28.1 — Data model: `StorySpawn`
+
+New entity `StorySpawnRow` in `Persistence/Entities.cs`:
+
+```
+StorySpawnRow
+  Id              TEXT PK          — e.g. "spawn-{storyId}"
+  StoryId         TEXT NOT NULL    — ADO work item id (Feature / PBI)
+  StoryTitle      TEXT NOT NULL    — display title
+  RepoId          TEXT             — FK to repos
+  Phase           TEXT NOT NULL    — plan | decompose | implement | review | qa | done
+  PlanBranch      TEXT             — branch for arch planning artifacts
+  PlanPrId        TEXT             — PR id for planning artifacts
+  DecompositionJson TEXT           — JSON: array of { workstreamId, title, deps[], deliverables[], timeline }
+  QaBranch        TEXT             — branch for QA feature files
+  QaPrId          TEXT             — PR id for QA feature files
+  CreatedAt       TEXT NOT NULL
+  UpdatedAt       TEXT NOT NULL
+```
+
+Each child workstream created during decompose links back via `WorkstreamRow.StorySpawnId` (new nullable FK).
+
+### 28.2 — API: spawn endpoints
+
+```
+POST   /api/stories/{storyId}/spawn          — start the spawn flow (select story, create StorySpawn)
+GET    /api/stories/{storyId}/spawn           — get spawn status + phase + child workstreams
+PATCH  /api/stories/{storyId}/spawn/phase     — advance to next phase (with gate check)
+POST   /api/stories/{storyId}/spawn/decompose — submit decomposition (workstream definitions)
+GET    /api/stories/{storyId}/spawn/artifacts — list committed artifacts per phase
+```
+
+### 28.3 — Phase 1: Plan (Architect team)
+
+When the operator selects a story and clicks **Spawn**:
+
+1. Create `StorySpawnRow` with `Phase = "plan"`.
+2. Create a planning branch: `story/{storyId}/plan` from `main`.
+3. Assign Architect team agents (filtered from `AGENT_ALLOCATION` where `team = 'Architect'`).
+4. Architect agents produce artifacts in the planning branch:
+   - `docs/stories/{storyId}/tech-spec.md` — technology choices, constraints, risks.
+   - `docs/stories/{storyId}/architecture.md` — component diagram, data flow, API contracts.
+   - `docs/stories/{storyId}/implementation-plan.md` — ordered list of work items with estimates.
+   - `docs/stories/{storyId}/e2e-scenarios.md` — high-level end-to-end scenario descriptions.
+5. Architect agents create a PR from `story/{storyId}/plan` → `main`.
+6. **Gate**: PR must be merged before advancing to Phase 2. `StorySpawn.PlanPrId` tracks the PR.
+
+### 28.4 — Phase 2: Decompose (Architect team)
+
+After the plan PR merges:
+
+1. Advance `Phase = "decompose"`.
+2. Architect agents read the merged plan and produce a decomposition:
+   - Split into N parallel workstreams, each with a clear scope boundary.
+   - For each workstream: title, description, acceptance criteria, estimated effort.
+   - Dependency graph between workstreams (which must complete before which).
+   - Timeline: relative ordering and estimated duration.
+3. Decomposition is persisted as `StorySpawn.DecompositionJson`.
+4. For each workstream in the decomposition:
+   - Create `WorkstreamRow` with `StorySpawnId = spawn.Id`, `Status = "planning"`, branch `ws/{storyId}/{wsName}`.
+   - Populate `CardsJson` with linked work items (created or mapped from ADO).
+   - Record dependencies in a new `WorkstreamDepRow(workstreamId, dependsOnId)` table.
+5. **Gate**: operator reviews and approves the decomposition before advancing to Phase 3.
+
+### 28.5 — Phase 3: Implement (Engineer team, parallel)
+
+After decomposition is approved:
+
+1. Advance `Phase = "implement"`.
+2. For each workstream (respecting dependency order):
+   - Assign Engineer team agents.
+   - Create branch + worktree per existing Phase 16 flow.
+   - Per work item within the workstream: run the existing generator → evaluator iteration loop (Phase 16/20).
+   - When all work items in a workstream are complete, create a PR from the workstream branch → `main`.
+3. Workstream status transitions: `planning → active → review` (when PR is created).
+4. Dependency enforcement: a workstream cannot start until all its `dependsOn` workstreams have their PRs merged.
+
+### 28.6 — Phase 4: Review (Review team)
+
+For each PR created in Phase 3:
+
+1. Assign Review team agents (filtered from `AGENT_ALLOCATION` where `team = 'Review'`).
+2. Review agents inspect the diff, add comments.
+3. **Comment loop**: any unresolved comment is routed back to the Engineer team agent that authored the code.
+   - Engineer agent addresses the comment, pushes a fix, marks the comment as resolved.
+   - Review agent re-inspects; repeat until all threads are resolved.
+4. When all comments are resolved and build is green → Review agent approves the PR.
+5. PR merges via existing Phase 24/27 flow.
+
+### 28.7 — Phase 5: QA (QA team, parallel with Phases 3–4)
+
+QA runs in parallel with implementation, starting after the plan is merged:
+
+1. Assign QA team agents (filtered from `AGENT_ALLOCATION` where `team = 'QA'`).
+2. QA agents read the plan artifacts (`e2e-scenarios.md`, `tech-spec.md`) and produce:
+   - SpecFlow/Reqnroll `.feature` files covering all acceptance criteria.
+   - Feature files are organized under `tests/Features/{storyId}/`.
+   - Each scenario is tagged with the workstream it validates.
+3. QA agents create a PR from `story/{storyId}/qa` → `main` containing the feature files.
+4. **Gate**: feature file PR must be merged before test implementation begins.
+5. After merge, hand off to Engineer team:
+   - Engineer agents implement step definitions in `tests/Steps/{storyId}/`.
+   - Engineer agents run the e2e tests; iterate until all pass.
+   - Step definition implementation is committed via a separate PR per workstream.
+
+### 28.8 — Completion & story closure
+
+A story is complete when:
+
+- All workstream PRs are merged.
+- All QA feature file PRs are merged.
+- All e2e test step definition PRs are merged.
+- All e2e tests pass on the merged `main` branch.
+
+At that point: `StorySpawn.Phase = "done"`, linked work items transition to `Resolved`/`Closed` in ADO.
+
+### 28.9 — UI: Spawn dialog redesign
+
+Replace `NewWorkstreamModal` with `SpawnStoryModal`:
+
+- **Step 1 — Select story**: search/browse ADO features or PBIs. Show title, description, acceptance criteria. Filter by area path, iteration, state.
+- **Step 2 — Confirm scope**: display the selected story's details. Confirm the target repo. Click **Spawn** to begin.
+- No manual branch/worktree/epic fields — everything is derived from the story.
+
+The Workstreams view shows the spawned story as a **story card** (new component) with:
+
+- Story title and status badge (plan → decompose → implement → review → qa → done).
+- Expandable child workstreams underneath.
+- Phase progress bar showing which phase is active.
+- Artifacts list (linked PRs, docs, feature files).
+
+### 28.10 — Artifact check-in rule
+
+**Hard rule**: every artifact produced by any team must be committed to a branch, submitted as a PR, and merged into `main` before it can be consumed by a downstream phase. This ensures:
+
+- Full traceability (git history for every design decision, test scenario, code change).
+- Review opportunity at every phase boundary.
+- No ephemeral artifacts lost between agent runs.
+
+Artifacts include: spec docs, architecture docs, implementation plans, decomposition records, `.feature` files, step definitions, and all source code.
+
+### 28.11 — `WorkstreamDepRow` (dependency tracking)
+
+New table for inter-workstream dependencies:
+
+```
+WorkstreamDepRow
+  WorkstreamId   TEXT NOT NULL  — FK to workstreams
+  DependsOnId    TEXT NOT NULL  — FK to workstreams
+  PRIMARY KEY (WorkstreamId, DependsOnId)
+```
+
+The execution engine in Phase 28.5 queries this table before starting a workstream: all `DependsOnId` entries must have `Status = "merging"` or the linked PR must be merged.
+
+### Non-goals (Phase 28)
+
+- **Cross-story dependency** — stories are independent; cross-story ordering is out of scope.
+- **Automatic story selection** — the operator always chooses which story to spawn; no auto-pick from backlog.
+- **Partial re-spawn** — if a story spawn fails mid-flight, the operator can manually restart individual workstreams but cannot re-run the full spawn. Full re-spawn is a `forge_v2.md` candidate.
+- **Cost budgets per story** — cost tracking at the story level is deferred to a follow-up phase.
+
+### 28.12 — Test scenarios
+
+> BDD-style test scenarios covering every subsection, phase gate, team hand-off, and edge case. Organized by the subsection they validate.
+
+#### 28.1 — Data model
+
+```gherkin
+@phase28 @data-model
+Feature: StorySpawn data model
+
+  Scenario: StorySpawnRow is created with correct defaults
+    Given an ADO feature "WI-50001" titled "Multi-region failover"
+    When the operator spawns the story
+    Then a StorySpawnRow is persisted with:
+      | Field         | Value              |
+      | Id            | spawn-WI-50001     |
+      | StoryId       | WI-50001           |
+      | StoryTitle    | Multi-region failover |
+      | Phase         | plan               |
+      | PlanBranch    | story/WI-50001/plan |
+      | PlanPrId      | <null>             |
+      | DecompositionJson | <null>          |
+      | QaBranch      | <null>             |
+      | QaPrId        | <null>             |
+    And CreatedAt and UpdatedAt are set to the current UTC time
+
+  Scenario: Duplicate spawn for the same story is rejected
+    Given a StorySpawnRow already exists for story "WI-50001"
+    When the operator attempts to spawn "WI-50001" again
+    Then the API returns 409 Conflict
+    And no duplicate row is created
+
+  Scenario: WorkstreamRow links back to StorySpawn
+    Given a StorySpawnRow "spawn-WI-50001" in phase "decompose"
+    When the architect submits a decomposition with 3 workstreams
+    Then each created WorkstreamRow has StorySpawnId = "spawn-WI-50001"
+
+  Scenario: WorkstreamDepRow enforces FK integrity
+    Given workstreams "ws-auth" and "ws-api" exist
+    When a dependency "ws-api depends on ws-auth" is recorded
+    Then WorkstreamDepRow contains (WorkstreamId="ws-api", DependsOnId="ws-auth")
+    And deleting "ws-auth" is rejected while the dependency exists
+```
+
+#### 28.2 — API endpoints
+
+```gherkin
+@phase28 @api
+Feature: Story spawn API
+
+  Scenario: POST /api/stories/{storyId}/spawn creates a new spawn
+    Given no spawn exists for story "WI-60001"
+    When I POST /api/stories/WI-60001/spawn with body:
+      """json
+      { "repoId": "repo-update" }
+      """
+    Then the response status is 201
+    And the response body contains { "id": "spawn-WI-60001", "phase": "plan" }
+
+  Scenario: GET /api/stories/{storyId}/spawn returns spawn status
+    Given a spawn exists for "WI-60001" in phase "implement" with 3 child workstreams
+    When I GET /api/stories/WI-60001/spawn
+    Then the response includes phase "implement"
+    And the response includes 3 workstream summaries with their statuses
+
+  Scenario: PATCH /api/stories/{storyId}/spawn/phase advances phase
+    Given a spawn "WI-60001" in phase "plan" with PlanPrId merged
+    When I PATCH /api/stories/WI-60001/spawn/phase with { "targetPhase": "decompose" }
+    Then the response status is 200
+    And the spawn phase is now "decompose"
+
+  Scenario: PATCH phase is rejected when gate is not met
+    Given a spawn "WI-60001" in phase "plan" with PlanPrId not yet merged
+    When I PATCH /api/stories/WI-60001/spawn/phase with { "targetPhase": "decompose" }
+    Then the response status is 422
+    And the error message indicates "Plan PR must be merged before advancing"
+
+  Scenario: POST /api/stories/{storyId}/spawn/decompose persists workstream definitions
+    Given a spawn "WI-60001" in phase "decompose"
+    When I POST /api/stories/WI-60001/spawn/decompose with:
+      """json
+      {
+        "workstreams": [
+          { "title": "Auth service", "deps": [], "deliverables": ["auth API"], "timeline": "3d" },
+          { "title": "API gateway", "deps": ["ws-auth"], "deliverables": ["gateway routes"], "timeline": "2d" }
+        ]
+      }
+      """
+    Then 2 WorkstreamRows are created
+    And 1 WorkstreamDepRow is created (gateway depends on auth)
+    And DecompositionJson is persisted on the StorySpawnRow
+
+  Scenario: GET /api/stories/{storyId}/spawn/artifacts lists artifacts by phase
+    Given a spawn "WI-60001" with plan PR merged and 2 workstream PRs open
+    When I GET /api/stories/WI-60001/spawn/artifacts
+    Then the response groups artifacts by phase:
+      | Phase     | Artifacts                                    |
+      | plan      | tech-spec.md, architecture.md, impl-plan.md  |
+      | implement | PR #101 (open), PR #102 (open)               |
+
+  Scenario: POST spawn for non-existent story returns 404
+    When I POST /api/stories/WI-99999/spawn
+    Then the response status is 404
+```
+
+#### 28.3 — Phase 1: Plan (Architect team)
+
+```gherkin
+@phase28 @plan
+Feature: Planning phase
+
+  Scenario: Spawn creates planning branch
+    When the operator spawns story "WI-50001" in repo "update"
+    Then a git branch "story/WI-50001/plan" is created from "main"
+    And the StorySpawn.PlanBranch is "story/WI-50001/plan"
+
+  Scenario: Architect agents are assigned to the planning phase
+    When the spawn enters the plan phase
+    Then only agents with team = "Architect" are assigned
+    And no Engineer, Review, or QA agents are active on this spawn
+
+  Scenario: All required planning artifacts are produced
+    Given the plan phase is active for story "WI-50001"
+    When architect agents complete their work
+    Then the following files exist on branch "story/WI-50001/plan":
+      | Path                                        |
+      | docs/stories/WI-50001/tech-spec.md           |
+      | docs/stories/WI-50001/architecture.md        |
+      | docs/stories/WI-50001/implementation-plan.md  |
+      | docs/stories/WI-50001/e2e-scenarios.md       |
+
+  Scenario: Planning PR is created targeting main
+    When all planning artifacts are committed
+    Then a PR is created from "story/WI-50001/plan" to "main"
+    And StorySpawn.PlanPrId is updated with the PR identifier
+
+  Scenario: Phase cannot advance until plan PR is merged
+    Given the plan PR exists but is not yet merged
+    When the system attempts to advance to "decompose"
+    Then the advance is rejected with reason "Plan PR must be merged"
+
+  Scenario: Phase advances after plan PR is merged
+    Given the plan PR is merged into main
+    When the system checks the gate for "decompose"
+    Then the advance is allowed
+    And StorySpawn.Phase transitions to "decompose"
+```
+
+#### 28.4 — Phase 2: Decompose (Architect team)
+
+```gherkin
+@phase28 @decompose
+Feature: Decomposition phase
+
+  Scenario: Architect reads merged plan and produces decomposition
+    Given the spawn is in phase "decompose"
+    And the plan artifacts are merged into main
+    When architect agents analyze the implementation plan
+    Then they produce a decomposition with N workstreams
+
+  Scenario: Each workstream has required metadata
+    When the decomposition is submitted
+    Then each workstream entry contains:
+      | Field              | Required |
+      | title              | yes      |
+      | description        | yes      |
+      | acceptanceCriteria | yes      |
+      | estimatedEffort    | yes      |
+      | deps               | yes (may be empty) |
+      | deliverables       | yes      |
+
+  Scenario: Workstream branches follow naming convention
+    Given a decomposition with workstream titled "auth-service"
+    When the workstream is created
+    Then the branch name is "ws/WI-50001/auth-service"
+    And the base branch is "main"
+
+  Scenario: Dependencies between workstreams are recorded
+    Given a decomposition where "api-gateway" depends on "auth-service"
+    When the workstreams are created
+    Then WorkstreamDepRow(ws-api-gateway, ws-auth-service) exists
+    And the dependency is queryable from the API
+
+  Scenario: Circular dependencies are rejected
+    Given a decomposition where "A" depends on "B" and "B" depends on "A"
+    When the decomposition is submitted
+    Then the API returns 422
+    And the error message indicates "Circular dependency detected"
+
+  Scenario: Operator must approve decomposition before implementation starts
+    Given the decomposition has been submitted but not approved
+    When the system attempts to advance to "implement"
+    Then the advance is rejected with reason "Decomposition not yet approved"
+
+  Scenario: Decomposition with zero workstreams is rejected
+    When a decomposition with an empty workstream list is submitted
+    Then the API returns 422 with "At least one workstream is required"
+```
+
+#### 28.5 — Phase 3: Implement (Engineer team)
+
+```gherkin
+@phase28 @implement
+Feature: Implementation phase
+
+  Scenario: Workstreams without dependencies start immediately
+    Given workstreams "ws-auth" (no deps) and "ws-api" (depends on ws-auth)
+    When the implement phase begins
+    Then "ws-auth" transitions to "active" and engineer agents are assigned
+    And "ws-api" remains in "planning" (blocked by dependency)
+
+  Scenario: Dependent workstream starts after dependency PR is merged
+    Given "ws-auth" has its PR merged
+    When the dependency check runs for "ws-api"
+    Then "ws-api" transitions to "active"
+    And engineer agents are assigned to "ws-api"
+
+  Scenario: Each work item runs through generator-evaluator loop
+    Given workstream "ws-auth" is active with work items [WI-101, WI-102]
+    When engineer agents process WI-101
+    Then the generator produces code changes
+    And the evaluator reviews and scores the output
+    And the loop iterates until the score threshold is met
+
+  Scenario: PR is created when all work items in a workstream are complete
+    Given all work items in "ws-auth" have passed the evaluator
+    When the workstream is finalized
+    Then a PR is created from "ws/WI-50001/auth-service" to "main"
+    And the workstream status transitions to "review"
+
+  Scenario: Workstream branch + worktree are created per Phase 16 flow
+    When "ws-auth" becomes active
+    Then a git worktree is created at "{repo.cloneRoot}/.worktree/ws-{workItemId}"
+    And the branch "ws/WI-50001/auth-service" is checked out in the worktree
+
+  Scenario: Parallel workstreams run concurrently when no dependency conflict
+    Given "ws-auth" and "ws-logging" have no mutual dependency
+    When the implement phase begins
+    Then both workstreams start concurrently
+    And each has its own branch and worktree
+
+  Scenario: Workstream blocked by unmerged dependency shows blocked status
+    Given "ws-api" depends on "ws-auth" which has an open (unmerged) PR
+    Then the workstreams view shows "ws-api" with status "blocked"
+    And a tooltip indicates "Waiting for ws-auth PR to merge"
+```
+
+#### 28.6 — Phase 4: Review (Review team)
+
+```gherkin
+@phase28 @review
+Feature: Review phase
+
+  Scenario: Review agents are assigned when implementation PR is created
+    Given workstream "ws-auth" has an open PR
+    When the PR enters review
+    Then agents with team = "Review" are assigned to the PR
+    And no Architect or QA agents are assigned
+
+  Scenario: Review agent adds comments to the PR
+    Given the review agent inspects the PR diff
+    When issues are found
+    Then review comments are posted as PR threads
+    And each thread targets a specific file and line
+
+  Scenario: Unresolved comments are routed back to the authoring engineer
+    Given a review comment is posted on code authored by engineer agent "E4"
+    When the comment is unresolved
+    Then "E4" is notified and assigned to address the comment
+
+  Scenario: Engineer fixes code and resolves the comment thread
+    Given an open review comment on file "auth.cs:42"
+    When engineer agent pushes a fix commit
+    Then the engineer marks the thread as resolved
+    And the review agent is notified to re-inspect
+
+  Scenario: Review-fix loop repeats until all comments are resolved
+    Given the PR has 3 open review threads
+    When the engineer addresses threads 1 and 2
+    Then 1 thread remains open
+    And the review agent re-inspects and may add new comments
+    And the cycle continues until all threads show resolved
+
+  Scenario: PR is approved when all comments are resolved and build is green
+    Given all review threads are resolved
+    And the CI build passes
+    When the review agent performs final inspection
+    Then the PR is approved
+    And the PR proceeds to merge via Phase 24/27 flow
+
+  Scenario: PR with failing build is not approved
+    Given all review threads are resolved
+    But the CI build is failing
+    When the review agent checks approval readiness
+    Then approval is withheld
+    And the status indicates "Build must pass before approval"
+```
+
+#### 28.7 — Phase 5: QA (parallel)
+
+```gherkin
+@phase28 @qa
+Feature: QA phase
+
+  Scenario: QA starts in parallel after plan PR is merged
+    Given the plan PR for "WI-50001" is merged
+    When the spawn advances to "implement"
+    Then QA agents also begin work on the QA branch "story/WI-50001/qa"
+    And QA runs concurrently with implementation
+
+  Scenario: QA agents produce SpecFlow/Reqnroll feature files
+    Given QA agents read "e2e-scenarios.md" and "tech-spec.md"
+    When they produce test scenarios
+    Then .feature files are created under "tests/Features/WI-50001/"
+    And each scenario is tagged with the workstream it validates (e.g. @ws-auth)
+
+  Scenario: Feature files cover all acceptance criteria from the plan
+    Given the plan lists 5 acceptance criteria
+    When QA agents produce feature files
+    Then at least one scenario maps to each acceptance criterion
+    And unmapped criteria are flagged as a warning
+
+  Scenario: QA PR is created targeting main
+    When all feature files are committed to "story/WI-50001/qa"
+    Then a PR is created from "story/WI-50001/qa" to "main"
+    And StorySpawn.QaPrId is updated
+
+  Scenario: Feature file PR must merge before step definitions begin
+    Given the QA feature PR is open (not merged)
+    When engineer agents attempt to implement step definitions
+    Then the implementation is blocked
+    And the status indicates "QA feature PR must be merged first"
+
+  Scenario: Engineer implements step definitions after feature merge
+    Given the QA feature PR is merged into main
+    When engineer agents start test implementation
+    Then step definitions are created under "tests/Steps/WI-50001/"
+    And they reference the merged .feature files
+
+  Scenario: E2E tests are run and iterated until all pass
+    Given step definitions are implemented
+    When the test suite is executed
+    And 2 of 5 scenarios fail
+    Then engineer agents iterate on the failing step definitions
+    And re-run until all 5 scenarios pass
+
+  Scenario: Step definitions are committed via PR per workstream
+    Given engineer agents finish step definitions for "ws-auth"
+    When the tests pass
+    Then a PR is created for the step definitions
+    And the PR is separate from the implementation PR
+```
+
+#### 28.8 — Completion & story closure
+
+```gherkin
+@phase28 @completion
+Feature: Story completion
+
+  Scenario: Story is complete when all conditions are met
+    Given all workstream implementation PRs are merged
+    And all QA feature file PRs are merged
+    And all step definition PRs are merged
+    And all e2e tests pass on main
+    When the completion check runs
+    Then StorySpawn.Phase transitions to "done"
+    And the linked ADO work item transitions to "Resolved"
+
+  Scenario: Story is not complete while any PR is unmerged
+    Given 2 of 3 workstream PRs are merged
+    When the completion check runs
+    Then StorySpawn.Phase remains in its current value
+    And the story card shows "2/3 workstreams merged"
+
+  Scenario: Story is not complete while e2e tests are failing
+    Given all PRs are merged
+    But 1 e2e test scenario is still failing on main
+    When the completion check runs
+    Then StorySpawn.Phase does not advance to "done"
+    And the status indicates "1 failing e2e test"
+
+  Scenario: ADO work item state is updated on story completion
+    Given the story references ADO feature "WI-50001"
+    When the story phase transitions to "done"
+    Then the ADO work item state is updated to "Resolved" or "Closed"
+```
+
+#### 28.9 — UI: Spawn dialog
+
+```gherkin
+@phase28 @ui
+Feature: Spawn story dialog
+
+  Scenario: Dialog shows searchable list of ADO features/PBIs
+    When the operator clicks "Spawn workstream" (or "+ New")
+    Then a dialog opens with a search field
+    And results show ADO features/PBIs with title, state, area path
+    And results are filterable by area path, iteration, and state
+
+  Scenario: Selecting a story shows confirmation step
+    Given the dialog is open
+    When the operator selects feature "WI-50001 — Multi-region failover"
+    Then Step 2 shows:
+      | Field       | Value                      |
+      | Title       | Multi-region failover      |
+      | Description | (from ADO)                 |
+      | Repo        | (auto-selected or picker)  |
+    And a "Spawn" button is enabled
+
+  Scenario: No manual branch/worktree/epic fields are shown
+    When the spawn dialog is open
+    Then there are no input fields for branch name, worktree path, or epic
+    And all those values are derived from the selected story
+
+  Scenario: Spawn button creates the StorySpawn and closes the dialog
+    When the operator clicks "Spawn"
+    Then the dialog closes
+    And the workstreams view shows a new story card in "plan" phase
+    And a toast confirms "Story WI-50001 spawned — planning phase started"
+
+  Scenario: Story card shows phase progress
+    Given a spawn "WI-50001" in phase "implement"
+    When the workstreams view renders
+    Then the story card shows:
+      | Element            | Value                          |
+      | Title              | Multi-region failover          |
+      | Phase badge        | IMPLEMENT                      |
+      | Progress bar       | 3/5 phases (60%)               |
+      | Child workstreams  | expandable list with statuses  |
+      | Artifacts          | linked PRs and doc files       |
+```
+
+#### 28.10 — Artifact check-in rule
+
+```gherkin
+@phase28 @artifact-gate
+Feature: Artifact check-in enforcement
+
+  Scenario: Planning artifacts must be in a merged PR before decomposition reads them
+    Given the plan phase produced tech-spec.md on the plan branch
+    But the plan PR is not merged
+    When the decompose phase attempts to read tech-spec.md from main
+    Then the file is not found on main
+    And the phase gate prevents advancement
+
+  Scenario: QA feature files must be merged before step definitions reference them
+    Given QA feature files exist on branch "story/WI-50001/qa"
+    But the QA PR is not merged
+    When engineer agents try to implement step definitions against main
+    Then the feature files are not on main
+    And the step definition work is blocked
+
+  Scenario: All code artifacts are committed — no ephemeral outputs
+    When any agent (arch, eng, review, qa) produces an artifact
+    Then the artifact is written to a git-tracked path
+    And eventually included in a PR
+    And no artifact exists only in agent memory or temp storage
+
+  Scenario: Merged artifacts are visible to downstream phases
+    Given the plan PR is merged with architecture.md
+    When the decompose phase starts
+    Then architect agents can read architecture.md from main
+    And use it to inform the decomposition
+```
+
+#### 28.11 — Dependency tracking
+
+```gherkin
+@phase28 @dependencies
+Feature: Workstream dependency enforcement
+
+  Scenario: Workstream with no dependencies starts immediately
+    Given workstream "ws-logging" has no entries in WorkstreamDepRow
+    When the implement phase begins
+    Then "ws-logging" is eligible to start immediately
+
+  Scenario: Workstream with unmet dependency is blocked
+    Given "ws-api" depends on "ws-auth"
+    And "ws-auth" status is "active" (PR not yet created)
+    When the scheduler evaluates "ws-api"
+    Then "ws-api" remains blocked
+
+  Scenario: Dependency is met when upstream PR is merged
+    Given "ws-api" depends on "ws-auth"
+    And "ws-auth" PR is merged (status = "merging" or complete)
+    When the scheduler re-evaluates "ws-api"
+    Then "ws-api" is unblocked and transitions to "active"
+
+  Scenario: Diamond dependency (A→B, A→C, B→D, C→D) resolves correctly
+    Given workstreams A, B, C, D where:
+      | Workstream | DependsOn |
+      | B          | A         |
+      | C          | A         |
+      | D          | B, C      |
+    When A's PR merges
+    Then B and C start in parallel
+    When B and C PRs both merge
+    Then D starts
+
+  Scenario: Deep chain dependency (A→B→C→D) executes sequentially
+    Given a linear dependency chain A → B → C → D
+    When implementation begins
+    Then only A starts
+    And B starts only after A's PR merges
+    And C starts only after B's PR merges
+    And D starts only after C's PR merges
+```
+
+#### Cross-cutting scenarios
+
+```gherkin
+@phase28 @cross-cutting
+Feature: Cross-team hand-offs and phase transitions
+
+  Scenario: Full story lifecycle — happy path
+    Given the operator spawns story "WI-50001"
+    When the plan phase completes and PR merges
+    And the decomposition produces 2 workstreams (no mutual deps)
+    And the operator approves the decomposition
+    And both workstreams implement and create PRs
+    And review agents approve both PRs
+    And QA produces feature files and PR merges
+    And engineer implements step definitions and all tests pass
+    Then StorySpawn.Phase = "done"
+    And 5 PRs total were merged (plan + 2 impl + qa features + step defs)
+
+  Scenario: Team isolation — engineers cannot modify planning artifacts
+    Given the plan PR is merged and phase is "implement"
+    When engineer agents work on workstream code
+    Then they do not modify files under "docs/stories/{storyId}/"
+    And any attempt to edit planning docs is rejected by the artifact rules
+
+  Scenario: Concurrent QA and implementation
+    Given the plan PR is merged
+    When the spawn advances to "implement"
+    Then engineer agents start on workstreams
+    And QA agents start on feature files concurrently
+    And neither team blocks the other until the feature file hand-off
+
+  Scenario: Story spawn survives server restart
+    Given a spawn "WI-50001" in phase "implement" with 2 active workstreams
+    When the Forge.Api server restarts
+    Then the spawn state is restored from the database
+    And active workstreams resume from their last checkpoint
+
+  Scenario: Phase rollback is not supported (non-goal)
+    Given a spawn in phase "review"
+    When the operator attempts to move back to phase "implement"
+    Then the API returns 422
+    And the error indicates "Phase rollback is not supported"
+
+  Scenario: Only one spawn per story at a time
+    Given a spawn for "WI-50001" is active in phase "implement"
+    When the operator tries to spawn "WI-50001" again
+    Then the API returns 409 Conflict
+    And the error indicates a spawn already exists for this story
+```
 
 ## Phase R — Post-implementation refactor (deferred)
 

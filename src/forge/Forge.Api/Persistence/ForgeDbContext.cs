@@ -100,6 +100,28 @@ public class ForgeDbContext : DbContext
 
     public DbSet<BuildValidationRunRow> BuildValidationRuns => this.Set<BuildValidationRunRow>();
 
+    public DbSet<BuildRow> Builds => this.Set<BuildRow>();
+
+    public DbSet<BuildStageRow> BuildStages => this.Set<BuildStageRow>();
+
+    public DbSet<BuildStageLogRow> BuildStageLogs => this.Set<BuildStageLogRow>();
+
+    public DbSet<BuildArtifactRow> BuildArtifacts => this.Set<BuildArtifactRow>();
+
+    public DbSet<BuildArtifactFileRow> BuildArtifactFiles => this.Set<BuildArtifactFileRow>();
+
+    public DbSet<BuildFailurePointRow> BuildFailurePoints => this.Set<BuildFailurePointRow>();
+
+    public DbSet<BuildFixPendingRow> BuildFixPending => this.Set<BuildFixPendingRow>();
+
+    public DbSet<BuildAnnotationRow> BuildAnnotations => this.Set<BuildAnnotationRow>();
+
+    /// <summary>forge_implementation.md Phase 28 — story spawn rows.</summary>
+    public DbSet<StorySpawnRow> StorySpawns => this.Set<StorySpawnRow>();
+
+    /// <summary>forge_implementation.md Phase 28 — workstream dependency edges.</summary>
+    public DbSet<WorkstreamDepRow> WorkstreamDeps => this.Set<WorkstreamDepRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         mb.Entity<EpicRow>().ToTable("epics").HasKey(x => x.Id);
@@ -332,5 +354,51 @@ public class ForgeDbContext : DbContext
         // Phase 29 — build validation runs.
         mb.Entity<BuildValidationRunRow>().ToTable("build_validation_runs").HasKey(x => x.Id);
         mb.Entity<BuildValidationRunRow>().HasIndex(x => new { x.RepoId, x.StartedAt });
+
+        // forge_implementation.md Phase 27 — build sync surface (mapped to the
+        // schema added by Phase31Migration). Indexes and uniqueness are
+        // declared in the migration with portable SQLite syntax; the EF index
+        // declarations here are kept thin to avoid double-creation.
+        mb.Entity<BuildRow>().ToTable("builds").HasKey(x => x.Id);
+        mb.Entity<BuildRow>().HasIndex(x => x.PrId);
+        mb.Entity<BuildRow>().HasIndex(x => new { x.PrId, x.IsActive });
+        mb.Entity<BuildRow>().HasIndex(x => x.LastSyncAt);
+
+        mb.Entity<BuildStageRow>().ToTable("build_stages").HasKey(x => x.Id);
+        mb.Entity<BuildStageRow>().HasIndex(x => new { x.BuildId, x.StageOrder });
+
+        mb.Entity<BuildStageLogRow>()
+            .ToTable("build_stage_logs")
+            .HasKey(x => new { x.StageId, x.LogIndex });
+
+        mb.Entity<BuildArtifactRow>().ToTable("build_artifacts").HasKey(x => x.Id);
+        mb.Entity<BuildArtifactRow>().HasIndex(x => x.BuildId);
+
+        mb.Entity<BuildArtifactFileRow>().ToTable("build_artifact_files").HasKey(x => x.Id);
+        mb.Entity<BuildArtifactFileRow>().HasIndex(x => x.ArtifactId);
+
+        mb.Entity<BuildFailurePointRow>().ToTable("build_failure_points").HasKey(x => x.Id);
+        mb.Entity<BuildFailurePointRow>().HasIndex(x => x.StageId);
+
+        mb.Entity<BuildFixPendingRow>().ToTable("build_fix_pending").HasKey(x => x.Id);
+        mb.Entity<BuildFixPendingRow>().HasIndex(x => x.WorkItemId).IsUnique();
+
+        mb.Entity<BuildAnnotationRow>().ToTable("build_annotations").HasKey(x => x.Id);
+        mb.Entity<BuildAnnotationRow>().HasIndex(x => x.BuildId);
+
+        // forge_implementation.md Phase 28 — story spawns + workstream dependency edges.
+        mb.Entity<StorySpawnRow>().ToTable("story_spawns").HasKey(x => x.Id);
+        // Q28.1 — duplicate spawn for the same StoryId is rejected with 409.
+        mb.Entity<StorySpawnRow>().HasIndex(x => x.StoryId).IsUnique();
+        mb.Entity<StorySpawnRow>().HasIndex(x => x.Phase);
+
+        mb.Entity<WorkstreamDepRow>()
+            .ToTable("workstream_deps")
+            .HasKey(x => new { x.WorkstreamId, x.DependsOnId });
+        mb.Entity<WorkstreamDepRow>().HasIndex(x => x.WorkstreamId);
+        mb.Entity<WorkstreamDepRow>().HasIndex(x => x.DependsOnId);
+
+        // Phase 28 back-pointer index for story → workstreams roll-up.
+        mb.Entity<WorkstreamRow>().HasIndex(x => x.StorySpawnId);
     }
 }

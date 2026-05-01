@@ -46,12 +46,30 @@ builder.Services.AddCors(options =>
 
 // EF Core: SQLite, path overridable via Forge:Db:Path. Resolve in the factory
 // delegate so test-factory configuration overrides flow through.
-builder.Services.AddDbContext<ForgeDbContext>((sp, opt) =>
+// SQLite DB — use DELETE journal mode for durability across forced kills.
 {
-    var cfg = sp.GetRequiredService<IConfiguration>();
-    var dbPath = cfg["Forge:Db:Path"] ?? "forge.db";
-    opt.UseSqlite($"Data Source={dbPath}");
-});
+    var dbPath = builder.Configuration["Forge:Db:Path"] ?? "forge.db";
+    if (!Path.IsPathFullyQualified(dbPath))
+        dbPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", dbPath);
+    dbPath = Path.GetFullPath(dbPath);
+    Console.WriteLine($"[Forge] SQLite DB path: {dbPath}");
+
+    // Set journal_mode=DELETE on a throwaway connection before EF opens its own.
+    // journal_mode is per-database (persisted in the file header), so this
+    // only needs to happen once and all subsequent connections inherit it.
+    using (var bootstrap = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}"))
+    {
+        bootstrap.Open();
+        using var cmd = bootstrap.CreateCommand();
+        cmd.CommandText = "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;";
+        cmd.ExecuteNonQuery();
+    }
+
+    builder.Services.AddDbContext<ForgeDbContext>((sp, opt) =>
+    {
+        opt.UseSqlite($"Data Source={dbPath}");
+    });
+}
 
 // OpenAPI / Swagger.
 builder.Services.AddEndpointsApiExplorer();
@@ -138,6 +156,17 @@ builder.Services.AddSingleton<Forge.Api.Services.IPrCommentSyncClient, Forge.Api
 builder.Services.AddSingleton<Forge.Api.Services.IPrCommentSyncClient, Forge.Api.Services.GitHubPrCommentSyncClient>();
 builder.Services.AddSingleton<Forge.Api.Services.PrSyncJob>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.PrSyncJob>());
+
+// forge_implementation.md Phase 27 — build sync, failure parser, artifact expander.
+builder.Services.AddHttpClient(Forge.Api.Providers.Ado.AdoBuildSyncRunner.ClientName);
+builder.Services.AddHttpClient(Forge.Api.Providers.GitHub.GitHubBuildSyncRunner.ClientName);
+builder.Services.AddHttpClient(nameof(Forge.Api.Services.BuildArtifactExpander));
+builder.Services.AddSingleton<Forge.Api.Services.IBuildSyncRunner, Forge.Api.Providers.Ado.AdoBuildSyncRunner>();
+builder.Services.AddSingleton<Forge.Api.Services.IBuildSyncRunner, Forge.Api.Providers.GitHub.GitHubBuildSyncRunner>();
+builder.Services.AddSingleton<Forge.Api.Services.BuildArtifactExpander>();
+builder.Services.AddSingleton<Forge.Api.Services.BuildFailureParser>();
+builder.Services.AddSingleton<Forge.Api.Services.BuildSyncJob>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.BuildSyncJob>());
 builder.Services.AddSingleton<AutoMergeWatcher>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoMergeWatcher>());
 builder.Services.AddHttpContextAccessor();
@@ -230,6 +259,12 @@ using (var scope = app.Services.CreateScope())
     await Phase28Migration.ApplyAsync(db);
     // Phase 29 — init/restore commands + build validation run history.
     await Phase29Migration.ApplyAsync(db);
+    // Phase 24 Q24.14 — preferred-agent pin on task_queue + livelock counter on work_items.
+    await Phase30Migration.ApplyAsync(db);
+    // forge_implementation.md Phase 27 — build sync + repair loop tables.
+    await Phase31Migration.ApplyAsync(db);
+    // forge_implementation.md Phase 28 — story spawns + workstream dependency edges.
+    await Phase32Migration.ApplyAsync(db);
     // Phase 29 — cancel orphaned validation runs left from a previous crash/restart.
     {
         var now = DateTime.UtcNow.ToString("O");
@@ -244,7 +279,8 @@ using (var scope = app.Services.CreateScope())
         }
         if (orphaned.Count > 0) await db.SaveChangesAsync();
     }
-    await ForgeSeed.EnsureSeededAsync(db);
+    // Seed is skipped — real data is committed in forge.db.
+    // await ForgeSeed.EnsureSeededAsync(db);
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.
     await Forge.Api.Endpoints.CrewsEndpoints.ApplyAutoAssignAsync(db, caller: "boot", ct: default);
@@ -281,6 +317,8 @@ app.MapStateEndpoints();
 app.MapCardsEndpoints();
 app.MapTimelineEndpoints();
 app.MapWorkstreamsEndpoints();
+// forge_implementation.md Phase 28 — story-driven spawn endpoints.
+app.MapStoriesEndpoints();
 app.MapPrsEndpoints();
 app.MapProvidersEndpoints();
 app.MapWebhooksEndpoints();
@@ -311,6 +349,8 @@ app.MapAdminEndpoints();
 app.MapAgentAssignmentsEndpoints();
 // Phase 24 — PR comment CRUD + resolve/reopen endpoints.
 app.MapPrCommentsEndpoints();
+// forge_implementation.md Phase 27 — builds REST surface.
+app.MapBuildsEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 
@@ -334,6 +374,15 @@ TaskScheduler.UnobservedTaskException += (_, e) =>
 {
     e.SetObserved();
 };
+
+// Checkpoint SQLite WAL on shutdown so data survives forced stop.
+app.Lifetime.ApplicationStopping.Register(() =>
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+    db.Database.ExecuteSqlRaw("PRAGMA wal_checkpoint(TRUNCATE)");
+    Console.WriteLine("[Forge] WAL checkpoint completed.");
+});
 
 app.Run();
 

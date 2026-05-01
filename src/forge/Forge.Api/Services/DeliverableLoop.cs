@@ -71,7 +71,28 @@ public sealed record DeliverableLoopRequest(
     /// Phase 20 — optional override for <see cref="ScoringConstants.MaxIterations"/>.
     /// When null, the compile-time constant is used.
     /// </summary>
-    int? MaxIterations = null);
+    int? MaxIterations = null,
+    /// <summary>
+    /// Phase 24 Q24.12 — task kind discriminator. Defaults to <c>'coding'</c>
+    /// for backward compatibility; <c>'comment-response'</c> selects the
+    /// scope-is-union-of-comments rubric note for the evaluator (Q24.13). The
+    /// loop's flow control is identical across kinds — only the evaluator
+    /// preamble differs, and that's the caller's responsibility (the loop
+    /// surfaces this string on the deliverable row + transcript events so the
+    /// downstream evaluator delegate can branch).
+    /// </summary>
+    string Kind = DeliverableKinds.Coding);
+
+/// <summary>
+/// Phase 24 Q24.12 — well-known values for <see cref="DeliverableLoopRequest.Kind"/>.
+/// </summary>
+public static class DeliverableKinds
+{
+    public const string Coding = "coding";
+    public const string CommentResponse = "comment-response";
+    public const string BuildFix = "build-fix";
+    public const string Plan = "plan";
+}
 
 /// <summary>One generator turn's raw output + cost.</summary>
 public sealed record GeneratorRunOutput(string OutputText, decimal CostUsd, long InputTokens = 0, long OutputTokens = 0);

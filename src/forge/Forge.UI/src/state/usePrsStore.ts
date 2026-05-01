@@ -1,10 +1,16 @@
+// -----------------------------------------------------------------------
+// <copyright file="usePrsStore.ts" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+
 import { create } from 'zustand';
 import type { Pr } from '@/types';
 import { forgeApi } from '@/api/forgeApi';
 import { sampleState } from '@/sampleData';
 import { useToastStore } from './useToastStore';
 
-export type PrFilter = 'all' | 'need-approval' | 'failing' | 'conflicts' | 'my-reviews';
+export type PrFilter = 'all' | 'need-approval' | 'failed-build' | 'conflicts' | 'my-reviews' | 'open-comments';
 
 interface PrsState {
   prs: Pr[];
@@ -12,10 +18,19 @@ interface PrsState {
   error: string | null;
   filter: PrFilter;
   selectedId: string | null;
+  authorFilter: string[];
+  workstreamFilter: string[];
+  searchQuery: string;
+  dateFrom: string | null;
+  dateTo: string | null;
 
   load: () => Promise<void>;
   setFilter: (f: PrFilter) => void;
   setSelected: (id: string | null) => void;
+  setAuthorFilter: (authors: string[]) => void;
+  setWorkstreamFilter: (ws: string[]) => void;
+  setSearchQuery: (q: string) => void;
+  setDateRange: (from: string | null, to: string | null) => void;
   upsertFromRealtime: (pr: Pr) => void;
 
   toggleAutoMerge: (id: string, next?: boolean) => Promise<void>;
@@ -33,6 +48,11 @@ export const usePrsStore = create<PrsState>((set, get) => ({
   error: null,
   filter: 'all',
   selectedId: null,
+  authorFilter: [],
+  workstreamFilter: [],
+  searchQuery: '',
+  dateFrom: null,
+  dateTo: null,
 
   load: async () => {
     set({ loading: true, error: null });
@@ -46,6 +66,10 @@ export const usePrsStore = create<PrsState>((set, get) => ({
 
   setFilter: (f) => set({ filter: f }),
   setSelected: (id) => set({ selectedId: id }),
+  setAuthorFilter: (authors) => set({ authorFilter: authors }),
+  setWorkstreamFilter: (ws) => set({ workstreamFilter: ws }),
+  setSearchQuery: (q) => set({ searchQuery: q }),
+  setDateRange: (from, to) => set({ dateFrom: from, dateTo: to }),
 
   upsertFromRealtime: (pr) => {
     const list = get().prs;
@@ -139,12 +163,59 @@ export const usePrsStore = create<PrsState>((set, get) => ({
 }));
 
 /** Pure selector helper — call inside `useMemo`. */
-export function filterPrs(list: Pr[], filter: PrFilter): Pr[] {
+export function filterPrs(
+  list: Pr[],
+  filter: PrFilter,
+  authorFilter: string[] = [],
+  workstreamFilter: string[] = [],
+  searchQuery = '',
+  dateFrom: string | null = null,
+  dateTo: string | null = null,
+): Pr[] {
+  let result = list;
+
+  // Chip filter
   switch (filter) {
-    case 'need-approval': return list.filter((p) => p.humanGate);
-    case 'failing':       return list.filter((p) => p.build?.status === 'failing');
-    case 'conflicts':     return list.filter((p) => p.conflicts);
-    case 'my-reviews':    return list.filter((p) => p.review?.verdict === 'pending' || p.review?.verdict === 'changes');
-    default:              return list;
+    case 'need-approval': result = result.filter((p) => p.humanGate); break;
+    case 'failed-build':  result = result.filter((p) => p.build?.status === 'failing'); break;
+    case 'conflicts':     result = result.filter((p) => p.conflicts); break;
+    case 'my-reviews':    result = result.filter((p) => p.review?.verdict === 'pending' || p.review?.verdict === 'changes'); break;
+    case 'open-comments': result = result.filter((p) => (p.openCommentCount ?? 0) > 0); break;
+    default: break;
   }
+
+  // Author filter
+  if (authorFilter.length > 0) {
+    result = result.filter((p) => authorFilter.includes(p.author.name));
+  }
+
+  // Repo filter (by repoId)
+  if (workstreamFilter.length > 0) {
+    result = result.filter((p) => p.repoId && workstreamFilter.includes(p.repoId));
+  }
+
+  // Search filter (case-insensitive substring on title)
+  if (searchQuery.trim()) {
+    const q = searchQuery.trim().toLowerCase();
+    result = result.filter((p) => p.title.toLowerCase().includes(q));
+  }
+
+  // Date range filter
+  if (dateFrom) {
+    const from = new Date(dateFrom);
+    result = result.filter((p) => {
+      if (!p.createdAt) return false;
+      return new Date(p.createdAt) >= from;
+    });
+  }
+  if (dateTo) {
+    const to = new Date(dateTo);
+    to.setHours(23, 59, 59, 999);
+    result = result.filter((p) => {
+      if (!p.createdAt) return false;
+      return new Date(p.createdAt) <= to;
+    });
+  }
+
+  return result;
 }

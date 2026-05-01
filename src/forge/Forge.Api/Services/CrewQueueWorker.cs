@@ -31,6 +31,50 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
 
+    /// <summary>
+    /// Phase 24 Q24.13 — toolset registered for <c>kind='comment-response'</c>
+    /// generator runs. <c>open_pr</c> is intentionally NOT included — comment
+    /// responses write against the existing PR. <c>post_pr_comment_reply</c>
+    /// is the new tool surfaced for the must-reply path.
+    /// </summary>
+    internal static readonly string[] CommentResponseAllowedTools =
+    {
+        "read_file",
+        "write_file",
+        "run_command",
+        "git_commit",
+        "git_push",
+        "post_pr_comment_reply",
+    };
+
+    /// <summary>
+    /// Phase 27 Q27.10 — toolset registered for <c>kind='build-fix'</c>
+    /// generator runs. Same shape as comment-response — same write/push
+    /// surface, same reply tool, no <c>open_pr</c> (build-fix pushes to the
+    /// existing branch). <c>read_file</c> is path-validated against both
+    /// the worktree and the artifact root by the runner.
+    /// </summary>
+    internal static readonly string[] BuildFixAllowedTools =
+    {
+        "read_file",
+        "write_file",
+        "run_command",
+        "git_commit",
+        "git_push",
+        "post_pr_comment_reply",
+    };
+
+    /// <summary>
+    /// Evaluator runs across all kinds — read-only inspection only. No
+    /// commit / push / reply tools because the evaluator scores the
+    /// deliverable, it never acts on the PR.
+    /// </summary>
+    internal static readonly string[] EvaluatorAllowedTools =
+    {
+        "read_file",
+        "run_command",
+    };
+
     private readonly IServiceScopeFactory scopeFactory;
     private readonly TaskChannel taskChannel;
     private readonly IHubContext<ForgeHub> hub;
@@ -297,21 +341,83 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 .Where(id => ScheduleGate.EvaluateAgent(crew, id, nowUtc).Verdict != ScheduleGate.Verdict.OffShift)
                 .ToList();
 
-            // Resume support — when a work item already has deliverables (boot-
-            // recovery just put it back on the queue), prefer the same agent
-            // that was driving it before. Without pinning, every restart spins
-            // up a fresh round-robin pick and the live transcript looks like a
-            // brand-new task instead of a continuation.
             // SQLite EF cannot ORDER BY DateTimeOffset in-query — materialize
             // the queued candidates and sort in memory (mirrors
             // TaskQueueService.ClaimNextAsync at line 184).
             string? picked = null;
+            string? pinReason = null;
             var headRow = (await db.TaskQueue.AsNoTracking()
                 .Where(r => r.RoutedToCrewId == crewId && r.State == TaskQueueStates.Queued)
                 .ToListAsync(ct))
                 .OrderBy(r => r.PriorityRank).ThenBy(r => r.EnqueuedAt)
                 .FirstOrDefault();
-            if (headRow is not null)
+
+            // Q24.14 — when the head row carries PreferredAgentId, we are pinned to
+            // that agent. Round-robin to a fresh member is *not* an acceptable
+            // fallback for pinned rows; the chain is preferred → lead → blocked.
+            // The pin applies to any row with PreferredAgentId set (today this
+            // is comment-response; the same column will carry build-fix's pin
+            // under Q27.7 when that phase ships).
+            if (headRow is not null && !string.IsNullOrEmpty(headRow.PreferredAgentId))
+            {
+                var preferredId = headRow.PreferredAgentId!;
+                var preferredAgent = await db.Agents.AsNoTracking()
+                    .FirstOrDefaultAsync(a => a.Id == preferredId, ct);
+                var inCrew = await db.CrewMembers.AsNoTracking()
+                    .AnyAsync(m => m.CrewId == crewId && m.AgentId == preferredId, ct);
+
+                if (preferredAgent is null)
+                {
+                    pinReason = "preferred-agent-missing";
+                }
+                else if (!inCrew && !string.Equals(preferredId, crew.Lead, StringComparison.Ordinal))
+                {
+                    pinReason = "preferred-agent-not-in-crew";
+                }
+                else if (string.Equals(preferredAgent.State, "paused", StringComparison.OrdinalIgnoreCase))
+                {
+                    pinReason = "preferred-agent-paused";
+                }
+                else
+                {
+                    picked = preferredId;
+                    pinReason = "original-agent-pin";
+                }
+
+                // Fallback to lead per Q24.14 step 2 — the lead is the next-best
+                // continuity holder because they routed the original work item.
+                // Lead is exempt from the schedule gate per Q18.3.
+                if (string.IsNullOrEmpty(picked) && !string.IsNullOrEmpty(crew.Lead))
+                {
+                    var lead = await db.Agents.AsNoTracking()
+                        .FirstOrDefaultAsync(a => a.Id == crew.Lead, ct);
+                    if (lead is not null && !string.Equals(lead.State, "paused", StringComparison.OrdinalIgnoreCase))
+                    {
+                        picked = crew.Lead;
+                    }
+                }
+
+                // Q24.14 step 3 — neither pin nor lead available. Block the row;
+                // the operator's manual-assign endpoint (Phase 22.4) is the
+                // unblocker. Round-robin to a fresh member is never automatic.
+                if (string.IsNullOrEmpty(picked))
+                {
+                    ForgeMetrics.NoOriginalAgentBlocked.Add(1,
+                        new KeyValuePair<string, object?>("crewId", crewId),
+                        new KeyValuePair<string, object?>("reason", pinReason ?? "unknown"));
+                    await queue.BlockAsync(headRow.Id, "comment-response.no_original_agent",
+                        reason: pinReason, ct: ct);
+                    skips.Add(new ClaimSkip(crewId, "pinned-blocked", $"preferred={preferredId} reason={pinReason} lead={crew.Lead ?? "(null)"}"));
+                    continue;
+                }
+            }
+
+            // Resume support — when a work item already has deliverables (boot-
+            // recovery just put it back on the queue), prefer the same agent
+            // that was driving it before. Without pinning, every restart spins
+            // up a fresh round-robin pick and the live transcript looks like a
+            // brand-new task instead of a continuation.
+            if (string.IsNullOrEmpty(picked) && headRow is not null)
             {
                 var priorAgent = (await db.Deliverables.AsNoTracking()
                     .Where(d => d.WorkItemId == headRow.WorkItemId)
@@ -350,6 +456,14 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             {
                 skips.Add(new ClaimSkip(crewId, "claim-cas-failed", $"members={allMembers.Count} onShift={onShiftMembers.Count} lead={crew.Lead ?? "(null)"} picked={picked ?? "(null)"}"));
                 continue;
+            }
+
+            // Q24.14 — record the pin reason on the queue row + history payload
+            // so the audit trail is loud about why round-robin was skipped.
+            if (!string.IsNullOrEmpty(pinReason))
+            {
+                row.PinReason = pinReason;
+                await db.SaveChangesAsync(ct);
             }
             claimed++;
 
@@ -488,6 +602,36 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             {
                 try { soulMd = await File.ReadAllTextAsync(agent.SoulPath, ct); }
                 catch { /* best effort */ }
+            }
+
+            // Phase 24 Q24.13 — comment-response runs prepend the per-task
+            // system template ahead of soul.md so the must-reply rubric is
+            // surfaced regardless of the agent's persona. Missing template
+            // is a soft fallback (empty string) so the rest of the loop
+            // still runs; tests cover the loaded path.
+            if (string.Equals(kind, TaskQueueKinds.CommentResponse, StringComparison.OrdinalIgnoreCase) && !skipSoulPrompt)
+            {
+                var template = await AgentTemplateLoader.LoadAsync(AgentTemplateLoader.CommentResponseFile, ct);
+                if (!string.IsNullOrEmpty(template))
+                {
+                    soulMd = string.IsNullOrEmpty(soulMd)
+                        ? template
+                        : template + "\n\n---\n\n" + soulMd;
+                }
+            }
+
+            // Phase 27 Q27.10 — build-fix runs prepend the build-fix template
+            // ahead of soul.md so the must-act rubric is surfaced regardless
+            // of the agent's persona.
+            if (string.Equals(kind, TaskQueueKinds.BuildFix, StringComparison.OrdinalIgnoreCase) && !skipSoulPrompt)
+            {
+                var template = await AgentTemplateLoader.LoadAsync(AgentTemplateLoader.BuildFixFile, ct);
+                if (!string.IsNullOrEmpty(template))
+                {
+                    soulMd = string.IsNullOrEmpty(soulMd)
+                        ? template
+                        : template + "\n\n---\n\n" + soulMd;
+                }
             }
 
             // Worktree: prefer the workstream's worktree path over the bare repo root.
@@ -679,6 +823,16 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // needing response and asks the agent to reply or commit a fix.
                 prompt = await BuildCommentResponsePromptAsync(db, workItemId, title, ct);
             }
+            else if (string.Equals(kind, TaskQueueKinds.BuildFix, StringComparison.OrdinalIgnoreCase))
+            {
+                // Phase 27 Q27.10 — build-fix prompt carries the failed
+                // build's pipeline header, parsed FailurePoint rows, the
+                // 256 KB log tail of failed stages, the artifact index, the
+                // work-item brief, and recent commit messages. Logs and
+                // artifacts are NOT inlined verbatim — the agent uses
+                // `read_file` to descend into specific artifact files.
+                prompt = await BuildBuildFixPromptAsync(db, workItemId, title, desc, ct);
+            }
             else
             {
                 var basePrompt = string.IsNullOrWhiteSpace(desc)
@@ -731,12 +885,22 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             }, crewId: crewId, ct: ct);
 
             // Rebuild context with the (possibly updated) worktree path.
+            // Phase 24 Q24.13 — when kind='comment-response' the runner registers
+            // post_pr_comment_reply alongside the standard read/write/git toolset.
+            // open_pr is intentionally NOT in this list — comment-response writes
+            // against the existing PR, never opens a new one.
+            var allowedTools = string.Equals(kind, TaskQueueKinds.CommentResponse, StringComparison.OrdinalIgnoreCase)
+                ? CommentResponseAllowedTools
+                : string.Equals(kind, TaskQueueKinds.BuildFix, StringComparison.OrdinalIgnoreCase)
+                    ? BuildFixAllowedTools
+                    : Array.Empty<string>();
+
             var context = new AgentContext(
                 CrewId: crewId,
                 Model: model,
                 SoulMd: soulMd,
                 WorktreePath: worktreePath,
-                AllowedTools: Array.Empty<string>(),
+                AllowedTools: allowedTools,
                 MaxTaskBudgetUsd: crew.MaxTaskBudgetUsd,
                 Backend: backend,
                 InvokeMode: invokeMode,
@@ -848,12 +1012,61 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     + "   Focus on the technical substance: which code paths were modified, what error handling was added,\n"
                     + "   what edge cases are now covered, and whether the approach is correct.\n";
 
+                // Phase 24 Q24.12 / Q24.13 — comment-response runs append the
+                // must-reply rubric note so the evaluator scores against the
+                // "every input comment is addressed via commit OR reply" rule.
+                // Scope is interpreted as the union of input comments — a
+                // reply-only deliverable scoring 100 on scope is valid.
+                if (string.Equals(kind, TaskQueueKinds.CommentResponse, StringComparison.OrdinalIgnoreCase))
+                {
+                    evalSoulForScoring += "\n"
+                        + "COMMENT-RESPONSE RUBRIC ADDENDUM (Phase 24 Q24.13):\n"
+                        + "- The deliverable's *scope* is the union of the input comments, NOT the entire work item.\n"
+                        + "  A small focused reply that addresses every input comment is the right shape.\n"
+                        + "- For every input comment the agent must take exactly one of two actions:\n"
+                        + "  (a) commit a fix that the position-and-time heuristic will link, OR\n"
+                        + "  (b) post a reply that names the comment id (Addresses comment <id>).\n"
+                        + "- Silently dropping a comment is a graded failure. A deliverable that ignores any\n"
+                        + "  RequiresAttention=true comment scores ≤ 70 on correctness regardless of the rest\n"
+                        + "  of the work — verdict iterate or reject.\n"
+                        + "- Reply-only deliverables (zero git commits, only post_pr_comment_reply calls\n"
+                        + "  covering every input comment) ARE valid. They can score ≥ 90 against this rubric.\n"
+                        + "- The agent does NOT auto-resolve threads. Only humans resolve. Pass means the agent\n"
+                        + "  did its part; the reviewer's resolve click closes the thread upstream.\n";
+                }
+
+                // Phase 27 Q27.8 — build-fix runs append the build-fix
+                // rubric extension so the evaluator scores against the
+                // "did the fix address the parsed failure points?" rule.
+                if (string.Equals(kind, TaskQueueKinds.BuildFix, StringComparison.OrdinalIgnoreCase))
+                {
+                    evalSoulForScoring += "\n"
+                        + "BUILD-FIX RUBRIC ADDENDUM (Phase 27 Q27.8 / Q27.10):\n"
+                        + "- The deliverable's *scope* is the union of the parsed FailurePoint rows from the\n"
+                        + "  failed build, NOT the entire work item.\n"
+                        + "- For every failure point the agent must take exactly one of two actions:\n"
+                        + "  (a) commit a fix that plausibly addresses the failure point, OR\n"
+                        + "  (b) post a PR reply explaining why the failure is non-code (flaky test, infra,\n"
+                        + "      env, signing-key rotation) using the format `Build #<n> failure analysis: …`.\n"
+                        + "- Silently exiting (no commit AND no reply) is a graded failure. A deliverable that\n"
+                        + "  ignores any failure point scores ≤ 70 on correctness regardless of the rest of the\n"
+                        + "  work — verdict iterate or reject.\n"
+                        + "- Did the fix address the parsed failure points? If multiple failure points exist,\n"
+                        + "  are they all addressed? Score against this rule explicitly.\n"
+                        + "- Reply-only deliverables (zero git commits, only post_pr_comment_reply calls) ARE\n"
+                        + "  valid when every failure point is genuinely non-code. They can score ≥ 90.\n"
+                        + "- The build re-runs naturally on push — the runner does NOT manually re-trigger.\n";
+                }
+
+                // Evaluator stays read-only across kinds; no post_pr_comment_reply
+                // here. The evaluator scores the deliverable, it does not act on
+                // the PR.
                 var evalContext = new AgentContext(
                     CrewId: evaluatorCrewId!,
                     Model: evalModel,
                     SoulMd: evalSoulForScoring,
                     WorktreePath: worktreePath,
-                    AllowedTools: Array.Empty<string>(),
+                    AllowedTools: EvaluatorAllowedTools,
                     MaxTaskBudgetUsd: evalCrew.MaxTaskBudgetUsd,
                     Backend: evalBackend,
                     InvokeMode: AgentInvokeMode.Sdk,
@@ -935,6 +1148,15 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 return new EvaluatorRunOutput(evalOutput.ToString(), evalCost, evalInTok, evalOutTok);
             }
 
+            // Phase 24 Q24.12 — propagate the queue row's kind into the loop so
+            // downstream consumers (cost ledger tagging, transcript events,
+            // evaluator preamble selection) can branch on it.
+            var loopKind = string.Equals(kind, TaskQueueKinds.CommentResponse, StringComparison.OrdinalIgnoreCase)
+                ? DeliverableKinds.CommentResponse
+                : string.Equals(kind, TaskQueueKinds.BuildFix, StringComparison.OrdinalIgnoreCase)
+                    ? DeliverableKinds.BuildFix
+                    : DeliverableKinds.Coding;
+
             var loopRequest = new DeliverableLoopRequest(
                 WorkItemId: workItemId,
                 CrewId: crewId,
@@ -943,13 +1165,47 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 Generator: GeneratorDelegate,
                 Evaluator: EvaluatorDelegate,
                 MaxTaskBudgetUsd: crew.MaxTaskBudgetUsd,
-                EvaluatorCrewId: evaluatorCrewId);
+                EvaluatorCrewId: evaluatorCrewId,
+                Kind: loopKind);
 
             var result = await loop.RunAsync(loopRequest, ct);
 
             this.logger.LogInformation(
                 "Deliverable loop completed: wi={Wi} verdict={Verdict} score={Score} iters={Iters} cost={Cost}",
                 workItemId, result.FinalVerdict, result.FinalScore, result.Iterations, result.TotalCostUsd);
+
+            // Phase 24 Q24.13 livelock guard — for comment-response runs,
+            // track consecutive stalls on the work item. After
+            // CommentResponseStallCap stalls in a row, the next sync-tick
+            // auto-enqueue refuses with a "blocked" path so the lead can
+            // intervene rather than burning more tokens on a comment the
+            // agent can't satisfy. Pass / reject reset the counter.
+            if (string.Equals(loopKind, DeliverableKinds.CommentResponse, StringComparison.Ordinal))
+            {
+                var wiForCount = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
+                if (wiForCount is not null)
+                {
+                    var stalled = result.FinalVerdict == "stalled"
+                        || result.FinalVerdict == "stalled-budget";
+                    if (stalled)
+                    {
+                        wiForCount.CommentResponseStallCount++;
+                        if (wiForCount.CommentResponseStallCount >= PrSyncJob.CommentResponseStallCap)
+                        {
+                            ForgeMetrics.CommentResponseRepeatedStall.Add(1,
+                                new KeyValuePair<string, object?>("workItemId", workItemId));
+                        }
+                    }
+                    else
+                    {
+                        // pass / reject / paused-eod — clear the counter so the
+                        // next stall-streak starts fresh from zero.
+                        wiForCount.CommentResponseStallCount = 0;
+                    }
+                    wiForCount.UpdatedAt = DateTimeOffset.UtcNow;
+                    await db.SaveChangesAsync(ct);
+                }
+            }
 
             // (4) On pass, push the branch server-side and create a PR.
             //     We don't rely on the agent having pushed — agents
@@ -1166,11 +1422,35 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 } // end: pushCwd exists
 
                 // (4b) Create PR via provider API.
+                // Phase 24 Q24.12 — comment-response runs target the EXISTING PR,
+                // never open a new one. The push above flushes the new commit;
+                // the build re-runs naturally on push and the existing PR
+                // continues its lifecycle. Skip the entire PR-create block
+                // for this kind.
+                // Phase 27 Q27.9 — build-fix never opens a new PR (it pushes
+                // to the existing branch and the build re-runs on push).
+                var skipPrCreate = string.Equals(loopKind, DeliverableKinds.CommentResponse, StringComparison.Ordinal)
+                    || string.Equals(loopKind, DeliverableKinds.BuildFix, StringComparison.Ordinal);
+
                 // Track PR creation locally — VerifyPrCreatedAsync checks ALL
                 // historical transcript events, so a task.pr-opened from a
                 // previous execution would incorrectly pass verification.
                 var prCreatedInThisExecution = false;
                 string? prErrorDetail = null;
+                if (skipPrCreate)
+                {
+                    this.logger.LogInformation(
+                        "Comment-response run — skipping PR create; delivering via push to existing PR: wi={Wi}", workItemId);
+                    await this.taskChannel.EmitAsync(workItemId, "task.comment-response-pushed", new
+                    {
+                        agentId, crewId, branch = branchName,
+                    }, crewId: crewId, ct: ct);
+                    // Treat as PR-created for the verification path so the loop
+                    // exits the in-review transition without trying to find a
+                    // new PR row that doesn't exist.
+                    prCreatedInThisExecution = true;
+                }
+                else
                 try
                 {
                     // Resolve the correct provider based on the work item's repo kind.
@@ -1741,6 +2021,155 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         sb.AppendLine("Push to the existing branch with `git push --force-with-lease origin HEAD`.");
         sb.AppendLine("Do NOT open a new PR — the existing PR will receive the new commit.");
         sb.AppendLine("Do NOT mark comments as resolved — only the human reviewer can resolve threads.");
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Phase 27 Q27.10 — build the build-fix prompt for the agent. Carries
+    /// the failed build's pipeline header, parsed FailurePoint rows, the
+    /// 256 KB log tail, the artifact index (file names + sizes only), the
+    /// work-item brief, the PR diff, and recent commit messages. Logs and
+    /// artifacts are NOT inlined verbatim — the agent reads specific files
+    /// via <c>read_file</c>.
+    /// </summary>
+    private static async Task<string> BuildBuildFixPromptAsync(
+        ForgeDbContext db, string workItemId, string title, string desc, CancellationToken ct)
+    {
+        var pr = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.WorkItemId == workItemId, ct);
+        if (pr is null)
+        {
+            return $"Work item: {title}\n\nThis task asked you to fix a failed build, but no PR is linked to this work item.";
+        }
+
+        // Pull the most recent failed build for this PR.
+        var failedBuild = await db.Builds.AsNoTracking()
+            .Where(b => b.PrId == pr.Id && b.State == "failed")
+            .OrderByDescending(b => b.FinishedAt ?? b.StartedAt ?? string.Empty)
+            .FirstOrDefaultAsync(ct);
+        if (failedBuild is null)
+        {
+            return $"Work item: {title}\n\nNo failed build found for PR {pr.Id}.";
+        }
+
+        var stages = await db.BuildStages.AsNoTracking()
+            .Where(s => s.BuildId == failedBuild.Id)
+            .OrderBy(s => s.StageOrder)
+            .ToListAsync(ct);
+
+        var stageIds = stages.Select(s => s.Id).ToList();
+        var failurePoints = await db.BuildFailurePoints.AsNoTracking()
+            .Where(f => stageIds.Contains(f.StageId))
+            .OrderBy(f => f.StageId).ThenBy(f => f.SourceLogTailOffset)
+            .ToListAsync(ct);
+
+        var logRows = await db.BuildStageLogs.AsNoTracking()
+            .Where(l => stageIds.Contains(l.StageId))
+            .ToListAsync(ct);
+
+        var artifacts = await db.BuildArtifacts.AsNoTracking()
+            .Where(a => a.BuildId == failedBuild.Id)
+            .ToListAsync(ct);
+        var artifactIds = artifacts.Select(a => a.Id).ToList();
+        var artifactFiles = await db.BuildArtifactFiles.AsNoTracking()
+            .Where(f => artifactIds.Contains(f.ArtifactId))
+            .ToListAsync(ct);
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Work item: {title}");
+        if (!string.IsNullOrWhiteSpace(desc))
+        {
+            sb.AppendLine();
+            sb.AppendLine("## Original brief");
+            sb.AppendLine(desc.Length > 4000 ? desc[..4000] + "…" : desc);
+        }
+        sb.AppendLine();
+        sb.AppendLine($"## Failed build #{failedBuild.Id} ({failedBuild.PipelineName ?? "unknown pipeline"})");
+        sb.AppendLine($"- Pipeline: {failedBuild.PipelineName ?? "(none)"} (id={failedBuild.PipelineId ?? "(none)"})");
+        sb.AppendLine($"- State: {failedBuild.State}{(string.IsNullOrEmpty(failedBuild.Result) ? string.Empty : $" / result: {failedBuild.Result}")}");
+        sb.AppendLine($"- Branch: `{failedBuild.Branch ?? pr.Branch}`");
+        sb.AppendLine($"- Triggering commit: {failedBuild.TriggeringCommit ?? "(unknown)"}");
+        if (!string.IsNullOrEmpty(failedBuild.WebUrl)) sb.AppendLine($"- Web: {failedBuild.WebUrl}");
+        sb.AppendLine();
+
+        sb.AppendLine("## Parsed failure points");
+        if (failurePoints.Count == 0)
+        {
+            sb.AppendLine("(none — descended into artifact logs; check the artifact index below)");
+        }
+        else
+        {
+            var i = 1;
+            foreach (var f in failurePoints)
+            {
+                var loc = f.FilePath is null
+                    ? string.Empty
+                    : $" — `{f.FilePath}`" + (f.Line.HasValue ? $":{f.Line.Value}" : string.Empty);
+                sb.AppendLine($"{i}. **[{f.Kind}]**{loc}");
+                if (!string.IsNullOrWhiteSpace(f.Message))
+                    sb.AppendLine($"   > {f.Message.Trim()}");
+                if (!string.IsNullOrEmpty(f.PayloadJson))
+                    sb.AppendLine($"   (in artifact: {f.PayloadJson})");
+                i++;
+            }
+        }
+        sb.AppendLine();
+
+        // Truncated log tail of the failed stages.
+        sb.AppendLine("## Failed stage log tails (truncated to ≤ 256 KB total)");
+        const int promptLogBudget = 32 * 1024; // 32 KB chunk per stage in the prompt
+        foreach (var stage in stages)
+        {
+            var log = logRows.FirstOrDefault(l => l.StageId == stage.Id);
+            sb.AppendLine($"### Stage `{stage.StageName}` ({stage.Result})");
+            if (log is null || string.IsNullOrEmpty(log.Content))
+            {
+                sb.AppendLine("(no log content captured)");
+            }
+            else
+            {
+                var snippet = log.Content.Length > promptLogBudget
+                    ? "…" + log.Content[^promptLogBudget..]
+                    : log.Content;
+                sb.AppendLine("```");
+                sb.AppendLine(snippet);
+                sb.AppendLine("```");
+                if (log.TruncatedFromBytes > 0)
+                    sb.AppendLine($"_(log was truncated from {log.TruncatedFromBytes:N0} bytes)_");
+            }
+            sb.AppendLine();
+        }
+
+        // Artifact index (names + sizes only).
+        if (artifacts.Count > 0)
+        {
+            sb.AppendLine("## Artifacts (use `read_file` to inspect contents)");
+            foreach (var a in artifacts)
+            {
+                sb.AppendLine($"### {a.Name}");
+                if (!string.IsNullOrEmpty(a.ExtractedPath))
+                    sb.AppendLine($"Root: `{a.ExtractedPath}`");
+                var files = artifactFiles.Where(f => f.ArtifactId == a.Id).Take(50).ToList();
+                foreach (var f in files)
+                {
+                    sb.AppendLine($"- {(f.IsLog ? "[log] " : string.Empty)}`{f.RelPath}` ({f.SizeBytes:N0} bytes)");
+                }
+                if (artifactFiles.Count(f => f.ArtifactId == a.Id) > 50)
+                {
+                    sb.AppendLine($"…and {artifactFiles.Count(f => f.ArtifactId == a.Id) - 50} more files");
+                }
+                sb.AppendLine();
+            }
+        }
+
+        sb.AppendLine("## Instructions");
+        sb.AppendLine("For each parsed failure point, choose ONE of:");
+        sb.AppendLine("- **Commit a fix** that plausibly addresses the failure point. Push to the existing branch.");
+        sb.AppendLine("- **Post a PR reply** explaining why the failure is non-code (flaky test, infra, env).");
+        sb.AppendLine("  Use the `post_pr_comment_reply` tool with `Build #{n} failure analysis: …` as the body.");
+        sb.AppendLine();
+        sb.AppendLine("Do NOT open a new PR — the existing PR will receive the new commit and the build re-runs on push.");
+        sb.AppendLine("Do NOT manually trigger a new build; the push trigger handles that.");
 
         return sb.ToString();
     }

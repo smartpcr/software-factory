@@ -548,21 +548,43 @@ public static class PrsEndpoints
 
                 // Phase 28 — enrich each PR with iteration / commit / file stats from
                 // dedicated ADO endpoints. The list response doesn't include those.
-                var enriched = new List<Pr>(prs.Count);
-                foreach (var basePr in prs)
+                // Use bounded parallelism + per-PR timeout to prevent hangs.
+                var enriched = new Pr[prs.Count];
+                using var enrichSemaphore = new SemaphoreSlim(4);
+                var enrichTasks = prs.Select(async (basePr, idx) =>
                 {
                     var prIdStr = basePr.Id.Replace("PR #", string.Empty);
                     if (!long.TryParse(prIdStr, out var prIdLong))
                     {
-                        enriched.Add(basePr);
-                        continue;
+                        enriched[idx] = basePr;
+                        return;
                     }
-                    var richer = await AdoPrStats.EnrichAsync(
-                        basePr, client, repo.AdoProject!, adoRepoName!, prIdLong, log, ct);
-                    enriched.Add(richer);
-                }
-                remotePrs = enriched;
-                log.LogInformation("PR sync: {Count} PRs after author filter (enriched)", enriched.Count);
+                    await enrichSemaphore.WaitAsync(ct);
+                    try
+                    {
+                        using var perPrCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        perPrCts.CancelAfter(TimeSpan.FromSeconds(10));
+                        enriched[idx] = await AdoPrStats.EnrichAsync(
+                            basePr, client, repo.AdoProject!, adoRepoName!, prIdLong, log, perPrCts.Token);
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        log.LogWarning("PR sync: enrichment timed out for {PrId}, using base data", basePr.Id);
+                        enriched[idx] = basePr;
+                    }
+                    catch (Exception ex)
+                    {
+                        log.LogWarning(ex, "PR sync: enrichment failed for {PrId}, using base data", basePr.Id);
+                        enriched[idx] = basePr;
+                    }
+                    finally
+                    {
+                        enrichSemaphore.Release();
+                    }
+                });
+                await Task.WhenAll(enrichTasks);
+                remotePrs = enriched.ToList();
+                log.LogInformation("PR sync: {Count} PRs after author filter (enriched)", enriched.Length);
             }
             else if (repo.Kind == "github" && !string.IsNullOrWhiteSpace(repo.GhOwner) && !string.IsNullOrWhiteSpace(repo.GhRepo))
             {
@@ -750,13 +772,37 @@ public static class PrsEndpoints
         await db.SaveChangesAsync(ct);
         log.LogInformation("PR sync: completed — pulled={Pulled} inserted={Inserted} updated={Updated}", remotePrs.Count, inserted, updated);
 
+        // Record a sync-run history entry so the UI Sync History tab shows
+        // manual PR syncs alongside the background pr-delta entries.
+        try
+        {
+            db.Set<Persistence.WorkItemSyncRunRow>().Add(new Persistence.WorkItemSyncRunRow
+            {
+                Id = $"pr-{Guid.NewGuid():N}"[..16],
+                RepoId = req.RepoId,
+                Kind = "pr-manual",
+                StartedAt = DateTimeOffset.UtcNow.ToString("o"),
+                FinishedAt = DateTimeOffset.UtcNow.ToString("o"),
+                ItemsAdded = inserted,
+                ItemsUpdated = updated,
+                ItemsConflicted = 0,
+                CompletedSuccessfully = true,
+            });
+            await db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            log.LogWarning(ex, "PR sync: failed to record sync-run history (non-fatal)");
+        }
+
         // Phase 24/28 — fire-and-forget the comment-sync sweep so users see
         // threads + states populate without waiting for the 20-min background
         // tick. Any failure is logged inside RunSweepAsync; we don't block the
-        // user's response on it.
+        // user's response on it. skipHistory=true because we already recorded
+        // the manual sync-run above.
         _ = Task.Run(async () =>
         {
-            try { await prSyncJob.RunSweepAsync(CancellationToken.None); }
+            try { await prSyncJob.RunSweepAsync(CancellationToken.None, skipHistory: true); }
             catch (Exception ex) { log.LogWarning(ex, "PR sync: post-sync comment sweep failed"); }
         });
 

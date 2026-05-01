@@ -161,6 +161,14 @@ public class WorkstreamRow
     public double BarEnd { get; set; }
 
     public bool Planned { get; set; }
+
+    /// <summary>
+    /// forge_implementation.md Phase 28 — back-pointer to the parent story
+    /// spawn. Null for ad-hoc / pre-spawn workstreams. When set, the
+    /// workstream is one of N parallel workstreams produced by the
+    /// architect's decomposition.
+    /// </summary>
+    public string? StorySpawnId { get; set; }
 }
 
 public class WsEventRow
@@ -984,6 +992,32 @@ public class TaskQueueRow
     /// fixes against the existing PR.
     /// </summary>
     public string Kind { get; set; } = TaskQueueKinds.Work;
+
+    /// <summary>
+    /// Phase 24 Q24.14 — pin the original generator agent for continuity. When
+    /// set, the Sweep 2 picker prefers this agent over round-robin and falls
+    /// through to the lead only if the pinned agent is paused / retired /
+    /// missing. Round-robin to a fresh member is never automatic for a
+    /// pinned row. Null on regular work tasks; populated on comment-response
+    /// enqueue from <c>WorkItemRow.AssignedAgent.agents[0]</c>.
+    /// </summary>
+    public string? PreferredAgentId { get; set; }
+
+    /// <summary>
+    /// Phase 24 Q24.14 — recorded reason when the pin falls through. One of
+    /// 'preferred-agent-paused' | 'preferred-agent-not-in-crew' |
+    /// 'preferred-agent-missing' | 'original-agent-pin' (succeeded). Null
+    /// before claim. Surfaces on the queue history audit row so the trail is
+    /// loud about why round-robin was skipped or why the lead self-assigned.
+    /// </summary>
+    public string? PinReason { get; set; }
+
+    /// <summary>
+    /// Phase 24 Q24.14 — surfaces why a row went to <see cref="TaskQueueStates.Blocked"/>.
+    /// Always null for non-blocked rows. Read by the lead inbox banner so the
+    /// operator can see <c>comment-response.no_original_agent</c> at a glance.
+    /// </summary>
+    public string? LastError { get; set; }
 }
 
 /// <summary>Phase 24 — well-known values for <see cref="TaskQueueRow.Kind"/>.</summary>
@@ -991,6 +1025,21 @@ public static class TaskQueueKinds
 {
     public const string Work = "work";
     public const string CommentResponse = "comment-response";
+
+    /// <summary>
+    /// Phase 27 — fix a failed CI build for an existing PR. Enters the same
+    /// queue / worker / DeliverableLoop as <see cref="CommentResponse"/>;
+    /// pinned to the original generator agent (Q27.7). Idempotent against
+    /// the per-work-item open-rows partial unique index.
+    /// </summary>
+    public const string BuildFix = "build-fix";
+
+    /// <summary>
+    /// Phase 27 — work-item-level coding kind, used by the original Phase 17
+    /// pipeline. Re-declared here so consumers can reference all queue kinds
+    /// from a single static table for switch / display.
+    /// </summary>
+    public const string Coding = "coding";
 }
 
 /// <summary>
@@ -1035,8 +1084,17 @@ public static class TaskQueueStates
     public const string Cancelled     = "cancelled";
     public const string Reassigned    = "reassigned";
 
+    /// <summary>
+    /// Q24.14 — preferred agent unavailable AND lead unavailable; the row is
+    /// awaiting human PO-tier intervention via the manual-assign endpoint.
+    /// Counts as open so a duplicate auto-enqueue returns the existing
+    /// blocked row instead of duplicating; the operator unblocks by manually
+    /// reassigning a different generator.
+    /// </summary>
+    public const string Blocked      = "blocked";
+
     /// <summary>Open states count against the per-work-item idempotency guard.</summary>
-    public static readonly string[] OpenStates = { AwaitingAck, AwaitingRoute, Queued, PickedUp };
+    public static readonly string[] OpenStates = { AwaitingAck, AwaitingRoute, Queued, PickedUp, Blocked };
 }
 
 /// <summary>
@@ -1293,6 +1351,17 @@ public class WorkItemRow
     /// <see cref="AssignedToJson"/> which carries the WIT-level assignee.
     /// </summary>
     public string? AssignedAgentJson { get; set; }
+
+    /// <summary>
+    /// Phase 24 Q24.13 livelock guard — counts consecutive stalled
+    /// comment-response deliverables on this work item. Reset to zero on any
+    /// non-stalled outcome (pass / iterate that ends in pass / reject).
+    /// When this hits <see cref="CommentResponseStallCap"/>, the next
+    /// auto-enqueue refuses with <c>state='blocked'</c> and a lead inbox
+    /// banner so the agent doesn't loop forever on a comment it can't
+    /// satisfy.
+    /// </summary>
+    public int CommentResponseStallCount { get; set; }
 }
 
 /// <summary>
@@ -1582,4 +1651,316 @@ public class SyncRunItemRow
 
     /// <summary>Optional — the provider reference number (ADO WIT id or GitHub issue #).</summary>
     public int? ProviderRef { get; set; }
+}
+
+/// <summary>
+/// forge_implementation.md Phase 27 — one row per upstream pipeline run.
+/// Keyed (Provider, ProviderBuildId); FK loose to <see cref="PrRow"/>. Carries
+/// the per-build state (queued | running | not-started | succeeded | failed |
+/// partially-succeeded | canceled), result (provider-native string), the
+/// commit SHA that triggered the run, and the standard sync quintet.
+/// <see cref="IsActive"/> tracks whether the build is still running so the
+/// scheduled <c>BuildSyncJob</c> can stop polling terminal builds (Q27.11).
+/// </summary>
+public class BuildRow
+{
+    public long Id { get; set; }
+
+    /// <summary>One of: <c>ado | github</c>.</summary>
+    public string Provider { get; set; } = string.Empty;
+
+    /// <summary>Upstream-native build id (numeric for ADO, run id for GitHub Actions).</summary>
+    public string ProviderBuildId { get; set; } = string.Empty;
+
+    /// <summary>FK → <see cref="PrRow.Id"/>; null when the build was discovered before the PR was tracked.</summary>
+    public string? PrId { get; set; }
+
+    public string RepoId { get; set; } = string.Empty;
+
+    /// <summary>Pipeline / workflow id (ADO definition id; GitHub workflow id).</summary>
+    public string? PipelineId { get; set; }
+
+    public string? PipelineName { get; set; }
+
+    /// <summary>One of: queued | running | not-started | succeeded | failed | partially-succeeded | canceled.</summary>
+    public string State { get; set; } = "queued";
+
+    /// <summary>Provider-native result (ADO: succeeded|failed|partiallySucceeded|canceled; GH: success|failure|cancelled|...).</summary>
+    public string? Result { get; set; }
+
+    /// <summary>The commit SHA that triggered this build run.</summary>
+    public string? TriggeringCommit { get; set; }
+
+    public string? Branch { get; set; }
+
+    public string? WebUrl { get; set; }
+
+    public string? StartedAt { get; set; }
+
+    public string? FinishedAt { get; set; }
+
+    public string? LastSyncAt { get; set; }
+
+    public string LastSyncStatus { get; set; } = "idle";
+
+    public string? LastSyncError { get; set; }
+
+    public string? IsRunningSince { get; set; }
+
+    /// <summary>True while <see cref="State"/> is in (queued|running|not-started); flips false on first terminal transition (Q27.11).</summary>
+    public bool IsActive { get; set; } = true;
+}
+
+/// <summary>
+/// Phase 27 — per-leaf-stage detail for a build. One row per failed leaf
+/// (Q27.3). Successful builds skip stage population.
+/// </summary>
+public class BuildStageRow
+{
+    public long Id { get; set; }
+
+    public long BuildId { get; set; }
+
+    /// <summary>Provider-native ref — ADO timeline record id; GH job id.</summary>
+    public string ProviderStageRef { get; set; } = string.Empty;
+
+    public string StageName { get; set; } = string.Empty;
+
+    public int StageOrder { get; set; }
+
+    public string State { get; set; } = string.Empty;
+
+    public string? Result { get; set; }
+
+    public string? StartedAt { get; set; }
+
+    public string? FinishedAt { get; set; }
+
+    /// <summary>Provider-side log id / job id for the per-step log fetch.</summary>
+    public string? LogRef { get; set; }
+
+    /// <summary>SHA-256 of the persisted log tail content; identical hash on re-fetch is a no-op (Q27.4).</summary>
+    public string? LogTailHash { get; set; }
+}
+
+/// <summary>
+/// Phase 27 — tail-truncated log content for a stage. Composite key
+/// (StageId, LogIndex). <see cref="TruncatedFromBytes"/> records the
+/// upstream size before tail-truncation so the UI can show
+/// "log truncated from 1.2 MB" (Q27.4).
+/// </summary>
+public class BuildStageLogRow
+{
+    public long StageId { get; set; }
+
+    public int LogIndex { get; set; }
+
+    public string Content { get; set; } = string.Empty;
+
+    public int SizeBytes { get; set; }
+
+    public int TruncatedFromBytes { get; set; }
+
+    public string FetchedAt { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Phase 27 — extracted artifact metadata (Q27.5). The actual files live
+/// under <see cref="ExtractedPath"/>; <see cref="BuildArtifactFileRow"/>
+/// indexes them.
+/// </summary>
+public class BuildArtifactRow
+{
+    public long Id { get; set; }
+
+    public long BuildId { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+
+    public string? DownloadUrl { get; set; }
+
+    public long SizeBytes { get; set; }
+
+    public string? ExtractedPath { get; set; }
+
+    public string? FetchedAt { get; set; }
+
+    public string? ExpiredAt { get; set; }
+}
+
+/// <summary>
+/// Phase 27 — indexed file inside an extracted artifact. <see cref="IsLog"/>
+/// is set when the file extension is in (.log | .txt | .trx | .xml) so the
+/// agent prompt can prioritize them (Q27.5).
+/// </summary>
+public class BuildArtifactFileRow
+{
+    public long Id { get; set; }
+
+    public long ArtifactId { get; set; }
+
+    public string RelPath { get; set; } = string.Empty;
+
+    public long SizeBytes { get; set; }
+
+    public bool IsLog { get; set; }
+}
+
+/// <summary>
+/// Phase 27 — parsed FailurePoint row, persisted by
+/// <c>BuildFailureParser</c>. Multi-failure logs produce multiple rows
+/// (Q27.6). <see cref="SourceLogTailOffset"/> is the byte offset of the
+/// match within the persisted log tail (or -1 when the match was found in
+/// an extracted artifact log per Pass 1.5).
+/// </summary>
+public class BuildFailurePointRow
+{
+    public long Id { get; set; }
+
+    public long StageId { get; set; }
+
+    /// <summary>One of: compile | build | test | runtime | npm | other.</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    public string? FilePath { get; set; }
+
+    public int? Line { get; set; }
+
+    public int? Column { get; set; }
+
+    public string Message { get; set; } = string.Empty;
+
+    /// <summary>Byte offset in the stage tail (or -1 when the match was in an artifact log; payload carries name + relPath).</summary>
+    public int SourceLogTailOffset { get; set; }
+
+    public string? Severity { get; set; }
+
+    /// <summary>Optional JSON payload — used by Pass 1.5 to carry { artifactName, relPath } for artifact-found matches.</summary>
+    public string? PayloadJson { get; set; }
+}
+
+/// <summary>
+/// Phase 27 Q27.12 — staging row for a deferred build-fix enqueue. Written
+/// when a build failure lands while another open queue row for the same
+/// work item is in flight (typically <c>comment-response</c> or
+/// <c>coding</c>). The completion hook in <c>TaskQueueService</c> drains
+/// these rows and promotes them to real <c>task_queue</c> rows when the
+/// blocking row reaches a terminal state.
+/// </summary>
+public class BuildFixPendingRow
+{
+    public long Id { get; set; }
+
+    public string WorkItemId { get; set; } = string.Empty;
+
+    public long BuildId { get; set; }
+
+    public string EnqueuedAt { get; set; } = string.Empty;
+
+    public string? ReasonJson { get; set; }
+}
+
+/// <summary>
+/// Phase 27 — operator annotation on a build (Q27.6 fall-through path).
+/// <see cref="Category"/> is one of <c>infra | flaky-test | env | code</c>;
+/// the auto-enqueue suppresses subsequent failures with the same fingerprint
+/// when category != <c>code</c>.
+/// </summary>
+public class BuildAnnotationRow
+{
+    public long Id { get; set; }
+
+    public long BuildId { get; set; }
+
+    public string Category { get; set; } = string.Empty;
+
+    public string? RootCause { get; set; }
+
+    /// <summary>JSON array of file paths the operator suggests inspecting.</summary>
+    public string? SuggestedFiles { get; set; }
+
+    public string? ByUserId { get; set; }
+
+    public string At { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// forge_implementation.md Phase 28 — story spawn row. The unit of end-to-end
+/// delivery: a multi-team orchestrated lifecycle that progresses through
+/// plan → decompose → implement → review → qa → done. Each phase is gated
+/// (the next phase cannot start until the current phase's artifacts are
+/// committed via a merged PR).
+/// </summary>
+public class StorySpawnRow
+{
+    /// <summary>Primary key, e.g. "spawn-{storyId}".</summary>
+    public string Id { get; set; } = string.Empty;
+
+    /// <summary>ADO work item id (Feature / Epic / PBI) the story tracks.</summary>
+    public string StoryId { get; set; } = string.Empty;
+
+    /// <summary>Display title sourced from the upstream work item.</summary>
+    public string StoryTitle { get; set; } = string.Empty;
+
+    /// <summary>Repo this story spawns into. FK to <see cref="RepoRow"/>; nullable for legacy / unbound rows.</summary>
+    public string? RepoId { get; set; }
+
+    /// <summary>One of: <c>plan | decompose | implement | review | qa | done</c>.</summary>
+    public string Phase { get; set; } = StorySpawnPhases.Plan;
+
+    /// <summary>Branch holding planning artifacts, e.g. "story/{storyId}/plan".</summary>
+    public string? PlanBranch { get; set; }
+
+    /// <summary>PR id for the planning artifacts; null until plan PR is opened.</summary>
+    public string? PlanPrId { get; set; }
+
+    /// <summary>JSON: array of <c>{ id, title, description, acceptanceCriteria, deps[], deliverables[], timeline, estimatedEffort }</c>.</summary>
+    public string? DecompositionJson { get; set; }
+
+    /// <summary>True when the operator has approved the decomposition (gate to phase=implement).</summary>
+    public bool DecompositionApproved { get; set; }
+
+    /// <summary>Branch holding the QA feature files, e.g. "story/{storyId}/qa".</summary>
+    public string? QaBranch { get; set; }
+
+    /// <summary>PR id for the QA feature files; null until the QA PR is opened.</summary>
+    public string? QaPrId { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>Well-known phase constants for <see cref="StorySpawnRow.Phase"/>.</summary>
+public static class StorySpawnPhases
+{
+    public const string Plan = "plan";
+    public const string Decompose = "decompose";
+    public const string Implement = "implement";
+    public const string Review = "review";
+    public const string Qa = "qa";
+    public const string Done = "done";
+
+    /// <summary>
+    /// Ordered phase list. Phase rollback is rejected (Phase 28 non-goal),
+    /// so an advance is allowed only when the target index is exactly
+    /// current + 1, or terminal "done" when the completion check passes.
+    /// </summary>
+    public static readonly string[] Order = { Plan, Decompose, Implement, Review, Qa, Done };
+
+    public static int IndexOf(string phase) => Array.IndexOf(Order, phase);
+}
+
+/// <summary>
+/// forge_implementation.md Phase 28 — inter-workstream dependency edge. A
+/// workstream cannot start until every <see cref="DependsOnId"/> entry has
+/// its PR merged. Composite primary key (WorkstreamId, DependsOnId).
+/// </summary>
+public class WorkstreamDepRow
+{
+    public string WorkstreamId { get; set; } = string.Empty;
+
+    public string DependsOnId { get; set; } = string.Empty;
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }

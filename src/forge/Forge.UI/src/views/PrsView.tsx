@@ -24,6 +24,11 @@ export function PrsView() {
   const prs = usePrsStore((s) => s.prs);
   const load = usePrsStore((s) => s.load);
   const filter = usePrsStore((s) => s.filter);
+  const authorFilter = usePrsStore((s) => s.authorFilter);
+  const workstreamFilter = usePrsStore((s) => s.workstreamFilter);
+  const searchQuery = usePrsStore((s) => s.searchQuery);
+  const dateFrom = usePrsStore((s) => s.dateFrom);
+  const dateTo = usePrsStore((s) => s.dateTo);
   const setSelected = usePrsStore((s) => s.setSelected);
   const toggleAutoMerge = usePrsStore((s) => s.toggleAutoMerge);
   const [syncOpen, setSyncOpen] = useState(false);
@@ -35,7 +40,10 @@ export function PrsView() {
     try { window.localStorage.setItem(LAYOUT_KEY, layout); } catch { /* ignore */ }
   }, [layout]);
 
-  const filtered = useMemo(() => filterPrs(prs, filter), [prs, filter]);
+  const filtered = useMemo(
+    () => filterPrs(prs, filter, authorFilter, workstreamFilter, searchQuery, dateFrom, dateTo),
+    [prs, filter, authorFilter, workstreamFilter, searchQuery, dateFrom, dateTo],
+  );
 
   const openCount = prs.length;
   const needApproval = prs.filter((p) => p.humanGate).length;

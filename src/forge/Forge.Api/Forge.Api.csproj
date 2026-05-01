@@ -31,4 +31,16 @@
     </Content>
   </ItemGroup>
 
+  <!-- Phase 24 Q24.13 — copy the comment-response system template (and any
+       sibling system-preamble templates) into the build output so the runtime
+       can load them at agents/templates/*.md without a publish step. The
+       template files live in the repo root's agents/templates/ folder; the
+       Link metadata flattens them into agents/templates/ relative to the
+       output directory. Operators can replace the deployed file in place. -->
+  <ItemGroup>
+    <Content Include="..\..\..\agents\templates\*.md" LinkBase="agents\templates">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

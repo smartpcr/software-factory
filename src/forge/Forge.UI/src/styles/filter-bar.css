@@ -81,3 +81,78 @@
 .filter-search:focus-within { border-color: var(--border-strong); }
 .filter-search input { width: 100%; font-size: 11px; }
 .filter-search input::placeholder { color: var(--text-tertiary); }
+
+/* ---- Filter dropdown popover ---- */
+.filter-dropdown-wrap { display: inline-flex; }
+.filter-dropdown-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 100;
+  min-width: 180px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 4px 0;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.filter-dropdown-empty {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.filter-dropdown-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 80ms;
+}
+.filter-dropdown-option:hover { background: var(--bg-sunken); color: var(--text-primary); }
+.filter-dropdown-option input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+.filter-dropdown-option-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- Date range filter ---- */
+.filter-date-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 11px;
+  color: var(--text-secondary);
+  transition: border-color 120ms;
+}
+.filter-date-range:focus-within { border-color: var(--border-strong); }
+.filter-date-label {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.filter-date-input {
+  width: 110px;
+  font-size: 11px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+.filter-date-input::-webkit-calendar-picker-indicator { filter: invert(0.7); }

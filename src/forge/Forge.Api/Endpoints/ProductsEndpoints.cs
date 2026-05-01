@@ -892,14 +892,22 @@ public static class ProductsEndpoints
         string id,
         ForgeDbContext db,
         [FromQuery] int? limit,
+        [FromQuery] string? target,
         CancellationToken ct)
     {
         var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
         if (repo is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         var max = Math.Clamp(limit ?? 20, 1, 100);
-        var runs = await db.WorkItemSyncRuns
-            .Where(r => r.RepoId == id)
+        var query = db.WorkItemSyncRuns.Where(r => r.RepoId == id);
+
+        // Filter by target: "wi" = work-item runs, "pr" = PR runs.
+        if (string.Equals(target, "pr", StringComparison.OrdinalIgnoreCase))
+            query = query.Where(r => r.Kind.StartsWith("pr-"));
+        else if (string.Equals(target, "wi", StringComparison.OrdinalIgnoreCase))
+            query = query.Where(r => !r.Kind.StartsWith("pr-"));
+
+        var runs = await query
             .OrderByDescending(r => r.StartedAt)
             .Take(max)
             .Select(r => new

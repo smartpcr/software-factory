@@ -248,6 +248,12 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
       });
       const summary = `${result.pulled} pulled · ${result.inserted} new · ${result.updated} updated`;
       toast(`PR sync completed · ${summary}`, 'success');
+      // Refresh history so the new pr-manual entry appears immediately.
+      setRuns(null);
+      fetch(`/api/repos/${encodeURIComponent(repo.id)}/sync-work-items/runs?limit=50`)
+        .then((r) => r.ok ? r.json() : [])
+        .then((rs: WorkItemSyncRun[]) => setRuns(rs))
+        .catch(() => {});
     } catch (e) {
       toast(e instanceof Error ? e.message : 'PR sync failed', 'danger');
     } finally {

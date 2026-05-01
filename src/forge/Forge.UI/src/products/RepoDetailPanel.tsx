@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { forgeApi } from '@/api/forgeApi';
 import type { BuildValidationRun, ValidateStep } from '@/api/forgeApi';
 import type { Repo, WorkItemSyncRun } from '@/types';
@@ -17,23 +17,32 @@ interface Props {
  */
 export function RepoDetailPanel({ repo }: Props) {
   const [tab, setTab] = useState<Tab>('build');
+  const [clearFn, setClearFn] = useState<(() => Promise<void>) | null>(null);
+
+  // Wrap setClearFn so child components can pass a function value without
+  // React interpreting it as a functional state update (which would invoke
+  // the clear callback immediately instead of storing it).
+  const handleClearReady = useCallback((fn: (() => Promise<void>) | null) => {
+    setClearFn(() => fn);
+  }, []);
 
   return (
     <div style={{
       background: 'color-mix(in srgb, var(--bg-surface) 60%, transparent)',
       border: '1px solid var(--border-subtle)',
       borderRadius: 'var(--radius-sm)',
-      margin: '4px 0 8px',
-      overflow: 'hidden',
+      margin: '4px -12px 8px',
+      padding: 0,
+      minWidth: 0,
     }}>
-      {/* Tab bar */}
+      {/* Tab bar + clear button */}
       <div style={{
-        display: 'flex', gap: 0,
+        display: 'flex', gap: 0, alignItems: 'center',
         borderBottom: '1px solid var(--border-subtle)',
         background: 'color-mix(in srgb, var(--bg-base) 40%, transparent)',
       }}>
         {([
-          ['build', '🔨 Build History'],
+          ['build', '🔨 Build'],
           ['wi-sync', '📋 WI Sync'],
           ['pr-sync', '🔀 PR Sync'],
         ] as [Tab, string][]).map(([id, label]) => (
@@ -52,13 +61,18 @@ export function RepoDetailPanel({ repo }: Props) {
             {label}
           </button>
         ))}
+        {clearFn && (
+          <div style={{ marginLeft: 'auto', paddingRight: 8 }}>
+            <ClearHistoryButton label="🗑 Clear" title="Clear history for this tab" onClick={clearFn} />
+          </div>
+        )}
       </div>
 
       {/* Tab content */}
-      <div style={{ padding: '8px 12px', maxHeight: 320, overflowY: 'auto' }}>
-        {tab === 'build' && <BuildHistoryTab repo={repo} />}
-        {tab === 'wi-sync' && <SyncHistoryTab repo={repo} kind="wi" />}
-        {tab === 'pr-sync' && <SyncHistoryTab repo={repo} kind="pr" />}
+      <div style={{ padding: '8px 12px' }}>
+        {tab === 'build' && <BuildHistoryTab repo={repo} onClearReady={handleClearReady} />}
+        {tab === 'wi-sync' && <SyncHistoryTab repo={repo} kind="wi" onClearReady={handleClearReady} />}
+        {tab === 'pr-sync' && <SyncHistoryTab repo={repo} kind="pr" onClearReady={handleClearReady} />}
       </div>
     </div>
   );
@@ -68,7 +82,7 @@ export function RepoDetailPanel({ repo }: Props) {
 // Build History Tab
 // ═══════════════════════════════════════════════════════════════════════
 
-function BuildHistoryTab({ repo }: { repo: Repo }) {
+function BuildHistoryTab({ repo, onClearReady }: { repo: Repo; onClearReady: (fn: (() => Promise<void>) | null) => void }) {
   const [runs, setRuns] = useState<BuildValidationRun[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -82,6 +96,15 @@ function BuildHistoryTab({ repo }: { repo: Repo }) {
     setLoading(true);
     forgeApi.getValidationRuns(repo.id).then(setRuns).catch(() => {}).finally(() => setLoading(false));
   }, [repo.id]);
+
+  // Register clear callback — use ref to avoid re-render loops.
+  const onClearRef = useRef(onClearReady);
+  onClearRef.current = onClearReady;
+  useEffect(() => {
+    if (runs.length === 0) { onClearRef.current(null); return; }
+    onClearRef.current(async () => { await forgeApi.clearValidationRuns(repo.id); refresh(); });
+    return () => onClearRef.current(null);
+  }, [runs.length, repo.id, refresh]);
 
   // Poll while any run is active.
   const hasActive = runs.some((r) => r.status === 'queued' || r.status === 'running');
@@ -114,10 +137,7 @@ function BuildHistoryTab({ repo }: { repo: Repo }) {
         <span>Started</span>
         <span>Steps</span>
         <span>By</span>
-        <ClearHistoryButton label="Clear" title="Clear completed validation runs" onClick={async () => {
-          await forgeApi.clearValidationRuns(repo.id);
-          refresh();
-        }} />
+        <span />
       </div>
 
       {runs.map((run) => {
@@ -192,32 +212,35 @@ function BuildHistoryTab({ repo }: { repo: Repo }) {
 // Sync History Tab (shared for WI and PR)
 // ═══════════════════════════════════════════════════════════════════════
 
-function SyncHistoryTab({ repo, kind }: { repo: Repo; kind: 'wi' | 'pr' }) {
+function SyncHistoryTab({ repo, kind, onClearReady }: { repo: Repo; kind: 'wi' | 'pr'; onClearReady: (fn: (() => Promise<void>) | null) => void }) {
   const [runs, setRuns] = useState<WorkItemSyncRun[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (kind === 'pr') {
-      // PR sync does not yet have its own run history table.
-      setRuns([]);
-      setLoading(false);
-      return;
-    }
     setLoading(true);
-    fetch(`/api/repos/${encodeURIComponent(repo.id)}/sync-work-items/runs?limit=20`)
+    fetch(`/api/repos/${encodeURIComponent(repo.id)}/sync-work-items/runs?limit=20&target=${kind}`)
       .then((r) => r.ok ? r.json() : [])
       .then((data: WorkItemSyncRun[]) => setRuns(Array.isArray(data) ? data : []))
       .catch(() => setRuns([]))
       .finally(() => setLoading(false));
   }, [repo.id, kind]);
 
+  // Register clear callback — use ref to avoid re-render loops.
+  const onClearRef = useRef(onClearReady);
+  onClearRef.current = onClearReady;
+  useEffect(() => {
+    if (runs.length === 0) { onClearRef.current(null); return; }
+    onClearRef.current(async () => { await forgeApi.clearSyncRuns(repo.id); setRuns([]); });
+    return () => onClearRef.current(null);
+  }, [runs.length, repo.id]);
+
   if (loading) return <Placeholder>Loading…</Placeholder>;
-  if (runs.length === 0) return <Placeholder>{kind === 'pr' ? 'PR sync history is not yet tracked separately. PR syncs run as part of the background sync sweep.' : 'No work item sync runs yet.'}</Placeholder>;
+  if (runs.length === 0) return <Placeholder>No {kind === 'wi' ? 'work item' : 'PR'} sync runs yet.</Placeholder>;
 
   return (
     <div style={{ display: 'grid', gap: 1 }}>
       <div style={{
-        display: 'grid', gridTemplateColumns: '20px 1fr 80px 60px 60px 60px 50px',
+        display: 'grid', gridTemplateColumns: '20px 1fr 80px 60px 60px 60px',
         gap: 8, padding: '2px 4px', fontSize: 10, fontWeight: 700,
         textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-tertiary)',
         borderBottom: '1px solid var(--border-subtle)', alignItems: 'center',
@@ -228,16 +251,12 @@ function SyncHistoryTab({ repo, kind }: { repo: Repo; kind: 'wi' | 'pr' }) {
         <span>Added</span>
         <span>Updated</span>
         <span>Conflicts</span>
-        <ClearHistoryButton label="Clear" title="Clear all sync run history" onClick={async () => {
-          await forgeApi.clearSyncRuns(repo.id);
-          setRuns([]);
-        }} />
       </div>
       {runs.map((run) => {
         const ok = run.completedSuccessfully !== false && !run.errorMessage;
         return (
           <div key={run.id} style={{
-            display: 'grid', gridTemplateColumns: '20px 1fr 80px 60px 60px 60px 50px',
+            display: 'grid', gridTemplateColumns: '20px 1fr 80px 60px 60px 60px',
             gap: 8, padding: '4px 4px', fontSize: 11, alignItems: 'center',
           }}
             title={run.errorMessage ?? undefined}
@@ -264,7 +283,6 @@ function SyncHistoryTab({ repo, kind }: { repo: Repo; kind: 'wi' | 'pr' }) {
             <span style={{ textAlign: 'center', color: run.itemsConflicted > 0 ? 'rgb(220,38,38)' : 'var(--text-tertiary)' }}>
               {run.itemsConflicted > 0 ? run.itemsConflicted : '—'}
             </span>
-            <span />
           </div>
         );
       })}
@@ -364,31 +382,45 @@ function Placeholder({ children }: { children: React.ReactNode }) {
 }
 
 function ClearHistoryButton({ label, title, onClick }: { label: string; title: string; onClick: () => Promise<void> }) {
+  const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const toast = useToastStore((s) => s.show);
+
+  if (confirming) {
+    return (
+      <div style={{
+        display: 'flex', gap: 6, alignItems: 'center',
+        background: 'color-mix(in srgb, rgb(220,38,38) 10%, transparent)',
+        border: '1px solid rgba(220,38,38,0.3)',
+        borderRadius: 'var(--radius-sm)', padding: '4px 8px',
+      }}>
+        <span style={{ fontSize: 11, color: 'rgb(220,38,38)' }}>Clear all history?</span>
+        <button type="button" disabled={busy} onClick={() => {
+          setBusy(true);
+          onClick()
+            .then(() => { toast('History cleared', 'info'); setConfirming(false); })
+            .catch(() => toast('Failed to clear', 'danger'))
+            .finally(() => setBusy(false));
+        }} style={{
+          padding: '2px 8px', fontSize: 10, fontWeight: 700,
+          background: 'rgb(220,38,38)', color: '#fff',
+          border: 'none', borderRadius: 3, cursor: 'pointer',
+        }}>{busy ? '…' : 'Yes, clear'}</button>
+        <button type="button" onClick={() => setConfirming(false)} style={{
+          padding: '2px 8px', fontSize: 10, fontWeight: 600,
+          background: 'none', color: 'var(--text-tertiary)',
+          border: '1px solid var(--border-subtle)', borderRadius: 3, cursor: 'pointer',
+        }}>Cancel</button>
+      </div>
+    );
+  }
+
   return (
-    <button
-      type="button"
-      title={title}
-      disabled={busy}
-      onClick={(e) => {
-        e.stopPropagation();
-        if (!window.confirm('Clear all history? This cannot be undone.')) return;
-        setBusy(true);
-        onClick()
-          .then(() => toast('History cleared', 'info'))
-          .catch(() => toast('Failed to clear', 'danger'))
-          .finally(() => setBusy(false));
-      }}
-      style={{
-        padding: '1px 5px', fontSize: 9, fontWeight: 600,
-        background: 'rgba(255,255,255,0.06)', color: 'var(--text-tertiary)',
-        border: '1px solid rgba(255,255,255,0.1)', borderRadius: 3,
-        cursor: 'pointer', justifySelf: 'end',
-      }}
-    >
-      {busy ? '…' : label}
-    </button>
+    <button type="button" title={title} onClick={() => setConfirming(true)} style={{
+      padding: '2px 8px', fontSize: 10, fontWeight: 600,
+      background: 'rgba(255,255,255,0.06)', color: 'var(--text-tertiary)',
+      border: '1px solid rgba(255,255,255,0.1)', borderRadius: 3, cursor: 'pointer',
+    }}>{label}</button>
   );
 }
 

@@ -82,7 +82,7 @@ public sealed class PrSyncJob : BackgroundService
     /// Run one tick. Public so an ad-hoc operator endpoint or a test can
     /// invoke it without spinning the BackgroundService loop.
     /// </summary>
-    public async Task RunSweepAsync(CancellationToken ct)
+    public async Task RunSweepAsync(CancellationToken ct, bool skipHistory = false)
     {
         List<PrSyncCandidate> candidates;
         using (var scope = this.scopeFactory.CreateScope())
@@ -121,6 +121,35 @@ public sealed class PrSyncJob : BackgroundService
         });
 
         await Task.WhenAll(tasks);
+
+        // Record per-repo PR sync run history (skip when the caller
+        // already recorded a manual sync-run entry to avoid duplicates).
+        if (!skipHistory)
+        {
+            var repoGroups = candidates.GroupBy(c => c.RepoId).Where(g => !string.IsNullOrEmpty(g.Key));
+            if (repoGroups.Any())
+            {
+                using var histScope = this.scopeFactory.CreateScope();
+                var histDb = histScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var now2 = DateTimeOffset.UtcNow;
+                foreach (var g in repoGroups)
+                {
+                    histDb.WorkItemSyncRuns.Add(new Persistence.WorkItemSyncRunRow
+                    {
+                        Id = $"pr-{Guid.NewGuid():N}"[..16],
+                        RepoId = g.Key!,
+                        Kind = "pr-delta",
+                        StartedAt = now2.ToString("o"),
+                        FinishedAt = now2.ToString("o"),
+                        ItemsAdded = 0,
+                        ItemsUpdated = g.Count(),
+                        ItemsConflicted = 0,
+                        CompletedSuccessfully = true,
+                    });
+                }
+                await histDb.SaveChangesAsync(ct);
+            }
+        }
     }
 
     /// <summary>
@@ -460,9 +489,31 @@ public sealed class PrSyncJob : BackgroundService
         var hasAttention = await db.PrComments.AnyAsync(c => c.PrId == candidate.PrId && c.RequiresAttention, ct);
         if (!hasAttention) return;
 
+        // Q24.13 livelock guard — refuse to re-enqueue when the agent has
+        // stalled three times in a row on this work item; raise the lead's
+        // attention rather than burning more tokens on a comment the agent
+        // can't satisfy.
+        if (wi.CommentResponseStallCount >= CommentResponseStallCap)
+        {
+            await this.hub.Clients.All.SendAsync("task.comment-response-blocked",
+                new
+                {
+                    workItemId = candidate.WorkItemId,
+                    prId = candidate.PrId,
+                    reason = "comment-response.repeated_stall",
+                    stallCount = wi.CommentResponseStallCount,
+                }, ct);
+            return;
+        }
+
         // Resolve crew id from AssignedAgentJson.
         var crewId = ResolveCrewId(wi.AssignedAgentJson);
         if (string.IsNullOrEmpty(crewId)) return;
+
+        // Q24.14 — pin the original generator so continuity wins over load
+        // balancing. The Sweep 2 picker reads PreferredAgentId before falling
+        // back to round-robin / lead.
+        var preferredAgentId = ResolvePreferredAgentId(wi.AssignedAgentJson);
 
         // Idempotency: skip when an open comment-response row already exists.
         var openStates = TaskQueueStates.OpenStates.ToList();
@@ -474,11 +525,24 @@ public sealed class PrSyncJob : BackgroundService
 
         using var s = this.scopeFactory.CreateScope();
         var queue = s.ServiceProvider.GetRequiredService<ITaskQueueService>();
-        await queue.EnqueueAsync(candidate.WorkItemId!, "crew", crewId, ct, kind: TaskQueueKinds.CommentResponse);
+        await queue.EnqueueAsync(
+            candidate.WorkItemId!,
+            "crew",
+            crewId,
+            ct,
+            kind: TaskQueueKinds.CommentResponse,
+            preferredAgentId: preferredAgentId);
 
         await this.hub.Clients.All.SendAsync("task.comment-needs-response",
-            new { workItemId = candidate.WorkItemId, prId = candidate.PrId }, ct);
+            new { workItemId = candidate.WorkItemId, prId = candidate.PrId, preferredAgentId }, ct);
     }
+
+    /// <summary>
+    /// Q24.13 — once a comment-response work item stalls this many consecutive
+    /// times, auto-enqueue refuses with state='blocked' and the lead's inbox
+    /// banner takes over.
+    /// </summary>
+    public const int CommentResponseStallCap = 3;
 
     private static string? ResolveCrewId(string? assignedAgentJson)
     {
@@ -493,6 +557,43 @@ public sealed class PrSyncJob : BackgroundService
         }
         catch { /* swallow */ }
         return null;
+    }
+
+    /// <summary>
+    /// Q24.14 — read <c>agents[0]</c> from the Phase 22 AssignedAgent JSON.
+    /// The first array element is the canonical "driver" (generator under
+    /// role='generator', reviewer under role='reviewer'); the comment-response
+    /// pin always targets the original generator.
+    /// </summary>
+    private static string? ResolvePreferredAgentId(string? assignedAgentJson)
+    {
+        if (string.IsNullOrEmpty(assignedAgentJson)) return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(assignedAgentJson);
+            // Try both casings — the contract uses Pascal but seed/manual
+            // assignments sometimes serialize camel-case.
+            if (TryGetAgentsFirst(doc.RootElement, "agents", out var lower)) return lower;
+            if (TryGetAgentsFirst(doc.RootElement, "Agents", out var upper)) return upper;
+        }
+        catch { /* swallow — defensive on malformed JSON */ }
+        return null;
+
+        static bool TryGetAgentsFirst(System.Text.Json.JsonElement root, string name, out string? value)
+        {
+            value = null;
+            if (!root.TryGetProperty(name, out var arr)) return false;
+            if (arr.ValueKind != System.Text.Json.JsonValueKind.Array) return false;
+            foreach (var el in arr.EnumerateArray())
+            {
+                if (el.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    value = el.GetString();
+                    return !string.IsNullOrEmpty(value);
+                }
+            }
+            return false;
+        }
     }
 
     private async Task<string?> ResolveWorktreeRootAsync(ForgeDbContext db, PrSyncCandidate candidate, CancellationToken ct)

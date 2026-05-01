@@ -1,521 +1,273 @@
 # ETW Events Discovery Report
 
 **Repository:** `E:\work\github\crp\workflow` (Workflow.sln)
-**Generated:** 2026-04-26
-**Iteration:** 1
+**Service Type:** Standalone tool (ETW consumer + Forge API + Execution Engine)
+**Generated:** 2026-04-29
+**Iteration:** 0 (initial discovery)
 
 ---
 
 ## Summary
 
-**No production EventSource classes were found in this repository.**
+This repository is primarily an ETW **consumer and analysis tool** — it parses `.etl`/`.evtx` files from Azure Stack services and ingests them into Kusto. It does not emit ETW events itself in production.
 
-This repository is an ETW **consumer and analysis tool** -- it reads, parses, and ingests ETW events from `.etl`/`.evtx` files produced by other Azure Stack services into Kusto. It does not emit ETW events itself.
+However, it uses three active observability patterns for its own code:
+1. **ILogger** (Microsoft.Extensions.Logging) — 100+ structured log calls across all projects
+2. **System.Diagnostics.Metrics** — `Forge.Api.Phase16` meter with 11 counters + 5 histograms
+3. **SignalR hub events** — 9 distinct event types across `ForgeHub` and `TelemetryHub`
 
-### Repository Purpose
-
-| Component | Description |
-|-----------|-------------|
-| **EtwIngest** | BDD test project for ETW parsing and Kusto ingestion |
-| **EtlIterator** | Batch ETL file processor (parallel processing, schema discovery, CSV export) |
-| **EtwEventReader** | Event reader with formatters and models for ETW events |
-| **Common.Diagnostics.EtwParser** | Core ETL/EVTX parsing library using `Microsoft.Diagnostics.Tracing.TraceEvent` |
-| **Common.Diagnostics.EtwProcessor** | ETW processing and Kusto ingestion pipeline |
-| **ExecutionEngine** | Workflow execution engine with node-based execution model |
-| **ProgressTree** | Progress tracking library for workflow execution |
-| **WorkflowUi.Server** | Web UI with SignalR-based real-time telemetry streaming |
-| **Forge.Api** | Git/ADO integration API with auth, webhooks, and agent orchestration |
-| **CodeIntelligence** | AST analyzer including `ObservabilityAnalyzer` that detects ETW patterns in other repos |
+An **EventSource skeleton** (`Microsoft-WorkflowUi-Server`) exists at `src/WorkflowUi.Server/runs/deep-dive/etw-eventsource-skeleton.cs` with 7 planned events, but it is NOT compiled into any production project and has zero call sites.
 
 ---
 
-## Discovered EventSource Classes
+## ETW Events by Code Issue
 
-### Production EventSource Classes: **NONE**
+### ISS-1: ClaudeAgentRunner tool_use Not Wired (FORGE-GAP-11.6 + 11.5)
 
-Scanned all `.cs` files under `src/` (excluding test directories). No classes inheriting from `System.Diagnostics.Tracing.EventSource` were found in production code.
+**Code Path:** `AgentsEndpoints.cs:360` → `AgentRunnerDispatcher.RunClaudeSdk()` → SSE stream → `PumpEvents:406-463`
 
-Search patterns used:
-- `: EventSource` (direct inheritance)
-- `[EventSource(` attribute
-- `[Event(` attribute on methods
+| Logger Method | Provider / Sink | Event | Level | Key Data | Code Location |
+|---|---|---|---|---|---|
+| `_logger.LogError(ex, "Agent invocation {Id} pump crashed")` | ILogger | PumpCrashed | Error | InvocationId, ExceptionType | `AgentsEndpoints.cs:463` |
+| `_logger.LogWarning("Claude HTTP failed (attempt {Attempt}); retrying")` | ILogger | ClaudeHttpRetry | Warning | Attempt number | `AgentRunnerDispatcher.cs:250` |
+| `_logger.LogWarning("Claude returned {Status} (attempt {Attempt}); retrying")` | ILogger | ClaudeStatusRetry | Warning | HTTP status, attempt | `AgentRunnerDispatcher.cs:259` |
+| `_logger.LogWarning("Unknown engine event type {EventType} ignored")` | ILogger | UnknownEventType | Warning | EventType name | `EngineEventBridge.cs:45` |
 
-### Test-Only EventSource Classes (not production)
+**Logging gaps (CRITICAL):**
+- `AgentToolHost.cs` — **ZERO ILogger calls**. Sandbox enforcement (tool allowlist, path traversal prevention, symlink detection, budget checks) is completely silent.
+- `AgentRunnerDispatcher.cs` — Process.Start() failures (lines 83-97), CLI timeouts (line 464-468), disposal failures (lines 492-493) are all caught without logging.
+- No `tool_use` SSE content block parsing exists — the runner only handles `text` type blocks. Any `tool_use` block from the Anthropic API will cause a pump crash (observable via the LogError above).
 
-The following EventSource references exist **only in unit test code** as string-literal fixtures for the `ObservabilityAnalyzer`:
-
-| Class | File | Purpose |
-|-------|------|---------|
-| `OrderEventSource` | `src/ast/CodeIntelligence.UnitTests/Analyzers/ObservabilityAnalyzerTests.cs` | Test fixture -- string literal for ETW provider name extraction |
-| `MyEventSource` | `src/ast/CodeIntelligence.UnitTests/Analyzers/ObservabilityAnalyzerTests.cs` | Test fixture -- string literal for ETW event detection |
-
-These are inline test code snippets (not compiled classes) used to verify the `ObservabilityAnalyzer` can detect EventSource patterns in source code it analyzes.
+**Troubleshooting value:** The `pump crashed` error is the PRIMARY signal for this gap. `JsonException` in the exception type indicates the runner encountered an unexpected SSE block type (e.g., `tool_use`). The `Unknown engine event type` warning confirms ToolCall/ToolResult events are produced but not bridged to SignalR.
 
 ---
 
-## Observability Patterns Actually Used
+### ISS-2: SignalR Streaming UI Hooks Not Wired (FORGE-GAP-11.7)
 
-This repository uses standard .NET observability patterns (not ETW):
+**Code Path:** `AgentsEndpoints.PumpEvents:406` → `ForgeHub` group `agent.{agentId}` → (no UI consumer)
 
-### 1. ILogger (Microsoft.Extensions.Logging)
+| Logger Method | Provider / Sink | Event | Level | Key Data | Code Location |
+|---|---|---|---|---|---|
+| `hub.Clients.Group().SendAsync("agent.event", ...)` | SignalR | agent.event | — | invocationId, agentId, kind, text, toolName | `AgentsEndpoints.cs:406-418` |
+| `hub.Clients.Group().SendAsync("agent.usage", ...)` | SignalR | agent.usage | — | agentId, inputTokens, outputTokens, costUsd | `AgentsEndpoints.cs:487-499` |
+| `hub.Clients.All.SendAsync("agent.reassigned", ...)` | SignalR | agent.reassigned | — | agentId, fromCrewId, toCrewId | `AgentsEndpoints.cs:233-236` |
+| `_logger.LogInformation("Client {ConnectionId} attached to run {RunId}")` | ILogger | ClientAttached | Info | ConnectionId, RunId | `TelemetryHub.cs:48` |
+| `_logger.LogInformation("Client {ConnectionId} detached from run {RunId}")` | ILogger | ClientDetached | Info | ConnectionId, RunId | `TelemetryHub.cs:69` |
+| `_logger.LogWarning("Failed to persist run event {RunId}/{Seq}")` | ILogger | PersistFailed | Warning | RunId, Seq, ExceptionType | `TelemetryHubSink.cs:50` |
 
-Used across 90+ files in all production services:
+**Logging gaps:**
+- `ForgeHub.cs` — ZERO ILogger calls in `Subscribe()`/`Unsubscribe()` methods. Cannot audit group membership changes.
+- No client-side subscription verification — server fan-out is confirmed working, but there's no way to verify UI clients are actually receiving events.
 
-| Component | Logger Usage |
-|-----------|-------------|
-| `WorkflowUi.Server` | `ILogger<T>` injected via DI in endpoints, hubs, middleware, and hosted services |
-| `ExecutionEngine` | `ILogger<T>` in `WorkflowEngine`, `NodeFactory`, `AINode`, `MessageRouter`, `DeadLetterQueue` |
-| `EngineEventBridge` | `ILogger<EngineEventBridge>` for CLR-to-SignalR event mapping diagnostics |
-| `TelemetryHub` | `ILogger<TelemetryHub>` for SignalR connection lifecycle |
-| `Forge.Api` | `ILogger<T>` in auth services, Git operations, provider sync, webhooks, and agents |
-| `CodeIntelligence (AST)` | `ILogger<T>` in LSP client, embedding services, graph DB, and query services |
-
-### 2. SignalR Telemetry (Real-Time UI Events)
-
-| Class | Namespace | Description |
-|-------|-----------|-------------|
-| `TelemetryHub` | `WorkflowUi.Server.Hubs` | SignalR hub streaming per-run workflow events to UI clients |
-| `TelemetryHubSink` | `WorkflowUi.Server.Hubs` | Publishes `RunEvent` DTOs to SignalR groups |
-| `EngineEventBridge` | `WorkflowUi.Server.Telemetry` | Adapts engine `WorkflowEvent` CLR events into `RunEvent` transport DTOs |
-
-### 3. Custom WorkflowEvent System
-
-The `ExecutionEngine` uses a custom CLR event system (`WorkflowEvent` base class) for engine lifecycle events -- these are in-process .NET events consumed by `EngineEventBridge`, not ETW events.
+**Troubleshooting value:** If `agent.event` messages are being sent (visible in SignalR diagnostics) but the UI shows no live updates, the gap is confirmed: server fan-out works but UI consumer hooks are missing. The `ClientAttached` / `ClientDetached` logs in TelemetryHub show whether any UI clients are subscribing to run streams.
 
 ---
 
-## Recommended Kusto Queries
+### ISS-3: Budget Enforcement Observability (FORGE-GAP-11.10)
 
-Since this repository does not emit ETW events, there are no ETW-based Kusto queries to recommend.
+**Code Path:** `AgentToolHost.Session.RecordTokens():108` → throws `AgentBudgetExceededException` → `PumpEvents:463` catches
 
-The repository **processes** ETW events from other Azure Stack services. Tables it creates in Kusto are dynamically named based on source ETL file contents:
+| Logger Method | Provider / Sink | Event | Level | Key Data | Code Location |
+|---|---|---|---|---|---|
+| `hub.Clients.All.SendAsync("agent.budget_exceeded", ...)` | SignalR | agent.budget_exceeded | — | crewId, dailyBudgetUsd, spentTodayUsd, agentId | `AgentsEndpoints.cs:333-336` |
+| `_logger.LogError(ex, "Agent invocation {Id} pump crashed")` | ILogger | PumpCrashed | Error | AgentBudgetExceededException | `AgentsEndpoints.cs:463` |
 
-```
-Table naming convention (Hub services):
-  ['ETL-{ProviderName}.{EventMethodName}']
+**Logging gaps:**
+- `RecordTokens()` throws without logging — budget breaches are only observable through exception propagation or SignalR broadcast.
+- No dedicated `LogWarning("Budget exceeded for agent {AgentId}")` call before throwing.
 
-Example:
-  ['ETL-Microsoft-AzureStack-Compute-Pipeline.VmPipelineCriticalError']
-```
+**Troubleshooting value:** Budget breaches appear as `pump crashed` errors with `ExceptionType=AgentBudgetExceededException`. The `agent.budget_exceeded` SignalR event confirms the broadcast was sent. No rows = either no breaches or silent enforcement.
 
-To query data ingested by this tool, use the table names from the source ETL files.
+---
+
+### ISS-4: Supervising Audit Column Never Written (FORGE-GAP-10.8)
+
+**Code Path:** `AuditMiddleware.cs:60` → `AuditRow.Supervising` → (always false)
+
+| Logger Method | Provider / Sink | Event | Level | Key Data | Code Location |
+|---|---|---|---|---|---|
+| `_logger.LogInformation("Audit: {Action} {Path} by {UserId} → {OutcomeCode}")` | ILogger | AuditEvent | Info | action, path, userId, outcomeCode | `AuditMiddleware.cs:60` |
+
+**Logging gaps:**
+- `StepBudgetChecker.cs:81` hardcodes `Supervising = false` in every AuditRow.
+- No code path sets `Supervising = true` anywhere in the codebase.
+- The audit log itself works, but the `Supervising` field is never populated.
+
+**Troubleshooting value:** The audit trail captures all mutating operations, but the `Supervising` column is always `false` — filtering by `Supervising = true` will always return zero rows.
+
+---
+
+### ISS-5: MeSettings Validation Gap (FORGE-GAP-10.2)
+
+**Code Path:** `MeSettingsEndpoints.cs` → accepts arbitrary strings for DefaultProductId/DefaultRepoId
+
+**No ILogger or telemetry calls** guard the validation path. The endpoint accepts invalid product/repo IDs without emitting any warning or metric.
+
+**Logging gaps:**
+- No `LogWarning("Invalid DefaultProductId {Id} — product not found")` call.
+- No `forge.settings.invalid_default` counter.
+
+**Troubleshooting value:** There are NO observable signals for invalid settings. A dedicated validation log or metric would detect misconfigured user defaults.
+
+---
+
+### ISS-6: PR RerunBuild/CancelBuild Are Fake (FORGE-GAP-4.9)
+
+**Code Path:** PR endpoints → flip cached state → synthesize log tails → return 202
+
+**No ILogger calls** distinguish fake CI operations from real ones. The endpoints return 202 with synthesized data, giving no indication that no actual CI provider was invoked.
+
+**Troubleshooting value:** There are NO observable signals to detect that CI operations are fake. The 202 response looks identical to a real CI call.
+
+---
+
+## Discovered Provider Catalog
+
+### 1. EventSource (Skeleton — NOT in production)
+
+| Field | Value |
+|---|---|
+| **Provider Name** | `Microsoft-WorkflowUi-Server` |
+| **File** | `src/WorkflowUi.Server/runs/deep-dive/etw-eventsource-skeleton.cs` |
+| **Status** | ⚠️ SKELETON — not compiled, zero call sites |
+| **Singleton** | `WorkflowUiServerEventSource.Log` |
+
+| Event ID | Method | Level | Message | Planned Table |
+|---|---|---|---|---|
+| 1 | RunFailed | Error | Run {0} failed after {2}ms: {1} | `['ETL-Microsoft-WorkflowUi-Server.RunFailed']` |
+| 2 | RunCompleted | Informational | Run {0} completed with status {1} in {2}ms | `['ETL-Microsoft-WorkflowUi-Server.RunCompleted']` |
+| 3 | NodeFailed | Error | Node {1} ({0}) failed in run {2}: {3} | `['ETL-Microsoft-WorkflowUi-Server.NodeFailed']` |
+| 4 | UnhandledException | Critical | Unhandled exception [{1}] for {0}: {2} | `['ETL-Microsoft-WorkflowUi-Server.UnhandledException']` |
+| 5 | RequestStop | Informational | HTTP {0} {1} -> {2} in {3}ms | `['ETL-Microsoft-WorkflowUi-Server.RequestStop']` |
+| 6 | AuditEvent | Informational | Audit: {0} {1} by {2} -> {3} | `['ETL-Microsoft-WorkflowUi-Server.AuditEvent']` |
+| 7 | ClientAttached | Informational | Client {1} attached to run {0} | `['ETL-Microsoft-WorkflowUi-Server.ClientAttached']` |
+
+### 2. System.Diagnostics.Metrics (Production — Active)
+
+**Meter:** `Forge.Api.Phase16` v1.0 (defined in `LeadAutoDispatcher.cs:51`)
+
+#### Counters
+
+| Instrument Name | Source File | Tags |
+|---|---|---|
+| `forge.dispatch.lead_no_capacity` | LeadAutoDispatcher.cs | crewId |
+| `forge.coding.over_budget` | StepBudgetChecker.cs | stepId |
+| `forge.queue.enqueued` | CrewQueueWorker.cs | targetKind |
+| `forge.queue.ack_timeout` | CrewQueueWorker.cs | targetKind |
+| `forge.queue.strain.fired` | CrewQueueWorker.cs | crewId |
+| `forge.sync.workitem.items` | WorkItemSyncMetrics.cs | provider, kind |
+| `forge.sync.workitem.pagination.batches` | WorkItemSyncMetrics.cs | provider |
+| `forge.sync.workitem.errors` | WorkItemSyncMetrics.cs | provider, errorClass |
+| `forge.sync.workitem.agent_ready_assignments` | WorkItemSyncMetrics.cs | team |
+| `forge.sync.pr.state_transitions` | ForgeMetrics.cs | from, to |
+| `forge.sync.pr.comments` | ForgeMetrics.cs | kind |
+| `forge.sync.pr.attention_flips` | ForgeMetrics.cs | direction |
+| `forge.pr.comment.authority_refused` | ForgeMetrics.cs | actorKind |
+| `forge.pr.comment.linker_matched` | ForgeMetrics.cs | heuristic |
+| `forge.worktree.cleanup` | ForgeMetrics.cs | outcome, prState |
+
+#### Histograms
+
+| Instrument Name | Unit | Source File | Tags |
+|---|---|---|---|
+| `forge.dispatch.lead_to_crew.latency_ms` | ms | LeadAutoDispatcher.cs | crewId, pair, outcome |
+| `forge.queue.ack_latency_ms` | ms | CrewQueueWorker.cs | crewId |
+| `forge.queue.dwell_ms` | ms | CrewQueueWorker.cs | crewId |
+| `forge.sync.workitem.duration_ms` | ms | WorkItemSyncMetrics.cs | provider, kind, outcome |
+| `forge.sync.pr.duration_ms` | ms | ForgeMetrics.cs | provider, outcome |
+
+### 3. SignalR Hub Events (Production — Active)
+
+| Hub | Method Name | Group Pattern | Payload Fields | Source |
+|---|---|---|---|---|
+| ForgeHub | `agent.event` | `agent.{agentId}` | invocationId, agentId, kind, at, text, toolName, toolPayload, error | AgentsEndpoints.cs:406 |
+| ForgeHub | `agent.usage` | `agent.{agentId}` | invocationId, agentId, ledgerId, inputTokens, outputTokens, costUsd, status, error | AgentsEndpoints.cs:487 |
+| ForgeHub | `agent.reassigned` | All | agentId, fromCrewId, toCrewId, fromModel, toModel | AgentsEndpoints.cs:233 |
+| ForgeHub | `agent.budget_exceeded` | All | crewId, dailyBudgetUsd, spentTodayUsd, agentId | AgentsEndpoints.cs:333 |
+| ForgeHub | `task.event` | `task.{workItemId}` | workItemId, kind, agentId, crewId, payload, at | TaskChannel.cs:102 |
+| ForgeHub | `task.budget-warning` | `task.{workItemId}` | kind, stepId, expected, actual, breach, softFail | StepBudgetChecker.cs:84 |
+| ForgeHub | `task.delegated` | `task.{workItemId}` | assignee, crewId, workItemId | LeadAutoDispatcher.cs:230 |
+| ForgeHub | `queue.changed` | All | kind, item | CrewsEndpoints.cs |
+| TelemetryHub | `ReceiveRunEvent` | `{runId}` | RunEvent DTO (full) | TelemetryHubSink.cs:54 |
+
+### 4. Consumed ETW Providers (ETW Consumer Tool)
+
+The repo's ETL processing pipeline dynamically ingests ETW events from other Azure Stack services into Kusto tables named `['ETL-{ProviderName}.{EventName}']`. Known providers from feature files:
+
+| Category | Provider | Sample Events |
+|---|---|---|
+| Compute (Hub) | `Microsoft-AzureStack-Compute-HostPluginWatchDog` | EnsureProcessStarted, ProcessStarted, FoundProcessAlreadyRunning, ConfigFilesFound |
+| CloudEngine (Hub) | `Microsoft-AzureStack-CloudEngine` | ActionPlanStart, PowerShellRemoteStepStop |
+| Infrastructure (Hub) | `Microsoft-AzureStack-Common-Infrastructure-Http` | ClientRequestStop |
+| Infrastructure (Hub) | `Microsoft-AzureStack-Common-Infrastructure-HostModel-ServiceFabricHost` | InitializeStateSerializersStart |
+| Health (Hub) | `Microsoft-AzureStack-Infrastructure-Health-HealthStorePlugin` | FaultSubStateMachine |
+| Health (Hub) | `Microsoft-AzureStack-Infrastructure-Health-RunnerService` | InvalidOldResult |
+| HCI Update (Non-Hub) | `Microsoft-URP-InfraEventSource` | HealthCheckResultDirectoryIsEmptyOrDoesNotExist, StartService, StopService |
+| NC Host Agent (Hub) | `Microsoft.Windows.NetworkController.HostAgent.*` | FirewallPlugin, VNetPlugin, Service, GatewayPlugin events |
+
+---
+
+## Summary: Key Observability Signals for Troubleshooting
+
+### ILogger Events (by priority for forge_gaps.md issues)
+
+| Priority | Event | Level | Source | Mapped Issue |
+|---|---|---|---|---|
+| **CRITICAL** | `pump crashed` | Error | AgentsEndpoints.cs:463 | ISS-1 (tool_use) |
+| **CRITICAL** | `Unknown engine event type {EventType}` | Warning | EngineEventBridge.cs:45 | ISS-1 (tool_use) |
+| HIGH | `Claude HTTP failed (attempt {Attempt})` | Warning | AgentRunnerDispatcher.cs:250 | ISS-1 (SSE reliability) |
+| HIGH | `Claude returned {Status} (attempt {Attempt})` | Warning | AgentRunnerDispatcher.cs:259 | ISS-1 (SSE reliability) |
+| HIGH | `Failed to persist run event {RunId}/{Seq}` | Warning | TelemetryHubSink.cs:50 | ISS-2 (SignalR) |
+| MEDIUM | `Client {ConnectionId} attached to run {RunId}` | Info | TelemetryHub.cs:48 | ISS-2 (SignalR) |
+| MEDIUM | `Client {ConnectionId} detached from run {RunId}` | Info | TelemetryHub.cs:69 | ISS-2 (SignalR) |
+| MEDIUM | `Audit: {Action} {Path} by {UserId}` | Info | AuditMiddleware.cs:60 | ISS-4 (Supervising) |
+| LOW | `Failed to start shared Copilot server` | Error | CopilotServerManager.cs:146 | ISS-1 (runtime) |
+| LOW | `HTTP {Method} {Path} responded {StatusCode}` | Info | RequestLoggingEnricher.cs:53 | General |
+
+### OTel Metrics (by priority)
+
+| Priority | Metric | Type | Mapped Issue |
+|---|---|---|---|
+| HIGH | `forge.coding.over_budget` | Counter | ISS-3 (budget) |
+| HIGH | `forge.queue.ack_timeout` | Counter | General (queue health) |
+| HIGH | `forge.sync.workitem.errors` | Counter | General (sync reliability) |
+| MEDIUM | `forge.dispatch.lead_to_crew.latency_ms` | Histogram | General (dispatch performance) |
+| MEDIUM | `forge.queue.dwell_ms` | Histogram | General (queue latency) |
 
 ---
 
 ## Logging Gaps
 
-| Area | Gap | Impact |
-|------|-----|--------|
-| No ETW instrumentation | No `EventSource` subclass in any production project | Cannot trace execution via ETW sessions; must rely on ILogger sinks |
-| No OpenTelemetry metrics | No `Meter` or `Counter<T>` instrumentation | No quantitative performance metrics (latency histograms, throughput counters) |
-| No distributed tracing | No `ActivitySource` usage | Cannot correlate operations across services via W3C trace context |
+1. **`AgentToolHost.cs` (entire file)** — ZERO ILogger calls. Sandbox enforcement decisions (tool allowlist checks, path traversal prevention, symlink detection, budget validation) are completely silent. This is the MOST CRITICAL logging gap — when an agent tries to use a blocked tool or access a forbidden path, there is no record of the attempt.
+
+2. **`AgentRunnerDispatcher.cs:83-97`** — Process.Start() failures are caught without logging. If the Claude CLI binary fails to launch, the error is swallowed silently.
+
+3. **`AgentRunnerDispatcher.cs:464-468`** — OperationCanceledException (CLI timeout) caught without logging. Timeouts during agent execution produce no warning.
+
+4. **`ForgeHub.cs:24,27`** — Subscribe/Unsubscribe methods have no ILogger calls. Cannot audit SignalR group membership changes.
+
+5. **`AgentsEndpoints.cs:456-460`** — OperationCanceledException in PumpEvents caught without logging. Client disconnections during streaming produce no trace.
+
+6. **`CopilotAIExecutor.cs:177,335,341`** — Three silent catch blocks: serialization errors, cleanup errors, and generic ignore blocks.
+
+7. **`FileAIPromptResolver.cs:328,363,367`** — Silent catch blocks for JSON parse failures and cancellation during metadata extraction.
+
+8. **`RecordTokens()` (AgentToolHost)** — Throws AgentBudgetExceededException without prior logging. Budget breaches are only observable through exception propagation.
+
+9. **`MeSettingsEndpoints.cs`** — No validation logging for invalid DefaultProductId/DefaultRepoId values.
+
+10. **`LeadAutoDispatcher.cs:305-308,323-326`** — TryGetAssigneeId/TryGetCrewId JSON parse failures return null silently.
 
 ---
 
-## Query Generation Log
+## Recommended Kusto Queries
 
-| Iteration | New Queries | Total Queries | Max Score | Reason |
-|-----------|-------------|---------------|-----------|--------|
-| 0 | 0 | 0 | N/A | Scanned all src/ projects. No production EventSource classes found. Repository is an ETW consumer/analyzer tool, not an ETW producer. |
-| 1 | 15 (Q1-Q15) | 15 | N/A | Shifted focus to consumed ETW providers. Scanned feature files, parsers, and ingest pipeline code for hardcoded provider names and event names. Generated queries targeting the `['ETL-{Provider}.{Event}']` table convention used by this tool. |
+Since this repository uses ILogger (not ETW) for its own telemetry, queries target structured log sinks (Application Insights `traces` table, Seq, or console JSON output).
 
----
+### Query 1: Agent Invocation Pump Crashes
 
-## Iteration 1: Consumed ETW Providers
-
-### Approach
-
-Since this repository produces no ETW events of its own, iteration 1 focuses on the ETW providers **consumed** by this tool. The codebase dynamically parses `.etl`/`.evtx` files and creates Kusto tables named `['ETL-{ProviderName}.{EventName}']`. Provider and event names are discovered at runtime from the trace files themselves (via `DynamicTraceEventParser`), not hardcoded.
-
-However, the BDD feature files (`src/EtwIngest/Features/*.feature`) and the `EtlIterator/Program.cs` contain **concrete examples** of providers and events processed from real Azure Stack ETL files. These represent the known provider catalog.
-
-### Table Naming Convention
-
-The code in `EventIdentifier.ToSafeIdentifier()` and `EtlIterator/Program.cs` establishes:
-
-```
-Table name = ETL-{ProviderName}.{EventName}
-  where EventName has "/" characters stripped
-```
-
-Examples:
-- Provider `Microsoft-AzureStack-Compute-HostPluginWatchDog`, Event `EnsureProcessStarted/Stop`
-  -> Table: `['ETL-Microsoft-AzureStack-Compute-HostPluginWatchDog.EnsureProcessStartedStop']`
-
-### Standard Columns (all ETL-ingested tables)
-
-Every table created by this tool includes these standard columns from `EtlFileParser.CreateSchemaFromEvent()`:
-
-| Column | Type | Source |
-|--------|------|--------|
-| `TimeStamp` | datetime | `traceEvent.TimeStamp` |
-| `ProcessID` | int | `traceEvent.ProcessID` |
-| `ProcessName` | string | `traceEvent.ProcessName` |
-| `Level` | int | `traceEvent.Level` (0=Always, 1=Critical, 2=Error, 3=Warning, 4=Info, 5=Verbose) |
-| `Opcode` | int | `traceEvent.Opcode` |
-| `OpcodeName` | string | `traceEvent.OpcodeName` |
-
-Plus event-specific payload columns extracted from `traceEvent.PayloadNames`.
-
-### Discovered ETW Providers
-
-#### Category 1: Azure Stack Compute (Hub)
-
-| Provider | Events | Source |
-|----------|--------|--------|
-| `Microsoft-AzureStack-Compute-HostPluginWatchDog` | ManifestData, StartWatchDog/Start, StartWatchDog/Stop, ConfigFilesFound, ReadConfigFromStore, EnsureProcessStarted/Start, EnsureProcessStarted/Stop, ProcessStarted, FoundProcessAlreadyRunning | EtwIngest.feature |
-
-#### Category 2: Azure Stack CloudEngine / ECE (Hub)
-
-| Provider | Events | Source |
-|----------|--------|--------|
-| `Microsoft-AzureStack-CloudEngine` | ActionPlanStart, PowerShellRemoteStepStop | EtwIngest.feature |
-
-#### Category 3: Azure Stack Infrastructure (Hub)
-
-| Provider | Events | Source |
-|----------|--------|--------|
-| `Microsoft-AzureStack-Common-Infrastructure-Http` | ClientRequestStop | EtwIngest.feature |
-| `Microsoft-AzureStack-Common-Infrastructure-HostModel-ServiceFabricHost` | InitializeStateSerializersStart | EtwIngest.feature |
-| `Microsoft-AzureStack-Infrastructure-ServiceSettings-Sdk` | OperationStart | EtwIngest.feature |
-| `Microsoft-AzureStack-Infrastructure-Health-Refresher` | RefreshCycleStop | EtwIngest.feature |
-| `Microsoft-AzureStack-Infrastructure-Health-RunnerService` | InvalidOldResult | EtwIngest.feature |
-| `Microsoft-AzureStack-Infrastructure-Health-WindowsServiceHost` | ServiceAssemblyFindResult | EtwIngest.feature |
-| `Microsoft-AzureStack-Infrastructure-Health-HealthStorePlugin` | FaultSubStateMachine | EtwIngest.feature |
-
-#### Category 4: Azure Stack Usage (Hub)
-
-| Provider | Events | Source |
-|----------|--------|--------|
-| `Microsoft-AzureStack-Usage` | UsageQueryRequest | EtwIngest.feature |
-| `Microsoft-AzureStack-UsageAdminHealthProbe` | EndHealthProbe | EtwIngest.feature |
-| `Microsoft-AzureStack-Roles-KB-EventSource` | LiveUpdateKbStart | EtwIngest.feature |
-
-#### Category 5: Azure Stack HCI Update (Non-Hub)
-
-| Provider | Events | Source |
-|----------|--------|--------|
-| `Microsoft-URP-InfraEventSource` | HealthCheckResultDirectoryIsEmptyOrDoesNotExist, ResolverGetAll, StartService, StopService | IngestHciLog.feature |
-
-#### Category 6: Network Controller Host Agent (Hub)
-
-| Provider | Sample Events | Source |
-|----------|---------------|--------|
-| `Microsoft.Windows.NetworkController.HostAgent.FirewallPlugin` | AddNicRedirectionRules, ApplyingState, CertValidated, OvsdbDbg, PluginEvent, ProcessingUpdate, Update, UpdateCompleted | EtwIngest.feature |
-| `Microsoft.Windows.NetworkController.HostAgent.VNetPlugin` | ApplyingState, BuildingState, BuiltState, CertValidated, DnsProxyOnUpdate, DnsSocketPool, OvsdbDbg, PortState, VfpPort, VfpSwitch | EtwIngest.feature |
-| `Microsoft.Windows.NetworkController.HostAgent.Service` | ChangingPortState, OvsdbDbg, PluginNotification, PolicyApplied, PortStateCheck, ReconcilePorts | EtwIngest.feature |
-| `Microsoft.Windows.NetworkController.HostAgent.GatewayPlugin` | AddGateway, AddGatewayCommon, Error, HealthMonitorTimerCallbackEnd, StartGatewayMonitoring, UpdatedHealthState, VmmsPid | EtwIngest.feature |
-| `Microsoft.Windows.NetworkController.HostAgent.ServiceInsertionPlugin` | ApplyingState, NoActiveUpdates, NoInfrastructureRules, OvsdbDbg, PluginEvent, PortState, SchedulingUpdate, Update, UpdateCompleted | EtwIngest.feature |
-| `Microsoft.Windows.NetworkController.HostAgent.VSwitchPlugin` | CertValidated, ChannelClosedCallback | EtwIngest.feature |
-
-#### Category 7: Windows / System
-
-| Provider | Events | Source |
-|----------|--------|--------|
-| `MSNT_SystemTrace` | EventTrace/PartitionInfoExtensionV2 | EtwIngest.feature |
-| `Microsoft-Windows-Services` | ServiceConfigChange | EtwIngest.feature |
-| `Microsoft-Windows-TCPIP` | Ndkpi_Arm_Cq, TcpSwsAvoidanceBegin | EtwIngest.feature |
-| `Microsoft-Windows-Sysprep` | RunRegistryDllsStart | EtwIngest.feature |
-| `Microsoft-Windows-OobeLdr` | OobeLdrProcessUnattend | EtwIngest.feature |
-| `Microsoft-Windows-Windeploy` | LaunchandwaitforexternalprocessStart | EtwIngest.feature |
-
-#### Category 8: EVTX (Windows Event Log)
-
-EVTX files are ingested into a single `WindowsEvents` table with a consistent schema:
-
-| Column | Type |
-|--------|------|
-| TimeStamp | datetime |
-| ProviderName | string |
-| LogName | string |
-| MachineName | string |
-| EventId | int |
-| Level | string |
-| Keywords | string |
-| ProcessId | int |
-| Description | string |
-
----
-
-## Recommended Kusto Queries (Iteration 1)
-
-### Query 1: HostPluginWatchDog Error Events
-
-**Database:** Local Kusto (ETL-ingested)
-**Issue:** N/A -- general troubleshooting
-
-```kusto
-['ETL-Microsoft-AzureStack-Compute-HostPluginWatchDog.EnsureProcessStartedStop']
-| where Level <= 3
-| project TimeStamp, ProcessID, ProcessName, Level, OpcodeName, correlationVector, name, executablePath, duration, exception
-| order by TimeStamp desc
-| limit 1000
-```
-
-**How to Interpret:** Level <= 3 captures Critical (1), Error (2), and Warning (3) events. Non-null `exception` field indicates process start failures. Long `duration` values indicate slow process launches.
-
----
-
-### Query 2: HostPluginWatchDog Process Lifecycle
-
-**Database:** Local Kusto (ETL-ingested)
-**Issue:** N/A -- general troubleshooting
-
-```kusto
-['ETL-Microsoft-AzureStack-Compute-HostPluginWatchDog.ProcessStarted']
-| project TimeStamp, ProcessID, ProcessName, Level, name, executablePath, arguments, workingDirectory
-| order by TimeStamp desc
-| limit 1000
-```
-
-**How to Interpret:** Shows which processes were started by the watchdog and when. Compare with `FoundProcessAlreadyRunning` to detect restart loops.
-
----
-
-### Query 3: HostPluginWatchDog Already Running Detection
-
-**Database:** Local Kusto (ETL-ingested)
-**Issue:** N/A -- general troubleshooting
-
-```kusto
-['ETL-Microsoft-AzureStack-Compute-HostPluginWatchDog.FoundProcessAlreadyRunning']
-| summarize Count=count() by bin(TimeStamp, 5m), name
-| order by TimeStamp desc
-| limit 1000
-```
-
-**How to Interpret:** Frequent "already running" events in short intervals may indicate healthy operation. A drop to zero followed by `ProcessStarted` events indicates a process crash/restart.
-
----
-
-### Query 4: CloudEngine Action Plan Execution
-
-**Database:** Local Kusto (ETL-ingested)
-**Issue:** N/A -- general troubleshooting
-
-```kusto
-['ETL-Microsoft-AzureStack-CloudEngine.ActionPlanStart']
-| project TimeStamp, ProcessID, ProcessName, Level, OpcodeName
-| order by TimeStamp desc
-| limit 1000
-```
-
-**How to Interpret:** Shows when ECE action plans were started. Correlate with `PowerShellRemoteStepStop` events for step completion timing.
-
----
-
-### Query 5: CloudEngine Remote Step Completion
-
-**Database:** Local Kusto (ETL-ingested)
-**Issue:** N/A -- general troubleshooting
-
-```kusto
-['ETL-Microsoft-AzureStack-CloudEngine.PowerShellRemoteStepStop']
-| where Level <= 3
-| project TimeStamp, ProcessID, ProcessName, Level, OpcodeName
-| order by TimeStamp desc
-| limit 1000
-```
-
-**How to Interpret:** Warning/Error level stop events indicate failed action plan steps. Cross-reference with ActionPlanStart timestamps to identify failing phases.
-
----
-
-### Query 6: Common Infrastructure HTTP Client Errors
-
-**Database:** Local Kusto (ETL-ingested)
-**Issue:** N/A -- general troubleshooting
-
-```kusto
-['ETL-Microsoft-AzureStack-Common-Infrastructure-Http.ClientRequestStop']
-| where Level <= 3
-| project TimeStamp, ProcessID, ProcessName, Level, OpcodeName
-| order by TimeStamp desc
-| limit 1000
-```
-
-**How to Interpret:** HTTP client errors from common-infra indicate failed service-to-service calls. Check surrounding events in the same ProcessID for context.
-
----
-
-### Query 7: Service Fabric Host Initialization
-
-**Database:** Local Kusto (ETL-ingested)
-**Issue:** N/A -- general troubleshooting
-
-```kusto
-['ETL-Microsoft-AzureStack-Common-Infrastructure-HostModel-ServiceFabricHost.InitializeStateSerializersStart']
-| project TimeStamp, ProcessID, ProcessName, Level, OpcodeName
-| order by TimeStamp desc
-| limit 1000
-```
-
-**How to Interpret:** Shows Service Fabric host process startup. Absence of these events during expected startup windows indicates the host process failed to start.
-
----
-
-### Query 8: Health Fault State Machine Transitions
-
-**Database:** Local Kusto (ETL-ingested)
-**Issue:** N/A -- general troubleshooting
-
-```kusto
-['ETL-Microsoft-AzureStack-Infrastructure-Health-HealthStorePlugin.FaultSubStateMachine']
-| project TimeStamp, ProcessID, ProcessName, Level, OpcodeName
-| order by TimeStamp desc
-| limit 1000
-```
-
-**How to Interpret:** Tracks health fault creation, resolution, and state transitions. Level 2 (Error) events indicate new faults being raised.
-
----
-
-### Query 9: URP/Update Service Lifecycle (HCI)
-
-**Database:** Local Kusto (ETL-ingested)
-**Issue:** N/A -- general troubleshooting
-
-```kusto
-['ETL-Microsoft-URP-InfraEventSource.StartService']
-| union ['ETL-Microsoft-URP-InfraEventSource.StopService']
-| project TimeStamp, ProcessID, ProcessName, Level, OpcodeName
-| order by TimeStamp desc
-| limit 1000
-```
-
-**How to Interpret:** Shows update service start/stop lifecycle. Frequent stop/start cycles indicate service instability. Gap between stop and next start indicates downtime.
-
----
-
-### Query 10: URP Health Check Failures (HCI)
-
-**Database:** Local Kusto (ETL-ingested)
-**Issue:** N/A -- general troubleshooting
-
-```kusto
-['ETL-Microsoft-URP-InfraEventSource.HealthCheckResultDirectoryIsEmptyOrDoesNotExist']
-| project TimeStamp, ProcessID, ProcessName, Level, OpcodeName
-| order by TimeStamp desc
-| limit 1000
-```
-
-**How to Interpret:** Indicates update content directories are missing or empty -- a common root cause for update discovery failures.
-
----
-
-### Query 11: Network Controller Firewall Plugin Errors
-
-**Database:** Local Kusto (ETL-ingested)
-**Issue:** N/A -- general troubleshooting
-
-```kusto
-['ETL-Microsoft.Windows.NetworkController.HostAgent.FirewallPlugin.OvsdbDbg']
-| where Level <= 3
-| project TimeStamp, ProcessID, ProcessName, Level, OpcodeName
-| order by TimeStamp desc
-| limit 1000
-```
-
-**How to Interpret:** OVSDB debug events at Warning/Error level indicate firewall rule application failures. High event counts suggest persistent connectivity issues.
-
----
-
-### Query 12: Network Controller Gateway Plugin Errors
-
-**Database:** Local Kusto (ETL-ingested)
-**Issue:** N/A -- general troubleshooting
-
-```kusto
-['ETL-Microsoft.Windows.NetworkController.HostAgent.GatewayPlugin.Error']
-| project TimeStamp, ProcessID, ProcessName, Level, OpcodeName
-| order by TimeStamp desc
-| limit 1000
-```
-
-**How to Interpret:** Direct error events from the gateway plugin. Check `UpdatedHealthState` events for gateway tunnel health degradation.
-
----
-
-### Query 13: Windows Event Log Errors
-
-**Database:** Local Kusto (ETL-ingested)
-**Issue:** N/A -- general troubleshooting
-
-```kusto
-WindowsEvents
-| where Level in ("Error", "Critical")
-| summarize Count=count() by ProviderName, EventId, Level
-| order by Count desc
-| limit 1000
-```
-
-**How to Interpret:** Aggregates Windows Event Log errors by provider. High counts for a single provider/EventId indicate a recurring system issue.
-
----
-
-### Query 14: Event Frequency Heatmap by Provider
-
-**Database:** Local Kusto (ETL-ingested)
-**Issue:** N/A -- general troubleshooting
-
-```kusto
-['ETL-Microsoft-AzureStack-Compute-HostPluginWatchDog.ConfigFilesFound']
-| summarize EventCount=count() by bin(TimeStamp, 1h)
-| order by TimeStamp asc
-| limit 1000
-```
-
-**How to Interpret:** Shows event volume over time. Sudden drops indicate service downtime. Spikes may indicate restart storms.
-
----
-
-### Query 15: Cross-Provider Error Timeline
-
-**Database:** Local Kusto (ETL-ingested)
-**Issue:** N/A -- general troubleshooting
-
-```kusto
-['ETL-Microsoft-AzureStack-Infrastructure-Health-RunnerService.InvalidOldResult']
-| project TimeStamp, ProcessID, ProcessName, Level, OpcodeName
-| order by TimeStamp desc
-| limit 1000
-```
-
-**How to Interpret:** InvalidOldResult events indicate the health runner detected stale or invalid health check results -- may indicate a timing issue or health check service failure.
-
----
-
-## Iteration 2: Forge Correctness Gaps → ILogger/SignalR Queries
-
-### Approach
-
-Iteration 2 addresses correctness issues from `forge_gaps.md` by mapping them to observable ILogger call sites and SignalR hub events. Since this repository uses `ILogger<T>` (not ETW), queries target structured log sinks (Application Insights / Seq / console JSON).
-
-### Forge Correctness Issues Mapped
-
-| Forge Gap | Issue | Observable Signal | Query |
-|-----------|-------|-------------------|-------|
-| **11.6 ↔ 11.5** | `ClaudeAgentRunner` never invokes sandbox; `tool_use` parsing absent | `AgentsEndpoints.PumpEvents` LogError on crash (line 463) | Q16 |
-| **11.5** | Claude API transient failures during SSE streaming | `AgentRunnerDispatcher` LogWarning on HTTP retry (lines 250, 259) | Q17 |
-| **11.7** | SignalR fan-out works but no UI consumer wired | `agent.event` / `agent.usage` SignalR messages to `agent.{agentId}` groups | Q18 |
-| **11.7** | TelemetryHub client attach/detach not verified | `TelemetryHub` LogInformation on attach/detach (lines 48, 69) | Q19 |
-| **11.6** | EngineEventBridge doesn't map ToolCall/ToolResult event types | `EngineEventBridge` LogWarning on unknown event type (line 45) | Q20 |
-| **11.7** | RunEvent JSONL persistence failures | `TelemetryHubSink` LogWarning on write failure (line 50) | Q21 |
-| **11.10** | Budget exceeded events not logged at app level | `AgentBudgetExceededException` propagation through PumpEvents | Q22 |
-
-### Logging Gaps Identified (Forge)
-
-| Area | Gap | Impact |
-|------|-----|--------|
-| `AgentToolHost` sandbox enforcement | Tool allowlist checks, path traversal prevention, symlink detection have NO ILogger calls | Cannot audit tool execution or detect blocked tool attempts |
-| `AgentRunnerDispatcher.RunClaudeSdk` | SSE `content_block_delta` parsing only handles `text` type; no `tool_use` parsing | ToolCall/ToolResult events never emitted; agents are chat-only |
-| `ForgeHub` | No ILogger calls in Subscribe/Unsubscribe methods | Cannot audit SignalR group membership changes |
-| Budget enforcement | `RecordTokens()` throws on budget breach but doesn't log before throwing | Silent budget enforcement; only observable through exception propagation |
-
-### Query 16: Agent Invocation Pump Crashes
-
+**Issue:** ISS-1 — ClaudeAgentRunner tool_use not wired
 **Database:** Application Logs (ILogger sink)
-**Issue:** FORGE-GAP-11.6 — ClaudeAgentRunner tool_use not wired
 
 ```kusto
 traces
@@ -526,14 +278,14 @@ traces
 | limit 1000
 ```
 
-**How to Interpret:** Each row is a fatal crash in the agent event pump. `ExceptionType` reveals cause: `JsonException` (unexpected SSE block like `tool_use`), `HttpRequestException` (API failure), `AgentBudgetExceededException` (budget breached).
+**Expected result:** Each row is a fatal crash in the agent event pump. `ExceptionType=JsonException` indicates the runner hit an unexpected SSE block type (e.g., `tool_use`). `ExceptionType=HttpRequestException` indicates API failure. `ExceptionType=AgentBudgetExceededException` indicates budget breach.
 
 ---
 
-### Query 17: Claude API HTTP Retries
+### Query 2: Claude API HTTP Retries
 
+**Issue:** ISS-1 — ClaudeAgentRunner SSE reliability
 **Database:** Application Logs (ILogger sink)
-**Issue:** FORGE-GAP-11.5 — ClaudeAgentRunner SSE reliability
 
 ```kusto
 traces
@@ -544,14 +296,14 @@ traces
 | limit 1000
 ```
 
-**How to Interpret:** "Claude HTTP failed" = network exception. "Claude returned {Status}" = 429 (rate limited), 503 (unavailable), 529 (overloaded). Attempt > 3 = approaching max retries.
+**Expected result:** "Claude HTTP failed" = network exception on attempt N. "Claude returned {Status}" = 429 (rate limited), 503 (unavailable), 529 (overloaded). Attempt > 3 = approaching max retries; exhaustion leads to pump crash.
 
 ---
 
-### Query 18: SignalR Agent Event Fan-Out
+### Query 3: SignalR Agent Event Fan-Out
 
+**Issue:** ISS-2 — SignalR streaming UI hooks not wired
 **Database:** Application Logs (ILogger sink)
-**Issue:** FORGE-GAP-11.7 — SignalR streaming UI hooks not wired
 
 ```kusto
 traces
@@ -561,14 +313,14 @@ traces
 | limit 1000
 ```
 
-**How to Interpret:** If rows exist but UI shows no updates, server fan-out works but UI hooks are missing (confirmed gap).
+**Expected result:** If rows exist but UI shows no live updates, server fan-out works but UI consumer hooks are missing (confirmed gap). `kind` field identifies event type: Token, ToolCall, ToolResult, Error.
 
 ---
 
-### Query 19: TelemetryHub Connection Lifecycle
+### Query 4: TelemetryHub Connection Lifecycle
 
+**Issue:** ISS-2 — SignalR streaming verification
 **Database:** Application Logs (ILogger sink)
-**Issue:** FORGE-GAP-11.7 — SignalR streaming verification
 
 ```kusto
 traces
@@ -579,32 +331,32 @@ traces
 | limit 1000
 ```
 
-**How to Interpret:** AttachCount = 0 means no UI clients subscribing. Both > 0 = healthy; if UI still dark, issue is client-side.
+**Expected result:** AttachCount = 0 means no UI clients subscribing to run streams. Both counts > 0 = healthy server-client lifecycle. If positive but UI still dark, issue is client-side.
 
 ---
 
-### Query 20: EngineEventBridge Unknown Event Types
+### Query 5: EngineEventBridge Unknown Event Types
 
+**Issue:** ISS-1 — ToolCall/ToolResult events not bridged
 **Database:** Application Logs (ILogger sink)
-**Issue:** FORGE-GAP-11.6 — ToolCall/ToolResult events not bridged
 
 ```kusto
 traces
 | where message has "Unknown engine event type"
 | project timestamp, message, customDimensions.EventType
-| summarize Count=count() by customDimensions.EventType
+| summarize Count=count() by tostring(customDimensions.EventType)
 | order by Count desc
 | limit 1000
 ```
 
-**How to Interpret:** EventType = "ToolCallEvent" or "ToolResultEvent" confirms tool events produced but not bridged. Expected while gap 11.6 is open.
+**Expected result:** EventType = "ToolCallEvent" or "ToolResultEvent" confirms tool execution events are produced but not mapped through the bridge to SignalR. Expected while gap 11.6 is open.
 
 ---
 
-### Query 21: RunEvent Persistence Failures
+### Query 6: RunEvent Persistence Failures
 
+**Issue:** ISS-2 — SignalR streaming reliability
 **Database:** Application Logs (ILogger sink)
-**Issue:** FORGE-GAP-11.7 — SignalR streaming reliability
 
 ```kusto
 traces
@@ -615,14 +367,14 @@ traces
 | limit 1000
 ```
 
-**How to Interpret:** Repeated failures for same RunId = corrupted/locked history file. IOException = disk issue. JsonException = serialization failure.
+**Expected result:** Repeated failures for same RunId = corrupted/locked JSONL history file. IOException = disk issue. JsonException = serialization bug.
 
 ---
 
-### Query 22: Agent Budget Exceeded Events
+### Query 7: Agent Budget Exceeded Events
 
+**Issue:** ISS-3 — Budget enforcement observability
 **Database:** Application Logs (ILogger sink)
-**Issue:** FORGE-GAP-11.10 — Budget enforcement observability
 
 ```kusto
 traces
@@ -633,33 +385,121 @@ traces
 | limit 1000
 ```
 
-**How to Interpret:** "pump crashed" + AgentBudgetExceededException = budget exceeded mid-stream. No rows = either no breaches or silent enforcement (logging gap).
+**Expected result:** "pump crashed" + AgentBudgetExceededException = budget exceeded mid-stream. "budget_exceeded" = SignalR broadcast was sent. No rows = no breaches or silent enforcement gap.
 
 ---
 
-## Logging Gaps (Updated)
+### Query 8: Copilot Server Lifecycle
 
-| Area | Gap | Impact |
-|------|-----|--------|
-| No ETW instrumentation | No `EventSource` subclass in any production project | Cannot trace execution via ETW sessions; must rely on ILogger sinks |
-| No OpenTelemetry metrics | No `Meter` or `Counter<T>` instrumentation | No quantitative performance metrics |
-| No distributed tracing | No `ActivitySource` usage | Cannot correlate operations across services |
-| Dynamic provider discovery | Provider names not hardcoded -- discovered from ETL file content at runtime | Cannot enumerate all possible providers without sample ETL files |
-| No schema registry | Event schemas inferred from first event occurrence per type | Schema mismatches possible if first event has null payload fields |
-| AgentToolHost sandbox | Tool allowlist, path traversal, symlink, budget checks have no ILogger | Cannot audit sandbox enforcement decisions |
-| ForgeHub SignalR | No ILogger in Subscribe/Unsubscribe | Cannot audit group membership changes |
-| Budget enforcement | RecordTokens throws without logging | Budget breaches only observable through exception propagation |
+**Issue:** ISS-1 — Agent runtime infrastructure
+**Database:** Application Logs (ILogger sink)
+
+```kusto
+traces
+| where message has "Copilot server" or message has "Shared Copilot"
+| project timestamp, message, severityLevel, customDimensions.Port
+| order by timestamp desc
+| limit 1000
+```
+
+**Expected result:** Shows Copilot SDK server start/stop/restart lifecycle. "ping failed, restarting" = server died and was auto-recovered. "Failed to start" at Error level = infrastructure problem.
+
+---
+
+### Query 9: Workflow Engine Failures
+
+**Issue:** General — execution engine reliability
+**Database:** Application Logs (ILogger sink)
+
+```kusto
+traces
+| where message has "Node execution failed" or message has "Fatal error creating node" or message has "Unhandled node failure"
+| where severityLevel >= 3
+| project timestamp, message, customDimensions.NodeId, customDimensions.ErrorMessage
+| order by timestamp desc
+| limit 1000
+```
+
+**Expected result:** Shows workflow DAG node failures. "Fatal error creating node" = node definition/type resolution failure. "Unhandled node failure" = no error handler configured, workflow will fail.
+
+---
+
+### Query 10: Dead Letter Queue Activity
+
+**Issue:** General — message routing reliability
+**Database:** Application Logs (ILogger sink)
+
+```kusto
+traces
+| where message has "dead letter queue" or message has "Dead letter"
+| project timestamp, message, severityLevel, customDimensions.Reason, customDimensions.MessageType
+| order by timestamp desc
+| limit 1000
+```
+
+**Expected result:** Messages landing in DLQ indicate routing failures or node crashes. High DLQ volume = systemic issue. `Reason` field explains why the message was dead-lettered.
+
+---
+
+### Query 11: Audit Trail Analysis (Supervising Gap)
+
+**Issue:** ISS-4 — Supervising column never written
+**Database:** Application Logs (ILogger sink)
+
+```kusto
+traces
+| where message has "Audit:"
+| project timestamp, message, customDimensions.Action, customDimensions.Path, customDimensions.UserId, customDimensions.OutcomeCode
+| where customDimensions.Path has "/api/agents/" or customDimensions.Path has "/api/crews/"
+| order by timestamp desc
+| limit 1000
+```
+
+**Expected result:** Shows all mutating operations on agent/crew endpoints. The `Supervising` field is never true in any row — confirming the audit gap.
+
+---
+
+### Query 12: TaskChannel Broadcast Failures
+
+**Issue:** ISS-2 — real-time event delivery reliability
+**Database:** Application Logs (ILogger sink)
+
+```kusto
+traces
+| where message has "TaskTranscript persist failed" or message has "TaskChannel broadcast failed"
+| project timestamp, message, customDimensions.WorkItemId, customDimensions.ExceptionType
+| order by timestamp desc
+| limit 1000
+```
+
+**Expected result:** Persistence failures indicate SQLite lock contention under load. Broadcast failures indicate SignalR connection issues. Both are best-effort — the event continues even on failure.
+
+---
+
+### Query 13: Dispatch Latency and Capacity
+
+**Issue:** General — agent queue health
+**Database:** OTel Metrics (Prometheus / OTLP sink)
+
+```promql
+# PromQL equivalent for OTel metrics sink
+histogram_quantile(0.95, rate(forge_dispatch_lead_to_crew_latency_ms_bucket[5m]))
+# or
+sum(rate(forge_queue_ack_timeout_total[5m])) by (targetKind)
+```
+
+**Expected result:** p95 dispatch latency > 30s indicates capacity issues. Rising ack_timeout rate indicates queue strain. `forge.queue.strain.fired` counter confirms the system detected overload.
+
+---
+
+## Recommended Pre-Built Queries from Query Library
+
+No pre-built query library exists for this repository. Queries are generated directly from ILogger and OTel metric call site analysis.
 
 ---
 
 ## Query Generation Log
 
-| Iteration | New Queries | Total Queries | Max Score | Reason |
-|-----------|-------------|---------------|-----------|--------|
-| 0 | 0 | 0 | N/A | Scanned all src/ projects. No production EventSource classes found. Repository is an ETW consumer/analyzer tool, not an ETW producer. |
-| 1 | 15 (Q1-Q15) | 15 | N/A | Shifted focus to consumed ETW providers. Scanned feature files, parsers, and ingest pipeline code for hardcoded provider names and event names. Generated queries targeting the `['ETL-{Provider}.{Event}']` table convention used by this tool. |
-| 2 | 7 (Q16-Q22) | 22 | N/A | Mapped forge_gaps.md correctness issues (11.5, 11.6, 11.7, 11.10) to ILogger call sites and SignalR hub events. Wrote Q1-Q15 to disk. Generated Q16-Q22 targeting Application Logs for agent runtime observability. |
-
----
-
-Queries generated: 22
+| Iteration | Queries Added | Total Queries | Max Score | Reason |
+|-----------|---------------|---------------|-----------|--------|
+| 0 | 13 (Q1-Q13) | 13 | N/A | Initial discovery: scanned all src/ projects, built provider catalog (1 skeleton EventSource, 1 OTel Meter with 20 instruments, 9 SignalR event types, 100+ ILogger calls). Mapped 6 correctness issues from forge_gaps.md to observable signals. Identified 10 critical logging gaps. |

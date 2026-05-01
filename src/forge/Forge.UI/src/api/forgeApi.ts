@@ -48,6 +48,58 @@ import type {
   WorkItemType,
 } from '@/workitems/workItemTypes';
 
+// forge_implementation.md Phase 28 — story spawn types.
+export type StorySpawnPhase = 'plan' | 'decompose' | 'implement' | 'review' | 'qa' | 'done';
+
+export interface StorySpawn {
+  id: string;
+  storyId: string;
+  storyTitle: string;
+  repoId: string | null;
+  phase: StorySpawnPhase;
+  planBranch: string | null;
+  planPrId: string | null;
+  decompositionJson: string | null;
+  decompositionApproved: boolean;
+  qaBranch: string | null;
+  qaPrId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StorySpawnWorkstreamSummary {
+  id: string;
+  name: string;
+  branch: string;
+  status: string;
+  cards: string[];
+  prs: string[];
+  deps: string[];
+}
+
+export interface StorySpawnDetail {
+  spawn: StorySpawn;
+  workstreams: StorySpawnWorkstreamSummary[];
+}
+
+export interface StorySpawnDecomposeWorkstream {
+  title: string;
+  description?: string;
+  acceptanceCriteria?: string[];
+  deps?: string[];
+  deliverables?: string[];
+  timeline?: string;
+  estimatedEffort?: string;
+}
+
+export interface StorySpawnArtifacts {
+  plan: { branch: string | null; pr: string | null; files: string[] };
+  decompose: { approved: boolean; json: string | null };
+  implement: { prs: string[]; workstreams: string[] };
+  review: { prs: string[] };
+  qa: { branch: string | null; pr: string | null; files: string[] };
+}
+
 export interface WorkItemListFilters {
   repoId?: string;
   iterationRef?: string;
@@ -479,6 +531,78 @@ export const forgeApi = {
     });
   },
 
+  // -- Phase 27 — build sync endpoints --------------------------------------
+
+  /** GET /api/prs/{prId}/builds — list builds for a PR newest-first. */
+  async listPrBuilds(
+    prId: string,
+    opts?: { limit?: number },
+  ): Promise<{ total: number; items: import('@/types').Build[] }> {
+    const q = new URLSearchParams();
+    if (opts?.limit !== undefined) q.set('limit', String(opts.limit));
+    const qs = q.toString();
+    return fetchJson(`/api/prs/${encodeURIComponent(prId)}/builds${qs ? `?${qs}` : ''}`);
+  },
+
+  /** GET /api/builds/{id} — build detail with stages + failure points joined. */
+  async getBuild(id: number): Promise<{
+    build: import('@/types').Build;
+    stages: import('@/types').BuildStage[];
+    failurePoints: import('@/types').BuildFailurePoint[];
+  }> {
+    return fetchJson(`/api/builds/${id}`);
+  },
+
+  /** GET /api/builds/{id}/stages/{stageId}/logs — paginated log tail viewer. */
+  async getBuildStageLogs(
+    id: number,
+    stageId: number,
+    opts?: { from?: number; limit?: number },
+  ): Promise<{
+    stage: import('@/types').BuildStage;
+    lines: string[];
+    totalLines: number;
+    truncatedFromBytes?: number;
+  }> {
+    const q = new URLSearchParams();
+    if (opts?.from !== undefined) q.set('from', String(opts.from));
+    if (opts?.limit !== undefined) q.set('limit', String(opts.limit));
+    const qs = q.toString();
+    return fetchJson(`/api/builds/${id}/stages/${stageId}/logs${qs ? `?${qs}` : ''}`);
+  },
+
+  /** GET /api/builds/{id}/artifacts — list artifact rows. */
+  async listBuildArtifacts(id: number): Promise<{ items: import('@/types').BuildArtifact[] }> {
+    return fetchJson(`/api/builds/${id}/artifacts`);
+  },
+
+  /** POST /api/builds/{id}/sync — manual trigger (PO/lead, ?force=true bypasses 19-min stale rule). */
+  async syncBuild(id: number, force = false): Promise<void> {
+    const url = `/api/builds/${id}/sync${force ? '?force=true' : ''}`;
+    await fetchJson(url, { method: 'POST', headers: { 'X-Forge-User': writerHeader() } });
+  },
+
+  /** POST /api/builds/{id}/annotate — operator triage; PO/lead only. */
+  async annotateBuild(id: number, body: {
+    rootCause?: string;
+    suggestedFiles?: string[];
+    category: 'infra' | 'flaky-test' | 'env' | 'code';
+  }): Promise<void> {
+    await fetchJson(`/api/builds/${id}/annotate`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/queue/build-fix-pending/{id}/promote-now — operator override. */
+  async promoteBuildFixNow(pendingId: number): Promise<{ queueId: number }> {
+    return fetchJson(`/api/queue/build-fix-pending/${pendingId}/promote-now`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   /** POST /api/prs/{id}/merge. */
   async mergePr(id: string): Promise<Pr> {
     return fetchJson<Pr>(`/api/prs/${encodeURIComponent(id)}/merge`, {
@@ -577,6 +701,61 @@ export const forgeApi = {
       method: 'DELETE',
       headers: { 'X-Forge-User': writerHeader() },
     });
+  },
+
+  // ---------------------------------------------------------------------
+  // forge_implementation.md Phase 28 — story-driven spawn endpoints.
+  // ---------------------------------------------------------------------
+
+  /** POST /api/stories/{storyId}/spawn — start the multi-team delivery flow. */
+  async spawnStory(storyId: string, repoId?: string | null): Promise<StorySpawn> {
+    return fetchJson<StorySpawn>(`/api/stories/${encodeURIComponent(storyId)}/spawn`, {
+      method: 'POST',
+      body: JSON.stringify({ repoId: repoId ?? null }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** GET /api/stories/{storyId}/spawn — full spawn state + child workstreams. */
+  async getStorySpawn(storyId: string): Promise<StorySpawnDetail> {
+    return fetchJson<StorySpawnDetail>(`/api/stories/${encodeURIComponent(storyId)}/spawn`);
+  },
+
+  /** PATCH /api/stories/{storyId}/spawn/phase — advance the phase if the gate passes. */
+  async advanceStoryPhase(storyId: string, targetPhase: StorySpawnPhase): Promise<StorySpawn> {
+    return fetchJson<StorySpawn>(`/api/stories/${encodeURIComponent(storyId)}/spawn/phase`, {
+      method: 'PATCH',
+      body: JSON.stringify({ targetPhase }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/stories/{storyId}/spawn/decompose — submit workstream definitions. */
+  async submitStoryDecomposition(
+    storyId: string,
+    workstreams: StorySpawnDecomposeWorkstream[],
+  ): Promise<{ spawn: StorySpawn; workstreams: string[] }> {
+    return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/decompose`, {
+      method: 'POST',
+      body: JSON.stringify({ workstreams }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/stories/{storyId}/spawn/decompose/approve — operator approves. */
+  async approveStoryDecomposition(storyId: string): Promise<StorySpawn> {
+    return fetchJson<StorySpawn>(
+      `/api/stories/${encodeURIComponent(storyId)}/spawn/decompose/approve`,
+      {
+        method: 'POST',
+        headers: { 'X-Forge-User': writerHeader() },
+      });
+  },
+
+  /** GET /api/stories/{storyId}/spawn/artifacts — listings grouped by phase. */
+  async getStoryArtifacts(storyId: string): Promise<StorySpawnArtifacts> {
+    return fetchJson<StorySpawnArtifacts>(
+      `/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts`);
   },
 
   /** GET /api/prs. */

@@ -35,6 +35,12 @@
 *.sln.docstates
 *.vcxproj.filters
 
+# SQLite database files (Forge runtime data — too large for git)
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 
