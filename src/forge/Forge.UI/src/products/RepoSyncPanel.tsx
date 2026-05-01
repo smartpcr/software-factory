@@ -120,14 +120,16 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
   // Sync in progress
   const [syncing, setSyncing] = useState(false);
 
-  // Reset state when repo changes or panel opens — merge server-persisted
-  // values (areaPaths, agentReadyTeam) with localStorage-persisted filters
+  // Reset state when repo changes or panel opens — use server-persisted
+  // values as defaults, falling back to localStorage for fields not yet saved.
   useEffect(() => {
     if (!open) return;
     const freshWiDefaults: WiSyncFilters = {
       areaPaths: (repo.areaPaths ?? []).join('\n'),
-      assignedTo: me.email ?? me.displayName ?? '',
-      fromDate: defaultFromDate(),
+      assignedTo: repo.wiSyncAssignedTo ?? me.email ?? me.displayName ?? '',
+      fromDate: repo.wiSyncDateFromDays
+        ? isoDate(new Date(Date.now() - repo.wiSyncDateFromDays * 86400_000))
+        : defaultFromDate(),
       toDate: defaultToDate(),
       agentReadyTeam: repo.agentReadyDefaultTeam ?? 'Engineering',
       syncKind: 'auto',
@@ -136,14 +138,15 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
     // Always take server-persisted values fresh from repo
     loaded.areaPaths = (repo.areaPaths ?? []).join('\n');
     loaded.agentReadyTeam = repo.agentReadyDefaultTeam ?? loaded.agentReadyTeam;
+    if (repo.wiSyncAssignedTo) loaded.assignedTo = repo.wiSyncAssignedTo;
     setWiFilters(loaded);
 
     const freshPrDefaults: PrSyncFilters = {
-      createdBy: me.email ?? me.displayName ?? '',
+      createdBy: repo.prSyncCreatedBy ?? me.email ?? me.displayName ?? '',
       fromDate: defaultFromDate(),
       toDate: defaultToDate(),
       associatedWorkItem: '',
-      stateFilter: 'active',
+      stateFilter: (repo.prSyncStatus as PrSyncFilters['stateFilter']) ?? 'active',
     };
     setPrFilters(loadFilters(repo.id, 'pr', freshPrDefaults));
   }, [open, repo.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -202,9 +205,20 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
       const team = wiFilters.agentReadyTeam.trim() || null;
+
+      // Compute relative days for WI date range
+      const fromMs = Date.parse(wiFilters.fromDate);
+      const wiDateFromDays = Number.isNaN(fromMs)
+        ? null
+        : Math.max(1, Math.round((Date.now() - fromMs) / 86400_000));
+
       const updated = await forgeApi.patchRepo(repo.id, {
         areaPaths,
         agentReadyDefaultTeam: team,
+        wiSyncAssignedTo: wiFilters.assignedTo || '',
+        wiSyncDateFromDays: wiDateFromDays,
+        prSyncCreatedBy: prFilters.createdBy || '',
+        prSyncStatus: prFilters.stateFilter || 'active',
       });
       onRepoUpdated?.(updated);
       toast('Sync configuration saved', 'success');

@@ -921,6 +921,12 @@ export const forgeApi = {
     testCommand?: string;
     buildTimeoutSec?: number;
     testTimeoutSec?: number;
+    // Phase 33 — persisted sync settings.
+    wiSyncAssignedTo?: string;
+    wiSyncDateFromDays?: number | null;
+    prSyncCreatedBy?: string;
+    prSyncStatus?: string;
+    buildPipelineIds?: string[];
   }): Promise<Repo> {
     return fetchJson<Repo>(`/api/repos/${encodeURIComponent(id)}`, {
       method: 'PATCH',
