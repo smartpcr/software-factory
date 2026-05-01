@@ -129,8 +129,8 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
       assignedTo: repo.wiSyncAssignedTo ?? me.email ?? me.displayName ?? '',
       fromDate: repo.wiSyncDateFromDays
         ? isoDate(new Date(Date.now() - repo.wiSyncDateFromDays * 86400_000))
-        : defaultFromDate(),
-      toDate: defaultToDate(),
+        : repo.wiSyncFromDate ?? defaultFromDate(),
+      toDate: repo.wiSyncToDate ?? defaultToDate(),
       agentReadyTeam: repo.agentReadyDefaultTeam ?? 'Engineering',
       syncKind: 'auto',
     };
@@ -206,17 +206,22 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
         .filter((s) => s.length > 0);
       const team = wiFilters.agentReadyTeam.trim() || null;
 
-      // Compute relative days for WI date range
+      // Date range: if fromDate is exactly N days ago (±1 day) and toDate
+      // is today, store as relative days; otherwise store absolute dates.
       const fromMs = Date.parse(wiFilters.fromDate);
-      const wiDateFromDays = Number.isNaN(fromMs)
-        ? null
-        : Math.max(1, Math.round((Date.now() - fromMs) / 86400_000));
+      const toMs = Date.parse(wiFilters.toDate);
+      const todayMs = new Date(isoDate(new Date())).getTime();
+      const daysBack = Number.isNaN(fromMs) ? null : Math.round((todayMs - fromMs) / 86400_000);
+      const toIsToday = !Number.isNaN(toMs) && Math.abs(toMs - todayMs) < 86400_000;
+      const useRelative = daysBack !== null && daysBack > 0 && toIsToday;
 
       const updated = await forgeApi.patchRepo(repo.id, {
         areaPaths,
         agentReadyDefaultTeam: team,
         wiSyncAssignedTo: wiFilters.assignedTo || '',
-        wiSyncDateFromDays: wiDateFromDays,
+        wiSyncDateFromDays: useRelative ? daysBack : 0,
+        wiSyncFromDate: useRelative ? '' : (wiFilters.fromDate || ''),
+        wiSyncToDate: useRelative ? '' : (wiFilters.toDate || ''),
         prSyncCreatedBy: prFilters.createdBy || '',
         prSyncStatus: prFilters.stateFilter || 'active',
       });
@@ -556,24 +561,13 @@ function WorkItemSyncTab({
           </PanelField>
         )}
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <PanelField label="Updated from" hint="Lower bound for ChangedDate / updatedAt">
-            <input
-              type="date"
-              value={filters.fromDate}
-              onChange={(e) => onChange({ ...filters, fromDate: e.target.value })}
-              style={fieldInputStyle}
-            />
-          </PanelField>
-          <PanelField label="Updated to" hint="Upper bound">
-            <input
-              type="date"
-              value={filters.toDate}
-              onChange={(e) => onChange({ ...filters, toDate: e.target.value })}
-              style={fieldInputStyle}
-            />
-          </PanelField>
-        </div>
+        <PanelField label="Date range" hint="How far back to look for changed work items.">
+          <DateRangeSelect
+            fromDate={filters.fromDate}
+            toDate={filters.toDate}
+            onChange={(from, to) => onChange({ ...filters, fromDate: from, toDate: to })}
+          />
+        </PanelField>
 
         <PanelField label="Assigned to" hint="Filter by assignee email / UPN. Empty = everyone.">
           <input
@@ -702,24 +696,13 @@ function PrSyncTab({
           />
         </PanelField>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <PanelField label="Created from">
-            <input
-              type="date"
-              value={filters.fromDate}
-              onChange={(e) => onChange({ ...filters, fromDate: e.target.value })}
-              style={fieldInputStyle}
-            />
-          </PanelField>
-          <PanelField label="Created to">
-            <input
-              type="date"
-              value={filters.toDate}
-              onChange={(e) => onChange({ ...filters, toDate: e.target.value })}
-              style={fieldInputStyle}
-            />
-          </PanelField>
-        </div>
+        <PanelField label="Date range" hint="How far back to look for PRs.">
+          <DateRangeSelect
+            fromDate={filters.fromDate}
+            toDate={filters.toDate}
+            onChange={(from, to) => onChange({ ...filters, fromDate: from, toDate: to })}
+          />
+        </PanelField>
 
         <PanelField
           label="Associated work item"
@@ -1228,6 +1211,96 @@ function PanelField({ label, hint, children }: { label: string; hint?: string; c
 }
 
 // ── Shared Styles ───────────────────────────────────────────────────────
+
+// ── Date Range Select ──────────────────────────────────────────────────────
+
+const DATE_PRESETS = [
+  { label: 'Last 7 days',  days: 7 },
+  { label: 'Last 14 days', days: 14 },
+  { label: 'Last 30 days', days: 30 },
+  { label: 'Last 60 days', days: 60 },
+  { label: 'Last 90 days', days: 90 },
+] as const;
+
+function detectPreset(fromDate: string, toDate: string): number | 'custom' {
+  const todayIso = isoDate(new Date());
+  if (toDate && toDate !== todayIso) return 'custom';
+  const fromMs = Date.parse(fromDate);
+  if (Number.isNaN(fromMs)) return 30;
+  const days = Math.round((Date.now() - fromMs) / 86400_000);
+  const match = DATE_PRESETS.find((p) => Math.abs(p.days - days) <= 1);
+  return match ? match.days : 'custom';
+}
+
+function DateRangeSelect({ fromDate, toDate, onChange }: {
+  fromDate: string;
+  toDate: string;
+  onChange: (from: string, to: string) => void;
+}) {
+  const preset = detectPreset(fromDate, toDate);
+  const isCustom = preset === 'custom';
+
+  function selectPreset(days: number | 'custom') {
+    if (days === 'custom') return;
+    const d = new Date();
+    d.setDate(d.getDate() - days);
+    onChange(isoDate(d), isoDate(new Date()));
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        {DATE_PRESETS.map((p) => (
+          <button
+            key={p.days}
+            type="button"
+            onClick={() => selectPreset(p.days)}
+            style={{
+              padding: '4px 10px', fontSize: 11, fontWeight: 600,
+              borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+              border: `1px solid ${preset === p.days ? 'var(--accent)' : 'var(--border)'}`,
+              background: preset === p.days ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent',
+              color: preset === p.days ? 'var(--accent)' : 'var(--text-tertiary)',
+              transition: 'all 100ms',
+            }}
+          >
+            {p.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => { /* just show the pickers below */ if (!isCustom) onChange(fromDate, toDate); }}
+          style={{
+            padding: '4px 10px', fontSize: 11, fontWeight: 600,
+            borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+            border: `1px solid ${isCustom ? 'var(--accent)' : 'var(--border)'}`,
+            background: isCustom ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent',
+            color: isCustom ? 'var(--accent)' : 'var(--text-tertiary)',
+            transition: 'all 100ms',
+          }}
+        >
+          Custom
+        </button>
+      </div>
+      {isCustom && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <input
+            type="date"
+            value={fromDate}
+            onChange={(e) => onChange(e.target.value, toDate)}
+            style={{ ...fieldInputStyle, fontSize: 11.5 }}
+          />
+          <input
+            type="date"
+            value={toDate}
+            onChange={(e) => onChange(fromDate, e.target.value)}
+            style={{ ...fieldInputStyle, fontSize: 11.5 }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
 
 const fieldInputStyle: React.CSSProperties = {
   width: '100%',

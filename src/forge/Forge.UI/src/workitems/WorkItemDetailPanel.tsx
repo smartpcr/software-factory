@@ -1507,8 +1507,14 @@ function fmt(iso: string): string {
 // code, and paragraphs. Enough for the read-only mockup; the real editor
 // arrives with Phase 12.7.
 function MarkdownPreview({ md }: { md: string }) {
-  const html = useMemo(() => renderMd(md), [md]);
   if (!md.trim()) return <div className="muted">— no description</div>;
+  // ADO descriptions are HTML (contain <div>, <br>, etc.).
+  // Render HTML content directly; only run the markdown pipeline for plain text.
+  const isHtml = /<\/?[a-z][\s\S]*>/i.test(md);
+  if (isHtml) {
+    return <div className="wit-detail-md" dangerouslySetInnerHTML={{ __html: md }} />;
+  }
+  const html = renderMd(md);
   return <div className="wit-detail-md" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 

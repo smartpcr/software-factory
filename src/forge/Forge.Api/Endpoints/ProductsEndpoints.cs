@@ -132,6 +132,10 @@ public static class ProductsEndpoints
             row.WiSyncAssignedTo = NullIfEmpty(req.WiSyncAssignedTo);
         if (req.WiSyncDateFromDays is not null)
             row.WiSyncDateFromDays = req.WiSyncDateFromDays > 0 ? req.WiSyncDateFromDays : null;
+        if (req.WiSyncFromDate is not null)
+            row.WiSyncFromDate = NullIfEmpty(req.WiSyncFromDate);
+        if (req.WiSyncToDate is not null)
+            row.WiSyncToDate = NullIfEmpty(req.WiSyncToDate);
         if (req.PrSyncCreatedBy is not null)
             row.PrSyncCreatedBy = NullIfEmpty(req.PrSyncCreatedBy);
         if (req.PrSyncStatus is not null)
@@ -813,7 +817,7 @@ public static class ProductsEndpoints
             r.IsRunningSince, r.AgentReadyDefaultTeam, r.InitialSyncWindowDays,
             r.InitCommand, r.RestoreCommand,
             r.BuildCommand, r.TestCommand, r.BuildTimeoutSec, r.TestTimeoutSec,
-            r.WiSyncAssignedTo, r.WiSyncDateFromDays,
+            r.WiSyncAssignedTo, r.WiSyncDateFromDays, r.WiSyncFromDate, r.WiSyncToDate,
             r.PrSyncCreatedBy, r.PrSyncStatus, buildPipelineIds);
     }
 

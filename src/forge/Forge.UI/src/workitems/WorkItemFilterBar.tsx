@@ -95,6 +95,19 @@ export function WorkItemFilterBar({ items, visibleItems }: Props) {
     [productRepos],
   );
 
+  // Story/feature options from items in scope.
+  const storyOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const i of productItems) {
+      const ref = i.featureRef;
+      if (!ref) continue;
+      if (!map.has(ref)) map.set(ref, ref);
+    }
+    return [...map.entries()]
+      .sort((a, b) => a[1].localeCompare(b[1]))
+      .map(([id, label]) => ({ value: id, label }));
+  }, [productItems]);
+
   // When the active product changes, drop any repo selections that no
   // longer belong to it so the filter doesn't silently match nothing.
   useEffect(() => {
@@ -209,6 +222,13 @@ export function WorkItemFilterBar({ items, visibleItems }: Props) {
           onChange={(v) => setFilters({ repoId: v })}
           options={repoOptions}
           allLabel="Any repo"
+        />
+        <MultiSelect
+          label="Story"
+          values={filters.featureRef}
+          onChange={(v) => setFilters({ featureRef: v })}
+          options={storyOptions}
+          allLabel="Any story"
         />
       </div>
 

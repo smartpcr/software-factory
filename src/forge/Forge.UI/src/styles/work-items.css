@@ -1166,7 +1166,8 @@
   position: fixed;
   inset: 0;
   z-index: 60;
-  max-height: none;
+  max-height: 100vh;
+  height: 100vh;
   border-radius: 0;
   border: none;
   border-top: 4px solid var(--accent);
@@ -1466,6 +1467,18 @@
   font-size: 12.5px;
   line-height: 1.6;
   color: var(--text-secondary);
+  overflow: visible;
+  max-height: none;
+}
+/* Prevent ADO HTML descriptions from breaking scroll */
+.wit-detail-md div,
+.wit-detail-md span {
+  max-width: 100%;
+  overflow-wrap: break-word;
+}
+.wit-detail-md img {
+  max-width: 100%;
+  height: auto;
 }
 .wit-detail-md h1, .wit-detail-md h2, .wit-detail-md h3 {
   font-family: var(--font-display);

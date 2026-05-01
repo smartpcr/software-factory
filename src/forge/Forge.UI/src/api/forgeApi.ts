@@ -924,6 +924,8 @@ export const forgeApi = {
     // Phase 33 — persisted sync settings.
     wiSyncAssignedTo?: string;
     wiSyncDateFromDays?: number | null;
+    wiSyncFromDate?: string;
+    wiSyncToDate?: string;
     prSyncCreatedBy?: string;
     prSyncStatus?: string;
     buildPipelineIds?: string[];

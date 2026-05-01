@@ -189,6 +189,7 @@ public class WorkItemSyncJob : BackgroundService
         var filters = new WorkItemSyncFilters(
             UpdatedFrom: updatedFrom,
             AreaPaths: areaPaths,
+            AssignedTo: repo.WiSyncAssignedTo,
             StartCursor: repo.LastSyncCursor,
             AdoOrgUrl: adoOrgUrl,
             AdoProject: repo.AdoProject,

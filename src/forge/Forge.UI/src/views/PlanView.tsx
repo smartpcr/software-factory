@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { DndContext, DragOverlay, PointerSensor, useSensor, useSensors, type DragEndEvent, type DragStartEvent } from '@dnd-kit/core';
 import { useHotkeys } from 'react-hotkeys-hook';
 import type { ColumnId } from '@/types';
@@ -10,6 +10,7 @@ import { FilterBar } from '@/board/FilterBar';
 import { WorkItemDetailPanel } from '@/workitems/WorkItemDetailPanel';
 import { DetailPanel } from '@/board/DetailPanel';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
+import { useWitStore } from '@/workitems/useWitStore';
 import { ExecBoard } from '@/workitems/ExecBoard';
 import { CardModal } from '@/board/CardModal';
 import { NewStoryModal } from '@/board/NewStoryModal';
@@ -48,8 +49,39 @@ export function PlanView() {
     [selectedId, cards],
   );
 
+  // Sync board selection ↔ WI store focus so the detail panel's × button
+  // (which calls useWitStore.focus(null)) also clears the board selection.
+  const witFocusedId = useWitStore((s) => s.focusedId);
+  useEffect(() => {
+    if (selectedId && selectedId !== witFocusedId) {
+      useWitStore.getState().focus(selectedId);
+    }
+  }, [selectedId, witFocusedId]);
+  useEffect(() => {
+    if (witFocusedId === null && selectedId) {
+      setSelected(null);
+    }
+  }, [witFocusedId, selectedId, setSelected]);
+
   const [modalOpen, setModalOpen] = useState(false);
   const [storyModalOpen, setStoryModalOpen] = useState(false);
+
+  // Close detail panel when clicking outside it.
+  const detailRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!selectedId) return;
+    function onMouseDown(e: MouseEvent) {
+      const t = e.target as Node;
+      if (detailRef.current?.contains(t)) return;
+      // Don't dismiss if clicking a card (card click sets new selection).
+      if ((t as HTMLElement).closest?.('[data-id]')) return;
+      // Don't dismiss if a modal/popover is open above.
+      if ((t as HTMLElement).closest?.('[role="dialog"], .modal-backdrop, .wit-multi-pop')) return;
+      setSelected(null);
+    }
+    window.addEventListener('mousedown', onMouseDown);
+    return () => window.removeEventListener('mousedown', onMouseDown);
+  }, [selectedId, setSelected]);
   const [focusedCol, setFocusedCol] = useState<ColumnId | null>(null);
   const [viewMode, setViewMode] = useState<'board' | 'stories' | 'exec'>('board');
 
@@ -252,22 +284,13 @@ export function PlanView() {
         </div>
 
         {selectedWorkItem ? (
-          <div style={{ width: 420, flexShrink: 0, borderLeft: '1px solid var(--border)', overflow: 'auto' }}>
-            <div style={{ position: 'sticky', top: 0, zIndex: 10, display: 'flex', justifyContent: 'flex-end', padding: '6px 8px' }}>
-              <button
-                type="button"
-                className="btn btn-ghost"
-                style={{ fontSize: 16, lineHeight: 1, padding: '2px 6px' }}
-                onClick={() => setSelected(null)}
-                title="Close panel (Esc)"
-              >
-                ×
-              </button>
-            </div>
+          <div ref={detailRef} style={{ width: 420, flexShrink: 0, borderLeft: '1px solid var(--border)', overflow: 'auto' }}>
             <WorkItemDetailPanel item={selectedWorkItem} />
           </div>
         ) : (selectedId && selectedCard) ? (
-          <DetailPanel />
+          <div ref={detailRef}>
+            <DetailPanel />
+          </div>
         ) : null}
       </div>
       <CardModal open={modalOpen} onClose={() => setModalOpen(false)} />

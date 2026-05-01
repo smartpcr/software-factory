@@ -277,6 +277,8 @@ public sealed record Repo(
     // Phase 33 — persisted sync settings.
     string? WiSyncAssignedTo = null,
     int? WiSyncDateFromDays = null,
+    string? WiSyncFromDate = null,
+    string? WiSyncToDate = null,
     string? PrSyncCreatedBy = null,
     string? PrSyncStatus = null,
     IReadOnlyList<string>? BuildPipelineIds = null);
@@ -486,6 +488,8 @@ public sealed record UpdateRepoRequest(
     // Phase 33 — persisted sync settings.
     string? WiSyncAssignedTo = null,
     int? WiSyncDateFromDays = null,
+    string? WiSyncFromDate = null,
+    string? WiSyncToDate = null,
     string? PrSyncCreatedBy = null,
     string? PrSyncStatus = null,
     IReadOnlyList<string>? BuildPipelineIds = null);

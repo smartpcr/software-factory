@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useWitStore } from '@/workitems/useWitStore';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
@@ -55,6 +55,21 @@ export function WorkItemsView() {
   const [syncOpen, setSyncOpen] = useState(false);
   const [storyModalOpen, setStoryModalOpen] = useState(false);
   const [newItemOpen, setNewItemOpen] = useState(false);
+
+  // Close detail panel when clicking outside it.
+  const detailRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!focusedId) return;
+    function onMouseDown(e: MouseEvent) {
+      const t = e.target as Node;
+      if (detailRef.current?.contains(t)) return;
+      if ((t as HTMLElement).closest?.('[data-id], .wit-board-card, .wit-tree-row, .wit-list-row')) return;
+      if ((t as HTMLElement).closest?.('[role="dialog"], .modal-backdrop, .wit-multi-pop')) return;
+      useWitStore.getState().focus(null);
+    }
+    window.addEventListener('mousedown', onMouseDown);
+    return () => window.removeEventListener('mousedown', onMouseDown);
+  }, [focusedId]);
 
   // Phase 12.6 — pull from the store. Falls back to SAMPLE_WORK_ITEMS when
   // the API is offline (handled inside useWorkItemsStore.load()).
@@ -157,7 +172,7 @@ export function WorkItemsView() {
           {mode === 'tree'     && <WorkItemTree     items={visible} />}
           {mode === 'list'     && <WorkItemList     items={visible} />}
         </main>
-        {focused && <WorkItemDetailPanel item={focused} />}
+        {focused && <div ref={detailRef}><WorkItemDetailPanel item={focused} /></div>}
       </div>
 
       <BulkActionBar count={selection.size} />
@@ -220,6 +235,7 @@ function applyFilters(items: WorkItem[], f: ReturnType<typeof useWitStore.getSta
     if (f.state.length        && !f.state.includes(i.state))               return false;
     if (f.iterationRef.length && !f.iterationRef.includes(i.iterationRef)) return false;
     if (f.repoId.length       && (!i.repoId || !f.repoId.includes(i.repoId))) return false;
+    if (f.featureRef.length   && (!i.featureRef || !f.featureRef.includes(i.featureRef))) return false;
     if (f.assignee.length) {
       const wantUnassigned = f.assignee.includes('__unassigned__');
       const id = i.assignedTo?.id ?? null;

@@ -1228,8 +1228,14 @@ public class RepoRow
     /// <summary>Default assignee filter for WI sync (email or display name).</summary>
     public string? WiSyncAssignedTo { get; set; }
 
-    /// <summary>Relative days back from today for WI sync date window. Null means no date filter.</summary>
+    /// <summary>Relative days back from today for WI sync date window (e.g. 30). Null means use absolute dates or no filter.</summary>
     public int? WiSyncDateFromDays { get; set; }
+
+    /// <summary>Absolute start date for WI sync window (ISO 8601). Used when WiSyncDateFromDays is null.</summary>
+    public string? WiSyncFromDate { get; set; }
+
+    /// <summary>Absolute end date for WI sync window (ISO 8601). Null means today.</summary>
+    public string? WiSyncToDate { get; set; }
 
     /// <summary>Default PR author filter (email or display name).</summary>
     public string? PrSyncCreatedBy { get; set; }

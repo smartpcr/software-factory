@@ -351,6 +351,10 @@ export interface Repo {
   wiSyncAssignedTo?: string | null;
   /** Phase 33 — relative days back for WI sync date window. */
   wiSyncDateFromDays?: number | null;
+  /** Phase 33 — absolute start date for WI sync (ISO). */
+  wiSyncFromDate?: string | null;
+  /** Phase 33 — absolute end date for WI sync (ISO). */
+  wiSyncToDate?: string | null;
   /** Phase 33 — default PR author filter. */
   prSyncCreatedBy?: string | null;
   /** Phase 33 — default PR state filter (active/completed/all). */

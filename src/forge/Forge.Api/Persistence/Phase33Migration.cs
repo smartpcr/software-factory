@@ -23,6 +23,8 @@ public static class Phase33Migration
         // WI sync defaults
         await AddColumnIfMissingAsync(conn, "repos", "WiSyncAssignedTo", "TEXT", ct);
         await AddColumnIfMissingAsync(conn, "repos", "WiSyncDateFromDays", "INTEGER", ct);
+        await AddColumnIfMissingAsync(conn, "repos", "WiSyncFromDate", "TEXT", ct);
+        await AddColumnIfMissingAsync(conn, "repos", "WiSyncToDate", "TEXT", ct);
 
         // PR sync defaults
         await AddColumnIfMissingAsync(conn, "repos", "PrSyncCreatedBy", "TEXT", ct);

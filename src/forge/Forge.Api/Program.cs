@@ -48,10 +48,9 @@ builder.Services.AddCors(options =>
 // delegate so test-factory configuration overrides flow through.
 // SQLite DB — use DELETE journal mode for durability across forced kills.
 {
-    var dbPath = builder.Configuration["Forge:Db:Path"] ?? "forge.db";
+    var dbPath = builder.Configuration["Forge:Db:Path"] ?? @"E:\forge\forge.db";
     if (!Path.IsPathFullyQualified(dbPath))
-        dbPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", dbPath);
-    dbPath = Path.GetFullPath(dbPath);
+        dbPath = Path.GetFullPath(dbPath);
     Console.WriteLine($"[Forge] SQLite DB path: {dbPath}");
 
     // Set journal_mode=DELETE on a throwaway connection before EF opens its own.

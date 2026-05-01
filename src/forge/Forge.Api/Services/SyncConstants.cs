@@ -13,8 +13,8 @@ namespace Forge.Api.Services;
 /// </summary>
 public static class SyncConstants
 {
-    /// <summary>ADO first sync pulls items changed in the last 365 days (Q23.5).</summary>
-    public const int AdoInitialWindowDays = 365;
+    /// <summary>ADO first sync pulls items changed in the last 30 days.</summary>
+    public const int AdoInitialWindowDays = 30;
 
     /// <summary>ADO hard cap: 200 IDs per <c>_apis/wit/workitems?ids=…</c> request (Q23.6).</summary>
     public const int AdoMaxIdsPerWorkItemBatch = 200;

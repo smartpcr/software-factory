@@ -15,6 +15,8 @@ export interface WitFilters {
   iterationRef: string[];
   assignee: string[];
   repoId: string[];
+  /** Multi-select — empty array means "any". */
+  featureRef: string[];
   /** Free-text search across title + tags. */
   q: string;
   /** Phase 12 — owner identifier used by the "Mine" chip. Defaults to current PO seed. */
@@ -55,6 +57,7 @@ const DEFAULT_FILTERS: WitFilters = {
   iterationRef: [],
   assignee: [],
   repoId: [],
+  featureRef: [],
   q: '',
   meId: 'XD',
 };
