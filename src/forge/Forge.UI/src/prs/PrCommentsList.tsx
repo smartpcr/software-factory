@@ -1,169 +1,408 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { forgeApi } from '@/api/forgeApi';
+import { renderRichText } from '@/markdown';
+import { isAgentReview, isBuildEvent, summarizePlainText } from './prBuildEvents';
 import type { PrComment, PrCommentState } from '@/types';
 
-// Phase 24.10 — comment list rendered inside the PR detail panel.
-// Groups comments by ThreadId; renders the parent first then the
-// indented replies. Resolve / Reopen buttons are disabled for agents
-// (Q24.5 — only humans can close threads).
+// Phase 28.2 redesign — threaded conversation list. The list shows
+// collapsed thread rows by default (avatar / author / brief title /
+// state / age / reply count). Clicking a row expands it inline to
+// reveal the full markdown body and any replies. System events (ref
+// updated, build voted, auto-complete set, CI bot pipeline posts) are
+// filtered out via {@link isBuildEvent} — those live in the Builds
+// tab so the comments view stays focused on actual review remarks.
+//
+// Comment data is owned by `PrDetailPanel` (so the verdict badge +
+// the Builds tab can share a single fetch); this component is a pure
+// view that asks the parent to refresh on resolve / reopen.
 
 interface Props {
   prId: string;
+  /** Source-of-truth comments for the selected PR — fetched by `PrDetailPanel`. */
+  comments: readonly PrComment[];
+  /** Last fetch error, if any. */
+  error: string | null;
+  /** Re-fetch the parent's comment list (called after resolve / reopen). */
+  onRefresh: () => Promise<void> | void;
   /** When true, the caller is a human reviewer; agents see disabled action buttons. */
   callerIsHuman?: boolean;
 }
 
-const STATE_PILL_STYLE: Record<PrCommentState, { bg: string; fg: string; label: string }> = {
-  active: { bg: 'var(--danger-bg)', fg: 'var(--danger)', label: 'active' },
-  resolved: { bg: 'var(--success-bg)', fg: 'var(--success)', label: 'resolved' },
-  'wont-fix': { bg: 'var(--bg-sunken)', fg: 'var(--text-tertiary)', label: "won't fix" },
-  closed: { bg: 'var(--bg-sunken)', fg: 'var(--text-tertiary)', label: 'closed' },
-  pending: { bg: 'var(--info-bg)', fg: 'var(--info)', label: 'pending' },
+type FilterId = 'all' | 'attention' | 'active' | 'closed';
+
+const STATE_PILL: Record<PrCommentState, { cls: string; label: string }> = {
+  active:     { cls: 'state-active',   label: 'active' },
+  resolved:   { cls: 'state-resolved', label: 'resolved' },
+  'wont-fix': { cls: 'state-wontfix',  label: "won't fix" },
+  closed:     { cls: 'state-closed',   label: 'closed' },
+  pending:    { cls: 'state-pending',  label: 'pending' },
 };
 
-export function PrCommentsList({ prId, callerIsHuman = true }: Props) {
-  const [comments, setComments] = useState<PrComment[]>([]);
+function authorInitials(authorId: string | null | undefined): string {
+  if (!authorId) return '??';
+  const parts = authorId.split(/[.\s@_-]+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return authorId.slice(0, 2).toUpperCase();
+}
+
+function relativeAge(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '—';
+  const sec = Math.max(0, (Date.now() - t) / 1000);
+  if (sec < 60) return `${Math.floor(sec)}s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h`;
+  return `${Math.floor(sec / 86400)}d`;
+}
+
+/** Convenience wrapper around the shared `summarizePlainText`. */
+function summarizeBody(body: string | null | undefined, max = 110): string {
+  return summarizePlainText(body, max) || '(empty)';
+}
+
+/**
+ * Resolve a friendly author name + bot flag for a comment row. ADO PR
+ * Assistant remarks land with `authorKind: 'system'` and an empty
+ * UPN, so the raw author would render as "unknown" — substitute the
+ * canonical name and treat them as agent rows in the UI.
+ */
+function effectiveAuthor(c: PrComment): { name: string; isBot: boolean } {
+  if (isAgentReview(c)) return { name: 'PR Assistant', isBot: true };
+  if (c.authorKind === 'agent') return { name: c.authorId ?? 'agent', isBot: true };
+  return { name: c.authorId && c.authorId.length > 0 ? c.authorId : 'unknown', isBot: false };
+}
+
+export function PrCommentsList({ prId, comments, error: parentError, onRefresh, callerIsHuman = true }: Props) {
   const [busyId, setBusyId] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<FilterId>('all');
+  const [expandedThreads, setExpandedThreads] = useState<Set<string>>(() => new Set());
 
-  const refresh = async () => {
-    try {
-      const resp = await forgeApi.listPrComments(prId, { take: 200 });
-      setComments(resp.items);
-      setError(null);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load comments');
+  const error = actionError ?? parentError;
+
+  // Pipeline / vote / ref-update / policy events live in the Builds
+  // tab. The classifier sniffs the body too so CI bot comments that
+  // ADO posts as `authorKind: 'human'` still get routed correctly.
+  const reviewComments = useMemo(
+    () => comments.filter((c) => !isBuildEvent(c)),
+    [comments],
+  );
+
+  const counts = useMemo(() => {
+    let attention = 0; let active = 0; let closed = 0;
+    for (const c of reviewComments) {
+      if (c.requiresAttention) attention++;
+      if (c.state === 'active') active++;
+      if (c.state === 'resolved' || c.state === 'closed' || c.state === 'wont-fix') closed++;
     }
-  };
-
-  useEffect(() => { void refresh(); }, [prId]);
+    return { all: reviewComments.length, attention, active, closed };
+  }, [reviewComments]);
 
   const threads = useMemo(() => {
     const byThread = new Map<string, PrComment[]>();
-    for (const c of comments) {
+    for (const c of reviewComments) {
       const arr = byThread.get(c.threadId) ?? [];
       arr.push(c);
       byThread.set(c.threadId, arr);
     }
-    return Array.from(byThread.entries()).map(([threadId, items]) => ({
-      threadId,
-      // sort: parents first, then by createdAt
-      items: [...items].sort((a, b) => {
+    const list = Array.from(byThread.entries()).map(([threadId, items]) => {
+      const sorted = [...items].sort((a, b) => {
         if (!a.parentCommentId && b.parentCommentId) return -1;
         if (a.parentCommentId && !b.parentCommentId) return 1;
         return a.createdAt.localeCompare(b.createdAt);
-      }),
-    }));
-  }, [comments]);
+      });
+      const parent = sorted[0];
+      const replies = sorted.slice(1);
+      const threadAttention = sorted.some((c) => c.requiresAttention);
+      const threadState: PrCommentState = parent?.state ?? 'active';
+      const lastActivityAt = sorted.reduce(
+        (latest, c) => (c.updatedAt.localeCompare(latest) > 0 ? c.updatedAt : latest),
+        parent?.updatedAt ?? '',
+      );
+      return { threadId, parent, replies, threadAttention, threadState, lastActivityAt };
+    });
+    return list.sort((a, b) => {
+      // Attention first, then most-recent-activity.
+      if (a.threadAttention !== b.threadAttention) return a.threadAttention ? -1 : 1;
+      return b.lastActivityAt.localeCompare(a.lastActivityAt);
+    });
+  }, [reviewComments]);
+
+  const filtered = useMemo(() => threads.filter((t) => {
+    if (!t.parent) return false;
+    if (filter === 'attention') return t.threadAttention;
+    if (filter === 'active') return t.threadState === 'active';
+    if (filter === 'closed') {
+      return t.threadState === 'resolved' || t.threadState === 'closed' || t.threadState === 'wont-fix';
+    }
+    return true;
+  }), [threads, filter]);
 
   if (error) {
-    return <div style={{ color: 'var(--danger)', fontSize: 11.5 }}>Error: {error}</div>;
+    return <div className="pr-comments-error">Error: {error}</div>;
   }
 
-  if (comments.length === 0) {
-    return <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>No comments</div>;
+  if (reviewComments.length === 0) {
+    const buildEventCount = comments.length;
+    return (
+      <div className="pr-comments-empty">
+        No review comments yet
+        {buildEventCount > 0 && (
+          <span className="pr-comments-empty-hint">
+            {' '}— {buildEventCount} build / system event{buildEventCount === 1 ? '' : 's'} in the Builds tab
+          </span>
+        )}
+      </div>
+    );
   }
+
+  const toggleThread = (id: string) => {
+    setExpandedThreads((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
 
   const onResolve = async (c: PrComment) => {
     setBusyId(c.id);
-    try { await forgeApi.resolvePrComment(prId, c.id); await refresh(); }
-    catch (e: unknown) { setError(e instanceof Error ? e.message : 'resolve failed'); }
+    setActionError(null);
+    try { await forgeApi.resolvePrComment(prId, c.id); await onRefresh(); }
+    catch (e: unknown) { setActionError(e instanceof Error ? e.message : 'resolve failed'); }
     finally { setBusyId(null); }
   };
 
   const onReopen = async (c: PrComment) => {
     setBusyId(c.id);
-    try { await forgeApi.reopenPrComment(prId, c.id); await refresh(); }
-    catch (e: unknown) { setError(e instanceof Error ? e.message : 'reopen failed'); }
+    setActionError(null);
+    try { await forgeApi.reopenPrComment(prId, c.id); await onRefresh(); }
+    catch (e: unknown) { setActionError(e instanceof Error ? e.message : 'reopen failed'); }
     finally { setBusyId(null); }
   };
 
   return (
-    <div data-testid="pr-comments-list">
-      {threads.map((t) => (
-        <div key={t.threadId} className="pr-comment-thread" style={{ marginBottom: 12 }}>
-          {t.items.map((c) => {
-            const isReply = !!c.parentCommentId;
-            const pill = STATE_PILL_STYLE[c.state];
-            return (
-              <div
-                key={c.id}
-                style={{
-                  marginLeft: isReply ? 18 : 0,
-                  borderLeft: isReply ? '2px solid var(--border-subtle)' : 'none',
-                  paddingLeft: isReply ? 8 : 0,
-                  marginTop: 6,
-                }}
-              >
-                <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
-                  <span
-                    style={{
-                      background: pill.bg, color: pill.fg, padding: '1px 6px',
-                      borderRadius: 'var(--radius-sm)', fontSize: 10, fontWeight: 600,
-                      textTransform: 'uppercase', letterSpacing: 0.4,
-                    }}
-                  >
-                    {pill.label}
-                  </span>
-                  <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                    {c.authorKind === 'agent' ? '🤖' : c.authorKind === 'system' ? '⚙' : '👤'} {c.authorId ?? 'unknown'}
-                  </span>
-                  {c.filePath && (
-                    <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>
-                      {c.filePath}{c.line != null ? `:${c.line}` : ''}
-                    </span>
-                  )}
-                  {c.requiresAttention && (
-                    <span
-                      data-testid="needs-response-pill"
-                      style={{
-                        background: 'color-mix(in srgb, rgb(234, 88, 12) 14%, transparent)',
-                        color: 'rgb(234, 88, 12)',
-                        border: '1px solid rgb(234, 88, 12)',
-                        padding: '0 6px', borderRadius: 'var(--radius-sm)',
-                        fontSize: 10, fontWeight: 600, textTransform: 'uppercase',
-                      }}
-                    >
-                      needs response
-                    </span>
-                  )}
-                  {c.linkedCommitSha && (
-                    <span style={{ fontSize: 10, color: 'var(--info)', fontFamily: 'var(--font-mono)' }}>
-                      ↳ {c.linkedCommitSha.substring(0, 8)}
-                    </span>
-                  )}
-                </div>
-                <div style={{ fontSize: 11.5, color: 'var(--text-primary)', whiteSpace: 'pre-wrap' }}>
-                  {c.body}
-                </div>
-                {!isReply && (
-                  <div style={{ marginTop: 4, display: 'flex', gap: 6 }}>
-                    {c.state === 'active' ? (
-                      <button
-                        className="btn btn-ghost"
-                        disabled={!callerIsHuman || busyId === c.id}
-                        title={!callerIsHuman ? 'Only reviewers can resolve comments' : 'Resolve thread'}
-                        onClick={() => void onResolve(c)}
-                      >
-                        Resolve
-                      </button>
-                    ) : (
-                      <button
-                        className="btn btn-ghost"
-                        disabled={!callerIsHuman || busyId === c.id}
-                        title={!callerIsHuman ? 'Only reviewers can reopen comments' : 'Reopen thread'}
-                        onClick={() => void onReopen(c)}
-                      >
-                        Reopen
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+    <div className="pr-comments" data-testid="pr-comments-list">
+      <div className="pr-comments-filters">
+        <FilterChip label="All"            count={counts.all}       active={filter === 'all'}       onClick={() => setFilter('all')} />
+        <FilterChip label="Needs response" count={counts.attention} active={filter === 'attention'} onClick={() => setFilter('attention')} kind="attention" />
+        <FilterChip label="Active"         count={counts.active}    active={filter === 'active'}    onClick={() => setFilter('active')} kind="active" />
+        <FilterChip label="Closed"         count={counts.closed}    active={filter === 'closed'}    onClick={() => setFilter('closed')} kind="closed" />
+      </div>
+
+      <div className="pr-comments-list">
+        {filtered.length === 0 && (
+          <div className="pr-comments-empty">No comments match this filter</div>
+        )}
+        {filtered.map((t) => t.parent && (
+          <CommentThread
+            key={t.threadId}
+            parent={t.parent}
+            replies={t.replies}
+            expanded={expandedThreads.has(t.threadId)}
+            onToggle={() => toggleThread(t.threadId)}
+            callerIsHuman={callerIsHuman}
+            busyId={busyId}
+            onResolve={onResolve}
+            onReopen={onReopen}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FilterChip({
+  label, count, active, onClick, kind,
+}: { label: string; count: number; active: boolean; onClick: () => void; kind?: string }) {
+  // Use `is-selected` for the selected state and `chip-{kind}` for the
+  // type tint — the original `.active` class collided with the kind
+  // name "active" so the Active chip rendered as if always selected.
+  const cls = ['pr-comments-filter'];
+  if (active) cls.push('is-selected');
+  if (kind) cls.push(`chip-${kind}`);
+  return (
+    <button
+      className={cls.join(' ')}
+      onClick={onClick}
+      type="button"
+      aria-pressed={active}
+    >
+      <span className="label">{label}</span>
+      <span className="count">{count}</span>
+    </button>
+  );
+}
+
+interface ThreadProps {
+  parent: PrComment;
+  replies: PrComment[];
+  expanded: boolean;
+  onToggle: () => void;
+  callerIsHuman: boolean;
+  busyId: number | null;
+  onResolve: (c: PrComment) => void;
+  onReopen: (c: PrComment) => void;
+}
+
+function CommentThread({
+  parent, replies, expanded, onToggle,
+  callerIsHuman, busyId, onResolve, onReopen,
+}: ThreadProps) {
+  const cls = [
+    'pr-comment-thread',
+    expanded ? 'is-expanded' : 'is-collapsed',
+    parent.requiresAttention ? 'is-attention' : '',
+  ].filter(Boolean).join(' ');
+
+  return (
+    <div className={cls} data-thread-id={parent.threadId}>
+      <ThreadSummaryRow
+        parent={parent}
+        replyCount={replies.length}
+        expanded={expanded}
+        onClick={onToggle}
+      />
+      {expanded && (
+        <div className="pr-comment-thread-body">
+          <CommentBody
+            c={parent}
+            isReply={false}
+            callerIsHuman={callerIsHuman}
+            busyId={busyId}
+            onResolve={onResolve}
+            onReopen={onReopen}
+          />
+          {replies.map((r) => (
+            <CommentBody
+              key={r.id}
+              c={r}
+              isReply={true}
+              callerIsHuman={callerIsHuman}
+              busyId={busyId}
+              onResolve={onResolve}
+              onReopen={onReopen}
+            />
+          ))}
         </div>
-      ))}
+      )}
+    </div>
+  );
+}
+
+interface SummaryProps {
+  parent: PrComment;
+  replyCount: number;
+  expanded: boolean;
+  onClick: () => void;
+}
+
+function ThreadSummaryRow({ parent, replyCount, expanded, onClick }: SummaryProps) {
+  const pill = STATE_PILL[parent.state];
+  const title = useMemo(() => summarizeBody(parent.body), [parent.body]);
+  const author = effectiveAuthor(parent);
+
+  return (
+    <button
+      type="button"
+      className={`pr-comment-summary${author.isBot ? ' is-bot' : ''}`}
+      onClick={onClick}
+      aria-expanded={expanded}
+      data-testid="pr-comment-thread-row"
+    >
+      <span className="pr-comment-summary-caret" aria-hidden>
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+          <path
+            d="M3 2 L 7 5 L 3 8"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            fill="none"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            style={{ transform: expanded ? 'rotate(90deg)' : '', transformOrigin: '5px 5px', transition: 'transform 120ms' }}
+          />
+        </svg>
+      </span>
+      <span className="pr-comment-avatar" title={author.name}>
+        {author.isBot ? '🤖' : <span>{authorInitials(parent.authorId)}</span>}
+      </span>
+      <span className="pr-comment-summary-main">
+        <span className="pr-comment-summary-meta">
+          <span className="author">{author.name}</span>
+          <span className={`state-pill ${pill.cls}`}>{pill.label}</span>
+          {parent.requiresAttention && (
+            <span className="attention-pill" data-testid="needs-response-pill">needs response</span>
+          )}
+          {replyCount > 0 && (
+            <span className="pr-comment-reply-count" title={`${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}`}>
+              {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
+            </span>
+          )}
+          <span className="age">{relativeAge(parent.createdAt)}</span>
+        </span>
+        <span className="pr-comment-summary-title">{title}</span>
+        {parent.filePath && (
+          <span className="pr-comment-summary-file" title={`${parent.filePath}${parent.line != null ? `:${parent.line}` : ''}`}>
+            {parent.filePath.split(/[\\/]/).pop()}{parent.line != null ? `:${parent.line}` : ''}
+          </span>
+        )}
+      </span>
+    </button>
+  );
+}
+
+interface BodyProps {
+  c: PrComment;
+  isReply: boolean;
+  callerIsHuman: boolean;
+  busyId: number | null;
+  onResolve: (c: PrComment) => void;
+  onReopen: (c: PrComment) => void;
+}
+
+function CommentBody({ c, isReply, callerIsHuman, busyId, onResolve, onReopen }: BodyProps) {
+  const html = useMemo(() => renderRichText(c.body ?? ''), [c.body]);
+  const author = effectiveAuthor(c);
+  return (
+    <div className={`pr-comment-row ${isReply ? 'is-reply' : ''}${author.isBot ? ' is-bot' : ''}`}>
+      <div className="pr-comment-avatar" title={author.name}>
+        {author.isBot ? '🤖' : <span>{authorInitials(c.authorId)}</span>}
+      </div>
+      <div className="pr-comment-main">
+        <div className="pr-comment-meta">
+          <span className="author">{author.name}</span>
+          {c.linkedCommitSha && (
+            <span className="commit" title={c.linkedCommitSha}>↳ {c.linkedCommitSha.substring(0, 8)}</span>
+          )}
+          <span className="age">{relativeAge(c.createdAt)}</span>
+        </div>
+        <div
+          className="pr-comment-body detail-desc-md"
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+        {!isReply && (
+          <div className="pr-comment-actions">
+            {c.state === 'active' ? (
+              <button
+                className="btn btn-ghost"
+                disabled={!callerIsHuman || busyId === c.id}
+                title={!callerIsHuman ? 'Only reviewers can resolve comments' : 'Resolve thread'}
+                onClick={() => onResolve(c)}
+              >
+                Resolve
+              </button>
+            ) : (
+              <button
+                className="btn btn-ghost"
+                disabled={!callerIsHuman || busyId === c.id}
+                title={!callerIsHuman ? 'Only reviewers can reopen comments' : 'Reopen thread'}
+                onClick={() => onReopen(c)}
+              >
+                Reopen
+              </button>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

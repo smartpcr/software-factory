@@ -626,7 +626,9 @@ function renderPayload(evt: TaskTranscriptEvent): string {
   if (evt.kind === 'task.pr-opened') {
     const prId = (p.prId as string | number | undefined) ?? '?';
     const branch = (p.branch as string | undefined) ?? '';
-    return branch ? `↑ PR #${prId} (${branch})` : `↑ PR #${prId}`;
+    const webUrl = (p.webUrl as string | undefined) ?? '';
+    const parts = branch ? `↑ PR #${prId} (${branch})` : `↑ PR #${prId}`;
+    return webUrl ? `${parts} — ${webUrl}` : parts;
   }
   if (evt.kind === 'task.pr-failed') {
     const err = typeof p.error === 'string' ? p.error : '';

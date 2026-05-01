@@ -18,6 +18,8 @@ public static class PrMapper
         r.ReviewJson is null ? null : CardMapper.Deserialize<ReviewVerdict>(r.ReviewJson),
         r.Conflicts, r.HumanGate, r.GateReason, r.ConflictPaths, r.AutoMerge, r.Blocked,
         r.ImplJson is null ? null : CardMapper.Deserialize<ImplStatus>(r.ImplJson),
+        // Phase 28 — iteration count.
+        Updates: r.Updates,
         // Phase 24 — sync state + comment counts.
         IsActive: r.IsActive,
         OpenCommentCount: openCommentCount,
@@ -25,5 +27,10 @@ public static class PrMapper
         LastSyncAt: r.LastSyncAt,
         LastSyncStatus: r.LastSyncStatus,
         Provider: r.Provider,
-        WorkItemId: r.WorkItemId);
+        WorkItemId: r.WorkItemId,
+        // Phase 27 — detail enrichment.
+        Description: string.IsNullOrEmpty(r.Description) ? null : r.Description,
+        WebUrl: r.WebUrl,
+        CreatedAt: r.CreatedAt,
+        UpdatedAt: r.UpdatedAt);
 }

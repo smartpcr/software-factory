@@ -77,6 +77,30 @@ async function ensureConnected() {
         store.upsertFromRealtime(payload.workItem);
       }
     });
+    // Phase 29 — build validation completion toast (global, not modal-scoped).
+    connection.on('repo.validation-complete', (payload: {
+      runId?: string; repoId?: string; status?: string;
+      allPassed?: boolean; ecosystem?: string; errorMessage?: string;
+      steps?: Array<{ step: string; passed: boolean }>;
+    }) => {
+      if (!payload?.repoId) return;
+      const stepSummary = payload.steps
+        ?.map((s) => `${s.step}:${s.passed ? 'ok' : 'fail'}`)
+        .join(' → ') ?? '';
+      if (payload.allPassed) {
+        useToastStore.getState().show(
+          `Build validation passed ✓ ${stepSummary}`,
+          'success',
+        );
+      } else {
+        useToastStore.getState().show(
+          payload.errorMessage
+            ? `Validation failed: ${payload.errorMessage}`
+            : `Validation failed: ${stepSummary}`,
+          'danger',
+        );
+      }
+    });
   }
   starting = connection.start().catch((err) => {
     if (import.meta.env.DEV) {

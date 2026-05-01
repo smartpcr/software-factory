@@ -64,6 +64,38 @@
   justify-content: space-between;
 }
 .detail-desc { font-size: 12.5px; line-height: 1.55; color: var(--text-primary); }
+
+/* Markdown-rendered description block. The renderer emits semantic HTML
+ * (h1..h6, p, ul, ol, code, strong, em, a) — these rules just give them
+ * sensible spacing inside the narrow detail panel. */
+.detail-desc-md { word-wrap: break-word; overflow-wrap: anywhere; }
+.detail-desc-md h1,
+.detail-desc-md h2,
+.detail-desc-md h3,
+.detail-desc-md h4 {
+  margin: 12px 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+.detail-desc-md h1 { font-size: 14px; }
+.detail-desc-md h2 { font-size: 13.5px; }
+.detail-desc-md p { margin: 6px 0; }
+.detail-desc-md ul,
+.detail-desc-md ol { margin: 4px 0 8px; padding-left: 18px; }
+.detail-desc-md li { margin: 2px 0; }
+.detail-desc-md code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 4px;
+  background: var(--bg-sunken);
+  border-radius: 3px;
+}
+.detail-desc-md strong { font-weight: 600; color: var(--text-primary); }
+.detail-desc-md a { color: var(--accent); text-decoration: underline; }
+.detail-desc-md hr { border: 0; border-top: 1px solid var(--border); margin: 10px 0; }
+.detail-desc-md.muted { color: var(--text-tertiary); font-style: italic; }
 .detail-criteria {
   background: var(--bg-surface);
   border: 1px solid var(--border);

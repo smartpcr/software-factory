@@ -211,6 +211,9 @@ public class PrRow
 
     public int Commits { get; set; }
 
+    /// <summary>Phase 28 — number of updates / iterations on the PR (ADO "Updates" tab count).</summary>
+    public int Updates { get; set; }
+
     public string Age { get; set; } = string.Empty;
 
     public string? BuildJson { get; set; }
@@ -263,6 +266,18 @@ public class PrRow
 
     /// <summary>Phase 24 — cursor for the comment-↔-commit linker sweep.</summary>
     public string? LastLinkerCommitSha { get; set; }
+
+    /// <summary>Phase 27 — PR description body from the provider.</summary>
+    public string Description { get; set; } = string.Empty;
+
+    /// <summary>Phase 27 — clickable web URL to open the PR in ADO/GitHub.</summary>
+    public string? WebUrl { get; set; }
+
+    /// <summary>Phase 27 — PR creation timestamp from the provider.</summary>
+    public string? CreatedAt { get; set; }
+
+    /// <summary>Phase 27 — last updated timestamp from the provider.</summary>
+    public string? UpdatedAt { get; set; }
 }
 
 /// <summary>Phase 24 — mirrors upstream PR comment threads + individual comments.</summary>
@@ -1116,7 +1131,19 @@ public class RepoRow
     /// <summary>Overrides the ADO 365-day initial sync window; ignored for GitHub (Q23.5).</summary>
     public int? InitialSyncWindowDays { get; set; }
 
-    // -- Phase 26 — build/test gate before PR creation ------------------------
+    // -- Phase 26/29 — build/test gate before PR creation --------------------
+
+    /// <summary>
+    /// Init command to run as the first pipeline step (e.g., project-specific bootstrap).
+    /// When null/empty the init step is skipped.
+    /// </summary>
+    public string? InitCommand { get; set; }
+
+    /// <summary>
+    /// Restore / dependency-install command (e.g., <c>dotnet restore Workflow.sln</c>, <c>npm install</c>).
+    /// When null/empty the restore step is skipped.
+    /// </summary>
+    public string? RestoreCommand { get; set; }
 
     /// <summary>
     /// Build command to run before creating a PR (e.g., <c>dotnet build Workflow.sln</c>).
@@ -1132,11 +1159,43 @@ public class RepoRow
     /// </summary>
     public string? TestCommand { get; set; }
 
-    /// <summary>Build command timeout in seconds. Defaults to 600 (10 min) when null.</summary>
+    /// <summary>Build command timeout in seconds. Also used for init and restore. Defaults to 600 (10 min) when null.</summary>
     public int? BuildTimeoutSec { get; set; }
 
     /// <summary>Test command timeout in seconds. Defaults to 600 (10 min) when null.</summary>
     public int? TestTimeoutSec { get; set; }
+}
+
+/// <summary>
+/// Phase 29 — persistent build-validation run history. One row per
+/// <c>POST /api/repos/{id}/validate-build</c> invocation. Steps are
+/// stored as a JSON array in <see cref="StepsJson"/>.
+/// </summary>
+public class BuildValidationRunRow
+{
+    public string Id { get; set; } = string.Empty;
+
+    public string RepoId { get; set; } = string.Empty;
+
+    /// <summary>One of: queued, running, succeeded, failed, cancelled.</summary>
+    public string Status { get; set; } = "queued";
+
+    public string StartedAt { get; set; } = string.Empty;
+
+    public string? FinishedAt { get; set; }
+
+    public bool AllPassed { get; set; }
+
+    public string? Ecosystem { get; set; }
+
+    /// <summary>JSON array of step results: <c>[{ step, command, passed, exitCode, timedOut, stdout, stderr }]</c>.</summary>
+    public string? StepsJson { get; set; }
+
+    /// <summary>User who triggered the validation run.</summary>
+    public string? TriggeredBy { get; set; }
+
+    /// <summary>Error message if the run failed for infrastructure reasons (not a step failure).</summary>
+    public string? ErrorMessage { get; set; }
 }
 
 /// <summary>

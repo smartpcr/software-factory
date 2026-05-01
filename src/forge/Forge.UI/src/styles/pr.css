@@ -15,6 +15,50 @@
   gap: 12px;
   overflow: hidden;
 }
+.pr-board.pr-board-4col { grid-template-columns: repeat(4, 1fr); }
+@media (max-width: 1280px) {
+  .pr-board.pr-board-4col { grid-template-columns: repeat(2, 1fr); overflow-y: auto; }
+}
+
+/* Layout toggle (Agent flow / ADO lifecycle) — segmented control. */
+.pr-board-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 28px 8px;
+  gap: 12px;
+}
+.pr-layout-toggle {
+  display: inline-flex;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px;
+}
+.pr-layout-toggle-btn {
+  padding: 4px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 100ms, background 100ms;
+}
+.pr-layout-toggle-btn:hover { color: var(--text-primary); }
+.pr-layout-toggle-btn.active {
+  background: var(--accent);
+  color: var(--bg-base);
+}
+
+/* ADO lifecycle column accents — subtle left-border tint to make the
+ * Draft / In review / Approved / Merged ordering legible at a glance. */
+.pr-board[data-layout="lifecycle"] .pr-col[data-col="draft"]    .pr-col-name .marker { background: var(--text-tertiary); }
+.pr-board[data-layout="lifecycle"] .pr-col[data-col="review"]   .pr-col-name .marker { background: var(--warning); }
+.pr-board[data-layout="lifecycle"] .pr-col[data-col="approved"] .pr-col-name .marker { background: var(--success); }
+.pr-board[data-layout="lifecycle"] .pr-col[data-col="merged"]   .pr-col-name .marker { background: var(--accent); }
 .pr-col {
   background: var(--bg-surface);
   border: 1px solid var(--border);
@@ -85,6 +129,7 @@
   cursor: pointer;
   transition: all 200ms cubic-bezier(0.2, 0, 0, 1);
   position: relative;
+  flex-shrink: 0;
 }
 .pr-card:hover {
   border-color: var(--accent);
@@ -93,6 +138,15 @@
 }
 .pr-card.failing { border-color: var(--danger-border); }
 .pr-card.conflicts { border-left: 3px solid var(--danger); }
+
+/* Selected card — orange ring matching the detail panel's accent
+   color so the user can scan back to which card the open panel
+   belongs to. Outline (not border) keeps the card the same width
+   so neighbouring cards don't shift on selection. */
+.pr-card.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
 
 /* Accent stripe — colored left edge by PR column */
 .pr-card-stripe {
@@ -124,6 +178,51 @@
   font-size: 10.5px;
   font-weight: 600;
   color: var(--text-secondary);
+}
+.pr-card-link {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-tertiary);
+  transition: color 100ms ease;
+}
+.pr-card-link:hover { color: var(--accent); }
+.pr-card-human-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.pr-card-human-avatar-img-wrap {
+  position: relative;
+  overflow: hidden;
+}
+.pr-card-human-avatar-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.pr-card-human-avatar-img {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--accent-bg);
 }
 
 /* Provider pill — ADO/GH badge */
@@ -295,6 +394,24 @@
 .pr-changes-bar .bar-add { background: var(--success); height: 100%; }
 .pr-changes-bar .bar-del { background: var(--danger); height: 100%; }
 
+.pr-card-dates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+.pr-card-dates > span { display: inline-flex; gap: 5px; align-items: baseline; }
+.pr-card-dates .label {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 9px;
+  color: var(--text-tertiary);
+  opacity: 0.85;
+}
+.pr-card-dates .val { color: var(--text-secondary); }
+
 .pr-card-build {
   background: var(--bg-sunken);
   border: 1px solid var(--border);
@@ -454,4 +571,805 @@
   display: flex;
   align-items: center;
   gap: 5px;
+}
+
+/* ============================================
+   PR DETAIL — COMMENTS (Phase 28.1 redesign)
+   ============================================ */
+.pr-comments { display: flex; flex-direction: column; gap: 10px; }
+
+.pr-comments-empty {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  font-style: italic;
+  padding: 6px 0;
+}
+.pr-comments-empty-hint {
+  font-style: normal;
+  color: var(--text-secondary);
+}
+.pr-comments-error { color: var(--danger); font-size: 11.5px; }
+
+.pr-comments-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  position: sticky;
+  top: 0;
+  background: var(--bg-base);
+  z-index: 1;
+  padding-bottom: 4px;
+}
+.pr-comments-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 100ms, border-color 100ms, color 100ms;
+}
+.pr-comments-filter:hover { background: var(--bg-surface); color: var(--text-primary); }
+.pr-comments-filter .count {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  min-width: 16px;
+  text-align: center;
+}
+.pr-comments-filter.is-selected {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.pr-comments-filter.is-selected .count { background: var(--accent); color: var(--bg-base); }
+.pr-comments-filter.chip-attention.is-selected {
+  background: color-mix(in srgb, rgb(234, 88, 12) 14%, transparent);
+  border-color: rgb(234, 88, 12);
+  color: rgb(234, 88, 12);
+}
+.pr-comments-filter.chip-attention.is-selected .count { background: rgb(234, 88, 12); color: var(--bg-base); }
+.pr-comments-filter.chip-closed.is-selected,
+.pr-comments-filter.chip-resolved.is-selected {
+  background: var(--success-bg);
+  border-color: var(--success);
+  color: var(--success);
+}
+.pr-comments-filter.chip-closed.is-selected .count,
+.pr-comments-filter.chip-resolved.is-selected .count { background: var(--success); color: var(--bg-base); }
+
+.pr-comments-list { display: flex; flex-direction: column; gap: 8px; }
+
+.pr-comment-thread {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+.pr-comment-thread.is-attention {
+  border-color: rgb(234, 88, 12);
+  box-shadow: 0 0 0 1px color-mix(in srgb, rgb(234, 88, 12) 30%, transparent);
+}
+.pr-comment-thread.is-bot { opacity: 0.78; }
+.pr-comment-thread.is-bot:hover { opacity: 1; }
+
+.pr-comment-row {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+}
+.pr-comment-row.is-reply {
+  padding: 8px 12px 8px 40px;
+  border-top: 1px dashed var(--border);
+  background: var(--bg-base);
+}
+.pr-comment-row.is-bot .pr-comment-body { font-size: 10.5px; }
+
+.pr-comment-avatar {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.pr-comment-row.is-bot .pr-comment-avatar { background: var(--bg-base); }
+
+.pr-comment-main { flex: 1; min-width: 0; }
+
+.pr-comment-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+  font-size: 10.5px;
+}
+.pr-comment-meta .author {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 11px;
+}
+.pr-comment-meta .age {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+}
+.pr-comment-meta .file {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  background: var(--bg-sunken);
+  padding: 1px 5px;
+  border-radius: 3px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pr-comment-meta .commit {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--info);
+}
+
+.state-pill {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+.state-pill.state-active   { background: var(--danger-bg);  color: var(--danger); }
+.state-pill.state-resolved { background: var(--success-bg); color: var(--success); }
+.state-pill.state-wontfix  { background: var(--bg-sunken);  color: var(--text-tertiary); }
+.state-pill.state-closed   { background: var(--bg-sunken);  color: var(--text-tertiary); }
+.state-pill.state-pending  { background: var(--info-bg);    color: var(--info); }
+
+.attention-pill {
+  background: color-mix(in srgb, rgb(234, 88, 12) 14%, transparent);
+  color: rgb(234, 88, 12);
+  border: 1px solid rgb(234, 88, 12);
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.pr-comment-body {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+
+  /* ADO PR-Assistant bodies render their tag pills with inline styles
+     that reference ADO's design-token variables. Re-declare the tokens
+     in our scope so `rgba(var(--palette-primary-tint-40), 1)` resolves
+     to a sensible neutral pill color and `var(--text-secondary-color)`
+     uses our own text color. Same pattern applies to `--accent-tint`
+     and a couple of others ADO bodies sometimes reference. */
+  --palette-primary-tint-40: 200, 200, 200;
+  --palette-primary-tint-30: 180, 180, 180;
+  --palette-primary-tint-20: 150, 150, 150;
+  --text-secondary-color: var(--text-secondary);
+}
+
+/* Utility classes ADO uses inside its comment HTML — recreate the
+   minimum needed so the pill row + suggested-code block keep their
+   layout when the body is dropped into our panel. */
+.pr-comment-body .flex-row { display: inline-flex; align-items: center; gap: 4px; }
+.pr-comment-body .flex-wrap { flex-wrap: wrap; }
+.pr-comment-body small {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 4px 0 8px;
+  font-size: 10.5px;
+}
+.pr-comment-body small span {
+  border-radius: 3px;
+}
+.pr-comment-body pre {
+  background: var(--bg-sunken);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  overflow-x: auto;
+  margin: 6px 0;
+}
+.pr-comment-body code {
+  background: var(--bg-sunken);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+.pr-comment-body pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 11px;
+}
+.pr-comment-body img { max-width: 100%; }
+.pr-comment-body.clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  position: relative;
+  mask-image: linear-gradient(180deg, #000 70%, transparent 100%);
+}
+.pr-comment-body p { margin: 4px 0; }
+.pr-comment-body a {
+  color: var(--accent);
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+.pr-comment-show-more {
+  margin-top: 4px;
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.pr-comment-show-more:hover { text-decoration: underline; }
+
+.pr-comment-actions { margin-top: 8px; display: flex; gap: 6px; }
+
+.pr-comment-replies-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 6px 12px 6px 40px;
+  background: var(--bg-base);
+  border: 0;
+  border-top: 1px dashed var(--border);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+}
+.pr-comment-replies-toggle:hover { background: var(--bg-sunken); color: var(--text-primary); }
+
+/* ============================================
+   PR APPROVAL VERDICT BADGE (Phase 28.2)
+   ============================================ */
+.pr-verdict {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 7px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.pr-verdict-approved {
+  background: var(--success-bg);
+  color: var(--success);
+  border-color: var(--success);
+}
+.pr-verdict-rejected {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.pr-verdict-changes {
+  background: color-mix(in srgb, rgb(234, 88, 12) 12%, transparent);
+  color: rgb(234, 88, 12);
+  border-color: rgb(234, 88, 12);
+}
+.pr-verdict-wait {
+  background: var(--info-bg);
+  color: var(--info);
+  border-color: var(--info);
+}
+.pr-verdict-pending {
+  background: var(--bg-sunken);
+  color: var(--text-tertiary);
+  border-color: var(--border);
+}
+
+/* ============================================
+   PR DETAIL — TABS (Phase 28.2)
+   ----------------------------------------------
+   Refined for 4-tab layout (Comments / Builds /
+   Changes / Policy). Goals:
+     - Tighter horizontal footprint so the strip
+       fits in the 420px panel without wrapping.
+     - Count sits inline with the label (no chunky
+       pill) so the eye reads "Comments·3" as one
+       unit instead of "Comments  /  3" at arm's
+       length.
+     - Active tab gets an orange underline + a
+       subtle accent wash at the foot, echoing the
+       glow on the selected PR card.
+     - Horizontal-scroll fallback for narrow panels
+       (instead of wrapping to two rows).
+   ============================================ */
+.detail-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg-base);
+  /* Narrow-panel safety: scroll horizontally instead of wrapping. */
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.detail-tabs::-webkit-scrollbar { height: 0; }
+
+.detail-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 7px 10px 8px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--text-tertiary);
+  font-family: var(--font-display, inherit);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: color 120ms, border-color 120ms, background 120ms;
+}
+.detail-tab:hover:not(.active) { color: var(--text-secondary); }
+
+.detail-tab.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+  /* Faint accent wash — only visible at the foot of the active tab,
+     mirrors the orange ring used for the selected PR card. */
+  background: linear-gradient(
+    180deg,
+    transparent 60%,
+    color-mix(in srgb, var(--accent) 8%, transparent) 100%
+  );
+}
+
+/* Inline numeric count — no pill, just a tabular-num figure docked
+   next to the label. Matches the `count` style used by the comment
+   filter chips so the visual language is consistent. */
+.detail-tab-count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  letter-spacing: 0;
+}
+.detail-tab:hover:not(.active) .detail-tab-count { color: var(--text-secondary); }
+.detail-tab.active .detail-tab-count { color: var(--accent); }
+
+/* Attention badge — kept loud (orange + `!`) because it represents
+   "needs response" and should pop from the rest of the strip. */
+.detail-tab-count-attention {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: rgb(234, 88, 12);
+  margin-left: 1px;
+}
+
+/* Build-status sub-pill on the Builds tab. Smaller than before so it
+   doesn't dominate the tab next to a 1-2 digit count. */
+.detail-tab-build-status {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: 2px;
+  background: var(--bg-sunken);
+  color: var(--text-tertiary);
+  margin-left: 3px;
+}
+
+.detail-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.detail-composer { margin-top: 8px; margin-bottom: 0; }
+
+/* ============================================
+   PR DETAIL — COMMENTS (collapsed thread list)
+   ============================================ */
+
+/* Filters stick under the tab strip while scrolling. The tab strip
+   itself is also sticky (top: 0), so we offset by its height. */
+.pr-comments-filters {
+  top: 38px;
+  background: var(--bg-base);
+  z-index: 2;
+  padding: 6px 0;
+}
+
+.pr-comment-thread {
+  /* Reset the previous (Phase 28.1) panel-style border — the new
+     collapsed-row design uses a flatter card with a hover state. */
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  overflow: hidden;
+  transition: border-color 120ms, box-shadow 120ms;
+}
+.pr-comment-thread.is-expanded {
+  border-color: var(--border-strong);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+/* Collapsed thread row — clickable button surface that summarises the
+   thread in one line + a snippet underneath. */
+.pr-comment-summary {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  width: 100%;
+  padding: 9px 12px;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  transition: background 100ms;
+}
+.pr-comment-summary:hover { background: var(--bg-sunken); }
+.pr-comment-summary-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  margin-top: 4px;
+}
+.pr-comment-summary-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.pr-comment-summary-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 10.5px;
+}
+.pr-comment-summary-meta .author {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 11px;
+}
+.pr-comment-summary-meta .age {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+}
+.pr-comment-summary-title {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pr-comment-thread.is-expanded .pr-comment-summary-title {
+  white-space: normal;
+  color: var(--text-tertiary);
+  font-style: italic;
+  font-size: 10.5px;
+}
+.pr-comment-summary-file {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  background: var(--bg-sunken);
+  padding: 1px 5px;
+  border-radius: 3px;
+  align-self: flex-start;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pr-comment-reply-count {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--accent);
+  background: var(--accent-bg);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+/* Expanded thread body — wraps the parent CommentBody and any replies. */
+.pr-comment-thread-body {
+  border-top: 1px solid var(--border);
+  background: var(--bg-base);
+}
+.pr-comment-thread-body .pr-comment-row:first-child {
+  background: var(--bg-surface);
+}
+
+/* ============================================
+   PR DETAIL — BUILDS TAB
+   ============================================ */
+.pr-builds {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pr-build-current {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  background: var(--bg-surface);
+}
+.pr-build-current.pr-build-status-pass { border-color: var(--success); }
+.pr-build-current.pr-build-status-fail { border-color: var(--danger); }
+.pr-build-current.pr-build-status-running { border-color: var(--info); }
+.pr-build-current-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
+}
+.pr-build-current-step {
+  flex: 1;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pr-build-current-percent {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.pr-build-current-fail {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--danger);
+}
+
+.pr-build-status-pill {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.pr-build-status-pass    { background: var(--success-bg); color: var(--success); }
+.pr-build-status-fail    { background: var(--danger-bg);  color: var(--danger); }
+.pr-build-status-running { background: var(--info-bg);    color: var(--info); }
+.pr-build-status-pending { background: var(--bg-sunken);  color: var(--text-tertiary); }
+
+.pr-build-log-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+.pr-build-log-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+.pr-build-log-toggle:hover { background: var(--bg-sunken); color: var(--text-primary); }
+.pr-build-log-toggle .caret {
+  display: inline-block;
+  width: 10px;
+  color: var(--text-tertiary);
+  transition: transform 120ms;
+}
+.pr-build-log {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg-sunken);
+  padding: 10px;
+  margin: 0;
+  overflow-x: auto;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border);
+  max-height: 320px;
+}
+
+.pr-build-events {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.pr-build-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+.pr-build-row.is-expanded { border-color: var(--border-strong); }
+.pr-build-row-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font-size: 11px;
+}
+.pr-build-row-summary:hover { background: var(--bg-sunken); }
+.pr-build-row-summary .caret {
+  display: inline-block;
+  width: 10px;
+  color: var(--text-tertiary);
+  transition: transform 120ms;
+}
+.pr-build-row-name {
+  flex: 1;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pr-build-row-repeat {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  background: var(--bg-sunken);
+  padding: 1px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.pr-build-row-detail {
+  padding: 8px 10px 10px 28px;
+  border-top: 1px dashed var(--border);
+  background: var(--bg-base);
+}
+.pr-build-row-meta {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+}
+.pr-build-row-time { font-variant-numeric: tabular-nums; }
+.pr-build-row-author { color: var(--text-secondary); }
+.pr-build-row-body {
+  font-size: 11.5px;
+  color: var(--text-primary);
+  line-height: 1.5;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* ============================================
+   PR DETAIL PANEL — fullscreen toggle
+   ============================================ */
+.detail-panel.maximized {
+  width: calc(100vw - var(--sidebar-collapsed-width, 60px));
+  max-width: 100vw;
+}
+@media (max-width: 800px) {
+  .detail-panel.maximized { width: 100vw; }
+}
+.detail-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.detail-fullscreen {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: all 120ms;
+}
+.detail-fullscreen:hover { color: var(--text-primary); background: var(--bg-surface); }
+
+.detail-panel.maximized .detail-meta {
+  grid-template-columns: repeat(6, 1fr);
+}
+.detail-panel.maximized .detail-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 480px);
+  gap: 28px;
+  align-content: start;
+}
+.detail-panel.maximized .detail-body > .detail-meta {
+  grid-column: 1 / -1;
+}
+
+/* Tabs + active panel always span the full width of the maximized
+   grid. Otherwise the tab strip would land in column 1 and the
+   panel in column 2, leaving the comments / builds list squeezed
+   into the right rail. */
+.detail-panel.maximized .detail-tabs,
+.detail-panel.maximized .detail-tab-panel {
+  grid-column: 1 / -1;
+}
+
+/* Stretch the comments + builds lists to fill the panel width when
+   maximized so individual rows aren't squeezed into a narrow rail. */
+.detail-panel.maximized .pr-comments,
+.detail-panel.maximized .pr-comments-list,
+.detail-panel.maximized .pr-builds,
+.detail-panel.maximized .pr-build-events {
+  width: 100%;
+}
+.detail-panel.maximized .pr-comment-summary,
+.detail-panel.maximized .pr-comment-thread,
+.detail-panel.maximized .pr-build-row {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+@media (max-width: 1100px) {
+  .detail-panel.maximized .detail-body { grid-template-columns: 1fr; }
 }

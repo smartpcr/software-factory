@@ -95,6 +95,17 @@ public class WorkItemSyncJob : BackgroundService
                 .ToListAsync(ct);
         }
 
+        // Skip the seed placeholder repo — it satisfies the FK for seeded
+        // cards/PRs but its URL points at a fictional org. Hammering ADO with
+        // it produces a 401 every tick and the failure ends up in the UI.
+        // The operator is expected to add their real repo via /products.
+        var placeholders = repos.Where(IsSeedPlaceholder).ToList();
+        foreach (var ph in placeholders)
+        {
+            await this.MarkPlaceholderAsync(ph.Id, ct);
+        }
+        repos = repos.Where(r => !IsSeedPlaceholder(r)).ToList();
+
         if (repos.Count == 0) return;
 
         using var semaphore = new SemaphoreSlim(SyncConstants.WorkItemSyncMaxParallel);
@@ -448,6 +459,43 @@ public class WorkItemSyncJob : BackgroundService
             return trimmed.TrimEnd('/');
         }
         return $"https://dev.azure.com/{trimmed.Trim('/')}";
+    }
+
+    /// <summary>
+    /// True when the repo is the canonical seed placeholder created by
+    /// <c>ForgeSeed.EnsureDefaultProductAndRepoAsync</c>. The URL targets a
+    /// fictional <c>dev.azure.com/atlas</c> org used only to satisfy FK
+    /// constraints for seeded cards/PRs; auto-syncing it produces a 401
+    /// every tick that ends up in the products UI as a red error strip.
+    /// </summary>
+    internal static bool IsSeedPlaceholder(RepoRow repo) =>
+        string.Equals(repo.Id, ForgeSeed.DefaultRepoId, StringComparison.Ordinal)
+        && string.Equals(repo.AdoOrg, "atlas", StringComparison.OrdinalIgnoreCase)
+        && string.Equals(repo.AdoProject, "atlas-platform", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Mark the placeholder so the UI shows a friendly "edit me" message
+    /// instead of a stale 401. Idle status keeps it from being re-picked
+    /// next tick (the query also matches "failed", but the friendly error
+    /// message tells the operator what to do).
+    /// </summary>
+    private async Task MarkPlaceholderAsync(string repoId, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = this.scopes.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var repo = await db.Repos.FirstOrDefaultAsync(r => r.Id == repoId, ct);
+            if (repo is null) return;
+            repo.LastSyncStatus = "idle";
+            repo.LastSyncError = "Demo placeholder — click Edit to point at your real ADO project, or attach a new repo.";
+            repo.IsRunningSince = null;
+            await db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogDebug(ex, "WorkItemSyncJob: failed to mark placeholder repo {RepoId}", repoId);
+        }
     }
 
     /// <summary>

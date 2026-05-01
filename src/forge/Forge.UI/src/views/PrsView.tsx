@@ -1,11 +1,22 @@
 import { useEffect, useMemo, useState } from 'react';
 import { usePrsStore, filterPrs } from '@/state/usePrsStore';
 import { useForgeHub } from '@/realtime/useForgeHub';
-import { PrBoard } from '@/prs/PrBoard';
+import { PrBoard, type PrBoardLayout } from '@/prs/PrBoard';
 import { PrFilterBar } from '@/prs/PrFilterBar';
 import { PrDetailPanel } from '@/prs/PrDetailPanel';
 import { PrSyncDialog } from '@/prs/PrSyncDialog';
 import { Toaster } from '@/board/Toaster';
+
+const LAYOUT_KEY = 'forge.prs.layout';
+
+function readStoredLayout(): PrBoardLayout {
+  try {
+    const raw = window.localStorage.getItem(LAYOUT_KEY);
+    return raw === 'lifecycle' ? 'lifecycle' : 'flow';
+  } catch {
+    return 'flow';
+  }
+}
 
 export function PrsView() {
   useForgeHub();
@@ -16,8 +27,13 @@ export function PrsView() {
   const setSelected = usePrsStore((s) => s.setSelected);
   const toggleAutoMerge = usePrsStore((s) => s.toggleAutoMerge);
   const [syncOpen, setSyncOpen] = useState(false);
+  const [layout, setLayout] = useState<PrBoardLayout>(readStoredLayout);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    try { window.localStorage.setItem(LAYOUT_KEY, layout); } catch { /* ignore */ }
+  }, [layout]);
 
   const filtered = useMemo(() => filterPrs(prs, filter), [prs, filter]);
 
@@ -67,6 +83,33 @@ export function PrsView() {
 
       <PrFilterBar prs={prs} />
 
+      <div className="pr-board-toolbar">
+        <div className="pr-layout-toggle" role="tablist" aria-label="Board layout">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={layout === 'flow'}
+            className={`pr-layout-toggle-btn ${layout === 'flow' ? 'active' : ''}`}
+            onClick={() => setLayout('flow')}
+            data-testid="pr-layout-flow"
+            title="Forge agent flow — Implementation / Critical review / Build & merge"
+          >
+            Agent flow
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={layout === 'lifecycle'}
+            className={`pr-layout-toggle-btn ${layout === 'lifecycle' ? 'active' : ''}`}
+            onClick={() => setLayout('lifecycle')}
+            data-testid="pr-layout-lifecycle"
+            title="ADO PR lifecycle — Draft / In Review / Approved / Merged"
+          >
+            ADO lifecycle
+          </button>
+        </div>
+      </div>
+
       <div className="pr-board-wrap">
         {prs.length === 0 ? (
           <div className="empty-state">
@@ -79,6 +122,7 @@ export function PrsView() {
         ) : (
           <PrBoard
             prs={filtered}
+            layout={layout}
             onOpen={(pr) => setSelected(pr.id)}
             onApprove={(pr) => void toggleAutoMerge(pr.id, true)}
             onRequestChanges={(pr) => setSelected(pr.id)}

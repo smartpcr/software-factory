@@ -12,6 +12,7 @@ export interface Agent {
   id: string;
   role: Role;
   name: string;
+  imageUrl?: string | null;
 }
 
 export interface Epic {
@@ -133,6 +134,8 @@ export interface Pr {
   deletions: number;
   files: number;
   commits: number;
+  /** Phase 28 — number of updates / iterations on the PR (ADO "Updates" tab count). 0/undefined when unknown. */
+  updates?: number;
   age: string;
   build: BuildStatus | null;
   review: ReviewVerdict | null;
@@ -156,6 +159,16 @@ export interface Pr {
   lastSyncStatus?: string;
   /** Provider key (`ado` | `github`); null for prototype/seed PRs. */
   provider?: string | null;
+  /** Phase 27 — linked work item ID. */
+  workItemId?: string | null;
+  /** Phase 27 — PR description body from the provider. */
+  description?: string | null;
+  /** Phase 27 — clickable web URL to open the PR in ADO/GitHub. */
+  webUrl?: string | null;
+  /** Phase 27 — PR creation timestamp (ISO-8601). */
+  createdAt?: string | null;
+  /** Phase 27 — PR last updated timestamp (ISO-8601). */
+  updatedAt?: string | null;
 }
 
 // Phase 24 — comment lifecycle types -----------------------------------------
@@ -314,6 +327,18 @@ export interface Repo {
   agentReadyDefaultTeam?: string | null;
   /** Phase 23.3 — override for the initial sync window (ADO only); null defaults to 365 days. */
   initialSyncWindowDays?: number | null;
+  /** Phase 26/29 — init command run as first pipeline step. Null = step skipped. */
+  initCommand?: string | null;
+  /** Phase 26/29 — restore / dependency-install command. Null = step skipped. */
+  restoreCommand?: string | null;
+  /** Phase 26 — build command run before PR creation (e.g., `dotnet build Workflow.sln`). Null = gate skipped. */
+  buildCommand?: string | null;
+  /** Phase 26 — test command run before PR creation (e.g., `dotnet test src/Foo.Tests/Foo.Tests.csproj`). */
+  testCommand?: string | null;
+  /** Phase 26 — build timeout in seconds. Null defaults to 600. */
+  buildTimeoutSec?: number | null;
+  /** Phase 26 — test timeout in seconds. Null defaults to 600. */
+  testTimeoutSec?: number | null;
 }
 
 /** Phase 23.3 — one row in the per-repo sync history. */

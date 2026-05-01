@@ -12,6 +12,7 @@ import { RepoIcon } from '@/products/RepoIcon';
 import { forgeApi } from '@/api/forgeApi';
 import type { Product, Repo } from '@/types';
 import { RepoSyncStatusStrip } from '@/views/RepoSyncStatusStrip';
+import { RepoDetailPanel } from '@/products/RepoDetailPanel';
 import { ProductSprintStrip } from '@/sprints/ProductSprintStrip';
 import { SprintManager } from '@/sprints/SprintManager';
 
@@ -189,6 +190,7 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, on
   const toast = useToastStore((s) => s.show);
 
   const [busy, setBusy] = useState(false);
+  const [expandedRepoId, setExpandedRepoId] = useState<string | null>(null);
 
   async function confirmDelete() {
     const repoCount = repos.length;
@@ -272,7 +274,8 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, on
           <div className="ws-card-empty">No repos attached. <button className="link" onClick={onAttach}>Attach a repo</button></div>
         )}
         {repos.map((r) => (
-          <div key={r.id} className="repo-row" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div key={r.id}>
+            <div className="repo-row" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <button
               type="button"
               onClick={() => navigate(`/workstreams?repo=${encodeURIComponent(r.id)}`)}
@@ -310,6 +313,65 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, on
               }}
             />
 
+            {/* Phase 26/29 — build pipeline gate status pill. */}
+            {(r.initCommand || r.restoreCommand || r.buildCommand || r.testCommand) ? (
+              <span
+                title={[
+                  r.initCommand ? `Init: ${r.initCommand}` : null,
+                  r.restoreCommand ? `Restore: ${r.restoreCommand}` : null,
+                  r.buildCommand ? `Build: ${r.buildCommand}` : null,
+                  r.testCommand ? `Test: ${r.testCommand}` : null,
+                ].filter(Boolean).join('\n')}
+                style={{
+                  fontSize: 9,
+                  fontWeight: 600,
+                  padding: '1px 5px',
+                  borderRadius: 3,
+                  background: 'color-mix(in srgb, var(--accent) 15%, transparent)',
+                  color: 'var(--accent)',
+                  whiteSpace: 'nowrap',
+                  letterSpacing: 0.3,
+                }}
+              >
+                🔨 gated
+              </span>
+            ) : (
+              <span
+                title="No build pipeline configured. Click edit to set up."
+                style={{
+                  fontSize: 9,
+                  fontWeight: 500,
+                  padding: '1px 5px',
+                  borderRadius: 3,
+                  background: 'color-mix(in srgb, var(--text-tertiary) 10%, transparent)',
+                  color: 'var(--text-tertiary)',
+                  whiteSpace: 'nowrap',
+                  letterSpacing: 0.3,
+                }}
+              >
+                no gate
+              </span>
+            )}
+
+            {/* History toggle — opens inline detail panel */}
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => setExpandedRepoId(expandedRepoId === r.id ? null : r.id)}
+              title={`${expandedRepoId === r.id ? 'Hide' : 'Show'} build & sync history for ${r.displayName}`}
+              aria-label={`Toggle history for ${r.displayName}`}
+              style={{
+                width: 22, height: 22,
+                color: expandedRepoId === r.id ? 'var(--accent)' : 'var(--text-tertiary)',
+                transition: 'color 150ms',
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.3" />
+                <path d="M8 4.5V8l2.5 1.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+
             <button
               type="button"
               className="icon-btn"
@@ -328,7 +390,7 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, on
               type="button"
               className="icon-btn"
               onClick={() => onEditRepo(r)}
-              title={`Edit ${r.displayName} (path, branch, name)`}
+              title={`Edit ${r.displayName} (path, branch, pipeline)`}
               aria-label={`Edit ${r.displayName}`}
               style={{ width: 22, height: 22, color: 'var(--text-tertiary)' }}
             >
@@ -348,6 +410,10 @@ function ProductCard({ product, repos, stats, isActive, onActivate, onAttach, on
                 <path d="M3 3 L 9 9 M 9 3 L 3 9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
               </svg>
             </button>
+          </div>
+
+          {/* Inline detail panel — full width, slides open below the repo row */}
+          {expandedRepoId === r.id && <RepoDetailPanel repo={r} />}
           </div>
         ))}
       </div>

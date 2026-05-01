@@ -126,6 +126,10 @@ builder.Services.AddScoped<Forge.Api.Services.ITaskQueueService, Forge.Api.Servi
 // Phase 17.4 — queue worker hosted service (boot scan + 5s tick).
 builder.Services.AddSingleton<Forge.Api.Services.CrewQueueWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.CrewQueueWorker>());
+// Phase 29 — async build validation worker.
+builder.Services.AddSingleton(System.Threading.Channels.Channel.CreateUnbounded<Forge.Api.Services.BuildValidationJob>());
+builder.Services.AddSingleton<Forge.Api.Services.BuildValidationWorker>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.BuildValidationWorker>());
 // Phase 24 — PR state & comment sync sweep.
 builder.Services.AddSingleton<Forge.Api.Services.ForgeMetrics>();
 builder.Services.AddHttpClient(Forge.Api.Services.AdoPrCommentSyncClient.ClientName);
@@ -220,6 +224,26 @@ using (var scope = app.Services.CreateScope())
     await Phase25Migration.ApplyAsync(db);
     // Phase 26 — build/test gate columns on repos.
     await Phase26Migration.ApplyAsync(db);
+
+    await Phase27Migration.ApplyAsync(db);
+    // Phase 28 — PR diff stats (Updates column on prs table).
+    await Phase28Migration.ApplyAsync(db);
+    // Phase 29 — init/restore commands + build validation run history.
+    await Phase29Migration.ApplyAsync(db);
+    // Phase 29 — cancel orphaned validation runs left from a previous crash/restart.
+    {
+        var now = DateTime.UtcNow.ToString("O");
+        var orphaned = await db.BuildValidationRuns
+            .Where(r => r.Status == "queued" || r.Status == "running")
+            .ToListAsync();
+        foreach (var r in orphaned)
+        {
+            r.Status = "cancelled";
+            r.FinishedAt = now;
+            r.ErrorMessage = "Server restarted — run was not completed";
+        }
+        if (orphaned.Count > 0) await db.SaveChangesAsync();
+    }
     await ForgeSeed.EnsureSeededAsync(db);
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.

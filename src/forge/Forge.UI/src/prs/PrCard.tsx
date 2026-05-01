@@ -1,5 +1,9 @@
-import type { Pr } from '@/types';
+import { useState } from 'react';
+import type { Pr, Agent } from '@/types';
 import { avatarFor, agentTooltip } from '@/agentAvatar';
+import { usePrsStore } from '@/state/usePrsStore';
+import { PrApprovalBadge } from './PrApprovalBadge';
+import type { ApprovalVerdict } from './prVerdict';
 
 function AgentChip({ id, name, role }: { id: string; name?: string | null; role?: string | null }) {
   const avatar = avatarFor(id, name);
@@ -16,6 +20,52 @@ function AgentChip({ id, name, role }: { id: string; name?: string | null; role?
     );
   }
   return <span className={`agent-chip ${role ?? ''}`} style={{ borderColor: 'var(--bg-sunken)' }} title={tooltip}>{id}</span>;
+}
+
+function humanInitials(author: Agent): string {
+  const fromName = (author.name ?? '')
+    .split(/\s+/)
+    .map((w) => w[0]?.toUpperCase() ?? '')
+    .join('')
+    .slice(0, 2);
+  return fromName || author.id.slice(0, 2).toUpperCase();
+}
+
+/** Render real avatar or initials for human authors, agent avatar for agents.
+ *  ADO `imageUrl` is auth-protected and frequently 404s in the browser; the
+ *  `onError` fallback swaps to initials so the chip never collapses to an
+ *  empty circle (the regression fixed in Phase 28+). */
+export function HumanOrAgentChip({ author }: { author: Agent }) {
+  const [imgFailed, setImgFailed] = useState(false);
+  if (author.role === 'human') {
+    const initials = humanInitials(author);
+    if (author.imageUrl && !imgFailed) {
+      return (
+        <span
+          className="pr-card-human-avatar pr-card-human-avatar-img-wrap"
+          title={author.name}
+          aria-label={author.name}
+        >
+          <span className="pr-card-human-avatar-fallback">{initials}</span>
+          <img
+            src={author.imageUrl}
+            alt=""
+            className="pr-card-human-avatar-img"
+            onError={() => setImgFailed(true)}
+          />
+        </span>
+      );
+    }
+    return (
+      <span
+        className="pr-card-human-avatar"
+        title={author.name ?? author.id}
+      >
+        {initials}
+      </span>
+    );
+  }
+  return <AgentChip id={author.id} name={author.name} role={roleFor(author.id)} />;
 }
 
 interface Props {
@@ -42,8 +92,14 @@ export function PrCard({ pr, onOpen }: Props) {
   const hasChanges = pr.additions > 0 || pr.deletions > 0;
   const ageClass = ageUrgency(pr.age);
 
+  // Highlight the card whose detail panel is currently open. The
+  // selector returns a boolean so only the matching card re-renders
+  // when selection changes.
+  const isSelected = usePrsStore((s) => s.selectedId === pr.id);
+
   const cls = [
     'pr-card',
+    isSelected ? 'is-selected' : '',
     pr.build && pr.build.status === 'failing' ? 'failing' : '',
     pr.conflicts ? 'conflicts' : '',
   ].filter(Boolean).join(' ');
@@ -60,19 +116,39 @@ export function PrCard({ pr, onOpen }: Props) {
         <div className="pr-card-id-row">
           <span className="pr-card-id">{pr.id}</span>
           {pr.provider && <ProviderPill kind={pr.provider} />}
+          {pr.webUrl && (
+            <a
+              className="pr-card-link"
+              href={pr.webUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Open in ADO"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                <path d="M3.5 1.5H1.5V8.5H8.5V6.5M5.5 1.5H8.5V4.5M8.5 1.5L4.5 5.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              </svg>
+            </a>
+          )}
+          <PrApprovalBadge verdict={cardVerdict(pr)} />
           <span className={`pr-card-age ${ageClass}`} title={`Created ${pr.age} ago`}>{pr.age}</span>
         </div>
         <div className="pr-card-title">{pr.title || '(untitled)'}</div>
       </div>
 
       <div className="pr-card-body">
-        {/* Author + branch row — always visible */}
+        {/* Author + work item row */}
         <div className="pr-card-info-row">
           <span className="pr-card-info-author" title={pr.author.name}>
-            <AgentChip id={pr.author.id} name={pr.author.name} role={roleFor(pr.author.id)} />
+            <HumanOrAgentChip author={pr.author} />
             {pr.author.name}
           </span>
-          {pr.branch && (
+          {pr.workItemId && (
+            <span className="pr-card-info-branch" title={`Linked: ${pr.workItemId}`}>
+              {pr.workItemId}
+            </span>
+          )}
+          {!pr.workItemId && pr.branch && (
             <span className="pr-card-info-branch" title={`${pr.branch} → ${pr.base}`}>
               {pr.branch}
             </span>
@@ -106,7 +182,25 @@ export function PrCard({ pr, onOpen }: Props) {
             <span className="del">−{pr.deletions}</span>
             <span className="files">
               {pr.files} file{pr.files === 1 ? '' : 's'} · {pr.commits} commit{pr.commits === 1 ? '' : 's'}
+              {(pr.updates ?? 0) > 0 && <> · {pr.updates} update{pr.updates === 1 ? '' : 's'}</>}
             </span>
+          </div>
+        )}
+
+        {(pr.createdAt || pr.updatedAt) && (
+          <div className="pr-card-dates">
+            {pr.createdAt && (
+              <span title={`Created ${pr.createdAt}`}>
+                <span className="label">Created</span>
+                <span className="val">{formatCardDate(pr.createdAt)}</span>
+              </span>
+            )}
+            {pr.updatedAt && (
+              <span title={`Updated ${pr.updatedAt}`}>
+                <span className="label">Updated</span>
+                <span className="val">{formatCardDate(pr.updatedAt)}</span>
+              </span>
+            )}
           </div>
         )}
 
@@ -164,6 +258,29 @@ function ProviderPill({ kind }: { kind: string }) {
       {isAdo ? 'ADO' : 'GH'}
     </span>
   );
+}
+
+/** Short numeric date for the card strip — e.g. "Apr 28". */
+function formatCardDate(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/**
+ * Card-level verdict pill source. The card can't afford to fetch
+ * comments (200+ rows on the board), so we lean on the
+ * already-aggregated `pr.review.verdict` and translate it to the
+ * approval-badge vocabulary. Returns null when the PR has no review
+ * verdict yet — keeps the card uncluttered for fresh PRs.
+ */
+function cardVerdict(pr: Pr): ApprovalVerdict | null {
+  const v = pr.review?.verdict;
+  if (v === 'approved') return 'approved';
+  if (v === 'changes')  return 'changes';
+  if (v === 'pending')  return null;
+  return null;
 }
 
 /** Map age string to urgency class for color treatment. */

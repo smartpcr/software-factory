@@ -249,6 +249,15 @@ public static class GitHubMapper
         var humanGate = labels.Contains("needs-human-review", StringComparer.OrdinalIgnoreCase)
             || labels.Contains("security", StringComparer.OrdinalIgnoreCase);
 
+        var prCreatedAt = pr.TryGetProperty("created_at", out var prCa) && prCa.ValueKind == JsonValueKind.String
+            ? prCa.GetString() : null;
+        var prUpdatedAt = pr.TryGetProperty("updated_at", out var prUa) && prUa.ValueKind == JsonValueKind.String
+            ? prUa.GetString() : null;
+        var prDescription = pr.TryGetProperty("body", out var prBody) && prBody.ValueKind == JsonValueKind.String
+            ? prBody.GetString() ?? string.Empty : string.Empty;
+        var prWebUrl = pr.TryGetProperty("html_url", out var prHtml) && prHtml.ValueKind == JsonValueKind.String
+            ? prHtml.GetString() : null;
+
         return new Pr(
             Id: id,
             Col: col,
@@ -263,12 +272,16 @@ public static class GitHubMapper
             Deletions: deletions,
             Files: files,
             Commits: commits,
-            Age: pr.TryGetProperty("created_at", out var ca) ? RelativeAge(ca.GetString()) : "—",
+            Age: prCreatedAt is not null ? RelativeAge(prCreatedAt) : "—",
             Build: null,
             Review: null,
             Conflicts: conflicts,
             HumanGate: humanGate,
-            GateReason: humanGate ? "label requires human review" : null);
+            GateReason: humanGate ? "label requires human review" : null,
+            Description: prDescription,
+            WebUrl: prWebUrl,
+            CreatedAt: prCreatedAt,
+            UpdatedAt: prUpdatedAt);
     }
 
     private static IReadOnlyList<string> ExtractLabelNames(JsonElement issueOrPr)

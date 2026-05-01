@@ -65,9 +65,14 @@ public static class AdoMapper
         var name = assignedTo.TryGetProperty("displayName", out var dn) ? dn.GetString() : null;
         var unique = assignedTo.TryGetProperty("uniqueName", out var un) ? un.GetString() : null;
         if (string.IsNullOrEmpty(name) && string.IsNullOrEmpty(unique)) return null;
-        // Initials of the display name → "id" so the existing agent-chip CSS matches.
         var id = MakeInitials(name ?? unique!);
-        return new Agent(Id: id, Role: "human", Name: name ?? unique!);
+        var imageUrl = assignedTo.TryGetProperty("imageUrl", out var img) ? img.GetString() : null;
+        // ADO _avatar URLs need &size=2 for a small image.
+        if (!string.IsNullOrEmpty(imageUrl) && !imageUrl.Contains("size="))
+        {
+            imageUrl += (imageUrl.Contains('?') ? "&" : "?") + "size=2";
+        }
+        return new Agent(Id: id, Role: "human", Name: name ?? unique!, ImageUrl: imageUrl);
     }
 
     private static string MakeInitials(string s)
@@ -298,7 +303,8 @@ public static class AdoMapper
     /// <summary>Maps an ADO PR JSON envelope into a <see cref="Pr"/>.</summary>
     public static Pr ToPr(JsonElement pr, string epicFallback)
     {
-        var id = "PR #" + pr.GetProperty("pullRequestId").GetInt64();
+        var prIdNum = pr.GetProperty("pullRequestId").GetInt64();
+        var id = "PR #" + prIdNum;
         var title = pr.TryGetProperty("title", out var t) ? t.GetString() ?? string.Empty : string.Empty;
 
         // ADO returns "refs/heads/branch-name"; trim the prefix.
@@ -328,6 +334,46 @@ public static class AdoMapper
             hasConflict = string.Equals(ms.GetString(), "conflicts", StringComparison.OrdinalIgnoreCase);
         }
 
+        // Phase 27 — extract description, dates, web URL, and work item link.
+        var description = pr.TryGetProperty("description", out var desc) ? desc.GetString() ?? string.Empty : string.Empty;
+
+        var createdAt = pr.TryGetProperty("creationDate", out var cd) && cd.ValueKind == JsonValueKind.String
+            ? cd.GetString() : null;
+        // ADO's PR list API doesn't expose a `lastUpdateDate` directly; closedDate is set only
+        // on completed/abandoned PRs. For active PRs, fall back to creationDate so the UI has
+        // a date to display; PrSyncJob refreshes UpdatedAt from the comment-sync snapshot.
+        string? updatedAt = null;
+        if (pr.TryGetProperty("closedDate", out var closedD) && closedD.ValueKind == JsonValueKind.String)
+        {
+            updatedAt = closedD.GetString();
+        }
+        if (string.IsNullOrEmpty(updatedAt)) updatedAt = createdAt;
+
+        // Construct the web URL from the repository URL: {org}/{project}/_git/{repo}/pullrequest/{prId}
+        string? webUrl = null;
+        if (pr.TryGetProperty("repository", out var repo) && repo.TryGetProperty("webUrl", out var repoUrl))
+        {
+            var repoWebUrl = repoUrl.GetString();
+            if (!string.IsNullOrEmpty(repoWebUrl))
+            {
+                webUrl = $"{repoWebUrl}/pullrequest/{prIdNum}";
+            }
+        }
+
+        // Extract linked work item IDs.
+        string? workItemId = null;
+        if (pr.TryGetProperty("workItemRefs", out var wiRefs) && wiRefs.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var wiRef in wiRefs.EnumerateArray())
+            {
+                if (wiRef.TryGetProperty("id", out var wiId))
+                {
+                    workItemId = "WI-" + wiId.GetString();
+                    break;
+                }
+            }
+        }
+
         return new Pr(
             Id: id,
             Col: col,
@@ -342,13 +388,16 @@ public static class AdoMapper
             Deletions: 0,
             Files: 0,
             Commits: 0,
-            Age: pr.TryGetProperty("creationDate", out var cd) && cd.ValueKind == JsonValueKind.String
-                ? RelativeAge(cd.GetString())
-                : "—",
+            Age: createdAt is not null ? RelativeAge(createdAt) : "—",
             Build: null,
             Review: null,
             Conflicts: hasConflict,
-            HumanGate: false);
+            HumanGate: false,
+            Description: description,
+            WebUrl: webUrl,
+            CreatedAt: createdAt,
+            UpdatedAt: updatedAt,
+            WorkItemId: workItemId);
     }
 
     private static string RelativeAge(string? iso)

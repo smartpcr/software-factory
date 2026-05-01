@@ -27,6 +27,21 @@ using Microsoft.EntityFrameworkCore;
 /// </summary>
 public static class PrsEndpoints
 {
+    /// <summary>
+    /// Phase 28.2 — review-comment classifier mirrored from the UI's
+    /// <c>isBuildEvent</c> helper. A "review" comment is anything that
+    /// isn't a pure ADO system event or a CI bot post — PR Assistant
+    /// remarks land with <c>AuthorKind == "system"</c> but their body
+    /// has the <c>PR Assistant</c> marker, so they DO count as review.
+    /// Used by the open / attention count queries so the badge on a PR
+    /// card matches the Comments tab filter inside the detail panel.
+    /// </summary>
+    private static readonly System.Linq.Expressions.Expression<Func<PrCommentRow, bool>> IsReviewComment =
+        c => c.Body.Contains("PR Assistant")
+          || (c.AuthorKind != "system"
+              && !((c.AuthorId == null || c.AuthorId == "")
+                  && (c.Body.StartsWith("@@@ci") || c.Body.Contains("Pipeline: ["))));
+
     public static WebApplication MapPrsEndpoints(this WebApplication app)
     {
         var grp = app.MapGroup("/api/prs").WithTags("Prs");
@@ -42,8 +57,50 @@ public static class PrsEndpoints
         grp.MapPost("/{id}/comment", Comment).WithName("CommentOnPr");
         grp.MapPost("/{id}/merge", Merge).WithName("MergePr");
         grp.MapPost("/sync", SyncPrs).WithName("SyncPrs");
+        grp.MapPost("/{id}/resync", ResyncPr).WithName("ResyncPr");
 
         return app;
+    }
+
+    /// <summary>
+    /// Phase 24/28 — Resync a single PR's state + comments from the provider.
+    /// Calls <see cref="Forge.Api.Services.PrSyncJob.RunSyncForAsync"/> which
+    /// fetches the PR + threads endpoint, upserts comments, and broadcasts
+    /// <c>pr.changed</c> to connected clients.
+    /// </summary>
+    private static async Task<IResult> ResyncPr(
+        HttpContext ctx,
+        string id,
+        ForgeDbContext db,
+        [FromServices] Forge.Api.Services.PrSyncJob prSyncJob,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var row = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id, ct);
+        if (row is null) return NotFound(id);
+
+        // Backfill ProviderRef on legacy rows so the sync isn't a no-op.
+        if (string.IsNullOrEmpty(row.ProviderRef))
+        {
+            var tracked = await db.Prs.FirstAsync(p => p.Id == id, ct);
+            tracked.ProviderRef = ExtractProviderRef(id);
+            tracked.LastSyncStatus = "idle";
+            await db.SaveChangesAsync(ct);
+        }
+
+        await prSyncJob.RunSyncForAsync(id, ct);
+        var fresh = await db.Prs.AsNoTracking().FirstAsync(p => p.Id == id, ct);
+        var open = await db.PrComments
+            .Where(c => c.PrId == id && c.State == "active")
+            .Where(IsReviewComment)
+            .CountAsync(ct);
+        var attention = await db.PrComments
+            .Where(c => c.PrId == id && c.State == "active" && c.RequiresAttention)
+            .Where(IsReviewComment)
+            .CountAsync(ct);
+        return Results.Ok(PrMapper.ToContract(fresh, open, attention));
     }
 
     private static IForgeProvider? PickProvider(string preferred, IEnumerable<IForgeProvider> providers) =>
@@ -60,11 +117,12 @@ public static class PrsEndpoints
             var ids = scope.RepoIds!;
             q = q.Where(p => p.RepoId != null && ids.Contains(p.RepoId));
         }
-        var rows = await q.OrderBy(p => p.Sort).ToListAsync();
+        var rows = await q.OrderByDescending(p => p.UpdatedAt ?? p.CreatedAt ?? "").ThenBy(p => p.Sort).ToListAsync();
         // Phase 24 — fetch open + attention comment counts in one batch query.
         var prIds = rows.Select(r => r.Id).ToList();
         var commentCounts = await db.PrComments
             .Where(c => prIds.Contains(c.PrId) && c.State == "active")
+            .Where(IsReviewComment)
             .GroupBy(c => c.PrId)
             .Select(g => new { PrId = g.Key, Open = g.Count(), Attention = g.Count(c => c.RequiresAttention) })
             .ToListAsync();
@@ -81,8 +139,14 @@ public static class PrsEndpoints
     {
         var row = await db.Prs.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
         if (row is null) return NotFound(id);
-        var open = await db.PrComments.CountAsync(c => c.PrId == id && c.State == "active");
-        var attention = await db.PrComments.CountAsync(c => c.PrId == id && c.State == "active" && c.RequiresAttention);
+        var open = await db.PrComments
+            .Where(c => c.PrId == id && c.State == "active")
+            .Where(IsReviewComment)
+            .CountAsync();
+        var attention = await db.PrComments
+            .Where(c => c.PrId == id && c.State == "active" && c.RequiresAttention)
+            .Where(IsReviewComment)
+            .CountAsync();
         return Results.Ok(PrMapper.ToContract(row, open, attention));
     }
 
@@ -99,8 +163,8 @@ public static class PrsEndpoints
         if (row is null) return NotFound(id);
         var pr = PrMapper.ToContract(row);
 
-        // Description: use PR title as a meaningful fallback.
-        var description = pr.Title;
+        // Use real description from the provider; fall back to title.
+        var description = !string.IsNullOrWhiteSpace(row.Description) ? row.Description : pr.Title;
 
         // Build log: only show real build data when available.
         var log = new List<string>();
@@ -358,6 +422,7 @@ public static class PrsEndpoints
         [FromServices] IHubContext<ForgeHub> hub,
         [FromServices] IEnumerable<IAuthService> authServices,
         [FromServices] ILoggerFactory loggerFactory,
+        [FromServices] Forge.Api.Services.PrSyncJob prSyncJob,
         CancellationToken ct)
     {
         var log = loggerFactory.CreateLogger("Forge.PrSync");
@@ -480,8 +545,24 @@ public static class PrsEndpoints
                     }
                     prs.Add(mapped);
                 }
-                remotePrs = prs;
-                log.LogInformation("PR sync: {Count} PRs after author filter", prs.Count);
+
+                // Phase 28 — enrich each PR with iteration / commit / file stats from
+                // dedicated ADO endpoints. The list response doesn't include those.
+                var enriched = new List<Pr>(prs.Count);
+                foreach (var basePr in prs)
+                {
+                    var prIdStr = basePr.Id.Replace("PR #", string.Empty);
+                    if (!long.TryParse(prIdStr, out var prIdLong))
+                    {
+                        enriched.Add(basePr);
+                        continue;
+                    }
+                    var richer = await AdoPrStats.EnrichAsync(
+                        basePr, client, repo.AdoProject!, adoRepoName!, prIdLong, log, ct);
+                    enriched.Add(richer);
+                }
+                remotePrs = enriched;
+                log.LogInformation("PR sync: {Count} PRs after author filter (enriched)", enriched.Count);
             }
             else if (repo.Kind == "github" && !string.IsNullOrWhiteSpace(repo.GhOwner) && !string.IsNullOrWhiteSpace(repo.GhRepo))
             {
@@ -560,8 +641,31 @@ public static class PrsEndpoints
         // Upsert into the local DB.
         var inserted = 0;
         var updated = 0;
+
+        // Phase 27 — construct web URL for ADO PRs from known org/project/repo.
+        string? ConstructAdoWebUrl(string prId)
+        {
+            if (repo.Kind != "ado" || string.IsNullOrEmpty(repo.AdoOrg) || string.IsNullOrEmpty(repo.AdoProject) || string.IsNullOrEmpty(adoRepoName))
+                return null;
+            var numStr = prId.Replace("PR #", "");
+            var orgBase = BuildAdoOrgUrl(repo.AdoOrg!);
+            return $"{orgBase}/{repo.AdoProject}/_git/{adoRepoName}/pullrequest/{numStr}";
+        }
+
         foreach (var pr in remotePrs)
         {
+            // Fill in webUrl if the mapper couldn't extract it from the API response.
+            var webUrl = pr.WebUrl ?? ConstructAdoWebUrl(pr.Id);
+
+            // Infer WorkItemId from ws/{id} branch convention if the API didn't provide it.
+            var workItemId = pr.WorkItemId;
+            if (string.IsNullOrEmpty(workItemId) && !string.IsNullOrEmpty(pr.Branch) && pr.Branch.StartsWith("ws/", StringComparison.Ordinal))
+            {
+                var candidateWiId = pr.Branch[3..];
+                if (await db.WorkItems.AnyAsync(w => w.Id == candidateWiId, ct))
+                    workItemId = candidateWiId;
+            }
+
             var existing = await db.Prs.FirstOrDefaultAsync(p => p.Id == pr.Id, ct);
             if (existing is null)
             {
@@ -580,6 +684,7 @@ public static class PrsEndpoints
                     Deletions = pr.Deletions,
                     Files = pr.Files,
                     Commits = pr.Commits,
+                    Updates = pr.Updates,
                     Age = pr.Age,
                     BuildJson = pr.Build is null ? null : CardMapper.Serialize(pr.Build),
                     ReviewJson = pr.Review is null ? null : CardMapper.Serialize(pr.Review),
@@ -592,9 +697,19 @@ public static class PrsEndpoints
                     ImplJson = pr.Impl is null ? null : CardMapper.Serialize(pr.Impl),
                     IsActive = pr.Col != "merged",
                     Provider = repo.Kind,
+                    // Phase 24/28 — provider's PR id (digits only). PrSyncJob requires
+                    // this to be non-empty before it'll fetch comments via the per-PR
+                    // ADO/GitHub endpoints.
+                    ProviderRef = ExtractProviderRef(pr.Id),
                     LastSyncAt = DateTimeOffset.UtcNow.ToString("o"),
                     LastSyncStatus = "idle",
                     RepoId = req.RepoId,
+                    // Phase 27 — enriched fields.
+                    Description = pr.Description ?? string.Empty,
+                    WebUrl = webUrl,
+                    CreatedAt = pr.CreatedAt,
+                    UpdatedAt = pr.UpdatedAt,
+                    WorkItemId = workItemId,
                 });
                 inserted++;
             }
@@ -607,6 +722,7 @@ public static class PrsEndpoints
                 existing.Deletions = pr.Deletions;
                 existing.Files = pr.Files;
                 existing.Commits = pr.Commits;
+                existing.Updates = pr.Updates;
                 existing.Age = pr.Age;
                 existing.BuildJson = pr.Build is null ? null : CardMapper.Serialize(pr.Build);
                 existing.ReviewJson = pr.Review is null ? null : CardMapper.Serialize(pr.Review);
@@ -615,6 +731,18 @@ public static class PrsEndpoints
                 existing.IsActive = pr.Col != "merged";
                 existing.LastSyncAt = DateTimeOffset.UtcNow.ToString("o");
                 existing.LastSyncStatus = "idle";
+                // Phase 24/28 — backfill ProviderRef on previously-synced rows that
+                // missed it; PrSyncJob skips rows where this is empty.
+                if (string.IsNullOrEmpty(existing.ProviderRef))
+                {
+                    existing.ProviderRef = ExtractProviderRef(pr.Id);
+                }
+                // Phase 27 — enriched fields.
+                if (!string.IsNullOrEmpty(pr.Description)) existing.Description = pr.Description;
+                if (!string.IsNullOrEmpty(webUrl)) existing.WebUrl = webUrl;
+                if (!string.IsNullOrEmpty(pr.CreatedAt)) existing.CreatedAt = pr.CreatedAt;
+                if (!string.IsNullOrEmpty(pr.UpdatedAt)) existing.UpdatedAt = pr.UpdatedAt;
+                if (!string.IsNullOrEmpty(workItemId)) existing.WorkItemId ??= workItemId;
                 updated++;
             }
         }
@@ -622,12 +750,34 @@ public static class PrsEndpoints
         await db.SaveChangesAsync(ct);
         log.LogInformation("PR sync: completed — pulled={Pulled} inserted={Inserted} updated={Updated}", remotePrs.Count, inserted, updated);
 
+        // Phase 24/28 — fire-and-forget the comment-sync sweep so users see
+        // threads + states populate without waiting for the 20-min background
+        // tick. Any failure is logged inside RunSweepAsync; we don't block the
+        // user's response on it.
+        _ = Task.Run(async () =>
+        {
+            try { await prSyncJob.RunSweepAsync(CancellationToken.None); }
+            catch (Exception ex) { log.LogWarning(ex, "PR sync: post-sync comment sweep failed"); }
+        });
+
         await hub.Clients.All.SendAsync("pr.changed", new { kind = "synced", inserted, updated }, ct);
         return Results.Ok(new { pulled = remotePrs.Count, inserted, updated });
     }
 
     private static IResult NotFound(string id) =>
         Results.Problem(title: $"PR {id} not found", statusCode: 404);
+
+    /// <summary>
+    /// Extract the bare numeric provider ref from a Forge PR id (e.g.
+    /// "PR #15567121" → "15567121"). Returns the input unchanged when no
+    /// digits are present so callers can store the raw id as a fallback.
+    /// </summary>
+    private static string ExtractProviderRef(string prId)
+    {
+        if (string.IsNullOrEmpty(prId)) return prId;
+        var digits = new string(prId.Where(char.IsDigit).ToArray());
+        return string.IsNullOrEmpty(digits) ? prId : digits;
+    }
 
     /// <summary>
     /// Build the canonical ADO org URL from the repo row's AdoOrg.

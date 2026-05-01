@@ -9,6 +9,7 @@ namespace Forge.Api.Services;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Forge.Api.Auth;
 using Forge.Api.Persistence;
 using Forge.Api.Providers;
 using Forge.Api.Providers.Ado;
@@ -28,26 +29,35 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
     private readonly IHttpClientFactory clientFactory;
     private readonly AdoOptions options;
     private readonly IServiceScopeFactory scopeFactory;
+    private readonly IEnumerable<IAuthService> authServices;
     private readonly ILogger<AdoPrCommentSyncClient> logger;
 
     public AdoPrCommentSyncClient(
         IHttpClientFactory clientFactory,
         IOptions<AdoOptions> options,
         IServiceScopeFactory scopeFactory,
+        IEnumerable<IAuthService> authServices,
         ILogger<AdoPrCommentSyncClient> logger)
     {
         this.clientFactory = clientFactory;
         this.options = options.Value;
         this.scopeFactory = scopeFactory;
+        this.authServices = authServices;
         this.logger = logger;
     }
 
     public string Provider => "ado";
 
+    /// <summary>
+    /// True when comment sync can authenticate against ADO. Either a global
+    /// PAT is configured (legacy path) or an interactive sign-in (Phase 9
+    /// <see cref="IAuthService"/>) is registered. Per-repo fields are
+    /// resolved from <see cref="RepoRow"/> at fetch time so we don't
+    /// require <c>options.OrgUrl</c> / <c>options.Project</c> here.
+    /// </summary>
     public bool IsConfigured =>
-        !string.IsNullOrWhiteSpace(this.options.OrgUrl)
-        && !string.IsNullOrWhiteSpace(this.options.Project)
-        && !string.IsNullOrWhiteSpace(this.options.Pat);
+        !string.IsNullOrWhiteSpace(this.options.Pat)
+        || this.authServices.Any(a => string.Equals(a.Kind, "ado", StringComparison.OrdinalIgnoreCase));
 
     public async Task<PrSyncSnapshot> FetchAsync(PrRow pr, CancellationToken ct)
     {
@@ -56,15 +66,20 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
             return new PrSyncSnapshot(pr.Col, pr.LastUpstreamUpdatedAt, Array.Empty<PrSyncComment>(), false);
         }
 
-        var (project, repo) = await this.ResolveRepoAsync(pr, ct);
-        if (string.IsNullOrEmpty(project) || string.IsNullOrEmpty(repo))
+        var (orgUrl, project, repo) = await this.ResolveRepoAsync(pr, ct);
+        if (string.IsNullOrEmpty(orgUrl) || string.IsNullOrEmpty(project) || string.IsNullOrEmpty(repo))
         {
+            this.logger.LogDebug(
+                "ADO comment sync: missing repo config for PR={Pr} (orgUrl='{OrgUrl}' project='{Project}' repo='{Repo}')",
+                pr.Id, orgUrl, project, repo);
             return new PrSyncSnapshot(pr.Col, pr.LastUpstreamUpdatedAt, Array.Empty<PrSyncComment>(), false);
         }
 
-        var num = pr.ProviderRef.TrimStart('#').Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase);
+        // Provider ref may have come in as "PR #123" / "#123" / "123" — normalise to digits.
+        var num = new string(pr.ProviderRef.Where(char.IsDigit).ToArray());
+        if (string.IsNullOrEmpty(num)) num = pr.ProviderRef;
 
-        using var http = this.NewClient();
+        using var http = await this.NewClientAsync(orgUrl, ct);
         var prResp = await http.GetAsync(
             $"{Uri.EscapeDataString(project)}/_apis/git/repositories/{Uri.EscapeDataString(repo)}/pullRequests/{Uri.EscapeDataString(num)}?api-version=7.0",
             ct);
@@ -186,12 +201,17 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
 
     /// <summary>
     /// Maps ADO <c>commentThread.status</c> to canonical comment state.
+    /// ADO statuses: <c>active | fixed | wontFix | closed | byDesign | pending | unknown</c>.
+    /// Forge keeps <c>closed</c> distinct from <c>resolved</c> because ADO's web
+    /// UI surfaces them differently — "closed" is the dismissed-without-fix
+    /// state shown in <c>pr-comment.png</c>, while "fixed" is the resolved one.
     /// </summary>
     internal static string MapAdoStatus(string status) => status.ToLowerInvariant() switch
     {
         "active" => "active",
-        "fixed" or "closed" or "bydesign" => "resolved",
+        "fixed" or "bydesign" => "resolved",
         "wontfix" => "wont-fix",
+        "closed" => "closed",
         "pending" => "pending",
         _ => "active",
     };
@@ -206,7 +226,7 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
         return "human";
     }
 
-    private async Task<(string Project, string Repo)> ResolveRepoAsync(PrRow pr, CancellationToken ct)
+    private async Task<(string OrgUrl, string Project, string Repo)> ResolveRepoAsync(PrRow pr, CancellationToken ct)
     {
         if (!string.IsNullOrEmpty(pr.RepoId))
         {
@@ -215,10 +235,30 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
             var repoRow = await db.Set<RepoRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == pr.RepoId, ct);
             if (repoRow is not null && !string.IsNullOrEmpty(repoRow.AdoProject))
             {
-                return (repoRow.AdoProject!, ExtractRepoFromUrl(repoRow.RemoteUrl) ?? this.options.Repository ?? string.Empty);
+                var orgUrl = !string.IsNullOrEmpty(repoRow.AdoOrg)
+                    ? BuildAdoOrgUrl(repoRow.AdoOrg!)
+                    : this.options.OrgUrl ?? string.Empty;
+                var repoName = ExtractRepoFromUrl(repoRow.RemoteUrl) ?? this.options.Repository ?? string.Empty;
+                return (orgUrl, repoRow.AdoProject!, repoName);
             }
         }
-        return (this.options.Project, this.options.Repository ?? string.Empty);
+        return (this.options.OrgUrl ?? string.Empty, this.options.Project ?? string.Empty, this.options.Repository ?? string.Empty);
+    }
+
+    /// <summary>
+    /// Mirrors <c>PrsEndpoints.BuildAdoOrgUrl</c>: accepts either a bare org
+    /// name (<c>"contoso"</c> → <c>"https://dev.azure.com/contoso"</c>) or an
+    /// already-canonical URL.
+    /// </summary>
+    private static string BuildAdoOrgUrl(string adoOrg)
+    {
+        var trimmed = adoOrg.Trim();
+        if (trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return trimmed.TrimEnd('/');
+        }
+        return $"https://dev.azure.com/{trimmed.Trim('/')}";
     }
 
     private static string? ExtractRepoFromUrl(string remoteUrl)
@@ -248,18 +288,43 @@ public sealed class AdoPrCommentSyncClient : IPrCommentSyncClient
         return dict;
     }
 
-    private HttpClient NewClient()
+    private async Task<HttpClient> NewClientAsync(string orgUrl, CancellationToken ct)
     {
         var client = this.clientFactory.CreateClient(ClientName);
-        if (!string.IsNullOrWhiteSpace(this.options.OrgUrl))
+        if (!string.IsNullOrEmpty(orgUrl))
         {
-            client.BaseAddress = new Uri(this.options.OrgUrl.TrimEnd('/') + "/");
+            client.BaseAddress = new Uri(orgUrl.TrimEnd('/') + "/");
         }
+
+        // Prefer Basic-PAT when configured for backwards compat with headless
+        // setups; otherwise borrow the bearer token from the interactive ADO
+        // sign-in (Phase 9). Without one of these, ADO replies 401 and the
+        // sync client silently produces an empty snapshot.
         if (!string.IsNullOrWhiteSpace(this.options.Pat))
         {
             var token = Convert.ToBase64String(Encoding.ASCII.GetBytes($":{this.options.Pat}"));
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", token);
         }
+        else
+        {
+            var auth = this.authServices.FirstOrDefault(a => string.Equals(a.Kind, "ado", StringComparison.OrdinalIgnoreCase));
+            if (auth is not null)
+            {
+                try
+                {
+                    var bearer = await auth.GetAccessTokenAsync(ct);
+                    if (!string.IsNullOrEmpty(bearer))
+                    {
+                        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    this.logger.LogDebug(ex, "ADO comment sync: failed to acquire bearer token");
+                }
+            }
+        }
+
         client.DefaultRequestHeaders.Accept.Clear();
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         return client;

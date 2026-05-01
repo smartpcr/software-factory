@@ -271,6 +271,63 @@ export interface PrDetailsResponse {
   reviewers: string[];
 }
 
+/** Phase 26 — result of POST /api/repos/{id}/detect-build. */
+export interface DetectBuildResult {
+  ecosystem: string;
+  initCommand?: string | null;
+  restoreCommand?: string | null;
+  buildCommand?: string | null;
+  testCommand?: string | null;
+  ambiguous: boolean;
+  ambiguityDetail?: string | null;
+  current: {
+    initCommand?: string | null;
+    restoreCommand?: string | null;
+    buildCommand?: string | null;
+    testCommand?: string | null;
+    buildTimeoutSec?: number | null;
+    testTimeoutSec?: number | null;
+  };
+}
+
+/** Phase 26/29 — result of POST /api/repos/{id}/validate-build (async). */
+export interface ValidateBuildAccepted {
+  runId: string;
+  status: string;
+}
+
+/** Phase 29 — step result within a validation run. */
+export interface ValidateStep {
+  step: string;
+  command: string;
+  passed: boolean;
+  exitCode: number;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+}
+
+/** Phase 26 — validation result (used for display). */
+export interface ValidateBuildResult {
+  allPassed: boolean;
+  ecosystem: string;
+  steps: ValidateStep[];
+}
+
+/** Phase 29 — persistent build validation run record. */
+export interface BuildValidationRun {
+  id: string;
+  repoId: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+  startedAt: string;
+  finishedAt?: string | null;
+  allPassed: boolean;
+  ecosystem?: string | null;
+  stepsJson?: string | null;
+  triggeredBy?: string | null;
+  errorMessage?: string | null;
+}
+
 export const forgeApi = {
   async getState(): Promise<ForgeState> {
     if (useLocalSeed()) {
@@ -678,6 +735,13 @@ export const forgeApi = {
     // Phase 23 — sync settings.
     areaPaths?: string[];
     agentReadyDefaultTeam?: string | null;
+    // Phase 26/29 — build pipeline gate.
+    initCommand?: string;
+    restoreCommand?: string;
+    buildCommand?: string;
+    testCommand?: string;
+    buildTimeoutSec?: number;
+    testTimeoutSec?: number;
   }): Promise<Repo> {
     return fetchJson<Repo>(`/api/repos/${encodeURIComponent(id)}`, {
       method: 'PATCH',
@@ -694,6 +758,62 @@ export const forgeApi = {
         method: 'POST',
         headers: { 'X-Forge-User': writerHeader() },
       },
+    );
+  },
+
+  /** Phase 26 — POST /api/repos/{id}/detect-build — scan repo for build markers. */
+  async detectBuild(id: string): Promise<DetectBuildResult> {
+    return fetchJson<DetectBuildResult>(
+      `/api/repos/${encodeURIComponent(id)}/detect-build`,
+      {
+        method: 'POST',
+        headers: { 'X-Forge-User': writerHeader() },
+      },
+    );
+  },
+
+  /** Phase 26/29 — POST /api/repos/{id}/validate-build — enqueue async validation. */
+  async validateBuild(id: string): Promise<ValidateBuildAccepted> {
+    return fetchJson<ValidateBuildAccepted>(
+      `/api/repos/${encodeURIComponent(id)}/validate-build`,
+      {
+        method: 'POST',
+        headers: { 'X-Forge-User': writerHeader() },
+      },
+    );
+  },
+
+  /** Phase 29 — GET /api/repos/{id}/validation-runs — fetch persistent history. */
+  async getValidationRuns(id: string): Promise<BuildValidationRun[]> {
+    return fetchJson<BuildValidationRun[]>(
+      `/api/repos/${encodeURIComponent(id)}/validation-runs`,
+    );
+  },
+
+  /** Phase 29 — POST /api/repos/{id}/validation-runs/{runId}/cancel — cancel a running validation. */
+  async cancelValidationRun(repoId: string, runId: string): Promise<{ runId: string; status: string }> {
+    return fetchJson<{ runId: string; status: string }>(
+      `/api/repos/${encodeURIComponent(repoId)}/validation-runs/${encodeURIComponent(runId)}/cancel`,
+      {
+        method: 'POST',
+        headers: { 'X-Forge-User': writerHeader() },
+      },
+    );
+  },
+
+  /** Phase 29 — DELETE /api/repos/{id}/validation-runs — clear completed validation history. */
+  async clearValidationRuns(repoId: string): Promise<{ deleted: number }> {
+    return fetchJson<{ deleted: number }>(
+      `/api/repos/${encodeURIComponent(repoId)}/validation-runs`,
+      { method: 'DELETE', headers: { 'X-Forge-User': writerHeader() } },
+    );
+  },
+
+  /** Phase 29 — DELETE /api/repos/{id}/sync-work-items/runs — clear sync history. */
+  async clearSyncRuns(repoId: string): Promise<{ deleted: number }> {
+    return fetchJson<{ deleted: number }>(
+      `/api/repos/${encodeURIComponent(repoId)}/sync-work-items/runs`,
+      { method: 'DELETE', headers: { 'X-Forge-User': writerHeader() } },
     );
   },
 

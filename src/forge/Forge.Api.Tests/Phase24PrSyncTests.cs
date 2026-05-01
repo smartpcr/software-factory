@@ -621,7 +621,9 @@ public class Phase24PrSyncTests
     [Theory]
     [InlineData("active", "active")]
     [InlineData("fixed", "resolved")]
-    [InlineData("closed", "resolved")]
+    // Phase 28 — "closed" stays distinct from "resolved" so the Forge UI
+    // can render the closed-without-fix pill (see pr-comment.png).
+    [InlineData("closed", "closed")]
     [InlineData("byDesign", "resolved")]
     [InlineData("wontFix", "wont-fix")]
     [InlineData("pending", "pending")]
@@ -926,7 +928,54 @@ public class Phase24PrSyncTests
         var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
         var pr = await db2.Prs.AsNoTracking().FirstAsync(p => p.Id == "p24-snap-term");
         Assert.False(pr.IsActive);
-        Assert.Equal("completed", pr.Col);
+        // Phase 28 — completed/abandoned canonical states map to the "merged"
+        // UI column. Storing the raw canonical "completed" string here would
+        // hide the row from the board (PrColumn = implementation|build|review|merged).
+        Assert.Equal("merged", pr.Col);
+    }
+
+    /// <summary>
+    /// Phase 28 — non-terminal "open" canonical state must NOT overwrite the PR's
+    /// existing UI column (e.g. "review"). Otherwise the PR vanishes from the board
+    /// because "open" isn't a valid <c>PrColumn</c>. This test pins the regression
+    /// reported after the post-sync comment sweep started running on every manual
+    /// sync.
+    /// </summary>
+    [Fact]
+    public async Task PrSync_Open_State_Preserves_Existing_Ui_Column()
+    {
+        using var f = new ForgeWebApplicationFactory();
+        using (f.CreateClient()) { }
+        using var scope = f.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+
+        // Seed a PR with the col already at the UI value "review" — this is what
+        // PrsEndpoints.SyncPrs writes for an active ADO PR.
+        var pr = SeedPr(db, "p28-preserve-col");
+        pr.Col = "review";
+        pr.Provider = "ado";
+        pr.ProviderRef = "15567121";
+        await db.SaveChangesAsync();
+
+        // Snapshot reports the upstream is still active → canonical "open".
+        var snapshot = new PrSyncSnapshot(
+            CanonicalState: "open",
+            UpstreamUpdatedAt: "2026-04-30T19:01:00Z",
+            Comments: Array.Empty<PrSyncComment>(),
+            CommentsFetched: false);
+
+        var job = scope.ServiceProvider.GetRequiredService<PrSyncJob>();
+        var method = typeof(PrSyncJob).GetMethod("ApplySnapshotAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var candidate = new PrSyncJob.PrSyncCandidate("p28-preserve-col", "ado", "15567121", "review", null, null);
+        await (Task)method.Invoke(job, new object?[] { candidate, snapshot, default(CancellationToken) })!;
+
+        using var scope2 = f.Services.CreateScope();
+        var db2 = scope2.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var refreshed = await db2.Prs.AsNoTracking().FirstAsync(p => p.Id == "p28-preserve-col");
+        // Must stay "review" — not overwritten with the canonical "open".
+        Assert.Equal("review", refreshed.Col);
+        Assert.True(refreshed.IsActive);
     }
 
     // ── 14. Sweep filters out IsActive=false (Q24.3) ──────────────────────

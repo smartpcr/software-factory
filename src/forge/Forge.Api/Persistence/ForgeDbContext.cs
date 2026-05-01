@@ -98,6 +98,8 @@ public class ForgeDbContext : DbContext
 
     public DbSet<PrCommentHistoryRow> PrCommentHistory => this.Set<PrCommentHistoryRow>();
 
+    public DbSet<BuildValidationRunRow> BuildValidationRuns => this.Set<BuildValidationRunRow>();
+
     protected override void OnModelCreating(ModelBuilder mb)
     {
         mb.Entity<EpicRow>().ToTable("epics").HasKey(x => x.Id);
@@ -326,5 +328,9 @@ public class ForgeDbContext : DbContext
         mb.Entity<PrCommentRow>().HasIndex(x => x.ThreadId);
         mb.Entity<PrCommentHistoryRow>().ToTable("pr_comment_history").HasKey(x => x.Id);
         mb.Entity<PrCommentHistoryRow>().HasIndex(x => new { x.CommentId, x.At });
+
+        // Phase 29 — build validation runs.
+        mb.Entity<BuildValidationRunRow>().ToTable("build_validation_runs").HasKey(x => x.Id);
+        mb.Entity<BuildValidationRunRow>().HasIndex(x => new { x.RepoId, x.StartedAt });
     }
 }

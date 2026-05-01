@@ -71,7 +71,29 @@ public class AdoConfigResolver : IAdoConfigResolver
             return cached;
         }
 
-        var settings = await db.UserSettings.AsNoTracking().FirstOrDefaultAsync(ct);
+        // Phase 9 sign-in re-keys the singleton settings row from "default" to
+        // the signed-in user's id, but the legacy row is left behind. A naive
+        // FirstOrDefault returned the empty "default" row under SQLite's
+        // insertion-order scan, hiding the real user's ADO org/project and
+        // making the provider test fail with "An invalid request URI…".
+        // Prefer rows that actually have ADO config set; client-side sort by
+        // UpdatedAt because SQLite can't ORDER BY DateTimeOffset.
+        var rowsWithConfig = await db.UserSettings
+            .AsNoTracking()
+            .Where(s =>
+                (s.DefaultAdoOrgUrl != null && s.DefaultAdoOrgUrl != "") &&
+                (s.DefaultAdoProject != null && s.DefaultAdoProject != ""))
+            .ToListAsync(ct);
+        var settings = rowsWithConfig
+            .OrderByDescending(s => s.UpdatedAt)
+            .FirstOrDefault();
+        if (settings is null)
+        {
+            // Fall back to any row, also sorted client-side.
+            var allRows = await db.UserSettings.AsNoTracking().ToListAsync(ct);
+            settings = allRows.OrderByDescending(s => s.UpdatedAt).FirstOrDefault();
+        }
+
         var effective = (settings, this.fallback) switch
         {
             ({ DefaultAdoOrgUrl: { Length: > 0 } orgUrl, DefaultAdoProject: { Length: > 0 } project }, _) =>

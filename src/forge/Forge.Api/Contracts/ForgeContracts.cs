@@ -32,7 +32,8 @@ public sealed record ProductStory(
 public sealed record Agent(
     string Id,
     string Role,
-    string Name);
+    string Name,
+    string? ImageUrl = null);
 
 /// <summary>
 /// Card on the plan-and-design board. Mirrors the prototype's <c>cards</c> array.
@@ -162,7 +163,15 @@ public sealed record Pr(
     string? LastSyncAt = null,
     string? LastSyncStatus = null,
     string? Provider = null,
-    string? WorkItemId = null);
+    string? WorkItemId = null,
+    // -- Phase 27 — PR detail enrichment --
+    string? Description = null,
+    string? WebUrl = null,
+    string? CreatedAt = null,
+    string? UpdatedAt = null,
+    // -- Phase 28 — iteration count ("Updates" tab) --
+    /// <summary>Phase 28 — number of updates / iterations on the PR (ADO "Updates" tab count). 0 when unknown.</summary>
+    int Updates = 0);
 
 /// <summary>
 /// Stat tile shown at the top of the workstreams view.
@@ -249,7 +258,9 @@ public sealed record Repo(
     string? IsRunningSince = null,
     string? AgentReadyDefaultTeam = null,
     int? InitialSyncWindowDays = null,
-    // Phase 26 — build/test gate before PR creation.
+    // Phase 26/29 — build pipeline gate before PR creation.
+    string? InitCommand = null,
+    string? RestoreCommand = null,
     string? BuildCommand = null,
     string? TestCommand = null,
     int? BuildTimeoutSec = null,
@@ -450,7 +461,9 @@ public sealed record UpdateRepoRequest(
     // Phase 23 — scheduled sync configuration.
     IReadOnlyList<string>? AreaPaths = null,
     string? AgentReadyDefaultTeam = null,
-    // Phase 26 — build/test gate before PR creation.
+    // Phase 26/29 — build pipeline gate before PR creation.
+    string? InitCommand = null,
+    string? RestoreCommand = null,
     string? BuildCommand = null,
     string? TestCommand = null,
     int? BuildTimeoutSec = null,

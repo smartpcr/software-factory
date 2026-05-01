@@ -12,6 +12,7 @@ using Forge.Api.Domain;
 using Forge.Api.Persistence;
 using Forge.Api.Providers;
 using Forge.Api.Realtime;
+using Forge.Api.Services;
 using Forge.Api.Services.Git;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -53,6 +54,14 @@ public static class ProductsEndpoints
         repos.MapGet("/{id}/sync-work-items/runs", GetRepoSyncRuns).WithName("GetRepoSyncRuns");
         repos.MapGet("/{id}/sync-work-items/runs/{runId}/items", GetSyncRunItems).WithName("GetSyncRunItems");
         repos.MapGet("/{id}/sync-work-items/status", GetRepoSyncStatus).WithName("GetRepoSyncStatus");
+
+        // Phase 26/29 — build pipeline detection, validation & history.
+        repos.MapPost("/{id}/detect-build", DetectBuild).WithName("DetectBuild");
+        repos.MapPost("/{id}/validate-build", ValidateBuild).WithName("ValidateBuild");
+        repos.MapGet("/{id}/validation-runs", GetValidationRuns).WithName("GetValidationRuns");
+        repos.MapPost("/{id}/validation-runs/{runId}/cancel", CancelValidationRun).WithName("CancelValidationRun");
+        repos.MapDelete("/{id}/validation-runs", ClearValidationRuns).WithName("ClearValidationRuns");
+        repos.MapDelete("/{id}/sync-work-items/runs", ClearSyncRuns).WithName("ClearSyncRuns");
 
         return app;
     }
@@ -104,7 +113,11 @@ public static class ProductsEndpoints
             row.AgentReadyDefaultTeam = NullIfEmpty(req.AgentReadyDefaultTeam);
         }
 
-        // Phase 26 — build/test gate configuration.
+        // Phase 26/29 — build pipeline gate configuration.
+        if (req.InitCommand is not null)
+            row.InitCommand = NullIfEmpty(req.InitCommand);
+        if (req.RestoreCommand is not null)
+            row.RestoreCommand = NullIfEmpty(req.RestoreCommand);
         if (req.BuildCommand is not null)
             row.BuildCommand = NullIfEmpty(req.BuildCommand);
         if (req.TestCommand is not null)
@@ -113,6 +126,14 @@ public static class ProductsEndpoints
             row.BuildTimeoutSec = req.BuildTimeoutSec > 0 ? req.BuildTimeoutSec : null;
         if (req.TestTimeoutSec is not null)
             row.TestTimeoutSec = req.TestTimeoutSec > 0 ? req.TestTimeoutSec : null;
+
+        // Phase 26 — auto-detect build/test commands when cloneRoot changes
+        // and the new directory already exists on disk.
+        if (req.CloneRoot is not null && Directory.Exists(row.CloneRoot))
+        {
+            var detected = BuildSystemDetector.Detect(row.CloneRoot);
+            BuildSystemDetector.MergeInto(row, detected);
+        }
 
         await db.SaveChangesAsync();
         var repo = MapRepo(row);
@@ -133,23 +154,45 @@ public static class ProductsEndpoints
         string id,
         ForgeDbContext db,
         IRepoCloneService cloneSvc,
+        IHubContext<ForgeHub> hub,
         CancellationToken ct)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
 
-        var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+        var row = await db.Repos.FirstOrDefaultAsync(r => r.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
         if (Directory.Exists(row.CloneRoot))
         {
-            return Results.Ok(new { outcome = "skipped", message = "cloneRoot already exists" });
+            // Phase 26 — still run detection even if already cloned (operator may
+            // have manually cloned without going through Forge).
+            var det = BuildSystemDetector.Detect(row.CloneRoot);
+            if (BuildSystemDetector.MergeInto(row, det))
+            {
+                await db.SaveChangesAsync(ct);
+                await hub.Clients.All.SendAsync("repo.changed", new { kind = "build-detected", repo = MapRepo(row) }, ct);
+            }
+            return Results.Ok(new { outcome = "skipped", message = "cloneRoot already exists", detectedBuild = MapDetected(det) });
         }
 
         var result = await cloneSvc.EnsureClonedAsync(row, ct);
+
+        // Phase 26 — auto-detect after successful clone.
+        BuildSystemDetector.DetectedCommands? detected = null;
+        if (result.Outcome == RepoCloneOutcome.Cloned && Directory.Exists(row.CloneRoot))
+        {
+            detected = BuildSystemDetector.Detect(row.CloneRoot);
+            if (BuildSystemDetector.MergeInto(row, detected))
+            {
+                await db.SaveChangesAsync(ct);
+                await hub.Clients.All.SendAsync("repo.changed", new { kind = "build-detected", repo = MapRepo(row) }, ct);
+            }
+        }
+
         return result.Outcome switch
         {
-            RepoCloneOutcome.Cloned => Results.Ok(new { outcome = "cloned", message = result.Message }),
+            RepoCloneOutcome.Cloned => Results.Ok(new { outcome = "cloned", message = result.Message, detectedBuild = MapDetected(detected) }),
             RepoCloneOutcome.Skipped => Results.Ok(new { outcome = "skipped", message = result.Message }),
             RepoCloneOutcome.Mismatched => Results.Problem(title: "Repo cloneRoot mismatch", detail: result.Message, statusCode: 409),
             RepoCloneOutcome.Failed => Results.Problem(title: "Clone failed", detail: result.Message, statusCode: 502),
@@ -158,6 +201,218 @@ public static class ProductsEndpoints
     }
 
     private static string? NullIfEmpty(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+
+    // ── Phase 26 — build/test detection & validation ─────────────────────
+
+    /// <summary>
+    /// POST /api/repos/{id}/detect-build — scan the repo root for known
+    /// build markers and return the detected commands WITHOUT saving.
+    /// The UI shows these to the operator who can accept or override.
+    /// </summary>
+    private static async Task<IResult> DetectBuild(
+        HttpContext ctx, string id, ForgeDbContext db)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id);
+        if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+        if (string.IsNullOrEmpty(row.CloneRoot) || !Directory.Exists(row.CloneRoot))
+            return Results.Problem(title: "Repo has no local clone", detail: "Set a cloneRoot and clone the repo first.", statusCode: 422);
+
+        var detected = BuildSystemDetector.Detect(row.CloneRoot);
+        return Results.Ok(new
+        {
+            detected.Ecosystem,
+            detected.InitCommand,
+            detected.RestoreCommand,
+            detected.BuildCommand,
+            detected.TestCommand,
+            detected.Ambiguous,
+            detected.AmbiguityDetail,
+            current = new
+            {
+                row.InitCommand,
+                row.RestoreCommand,
+                row.BuildCommand,
+                row.TestCommand,
+                row.BuildTimeoutSec,
+                row.TestTimeoutSec,
+            },
+        });
+    }
+
+    /// <summary>
+    /// POST /api/repos/{id}/validate-build — enqueues an async validation run
+    /// (init → restore → build → test). Returns 202 with a run ID.
+    /// Completion is notified via SignalR <c>repo.validation-complete</c>.
+    /// </summary>
+    private static async Task<IResult> ValidateBuild(
+        HttpContext ctx, string id, ForgeDbContext db, BuildValidationWorker worker, CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+        if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+        if (string.IsNullOrEmpty(row.CloneRoot) || !Directory.Exists(row.CloneRoot))
+            return Results.Problem(title: "Repo has no local clone", statusCode: 422);
+
+        var runId = Guid.NewGuid().ToString("N")[..12];
+        var triggeredBy = ctx.Request.Headers.TryGetValue(ForgeUser.HeaderName, out var hv) ? hv.ToString() : null;
+
+        // Check for active run BEFORE persisting to avoid orphaned "queued" rows.
+        var hasActive = await db.BuildValidationRuns
+            .AnyAsync(r => r.RepoId == id && (r.Status == "queued" || r.Status == "running"), ct);
+        if (hasActive)
+        {
+            return Results.Problem(
+                title: "A validation is already running for this repo",
+                statusCode: 409);
+        }
+
+        var run = new Persistence.BuildValidationRunRow
+        {
+            Id = runId,
+            RepoId = id,
+            Status = "queued",
+            StartedAt = DateTime.UtcNow.ToString("O"),
+            TriggeredBy = triggeredBy,
+        };
+        db.BuildValidationRuns.Add(run);
+        await db.SaveChangesAsync(ct);
+
+        var job = new BuildValidationJob(runId, id);
+        if (!worker.TryEnqueue(job))
+        {
+            // Race: another request got in between our check and enqueue.
+            // Mark the orphan as cancelled so it doesn't pollute history.
+            run.Status = "cancelled";
+            run.FinishedAt = DateTime.UtcNow.ToString("O");
+            run.ErrorMessage = "Superseded by concurrent request";
+            await db.SaveChangesAsync(ct);
+            return Results.Problem(
+                title: "A validation is already running for this repo",
+                statusCode: 409);
+        }
+
+        return Results.Accepted(value: new { runId, status = "queued" });
+    }
+
+    /// <summary>
+    /// GET /api/repos/{id}/validation-runs — returns the most recent
+    /// validation runs for the repo, ordered by start time descending.
+    /// </summary>
+    private static async Task<IResult> GetValidationRuns(
+        HttpContext ctx, string id, ForgeDbContext db, CancellationToken ct)
+    {
+        var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+        if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
+
+        var runs = await db.BuildValidationRuns
+            .AsNoTracking()
+            .Where(r => r.RepoId == id)
+            .OrderByDescending(r => r.StartedAt)
+            .Take(20)
+            .Select(r => new
+            {
+                r.Id,
+                r.RepoId,
+                r.Status,
+                r.StartedAt,
+                r.FinishedAt,
+                r.AllPassed,
+                r.Ecosystem,
+                r.StepsJson,
+                r.TriggeredBy,
+                r.ErrorMessage,
+            })
+            .ToListAsync(ct);
+
+        return Results.Ok(runs);
+    }
+
+    /// <summary>
+    /// POST /api/repos/{id}/validation-runs/{runId}/cancel — cancel a running validation.
+    /// </summary>
+    private static async Task<IResult> CancelValidationRun(
+        HttpContext ctx, string id, string runId, ForgeDbContext db, BuildValidationWorker worker, CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var run = await db.BuildValidationRuns.FirstOrDefaultAsync(r => r.Id == runId && r.RepoId == id, ct);
+        if (run is null) return Results.Problem(title: "Validation run not found", statusCode: 404);
+
+        if (run.Status is not ("queued" or "running"))
+            return Results.Problem(title: $"Run is already {run.Status}", statusCode: 409);
+
+        // Signal the worker to cancel.
+        worker.TryCancel(runId);
+
+        // If still queued (not yet picked up by worker), mark cancelled directly.
+        if (run.Status == "queued")
+        {
+            run.Status = "cancelled";
+            run.FinishedAt = DateTime.UtcNow.ToString("O");
+            run.ErrorMessage = "Cancelled by user";
+            await db.SaveChangesAsync(ct);
+        }
+
+        return Results.Ok(new { runId, status = "cancelled" });
+    }
+
+    /// <summary>DELETE /api/repos/{id}/validation-runs — clear all completed validation runs.</summary>
+    private static async Task<IResult> ClearValidationRuns(
+        HttpContext ctx, string id, ForgeDbContext db, CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var completed = await db.BuildValidationRuns
+            .Where(r => r.RepoId == id && r.Status != "queued" && r.Status != "running")
+            .ToListAsync(ct);
+        db.BuildValidationRuns.RemoveRange(completed);
+        await db.SaveChangesAsync(ct);
+        return Results.Ok(new { deleted = completed.Count });
+    }
+
+    /// <summary>DELETE /api/repos/{id}/sync-work-items/runs — clear all sync run history.</summary>
+    private static async Task<IResult> ClearSyncRuns(
+        HttpContext ctx, string id, ForgeDbContext db, CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        // Delete run items first (child rows), then runs.
+        var runIds = await db.WorkItemSyncRuns
+            .Where(r => r.RepoId == id)
+            .Select(r => r.Id)
+            .ToListAsync(ct);
+        if (runIds.Count > 0)
+        {
+            var items = await db.SyncRunItems
+                .Where(i => runIds.Contains(i.RunId))
+                .ToListAsync(ct);
+            db.SyncRunItems.RemoveRange(items);
+            var runs = await db.WorkItemSyncRuns
+                .Where(r => r.RepoId == id)
+                .ToListAsync(ct);
+            db.WorkItemSyncRuns.RemoveRange(runs);
+            await db.SaveChangesAsync(ct);
+        }
+        return Results.Ok(new { deleted = runIds.Count });
+    }
+
+    private static object? MapDetected(BuildSystemDetector.DetectedCommands? d) =>
+        d is null ? null : new
+        {
+            d.Ecosystem, d.BuildCommand, d.TestCommand,
+            d.RestoreCommand, d.Ambiguous, d.AmbiguityDetail,
+        };
+
+    private static string Truncate(string s, int max) =>
+        s.Length <= max ? s : "…" + s[^max..];
 
     // ----- /api/products ---------------------------------------------------
 
@@ -392,7 +647,34 @@ public static class ProductsEndpoints
             }
         }
 
-        return Results.Created($"/api/repos/{row.Id}", new { repo, cloneOutcome, cloneError });
+        // Phase 26 — auto-detect build/test commands after clone completes.
+        BuildSystemDetector.DetectedCommands? detected = null;
+        if (Directory.Exists(row.CloneRoot))
+        {
+            detected = BuildSystemDetector.Detect(row.CloneRoot);
+            if (BuildSystemDetector.MergeInto(row, detected))
+            {
+                await db.SaveChangesAsync();
+                repo = MapRepo(row);
+                await hub.Clients.All.SendAsync("repo.changed", new { kind = "build-detected", repo });
+            }
+        }
+
+        return Results.Created($"/api/repos/{row.Id}", new
+        {
+            repo,
+            cloneOutcome,
+            cloneError,
+            detectedBuild = detected is not null ? new
+            {
+                detected.Ecosystem,
+                detected.BuildCommand,
+                detected.TestCommand,
+                detected.RestoreCommand,
+                detected.Ambiguous,
+                detected.AmbiguityDetail,
+            } : null,
+        });
     }
 
     // ----- /api/products/{id}/stats ---------------------------------------
@@ -509,6 +791,7 @@ public static class ProductsEndpoints
             r.AdoOrg, r.AdoProject, r.GhOwner, r.GhRepo,
             areaPaths, r.LastSyncAt, r.LastSyncCursor, r.LastSyncStatus, r.LastSyncError,
             r.IsRunningSince, r.AgentReadyDefaultTeam, r.InitialSyncWindowDays,
+            r.InitCommand, r.RestoreCommand,
             r.BuildCommand, r.TestCommand, r.BuildTimeoutSec, r.TestTimeoutSec);
     }
 

@@ -210,21 +210,34 @@ public sealed class PrSyncJob : BackgroundService
 
         var oldState = prRow.Col;
         var newState = snapshot.CanonicalState;
-        var stateChanged = !string.Equals(oldState, newState, StringComparison.OrdinalIgnoreCase);
         var isTerminal = newState is "completed" or "abandoned";
 
-        if (stateChanged)
+        // Map the upstream canonical state ("open" / "completed" / "abandoned")
+        // to a Forge UI column ("implementation" / "build" / "review" / "merged").
+        // Non-terminal "open" PRs keep whatever column the list-sync put them in
+        // (typically "review"); writing "open" would push them off the board
+        // because no UI column matches that string.
+        var newCol = newState switch
         {
-            prRow.Col = newState;
-            this.metrics.StateTransition(oldState, newState);
+            "open" => oldState,                // preserve "review" / "build" / "implementation"
+            "completed" => "merged",
+            "abandoned" => "merged",           // no abandoned column; IsActive=false filters it out below
+            _ => oldState,
+        };
+        var colChanged = !string.Equals(oldState, newCol, StringComparison.OrdinalIgnoreCase);
+
+        if (colChanged)
+        {
+            prRow.Col = newCol;
+            this.metrics.StateTransition(oldState, newCol);
             await this.hub.Clients.All.SendAsync("pr.changed",
-                new { kind = "state", prId = candidate.PrId, from = oldState, to = newState }, ct);
+                new { kind = "state", prId = candidate.PrId, from = oldState, to = newCol }, ct);
             db.PrCommentHistory.Add(new PrCommentHistoryRow
             {
                 CommentId = 0,
                 Kind = "pr-state-transition",
                 FromValue = oldState,
-                ToValue = newState,
+                ToValue = newCol,
                 ByUserId = "system:pr-sync",
                 At = DateTimeOffset.UtcNow,
                 PayloadJson = $"{{\"prId\":\"{candidate.PrId}\"}}",
@@ -244,6 +257,10 @@ public sealed class PrSyncJob : BackgroundService
         if (!string.IsNullOrEmpty(snapshot.UpstreamUpdatedAt))
         {
             prRow.LastUpstreamUpdatedAt = snapshot.UpstreamUpdatedAt;
+            // Phase 27 — keep the displayed UpdatedAt fresh. The PR list API
+            // doesn't expose a per-PR lastUpdate, but the comment-sync snapshot
+            // carries one; mirror it so the card / detail panel show real activity.
+            prRow.UpdatedAt = snapshot.UpstreamUpdatedAt;
         }
 
         if (isTerminal)
@@ -314,7 +331,7 @@ public sealed class PrSyncJob : BackgroundService
                     UpdatedAt = u.UpdatedAt,
                     ResolvedByUserId = u.ResolvedByUserId,
                     ResolvedAt = u.ResolvedAt,
-                    RequiresAttention = u.AuthorKind != "agent" && u.State == "active",
+                    RequiresAttention = u.AuthorKind != "agent" && u.State == "active" && !IsPrAssistantBody(u.Body),
                 };
                 db.PrComments.Add(row);
                 this.metrics.Comments("added");
@@ -396,8 +413,11 @@ public sealed class PrSyncJob : BackgroundService
         local.AuthorKind = u.AuthorKind;
 
         // Recompute RequiresAttention. Edits/reopens after a link invalidate it.
+        // PR Assistant / AI-generated suggestions never raise the
+        // attention flag — they're advisory and shouldn't show up as
+        // "needs response" on the PR card or in the comments tab.
         var hadLink = local.LinkedCommitSha is not null || local.LinkedAgentResponseId.HasValue;
-        if (u.State != "active")
+        if (u.State != "active" || IsPrAssistantBody(u.Body))
         {
             local.RequiresAttention = false;
         }
@@ -608,6 +628,16 @@ public sealed class PrSyncJob : BackgroundService
         string CurrentCol,
         string? WorkItemId,
         string? RepoId);
+
+    /// <summary>
+    /// Phase 28.2 — true when a comment body is an ADO PR Assistant /
+    /// GitOps AI Code Review remark. These are advisory AI-generated
+    /// suggestions, not human review feedback — they shouldn't drive
+    /// the "needs response" attention flag because no human will ever
+    /// explicitly resolve them in ADO.
+    /// </summary>
+    private static bool IsPrAssistantBody(string body)
+        => !string.IsNullOrEmpty(body) && body.Contains("PR Assistant", StringComparison.OrdinalIgnoreCase);
 }
 
 internal sealed class LoggerWrapper<T> : ILogger<T>
