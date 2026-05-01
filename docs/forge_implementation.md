@@ -2470,6 +2470,19 @@ Delta:
 
 ---
 
+## Phase 25 — Sync run item details
+
+> Phase 23 runs scheduled work-item syncs but the sync history drawer only shows run-level metadata (start time, status, count). **Phase 25 adds per-item granularity**: a `sync_run_items` table records exactly which work items / PRs were created, updated, or removed in each sync run so the operator can drill into a run and see what changed.
+
+### Implementation steps
+
+- [x] **25.1** **Schema migration** — `Forge.Api/Persistence/Phase25Migration.cs`. Creates `sync_run_items(Id, RunId, EntityKind, EntityId, Title, Action, ProviderRef)` table with index on `RunId`.
+- [x] **25.2** **Entity** — `SyncRunItemRow` in `Entities.cs`. `EntityKind` is `"workitem"` or `"pr"`; `Action` is `"added"`, `"updated"`, or `"removed"`.
+- [x] **25.3** **Sync integration** — `WorkItemSyncJob` writes `SyncRunItemRow` entries for each created/updated work item during the sync loop.
+- [x] **25.4** **API endpoint** — `GET /api/repos/{id}/sync-work-items/runs/{runId}/items` returns the per-item details for a given sync run.
+
+---
+
 ## Phase 26 — Build & test gate before PR creation
 
 > Phase 16.18 creates PRs after the deliverable loop passes, but it never verifies that the code actually **builds** and **tests pass** in the workstream branch. The agent is instructed to run build/tests, but this isn't enforced server-side. **Phase 26 adds a server-side verification gate**: after auto-commit but before push + PR, the worker runs the repo's configured build and test commands. If either fails, the delivery is aborted and the work item is marked failed — no broken code reaches the remote, no PR is opened on a red build.
@@ -2477,10 +2490,17 @@ Delta:
 ### Resolved decisions
 
 - **Q26.1 Gate runs before push.** Build and test run in the worktree after auto-commit. If either fails, the branch is never pushed and no PR is created. This ensures the remote branch always represents a buildable, tested state.
-- **Q26.2 Commands are per-repo configuration.** `repos.BuildCommand` and `repos.TestCommand` are nullable strings (e.g., `dotnet build Workflow.sln`). When null/empty, the gate is skipped (backward compatible). Commands are parsed respecting double-quoted tokens and executed via `ProcessStartInfo.ArgumentList` — no shell execution.
+- **Q26.2 Commands are per-repo configuration.** `repos.InitCommand`, `repos.RestoreCommand`, `repos.BuildCommand` and `repos.TestCommand` are nullable strings (e.g., `dotnet build Workflow.sln`). When null/empty, the corresponding step is skipped (backward compatible). Commands are parsed respecting double-quoted tokens and executed via `ProcessStartInfo.ArgumentList` — no shell execution. The full pipeline order is **init → restore → build → test**; any step failure aborts subsequent steps.
 - **Q26.3 Configurable timeout with process tree kill.** Each repo has optional `BuildTimeoutSec` and `TestTimeoutSec` (default 600s / 10 min). On timeout, `Process.Kill(entireProcessTree: true)` ensures child processes (e.g., `testhost.dll`) are cleaned up.
 - **Q26.4 Post-gate auto-commit.** After build/test pass, the worker re-checks `git status --porcelain`. If build/test modified tracked files (generated code, lockfiles, snapshots), they are auto-committed before push so the pushed state matches the validated state.
 - **Q26.5 Output is truncated.** Build/test stdout + stderr are capped at 16 KB (keeping the tail) in transcript events and 4 KB in the live-exec view payload. This prevents large test logs from bloating the DB or the UI.
+- **Q26.6 Auto-discovery on repo setup.** When a repo is attached (`POST /api/products/{id}/repos`), cloned (`POST /api/repos/{id}/clone`), or its `cloneRoot` is updated (`PATCH /api/repos/{id}`), the server scans the repo root for known build-system markers (`.sln`, `package.json`, `Cargo.toml`, `go.mod`, `pom.xml`, `pyproject.toml`) and auto-populates `InitCommand`, `RestoreCommand`, `BuildCommand` and `TestCommand` — but only if they are currently null. Operator overrides are never overwritten. This is a filesystem scan only; no commands are executed during detection.
+- **Q26.7 Detect is preview, validate is async.** `POST /api/repos/{id}/detect-build` returns detected commands without saving — the UI shows them to the operator who can accept or override. `POST /api/repos/{id}/validate-build` enqueues an async validation run (init → restore → build → test) and returns `202 Accepted` with a `runId`. The run executes in a background hosted service (`BuildValidationWorker`) and completion is notified via SignalR `repo.validation-complete`. Only one validation can run per repo at a time (409 if already running).
+- **Q26.8 PR link persisted on creation.** When the delivery pipeline creates a PrRow after `provider.CreatePullRequestAsync`, it stores the `WebUrl` and `Provider` fields so the PR card and live-exec view can link directly to the PR in ADO/GitHub. The `task.pr-opened` transcript event also carries `webUrl` for the live view.
+- **Q26.9 PR board sorted by last update.** The `/api/prs` endpoint returns PRs ordered by `UpdatedAt DESC` (then `Sort` as tiebreaker). The `PrBoard` UI component sorts each column's cards by `updatedAt` descending so the most recently active PR appears at the top. Seed PRs without `updatedAt` fall to the bottom.
+- **Q26.10 Repo management UX — async validate-on-save.** The Products view shows a "🔨 gated" pill on repos with any configured pipeline step and a "no gate" pill on unconfigured repos — visible at a glance. The EditRepoModal exposes init/restore/build/test command inputs, build/test timeout inputs, a "Detect" button (manual re-detect), and a "Validate" button (async validation via background worker). **On save, the modal: saves → clones (if path changed) → detects (if no commands) → enqueues async validation → closes immediately.** Validation results arrive via SignalR toast notification. The operator can examine validation run history via the persistent history panel in the modal, which fetches from `GET /api/repos/{id}/validation-runs`.
+- **Q26.11 Persistent validation history.** The `build_validation_runs` table stores every validation run with status (`queued|running|succeeded|failed|cancelled`), per-step results as JSON, triggered-by user, and error messages. `GET /api/repos/{id}/validation-runs` returns the last 20 runs ordered by start time. The EditRepoModal loads and displays this history with expandable per-step output.
+- **Q26.12 Per-repo concurrency guard.** Only one validation can run per repo at a time. The `BuildValidationWorker` uses a `ConcurrentDictionary` keyed by `RepoId` to enforce this. Duplicate requests return 409.
 
 ### Implementation steps
 
@@ -2489,6 +2509,44 @@ Delta:
 - [x] **26.3** **`RunCommandAsync` helper** — `CrewQueueWorker.RunCommandAsync(cwd, command, timeoutSec)`. Parses command string into executable + args via `ParseCommandLine` (handles double-quoted tokens). Uses `ProcessStartInfo` with `UseShellExecute=false`. On timeout, kills entire process tree. Returns `(exitCode, stdout, stderr, timedOut)` with output truncated to 16 KB.
 - [x] **26.4** **Delivery gate** — in `CrewQueueWorker.RunAgentAsync`, after auto-commit + commits-ahead check, before push: runs build command → test command → post-gate auto-commit → push → PR. On failure emits `task.build-failed` / `task.test-failed` + `task.delivery-failed` + `task.failed`, sets execution status to failed, returns early.
 - [x] **26.5** **Live Execution view** — `LiveExecutionView.tsx` `renderPayload` handles `task.build-started` (🔨), `task.build-passed` (✓), `task.build-failed` (✗), `task.test-started` (🧪), `task.test-passed` (✓), `task.test-failed` (✗).
+
+- [x] **26.6** **Tests** — `Forge.Api.Tests/Phase26BuildTestGateTests.cs` (53 tests, all green):
+  - **Migration (6):** columns added, read/write round-trip, idempotent, pragma verification.
+  - **ParseCommandLine (7):** simple, multi-arg, quoted, empty, spaces, single token, quoted path.
+  - **RunCommandAsync (5):** success, failure, timeout + process tree kill, empty command, nonexistent executable.
+  - **API surface (6):** PATCH set/clear build/test commands + timeouts, GET round-trip.
+  - **Delivery pipeline (10):** no config skips gate; build pass/fail; test pass/fail; test skipped on build fail; full event sequencing; invalid executable; payload contents.
+  - **BuildSystemDetector (13):** .sln (single, with spaces, multiple → ambiguous), .csproj, package.json (with/without scripts), Cargo.toml, go.mod, pom.xml, pyproject.toml, requirements.txt, empty dir, nonexistent dir, `MergeInto` preserves existing fields, `MergeInto` returns false when nothing new.
+  - **Detect/Validate endpoints + lifecycle (6):** detect returns ecosystem, detect requires auth, detect 422 without clone, validate requires auth, PATCH cloneRoot auto-detects build command, PATCH preserves existing build command.
+
+- [x] **26.7** **Build-system auto-discovery** — `Forge.Api/Services/BuildSystemDetector.cs`. Filesystem-only scanner detecting build/test commands from common project markers:
+  - **.NET**: `*.sln` → `dotnet restore/build/test <sln>`; single `*.csproj` fallback; multiple `.sln` → ambiguous with detail.
+  - **Node.js**: `package.json` → `npm install` / `npm run build` / `npm test` (only if scripts exist).
+  - **Rust**: `Cargo.toml` → `cargo build` / `cargo test`.
+  - **Go**: `go.mod` → `go mod download` / `go build ./...` / `go test ./...`.
+  - **Java**: `pom.xml` → `mvn package -DskipTests` / `mvn test`.
+  - **Python**: `pyproject.toml` or `requirements.txt` → `pip install` / `pytest`.
+  - `MergeInto(row, detected)` fills null/empty `InitCommand`, `RestoreCommand`, `BuildCommand`, `TestCommand` — operator overrides preserved.
+  - Filenames with spaces are automatically quoted in generated commands.
+
+- [x] **26.8** **Detection lifecycle hooks** — auto-detection runs silently after:
+  - **AttachRepo** (`POST /api/products/{id}/repos`) — after clone completes.
+  - **CloneRepo** (`POST /api/repos/{id}/clone`) — after clone or on existing checkout.
+  - **PatchRepo** (`PATCH /api/repos/{id}`) — when `cloneRoot` changes and directory exists.
+  - In all cases, only missing fields are filled; existing commands are preserved.
+
+- [x] **26.9** **Detection + validation endpoints**:
+  - `POST /api/repos/{id}/detect-build` — scan repo root, return detected commands (init/restore/build/test) without saving. UI uses this for "Detect" button preview.
+  - `POST /api/repos/{id}/validate-build` — enqueues async validation run (init → restore → build → test), returns `202 Accepted` with `{ runId, status: "queued" }`. Completion notified via SignalR `repo.validation-complete`. Returns `409` if a validation is already running for the repo.
+  - `GET /api/repos/{id}/validation-runs` — returns last 20 validation runs with status, steps, and error messages.
+
+- [x] **26.10** **EditRepoModal UI** — init/restore/build/test command inputs, build/test timeout inputs, "Detect" button (calls detect-build and auto-fills empty fields), "Validate" button (enqueues async validation, shows toast). Persistent validation history section loaded from `GET /api/repos/{id}/validation-runs` with expandable per-step output.
+
+- [x] **26.11** **Phase29Migration** — `Forge.Api/Persistence/Phase29Migration.cs`. Adds `InitCommand TEXT NULL`, `RestoreCommand TEXT NULL` to `repos` table. Creates `build_validation_runs` table with index on `(RepoId, StartedAt DESC)`.
+
+- [x] **26.12** **BuildValidationWorker** — `Forge.Api/Services/BuildValidationWorker.cs`. Background hosted service consuming `Channel<BuildValidationJob>`. Runs init → restore → build → test in repo's cloneRoot, persists results to `build_validation_runs`, sends `repo.validation-complete` via SignalR. Per-repo concurrency guard via `ConcurrentDictionary`.
+
+- [x] **26.13** **Global SignalR listener** — `useForgeHub.ts` handles `repo.validation-complete` events and shows toast with step summary (not modal-scoped, survives modal close).
 
 ### Transcript events
 
@@ -2500,6 +2558,7 @@ Delta:
 | `task.test-started` | `{ agentId, crewId, command }` | Test command begins |
 | `task.test-passed` | `{ agentId, crewId }` | Tests exit 0 |
 | `task.test-failed` | `{ agentId, crewId, exitCode, timedOut, stdout, stderr, reason }` | Tests exit non-zero or time out |
+| `repo.validation-complete` | `{ runId, repoId, status, allPassed, ecosystem, errorMessage, steps }` | Async validation run finishes |
 
 ---
 
