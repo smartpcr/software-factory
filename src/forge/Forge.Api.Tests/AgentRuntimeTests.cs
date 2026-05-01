@@ -35,7 +35,7 @@ public class AgentRuntimeTests
             CrewId: "engineering",
             Model: "local-stub",
             SoulMd: string.Empty,
-            WorktreePath: Path.GetTempPath(),
+            WorktreePath: string.Empty,
             AllowedTools: Array.Empty<string>());
 
         var inv = await runner.StartAsync("234", "E4", "hello world from forge", ctx, CancellationToken.None);
@@ -61,7 +61,7 @@ public class AgentRuntimeTests
             CrewId: "engineering",
             Model: "claude-opus-4-7",
             SoulMd: string.Empty,
-            WorktreePath: Path.GetTempPath(),
+            WorktreePath: string.Empty,
             AllowedTools: Array.Empty<string>());
 
         // The runner only takes the local-stub fast-path on model id "local-stub".
@@ -171,7 +171,7 @@ public class AgentRuntimeTests
                 CrewId: "engineering",
                 Model: "local-stub",
                 SoulMd: string.Empty,
-                WorktreePath: Path.GetTempPath(),
+                WorktreePath: string.Empty,
                 AllowedTools: Array.Empty<string>()),
             wallClock: TimeSpan.FromMinutes(1),
             maxTokens: 100);

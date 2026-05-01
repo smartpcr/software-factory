@@ -3,6 +3,7 @@ import type { Card, ProductStory } from '@/types';
 import { useBoardStore, filterCards } from '@/state/useBoardStore';
 import { useProductsStore } from '@/state/useProductsStore';
 import { forgeApi } from '@/api/forgeApi';
+import { EditStoryModal } from './EditStoryModal';
 
 // Story list view for Plan & Design. Shows each product-scoped story
 // as an expandable row with its associated cards underneath.
@@ -62,6 +63,8 @@ export function StoryList() {
     });
   }
 
+  const [editing, setEditing] = useState<ProductStory | null>(null);
+
   return (
     <div className="story-list">
       <div style={headerStyle}>
@@ -70,22 +73,39 @@ export function StoryList() {
         <span style={{ width: 50, textAlign: 'center' }}>Pts</span>
         <span style={{ width: 70, textAlign: 'center' }}>Priority</span>
         <span style={{ width: 80, textAlign: 'center' }}>Column</span>
+        <span style={{ width: 60 }} />
       </div>
 
       {groups.map(({ story, cards: groupCards }) => {
         const id = story?.id ?? '__none__';
         const isCollapsed = collapsed.has(id);
         const totalPts = groupCards.reduce((s, c) => s + c.pts, 0);
+        const storyPts = story?.points ?? 0;
 
         return (
           <div key={id} style={{ marginBottom: 2 }}>
             {/* Story header row */}
-            <button
-              type="button"
-              onClick={() => toggle(id)}
-              style={storyRowStyle}
-            >
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 2, minWidth: 0 }}>
+            <div style={storyRowStyle}>
+              <button
+                type="button"
+                onClick={() => toggle(id)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  flex: 2,
+                  minWidth: 0,
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'inherit',
+                  font: 'inherit',
+                  fontWeight: 600,
+                  padding: 0,
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  gap: 8,
+                }}
+                title={story?.description || undefined}
+              >
                 <svg width="10" height="10" viewBox="0 0 10 10" style={{ flexShrink: 0, transition: 'transform 150ms', transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}>
                   <path d="M2 3 L5 6 L8 3" stroke="currentColor" fill="none" strokeWidth="1.4" strokeLinecap="round" />
                 </svg>
@@ -93,16 +113,28 @@ export function StoryList() {
                   {story?.name ?? 'No story'}
                 </span>
                 <span style={countBadge}>{groupCards.length}</span>
-              </span>
+              </button>
               <span style={{ width: 80, textAlign: 'center', fontSize: 11 }}>
                 {story?.status ?? '—'}
               </span>
               <span style={{ width: 50, textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
-                {totalPts}
+                {storyPts > 0 ? `${totalPts}/${storyPts}` : totalPts}
               </span>
               <span style={{ width: 70 }} />
               <span style={{ width: 80 }} />
-            </button>
+              <span style={{ width: 60, textAlign: 'right' }}>
+                {story && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setEditing(story); }}
+                    style={editBtnStyle}
+                    title="Edit story"
+                  >
+                    Edit
+                  </button>
+                )}
+              </span>
+            </div>
 
             {/* Card rows */}
             {!isCollapsed && groupCards.map((c) => (
@@ -122,6 +154,15 @@ export function StoryList() {
           No stories yet. Click "New story" to create one.
         </div>
       )}
+
+      <EditStoryModal
+        open={editing !== null}
+        story={editing}
+        onClose={() => setEditing(null)}
+        onSaved={(updated) => {
+          setStories((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+        }}
+      />
     </div>
   );
 }
@@ -199,6 +240,18 @@ const storyRowStyle: React.CSSProperties = {
   fontSize: 13,
   fontWeight: 600,
   textAlign: 'left',
+};
+
+const editBtnStyle: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 600,
+  letterSpacing: 0.3,
+  textTransform: 'uppercase',
+  color: 'var(--text-secondary)',
+  background: 'transparent',
+  border: '1px solid var(--border-strong)',
+  borderRadius: 'var(--radius-sm)',
+  padding: '3px 8px',
   cursor: 'pointer',
 };
 

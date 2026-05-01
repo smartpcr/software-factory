@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { DndContext, DragOverlay, PointerSensor, useSensor, useSensors, type DragEndEvent, type DragStartEvent } from '@dnd-kit/core';
 import { useHotkeys } from 'react-hotkeys-hook';
 import type { ColumnId } from '@/types';
@@ -66,22 +66,6 @@ export function PlanView() {
   const [modalOpen, setModalOpen] = useState(false);
   const [storyModalOpen, setStoryModalOpen] = useState(false);
 
-  // Close detail panel when clicking outside it.
-  const detailRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!selectedId) return;
-    function onMouseDown(e: MouseEvent) {
-      const t = e.target as Node;
-      if (detailRef.current?.contains(t)) return;
-      // Don't dismiss if clicking a card (card click sets new selection).
-      if ((t as HTMLElement).closest?.('[data-id]')) return;
-      // Don't dismiss if a modal/popover is open above.
-      if ((t as HTMLElement).closest?.('[role="dialog"], .modal-backdrop, .wit-multi-pop')) return;
-      setSelected(null);
-    }
-    window.addEventListener('mousedown', onMouseDown);
-    return () => window.removeEventListener('mousedown', onMouseDown);
-  }, [selectedId, setSelected]);
   const [focusedCol, setFocusedCol] = useState<ColumnId | null>(null);
   const [viewMode, setViewMode] = useState<'board' | 'stories' | 'exec'>('board');
 
@@ -284,11 +268,11 @@ export function PlanView() {
         </div>
 
         {selectedWorkItem ? (
-          <div ref={detailRef} style={{ width: 420, flexShrink: 0, borderLeft: '1px solid var(--border)', overflow: 'auto' }}>
+          <div style={{ width: 420, flexShrink: 0, borderLeft: '1px solid var(--border)', overflow: 'auto' }}>
             <WorkItemDetailPanel item={selectedWorkItem} />
           </div>
         ) : (selectedId && selectedCard) ? (
-          <div ref={detailRef}>
+          <div>
             <DetailPanel />
           </div>
         ) : null}

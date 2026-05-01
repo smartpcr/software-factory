@@ -24,7 +24,9 @@ public sealed record ProductStory(
     string Name,
     string Status,
     int Sort,
-    string CreatedAt);
+    string CreatedAt,
+    string Description,
+    int Points);
 
 /// <summary>
 /// Agent reference attached to a card (architect / engineer / reviewer / human).

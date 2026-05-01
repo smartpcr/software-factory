@@ -425,12 +425,31 @@ export const forgeApi = {
   },
 
   /** POST /api/products/{productId}/stories — create a story under a product. */
-  async createProductStory(productId: string, req: { name: string; id?: string; status?: string }): Promise<ProductStory> {
+  async createProductStory(
+    productId: string,
+    req: { name: string; id?: string; status?: string; description?: string; points?: number },
+  ): Promise<ProductStory> {
     return fetchJson<ProductStory>(`/api/products/${encodeURIComponent(productId)}/stories`, {
       method: 'POST',
       body: JSON.stringify(req),
       headers: { 'X-Forge-User': writerHeader() },
     });
+  },
+
+  /** PATCH /api/products/{productId}/stories/{storyId} — edit a story's name / desc / points / status. */
+  async updateProductStory(
+    productId: string,
+    storyId: string,
+    body: { name?: string; status?: string; description?: string; points?: number },
+  ): Promise<ProductStory> {
+    return fetchJson<ProductStory>(
+      `/api/products/${encodeURIComponent(productId)}/stories/${encodeURIComponent(storyId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+        headers: { 'X-Forge-User': writerHeader() },
+      },
+    );
   },
 
   /** POST /api/cards/{id}/comment. */
@@ -714,6 +733,12 @@ export const forgeApi = {
       body: JSON.stringify({ repoId: repoId ?? null }),
       headers: { 'X-Forge-User': writerHeader() },
     });
+  },
+
+  /** GET /api/stories/spawns — list all story spawns (optionally filtered by phase). */
+  async listStorySpawns(phase?: string): Promise<StorySpawn[]> {
+    const qs = phase ? `?phase=${encodeURIComponent(phase)}` : '';
+    return fetchJson<StorySpawn[]>(`/api/stories/spawns${qs}`);
   },
 
   /** GET /api/stories/{storyId}/spawn — full spawn state + child workstreams. */

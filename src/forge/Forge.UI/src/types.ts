@@ -32,6 +32,9 @@ export interface ProductStory {
   status: string;
   sort: number;
   createdAt: string;
+  /** User prompt the architect agent receives when this story is picked up. */
+  description: string;
+  points: number;
 }
 
 export interface Card {

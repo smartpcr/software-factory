@@ -364,22 +364,26 @@ export function LiveExecutionView(): JSX.Element {
             >
               ◂
             </button>
-            {iterations.map((it, idx) => (
-              <button
-                key={idx}
-                type="button"
-                className={idx === activeIter ? 'active' : ''}
-                onClick={() => setSelectedIter(idx === totalIters - 1 ? null : idx)}
-                title={it.label}
-              >
-                {idx + 1}
-                {it.score != null && (
-                  <span className={`live-exec__iter-pager-score ${it.verdict ?? ''}`}>
-                    {it.score}
-                  </span>
-                )}
-              </button>
-            ))}
+            {buildPageWindow(totalIters, activeIter).map((slot, i) =>
+              slot === 'ellipsis' ? (
+                <span key={`e${i}`} className="live-exec__iter-pager-ellipsis">…</span>
+              ) : (
+                <button
+                  key={slot}
+                  type="button"
+                  className={slot === activeIter ? 'active' : ''}
+                  onClick={() => setSelectedIter(slot === totalIters - 1 ? null : slot)}
+                  title={iterations[slot].label}
+                >
+                  {slot + 1}
+                  {iterations[slot].score != null && (
+                    <span className={`live-exec__iter-pager-score ${iterations[slot].verdict ?? ''}`}>
+                      {iterations[slot].score}
+                    </span>
+                  )}
+                </button>
+              ),
+            )}
             <button
               type="button"
               disabled={activeIter >= totalIters - 1}
@@ -718,6 +722,29 @@ function filterEvents(
 }
 
 // ── Phase 19 — group events by iteration for paged display ────────────
+
+/// Build a windowed page list: first, last, and a window around the
+/// active page, with 'ellipsis' markers for gaps.  E.g. for 33 pages
+/// and active=16: [0, 'ellipsis', 14, 15, 16, 17, 18, 'ellipsis', 32]
+function buildPageWindow(total: number, active: number, wing = 2): (number | 'ellipsis')[] {
+  if (total <= wing * 2 + 5) {
+    // Few enough pages — show them all.
+    return Array.from({ length: total }, (_, i) => i);
+  }
+  const pages = new Set<number>();
+  pages.add(0);
+  pages.add(total - 1);
+  for (let i = Math.max(0, active - wing); i <= Math.min(total - 1, active + wing); i++) {
+    pages.add(i);
+  }
+  const sorted = [...pages].sort((a, b) => a - b);
+  const result: (number | 'ellipsis')[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    if (i > 0 && sorted[i] - sorted[i - 1] > 1) result.push('ellipsis');
+    result.push(sorted[i]);
+  }
+  return result;
+}
 
 interface IterationGroup {
   label: string;

@@ -44,28 +44,40 @@ builder.Services.AddCors(options =>
         .AllowCredentials());
 });
 
-// EF Core: SQLite, path overridable via Forge:Db:Path. Resolve in the factory
-// delegate so test-factory configuration overrides flow through.
-// SQLite DB — use DELETE journal mode for durability across forced kills.
+// EF Core: SQLite, path overridable via Forge:Db:Path. The path MUST be
+// resolved inside the factory delegate so the test factory's
+// `WebApplicationFactory.ConfigureWebHost` overrides have a chance to land
+// (those callbacks run during `builder.Build()` — config reads ABOVE that
+// see only `appsettings.json` + env vars, which is how earlier integration
+// tests polluted the production DB at `E:\forge\forge.db`).
 {
-    var dbPath = builder.Configuration["Forge:Db:Path"] ?? @"E:\forge\forge.db";
-    if (!Path.IsPathFullyQualified(dbPath))
-        dbPath = Path.GetFullPath(dbPath);
-    Console.WriteLine($"[Forge] SQLite DB path: {dbPath}");
-
-    // Set journal_mode=DELETE on a throwaway connection before EF opens its own.
-    // journal_mode is per-database (persisted in the file header), so this
-    // only needs to happen once and all subsequent connections inherit it.
-    using (var bootstrap = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}"))
-    {
-        bootstrap.Open();
-        using var cmd = bootstrap.CreateCommand();
-        cmd.CommandText = "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;";
-        cmd.ExecuteNonQuery();
-    }
+    // Run the journal_mode bootstrap once per process, on first DbContext
+    // resolution. `bootstrapped` is keyed on the resolved path so a different
+    // path (e.g. tests) bootstraps separately.
+    var bootstrapped = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var bootstrapLock = new object();
 
     builder.Services.AddDbContext<ForgeDbContext>((sp, opt) =>
     {
+        var cfg = sp.GetRequiredService<IConfiguration>();
+        var dbPath = cfg["Forge:Db:Path"] ?? @"E:\forge\forge.db";
+        if (!Path.IsPathFullyQualified(dbPath))
+            dbPath = Path.GetFullPath(dbPath);
+
+        bool needBootstrap;
+        lock (bootstrapLock)
+        {
+            needBootstrap = bootstrapped.Add(dbPath);
+        }
+        if (needBootstrap)
+        {
+            Console.WriteLine($"[Forge] SQLite DB path: {dbPath}");
+            using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}");
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;";
+            cmd.ExecuteNonQuery();
+        }
         opt.UseSqlite($"Data Source={dbPath}");
     });
 }
@@ -171,9 +183,15 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoMergeWatcher>(
 
 // forge_implementation.md Phase 28 — story-driven spawn orchestrator + deps scheduler.
 builder.Services.AddSingleton<Forge.Api.Services.Stories.AgentAllocationLoader>();
-builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryArtifactStrategy, Forge.Api.Services.Stories.DeterministicStoryArtifactStrategy>();
-builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryGitOps, Forge.Api.Services.Stories.InMemoryStoryGitOps>();
-builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryProviderOps, Forge.Api.Services.Stories.LocalStoryProviderOps>();
+// Real-implementation bindings for the story-spawn lifecycle. No fakes /
+// in-memory / Local stubs in production — see memory/feedback_no_fakes_no_manual.md.
+//
+//   IStoryArtifactStrategy → CrewStoryArtifactStrategy (real LLM via IAgentRunner)
+//   IStoryGitOps           → RealStoryGitOps (real git CLI against repo.CloneRoot)
+//   IStoryProviderOps      → ProviderStoryProviderOps (real provider.CreatePullRequest / Merge)
+builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryArtifactStrategy, Forge.Api.Services.Stories.CrewStoryArtifactStrategy>();
+builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryGitOps, Forge.Api.Services.Stories.RealStoryGitOps>();
+builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryProviderOps, Forge.Api.Services.Stories.ProviderStoryProviderOps>();
 builder.Services.AddSingleton<Forge.Api.Services.Stories.StorySpawnOrchestrator>();
 builder.Services.AddSingleton<Forge.Api.Services.Stories.SpawnDependencyScheduler>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.Stories.SpawnDependencyScheduler>());

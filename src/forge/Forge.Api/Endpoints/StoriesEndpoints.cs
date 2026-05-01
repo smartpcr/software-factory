@@ -45,6 +45,7 @@ public static class StoriesEndpoints
         var grp = app.MapGroup("/api/stories").WithTags("Stories");
 
         grp.MapPost("/{storyId}/spawn", Spawn).WithName("SpawnStory");
+        grp.MapGet("/spawns", ListSpawns).WithName("ListStorySpawns");
         grp.MapGet("/{storyId}/spawn", GetSpawn).WithName("GetStorySpawn");
         grp.MapPatch("/{storyId}/spawn/phase", AdvancePhase).WithName("AdvanceStoryPhase");
         grp.MapPost("/{storyId}/spawn/decompose", SubmitDecomposition).WithName("SubmitStoryDecomposition");
@@ -95,32 +96,56 @@ public static class StoriesEndpoints
                 statusCode: 409);
         }
 
-        // 28.2 — story must exist (work_items table is the local mirror; for
-        // tests we accept any non-empty storyId, but if a row exists we read
-        // its title).
-        var wi = await db.WorkItems.AsNoTracking()
-            .FirstOrDefaultAsync(w => w.Id == storyId);
-        if (wi is null)
+        // 28.2 — story must exist. Three sources accepted:
+        //   1) ProductStoryRow (locally-authored story; description carries the
+        //      architect-agent user prompt and points size the work).
+        //   2) WorkItemRow by id (e.g. "WI-12345" mirroring an ADO Feature/Epic).
+        //   3) WorkItemRow by numeric ADO provider ref (bare "12345" / "WI-12345").
+        string title;
+        string description = string.Empty;
+        int points = 0;
+        string? defaultRepoId = null;
+
+        var ps = await db.ProductStories.AsNoTracking().FirstOrDefaultAsync(s => s.Id == storyId);
+        if (ps is not null)
         {
-            // Try a numeric provider-ref lookup so callers can pass the bare ADO id.
-            if (int.TryParse(storyId.Replace("WI-", string.Empty, StringComparison.OrdinalIgnoreCase), out var providerRef))
-            {
-                wi = await db.WorkItems.AsNoTracking()
-                    .FirstOrDefaultAsync(w => w.ProviderRef == providerRef);
-            }
+            title = ps.Name;
+            description = ps.Description ?? string.Empty;
+            points = ps.Points;
+            // ProductStoryRow is product-scoped, not repo-scoped; caller must
+            // pick a repo via SpawnRequest.RepoId. defaultRepoId stays null.
+        }
+        else
+        {
+            var wi = await db.WorkItems.AsNoTracking()
+                .FirstOrDefaultAsync(w => w.Id == storyId);
             if (wi is null)
             {
-                return Results.Problem(title: $"Story {storyId} not found", statusCode: 404);
+                if (int.TryParse(storyId.Replace("WI-", string.Empty, StringComparison.OrdinalIgnoreCase), out var providerRef))
+                {
+                    wi = await db.WorkItems.AsNoTracking()
+                        .FirstOrDefaultAsync(w => w.ProviderRef == providerRef);
+                }
+                if (wi is null)
+                {
+                    return Results.Problem(title: $"Story {storyId} not found", statusCode: 404);
+                }
             }
+            title = wi.Title;
+            description = wi.DescriptionMd ?? string.Empty;
+            points = wi.Points;
+            defaultRepoId = wi.RepoId;
         }
 
-        var repoId = req?.RepoId ?? wi.RepoId;
+        var repoId = req?.RepoId ?? defaultRepoId;
         var now = DateTimeOffset.UtcNow;
         var spawn = new StorySpawnRow
         {
             Id = $"spawn-{storyId}",
             StoryId = storyId,
-            StoryTitle = wi.Title,
+            StoryTitle = title,
+            StoryDescription = description,
+            StoryPoints = points,
             RepoId = repoId,
             Phase = StorySpawnPhases.Plan,
             PlanBranch = $"story/{storyId}/plan",
@@ -139,6 +164,19 @@ public static class StoriesEndpoints
         // (PlanPrId, QaBranch).
         var refreshed = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == storyId);
         return Results.Created($"/api/stories/{storyId}/spawn", ToContract(refreshed));
+    }
+
+    private static async Task<IResult> ListSpawns(ForgeDbContext db, [FromQuery] string? phase)
+    {
+        var q = db.StorySpawns.AsNoTracking().AsQueryable();
+        if (!string.IsNullOrEmpty(phase) && !string.Equals(phase, "all", StringComparison.OrdinalIgnoreCase))
+        {
+            q = q.Where(s => s.Phase == phase);
+        }
+        // SQLite can't ORDER BY DateTimeOffset — materialize then sort client-side.
+        var rows = await q.ToListAsync();
+        rows.Sort((a, b) => b.UpdatedAt.CompareTo(a.UpdatedAt));
+        return Results.Ok(rows.Select(ToContract).ToList());
     }
 
     private static async Task<IResult> GetSpawn(string storyId, ForgeDbContext db)
@@ -634,6 +672,8 @@ public static class StoriesEndpoints
         id = row.Id,
         storyId = row.StoryId,
         storyTitle = row.StoryTitle,
+        storyDescription = row.StoryDescription,
+        storyPoints = row.StoryPoints,
         repoId = row.RepoId,
         phase = row.Phase,
         planBranch = row.PlanBranch,

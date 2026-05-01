@@ -337,7 +337,8 @@ public class GitHubProvider : IForgeProvider
         // service); if neither's around there's nothing to send.
         if (string.IsNullOrWhiteSpace(this.options.Pat) && this.ghAuth is null) yield break;
 
-        var client = this.NewClient();
+        var client = await this.NewClientAsync(ct);
+        if (client is null) yield break;
 
         // Resume from a stored next-page URL when the prior run left a
         // cursor; otherwise build the first request from filters.

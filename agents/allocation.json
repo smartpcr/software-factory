@@ -1,15 +1,5 @@
 [
   {
-    "id": "XD",
-    "name": "Xiaodong",
-    "role_label": "Product Strategist / Product Owner",
-    "team": "Architect",
-    "pod": "leadership-product",
-    "role_bucket": "leadership",
-    "crew_role": "product-owner",
-    "avatar": null
-  },
-  {
     "id": "YS",
     "name": "Yuan Shi Tianzun",
     "role_label": "AI Factory Architect",

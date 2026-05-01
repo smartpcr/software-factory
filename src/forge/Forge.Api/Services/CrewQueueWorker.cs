@@ -75,6 +75,20 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         "run_command",
     };
 
+    /// <summary>
+    /// Plan tasks — architecture agents produce design docs and WIT trees.
+    /// <c>write_file</c> is allowed (server-side path enforcement limits
+    /// writes to <c>docs/specs/</c>); <c>run_command</c> is intentionally
+    /// excluded so plan agents cannot modify source code indirectly.
+    /// </summary>
+    internal static readonly string[] PlanAllowedTools =
+    {
+        "read_file",
+        "write_file",
+        "git_commit",
+        "git_push",
+    };
+
     private readonly IServiceScopeFactory scopeFactory;
     private readonly TaskChannel taskChannel;
     private readonly IHubContext<ForgeHub> hub;
@@ -92,6 +106,14 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
     private CancellationTokenSource? cts;
     private Task? loop;
+
+    /// <summary>
+    /// Set to <c>true</c> in <see cref="StopAsync"/> before the CTS is
+    /// cancelled. Fire-and-forget agent tasks check this flag so they can
+    /// distinguish a host shutdown (leave the row in <c>picked-up</c> for
+    /// boot recovery) from a genuine runtime failure (mark as failed).
+    /// </summary>
+    private volatile bool shuttingDown;
 
     private readonly WorktreeChangeFeed worktreeFeed;
 
@@ -118,6 +140,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // previous server process (agent died with the old host).
             try { await this.SweepBootRecoveryAsync(this.cts.Token); }
             catch (Exception ex) { this.logger.LogDebug(ex, "CrewQueueWorker boot recovery errored"); }
+            // Boot crash recovery: re-queue items that the previous process
+            // marked failed during its death throes (connection-lost race).
+            try { await this.SweepBootCrashRecoveryAsync(this.cts.Token); }
+            catch (Exception ex) { this.logger.LogDebug(ex, "CrewQueueWorker boot crash recovery errored"); }
             // Boot scan once before the timer.
             try { await this.RunOnceAsync(this.cts.Token); }
             catch (Exception ex) { this.logger.LogDebug(ex, "CrewQueueWorker boot scan errored"); }
@@ -128,6 +154,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        this.shuttingDown = true;
         this.cts?.Cancel();
         if (this.loop is not null)
         {
@@ -251,6 +278,95 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             if (wi is not null) await this.BroadcastWorkItemChangedAsync(wi, "exec-requeued", ct, db);
         }
         return stale.Count;
+    }
+
+    // ── Boot crash recovery — re-queue WIs marked failed by a prior crash ─
+    /// <summary>
+    /// Handles work items that were marked <c>failed</c> during the previous
+    /// process's death throes (e.g. ChildProcessTracker killed the copilot
+    /// CLI, the JSON-RPC error was caught, and the generic handler marked
+    /// the queue row completed + WI failed before the process exited).
+    /// <para>
+    /// <see cref="SweepBootRecoveryAsync"/> only finds <c>picked-up</c> rows,
+    /// but the crash path completes them. This sweep finds those orphaned
+    /// items and re-queues them so execution resumes with no human action.
+    /// </para>
+    /// </summary>
+    private async Task<int> SweepBootCrashRecoveryAsync(CancellationToken ct)
+    {
+        using var scope = this.scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+
+        // Find work items stuck in "failed" execution status whose ADO/GH
+        // state is still open (active/proposed) — these are crash victims,
+        // not items that the lead triaged or that reached a terminal verdict.
+        var failedWis = await db.WorkItems
+            .Where(w => w.ExecutionStatus == ExecutionStatuses.Failed
+                        && (w.State == "active" || w.State == "proposed"))
+            .ToListAsync(ct);
+        if (failedWis.Count == 0) return 0;
+
+        var recovered = 0;
+        foreach (var wi in failedWis)
+        {
+            // Check deliverables — only resume if no terminal verdict exists.
+            var delivCandidates = await db.Deliverables.AsNoTracking()
+                .Where(d => d.WorkItemId == wi.Id)
+                .ToListAsync(ct);
+            var lastDeliv = delivCandidates
+                .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
+                .FirstOrDefault();
+
+            // Terminal verdicts (pass/reject) mean the loop finished
+            // naturally — don't re-run.
+            if (lastDeliv is not null && lastDeliv.Verdict is "pass" or "reject")
+                continue;
+
+            // Determine the crew to re-queue into: last deliverable's crew,
+            // or the most recent completed queue row's crew.
+            var crewId = lastDeliv?.CrewId;
+            if (string.IsNullOrEmpty(crewId))
+            {
+                var lastRow = (await db.TaskQueue.AsNoTracking()
+                    .Where(r => r.WorkItemId == wi.Id)
+                    .ToListAsync(ct))
+                    .OrderByDescending(r => r.CompletedAt ?? r.LastUpdatedAt)
+                    .FirstOrDefault();
+                crewId = lastRow?.RoutedToCrewId;
+            }
+            if (string.IsNullOrEmpty(crewId)) continue;
+
+            // Guard: skip if there's already an open queue row (EnqueueAsync
+            // would return the existing one, but we'd still emit confusing events).
+            var openStates = TaskQueueStates.OpenStates.ToList();
+            var hasOpen = await db.TaskQueue.AsNoTracking()
+                .AnyAsync(r => r.WorkItemId == wi.Id && openStates.Contains(r.State), ct);
+            if (hasOpen) continue;
+
+            try
+            {
+                var newRow = await queue.EnqueueAsync(wi.Id, "crew", crewId, ct);
+                this.logger.LogInformation(
+                    "Boot crash recovery: re-queued wi={Wi} into crew={Crew} (lastIter={Iter} verdict={Verdict})",
+                    wi.Id, crewId, lastDeliv?.Iter ?? -1, lastDeliv?.Verdict ?? "(none)");
+                await this.taskChannel.EmitAsync(wi.Id, "task.boot-crash-recovery", new
+                {
+                    queueId = newRow.Id,
+                    crewId,
+                    resumeFromIter = lastDeliv?.Iter,
+                    priorVerdict = lastDeliv?.Verdict,
+                }, crewId: crewId, ct: ct);
+                var refreshed = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == wi.Id, ct);
+                if (refreshed is not null) await this.BroadcastWorkItemChangedAsync(refreshed, "exec-crash-recovered", ct, db);
+                recovered++;
+            }
+            catch (Exception ex)
+            {
+                this.logger.LogWarning(ex, "Boot crash recovery: EnqueueAsync failed for wi={Wi}", wi.Id);
+            }
+        }
+        return recovered;
     }
 
     // ── Sweep 1 — auto-ack timeouts ───────────────────────────────────────
@@ -634,6 +750,23 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 }
             }
 
+            // Plan tasks — architecture agents doing regular work get the
+            // plan preamble so they produce design docs, not application code.
+            // Detected via explicit kind=plan or agent role=arch on work tasks.
+            var isPlanTask = string.Equals(kind, TaskQueueKinds.Plan, StringComparison.OrdinalIgnoreCase)
+                || (string.Equals(kind, TaskQueueKinds.Work, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(agent?.Role, "arch", StringComparison.OrdinalIgnoreCase));
+            if (isPlanTask && !skipSoulPrompt)
+            {
+                var template = await AgentTemplateLoader.LoadAsync(AgentTemplateLoader.PlanFile, ct);
+                if (!string.IsNullOrEmpty(template))
+                {
+                    soulMd = string.IsNullOrEmpty(soulMd)
+                        ? template
+                        : template + "\n\n---\n\n" + soulMd;
+                }
+            }
+
             // Worktree: prefer the workstream's worktree path over the bare repo root.
             var worktreePath = "";
             var workstreamId = "";
@@ -679,18 +812,17 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 }
             }
 
-            // If the resolved path doesn't exist on disk, fall back to a temp
-            // directory so the agent can at least start (e.g. repo not cloned).
+            // If the resolved path doesn't exist on disk, run with no working
+            // directory rather than dumping the agent into %TEMP% (which makes
+            // the SDK auto-index the user's entire temp folder and blow past
+            // the model's prompt-token limit). The agent can still read files
+            // by absolute path; tools that try to write/commit will fail loud.
             if (!string.IsNullOrEmpty(worktreePath) && !Directory.Exists(worktreePath))
             {
                 this.logger.LogWarning(
-                    "Worktree path {Path} does not exist for wi={Wi}; falling back to temp",
+                    "Worktree path {Path} does not exist for wi={Wi}; running with no working directory",
                     worktreePath, workItemId);
-                worktreePath = Path.GetTempPath();
-            }
-            if (string.IsNullOrEmpty(worktreePath))
-            {
-                worktreePath = Path.GetTempPath();
+                worktreePath = string.Empty;
             }
 
             // Worktree feed subscription and prompt emission happen AFTER the
@@ -833,6 +965,26 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // `read_file` to descend into specific artifact files.
                 prompt = await BuildBuildFixPromptAsync(db, workItemId, title, desc, ct);
             }
+            else if (isPlanTask)
+            {
+                var basePrompt = string.IsNullOrWhiteSpace(desc)
+                    ? $"Work item: {title}"
+                    : $"Work item: {title}\n\n{desc}";
+
+                prompt = basePrompt + "\n\n"
+                    + "IMPORTANT: This is a PLAN task. You are producing design artifacts, NOT application code.\n"
+                    + "1. Write the design narrative to `docs/specs/{slug}/plan.md` (derive slug from the work item title).\n"
+                    + "2. Create the WIT tree of phase → stage → step rows as described in the plan-system preamble.\n"
+                    + "3. Commit your design documents with a descriptive commit message.\n"
+                    + "4. Push the branch to the remote with `git push --force-with-lease origin HEAD`.\n"
+                    + "   The remote branch may already exist from a prior run — force-push is expected.\n"
+                    + "5. End your response with a section titled '## Plan Summary' that explains:\n"
+                    + "   - The architectural approach and key design decisions\n"
+                    + "   - The phase → stage → step decomposition rationale\n"
+                    + "   - Out-of-scope items and open questions\n"
+                    + "Do NOT write application code, tests, or modify source files outside `docs/specs/`.\n"
+                    + "You MUST push before finishing — the server creates the PR automatically after you push.";
+            }
             else
             {
                 var basePrompt = string.IsNullOrWhiteSpace(desc)
@@ -893,7 +1045,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 ? CommentResponseAllowedTools
                 : string.Equals(kind, TaskQueueKinds.BuildFix, StringComparison.OrdinalIgnoreCase)
                     ? BuildFixAllowedTools
-                    : Array.Empty<string>();
+                    : isPlanTask
+                        ? PlanAllowedTools
+                        : Array.Empty<string>();
 
             var context = new AgentContext(
                 CrewId: crewId,
@@ -982,7 +1136,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     .FirstOrDefaultAsync(a => a.Id == evaluatorAgentId, iterCt);
                 var evalModel = !string.IsNullOrEmpty(evalAgent?.EvaluatorModel)
                     ? evalAgent!.EvaluatorModel
-                    : evalCrew.Model;
+                    : !string.IsNullOrEmpty(evalCrew.EvaluatorModel)
+                        ? evalCrew.EvaluatorModel
+                        : evalCrew.Model;
                 var evalSoul = "";
                 if (!skipSoulPrompt && !string.IsNullOrEmpty(evalAgent?.SoulPath))
                 {
@@ -1155,7 +1311,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 ? DeliverableKinds.CommentResponse
                 : string.Equals(kind, TaskQueueKinds.BuildFix, StringComparison.OrdinalIgnoreCase)
                     ? DeliverableKinds.BuildFix
-                    : DeliverableKinds.Coding;
+                    : isPlanTask
+                        ? DeliverableKinds.Plan
+                        : DeliverableKinds.Coding;
 
             var loopRequest = new DeliverableLoopRequest(
                 WorkItemId: workItemId,
@@ -1788,6 +1946,38 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         catch (ObjectDisposedException) { /* host shutting down — scope already disposed */ }
         catch (Exception ex)
         {
+            // When the host is shutting down, ChildProcessTracker kills the
+            // copilot CLI child process before the CancellationToken (which
+            // is CancellationToken.None for fire-and-forget agent tasks) is
+            // cancelled. The resulting JSON-RPC / transport error surfaces
+            // here as a generic Exception, not OperationCanceledException.
+            // If we mark the queue row completed + WI failed, boot recovery
+            // on the next startup finds nothing to recover and the work item
+            // stays stuck in "failed" forever.
+            //
+            // Fix: when shuttingDown is set (StopAsync ran), leave the queue
+            // row in picked-up. SweepBootRecoveryAsync on the next startup
+            // resets it to queued, and DeliverableLoop seeds iter from the
+            // last persisted deliverable — true resume-from-disk.
+            if (this.shuttingDown)
+            {
+                this.logger.LogInformation(
+                    "Agent interrupted by shutdown: wi={Wi} agent={Agent} crew={Crew} — leaving picked-up for boot recovery",
+                    workItemId, agentId, crewId);
+                try
+                {
+                    await this.taskChannel.EmitAsync(workItemId, "task.interrupted", new
+                    {
+                        agentId,
+                        crewId,
+                        reason = "shutdown",
+                        error = ex.Message,
+                    }, crewId: crewId, ct: CancellationToken.None);
+                }
+                catch { /* best-effort — host may be tearing down */ }
+                return;
+            }
+
             this.logger.LogWarning(ex,
                 "Agent invocation failed: wi={Wi} agent={Agent} crew={Crew}",
                 workItemId, agentId, crewId);

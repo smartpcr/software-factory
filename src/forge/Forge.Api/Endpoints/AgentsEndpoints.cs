@@ -346,7 +346,9 @@ public static class AgentsEndpoints
             CrewId: crewId,
             Model: modelId,
             SoulMd: req.SoulMd ?? string.Empty,
-            WorktreePath: req.WorktreePath ?? Path.GetTempPath(),
+            // Empty when the caller didn't supply a working directory — never
+            // %TEMP%, which the SDK would auto-index and overflow context.
+            WorktreePath: req.WorktreePath ?? string.Empty,
             AllowedTools: req.AllowedTools ?? Array.Empty<string>(),
             MaxTaskBudgetUsd: taskCap);
 

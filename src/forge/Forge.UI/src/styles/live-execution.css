@@ -609,6 +609,12 @@
 .live-exec__iter-pager-score.pass { color: var(--success); }
 .live-exec__iter-pager-score.iterate { color: var(--warning); }
 .live-exec__iter-pager-score.reject { color: var(--danger); }
+.live-exec__iter-pager-ellipsis {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  padding: 0 2px;
+  user-select: none;
+}
 .live-exec__iter-pager-label {
   margin-left: auto;
   color: var(--text-tertiary);

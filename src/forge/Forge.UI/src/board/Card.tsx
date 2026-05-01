@@ -65,12 +65,13 @@ export function Card({ card }: CardProps) {
       data-id={card.id}
       data-epic={card.epic}
       data-col={card.col}
-      onClick={(e) => {
+      {...listeners}
+      {...attributes}
+      onPointerUp={(e) => {
+        if (isDragging) return;
         if ((e.target as HTMLElement).closest('.card-action')) return;
         setSelected(card.id);
       }}
-      {...listeners}
-      {...attributes}
     >
       <div className="card-row1">
         <div className="card-id-group">

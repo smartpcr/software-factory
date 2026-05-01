@@ -66,7 +66,10 @@ public sealed class StorySpawnOrchestrator
     /// </summary>
     public async Task DriveAsync(string storyId, CancellationToken ct = default)
     {
-        for (var safety = 0; safety < 8; safety++)
+        // Loop bound is generous so dev-mode auto-progress can chain
+        // plan → decompose → implement → review → qa → done in one call.
+        // Each phase's drive method is idempotent so a re-tick is cheap.
+        for (var safety = 0; safety < 32; safety++)
         {
             var advanced = false;
             using (var scope = this.services.CreateScope())
@@ -89,8 +92,29 @@ public sealed class StorySpawnOrchestrator
     private async Task<bool> RunOneStepAsync(
         ForgeDbContext db, IHubContext<ForgeHub>? hub, StorySpawnRow spawn, CancellationToken ct)
     {
+        // The spawn may originate from either an upstream WorkItem (ADO Feature/Epic)
+        // or a locally-authored ProductStory. When no WorkItem matches the spawn id,
+        // synthesize a transient WorkItemRow from the spawn fields so downstream
+        // strategy / provider calls can read title, description, and id uniformly.
+        // The synthesized row is detached — never added to the DbContext.
         var story = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == spawn.StoryId, ct);
-        if (story is null) return false;
+        if (story is null)
+        {
+            story = new WorkItemRow
+            {
+                Id = spawn.StoryId,
+                Title = spawn.StoryTitle,
+                DescriptionMd = spawn.StoryDescription ?? string.Empty,
+                RepoId = spawn.RepoId,
+                Provider = "local",
+                Track = "dev",
+                Type = "feature",
+                State = "active",
+                Points = spawn.StoryPoints,
+                CreatedAt = spawn.CreatedAt,
+                UpdatedAt = spawn.UpdatedAt,
+            };
+        }
 
         var repo = spawn.RepoId is null
             ? null
@@ -133,21 +157,23 @@ public sealed class StorySpawnOrchestrator
         ForgeDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
-        // Idempotent — once PlanPrId is set, we leave gate-handling to the API.
+        // Idempotent — once PlanPrId is set, the gate (review/merge of the
+        // plan PR) is owned by the review crew + operator, not by the
+        // orchestrator. Advancing the phase happens via PATCH /spawn/phase.
         if (!string.IsNullOrEmpty(spawn.PlanPrId)) return false;
 
-        var planBranch = spawn.PlanBranch ?? $"story/{spawn.StoryId}/plan";
+        var planBranch = spawn.PlanBranch ?? $"story/{GitSafe(spawn.StoryId)}/plan";
         await this.git.EnsureBranchAsync(repo, planBranch, "main", ct);
 
         var artifacts = await this.strategy.ProducePlanArtifactsAsync(spawn, story, ct);
         await this.git.CommitFilesAsync(repo, planBranch, artifacts,
-            $"plan: artifacts for story {spawn.StoryId}", ct);
+            $"plan: artifacts for story {GitSafe(spawn.StoryId)}", ct);
 
         var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
             Branch: planBranch,
             BaseBranch: "main",
             Title: $"[plan] {story.Title}",
-            Body: $"Planning artifacts for story `{spawn.StoryId}` produced by the architect crew.",
+            Body: $"Planning artifacts for story `{GitSafe(spawn.StoryId)}` produced by the architect crew.",
             Repo: repo,
             WorkItemId: story.Id,
             Workstream: null,
@@ -165,7 +191,7 @@ public sealed class StorySpawnOrchestrator
         // DriveQaAsync via qa branch existence check).
         if (string.IsNullOrEmpty(spawnRow.QaBranch))
         {
-            spawnRow.QaBranch = $"story/{spawn.StoryId}/qa";
+            spawnRow.QaBranch = $"story/{GitSafe(spawn.StoryId)}/qa";
             await db.SaveChangesAsync(ct);
             await this.git.EnsureBranchAsync(repo, spawnRow.QaBranch, "main", ct);
         }
@@ -204,7 +230,7 @@ public sealed class StorySpawnOrchestrator
         foreach (var w in ws)
         {
             var slug = SlugFor(w.Title);
-            var wsId = $"ws-{spawn.StoryId}-{slug}".ToLowerInvariant();
+            var wsId = $"ws-{GitSafe(spawn.StoryId)}-{slug}".ToLowerInvariant();
             titleToId[w.Title] = wsId;
             // Idempotent — leave any pre-existing row alone.
             if (await db.Workstreams.AnyAsync(x => x.Id == wsId, ct)) continue;
@@ -214,7 +240,7 @@ public sealed class StorySpawnOrchestrator
                 Sort = ++maxSort,
                 RepoId = spawn.RepoId,
                 Name = w.Title,
-                Branch = $"ws/{spawn.StoryId}/{slug}",
+                Branch = $"ws/{GitSafe(spawn.StoryId)}/{slug}",
                 Base = "main",
                 Epic = spawn.StoryId,
                 Status = "planning",
@@ -295,7 +321,7 @@ public sealed class StorySpawnOrchestrator
                 Branch: w.Branch,
                 BaseBranch: "main",
                 Title: $"[impl] {w.Name}",
-                Body: $"Implementation of `{w.Id}` for story `{spawn.StoryId}`.",
+                Body: $"Implementation of `{w.Id}` for story `{GitSafe(spawn.StoryId)}`.",
                 Repo: repo,
                 WorkItemId: spawn.StoryId,
                 Workstream: w.Id,
@@ -398,17 +424,17 @@ public sealed class StorySpawnOrchestrator
         // Step 1 — produce the QA feature files & open the QA PR (idempotent).
         if (string.IsNullOrEmpty(spawn.QaPrId))
         {
-            var qaBranch = spawn.QaBranch ?? $"story/{spawn.StoryId}/qa";
+            var qaBranch = spawn.QaBranch ?? $"story/{GitSafe(spawn.StoryId)}/qa";
             await this.git.EnsureBranchAsync(repo, qaBranch, "main", ct);
             var files = await this.strategy.ProduceQaFeatureFilesAsync(spawn, story, workstreams, ct);
             await this.git.CommitFilesAsync(repo, qaBranch, files,
-                $"qa: feature files for story {spawn.StoryId}", ct);
+                $"qa: feature files for story {GitSafe(spawn.StoryId)}", ct);
 
             var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
                 Branch: qaBranch,
                 BaseBranch: "main",
                 Title: $"[qa] {story.Title}",
-                Body: $"QA feature files for story `{spawn.StoryId}`.",
+                Body: $"QA feature files for story `{GitSafe(spawn.StoryId)}`.",
                 Repo: repo,
                 WorkItemId: spawn.StoryId,
                 Workstream: null,
@@ -436,7 +462,7 @@ public sealed class StorySpawnOrchestrator
         var changed = false;
         foreach (var w in workstreams)
         {
-            var stepBranch = $"ws/{spawn.StoryId}/{w.Id.Split('-').Last()}-steps";
+            var stepBranch = $"ws/{GitSafe(spawn.StoryId)}/{w.Id.Split('-').Last()}-steps";
             // Have we already created a step PR for this workstream?
             var existing = await db.Prs
                 .Where(p => p.Branch == stepBranch && p.Workstream == w.Id)
@@ -452,7 +478,7 @@ public sealed class StorySpawnOrchestrator
                 Branch: stepBranch,
                 BaseBranch: "main",
                 Title: $"[qa-steps] {w.Name}",
-                Body: $"Step definitions for `{w.Id}` (story `{spawn.StoryId}`).",
+                Body: $"Step definitions for `{w.Id}` (story `{GitSafe(spawn.StoryId)}`).",
                 Repo: repo,
                 WorkItemId: spawn.StoryId,
                 Workstream: w.Id,
@@ -491,9 +517,24 @@ public sealed class StorySpawnOrchestrator
         ForgeDbContext db, IHubContext<ForgeHub>? hub,
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
     {
-        // Transition ADO work item to Closed (idempotent).
+        // Transition the upstream ADO work item to Closed (idempotent).
+        // ProductStory-sourced spawns have no upstream provider record — we
+        // mark the local ProductStoryRow as 'done' instead.
         if (story.State is "closed" or "resolved") return false;
-        await this.provider.TransitionWorkItemAsync(story.Id, "closed", ct);
+        var hasUpstream = await db.WorkItems.AnyAsync(w => w.Id == spawn.StoryId, ct);
+        if (hasUpstream)
+        {
+            await this.provider.TransitionWorkItemAsync(story.Id, "closed", ct);
+        }
+        else
+        {
+            var ps = await db.ProductStories.FirstOrDefaultAsync(s => s.Id == spawn.StoryId, ct);
+            if (ps is not null)
+            {
+                ps.Status = "done";
+                await db.SaveChangesAsync(ct);
+            }
+        }
         await EmitChange(hub, "story-closed", spawn, ct);
         return true;
     }
@@ -503,10 +544,10 @@ public sealed class StorySpawnOrchestrator
     {
         var paths = new[]
         {
-            $"docs/stories/{spawn.StoryId}/tech-spec.md",
-            $"docs/stories/{spawn.StoryId}/architecture.md",
-            $"docs/stories/{spawn.StoryId}/implementation-plan.md",
-            $"docs/stories/{spawn.StoryId}/e2e-scenarios.md",
+            $"docs/stories/{GitSafe(spawn.StoryId)}/tech-spec.md",
+            $"docs/stories/{GitSafe(spawn.StoryId)}/architecture.md",
+            $"docs/stories/{GitSafe(spawn.StoryId)}/implementation-plan.md",
+            $"docs/stories/{GitSafe(spawn.StoryId)}/e2e-scenarios.md",
         };
         foreach (var p in paths)
         {
@@ -520,6 +561,25 @@ public sealed class StorySpawnOrchestrator
         if (string.IsNullOrWhiteSpace(json)) return new List<string>();
         try { return JsonSerializer.Deserialize<List<string>>(json, JsonOpts) ?? new List<string>(); }
         catch { return new List<string>(); }
+    }
+
+    /// <summary>
+    /// Make a story id safe to embed in git branch names (`:` is reserved)
+    /// and Windows file paths (`:` `/` `\` `*` `?` `"` `&lt;` `&gt;` `|` are
+    /// reserved). Replaces every reserved character with `-` and collapses
+    /// runs.
+    /// </summary>
+    private static string GitSafe(string storyId)
+    {
+        if (string.IsNullOrEmpty(storyId)) return "story";
+        var sb = new System.Text.StringBuilder(storyId.Length);
+        foreach (var c in storyId)
+        {
+            sb.Append(char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.' ? c : '-');
+        }
+        var s = sb.ToString();
+        while (s.Contains("--")) s = s.Replace("--", "-");
+        return s.Trim('-');
     }
 
     private static string SlugFor(string title)

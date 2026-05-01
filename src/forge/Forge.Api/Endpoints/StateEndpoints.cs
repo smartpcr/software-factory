@@ -138,6 +138,8 @@ public static class StateEndpoints
             var maxSort = await db.ProductStories
                 .Where(s => s.ProductId == productId)
                 .Select(s => (int?)s.Sort).MaxAsync() ?? -1;
+            var points = req.Points.GetValueOrDefault(0);
+            if (points < 0) points = 0;
             var row = new ProductStoryRow
             {
                 Id = id,
@@ -146,6 +148,8 @@ public static class StateEndpoints
                 Status = req.Status ?? "planning",
                 Sort = maxSort + 1,
                 CreatedAt = DateTimeOffset.UtcNow,
+                Description = (req.Description ?? string.Empty).Trim(),
+                Points = points,
             };
             db.ProductStories.Add(row);
             await db.SaveChangesAsync();
@@ -155,13 +159,71 @@ public static class StateEndpoints
             return Results.Created($"/api/products/{productId}/stories/{row.Id}", story);
         }).WithName("CreateProductStory");
 
+        stories.MapPatch("/{storyId}", async (
+            HttpContext ctx,
+            string productId,
+            string storyId,
+            [FromBody] PatchStoryRequest req,
+            ForgeDbContext db,
+            IHubContext<ForgeHub> hub) =>
+        {
+            var auth = ForgeUser.RequireWriter(ctx);
+            if (auth is not null) return auth;
+
+            var row = await db.ProductStories.FirstOrDefaultAsync(s => s.Id == storyId);
+            if (row is null || row.ProductId != productId)
+                return Results.Problem(title: $"Story {storyId} not found", statusCode: 404);
+
+            if (req.Name is { } name)
+            {
+                var trimmed = name.Trim();
+                if (trimmed.Length == 0)
+                    return Results.Problem(title: "Name cannot be empty", statusCode: 400);
+                row.Name = trimmed;
+            }
+            if (req.Status is { } status)
+            {
+                var trimmed = status.Trim();
+                if (trimmed.Length == 0)
+                    return Results.Problem(title: "Status cannot be empty", statusCode: 400);
+                row.Status = trimmed;
+            }
+            if (req.Description is { } description)
+            {
+                row.Description = description.Trim();
+            }
+            if (req.Points is { } points)
+            {
+                if (points < 0)
+                    return Results.Problem(title: "Points must be >= 0", statusCode: 400);
+                row.Points = points;
+            }
+
+            await db.SaveChangesAsync();
+            var story = MapStory(row);
+            await hub.Clients.All.SendAsync("story.changed", new { kind = "updated", story });
+            return Results.Ok(story);
+        }).WithName("UpdateProductStory");
+
         return app;
     }
 
-    public sealed record CreateStoryRequest(string Name, string? Id = null, string? Status = null);
+    public sealed record CreateStoryRequest(
+        string Name,
+        string? Id = null,
+        string? Status = null,
+        string? Description = null,
+        int? Points = null);
+
+    public sealed record PatchStoryRequest(
+        string? Name = null,
+        string? Status = null,
+        string? Description = null,
+        int? Points = null);
 
     private static ProductStory MapStory(ProductStoryRow r) => new(
-        r.Id, r.ProductId, r.Name, r.Status, r.Sort, r.CreatedAt.ToString("o"));
+        r.Id, r.ProductId, r.Name, r.Status, r.Sort, r.CreatedAt.ToString("o"),
+        r.Description ?? string.Empty, r.Points);
 
     private static Epic MapEpic(EpicRow r) => new(
         r.Id, r.Name, r.Status, r.Progress,

@@ -802,11 +802,14 @@ public static class WorkItemsEndpoints
 
         // Fallback: check transcript for task.pr-opened events (agent created
         // a PR on the remote but it hasn't been synced into the local prs table).
-        var evt = await db.TaskTranscriptEvents.AsNoTracking()
+        // NOTE: Order in-memory because SQLite cannot ORDER BY DateTimeOffset.
+        var evtRows = await db.TaskTranscriptEvents.AsNoTracking()
             .Where(e => e.WorkItemId == workItemId && e.Kind == "task.pr-opened")
+            .ToListAsync(ct);
+        var evt = evtRows
             .OrderByDescending(e => e.At)
             .Select(e => e.PayloadJson)
-            .FirstOrDefaultAsync(ct);
+            .FirstOrDefault();
         if (evt is not null)
         {
             try

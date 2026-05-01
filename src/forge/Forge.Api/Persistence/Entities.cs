@@ -53,6 +53,12 @@ public class ProductStoryRow
     public int Sort { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
+
+    // Used as the user prompt the architect agent receives when this story
+    // is picked up to start design.
+    public string Description { get; set; } = string.Empty;
+
+    public int Points { get; set; }
 }
 
 public class CardRow
@@ -1040,6 +1046,14 @@ public static class TaskQueueKinds
     /// from a single static table for switch / display.
     /// </summary>
     public const string Coding = "coding";
+
+    /// <summary>
+    /// Plan task kind — architecture agents produce design documents and
+    /// work-item trees, not application code. The runner loads
+    /// <c>plan-system.md</c> and restricts the tool surface to read/write
+    /// under <c>docs/specs/</c> plus WIT operations.
+    /// </summary>
+    public const string Plan = "plan";
 }
 
 /// <summary>
@@ -1952,6 +1966,16 @@ public class StorySpawnRow
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// Architect agent's user prompt (sourced from the originating
+    /// <see cref="ProductStoryRow"/>'s description, or the upstream work item's
+    /// description). Empty until set at spawn time.
+    /// </summary>
+    public string StoryDescription { get; set; } = string.Empty;
+
+    /// <summary>Story points carried over from the originating story for sprint planning.</summary>
+    public int StoryPoints { get; set; }
 }
 
 /// <summary>Well-known phase constants for <see cref="StorySpawnRow.Phase"/>.</summary>

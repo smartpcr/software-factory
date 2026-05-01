@@ -224,7 +224,7 @@ public class AgentSalaryAndLedgerTests
             CrewId: "engineering",
             Model: "local-stub",
             SoulMd: string.Empty,
-            WorktreePath: Path.GetTempPath(),
+            WorktreePath: string.Empty,
             AllowedTools: Array.Empty<string>());
 
         var inv = runner.StartAsync("234", "E4", "alpha beta gamma", ctx, CancellationToken.None).GetAwaiter().GetResult();
