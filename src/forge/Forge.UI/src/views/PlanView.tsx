@@ -8,6 +8,7 @@ import { useForgeHub } from '@/realtime/useForgeHub';
 import { Board } from '@/board/Board';
 import { FilterBar } from '@/board/FilterBar';
 import { WorkItemDetailPanel } from '@/workitems/WorkItemDetailPanel';
+import { DetailPanel } from '@/board/DetailPanel';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 import { ExecBoard } from '@/workitems/ExecBoard';
 import { CardModal } from '@/board/CardModal';
@@ -41,6 +42,10 @@ export function PlanView() {
   const selectedWorkItem = useMemo(
     () => selectedId ? wiItems.find((w) => w.id === selectedId) ?? null : null,
     [selectedId, wiItems],
+  );
+  const selectedCard = useMemo(
+    () => selectedId ? cards.find((c) => c.id === selectedId) ?? null : null,
+    [selectedId, cards],
   );
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -246,7 +251,7 @@ export function PlanView() {
           )}
         </div>
 
-        {selectedWorkItem && (
+        {selectedWorkItem ? (
           <div style={{ width: 420, flexShrink: 0, borderLeft: '1px solid var(--border)', overflow: 'auto' }}>
             <div style={{ position: 'sticky', top: 0, zIndex: 10, display: 'flex', justifyContent: 'flex-end', padding: '6px 8px' }}>
               <button
@@ -261,7 +266,9 @@ export function PlanView() {
             </div>
             <WorkItemDetailPanel item={selectedWorkItem} />
           </div>
-        )}
+        ) : (selectedId && selectedCard) ? (
+          <DetailPanel />
+        ) : null}
       </div>
       <CardModal open={modalOpen} onClose={() => setModalOpen(false)} />
       <NewStoryModal open={storyModalOpen} onClose={() => setStoryModalOpen(false)} />

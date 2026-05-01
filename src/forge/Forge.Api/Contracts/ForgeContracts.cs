@@ -273,7 +273,13 @@ public sealed record Repo(
     string? BuildCommand = null,
     string? TestCommand = null,
     int? BuildTimeoutSec = null,
-    int? TestTimeoutSec = null);
+    int? TestTimeoutSec = null,
+    // Phase 33 — persisted sync settings.
+    string? WiSyncAssignedTo = null,
+    int? WiSyncDateFromDays = null,
+    string? PrSyncCreatedBy = null,
+    string? PrSyncStatus = null,
+    IReadOnlyList<string>? BuildPipelineIds = null);
 
 /// <summary>
 /// POST /api/products body.
@@ -476,7 +482,13 @@ public sealed record UpdateRepoRequest(
     string? BuildCommand = null,
     string? TestCommand = null,
     int? BuildTimeoutSec = null,
-    int? TestTimeoutSec = null);
+    int? TestTimeoutSec = null,
+    // Phase 33 — persisted sync settings.
+    string? WiSyncAssignedTo = null,
+    int? WiSyncDateFromDays = null,
+    string? PrSyncCreatedBy = null,
+    string? PrSyncStatus = null,
+    IReadOnlyList<string>? BuildPipelineIds = null);
 
 /// <summary>
 /// Phase 11.3 — agent listing payload.

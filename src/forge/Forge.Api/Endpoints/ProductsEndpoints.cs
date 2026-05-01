@@ -127,6 +127,20 @@ public static class ProductsEndpoints
         if (req.TestTimeoutSec is not null)
             row.TestTimeoutSec = req.TestTimeoutSec > 0 ? req.TestTimeoutSec : null;
 
+        // Phase 33 — persisted sync settings.
+        if (req.WiSyncAssignedTo is not null)
+            row.WiSyncAssignedTo = NullIfEmpty(req.WiSyncAssignedTo);
+        if (req.WiSyncDateFromDays is not null)
+            row.WiSyncDateFromDays = req.WiSyncDateFromDays > 0 ? req.WiSyncDateFromDays : null;
+        if (req.PrSyncCreatedBy is not null)
+            row.PrSyncCreatedBy = NullIfEmpty(req.PrSyncCreatedBy);
+        if (req.PrSyncStatus is not null)
+            row.PrSyncStatus = NullIfEmpty(req.PrSyncStatus);
+        if (req.BuildPipelineIds is not null)
+            row.BuildPipelineIdsJson = req.BuildPipelineIds.Count == 0
+                ? null
+                : System.Text.Json.JsonSerializer.Serialize(req.BuildPipelineIds);
+
         // Phase 26 — auto-detect build/test commands when cloneRoot changes
         // and the new directory already exists on disk.
         if (req.CloneRoot is not null && Directory.Exists(row.CloneRoot))
@@ -786,13 +800,21 @@ public static class ProductsEndpoints
             try { areaPaths = System.Text.Json.JsonSerializer.Deserialize<List<string>>(r.AreaPathsJson, RepoJsonOpts); }
             catch { /* malformed — null */ }
         }
+        IReadOnlyList<string>? buildPipelineIds = null;
+        if (!string.IsNullOrWhiteSpace(r.BuildPipelineIdsJson))
+        {
+            try { buildPipelineIds = System.Text.Json.JsonSerializer.Deserialize<List<string>>(r.BuildPipelineIdsJson, RepoJsonOpts); }
+            catch { /* malformed — null */ }
+        }
         return new Repo(
             r.Id, r.ProductId, r.Kind, r.RemoteUrl, r.DisplayName, r.DefaultBranch, r.CloneRoot,
             r.AdoOrg, r.AdoProject, r.GhOwner, r.GhRepo,
             areaPaths, r.LastSyncAt, r.LastSyncCursor, r.LastSyncStatus, r.LastSyncError,
             r.IsRunningSince, r.AgentReadyDefaultTeam, r.InitialSyncWindowDays,
             r.InitCommand, r.RestoreCommand,
-            r.BuildCommand, r.TestCommand, r.BuildTimeoutSec, r.TestTimeoutSec);
+            r.BuildCommand, r.TestCommand, r.BuildTimeoutSec, r.TestTimeoutSec,
+            r.WiSyncAssignedTo, r.WiSyncDateFromDays,
+            r.PrSyncCreatedBy, r.PrSyncStatus, buildPipelineIds);
     }
 
     private static string Slugify(string name)

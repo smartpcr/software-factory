@@ -12,7 +12,7 @@ interface Props {
   onSaved: (updated: Repo) => void;
 }
 
-type Tab = 'general' | 'sync' | 'pipeline';
+type Tab = 'general' | 'sync' | 'validation';
 
 export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
   const [tab, setTab] = useState<Tab>('general');
@@ -198,7 +198,7 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
           {([
             ['general', 'General'],
             ['sync', 'Sync'],
-            ['pipeline', `Pipeline${pipelineCount ? ` (${pipelineCount})` : ''}`],
+            ['validation', `Validation${pipelineCount ? ` (${pipelineCount})` : ''}`],
           ] as [Tab, string][]).map(([id, label]) => (
             <button
               key={id}
@@ -248,8 +248,8 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
               </>
             )}
 
-            {/* ── Pipeline tab ─────────────────────────────────────── */}
-            {tab === 'pipeline' && (
+            {/* ── Validation tab ───────────────────────────────────── */}
+            {tab === 'validation' && (
               <>
                 {/* Commands — 2-column grid for init+restore, build+test */}
                 <SectionLabel>Commands</SectionLabel>

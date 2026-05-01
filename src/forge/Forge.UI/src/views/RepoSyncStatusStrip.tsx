@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Repo, WorkItemSyncRun } from '@/types';
+import { syncKindDisplay } from '@/products/syncKindDisplay';
 
 const STATUS_COLOR: Record<NonNullable<Repo['lastSyncStatus']>, string> = {
   idle: 'rgb(34, 197, 94)',     // green
@@ -225,7 +226,7 @@ function RepoSyncDrawer({
                 <>
                   <tr key={r.id} style={{ borderTop: '1px solid var(--border)' }}>
                     <td style={{ padding: '6px 8px' }}>{relativeTime(r.startedAt)}</td>
-                    <td style={{ padding: '6px 8px' }}>{r.kind}</td>
+                    <td style={{ padding: '6px 8px' }}>{syncKindDisplay(r.kind).label}</td>
                     <td style={{ padding: '6px 8px' }}>+{r.itemsAdded}/~{r.itemsUpdated}{r.itemsConflicted > 0 ? `/!${r.itemsConflicted}` : ''}</td>
                     <td style={{ padding: '6px 8px', color: r.completedSuccessfully ? 'rgb(34, 197, 94)' : 'rgb(220, 38, 38)' }}>
                       {r.completedSuccessfully ? 'ok' : 'failed'}

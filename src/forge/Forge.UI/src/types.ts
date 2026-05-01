@@ -347,6 +347,16 @@ export interface Repo {
   buildTimeoutSec?: number | null;
   /** Phase 26 — test timeout in seconds. Null defaults to 600. */
   testTimeoutSec?: number | null;
+  /** Phase 33 — default assignee filter for WI sync. */
+  wiSyncAssignedTo?: string | null;
+  /** Phase 33 — relative days back for WI sync date window. */
+  wiSyncDateFromDays?: number | null;
+  /** Phase 33 — default PR author filter. */
+  prSyncCreatedBy?: string | null;
+  /** Phase 33 — default PR state filter (active/completed/all). */
+  prSyncStatus?: string | null;
+  /** Phase 33 — pipeline definition IDs to sync builds from. */
+  buildPipelineIds?: string[] | null;
 }
 
 /** Phase 23.3 — one row in the per-repo sync history. */

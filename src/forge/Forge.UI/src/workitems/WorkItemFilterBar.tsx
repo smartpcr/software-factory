@@ -242,12 +242,13 @@ interface MultiSelectProps {
 
 function MultiSelect({ label, values, onChange, options, allLabel }: MultiSelectProps) {
   const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
   const ref = useRef<HTMLDivElement | null>(null);
   const selected = new Set(values);
 
   // Close on click-outside / Esc so the popover doesn't trap focus.
   useEffect(() => {
-    if (!open) return;
+    if (!open) { setSearch(''); return; }
     function onMouseDown(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     }
@@ -266,6 +267,11 @@ function MultiSelect({ label, values, onChange, options, allLabel }: MultiSelect
     else next.add(value);
     onChange([...next]);
   }
+
+  const needle = search.trim().toLowerCase();
+  const filtered = needle
+    ? options.filter((o) => o.label.toLowerCase().includes(needle) || o.value.toLowerCase().includes(needle))
+    : options;
 
   const summary = (() => {
     if (selected.size === 0) return allLabel;
@@ -306,11 +312,27 @@ function MultiSelect({ label, values, onChange, options, allLabel }: MultiSelect
               Clear
             </button>
           </div>
+          {options.length > 5 && (
+            <div style={{ padding: '4px 6px', borderBottom: '1px solid var(--border)' }}>
+              <input
+                type="text"
+                autoFocus
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={`Search ${label.toLowerCase()}…`}
+                style={{
+                  width: '100%', padding: '3px 6px', fontSize: 11,
+                  background: 'var(--bg-base, transparent)', color: 'var(--text-primary)',
+                  border: '1px solid var(--border-strong)', borderRadius: 3,
+                }}
+              />
+            </div>
+          )}
           <div className="wit-multi-pop-list">
-            {options.length === 0 && (
-              <div className="wit-multi-empty">No options</div>
+            {filtered.length === 0 && (
+              <div className="wit-multi-empty">{search ? 'No matches' : 'No options'}</div>
             )}
-            {options.map((o) => {
+            {filtered.map((o) => {
               const checked = selected.has(o.value);
               return (
                 <label

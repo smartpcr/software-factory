@@ -275,6 +275,8 @@ using (var scope = app.Services.CreateScope())
     await Phase31Migration.ApplyAsync(db);
     // forge_implementation.md Phase 28 — story spawns + workstream dependency edges.
     await Phase32Migration.ApplyAsync(db);
+    // Phase 33 — persisted sync settings on repos.
+    await Phase33Migration.ApplyAsync(db);
     // Phase 29 — cancel orphaned validation runs left from a previous crash/restart.
     {
         var now = DateTime.UtcNow.ToString("O");

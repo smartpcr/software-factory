@@ -13,6 +13,7 @@ import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
 import { useCurrentUser } from '@/state/useCurrentUserStore';
 import { relativeTime, statusDotColor } from '@/views/RepoSyncStatusStrip';
+import { syncKindDisplay } from '@/products/syncKindDisplay';
 
 type Tab = 'workitems' | 'prs' | 'history';
 
@@ -919,19 +920,24 @@ function HistoryTab({
                   </span>
 
                   {/* Kind pill */}
-                  <span style={{
-                    padding: '2px 8px',
-                    fontSize: 10,
-                    fontWeight: 600,
-                    textTransform: 'uppercase',
-                    letterSpacing: 0.5,
-                    borderRadius: 'var(--radius-sm)',
-                    background: run.kind === 'full' ? 'var(--info-bg)' : run.kind === 'manual' ? 'var(--warning-bg)' : 'var(--bg-surface-2)',
-                    color: run.kind === 'full' ? 'var(--info)' : run.kind === 'manual' ? 'var(--warning)' : 'var(--text-tertiary)',
-                    border: `1px solid ${run.kind === 'full' ? 'var(--info-border)' : run.kind === 'manual' ? 'var(--warning-border)' : 'var(--border)'}`,
-                  }}>
-                    {run.kind}
-                  </span>
+                  {(() => {
+                    const kd = syncKindDisplay(run.kind);
+                    return (
+                      <span style={{
+                        padding: '2px 8px',
+                        fontSize: 10,
+                        fontWeight: 600,
+                        letterSpacing: 0.3,
+                        borderRadius: 'var(--radius-sm)',
+                        background: kd.bgColor,
+                        color: kd.color,
+                        border: `1px solid ${kd.borderColor}`,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        {kd.label}
+                      </span>
+                    );
+                  })()}
 
                   {/* Counts */}
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>

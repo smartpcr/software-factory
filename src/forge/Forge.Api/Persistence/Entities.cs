@@ -1222,6 +1222,23 @@ public class RepoRow
 
     /// <summary>Test command timeout in seconds. Defaults to 600 (10 min) when null.</summary>
     public int? TestTimeoutSec { get; set; }
+
+    // -- Phase 33 — persisted sync settings ----------------------------------
+
+    /// <summary>Default assignee filter for WI sync (email or display name).</summary>
+    public string? WiSyncAssignedTo { get; set; }
+
+    /// <summary>Relative days back from today for WI sync date window. Null means no date filter.</summary>
+    public int? WiSyncDateFromDays { get; set; }
+
+    /// <summary>Default PR author filter (email or display name).</summary>
+    public string? PrSyncCreatedBy { get; set; }
+
+    /// <summary>Default PR state filter: active, completed, or all.</summary>
+    public string? PrSyncStatus { get; set; }
+
+    /// <summary>JSON array of pipeline definition IDs to sync builds from.</summary>
+    public string? BuildPipelineIdsJson { get; set; }
 }
 
 /// <summary>

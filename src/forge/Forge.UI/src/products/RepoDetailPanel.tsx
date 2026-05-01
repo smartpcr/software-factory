@@ -3,6 +3,7 @@ import { forgeApi } from '@/api/forgeApi';
 import type { BuildValidationRun, ValidateStep } from '@/api/forgeApi';
 import type { Repo, WorkItemSyncRun } from '@/types';
 import { useToastStore } from '@/state/useToastStore';
+import { syncKindDisplay } from '@/products/syncKindDisplay';
 
 type Tab = 'build' | 'wi-sync' | 'pr-sync';
 
@@ -267,13 +268,19 @@ function SyncHistoryTab({ repo, kind, onClearReady }: { repo: Repo; kind: 'wi' |
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>
               {new Date(run.startedAt).toLocaleString()}
             </span>
-            <span style={{
-              fontSize: 9, fontWeight: 600, padding: '1px 4px', borderRadius: 3,
-              background: 'color-mix(in srgb, var(--accent) 10%, transparent)',
-              color: 'var(--accent)', textAlign: 'center',
-            }}>
-              {run.kind}
-            </span>
+            {(() => {
+              const kd = syncKindDisplay(run.kind);
+              return (
+                <span style={{
+                  fontSize: 9, fontWeight: 600, padding: '1px 4px', borderRadius: 3,
+                  background: kd.bgColor, color: kd.color,
+                  border: `1px solid ${kd.borderColor}`,
+                  textAlign: 'center', whiteSpace: 'nowrap',
+                }}>
+                  {kd.label}
+                </span>
+              );
+            })()}
             <span style={{ textAlign: 'center', color: run.itemsAdded > 0 ? 'rgb(34,197,94)' : 'var(--text-tertiary)' }}>
               {run.itemsAdded > 0 ? `+${run.itemsAdded}` : '—'}
             </span>
