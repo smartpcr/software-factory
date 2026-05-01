@@ -9,7 +9,6 @@ import { sampleState } from '@/sampleData';
 import { StatsStrip } from '@/workstreams/StatsStrip';
 import { WorkstreamCard } from '@/workstreams/WorkstreamCard';
 import { NewWorkstreamCta } from '@/workstreams/NewWorkstreamCta';
-import { NewWorkstreamModal } from '@/workstreams/NewWorkstreamModal';
 import { SpawnStoryModal } from '@/workstreams/SpawnStoryModal';
 import { StoryCard } from '@/workstreams/StoryCard';
 import { Toaster } from '@/board/Toaster';
@@ -53,7 +52,6 @@ export function WorkstreamsView() {
   const [searchParams] = useSearchParams();
   const repoFilter = searchParams.get('repo');
 
-  const [modalOpen, setModalOpen] = useState(false);
   // forge_implementation.md Phase 28 — story-driven spawn modal + tracked story ids.
   const [spawnStoryOpen, setSpawnStoryOpen] = useState(false);
   const [spawnedStories, setSpawnedStories] = useState<string[]>([]);
@@ -183,12 +181,6 @@ export function WorkstreamsView() {
             </svg>
             Sync from epics
           </button>
-          <button className="btn btn-secondary" onClick={() => setModalOpen(true)}>
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-              <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-            </svg>
-            New workstream
-          </button>
           <button className="btn btn-primary" onClick={() => setSpawnStoryOpen(true)} title="Spawn a multi-team delivery from a Feature / PBI">
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
               <path d="M2 6 L 5 9 L 10 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
@@ -260,11 +252,12 @@ export function WorkstreamsView() {
           <div className="empty-state">
             <div className="title">No workstreams yet</div>
             <div className="sub">
-              Spawn one from an epic on the board, or use “New workstream” above to create
-              an empty one with its own branch + worktree.
+              Click “Spawn story” above to start a multi-team delivery — Forge picks a
+              Feature / PBI from ADO and orchestrates plan → decompose → implement →
+              review → qa across the four crews.
             </div>
             <div className="actions">
-              <button className="btn btn-primary" onClick={() => setModalOpen(true)}>New workstream</button>
+              <button className="btn btn-primary" onClick={() => setSpawnStoryOpen(true)}>Spawn story</button>
               <button className="btn btn-secondary" onClick={() => void syncFromEpics()}>Sync from epics</button>
             </div>
           </div>
@@ -316,11 +309,10 @@ export function WorkstreamsView() {
               </div>
             );
           })}
-          <NewWorkstreamCta onClick={() => setModalOpen(true)} />
+          <NewWorkstreamCta onClick={() => setSpawnStoryOpen(true)} />
         </div>
       </div>
 
-      <NewWorkstreamModal open={modalOpen} onClose={() => setModalOpen(false)} />
       <SpawnStoryModal
         open={spawnStoryOpen}
         onClose={() => setSpawnStoryOpen(false)}

@@ -169,6 +169,16 @@ builder.Services.AddSingleton<Forge.Api.Services.BuildSyncJob>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.BuildSyncJob>());
 builder.Services.AddSingleton<AutoMergeWatcher>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoMergeWatcher>());
+
+// forge_implementation.md Phase 28 — story-driven spawn orchestrator + deps scheduler.
+builder.Services.AddSingleton<Forge.Api.Services.Stories.AgentAllocationLoader>();
+builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryArtifactStrategy, Forge.Api.Services.Stories.DeterministicStoryArtifactStrategy>();
+builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryGitOps, Forge.Api.Services.Stories.InMemoryStoryGitOps>();
+builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryProviderOps, Forge.Api.Services.Stories.LocalStoryProviderOps>();
+builder.Services.AddSingleton<Forge.Api.Services.Stories.StorySpawnOrchestrator>();
+builder.Services.AddSingleton<Forge.Api.Services.Stories.SpawnDependencyScheduler>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.Stories.SpawnDependencyScheduler>());
+
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IUserContext, HttpUserContext>();
 

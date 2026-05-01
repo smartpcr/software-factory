@@ -8,6 +8,7 @@
 
 import { useEffect, useState } from 'react';
 import { forgeApi, type StorySpawnArtifacts, type StorySpawnDetail, type StorySpawnPhase } from '@/api/forgeApi';
+import { useSpawnStore } from '@/state/useSpawnStore';
 
 interface Props {
   storyId: string;
@@ -33,6 +34,9 @@ export function StoryCard({ storyId, defaultExpanded = false, onAdvance }: Props
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Re-fetch when the SignalR realtime tick bumps for this story.
+  const tick = useSpawnStore((s) => s.ticks[storyId] ?? 0);
+
   useEffect(() => {
     let cancelled = false;
     async function load() {
@@ -51,7 +55,7 @@ export function StoryCard({ storyId, defaultExpanded = false, onAdvance }: Props
     }
     void load();
     return () => { cancelled = true; };
-  }, [storyId]);
+  }, [storyId, tick]);
 
   if (err) {
     return (

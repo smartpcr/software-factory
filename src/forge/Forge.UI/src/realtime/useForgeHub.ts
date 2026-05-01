@@ -6,6 +6,7 @@ import { usePrsStore } from '@/state/usePrsStore';
 import { usePrLogStore } from '@/state/usePrLogStore';
 import { useToastStore } from '@/state/useToastStore';
 import { useSprintsStore } from '@/state/useSprintsStore';
+import { useSpawnStore } from '@/state/useSpawnStore';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 import type { WorkItem } from '@/workitems/workItemTypes';
 
@@ -77,6 +78,24 @@ async function ensureConnected() {
         store.upsertFromRealtime(payload.workItem);
       }
     });
+    // forge_implementation.md Phase 28 — story-spawn lifecycle events. The
+    // workstreams view subscribes to these so its story cards reflect phase
+    // advances + auto-orchestration in real time without polling.
+    connection.on('story-spawn.changed', (payload: { kind?: string; storyId?: string; phase?: string }) => {
+      if (!payload?.storyId) return;
+      // Bump a tick on the spawn store so subscribed components re-fetch.
+      useSpawnStore.getState().bump(payload.storyId);
+      if (payload.kind === 'plan-pr-opened') {
+        useToastStore.getState().show(`Story ${payload.storyId}: plan PR opened`, 'info');
+      } else if (payload.kind === 'decomposed') {
+        useToastStore.getState().show(`Story ${payload.storyId}: decomposed`, 'info');
+      } else if (payload.kind === 'qa-pr-merged') {
+        useToastStore.getState().show(`Story ${payload.storyId}: QA features merged`, 'success');
+      } else if (payload.kind === 'done' || payload.kind === 'story-closed') {
+        useToastStore.getState().show(`Story ${payload.storyId}: complete ✓`, 'success');
+      }
+    });
+
     // Phase 29 — build validation completion toast (global, not modal-scoped).
     connection.on('repo.validation-complete', (payload: {
       runId?: string; repoId?: string; status?: string;

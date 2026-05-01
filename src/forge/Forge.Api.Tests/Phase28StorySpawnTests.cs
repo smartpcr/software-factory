@@ -39,6 +39,7 @@ using Xunit;
 /// </list>
 /// </para>
 /// </summary>
+[Collection("Phase28")]
 public class Phase28StorySpawnTests
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);

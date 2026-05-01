@@ -25,6 +25,17 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
         this.extraConfig = extraConfig ?? new();
     }
 
+    /// <summary>
+    /// forge_implementation.md Phase 28 — convenience constructor that flips
+    /// <c>Forge:Stories:OrchestratorEnabled=true</c> for end-to-end tests
+    /// driving the spawn lifecycle through real crew artifact production.
+    /// </summary>
+    public static ForgeWebApplicationFactory WithOrchestratorEnabled() =>
+        new(new Dictionary<string, string?>
+        {
+            ["Forge:Stories:OrchestratorEnabled"] = "true",
+        });
+
     /// <inheritdoc/>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -42,6 +53,10 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
                 // include the actual stack trace in the body.
                 ["DetailedErrors"] = "true",
                 ["Logging:LogLevel:Default"] = "Error",
+                // forge_implementation.md Phase 28 — by default tests exercise
+                // the gate-only (manual-API) flow. End-to-end orchestrator tests
+                // override this to "true" via the dedicated factory ctor.
+                ["Forge:Stories:OrchestratorEnabled"] = "false",
             };
             foreach (var kv in this.extraConfig)
             {

@@ -10,6 +10,7 @@ using System.Text.Json;
 using Forge.Api.Auth;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
+using Forge.Api.Services.Stories;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -25,6 +26,19 @@ using Microsoft.EntityFrameworkCore;
 public static class StoriesEndpoints
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
+
+    /// <summary>
+    /// Set to <c>false</c> via config <c>Forge:Stories:OrchestratorEnabled</c>
+    /// to skip the auto-orchestrator and only run the gate logic. Tests
+    /// covering the manual-API contract use this; production stays on.
+    /// </summary>
+    private static bool OrchestratorEnabled(HttpContext ctx)
+    {
+        var cfg = ctx.RequestServices.GetService<IConfiguration>();
+        var raw = cfg?["Forge:Stories:OrchestratorEnabled"];
+        if (string.IsNullOrEmpty(raw)) return true;
+        return bool.TryParse(raw, out var v) ? v : true;
+    }
 
     public static WebApplication MapStoriesEndpoints(this WebApplication app)
     {
@@ -60,7 +74,8 @@ public static class StoriesEndpoints
         string storyId,
         [FromBody] SpawnRequest? req,
         ForgeDbContext db,
-        IHubContext<ForgeHub> hub)
+        IHubContext<ForgeHub> hub,
+        StorySpawnOrchestrator orchestrator)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -116,7 +131,14 @@ public static class StoriesEndpoints
         await db.SaveChangesAsync();
 
         await hub.Clients.All.SendAsync("story-spawn.changed", new { kind = "created", spawn = ToContract(spawn) });
-        return Results.Created($"/api/stories/{storyId}/spawn", ToContract(spawn));
+        // forge_implementation.md Phase 28 — kick the orchestrator so the
+        // architect crew can produce the plan artifacts + open the plan PR
+        // before this request returns.
+        if (OrchestratorEnabled(ctx)) await orchestrator.DriveAsync(storyId, ctx.RequestAborted);
+        // Re-read so the response carries the orchestrator-mutated state
+        // (PlanPrId, QaBranch).
+        var refreshed = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == storyId);
+        return Results.Created($"/api/stories/{storyId}/spawn", ToContract(refreshed));
     }
 
     private static async Task<IResult> GetSpawn(string storyId, ForgeDbContext db)
@@ -183,7 +205,8 @@ public static class StoriesEndpoints
         string storyId,
         [FromBody] AdvancePhaseRequest req,
         ForgeDbContext db,
-        IHubContext<ForgeHub> hub)
+        IHubContext<ForgeHub> hub,
+        StorySpawnOrchestrator orchestrator)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -230,7 +253,13 @@ public static class StoriesEndpoints
         await db.SaveChangesAsync();
 
         await hub.Clients.All.SendAsync("story-spawn.changed", new { kind = "phase-advanced", spawn = ToContract(spawn) });
-        return Results.Ok(ToContract(spawn));
+        // Drive the new phase forward — e.g. on entering 'decompose' the
+        // architect crew immediately reads the plan and produces the
+        // decomposition; on entering 'implement' the engineer crew claims
+        // each ready workstream.
+        if (OrchestratorEnabled(ctx)) await orchestrator.DriveAsync(storyId, ctx.RequestAborted);
+        var refreshed = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == storyId);
+        return Results.Ok(ToContract(refreshed));
     }
 
     /// <summary>
@@ -383,7 +412,8 @@ public static class StoriesEndpoints
         string storyId,
         [FromBody] DecomposeRequest req,
         ForgeDbContext db,
-        IHubContext<ForgeHub> hub)
+        IHubContext<ForgeHub> hub,
+        StorySpawnOrchestrator orchestrator)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -518,7 +548,8 @@ public static class StoriesEndpoints
         HttpContext ctx,
         string storyId,
         ForgeDbContext db,
-        IHubContext<ForgeHub> hub)
+        IHubContext<ForgeHub> hub,
+        StorySpawnOrchestrator orchestrator)
     {
         var auth = ForgeUser.RequireWriter(ctx);
         if (auth is not null) return auth;
@@ -538,7 +569,9 @@ public static class StoriesEndpoints
         await db.SaveChangesAsync();
 
         await hub.Clients.All.SendAsync("story-spawn.changed", new { kind = "decomposition-approved", spawn = ToContract(spawn) });
-        return Results.Ok(ToContract(spawn));
+        if (OrchestratorEnabled(ctx)) await orchestrator.DriveAsync(storyId, ctx.RequestAborted);
+        var refreshed = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == storyId);
+        return Results.Ok(ToContract(refreshed));
     }
 
     private static async Task<IResult> GetArtifacts(string storyId, ForgeDbContext db)

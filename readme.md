@@ -1,371 +1,150 @@
-## Code Intelligence
+# Workflow
 
-### Overview
-
-The Code Intelligence system provides comprehensive repository-level code understanding through multi-strategy analysis. It addresses gaps in traditional LSP-based code intelligence by combining multiple approaches to extract and connect relationships across the codebase.
-
-
-#### System Components
-
-| Component | Description |
-|-----------|-------------|
-| **AST Extraction** | C#/PowerShell parsing and hypergraph construction |
-| **LSP Integration** | Language Server Protocol for semantic enrichment |
-| **Embedding Generation** | Vector embeddings for semantic similarity search |
-| **Graph Database (Neo4j)** | Structural queries and relationship traversal |
-| **Vector Database (Qdrant)** | Semantic search and similarity matching |
-| **CLI Application** | Commands for parse, enrich, embed, index, query, discover |
-
-### Documentation
-
-- **[Requirements](docs/code_intelligence_requirements.md)** - Problem statement, relationship taxonomy, success criteria
-- **[Architecture](docs/CODE_INTELLIGENCE_ARCHITECTURE.md)** - Complete system design and phase details
-- **[Implementation Plan](docs/code_intelligence_implementation_plan.md)** - Phase-by-phase implementation roadmap
-
-### Use Cases
-
-The system answers questions like:
-- "Where does execution start?" (Entry point detection)
-- "How does data flow through this service?" (Data flow analysis)
-- "What external services does this depend on?" (Dependency traversal)
-- "Where is authentication enforced?" (Security analysis)
-- "What happens when this API is called?" (Execution trace)
+A .NET 8.0 monorepo with three major subsystems: **Forge** (AI-powered software factory), **ExecutionEngine** (DAG-based workflow orchestration), and **ETW/EVTX processing** (Windows event log ingestion into Kusto).
 
 ---
 
-## Workflow Designer UI
+## Forge — Software Factory
 
-The Workflow Designer UI is a browser-based visual editor for building, editing, and monitoring ExecutionEngine workflows. It consists of an ASP.NET Core 8 server host and a React 18 + TypeScript SPA. For the full implementation plan, see [docs/workflow-ui-plan.md](docs/workflow-ui-plan.md). Per-stage implementation specs are in [docs/workflow-ui/](docs/workflow-ui/).
+Forge is an AI-agent-powered engineering management system that connects to ADO/GitHub, syncs work items and PRs, dispatches tasks to AI coding agents, and tracks builds end-to-end. It runs as a local two-process stack: ASP.NET Core API + React SPA.
 
-### Workflow Designer UI — status
+```
+┌────────────────────┐       ┌──────────────────┐
+│  Forge.UI (React)  │──────▶│  Forge.Api       │──────▶  ADO / GitHub REST
+│  Vite · port 5181  │ REST  │  ASP.NET 8       │
+│                    │◀──────│  port 5180       │
+│                    │SignalR │  ┌────────────┐  │  background jobs
+└────────────────────┘       │  │ SQLite DB  │  │  ├─ WorkItemSyncJob (20 min)
+                             │  │ forge.db   │  │  ├─ PrSyncJob (20 min)
+                             │  └────────────┘  │  ├─ BuildSyncJob (20 min)
+                             └──────────────────┘  └─ CrewQueueWorker
+```
 
-[![CI](https://github.com/smartpcr/workflow/actions/workflows/ci-workflow-ui.yml/badge.svg?branch=main)](https://github.com/smartpcr/workflow/actions/workflows/ci-workflow-ui.yml)
-[![Coverage](https://codecov.io/gh/smartpcr/workflow/branch/main/graph/badge.svg)](https://codecov.io/gh/smartpcr/workflow)
-[![Contract drift](https://github.com/smartpcr/workflow/actions/workflows/ci-workflow-ui.yml/badge.svg?branch=main&event=push&job=contract-drift)](https://github.com/smartpcr/workflow/actions/workflows/ci-workflow-ui.yml)
-[![Playwright](https://github.com/smartpcr/workflow/actions/workflows/ci-workflow-ui.yml/badge.svg?branch=main&event=push&job=playwright)](https://github.com/smartpcr/workflow/actions/workflows/ci-workflow-ui.yml)
+### Key capabilities
 
-See [`docs/workflow-ui-plan.md`](docs/workflow-ui-plan.md) and [`docs/workflow-ui/`](docs/workflow-ui/).
+| Area | What it does |
+|------|-------------|
+| **Products & repos** | Attach ADO/GitHub repos, configure area paths, build/test commands |
+| **Work item sync** | Scheduled delta sync from ADO, agent-ready classification by team |
+| **PR sync** | Pull requests with comment threads, build status, diff stats |
+| **Build validation** | Detect build pipeline, run init → restore → build → test locally |
+| **Agent dispatch** | Route tasks to AI agents (Copilot Coding Agent), track transcripts |
+| **Crew management** | Day/night shifts, per-crew quotas, agent roster, cost tracking |
+| **Sync history** | Persistent run log for all sync/build operations with per-entry detail |
+
+### Quick start
+
+```bash
+# Build & run both API and UI
+.\scripts\run-forge-ui.ps1 -Rebuild
+
+# Or run separately
+dotnet run --project src/forge/Forge.Api/Forge.Api.csproj     # API on :5180
+cd src/forge/Forge.UI && npm run dev                           # UI on :5181
+
+# Run tests (stop Forge.Api first — exe is file-locked)
+dotnet test src/forge/Forge.Api.Tests/Forge.Api.Tests.csproj
+```
+
+### Documentation
+
+- **[docs/forge/](docs/forge/)** — User docs (setup, providers, daily flow, keyboard, FAQ)
+- **[docs/forge/architecture.md](docs/forge/architecture.md)** — API/UI shape, request flow, telemetry
+- **[docs/forge_implementation.md](docs/forge_implementation.md)** — Phase-by-phase implementation plan
 
 ---
 
 ## Execution Engine
 
-### Overview
+A DAG-based workflow orchestration engine with per-node message queues, lock-free circular buffers, and support for C#/PowerShell task execution.
 
-The Execution Engine is a workflow orchestration system that executes directed acyclic graphs (DAGs) representing business processes. The engine provides a flexible framework for defining, validating, executing, and monitoring complex workflows with support for control flow, error handling, and state persistence.
+### Key features
 
-#### Key Features
-
-- Graph-based workflow definition with nodes and edges
-- Event-driven execution using channels for message passing
-- Support for C# code and PowerShell script execution
-- Control flow primitives (if-else, switch, loops)
+- Graph-based workflow definition (YAML) with nodes and edges
+- Container nodes: sequential or parallel execution of children
 - Subflow composition for workflow reusability
-- State persistence and workflow lifecycle management (pause, resume, cancel)
-- Progress tracking and error handling
-- Graph validation to prevent infinite loops
+- State persistence — pause, resume, cancel workflows
+- Progress tracking with Gantt-style timeline rendering
+
+### Example output
+
+```
+✓   root   (10.0s)                                ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  100%
+└── ✓ azs deployment (S 8.9s)                     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━    100%
+    ├── ✓ pre deployment checks (S 1.7s)          ━━━━━━                           100%
+    ├── ✓ node deployments (P 5.5s)                     ━━━━━━━━━━━━━━━━━━━━       100%
+    └── ✓ health checks (S 1.7s)                                        ━━━━━━━   100%
+```
+
+### Quick start
+
+```bash
+dotnet run --project src/ExecutionEngine.Example/ExecutionEngine.Example.csproj
+dotnet test src/ExecutionEngine.UnitTests/ExecutionEngine.UnitTests.csproj
+```
 
 ### Documentation
 
-The comprehensive design documentation has been split into focused documents for better readability:
+- **[src/ExecutionEngine/design.md](src/ExecutionEngine/design.md)** — Architecture, node model, message queues
+- **[src/ExecutionEngine/implementation.md](src/ExecutionEngine/implementation.md)** — Phase roadmap, test strategy
+- **[src/ExecutionEngine/usage_guide.md](src/ExecutionEngine/usage_guide.md)** — Examples, integration patterns
 
-#### Core Documentation
+---
 
-- **[design.md](src/ExecutionEngine/design.md)** - Architecture and Design
-  - Core concepts (execution plans, workflow instances, message queues)
-  - Node architecture and execution lifecycle
-  - Graph structure and edge definitions
-  - Graph validation and cycle detection
-  - Execution engine architecture
-  - State persistence strategy
+## Workflow Designer UI
 
-- **[implementation.md](src/ExecutionEngine/implementation.md)** - Implementation Details
-  - Testing strategy (unit and integration tests with BDD)
-  - Phase-by-phase implementation roadmap
-  - Detailed technical specifications for each component
-  - Progress tracking and completion status
+A browser-based visual editor for building, editing, and monitoring ExecutionEngine workflows. ASP.NET Core 8 server + React 18 SPA with real-time telemetry via SignalR.
 
-- **[usage_guide.md](src/ExecutionEngine/usage_guide.md)** - Usage and Examples
-  - Integration with EtwIngest workflows
-  - Example workflow definitions
-  - Node execution context flow patterns
-  - Future enhancements and extensibility
-
-### Quick Start
-
-The execution engine is designed to orchestrate complex ETL workflows. Here's the basic workflow:
-
-1. **Define your workflow** - Create a graph with nodes (tasks, control flow) and edges (dependencies)
-2. **Validate the graph** - Ensure no cycles and proper node connections
-3. **Execute** - Start a workflow instance with the execution engine
-4. **Monitor** - Track progress via events and check execution status
-5. **Manage state** - Pause, resume, or cancel workflows as needed
-
-#### Example
-
-1. definition
-
-```yaml
-# ===============================================================================
-# Azure Stack Deployment Workflow (Restructured)
-# ===============================================================================
-# This workflow demonstrates the Azure Stack deployment process with:
-# 1. Pre-deployment checks (container with sequential execution)
-# 2. Node deployments (container with parallel subflows): Deploy to AzS-Node1, Node2, Node3
-# 3. Post-deployment health checks (container with sequential execution)
-# ===============================================================================
-
-workflowId: azs-deployment
-workflowName: Azure Stack Deployment
-description: Complete Azure Stack deployment workflow with containers and subflows
-
-defaultVariables:
-  nodeName: "AzS-Node"
-
-nodes:
-  # ============================================================================
-  # Phase 1: Pre-deployment Checks Container (Sequential Execution)
-  # ============================================================================
-
-  - nodeId: pre-deployment-checks
-    nodeName: Pre-Deployment Checks
-    runtimeType: Container
-    configuration:
-      ExecutionMode: "Sequential"
-      ChildNodes:
-        # Child 1: Network check
-        - nodeId: check-network
-          nodeName: Network Connectivity Check
-          type: Task
-          runtimeType: CSharp
-          assemblyPath: ExecutionEngine.Example.dll
-          typeName: ExecutionEngine.Example.Nodes.AzureStackPreCheckNode
-          configuration:
-            checkType: "network"
-
-        # Child 2: Storage check
-        - nodeId: check-storage
-          nodeName: Storage Validation Check
-          type: Task
-          runtimeType: CSharp
-          assemblyPath: ExecutionEngine.Example.dll
-          typeName: ExecutionEngine.Example.Nodes.AzureStackPreCheckNode
-          configuration:
-            checkType: "storage"
-
-        # Child 3: Prerequisites check
-        - nodeId: check-prerequisites
-          nodeName: Prerequisites Check
-          type: Task
-          runtimeType: CSharp
-          assemblyPath: ExecutionEngine.Example.dll
-          typeName: ExecutionEngine.Example.Nodes.AzureStackPreCheckNode
-          configuration:
-            checkType: "prerequisites"
-
-      # Sequential connections: Network → Storage → Prerequisites
-      ChildConnections:
-        - sourceNodeId: check-network
-          targetNodeId: check-storage
-          triggerMessageType: Complete
-          isEnabled: true
-
-        - sourceNodeId: check-storage
-          targetNodeId: check-prerequisites
-          triggerMessageType: Complete
-          isEnabled: true
-
-  # ============================================================================
-  # Phase 2: Deploy to Nodes Container (Parallel Subflows)
-  # ============================================================================
-
-  - nodeId: node-deployments
-    nodeName: Node Deployments
-    runtimeType: Container
-    configuration:
-      ExecutionMode: "Parallel"
-      ChildNodes:
-        # Child 1: Deploy to Node1
-        - nodeId: deploy-node1
-          nodeName: Deploy to AzS-Node1
-          runtimeType: Subflow
-          configuration:
-            WorkflowFilePath: "Workflows/deploy_node.yaml"
-            InputMappings:
-              nodeName: "nodeName"
-            OutputMappings:
-              deploymentStatus: "node1DeploymentStatus"
-              osVersion: "node1OsVersion"
-              stampVersion: "node1StampVersion"
-
-        # Child 2: Deploy to Node2
-        - nodeId: deploy-node2
-          nodeName: Deploy to AzS-Node2
-          runtimeType: Subflow
-          configuration:
-            WorkflowFilePath: "Workflows/deploy_node.yaml"
-            InputMappings:
-              nodeName: "nodeName"
-            OutputMappings:
-              deploymentStatus: "node2DeploymentStatus"
-              osVersion: "node2OsVersion"
-              stampVersion: "node2StampVersion"
-
-        # Child 3: Deploy to Node3
-        - nodeId: deploy-node3
-          nodeName: Deploy to AzS-Node3
-          runtimeType: Subflow
-          configuration:
-            WorkflowFilePath: "Workflows/deploy_node.yaml"
-            InputMappings:
-              nodeName: "nodeName"
-            OutputMappings:
-              deploymentStatus: "node3DeploymentStatus"
-              osVersion: "node3OsVersion"
-              stampVersion: "node3StampVersion"
-
-      # No internal connections - all deployments run in parallel
-      ChildConnections: []
-
-  # ============================================================================
-  # Phase 3: Post-deployment Health Checks Container (Sequential Execution)
-  # ============================================================================
-
-  - nodeId: health-checks
-    nodeName: Post-Deployment Health Checks
-    runtimeType: Container
-    configuration:
-      ExecutionMode: "Sequential"
-      ChildNodes:
-        # Child 1: Portal health check
-        - nodeId: health-portal
-          nodeName: Portal Service Health Check
-          type: Task
-          runtimeType: CSharp
-          assemblyPath: ExecutionEngine.Example.dll
-          typeName: ExecutionEngine.Example.Nodes.AzureStackHealthCheckNode
-          configuration:
-            serviceName: "Portal"
-
-        # Child 2: ARM health check
-        - nodeId: health-arm
-          nodeName: ARM Service Health Check
-          type: Task
-          runtimeType: CSharp
-          assemblyPath: ExecutionEngine.Example.dll
-          typeName: ExecutionEngine.Example.Nodes.AzureStackHealthCheckNode
-          configuration:
-            serviceName: "ARM"
-
-        # Child 3: Storage health check
-        - nodeId: health-storage
-          nodeName: Storage Service Health Check
-          type: Task
-          runtimeType: CSharp
-          assemblyPath: ExecutionEngine.Example.dll
-          typeName: ExecutionEngine.Example.Nodes.AzureStackHealthCheckNode
-          configuration:
-            serviceName: "Storage"
-
-        # Child 4: Compute health check
-        - nodeId: health-compute
-          nodeName: Compute Service Health Check
-          type: Task
-          runtimeType: CSharp
-          assemblyPath: ExecutionEngine.Example.dll
-          typeName: ExecutionEngine.Example.Nodes.AzureStackHealthCheckNode
-          configuration:
-            serviceName: "Compute"
-
-      # Sequential connections: Portal → ARM → Storage → Compute
-      ChildConnections:
-        - sourceNodeId: health-portal
-          targetNodeId: health-arm
-          triggerMessageType: Complete
-          isEnabled: true
-
-        - sourceNodeId: health-arm
-          targetNodeId: health-storage
-          triggerMessageType: Complete
-          isEnabled: true
-
-        - sourceNodeId: health-storage
-          targetNodeId: health-compute
-          triggerMessageType: Complete
-          isEnabled: true
-
-# ============================================================================
-# External Workflow Connections
-# ============================================================================
-connections:
-  # ----------------------------------------------------------------------------
-  # Phase 1 → Phase 2: Pre-deployment checks complete → Start node deployments
-  # Pre-deployment checks container triggers node deployments container
-  # ----------------------------------------------------------------------------
-
-  - sourceNodeId: pre-deployment-checks
-    targetNodeId: node-deployments
-    triggerMessageType: Complete
-    isEnabled: true
-
-  # ----------------------------------------------------------------------------
-  # Phase 2 → Phase 3: All node deployments complete → Start health checks
-  # Node deployments container triggers health checks container
-  # ----------------------------------------------------------------------------
-
-  - sourceNodeId: node-deployments
-    targetNodeId: health-checks
-    triggerMessageType: Complete
-    isEnabled: true
-
+```bash
+dotnet run --project src/WorkflowUi.Server/WorkflowUi.Server.csproj   # Server :5226
+cd src/WorkflowUI && npm run dev                                       # UI :5555
 ```
 
-2. progress
+- **[docs/workflow-ui-plan.md](docs/workflow-ui-plan.md)** — Implementation plan
+- **[docs/workflow-ui/](docs/workflow-ui/)** — Per-stage specs
 
-```output
-✓   root   (10.0s)                                ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100%
-└── ✓ azs deployment (S 8.9s)                     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━      100%
-    ├── ✓ pre deployment checks (S 1.7s)          ━━━━━━                                     100%
-    │   ├── ✓ check network (503ms)               ━━                                         100%
-    │   ├── ✓ check storage (511ms)                 ━━                                       100%
-    │   └── ✓ check prerequisites (512ms)             ━━                                     100%
-    ├── ✓ node deployments (P 5.5s)                     ━━━━━━━━━━━━━━━━━━━━━━━              100%
-    │   ├── ✓ deploy node1 (S 5.4s)                      ━━━━━━━━━━━━━━━━━━━━━━              100%
-    │   │   ├── ✓ os update (1.9s)                       ━━━━━━━━                            100%
-    │   │   ├── ✓ stamp update (1.0s)                            ━━━━                        100%
-    │   │   ├── ✓ sbe update (1.5s)                                  ━━━━━━                  100%
-    │   │   └── ✓ mocarc update (1.0s)                                     ━━━━              100%
-    │   ├── ✓ deploy node2 (S 5.4s)                      ━━━━━━━━━━━━━━━━━━━━━━              100%
-    │   │   ├── ✓ os update (1.9s)                       ━━━━━━━━                            100%
-    │   │   ├── ✓ stamp update (1.0s)                            ━━━━                        100%
-    │   │   ├── ✓ sbe update (1.5s)                                  ━━━━━━                  100%
-    │   │   └── ✓ mocarc update (1.0s)                                     ━━━━              100%
-    │   └── ✓ deploy node3 (S 5.4s)                      ━━━━━━━━━━━━━━━━━━━━━━              100%
-    │       ├── ✓ os update (1.9s)                       ━━━━━━━━                            100%
-    │       ├── ✓ stamp update (1.0s)                            ━━━━                        100%
-    │       ├── ✓ sbe update (1.5s)                                  ━━━━━━                  100%
-    │       └── ✓ mocarc update (1.0s)                                     ━━━━              100%
-    └── ✓ health checks (S 1.7s)                                                ━━━━━━━      100%
-        ├── ✓ health portal (410ms)                                             ━            100%
-        ├── ✓ health arm (403ms)                                                 ━           100%
-        ├── ✓ health storage (404ms)                                               ━         100%
-        └── ✓ health compute (406ms)                                                 ━       100%
+---
+
+## ETW/EVTX Processing Pipeline
+
+Processes Windows Event Tracing (ETW) and Event Log (EVTX) files for ingestion into Azure Data Explorer (Kusto).
+
+**Pipeline**: Parse → Schema Inference → Table Creation → CSV Export → Kusto Ingestion
+
+```bash
+dotnet test src/EtwIngest/EtwIngest.csproj                              # BDD tests
+dotnet test src/EtwIngest/EtwIngest.csproj --filter "Category=parser"   # By tag
+dotnet run --project src/EtlIterator/EtlIterator.csproj                 # Batch processor
 ```
 
-See [usage_guide.md](usage_guide.md) for detailed examples and integration patterns.
+Key packages: `Microsoft.Diagnostics.Tracing.TraceEvent`, `evtx`, `Microsoft.Azure.Kusto.Data`
 
-### Architecture Highlights
+---
 
-The execution engine emphasizes:
+## Solution structure
 
-- **Flexibility**: Support for C# and PowerShell scripts, dynamic node loading
-- **Reliability**: Retry logic, dead letter queues, state persistence
-- **Performance**: Lock-free circular buffers, parallel node execution
-- **Observability**: Rich event model with progress tracking
-- **Maintainability**: Clean abstractions, comprehensive test coverage
+```
+src/
+├── forge/                          # Forge software factory
+│   ├── Forge.Api/                  #   ASP.NET 8 API + SQLite + background jobs
+│   ├── Forge.Api.Tests/            #   xUnit tests
+│   └── Forge.UI/                   #   React 18 + Vite + TypeScript SPA
+├── ExecutionEngine/                # DAG workflow engine core library
+├── ExecutionEngine.Example/        # Example workflows (Azure Stack deployment)
+├── ExecutionEngine.UnitTests/      # Reqnroll BDD tests
+├── ExecutionEngine.IntegrationTests/
+├── ProgressTree/                   # Gantt-style progress rendering
+├── WorkflowUI/                     # Workflow designer React SPA
+├── WorkflowUi.Server/              # Workflow designer ASP.NET host
+├── EtwIngest/                      # ETW/EVTX BDD test project
+├── EtlIterator/                    # Batch ETL processor
+├── EtwEventReader/                 # Event reader with formatters
+├── Common.Diagnostics.EtwParser/   # Core ETW parsing library
+└── Unzip/                          # Recursive ZIP extraction utility
+```
 
-### Project Status
+## Build
 
-This execution engine is being integrated into the EtwIngest solution to provide automated, scheduled ETL processing with full workflow orchestration capabilities.
-
-For detailed information, please refer to the documentation files linked above.
+```bash
+dotnet build Workflow.sln
+```
