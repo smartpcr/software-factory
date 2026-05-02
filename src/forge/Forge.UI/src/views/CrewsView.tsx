@@ -313,8 +313,7 @@ export function CrewsView() {
               <header style={detailHeadStyle}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={detailEyebrowStyle}>
-                    {selected.productId ? <span>product · <strong>{selected.productId}</strong></span> : <span>(no product)</span>}
-                    {selected.parentCrewId && <span> · child of {selected.parentCrewId}</span>}
+                    {selected.parentCrewId && <span>child of {selected.parentCrewId}</span>}
                     <span> · depth {selected.depth ?? 0}</span>
                   </div>
                   <div style={detailNameStyle}>{selected.name}</div>

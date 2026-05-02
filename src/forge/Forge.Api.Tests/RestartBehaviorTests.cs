@@ -51,11 +51,10 @@ public class RestartBehaviorTests
         UpdatedAt = DateTimeOffset.UtcNow,
     };
 
-    private static CrewRow NewCrew(string id, string productId, bool scheduleEnabled = false) => new()
+    private static CrewRow NewCrew(string id, bool scheduleEnabled = false) => new()
     {
         Id = id,
         Name = id,
-        ProductId = productId,
         Lead = "lead-1",
         Model = "claude-opus-4-7",
         ModelInputPricePerMTok = 15m,
@@ -207,7 +206,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-test", product.Id));
+            db.Crews.Add(NewCrew("crew-test"));
             db.WorkItems.Add(NewWorkItem("wi-restart-1", state: "active", execStatus: "failed"));
             db.Deliverables.Add(NewDeliverable("wi-restart-1", "crew-test", 1, 85));
             db.Deliverables.Add(NewDeliverable("wi-restart-1", "crew-test", 2, 72));
@@ -234,7 +233,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-rst-ir", product.Id));
+            db.Crews.Add(NewCrew("crew-rst-ir"));
             db.WorkItems.Add(NewWorkItem("wi-rst-ir", state: "in-review", execStatus: "failed"));
             await db.SaveChangesAsync();
 
@@ -259,7 +258,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-rst-res", product.Id));
+            db.Crews.Add(NewCrew("crew-rst-res"));
             db.WorkItems.Add(NewWorkItem("wi-rst-res", state: "resolved", execStatus: "completed"));
             await db.SaveChangesAsync();
 
@@ -283,7 +282,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-rst-cl", product.Id));
+            db.Crews.Add(NewCrew("crew-rst-cl"));
             db.WorkItems.Add(NewWorkItem("wi-rst-cl", state: "closed", execStatus: "completed"));
             await db.SaveChangesAsync();
 
@@ -307,7 +306,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-rst-act", product.Id));
+            db.Crews.Add(NewCrew("crew-rst-act"));
             db.WorkItems.Add(NewWorkItem("wi-rst-act", state: "active", execStatus: "failed"));
             await db.SaveChangesAsync();
 
@@ -331,7 +330,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-rst-prop", product.Id));
+            db.Crews.Add(NewCrew("crew-rst-prop"));
             db.WorkItems.Add(NewWorkItem("wi-rst-prop", state: "proposed", execStatus: "failed"));
             await db.SaveChangesAsync();
 
@@ -389,7 +388,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-norest", product.Id));
+            db.Crews.Add(NewCrew("crew-norest"));
             db.WorkItems.Add(NewWorkItem("wi-norest-1", state: "active", execStatus: "failed"));
             db.Deliverables.Add(NewDeliverable("wi-norest-1", "crew-norest"));
             await db.SaveChangesAsync();
@@ -418,7 +417,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-sched", product.Id, scheduleEnabled: true));
+            db.Crews.Add(NewCrew("crew-sched", scheduleEnabled: true));
             db.WorkItems.Add(NewWorkItem("wi-sched-1", state: "active", execStatus: "failed"));
             await db.SaveChangesAsync();
 
@@ -460,7 +459,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-dupe", product.Id));
+            db.Crews.Add(NewCrew("crew-dupe"));
             db.WorkItems.Add(NewWorkItem("wi-dupe", state: "active", execStatus: "queued"));
             await db.SaveChangesAsync();
 
@@ -489,7 +488,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-soul", product.Id));
+            db.Crews.Add(NewCrew("crew-soul"));
             db.WorkItems.Add(NewWorkItem("wi-soul-1", state: "active", execStatus: "failed"));
             await db.SaveChangesAsync();
 
@@ -530,7 +529,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-soul-nr", product.Id));
+            db.Crews.Add(NewCrew("crew-soul-nr"));
             db.WorkItems.Add(NewWorkItem("wi-soul-nr", state: "active", execStatus: "idle"));
             await db.SaveChangesAsync();
 
@@ -686,7 +685,7 @@ public class RestartBehaviorTests
         {
             var product = await db.Products.FirstAsync();
             var crewId = $"crew-guard-{terminalState}";
-            db.Crews.Add(NewCrew(crewId, product.Id));
+            db.Crews.Add(NewCrew(crewId));
             var wiId = $"wi-guard-{terminalState}";
             db.WorkItems.Add(NewWorkItem(wiId, state: terminalState, execStatus: "completed"));
             await db.SaveChangesAsync();
@@ -758,7 +757,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-asgn", product.Id));
+            db.Crews.Add(NewCrew("crew-asgn"));
             var wi = NewWorkItem("wi-asgn", state: "active", execStatus: "failed");
             wi.AssignedToJson = "{\"kind\":\"human\",\"id\":\"XD\",\"displayName\":\"Xiaodong\"}";
             db.WorkItems.Add(wi);
@@ -784,7 +783,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-links", product.Id));
+            db.Crews.Add(NewCrew("crew-links"));
             db.WorkItems.Add(NewWorkItem("wi-parent", state: "active"));
             var child = NewWorkItem("wi-child", state: "active", execStatus: "failed");
             child.ParentId = "wi-parent";
@@ -928,7 +927,7 @@ public class RestartBehaviorTests
     [Fact]
     public void ScheduleGate_Sunday_DayCrew_OffShift()
     {
-        var crew = NewCrew("sg", "p");
+        var crew = NewCrew("sg");
         crew.ScheduleEnabled = true;
         crew.Timezone = "America/Los_Angeles";
         crew.Shift = "day";
@@ -940,7 +939,7 @@ public class RestartBehaviorTests
     [Fact]
     public void ScheduleGate_Tuesday_DayCrew_OnShift()
     {
-        var crew = NewCrew("sg2", "p");
+        var crew = NewCrew("sg2");
         crew.ScheduleEnabled = true;
         crew.Timezone = "America/Los_Angeles";
         crew.Shift = "day";
@@ -960,7 +959,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-noitem", product.Id));
+            db.Crews.Add(NewCrew("crew-noitem"));
             await db.SaveChangesAsync();
 
             using var client = f.CreateClient();

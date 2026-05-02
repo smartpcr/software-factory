@@ -518,8 +518,6 @@ public class CrewRow
 
     public string Name { get; set; } = string.Empty;
 
-    public string? ProductId { get; set; }
-
     public string Summary { get; set; } = string.Empty;
 
     /// <summary>Agent id of the crew lead.</summary>
@@ -1259,6 +1257,25 @@ public class RepoRow
 
     /// <summary>JSON array of pipeline definition IDs to sync builds from.</summary>
     public string? BuildPipelineIdsJson { get; set; }
+
+    // -- Phase 34 — per-repo sync cadence + upstream-changedate cursor ------
+
+    /// <summary>Per-repo work-item sync interval in seconds. Null = inherit <see cref="SyncConstants.WorkItemSyncIntervalSeconds"/>.</summary>
+    public int? WorkItemSyncIntervalSeconds { get; set; }
+
+    /// <summary>Per-repo PR sync interval in seconds. Null = inherit <see cref="SyncConstants.PrSyncIntervalSeconds"/>.</summary>
+    public int? PrSyncIntervalSeconds { get; set; }
+
+    /// <summary>Per-repo build sync interval in seconds. Null = inherit <see cref="SyncConstants.BuildSyncIntervalSeconds"/>.</summary>
+    public int? BuildSyncIntervalSeconds { get; set; }
+
+    /// <summary>
+    /// ISO-8601 upstream-changedate cursor for delta sync (max <c>System.ChangedDate</c> /
+    /// <c>updated_at</c> observed in the last successful run). Distinct from
+    /// <see cref="LastSyncAt"/> which is the local clock at run start; this cursor is the
+    /// real "everything changed before this point is already in our cache" boundary.
+    /// </summary>
+    public string? LastUpstreamChangedDate { get; set; }
 }
 
 /// <summary>

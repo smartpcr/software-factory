@@ -31,7 +31,6 @@ public class Phase18PatchShiftTests
         {
             id,
             name = id,
-            productId = (string?)null,
             summary = string.Empty,
             lead = (string?)null,
             model = "local-stub",
@@ -173,7 +172,6 @@ public class Phase18PatchShiftTests
         {
             id = "c-bad",
             name = "C",
-            productId = (string?)null,
             summary = string.Empty,
             model = "local-stub",
             modelInputPricePerMTok = 1m,

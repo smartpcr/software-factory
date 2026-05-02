@@ -289,7 +289,6 @@ public class Phase17QueueTests
             db.Crews.Add(new CrewRow
             {
                 Id = "crew-strained", Name = "Engineering Strained",
-                ProductId = (await db.Products.FirstAsync()).Id,
                 Lead = "lead-strain", Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 1, ScheduleEnabled = false,
@@ -341,7 +340,6 @@ public class Phase17QueueTests
             db.Crews.Add(new CrewRow
             {
                 Id = "crew-cap", Name = "Engineering Cap",
-                ProductId = (await db.Products.FirstAsync()).Id,
                 Lead = "lead-cap", Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 1, ScheduleEnabled = false,
@@ -413,7 +411,7 @@ public class Phase17QueueTests
             var productId = (await db.Products.FirstAsync()).Id;
             db.Crews.Add(new CrewRow
             {
-                Id = "crew-solo", Name = "Solo", ProductId = productId,
+                Id = "crew-solo", Name = "Solo",
                 Lead = "lead-solo", Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 2, ScheduleEnabled = false,
@@ -444,7 +442,7 @@ public class Phase17QueueTests
             var productId = (await db.Products.FirstAsync()).Id;
             db.Crews.Add(new CrewRow
             {
-                Id = "crew-multi-gen", Name = "Multi", ProductId = productId,
+                Id = "crew-multi-gen", Name = "Multi",
                 Lead = "lead-multi", Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 2, ScheduleEnabled = false,
@@ -452,7 +450,7 @@ public class Phase17QueueTests
             });
             db.Crews.Add(new CrewRow
             {
-                Id = "crew-multi-eval", Name = "Multi (Night)", ProductId = productId,
+                Id = "crew-multi-eval", Name = "Multi (Night)",
                 Lead = null, Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 2, ScheduleEnabled = false,
@@ -500,7 +498,7 @@ public class Phase17QueueTests
             var productId = (await db.Products.FirstAsync()).Id;
             db.Crews.Add(new CrewRow
             {
-                Id = "crew-timeout-auto", Name = "Timeout", ProductId = productId,
+                Id = "crew-timeout-auto", Name = "Timeout",
                 Lead = "lead-timeout", Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 2, ScheduleEnabled = false,

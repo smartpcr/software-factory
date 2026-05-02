@@ -188,8 +188,14 @@ public class Phase23MigrationTests
 public class Phase23SyncConstantsTests
 {
     [Fact]
-    public void AdoInitialWindowDays_Equals_365() =>
-        Assert.Equal(365, SyncConstants.AdoInitialWindowDays);
+    public void AdoInitialWindowDays_Equals_30() =>
+        // Phase 34 — narrowed from 365 to 30 to keep the first sync small.
+        Assert.Equal(30, SyncConstants.AdoInitialWindowDays);
+
+    [Fact]
+    public void GithubInitialWindowDays_Equals_30() =>
+        // Phase 34 — GitHub used to omit `since=` (all-time); now mirrors ADO at 30 days.
+        Assert.Equal(30, SyncConstants.GithubInitialWindowDays);
 
     [Fact]
     public void AdoMaxIdsPerWorkItemBatch_Equals_200() =>
@@ -204,8 +210,9 @@ public class Phase23SyncConstantsTests
         Assert.Equal(100, SyncConstants.GithubPerPage);
 
     [Fact]
-    public void WorkItemSyncIntervalSeconds_Equals_1200() =>
-        Assert.Equal(1200, SyncConstants.WorkItemSyncIntervalSeconds);
+    public void WorkItemSyncIntervalSeconds_Equals_7200() =>
+        // Phase 34 — bumped from 20 min (1200) to 2 hr (7200) to reduce upstream load.
+        Assert.Equal(7200, SyncConstants.WorkItemSyncIntervalSeconds);
 
     [Fact]
     public void WorkItemSyncMaxParallel_Equals_4() =>
@@ -226,10 +233,11 @@ public class Phase23SyncConstantsTests
     [Fact]
     public void Constants_Match_Spec_Values()
     {
-        // Cross-check: all constant values combined satisfy Q23.5/Q23.6.
-        Assert.True(SyncConstants.AdoInitialWindowDays == 365);
+        // Phase 34 — Q23.5 initial window narrowed 365→30 days; Q23.1 cadence 1200→7200.
+        Assert.True(SyncConstants.AdoInitialWindowDays == 30);
+        Assert.True(SyncConstants.GithubInitialWindowDays == 30);
         Assert.True(SyncConstants.AdoMaxIdsPerWorkItemBatch == 200);
-        Assert.True(SyncConstants.WorkItemSyncIntervalSeconds == 1200);
+        Assert.True(SyncConstants.WorkItemSyncIntervalSeconds == 7200);
         Assert.True(SyncConstants.WorkItemSyncMaxParallel == 4);
         Assert.True(SyncConstants.RunningTimeoutMinutes == 19);
     }

@@ -95,6 +95,36 @@ public sealed class BuildSyncJob : BackgroundService
                 .Select(p => new BuildSweepCandidate(
                     p.Id, p.Provider ?? string.Empty, p.RepoId, p.Branch, p.WorkItemId))
                 .ToListAsync(ct);
+
+            // Phase 34 — per-repo build-sync cadence override. Per-PR eligibility
+            // is computed from MAX(builds.LastSyncAt) for that PR; PRs with no
+            // build rows yet are always eligible (first sweep wins).
+            var prIds = candidates.Select(c => c.PrId).ToArray();
+            var lastBuildSyncByPr = prIds.Length == 0
+                ? new Dictionary<string, string?>()
+                : await db.Builds
+                    .AsNoTracking()
+                    .Where(b => prIds.Contains(b.PrId!))
+                    .GroupBy(b => b.PrId!)
+                    .Select(g => new { PrId = g.Key, MaxAt = g.Max(x => x.LastSyncAt) })
+                    .ToDictionaryAsync(x => x.PrId, x => x.MaxAt, ct);
+
+            var repoIds = candidates
+                .Where(c => !string.IsNullOrEmpty(c.RepoId))
+                .Select(c => c.RepoId)
+                .Distinct()
+                .ToArray();
+            var intervals = repoIds.Length == 0
+                ? new Dictionary<string, int?>()
+                : await db.Repos
+                    .AsNoTracking()
+                    .Where(r => repoIds.Contains(r.Id))
+                    .ToDictionaryAsync(r => r.Id, r => r.BuildSyncIntervalSeconds, ct);
+
+            var nowOff = DateTimeOffset.UtcNow;
+            candidates = candidates
+                .Where(c => IsBuildDueForSweep(c, lastBuildSyncByPr, intervals, nowOff))
+                .ToList();
         }
         if (candidates.Count == 0) return;
 
@@ -581,6 +611,32 @@ public sealed class BuildSyncJob : BackgroundService
             }
             return false;
         }
+    }
+
+    /// <summary>
+    /// Phase 34 — per-PR cadence gate for the build sweep. Effective interval
+    /// is the parent repo's <c>BuildSyncIntervalSeconds</c> override, or the
+    /// global <see cref="SyncConstants.BuildSyncIntervalSeconds"/>. PRs with
+    /// no build rows yet always pass (first sweep wins).
+    /// </summary>
+    internal static bool IsBuildDueForSweep(
+        BuildSweepCandidate c,
+        IReadOnlyDictionary<string, string?> lastBuildSyncByPr,
+        IReadOnlyDictionary<string, int?> intervals,
+        DateTimeOffset now)
+    {
+        if (!lastBuildSyncByPr.TryGetValue(c.PrId, out var lastIso) || string.IsNullOrEmpty(lastIso))
+        {
+            return true;
+        }
+        if (!DateTimeOffset.TryParse(lastIso, out var lastTick)) return true;
+
+        var override_ = !string.IsNullOrEmpty(c.RepoId)
+                        && intervals.TryGetValue(c.RepoId, out var v)
+            ? v
+            : null;
+        var effectiveInterval = override_ ?? SyncConstants.BuildSyncIntervalSeconds;
+        return (now - lastTick).TotalSeconds >= effectiveInterval;
     }
 
     /// <summary>One PR row condensed to the columns the sweep needs.</summary>

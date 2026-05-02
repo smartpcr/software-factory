@@ -109,7 +109,7 @@ public class SettingsAndCrewsTests
         client.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
         var resp = await client.PostAsJsonAsync(
             "/api/crews",
-            new { id = "crew-platform", name = "Platform", productId = "atlas", model = "claude-opus-4-7" },
+            new { id = "crew-platform", name = "Platform", model = "claude-opus-4-7" },
             JsonOpts);
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
     }

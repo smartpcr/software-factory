@@ -116,12 +116,10 @@ export function CardModal({ open, onClose, initial, fromWorkItem }: CardModalPro
       const dayCrews = cs.filter((c) => !c.parentCrewId);
       setCrews(dayCrews.length > 0 ? dayCrews : cs);
     };
-    forgeApi.listCrews(activeProductId ?? undefined)
+    forgeApi.listCrews()
       .then((cs) => {
         if (cancelled) return;
-        if (cs.length > 0) { applyCrews(cs); return; }
-        // Fallback: active product has no crews — fetch all.
-        forgeApi.listCrews().then(applyCrews).catch(() => {});
+        applyCrews(cs);
       })
       .catch(() => { /* ignore */ });
     return () => { cancelled = true; };

@@ -100,8 +100,26 @@ public sealed class PrSyncJob : BackgroundService
                      p.LastSyncStatus == "failed" ||
                      (p.LastSyncStatus == "running" && p.IsRunningSince != null && string.Compare(p.IsRunningSince, staleThreshold) < 0)))
                 .OrderBy(p => p.LastSyncAt ?? string.Empty)
-                .Select(p => new PrSyncCandidate(p.Id, p.Provider, p.ProviderRef, p.Col, p.WorkItemId, p.RepoId))
+                .Select(p => new PrSyncCandidate(p.Id, p.Provider, p.ProviderRef, p.Col, p.WorkItemId, p.RepoId, p.LastSyncAt))
                 .ToListAsync(ct);
+
+            // Phase 34 — per-repo cadence override. A repo's PrSyncIntervalSeconds
+            // (when set) gates how often *each* of its PRs is re-synced. Stale
+            // 'running' rows already passed the staleThreshold check above and
+            // bypass the cadence gate so a crash recovery isn't held back.
+            var repoIds = candidates
+                .Where(c => !string.IsNullOrEmpty(c.RepoId))
+                .Select(c => c.RepoId!)
+                .Distinct()
+                .ToArray();
+            var intervals = repoIds.Length == 0
+                ? new Dictionary<string, int?>()
+                : await db.Repos
+                    .AsNoTracking()
+                    .Where(r => repoIds.Contains(r.Id))
+                    .ToDictionaryAsync(r => r.Id, r => r.PrSyncIntervalSeconds, ct);
+
+            candidates = candidates.Where(c => IsPrDueForSync(c, intervals, now)).ToList();
         }
 
         if (candidates.Count == 0) return;
@@ -724,13 +742,36 @@ public sealed class PrSyncJob : BackgroundService
         };
     }
 
+    /// <summary>
+    /// Phase 34 — per-PR cadence gate. Effective interval is the parent repo's
+    /// <c>PrSyncIntervalSeconds</c> override or the global
+    /// <see cref="SyncConstants.PrSyncIntervalSeconds"/>. PRs with no prior
+    /// sync are eligible immediately.
+    /// </summary>
+    internal static bool IsPrDueForSync(
+        PrSyncCandidate c,
+        IReadOnlyDictionary<string, int?> intervals,
+        DateTimeOffset now)
+    {
+        if (string.IsNullOrEmpty(c.LastSyncAt)) return true;
+        if (!DateTimeOffset.TryParse(c.LastSyncAt, out var lastTick)) return true;
+
+        var override_ = !string.IsNullOrEmpty(c.RepoId)
+                        && intervals.TryGetValue(c.RepoId!, out var v)
+            ? v
+            : null;
+        var effectiveInterval = override_ ?? SyncConstants.PrSyncIntervalSeconds;
+        return (now - lastTick).TotalSeconds >= effectiveInterval;
+    }
+
     public sealed record PrSyncCandidate(
         string PrId,
         string? Provider,
         string? ProviderRef,
         string CurrentCol,
         string? WorkItemId,
-        string? RepoId);
+        string? RepoId,
+        string? LastSyncAt = null);
 
     /// <summary>
     /// Phase 28.2 — true when a comment body is an ADO PR Assistant /

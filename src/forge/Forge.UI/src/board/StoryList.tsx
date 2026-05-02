@@ -78,7 +78,7 @@ export function StoryList() {
       setConfirmDelete(null);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Delete failed';
-      useToastStore.getState().show(msg, 'error');
+      useToastStore.getState().show(msg, 'danger');
     } finally {
       setDeleting(false);
     }

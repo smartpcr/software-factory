@@ -41,7 +41,6 @@ public class AgentReadyClaimStateTests
         db.Crews.Add(new CrewRow
         {
             Id = "claim-crew", Name = "Engineering Claim",
-            ProductId = product.Id,
             Lead = "claim-lead", Model = "local-stub",
             ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
             MaxConcurrent = 5, ScheduleEnabled = false,
@@ -87,7 +86,6 @@ public class AgentReadyClaimStateTests
         db.Crews.Add(new CrewRow
         {
             Id = "keep-crew", Name = "Engineering Keep",
-            ProductId = product.Id,
             Lead = "keep-lead", Model = "local-stub",
             ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
             MaxConcurrent = 5, ScheduleEnabled = false,
@@ -129,7 +127,6 @@ public class AgentReadyClaimStateTests
         db.Crews.Add(new CrewRow
         {
             Id = "res-crew", Name = "Engineering Res",
-            ProductId = product.Id,
             Lead = "res-lead", Model = "local-stub",
             ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
             MaxConcurrent = 5, ScheduleEnabled = false,

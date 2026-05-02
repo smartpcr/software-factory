@@ -283,7 +283,12 @@ public sealed record Repo(
     string? WiSyncToDate = null,
     string? PrSyncCreatedBy = null,
     string? PrSyncStatus = null,
-    IReadOnlyList<string>? BuildPipelineIds = null);
+    IReadOnlyList<string>? BuildPipelineIds = null,
+    // Phase 34 — per-repo sync cadence + upstream-changedate cursor.
+    int? WorkItemSyncIntervalSeconds = null,
+    int? PrSyncIntervalSeconds = null,
+    int? BuildSyncIntervalSeconds = null,
+    string? LastUpstreamChangedDate = null);
 
 /// <summary>
 /// POST /api/products body.
@@ -390,7 +395,6 @@ public sealed record UpdateUserSettingsRequest(
 public sealed record Crew(
     string Id,
     string Name,
-    string? ProductId,
     string Summary,
     string? Lead,
     string Model,
@@ -494,7 +498,11 @@ public sealed record UpdateRepoRequest(
     string? WiSyncToDate = null,
     string? PrSyncCreatedBy = null,
     string? PrSyncStatus = null,
-    IReadOnlyList<string>? BuildPipelineIds = null);
+    IReadOnlyList<string>? BuildPipelineIds = null,
+    // Phase 34 — per-repo sync cadence override.
+    int? WorkItemSyncIntervalSeconds = null,
+    int? PrSyncIntervalSeconds = null,
+    int? BuildSyncIntervalSeconds = null);
 
 /// <summary>
 /// Phase 11.3 — agent listing payload.

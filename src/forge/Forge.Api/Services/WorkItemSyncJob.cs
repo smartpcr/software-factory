@@ -86,15 +86,25 @@ public class WorkItemSyncJob : BackgroundService
             var now = DateTimeOffset.UtcNow;
             var staleThreshold = now.AddMinutes(-SyncConstants.RunningTimeoutMinutes).ToString("o");
 
-            repos = await db.Repos
+            // Phase 34 — pull the candidate set without the parallelism cap so the
+            // per-repo interval filter below doesn't starve a repo that sits
+            // behind a few not-yet-due repos in the order-by ranking.
+            var candidates = await db.Repos
                 .Where(r =>
                     r.LastSyncStatus == "idle"
                     || r.LastSyncStatus == "failed"
                     || (r.LastSyncStatus == "running" && r.IsRunningSince != null
                         && string.Compare(r.IsRunningSince, staleThreshold) < 0))
                 .OrderBy(r => r.LastSyncAt ?? string.Empty)
-                .Take(SyncConstants.WorkItemSyncMaxParallel)
                 .ToListAsync(ct);
+
+            // Per-repo cadence override: a repo with WorkItemSyncIntervalSeconds set
+            // syncs slower than the global tick. Stale 'running' rows always pass —
+            // recovering from a crash takes priority over the cadence gate.
+            repos = candidates
+                .Where(r => IsDueForSync(r, now))
+                .Take(SyncConstants.WorkItemSyncMaxParallel)
+                .ToList();
         }
 
         // Skip the seed placeholder repo — it satisfies the FK for seeded
@@ -160,24 +170,24 @@ public class WorkItemSyncJob : BackgroundService
             p => string.Equals(p.Kind, repo.Kind, StringComparison.OrdinalIgnoreCase));
         var providerLabel = repo.Kind ?? "unknown";
 
-        // Build filters from the repo's sync configuration.
+        // Phase 34 — delta cursor sources from the upstream changedate of the
+        // most-recent item observed in the previous run, NOT the local clock.
+        // First sync (no cursor) falls back to the initial window — 30 days
+        // for both ADO and GitHub by default; per-repo InitialSyncWindowDays
+        // override still wins when the operator sets it.
         DateTimeOffset? updatedFrom = null;
-        if (!string.IsNullOrEmpty(repo.LastSyncAt)
-            && DateTimeOffset.TryParse(repo.LastSyncAt, out var lastSync))
+        if (!string.IsNullOrEmpty(repo.LastUpstreamChangedDate)
+            && DateTimeOffset.TryParse(repo.LastUpstreamChangedDate, out var lastChanged))
         {
-            updatedFrom = lastSync;
+            updatedFrom = lastChanged;
         }
         else
         {
-            // First sync: use the initial window (per-repo override or default).
             var windowDays = repo.InitialSyncWindowDays
                 ?? (string.Equals(repo.Kind, "github", StringComparison.OrdinalIgnoreCase)
-                    ? (int?)null
+                    ? SyncConstants.GithubInitialWindowDays
                     : SyncConstants.AdoInitialWindowDays);
-            if (windowDays.HasValue)
-            {
-                updatedFrom = DateTimeOffset.UtcNow.AddDays(-windowDays.Value);
-            }
+            updatedFrom = DateTimeOffset.UtcNow.AddDays(-windowDays);
         }
 
         var areaPaths = ParseAreaPaths(repo.AreaPathsJson);
@@ -201,6 +211,7 @@ public class WorkItemSyncJob : BackgroundService
         var totalUpdated = 0;
         var totalConflicted = 0;
         var batchCount = 0;
+        DateTimeOffset? maxObservedChangedDate = null;
         Exception? terminalEx = null;
 
         if (provider is null || !provider.IsConfigured)
@@ -225,6 +236,16 @@ public class WorkItemSyncJob : BackgroundService
                     totalUpdated += updated;
                     totalConflicted += conflicted;
 
+                    // Phase 34 — track max upstream-changedate observed; written
+                    // back as the next-run delta cursor on success.
+                    foreach (var item in batch.Items)
+                    {
+                        if (item.UpdatedAt > (maxObservedChangedDate ?? DateTimeOffset.MinValue))
+                        {
+                            maxObservedChangedDate = item.UpdatedAt;
+                        }
+                    }
+
                     // Per-batch cursor commit (Phase 23.6 resume guarantee).
                     repo.LastSyncCursor = batch.OpaqueCursor;
                     await db.SaveChangesAsync(ct);
@@ -240,13 +261,28 @@ public class WorkItemSyncJob : BackgroundService
 
         if (terminalEx is null)
         {
-            // Successful run — advance LastSyncAt to the run START time so
-            // a subsequent delta run doesn't miss items written DURING this
-            // run; clear the cursor + error.
+            // Successful run — LastSyncAt is local-clock telemetry ("when did we last
+            // tick"); the delta cursor lives on LastUpstreamChangedDate (Phase 34).
             repo.LastSyncAt = startedAt.ToString("o");
             repo.LastSyncStatus = "idle";
             repo.LastSyncCursor = null;
             repo.LastSyncError = null;
+
+            // Phase 34 — only advance the upstream cursor when we actually
+            // observed an item; an empty delta run leaves the prior boundary
+            // alone so a slow week doesn't snap the cursor forward past
+            // un-synced items in a temporarily-empty WIQL response.
+            if (maxObservedChangedDate.HasValue)
+            {
+                var prior = !string.IsNullOrEmpty(repo.LastUpstreamChangedDate)
+                            && DateTimeOffset.TryParse(repo.LastUpstreamChangedDate, out var p)
+                    ? p
+                    : DateTimeOffset.MinValue;
+                if (maxObservedChangedDate.Value > prior)
+                {
+                    repo.LastUpstreamChangedDate = maxObservedChangedDate.Value.ToString("o");
+                }
+            }
         }
         else
         {
@@ -435,6 +471,22 @@ public class WorkItemSyncJob : BackgroundService
         }
 
         return (added, updated, conflicted);
+    }
+
+    /// <summary>
+    /// Phase 34 — per-repo cadence gate. A repo passes when (a) it has never
+    /// been synced, (b) its last sync was at least <c>effectiveInterval</c>
+    /// seconds ago, or (c) it was 'running' but went stale past the
+    /// <see cref="SyncConstants.RunningTimeoutMinutes"/> recovery threshold.
+    /// </summary>
+    internal static bool IsDueForSync(RepoRow r, DateTimeOffset now)
+    {
+        if (r.LastSyncStatus == "running") return true;
+        if (string.IsNullOrEmpty(r.LastSyncAt)) return true;
+        if (!DateTimeOffset.TryParse(r.LastSyncAt, out var lastTick)) return true;
+
+        var effectiveInterval = r.WorkItemSyncIntervalSeconds ?? SyncConstants.WorkItemSyncIntervalSeconds;
+        return (now - lastTick).TotalSeconds >= effectiveInterval;
     }
 
     private static IReadOnlyList<string>? ParseAreaPaths(string? json)

@@ -313,6 +313,10 @@ using (var scope = app.Services.CreateScope())
     await Phase32Migration.ApplyAsync(db);
     // Phase 33 — persisted sync settings on repos.
     await Phase33Migration.ApplyAsync(db);
+    // Phase 34 — per-repo sync cadence overrides + upstream-changedate cursor.
+    await Phase34Migration.ApplyAsync(db);
+    // Phase 35 — decouple crews from products (null out ProductId).
+    await Phase35Migration.ApplyAsync(db);
     // Phase 29 — cancel orphaned validation runs left from a previous crash/restart.
     {
         var now = DateTime.UtcNow.ToString("O");

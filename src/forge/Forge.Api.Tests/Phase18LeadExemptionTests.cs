@@ -27,7 +27,7 @@ public class Phase18LeadExemptionTests
         bool enabled = true,
         string shift = "day") => new()
     {
-        Id = "crew-test", Name = "T", ProductId = null, Summary = string.Empty,
+        Id = "crew-test", Name = "T", Summary = string.Empty,
         Lead = lead,
         Model = "local-stub", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
         Timezone = tz, ScheduleEnabled = enabled, Shift = shift,

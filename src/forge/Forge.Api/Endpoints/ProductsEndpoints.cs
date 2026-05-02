@@ -53,6 +53,7 @@ public static class ProductsEndpoints
         repos.MapPost("/{id}/sync-work-items", TriggerRepoSync).WithName("TriggerRepoSync");
         repos.MapGet("/{id}/sync-work-items/runs", GetRepoSyncRuns).WithName("GetRepoSyncRuns");
         repos.MapGet("/{id}/sync-work-items/runs/{runId}/items", GetSyncRunItems).WithName("GetSyncRunItems");
+        repos.MapGet("/{id}/sync-work-items/runs/{runId}/items/{entityKind}/{entityId}/detail", GetSyncRunItemDetail).WithName("GetSyncRunItemDetail");
         repos.MapGet("/{id}/sync-work-items/status", GetRepoSyncStatus).WithName("GetRepoSyncStatus");
 
         // Phase 26/29 — build pipeline detection, validation & history.
@@ -144,6 +145,15 @@ public static class ProductsEndpoints
             row.BuildPipelineIdsJson = req.BuildPipelineIds.Count == 0
                 ? null
                 : System.Text.Json.JsonSerializer.Serialize(req.BuildPipelineIds);
+
+        // Phase 34 — per-repo sync cadence overrides. Zero / negative clears
+        // the override and falls back to the global default.
+        if (req.WorkItemSyncIntervalSeconds is not null)
+            row.WorkItemSyncIntervalSeconds = req.WorkItemSyncIntervalSeconds > 0 ? req.WorkItemSyncIntervalSeconds : null;
+        if (req.PrSyncIntervalSeconds is not null)
+            row.PrSyncIntervalSeconds = req.PrSyncIntervalSeconds > 0 ? req.PrSyncIntervalSeconds : null;
+        if (req.BuildSyncIntervalSeconds is not null)
+            row.BuildSyncIntervalSeconds = req.BuildSyncIntervalSeconds > 0 ? req.BuildSyncIntervalSeconds : null;
 
         // Phase 26 — auto-detect build/test commands when cloneRoot changes
         // and the new directory already exists on disk.
@@ -818,7 +828,9 @@ public static class ProductsEndpoints
             r.InitCommand, r.RestoreCommand,
             r.BuildCommand, r.TestCommand, r.BuildTimeoutSec, r.TestTimeoutSec,
             r.WiSyncAssignedTo, r.WiSyncDateFromDays, r.WiSyncFromDate, r.WiSyncToDate,
-            r.PrSyncCreatedBy, r.PrSyncStatus, buildPipelineIds);
+            r.PrSyncCreatedBy, r.PrSyncStatus, buildPipelineIds,
+            r.WorkItemSyncIntervalSeconds, r.PrSyncIntervalSeconds, r.BuildSyncIntervalSeconds,
+            r.LastUpstreamChangedDate);
     }
 
     private static string Slugify(string name)
@@ -860,20 +872,29 @@ public static class ProductsEndpoints
             if (gate is not null) return gate;
         }
 
-        // kind='full' clears the delta cursor so the next run uses the initial window.
+        // kind='full' clears both delta cursors so the next run uses the initial window.
         var kind = req?.Kind ?? "auto";
         if (string.Equals(kind, "full", StringComparison.OrdinalIgnoreCase))
         {
             repo.LastSyncAt = null;
+            repo.LastUpstreamChangedDate = null; // Phase 34
             await db.SaveChangesAsync(ct);
         }
 
-        // Build filters from the repo's sync state.
+        // Phase 34 — delta cursor sources from upstream-changedate.
         DateTimeOffset? updatedFrom = null;
-        if (!string.IsNullOrEmpty(repo.LastSyncAt)
-            && DateTimeOffset.TryParse(repo.LastSyncAt, out var lastSync))
+        if (!string.IsNullOrEmpty(repo.LastUpstreamChangedDate)
+            && DateTimeOffset.TryParse(repo.LastUpstreamChangedDate, out var lastChanged))
         {
-            updatedFrom = lastSync;
+            updatedFrom = lastChanged;
+        }
+        else
+        {
+            var windowDays = repo.InitialSyncWindowDays
+                ?? (string.Equals(repo.Kind, "github", StringComparison.OrdinalIgnoreCase)
+                    ? Forge.Api.Services.SyncConstants.GithubInitialWindowDays
+                    : Forge.Api.Services.SyncConstants.AdoInitialWindowDays);
+            updatedFrom = DateTimeOffset.UtcNow.AddDays(-windowDays);
         }
 
         var filters = new WorkItemSyncFilters(UpdatedFrom: updatedFrom);
@@ -980,6 +1001,146 @@ public static class ProductsEndpoints
             .ToListAsync(ct);
 
         return Results.Ok(items);
+    }
+
+    /// <summary>
+    /// Phase 25 follow-up — return a richer detail payload for a specific
+    /// sync-run item: latest entity snapshot (work item or PR), upstream
+    /// last-update timestamp, and a structured summary the UI renders in the
+    /// sync-history click-through popup.
+    /// </summary>
+    private static async Task<IResult> GetSyncRunItemDetail(
+        HttpContext ctx,
+        string id,
+        string runId,
+        string entityKind,
+        string entityId,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var run = await db.WorkItemSyncRuns.AsNoTracking()
+            .FirstOrDefaultAsync(r => r.Id == runId && r.RepoId == id, ct);
+        if (run is null) return Results.Problem(title: $"Sync run {runId} not found", statusCode: 404);
+
+        var row = await db.SyncRunItems.AsNoTracking()
+            .FirstOrDefaultAsync(i =>
+                i.RunId == runId
+                && i.EntityKind == entityKind
+                && i.EntityId == entityId, ct);
+        if (row is null) return Results.Problem(title: "Sync-run item not found", statusCode: 404);
+
+        if (string.Equals(entityKind, "workitem", StringComparison.OrdinalIgnoreCase))
+        {
+            var wi = await db.WorkItems.AsNoTracking()
+                .FirstOrDefaultAsync(w => w.Id == entityId, ct);
+
+            var summary = row.Action switch
+            {
+                "added"   => "New work item",
+                "removed" => "Removed from sync scope",
+                _ => wi is null
+                    ? "Updated"
+                    : $"State: {wi.State} · Type: {wi.Type}{(wi.Points > 0 ? $" · {wi.Points} pts" : "")}",
+            };
+
+            return Results.Ok(new
+            {
+                entityKind = "workitem",
+                entityId,
+                providerRef = row.ProviderRef,
+                title = wi?.Title ?? row.Title,
+                action = row.Action,
+                lastUpdateDate = wi?.UpdatedAt,
+                summary,
+                workItem = wi is null ? null : new
+                {
+                    state = wi.State,
+                    type = wi.Type,
+                    points = wi.Points,
+                    priority = wi.Priority,
+                    areaPath = wi.AreaPath,
+                    iterationRef = wi.IterationRef,
+                    assignedTo = wi.AssignedToJson,
+                    parentId = wi.ParentId,
+                    tags = wi.TagsJson,
+                },
+            });
+        }
+
+        if (string.Equals(entityKind, "pr", StringComparison.OrdinalIgnoreCase))
+        {
+            var pr = await db.Prs.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.Id == entityId, ct);
+
+            var openComments = pr is null
+                ? 0
+                : await db.PrComments.CountAsync(c => c.PrId == pr.Id && c.State == "active", ct);
+            var totalComments = pr is null
+                ? 0
+                : await db.PrComments.CountAsync(c => c.PrId == pr.Id, ct);
+            var latestBuild = pr is null
+                ? null
+                : await db.Builds.AsNoTracking()
+                    .Where(b => b.PrId == pr.Id)
+                    .OrderByDescending(b => b.StartedAt ?? string.Empty)
+                    .Select(b => new { b.State, b.Result, b.PipelineName, b.WebUrl, b.StartedAt, b.FinishedAt })
+                    .FirstOrDefaultAsync(ct);
+
+            string? lastUpdateDate = pr?.LastUpstreamUpdatedAt ?? pr?.LastSyncAt;
+
+            string summary;
+            if (row.Action == "added") summary = "New PR";
+            else if (row.Action == "removed") summary = "PR removed from active sync";
+            else
+            {
+                var parts = new List<string>();
+                if (pr is not null)
+                {
+                    parts.Add($"State: {pr.Col}");
+                    if (totalComments > 0)
+                    {
+                        parts.Add(openComments > 0
+                            ? $"{totalComments} comment(s), {openComments} open"
+                            : $"{totalComments} comment(s)");
+                    }
+                    if (latestBuild is not null)
+                    {
+                        var buildStr = string.IsNullOrEmpty(latestBuild.PipelineName)
+                            ? $"build: {latestBuild.State}"
+                            : $"{latestBuild.PipelineName}: {latestBuild.State}";
+                        parts.Add(buildStr);
+                    }
+                }
+                summary = parts.Count > 0 ? string.Join(" · ", parts) : "Updated";
+            }
+
+            return Results.Ok(new
+            {
+                entityKind = "pr",
+                entityId,
+                providerRef = row.ProviderRef,
+                title = pr?.Title ?? row.Title,
+                action = row.Action,
+                lastUpdateDate,
+                summary,
+                pr = pr is null ? null : new
+                {
+                    col = pr.Col,
+                    branch = pr.Branch,
+                    @base = pr.Base,
+                    additions = pr.Additions,
+                    deletions = pr.Deletions,
+                    files = pr.Files,
+                    workItemId = pr.WorkItemId,
+                    isActive = pr.IsActive,
+                    openComments,
+                    totalComments,
+                },
+                latestBuild,
+            });
+        }
+
+        return Results.Problem(title: $"Unknown entityKind '{entityKind}'", statusCode: 400);
     }
 
     private static async Task<IResult> GetRepoSyncStatus(

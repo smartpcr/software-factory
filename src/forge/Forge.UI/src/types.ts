@@ -364,6 +364,14 @@ export interface Repo {
   prSyncStatus?: string | null;
   /** Phase 33 — pipeline definition IDs to sync builds from. */
   buildPipelineIds?: string[] | null;
+  /** Phase 34 — per-repo work-item sync interval in seconds. Null = inherit global (7200s). */
+  workItemSyncIntervalSeconds?: number | null;
+  /** Phase 34 — per-repo PR sync interval in seconds. Null = inherit global (7200s). */
+  prSyncIntervalSeconds?: number | null;
+  /** Phase 34 — per-repo build sync interval in seconds. Null = inherit global (7200s). */
+  buildSyncIntervalSeconds?: number | null;
+  /** Phase 34 — ISO upstream-changedate cursor (max System.ChangedDate / updated_at observed). */
+  lastUpstreamChangedDate?: string | null;
 }
 
 /** Phase 23.3 — one row in the per-repo sync history. */
@@ -387,6 +395,50 @@ export interface SyncRunItem {
   title: string;
   action: 'added' | 'updated' | 'removed';
   providerRef?: number | null;
+}
+
+/** Phase 25 follow-up — rich detail returned by /items/{kind}/{id}/detail. */
+export interface SyncRunItemDetail {
+  entityKind: 'workitem' | 'pr';
+  entityId: string;
+  providerRef?: number | null;
+  title: string;
+  action: 'added' | 'updated' | 'removed';
+  /** ISO upstream last-update timestamp (System.ChangedDate / updated_at). */
+  lastUpdateDate?: string | null;
+  /** Human-readable summary line: 'New', 'Removed', or "<state> · N comment(s) · build: <state>". */
+  summary: string;
+  workItem?: {
+    state: string;
+    type: string;
+    points: number;
+    priority: string;
+    areaPath: string;
+    iterationRef: string;
+    assignedTo?: string | null;
+    parentId?: string | null;
+    tags?: string | null;
+  } | null;
+  pr?: {
+    col: string;
+    branch: string;
+    base: string;
+    additions: number;
+    deletions: number;
+    files: number;
+    workItemId?: string | null;
+    isActive: boolean;
+    openComments: number;
+    totalComments: number;
+  } | null;
+  latestBuild?: {
+    state: string;
+    result?: string | null;
+    pipelineName?: string | null;
+    webUrl?: string | null;
+    startedAt?: string | null;
+    finishedAt?: string | null;
+  } | null;
 }
 
 export interface DiscoverableRepo {
@@ -464,7 +516,6 @@ export interface CrewMember {
 export interface Crew {
   id: string;
   name: string;
-  productId: string | null;
   summary: string;
   lead: string | null;
   model: string;

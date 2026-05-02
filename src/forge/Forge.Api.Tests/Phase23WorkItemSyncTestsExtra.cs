@@ -620,11 +620,12 @@ public class AgentReadyAuditExtraTests
 public class WorkItemSyncJobExtraTests
 {
     [Fact]
-    public void Job_Tick_Cadence_Is_20_Minutes()
+    public void Job_Tick_Cadence_Is_2_Hours()
     {
-        // Constant assertion so a future drift triggers a deliberate spec
-        // update rather than a silent cadence change.
-        Assert.Equal(1200, SyncConstants.WorkItemSyncIntervalSeconds);
+        // Phase 34 — bumped from 20 min to 2 hr to reduce upstream load.
+        // Per-repo overrides (RepoRow.WorkItemSyncIntervalSeconds) can slow
+        // an individual repo down further; the global default is the floor.
+        Assert.Equal(7200, SyncConstants.WorkItemSyncIntervalSeconds);
     }
 
     [Fact]

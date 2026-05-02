@@ -578,8 +578,9 @@ public class Phase24PrSyncTests
     // ── 7. Constants ──────────────────────────────────────────────────────
 
     [Fact]
-    public void SyncConstants_PrSyncIntervalSeconds_Is_1200() =>
-        Assert.Equal(1200, SyncConstants.PrSyncIntervalSeconds);
+    public void SyncConstants_PrSyncIntervalSeconds_Is_7200() =>
+        // Phase 34 — bumped from 20 min to 2 hr; per-repo overrides via RepoRow.PrSyncIntervalSeconds.
+        Assert.Equal(7200, SyncConstants.PrSyncIntervalSeconds);
 
     [Fact]
     public void SyncConstants_PrSyncMaxParallel_Is_8() =>
@@ -1010,7 +1011,8 @@ public class Phase24PrSyncTests
     [Fact]
     public void SyncConstants_PrSync_Match_Spec()
     {
-        Assert.Equal(1200, SyncConstants.PrSyncIntervalSeconds);
+        // Phase 34 — bumped to 2 hr.
+        Assert.Equal(7200, SyncConstants.PrSyncIntervalSeconds);
         Assert.Equal(8, SyncConstants.PrSyncMaxParallel);
         Assert.Equal(100, SyncConstants.PrCommentPageSize);
     }

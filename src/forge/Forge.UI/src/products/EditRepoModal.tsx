@@ -3,6 +3,7 @@ import { forgeApi } from '@/api/forgeApi';
 import type { BuildValidationRun, ValidateStep } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
 import { RepoIcon } from '@/products/RepoIcon';
+import { SyncFrequencyChips } from '@/products/SyncFrequencyChips';
 import type { Repo } from '@/types';
 
 interface Props {
@@ -27,6 +28,11 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
   const [testCommand, setTestCommand] = useState(repo.testCommand ?? '');
   const [buildTimeoutSec, setBuildTimeoutSec] = useState<number | ''>(repo.buildTimeoutSec ?? '');
   const [testTimeoutSec, setTestTimeoutSec] = useState<number | ''>(repo.testTimeoutSec ?? '');
+  // Phase 34 — per-repo sync cadence overrides. Stored as seconds; 0 clears
+  // the override and the row inherits the global default (2 hr).
+  const [wiIntervalSec, setWiIntervalSec] = useState<number>(repo.workItemSyncIntervalSeconds ?? 0);
+  const [prIntervalSec, setPrIntervalSec] = useState<number>(repo.prSyncIntervalSeconds ?? 0);
+  const [buildIntervalSec, setBuildIntervalSec] = useState<number>(repo.buildSyncIntervalSeconds ?? 0);
   const [detecting, setDetecting] = useState(false);
   const [validating, setValidating] = useState(false);
   const [validationRuns, setValidationRuns] = useState<BuildValidationRun[]>([]);
@@ -51,6 +57,9 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
     setTestCommand(repo.testCommand ?? '');
     setBuildTimeoutSec(repo.buildTimeoutSec ?? '');
     setTestTimeoutSec(repo.testTimeoutSec ?? '');
+    setWiIntervalSec(repo.workItemSyncIntervalSeconds ?? 0);
+    setPrIntervalSec(repo.prSyncIntervalSeconds ?? 0);
+    setBuildIntervalSec(repo.buildSyncIntervalSeconds ?? 0);
     setValidating(false);
     setValidationRuns([]);
     setExpandedRunId(null);
@@ -101,6 +110,12 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
       const tTimeout = typeof testTimeoutSec === 'number' ? testTimeoutSec : 0;
       if (bTimeout !== (repo.buildTimeoutSec ?? 0)) patch.buildTimeoutSec = bTimeout;
       if (tTimeout !== (repo.testTimeoutSec ?? 0)) patch.testTimeoutSec = tTimeout;
+
+      // Phase 34 — per-repo sync cadence overrides. Send 0 to clear; the server
+      // treats <= 0 as "fall back to global default".
+      if (wiIntervalSec !== (repo.workItemSyncIntervalSeconds ?? 0)) patch.workItemSyncIntervalSeconds = wiIntervalSec;
+      if (prIntervalSec !== (repo.prSyncIntervalSeconds ?? 0)) patch.prSyncIntervalSeconds = prIntervalSec;
+      if (buildIntervalSec !== (repo.buildSyncIntervalSeconds ?? 0)) patch.buildSyncIntervalSeconds = buildIntervalSec;
 
       const updated = Object.keys(patch).length > 0
         ? await forgeApi.patchRepo(repo.id, patch as Parameters<typeof forgeApi.patchRepo>[1])
@@ -244,6 +259,21 @@ export function EditRepoModal({ open, repo, onClose, onSaved }: Props) {
                 </FieldGroup>
                 <FieldGroup label="Agent-ready default team" hint="Team auto-assigned to work items tagged `agent-ready`. Defaults to Engineering.">
                   <input value={agentReadyTeam} onChange={(e) => setAgentReadyTeam(e.target.value)} placeholder="Engineering" spellCheck={false} disabled={busy} style={inputStyle} data-testid="repo-agent-ready-team" />
+                </FieldGroup>
+
+                {/* Phase 34 — per-repo sync cadence overrides. Default = inherit global 2 hr. */}
+                <SectionLabel>Sync frequency</SectionLabel>
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: -6, marginBottom: 4 }}>
+                  Pick a preset, or Custom for a specific value. Default inherits the global 2 hr setting.
+                </div>
+                <FieldGroup label="Work items">
+                  <SyncFrequencyChips valueSeconds={wiIntervalSec} onChange={setWiIntervalSec} disabled={busy} testIdPrefix="repo-wi-interval" />
+                </FieldGroup>
+                <FieldGroup label="Pull requests">
+                  <SyncFrequencyChips valueSeconds={prIntervalSec} onChange={setPrIntervalSec} disabled={busy} testIdPrefix="repo-pr-interval" />
+                </FieldGroup>
+                <FieldGroup label="Builds">
+                  <SyncFrequencyChips valueSeconds={buildIntervalSec} onChange={setBuildIntervalSec} disabled={busy} testIdPrefix="repo-build-interval" />
                 </FieldGroup>
               </>
             )}
@@ -470,3 +500,4 @@ const infoStyle: React.CSSProperties = {
   border: '1px solid var(--border-subtle)',
   borderRadius: 'var(--radius-sm)', padding: '7px 10px', marginBottom: 8,
 };
+

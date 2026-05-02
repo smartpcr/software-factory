@@ -966,6 +966,10 @@ export const forgeApi = {
     prSyncCreatedBy?: string;
     prSyncStatus?: string;
     buildPipelineIds?: string[];
+    // Phase 34 — per-repo sync cadence overrides (seconds; 0 clears the override).
+    workItemSyncIntervalSeconds?: number;
+    prSyncIntervalSeconds?: number;
+    buildSyncIntervalSeconds?: number;
   }): Promise<Repo> {
     return fetchJson<Repo>(`/api/repos/${encodeURIComponent(id)}`, {
       method: 'PATCH',
@@ -1042,9 +1046,8 @@ export const forgeApi = {
   },
 
   /** GET /api/crews. */
-  async listCrews(productId?: string): Promise<Crew[]> {
-    const qs = productId ? `?productId=${encodeURIComponent(productId)}` : '';
-    return fetchJson<Crew[]>(`/api/crews${qs}`);
+  async listCrews(): Promise<Crew[]> {
+    return fetchJson<Crew[]>('/api/crews');
   },
 
   /** GET /api/crews/{id}/salary — Phase 11.9 salary roll-up (Q14.7: legacy alias). */

@@ -8,12 +8,13 @@
 
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { Repo, WorkItemSyncRun, SyncRunItem } from '@/types';
+import type { Repo, WorkItemSyncRun, SyncRunItem, SyncRunItemDetail } from '@/types';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
 import { useCurrentUser } from '@/state/useCurrentUserStore';
 import { relativeTime, statusDotColor } from '@/views/RepoSyncStatusStrip';
 import { syncKindDisplay } from '@/products/syncKindDisplay';
+import { SyncFrequencyChips } from '@/products/SyncFrequencyChips';
 
 type Tab = 'workitems' | 'prs' | 'history';
 
@@ -35,6 +36,8 @@ interface WiSyncFilters {
   toDate: string;
   agentReadyTeam: string;
   syncKind: 'auto' | 'full' | 'delta';
+  /** Phase 34 — per-repo cadence override in seconds. 0 / null = inherit global default (2 hr). */
+  intervalSeconds: number;
 }
 
 // ── PR Sync Filters ─────────────────────────────────────────────────────
@@ -45,6 +48,10 @@ interface PrSyncFilters {
   toDate: string;
   associatedWorkItem: string;
   stateFilter: 'active' | 'all' | 'completed';
+  /** Phase 34 — per-repo PR sync cadence override in seconds. 0 = inherit global. */
+  intervalSeconds: number;
+  /** Phase 34 — per-repo build sync cadence override in seconds. 0 = inherit global. */
+  buildIntervalSeconds: number;
 }
 
 // ── Persistence helpers ─────────────────────────────────────────────────
@@ -95,6 +102,7 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
     toDate: defaultToDate(),
     agentReadyTeam: repo.agentReadyDefaultTeam ?? 'Engineering',
     syncKind: 'auto',
+    intervalSeconds: repo.workItemSyncIntervalSeconds ?? 0,
   };
   const [wiFilters, setWiFilters] = useState<WiSyncFilters>(() =>
     loadFilters(repo.id, 'wi', wiDefaults),
@@ -107,6 +115,8 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
     toDate: defaultToDate(),
     associatedWorkItem: '',
     stateFilter: 'active',
+    intervalSeconds: repo.prSyncIntervalSeconds ?? 0,
+    buildIntervalSeconds: repo.buildSyncIntervalSeconds ?? 0,
   };
   const [prFilters, setPrFilters] = useState<PrSyncFilters>(() =>
     loadFilters(repo.id, 'pr', prDefaults),
@@ -133,12 +143,14 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
       toDate: repo.wiSyncToDate ?? defaultToDate(),
       agentReadyTeam: repo.agentReadyDefaultTeam ?? 'Engineering',
       syncKind: 'auto',
+      intervalSeconds: repo.workItemSyncIntervalSeconds ?? 0,
     };
     const loaded = loadFilters(repo.id, 'wi', freshWiDefaults);
     // Always take server-persisted values fresh from repo
     loaded.areaPaths = (repo.areaPaths ?? []).join('\n');
     loaded.agentReadyTeam = repo.agentReadyDefaultTeam ?? loaded.agentReadyTeam;
     if (repo.wiSyncAssignedTo) loaded.assignedTo = repo.wiSyncAssignedTo;
+    loaded.intervalSeconds = repo.workItemSyncIntervalSeconds ?? 0;
     setWiFilters(loaded);
 
     const freshPrDefaults: PrSyncFilters = {
@@ -147,8 +159,13 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
       toDate: defaultToDate(),
       associatedWorkItem: '',
       stateFilter: (repo.prSyncStatus as PrSyncFilters['stateFilter']) ?? 'active',
+      intervalSeconds: repo.prSyncIntervalSeconds ?? 0,
+      buildIntervalSeconds: repo.buildSyncIntervalSeconds ?? 0,
     };
-    setPrFilters(loadFilters(repo.id, 'pr', freshPrDefaults));
+    const loadedPr = loadFilters(repo.id, 'pr', freshPrDefaults);
+    loadedPr.intervalSeconds = repo.prSyncIntervalSeconds ?? 0;
+    loadedPr.buildIntervalSeconds = repo.buildSyncIntervalSeconds ?? 0;
+    setPrFilters(loadedPr);
   }, [open, repo.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist filters to localStorage on change
@@ -224,6 +241,10 @@ export function RepoSyncPanel({ repo, open, onClose, onRepoUpdated }: Props) {
         wiSyncToDate: useRelative ? '' : (wiFilters.toDate || ''),
         prSyncCreatedBy: prFilters.createdBy || '',
         prSyncStatus: prFilters.stateFilter || 'active',
+        // Phase 34 — per-repo cadence overrides; 0 clears the override.
+        workItemSyncIntervalSeconds: Math.max(0, wiFilters.intervalSeconds | 0),
+        prSyncIntervalSeconds: Math.max(0, prFilters.intervalSeconds | 0),
+        buildSyncIntervalSeconds: Math.max(0, prFilters.buildIntervalSeconds | 0),
       });
       onRepoUpdated?.(updated);
       toast('Sync configuration saved', 'success');
@@ -601,6 +622,18 @@ function WorkItemSyncTab({
             ))}
           </select>
         </PanelField>
+
+        {/* Phase 34 — per-repo work-item sync cadence override. */}
+        <PanelField
+          label="Sync frequency"
+          hint="How often this repo's work items are pulled. Default inherits the global 2 hr; override slows it down to reduce ADO/GitHub load."
+        >
+          <SyncFrequencyChips
+            valueSeconds={filters.intervalSeconds}
+            onChange={(s) => onChange({ ...filters, intervalSeconds: s })}
+            testIdPrefix="sync-wi-interval"
+          />
+        </PanelField>
       </div>
 
       <SectionHeader icon="▶" title="Run Sync" subtitle="Trigger a sync run with the current configuration" />
@@ -746,6 +779,29 @@ function PrSyncTab({
             })}
           </div>
         </PanelField>
+
+        {/* Phase 34 — per-repo PR + Build sync cadence overrides. */}
+        <PanelField
+          label="PR sync frequency"
+          hint="How often this repo's active PRs are re-checked. Default inherits the global 2 hr."
+        >
+          <SyncFrequencyChips
+            valueSeconds={filters.intervalSeconds}
+            onChange={(s) => onChange({ ...filters, intervalSeconds: s })}
+            testIdPrefix="sync-pr-interval"
+          />
+        </PanelField>
+
+        <PanelField
+          label="Build sync frequency"
+          hint="How often this repo's PR builds are re-checked. Builds ride on top of PR sync; default inherits the global 2 hr."
+        >
+          <SyncFrequencyChips
+            valueSeconds={filters.buildIntervalSeconds}
+            onChange={(s) => onChange({ ...filters, buildIntervalSeconds: s })}
+            testIdPrefix="sync-build-interval"
+          />
+        </PanelField>
       </div>
 
       {/* Sync action */}
@@ -799,11 +855,11 @@ function PrSyncTab({
         lineHeight: 1.6,
       }}>
         <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4, fontSize: 11.5 }}>
-          PR sync also runs automatically every 20 minutes
+          PR sync also runs automatically every 2 hours
         </div>
         Active PRs are tracked until they reach a terminal state (completed or abandoned).
-        Comments are synced along with PR metadata. The sync cadence is configurable
-        via <code style={{ fontSize: 10.5, fontFamily: 'var(--font-mono)', background: 'var(--bg-sunken)', padding: '1px 4px', borderRadius: 2 }}>Forge:Sync:Pr:IntervalSeconds</code>.
+        Comments are synced along with PR metadata. Per-repo cadence overrides are set above;
+        the global default is configurable via <code style={{ fontSize: 10.5, fontFamily: 'var(--font-mono)', background: 'var(--bg-sunken)', padding: '1px 4px', borderRadius: 2 }}>Forge:Sync:Pr:IntervalSeconds</code>.
       </div>
     </div>
   );
@@ -1040,6 +1096,7 @@ const ACTION_STYLE: Record<string, { color: string; label: string; icon: string 
 function SyncRunItemList({ repoId, runId }: { repoId: string; runId: string }) {
   const [items, setItems] = useState<SyncRunItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [openItem, setOpenItem] = useState<SyncRunItem | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1103,16 +1160,30 @@ function SyncRunItemList({ repoId, runId }: { repoId: string; runId: string }) {
               {style.label} ({group.length})
             </div>
             {group.map((item) => (
-              <div
+              <button
                 key={`${item.entityKind}-${item.entityId}`}
+                type="button"
+                onClick={() => setOpenItem(item)}
+                title="Click for details"
                 style={{
                   display: 'flex',
                   alignItems: 'center',
                   gap: 8,
-                  padding: '3px 0',
+                  padding: '3px 4px',
                   fontSize: 11,
                   lineHeight: 1.4,
+                  width: '100%',
+                  background: 'transparent',
+                  border: 'none',
+                  borderRadius: 'var(--radius-sm)',
+                  cursor: 'pointer',
+                  color: 'inherit',
+                  textAlign: 'left',
+                  font: 'inherit',
+                  transition: 'background 80ms',
                 }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in srgb, var(--accent) 6%, transparent)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
               >
                 <span style={{
                   width: 14, height: 14,
@@ -1141,15 +1212,258 @@ function SyncRunItemList({ repoId, runId }: { repoId: string; runId: string }) {
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',
+                  flex: 1,
                 }}>
                   {item.title}
                 </span>
-              </div>
+              </button>
             ))}
           </div>
         );
       })}
+      {openItem && (
+        <SyncRunItemDetailPopup
+          repoId={repoId}
+          runId={runId}
+          item={openItem}
+          onClose={() => setOpenItem(null)}
+        />
+      )}
     </div>
+  );
+}
+
+// ─── Sync-run-item detail popup ───────────────────────────────────────────────
+
+function SyncRunItemDetailPopup({
+  repoId,
+  runId,
+  item,
+  onClose,
+}: {
+  repoId: string;
+  runId: string;
+  item: SyncRunItem;
+  onClose: () => void;
+}) {
+  const [detail, setDetail] = useState<SyncRunItemDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDetail(null);
+    setError(null);
+    fetch(
+      `/api/repos/${encodeURIComponent(repoId)}/sync-work-items/runs/${encodeURIComponent(runId)}/items/${encodeURIComponent(item.entityKind)}/${encodeURIComponent(item.entityId)}/detail`,
+    )
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((data: SyncRunItemDetail) => { if (!cancelled) setDetail(data); })
+      .catch((e: Error) => { if (!cancelled) setError(e.message); });
+    return () => { cancelled = true; };
+  }, [repoId, runId, item.entityKind, item.entityId]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const isPr = item.entityKind === 'pr';
+  const actionStyle = ACTION_STYLE[item.action] ?? ACTION_STYLE.updated;
+  const refLabel = item.providerRef ? `#${item.providerRef}` : item.entityId;
+  const titleText = detail?.title ?? item.title;
+  const lastUpdate = detail?.lastUpdateDate;
+
+  const popup = (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 9100,
+        background: 'rgba(0,0,0,0.5)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        style={{
+          width: '100%', maxWidth: 540,
+          maxHeight: '90vh', overflowY: 'auto',
+          background: 'var(--bg-surface)',
+          border: '1px solid var(--border-strong)',
+          borderRadius: 'var(--radius-md)',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
+          padding: 20,
+          display: 'grid', gap: 14,
+        }}
+      >
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+          <span style={{
+            width: 26, height: 26,
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            borderRadius: 4, fontSize: 12, fontWeight: 700,
+            fontFamily: 'var(--font-mono)',
+            background: isPr ? 'var(--accent-bg)' : 'var(--bg-surface-2)',
+            color: isPr ? 'var(--accent)' : 'var(--text-tertiary)',
+            border: `1px solid ${isPr ? 'var(--accent)' : 'var(--border)'}`,
+            flexShrink: 0,
+          }}>
+            {isPr ? 'PR' : 'WI'}
+          </span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-secondary)' }}>
+                {refLabel}
+              </span>
+              <span style={{
+                fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4,
+                padding: '2px 7px',
+                borderRadius: 'var(--radius-sm)',
+                color: actionStyle.color,
+                background: 'color-mix(in srgb, currentColor 12%, transparent)',
+                border: `1px solid ${actionStyle.color}`,
+              }}>
+                {actionStyle.label}
+              </span>
+            </div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.3 }}>
+              {titleText}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            style={{
+              background: 'transparent', border: 'none',
+              color: 'var(--text-tertiary)', cursor: 'pointer',
+              fontSize: 18, padding: 4, lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        </div>
+
+        {/* Summary line — "New" / state + comments + build / "Removed" */}
+        <div style={{
+          fontSize: 12, lineHeight: 1.5,
+          color: 'var(--text-secondary)',
+          padding: '8px 11px',
+          background: 'var(--bg-surface-2)',
+          borderRadius: 'var(--radius-sm)',
+          border: '1px solid var(--border)',
+        }}>
+          {detail?.summary ?? (error ? 'Could not load details' : 'Loading…')}
+        </div>
+
+        {/* Last update date */}
+        <DetailRow label="Last upstream update">
+          {lastUpdate
+            ? `${new Date(lastUpdate).toLocaleString()} (${relativeTime(lastUpdate)})`
+            : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
+        </DetailRow>
+
+        {/* Per-kind structured fields */}
+        {detail?.entityKind === 'workitem' && detail.workItem && (
+          <>
+            <DetailRow label="State">{detail.workItem.state}</DetailRow>
+            <DetailRow label="Type">{detail.workItem.type}</DetailRow>
+            {detail.workItem.points > 0 && <DetailRow label="Points">{detail.workItem.points}</DetailRow>}
+            {detail.workItem.priority && <DetailRow label="Priority">{detail.workItem.priority}</DetailRow>}
+            {detail.workItem.areaPath && <DetailRow label="Area path"><Mono>{detail.workItem.areaPath}</Mono></DetailRow>}
+            {detail.workItem.iterationRef && <DetailRow label="Iteration"><Mono>{detail.workItem.iterationRef}</Mono></DetailRow>}
+            {detail.workItem.assignedTo && <DetailRow label="Assigned to"><Mono>{detail.workItem.assignedTo}</Mono></DetailRow>}
+          </>
+        )}
+
+        {detail?.entityKind === 'pr' && detail.pr && (
+          <>
+            <DetailRow label="Status">{detail.pr.col}{detail.pr.isActive ? '' : ' (terminal)'}</DetailRow>
+            <DetailRow label="Branch"><Mono>{detail.pr.branch} → {detail.pr.base}</Mono></DetailRow>
+            <DetailRow label="Diff">
+              <span style={{ color: 'var(--success)' }}>+{detail.pr.additions}</span>
+              {' / '}
+              <span style={{ color: 'var(--danger)' }}>−{detail.pr.deletions}</span>
+              {' over '}{detail.pr.files} file{detail.pr.files === 1 ? '' : 's'}
+            </DetailRow>
+            <DetailRow label="Comments">
+              {detail.pr.totalComments === 0
+                ? <span style={{ color: 'var(--text-tertiary)' }}>none</span>
+                : (detail.pr.openComments > 0
+                    ? `${detail.pr.totalComments} total · ${detail.pr.openComments} open`
+                    : `${detail.pr.totalComments} (all resolved)`)}
+            </DetailRow>
+            <DetailRow label="Latest build">
+              {detail.latestBuild
+                ? <>
+                    {detail.latestBuild.pipelineName && <Mono>{detail.latestBuild.pipelineName}: </Mono>}
+                    <BuildStatePill state={detail.latestBuild.state} />
+                    {detail.latestBuild.webUrl && (
+                      <a href={detail.latestBuild.webUrl} target="_blank" rel="noreferrer"
+                         style={{ marginLeft: 8, fontSize: 11, color: 'var(--accent)' }}>
+                        open ↗
+                      </a>
+                    )}
+                  </>
+                : <span style={{ color: 'var(--text-tertiary)' }}>none</span>}
+            </DetailRow>
+            {detail.pr.workItemId && (
+              <DetailRow label="Linked work item"><Mono>{detail.pr.workItemId}</Mono></DetailRow>
+            )}
+          </>
+        )}
+
+        {error && (
+          <div style={{ fontSize: 11, color: 'var(--danger)' }}>
+            Failed to load detail: {error}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  return createPortal(popup, document.body);
+}
+
+function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '130px 1fr', gap: 10, alignItems: 'baseline', fontSize: 12 }}>
+      <span style={{
+        color: 'var(--text-tertiary)', fontSize: 10,
+        textTransform: 'uppercase', letterSpacing: 0.4, fontWeight: 600,
+      }}>{label}</span>
+      <span style={{ color: 'var(--text-primary)', wordBreak: 'break-word' }}>{children}</span>
+    </div>
+  );
+}
+
+function Mono({ children }: { children: React.ReactNode }) {
+  return <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5 }}>{children}</code>;
+}
+
+function BuildStatePill({ state }: { state: string }) {
+  const colors: Record<string, string> = {
+    succeeded: 'var(--success)',
+    failed: 'var(--danger)',
+    running: 'var(--info)',
+    queued: 'var(--text-tertiary)',
+    'partially-succeeded': 'var(--warning)',
+    canceled: 'var(--text-tertiary)',
+    'not-started': 'var(--text-tertiary)',
+  };
+  const color = colors[state] ?? 'var(--text-tertiary)';
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4,
+      padding: '2px 7px', borderRadius: 'var(--radius-sm)',
+      color, border: `1px solid ${color}`,
+      background: 'color-mix(in srgb, currentColor 12%, transparent)',
+    }}>
+      {state}
+    </span>
   );
 }
 
