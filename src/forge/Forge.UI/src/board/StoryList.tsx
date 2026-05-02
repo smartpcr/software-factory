@@ -3,6 +3,7 @@ import type { Card, ProductStory } from '@/types';
 import { useBoardStore, filterCards } from '@/state/useBoardStore';
 import { useProductsStore } from '@/state/useProductsStore';
 import { forgeApi } from '@/api/forgeApi';
+import { useToastStore } from '@/state/useToastStore';
 import { EditStoryModal } from './EditStoryModal';
 
 // Story list view for Plan & Design. Shows each product-scoped story
@@ -64,6 +65,24 @@ export function StoryList() {
   }
 
   const [editing, setEditing] = useState<ProductStory | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<ProductStory | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  async function handleDelete() {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    try {
+      await forgeApi.deleteProductStory(confirmDelete.productId, confirmDelete.id);
+      useToastStore.getState().show(`Story "${confirmDelete.name}" deleted`, 'success');
+      setStories((prev) => prev.filter((s) => s.id !== confirmDelete.id));
+      setConfirmDelete(null);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Delete failed';
+      useToastStore.getState().show(msg, 'error');
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   return (
     <div className="story-list">
@@ -122,16 +141,26 @@ export function StoryList() {
               </span>
               <span style={{ width: 70 }} />
               <span style={{ width: 80 }} />
-              <span style={{ width: 60, textAlign: 'right' }}>
+              <span style={{ width: 60, textAlign: 'right', display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
                 {story && (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); setEditing(story); }}
-                    style={editBtnStyle}
-                    title="Edit story"
-                  >
-                    Edit
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setEditing(story); }}
+                      style={editBtnStyle}
+                      title="Edit story"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setConfirmDelete(story); }}
+                      style={deleteBtnStyle}
+                      title="Delete story"
+                    >
+                      ✕
+                    </button>
+                  </>
                 )}
               </span>
             </div>
@@ -163,6 +192,38 @@ export function StoryList() {
           setStories((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
         }}
       />
+
+      {/* Delete confirmation modal — matches app modal style */}
+      <>
+        <div
+          className={`modal-backdrop${confirmDelete ? ' show' : ''}`}
+          onClick={() => !deleting && setConfirmDelete(null)}
+        />
+        <div className={`modal${confirmDelete ? ' show' : ''}`} role="dialog" aria-modal="true">
+          <div className="modal-icon" style={{ color: 'var(--danger, #ef4444)' }}>
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+              <path d="M9 2 L 16 14 H 2 Z" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinejoin="round" />
+              <line x1="9" y1="7" x2="9" y2="10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <circle cx="9" cy="12.5" r="0.8" fill="currentColor" />
+            </svg>
+          </div>
+          <h3 className="modal-title">Delete story</h3>
+          <p className="modal-text">
+            Delete <strong>{confirmDelete?.name}</strong>? Cards will remain but become ungrouped.
+          </p>
+          <div className="modal-actions">
+            <button className="btn btn-secondary" onClick={() => setConfirmDelete(null)} disabled={deleting}>Cancel</button>
+            <button
+              className="btn"
+              onClick={() => void handleDelete()}
+              disabled={deleting}
+              style={{ background: 'var(--danger, #ef4444)', color: '#fff', border: 'none' }}
+            >
+              {deleting ? 'Deleting…' : 'Delete'}
+            </button>
+          </div>
+        </div>
+      </>
     </div>
   );
 }
@@ -252,6 +313,17 @@ const editBtnStyle: React.CSSProperties = {
   border: '1px solid var(--border-strong)',
   borderRadius: 'var(--radius-sm)',
   padding: '3px 8px',
+  cursor: 'pointer',
+};
+
+const deleteBtnStyle: React.CSSProperties = {
+  fontSize: 12,
+  lineHeight: 1,
+  color: 'var(--text-tertiary)',
+  background: 'transparent',
+  border: '1px solid transparent',
+  borderRadius: 'var(--radius-sm)',
+  padding: '3px 5px',
   cursor: 'pointer',
 };
 

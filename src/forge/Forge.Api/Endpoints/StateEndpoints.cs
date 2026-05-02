@@ -205,6 +205,32 @@ public static class StateEndpoints
             return Results.Ok(story);
         }).WithName("UpdateProductStory");
 
+        stories.MapDelete("/{storyId}", async (
+            HttpContext ctx,
+            string productId,
+            string storyId,
+            ForgeDbContext db,
+            IHubContext<ForgeHub> hub) =>
+        {
+            var auth = ForgeUser.RequireWriter(ctx);
+            if (auth is not null) return auth;
+
+            var row = await db.ProductStories.FirstOrDefaultAsync(s => s.Id == storyId);
+            if (row is null || row.ProductId != productId)
+                return Results.Problem(title: $"Story {storyId} not found", statusCode: 404);
+
+            // Remove related story spawn (if any).
+            var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+            if (spawn is not null)
+                db.StorySpawns.Remove(spawn);
+
+            db.ProductStories.Remove(row);
+            await db.SaveChangesAsync();
+
+            await hub.Clients.All.SendAsync("story.changed", new { kind = "deleted", id = storyId });
+            return Results.NoContent();
+        }).WithName("DeleteProductStory");
+
         return app;
     }
 

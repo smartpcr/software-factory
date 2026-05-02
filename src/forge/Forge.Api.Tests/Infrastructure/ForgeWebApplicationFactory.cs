@@ -14,24 +14,27 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 /// <summary>
-/// Test factory that points the SQLite DB at a per-instance temp path so
-/// tests are isolated.
+/// Test factory that copies the production SQLite DB to a per-instance
+/// temp file so tests run against an isolated snapshot and NEVER touch
+/// the production database.
 ///
 /// <para>
-/// Hardening (after a leak that polluted the production DB at
-/// <c>E:\forge\forge.db</c> with 51 test spawns): the factory installs the
-/// override via THREE mechanisms — the <c>FORGE_DB_PATH</c> env var (which
-/// `WebApplicationBuilder` picks up before any `appsettings.json` reads),
-/// the in-memory <c>IConfiguration</c> source on the test web host, AND a
-/// post-build sanity check that asserts the resolved path is under
-/// <c>%TEMP%</c>. Any of those failing is a test setup bug we want to
-/// catch loud, not a silent prod-DB write.
+/// Setup: <c>File.Copy(ProdDbDefault, tempPath)</c> — each test gets a
+/// private copy of the production DB with realistic schema and data.
+/// Teardown: the temp copy is deleted in <see cref="Dispose"/>.
+/// </para>
+/// <para>
+/// The DB path override uses ONLY the in-memory <c>IConfiguration</c>
+/// source — no process-global env var manipulation. This eliminates the
+/// race condition that caused the original production DB leak (parallel
+/// xUnit tests stomping each other's <c>FORGE_DB_PATH</c> env var).
+/// A post-build tripwire asserts the resolved path is under
+/// <c>%TEMP%</c> and matches this instance's copy.
 /// </para>
 /// </summary>
 public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
 {
     private const string ProdDbDefault = @"E:\forge\forge.db";
-    private const string EnvVarName = "FORGE_DB_PATH";
 
     private readonly string dbPath = Path.Combine(Path.GetTempPath(), $"forge-test-{Guid.NewGuid():N}.db");
     private readonly Dictionary<string, string?> extraConfig;
@@ -41,13 +44,14 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
     internal ForgeWebApplicationFactory(Dictionary<string, string?>? extraConfig)
     {
         this.extraConfig = extraConfig ?? new();
-        // Belt and suspenders #1: env var takes effect during
-        // WebApplicationBuilder construction, before Program.cs reads any
-        // config. ConfigureAppConfiguration alone is too late because
-        // Program top-level statements may have already created bootstrap
-        // resources (e.g. SQLite journal-mode pragma) by then.
-        Environment.SetEnvironmentVariable(EnvVarName, this.dbPath);
-        Environment.SetEnvironmentVariable("Forge__Db__Path", this.dbPath);
+        // Copy production DB to the per-instance temp path so the test
+        // starts with realistic schema and seed data. If the prod DB
+        // doesn't exist (CI / fresh clone), the empty temp file will get
+        // its schema from EnsureCreatedAsync during Program.cs startup.
+        if (File.Exists(ProdDbDefault))
+        {
+            File.Copy(ProdDbDefault, this.dbPath, overwrite: true);
+        }
     }
 
     /// <summary>
@@ -84,8 +88,9 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
         {
             var settings = new Dictionary<string, string?>
             {
-                // Belt and suspenders #2: explicit in-memory source. Wins
-                // when Program.cs reads via DI after Build().
+                // Point at the per-test copy. Program.cs reads this inside
+                // the AddDbContext factory delegate at DI resolution time
+                // (after Build()), so the in-memory override always wins.
                 ["Forge:Db:Path"] = this.dbPath,
                 // Phase 8.10 — auto-clone shells out to `git clone`, which
                 // doesn't make sense in CI / unit tests. Workstream-create
@@ -107,10 +112,10 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
             config.AddInMemoryCollection(settings);
         });
 
-        // Belt and suspenders #3: tripwire that runs during Build(). The
-        // resolved Forge:Db:Path MUST be the per-test temp file. If anything
-        // else is in scope, fail loud — a passing test against the prod DB
-        // is much worse than a failing one.
+        // Tripwire that runs during Build(). The resolved Forge:Db:Path
+        // MUST be the per-test temp copy. If anything else is in scope,
+        // fail loud — a passing test against the prod DB is much worse
+        // than a failing one.
         builder.ConfigureServices((ctx, services) =>
         {
             var resolved = ctx.Configuration["Forge:Db:Path"];
@@ -155,9 +160,6 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
     protected override void Dispose(bool disposing)
     {
         base.Dispose(disposing);
-        // Clear the env vars so a follow-up factory instance gets a clean slate.
-        Environment.SetEnvironmentVariable(EnvVarName, null);
-        Environment.SetEnvironmentVariable("Forge__Db__Path", null);
         if (disposing && File.Exists(this.dbPath))
         {
             try { File.Delete(this.dbPath); }

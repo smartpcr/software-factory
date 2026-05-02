@@ -111,6 +111,7 @@ public static class WorkItemsEndpoints
     private static async Task<IResult> List(
         HttpContext ctx,
         ForgeDbContext db,
+        string? productId,
         string? repoId,
         string? iterationRef,
         string? state,
@@ -125,6 +126,17 @@ public static class WorkItemsEndpoints
         CancellationToken ct)
     {
         var query = db.WorkItems.AsNoTracking().AsQueryable();
+
+        // Scope to repos belonging to the active product.
+        if (!string.IsNullOrWhiteSpace(productId))
+        {
+            var repoIds = await db.Repos.AsNoTracking()
+                .Where(r => r.ProductId == productId)
+                .Select(r => r.Id)
+                .ToListAsync(ct);
+            query = query.Where(w => w.RepoId != null && repoIds.Contains(w.RepoId));
+        }
+
         if (!string.IsNullOrWhiteSpace(repoId))       query = query.Where(w => w.RepoId == repoId);
         if (!string.IsNullOrWhiteSpace(iterationRef)) query = query.Where(w => w.IterationRef == iterationRef);
         if (!string.IsNullOrWhiteSpace(parentId))     query = query.Where(w => w.ParentId == parentId);

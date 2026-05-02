@@ -101,6 +101,7 @@ export interface StorySpawnArtifacts {
 }
 
 export interface WorkItemListFilters {
+  productId?: string;
   repoId?: string;
   iterationRef?: string;
   track?: WorkItemTrack;
@@ -447,6 +448,17 @@ export const forgeApi = {
       {
         method: 'PATCH',
         body: JSON.stringify(body),
+        headers: { 'X-Forge-User': writerHeader() },
+      },
+    );
+  },
+
+  /** DELETE /api/products/{productId}/stories/{storyId} — delete a story. */
+  async deleteProductStory(productId: string, storyId: string): Promise<void> {
+    await fetchJson<unknown>(
+      `/api/products/${encodeURIComponent(productId)}/stories/${encodeURIComponent(storyId)}`,
+      {
+        method: 'DELETE',
         headers: { 'X-Forge-User': writerHeader() },
       },
     );
@@ -1346,6 +1358,7 @@ export const forgeApi = {
   /** GET /api/work-items with optional filters. */
   async listWorkItems(filters: WorkItemListFilters = {}): Promise<WorkItem[]> {
     const qs = new URLSearchParams();
+    if (filters.productId)    qs.set('productId', filters.productId);
     if (filters.repoId)       qs.set('repoId', filters.repoId);
     if (filters.iterationRef) qs.set('iterationRef', filters.iterationRef);
     if (filters.track)        qs.set('track', filters.track);
