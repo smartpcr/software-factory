@@ -1,283 +1,174 @@
 # Agent Memory — Implementation Plan
 
-> **Work Item**: Agent Memory
+> **Work Item**: Agent Memory (WI-1035)
 > **Status**: Planning
 > **Research Basis**: [Graph-based Agent Memory Survey](https://arxiv.org/abs/2602.05665) (DEEP-PolyU)
 
 ## Problem Statement
 
-Agents working on this codebase start every session blank — they re-discover repo structure,
-re-trace call chains, and re-learn conventions each time. The `AgentMemory` library already
-provides the core domain model (Episode, ExpertiseRecord, CallChain, MemoryEdge), two storage
-backends (in-memory and file-system JSON), a staged ContextBuilder, and a MemoryEvolver with
-consolidation, decay, and tier promotion. What remains is connecting this library to the
-existing graph infrastructure (Neo4j, Qdrant), building the initial knowledge graph from
-top-down repo structure and call chains, wiring it into agent workflows, and exposing it
-through CLI and MCP surfaces.
+Agents start every session blank — re-discovering repo structure, re-tracing call chains, and re-learning conventions. The `AgentMemory` library provides the domain model (Episode, ExpertiseRecord, CallChain, MemoryEdge), two storage backends (in-memory and file-system), a staged ContextBuilder, and a MemoryEvolver. What remains is: robust symbol identity, integration with the agent orchestrator, persistent graph/vector backends, knowledge extraction from repo structure and call chains, a feedback loop with observability, and CLI/MCP surfaces.
 
-### Persistence Boundary — Key Constraint
+### Key Constraints
 
-The existing `Ast.GraphDb` (`IGraphStore`, `Neo4jGraphStore`) is code-graph-centric: it stores
-`HypergraphNode`/`Hyperedge` as `:CodeNode` labels and materializes code-specific relationships.
-The memory persistence layer requires its own `IMemoryGraphStore` abstraction with distinct
-Neo4j labels (`:MemoryEpisode`, `:MemoryExpertise`, `:MemoryCallChain`) and Cypher queries
-purpose-built for memory lifecycle operations. Memory nodes reference code nodes via
-cross-label relationships, but the stores are architecturally separate.
+**Persistence boundary**: `Ast.GraphDb.IGraphStore` stores `HypergraphNode`/`Hyperedge` as `:CodeNode` labels. Memory requires a separate `IMemoryGraphStore` with distinct labels (`:MemoryEpisode`, `:MemoryExpertise`) and domain-specific Cypher queries. Memory nodes reference code nodes via cross-label relationships.
 
-### Symbol Identity — Key Constraint
+**Symbol identity**: Episode recording, context building, and extraction all join on file paths and symbol IDs. Identifiers must be canonical and stable across sessions, handling renames, worktrees, and branch drift. Each symbol carries a validity window (`firstSeenCommit`, `lastSeenCommit`).
 
-Episode recording, context building, structural seeding, and call chain extraction all join
-on file paths and symbol IDs. These identifiers must be **canonical and stable** across sessions.
-The plan includes an explicit identity resolver step that normalizes paths (forward-slash,
-repo-relative) and generates deterministic symbol IDs from the hypergraph before any
-cross-system joins are attempted.
-
-### Provenance — Key Constraint
-
-Memory records originate from three sources — **git history** (seed priors), **static
-analysis** (inferred from code graph), and **agent episodes** (observed at runtime). Each
-source has different reliability characteristics. Co-change edges from git are ground truth;
-inferred call chains from HypergraphData are structural approximations; agent-observed
-chains are runtime behavior. The retrieval pipeline weights these differently, and each
-memory record carries its provenance source for disambiguation.
+**Provenance**: Memory records originate from three sources — git history (ground truth), static analysis (inferred), and agent episodes (observed) — each weighted differently in retrieval.
 
 ## Architectural Approach
 
-The design adopts a **hybrid hierarchical graph** architecture, combining three paradigms
-from the research survey:
+The design adopts a **hybrid hierarchical graph** from the survey taxonomy:
 
-1. **MAGMA multi-graph** (arXiv:2601.03236) — orthogonal semantic, temporal, and structural
-   views layered on a single graph store. The existing ContextBuilder implements the
-   multi-signal candidate scoring pipeline; we extend it with graph-native traversals.
-
-2. **G-Memory 3-tier hierarchy** (arXiv:2506.07398) — Interaction → Query → Insight tiers
-   already modeled via `MemoryTier`. We complete the tier promotion pipeline and validate
-   with retrieval metrics before adding community detection.
-
-3. **Zep/Graphiti temporal KG** (arXiv:2501.13956) — temporal validity via CommitSha on
-   expertise records. Git-log-seeded co-change grounds temporal edges in real version
-   history rather than agent-only observations.
-
-### Key Design Decisions
+1. **MAGMA multi-graph** (arXiv:2601.03236) — orthogonal semantic, temporal, and structural views with multi-signal reranking in the ContextBuilder.
+2. **G-Memory 3-tier hierarchy** (arXiv:2506.07398) — Interaction → Query → Insight tiers via `MemoryTier`, with promotion pipeline.
+3. **Zep/Graphiti temporal KG** (arXiv:2501.13956) — temporal validity via `CommitSha` on expertise records; git-seeded co-change grounds temporal edges.
+4. **Mem0 consolidation** (arXiv:2504.19413) — diversity-gated episode aggregation preventing false expertise from loops.
+5. **ExpeL distillation** (AAAI'24) — verbal reflection without fine-tuning; failure patterns from repeated failures.
 
 | Decision | Rationale |
 |----------|-----------|
-| Early vertical slice before persistence infra | Validate the memory loop (record → retrieve → feedback) end-to-end using existing file-system store before investing in Neo4j/Qdrant |
-| Dedicated `IMemoryGraphStore` (not reusing `IGraphStore`) | `IGraphStore` stores `HypergraphNode`/`Hyperedge` as `:CodeNode` and drops `Metadata`; memory entities need domain-specific CRUD with different labels |
-| Canonical symbol identity resolver | File paths normalized to repo-relative forward-slash form; symbol IDs generated deterministically so cross-store joins are reliable |
-| Provenance on all memory records | Distinguishes `git-seeded`, `inferred`, `observed` sources; retrieval weights them differently |
-| Evaluation track before advanced features | Measure retrieval quality (hit rate, context usage, stale-memory rate) before investing in GraphRAG or temporal KG |
-| File-system store remains for offline/test | Graceful degradation with feature flags when Neo4j/Qdrant are unavailable |
-| Git-seeded co-change as seed priors | Git history is ground truth; agent observations refine it; provenance prevents conflation |
+| Early vertical slice with eval harness | Validate record → retrieve → measure loop before investing in Neo4j/Qdrant |
+| Separate `IMemoryGraphStore` | Code-graph store lacks memory CRUD, drops metadata, hardcodes `:CodeNode` |
+| Canonical identity with validity windows | Handles renames, partial classes, branch drift across sessions |
+| Provenance on all records | Retrieval weights `git-seeded` > `inferred` > `observed` differently |
+| Retrieval contract before injection | Token budget, confidence thresholds, max items per source defined upfront |
+| Write model with source-of-truth rules | Prevents dual-write drift between Neo4j, Qdrant, and filesystem |
+| Extraction with invalidation | Each seeder includes incremental refresh for renamed/removed/changed entities |
 
 ---
 
-## Phase 1 — Identity & Early Integration
+## Phase 1 — Identity, Integration & Baseline Metrics
 
-Deliver a thin vertical slice: canonical identity, feature flags, orchestrator hooks, and
-minimal context injection. Validates the memory loop end-to-end using the existing
-file-system store before building persistent infrastructure.
+Deliver a thin vertical slice: canonical identity, orchestrator hooks, context injection, and a minimal evaluation harness. Validates the memory loop end-to-end using the existing file-system store.
 
 ### Stage 1.1 — Identity & Configuration
 
-- **Step 1.1.1**: Canonical symbol identity resolver
-  Create `SymbolIdentity` static class with `NormalizePath(repoRoot, absolutePath) → string`
-  and `CanonicalSymbolId(namespace, typeName, memberName) → string`. Normalize all paths to
-  repo-relative forward-slash form. Unit tests for edge cases (drive letters, nested
-  worktrees). Update `EpisodeRecorder` to use canonical paths.
-  `expectedFileChanges`: 6
+- **Step 1.1.1**: Canonical symbol identity resolver — `SymbolIdentity` static class with `NormalizePath(repoRoot, absolutePath)` and `CanonicalSymbolId(namespace, typeName, memberName)`. Validity window fields (`FirstSeenCommit`, `LastSeenCommit`). Tests for drive letters, worktrees, renames. Update `EpisodeRecorder` to use canonical paths.
+  `expectedFileChanges`: 7
 
-- **Step 1.1.2**: Feature flags and memory configuration
-  Create `AgentMemoryOptions` with flags: `EnableNeo4j`, `EnableQdrant`, `FallbackToFileSystem`.
-  Wire into `ServiceCollectionExtensions`. Add `IMemoryStoreHealthCheck`. Tests verify
-  correct store selection per configuration.
+- **Step 1.1.2**: Feature flags and memory configuration — `AgentMemoryOptions` with `EnableNeo4j`, `EnableQdrant`, `FallbackToFileSystem`. Wire into `ServiceCollectionExtensions`. `IMemoryStoreHealthCheck`. Tests for store selection.
   `expectedFileChanges`: 5
 
 ### Stage 1.2 — Orchestrator Episode Recording
 
-- **Step 1.2.1**: Agent orchestrator episode recording middleware
-  Add `IEpisodeRecorder` hook into `CopilotAgentOrchestrator`. Auto-start episode on task
-  begin, auto-complete on task end. Track touched files from tool calls (view, edit, create).
-  Classify `TouchType` from tool name. Use `SymbolIdentity.NormalizePath` for all paths.
+- **Step 1.2.1**: Episode recording middleware — Hook `IEpisodeRecorder` into `CopilotAgentOrchestrator`. Auto-start/complete episodes on task lifecycle. Track touched files from tool calls (view, edit, create). Classify `TouchType` from tool name.
   `expectedFileChanges`: 8
 
-- **Step 1.2.2**: Symbol resolution for touched files
-  When an episode records a touched file, resolve it to `HypergraphNode` IDs using
-  `IGraphStoreAdapter`. Populate `TouchedSymbolIds`. Graceful fallback when graph
-  unavailable (file-only episodes).
+- **Step 1.2.2**: Symbol resolution for touched files — Resolve touched files to `HypergraphNode` IDs via `IGraphStoreAdapter`. Populate `TouchedSymbolIds`. Graceful fallback for file-only episodes when graph unavailable.
   `expectedFileChanges`: 5
 
-### Stage 1.3 — Minimal Context Injection
+### Stage 1.3 — Context Injection & Retrieval Contract
 
-- **Step 1.3.1**: Context injection into agent prompts
-  Add `IContextBuilder.BuildContextAsync()` call before task dispatch. Format
-  `ContextWindow` as markdown sections: "Prior Experience", "Known Patterns",
-  "Relevant Call Chains", "Freshness Warnings". Configurable token budget.
-  `expectedFileChanges`: 7
+- **Step 1.3.1**: Retrieval contract and context injection — Define retrieval contract (token budget, max items per source, confidence threshold, low-confidence behavior). Add `IContextBuilder.BuildContextAsync()` before task dispatch. Format `ContextWindow` as markdown sections. Per-source attribution in prompt.
+  `expectedFileChanges`: 8
 
-- **Step 1.3.2**: Provenance model and source-of-truth rules
-  Add `Provenance` enum (`GitSeeded`, `Inferred`, `Observed`) to `MemoryEdge`,
-  `CallChain`, and `ExpertiseRecord`. Document canonical source per entity type.
-  Define write-through vs async-projection rules. Tests verify provenance is set.
+- **Step 1.3.2**: Provenance model — Add `Provenance` enum (`GitSeeded`, `Inferred`, `Observed`) to `MemoryEdge`, `CallChain`, `ExpertiseRecord`. Source-of-truth rules per entity type. Tests verify provenance is set.
   `expectedFileChanges`: 6
+
+### Stage 1.4 — Baseline Evaluation Harness
+
+- **Step 1.4.1**: Context hit/miss logging and replay scenarios — `IMemoryMetrics` with context hit rate, retrieval latency counters. Structured logging for hit/miss events. 3-5 golden replay scenarios as test fixtures that verify context assembly against known expectations.
+  `expectedFileChanges`: 7
 
 ---
 
 ## Phase 2 — Persistent Storage Backends
 
-Connect to Neo4j and Qdrant for durable, queryable memory beyond the file-system store.
+Connect to Neo4j and Qdrant for durable memory. Includes write-model consistency rules to prevent dual-write drift.
 
 ### Stage 2.1 — Neo4j Memory Graph Store
 
-- **Step 2.1.1**: Neo4j memory schema DDL and migration
-  Cypher DDL for labels (`:MemoryEpisode`, `:MemoryExpertise`, `:MemoryCallChain`),
-  relationships (`:TOUCHED_FILE`, `:TOUCHED_SYMBOL`, `:PRODUCED_EXPERTISE`,
-  `:CO_CHANGED_WITH`, `:PROMOTED_TO`), composite indices, uniqueness constraints.
-  Idempotent `MemorySchemaMigration.ApplyAsync()`. Integration tests.
+- **Step 2.1.1**: Schema DDL and migration — Cypher for labels (`:MemoryEpisode`, `:MemoryExpertise`, `:MemoryCallChain`), relationships (`:TOUCHED_FILE`, `:TOUCHED_SYMBOL`, `:PRODUCED_EXPERTISE`, `:CO_CHANGED_WITH`), indices, constraints. Idempotent `MemorySchemaMigration.ApplyAsync()`.
   `expectedFileChanges`: 7
 
-- **Step 2.1.2**: Neo4jMemoryStore — episode and expertise CRUD
-  Implement `IAgentMemoryStore` and `ITieredExpertiseStore` against Neo4j. Cypher for
-  `RecordEpisodeAsync`, `GetEpisodesAsync`, `UpsertExpertiseAsync`,
-  `GetExpertiseByCategoryAsync`. Integration tests with Testcontainers.
+- **Step 2.1.2**: Episode and expertise CRUD — `Neo4jMemoryStore` implementing `IAgentMemoryStore` and `ITieredExpertiseStore`. Cypher for CRUD operations. Integration tests with Testcontainers.
+  `expectedFileChanges`: 12
+
+- **Step 2.1.3**: Edges, call chains, and statistics — `AddMemoryEdgeAsync`, `GetOutgoingEdgesAsync`/`GetIncomingEdgesAsync` via Cypher traversals. `ICallChainStore` with ordered list serialization. `GetStatisticsAsync`. Integration tests.
   `expectedFileChanges`: 10
 
-- **Step 2.1.3**: Neo4jMemoryStore — edges, call chains, and statistics
-  `AddMemoryEdgeAsync`, `GetOutgoingEdgesAsync`/`GetIncomingEdgesAsync` via Cypher
-  traversals. `ICallChainStore` with ordered list serialization. `GetStatisticsAsync`
-  via aggregate Cypher. Integration tests.
-  `expectedFileChanges`: 8
-
-- **Step 2.1.4**: Neo4j memory store DI registration
-  `services.AddNeo4jAgentMemory(connectionString)`. Health checks, configuration binding,
-  docker-compose entry for memory Neo4j container.
+- **Step 2.1.4**: DI registration and health checks — `services.AddNeo4jAgentMemory(connectionString)`. Health checks, configuration binding, docker-compose entry.
   `expectedFileChanges`: 5
 
 ### Stage 2.2 — Vector Memory Integration
 
-- **Step 2.2.1**: Vector memory adapter and embedding pipeline
-  `IVectorMemoryAdapter` with `IndexEpisodeAsync`, `IndexExpertiseAsync`,
-  `SearchSimilarEpisodesAsync`. Implement against `IVectorStore` (Qdrant). Collections:
-  `agent_memory_episodes`, `agent_memory_expertise`. Tests with mock vector store.
-  `expectedFileChanges`: 7
-
-- **Step 2.2.2**: ContextBuilder semantic retrieval integration
-  Add semantic search as candidate generation step after exact matches and graph neighbors.
-  Graceful fallback when vector store unavailable. Adjust reranking weights for semantic
-  candidates.
-  `expectedFileChanges`: 5
-
-### Stage 2.3 — Backfill & Index Consistency
-
-- **Step 2.3.1**: Write-through indexing and backfill job
-  `CompositeAgentMemoryStore` wraps primary store and dispatches writes to Neo4j + Qdrant.
-  `MemoryBackfillJob` reads all records from file-system store and indexes them. Idempotent.
+- **Step 2.2.1**: Vector memory adapter — `IVectorMemoryAdapter` with `IndexEpisodeAsync`, `IndexExpertiseAsync`, `SearchSimilarAsync`. Qdrant collections: `agent_memory_episodes`, `agent_memory_expertise`. Tests with mock.
   `expectedFileChanges`: 8
 
-- **Step 2.3.2**: Delete/update propagation and reindex command
-  Propagate deletes/updates to Neo4j and Qdrant. `memory reindex` command for CLI/MCP.
-  Failure semantics: log and continue when one backend fails. Tests verify consistency.
+- **Step 2.2.2**: Semantic retrieval in ContextBuilder — Add semantic search as candidate generation step. Graceful fallback when vector store unavailable. Reranking weight for semantic candidates.
   `expectedFileChanges`: 5
+
+### Stage 2.3 — Write Model & Index Consistency
+
+- **Step 2.3.1**: Composite store and write-model rules — `CompositeAgentMemoryStore` with source-of-truth rules per entity. Idempotent upsert keys. Outbox-style dispatch to Neo4j + Qdrant. Duplicate detection across seeded/inferred/observed.
+  `expectedFileChanges`: 10
+
+- **Step 2.3.2**: Backfill job and reindex command — `MemoryBackfillJob` from filesystem to Neo4j + Qdrant. `memory reindex` command. Log-and-continue on backend failures.
+  `expectedFileChanges`: 6
 
 ---
 
 ## Phase 3 — Code Graph Memory Extraction
 
-Build the initial memory graph from top-down repo structure, call chains, and git history.
+Build the initial knowledge graph from top-down repo structure, call chains, and git history. Each extractor includes invalidation rules for incremental refresh.
 
 ### Stage 3.1 — Structural Memory Seeder
 
-Walk `HypergraphData` to create initial `ExpertiseRecord`s at each tier. Bootstrapped
-expertise starts at confidence 0.3 and gains confidence through agent interaction.
+- **Step 3.1.1**: Solution and project hierarchy — Walk `HypergraphData.Nodes` grouped by project. Create `ProjectExpertise` (Query tier) with dependency summaries. `ContainedIn` edges for solution → project → namespace. Include folder/module boundaries and assembly references. Invalidation: detect removed/added projects.
+  `expectedFileChanges`: 8
 
-- **Step 3.1.1**: Repo structure walker and project-level expertise
-  Traverse `HypergraphData.Nodes` grouped by project. Create `ProjectExpertise` records
-  with dependency summaries. `ContainedIn` edges from namespace → project. Canonical
-  paths via `SymbolIdentity`. Tests with sample hypergraph fixture.
-  `expectedFileChanges`: 7
+- **Step 3.1.2**: Namespace and type seeding — `NamespaceExpertise` (Query tier), `TypeExpertise` (Interaction tier). Detect public API surface. `ContainedIn` edges namespace → type. Invalidation: detect renamed/moved types.
+  `expectedFileChanges`: 6
 
-- **Step 3.1.2**: Namespace and type-level expertise seeding
-  Group nodes by namespace. Create `NamespaceExpertise` (Query tier) and `TypeExpertise`
-  (Interaction tier). Detect public API surface. Connect via `ContainedIn` edges.
-  `expectedFileChanges`: 5
-
-- **Step 3.1.3**: Method-level expertise and API surface seeding
-  `MethodExpertise` for public/internal methods. Detect entry points and API endpoints
-  from `HyperedgeType.ApiEndpoint`, `EntryPoint`. Seed `CallChainPattern` expertise.
+- **Step 3.1.3**: Method and API surface seeding — `MethodExpertise` for public/internal methods. Detect entry points and API endpoints from `HyperedgeType.ApiEndpoint`, `EntryPoint`. Invalidation: signature changes.
   `expectedFileChanges`: 6
 
 ### Stage 3.2 — Call Chain Extraction
 
-- **Step 3.2.1**: Call chain extractor from hypergraph edges
-  Walk `MethodInvocation` edges depth-first from entry points. Build `CallChain` objects
-  with `CallChainSource.Inferred`. Configurable max depth (default 8). Cycle detection.
-  Canonical IDs via `SymbolIdentity`. Tests with cyclic and acyclic fixtures.
-  `expectedFileChanges`: 7
+- **Step 3.2.1**: Static call chain extractor — Walk `MethodInvocation` edges depth-first from entry points. Build `CallChain` with `CallChainSource.Inferred`. Max depth 8, cycle detection. Separate static invocation edges from DI resolution edges. Confidence-scored, partial graphs.
+  `expectedFileChanges`: 8
 
-- **Step 3.2.2**: DI registration chain extraction
-  Follow `ServiceRegistration` edges to build DI chains. Create `CallChainPattern`
-  expertise for common patterns (controller → service → repository). Link via `MemoryEdge`.
-  `expectedFileChanges`: 5
+- **Step 3.2.2**: DI registration chain extraction — Follow `ServiceRegistration` edges. Create `CallChainPattern` for controller → service → repository patterns. Handle open generics and MediatR-style pipelines as lower-confidence chains.
+  `expectedFileChanges`: 6
 
 ### Stage 3.3 — Git Co-Change Seeding
 
-- **Step 3.3.1**: Git log co-change analyzer with provenance
-  Parse `git log --name-only` for files modified together. Compute Jaccard similarity.
-  Create `CoChangedWith` edges with `Provenance.GitSeeded`. `CoChangeGroup` expertise
-  for pairs exceeding thresholds. Normalize paths via `SymbolIdentity`.
-  `expectedFileChanges`: 7
+- **Step 3.3.1**: Co-change analyzer with noise gates — Parse `git log --name-only`. Compute Jaccard similarity. Gates: commit size ≤50 files, file-type filters, repeated co-change count ≥3. `CoChangedWith` edges with `Provenance.GitSeeded`. Low default weight (0.3).
+  `expectedFileChanges`: 8
 
-- **Step 3.3.2**: Incremental git co-change updates
-  Track last-processed commit SHA as watermark. Process only new commits on subsequent
-  runs. Update existing co-change edges (reinforce or decay). Idempotent replay.
+- **Step 3.3.2**: Incremental co-change updates — Last-processed commit SHA watermark. Process only new commits. Reinforce or decay existing co-change edges. Idempotent replay.
   `expectedFileChanges`: 5
 
 ---
 
 ## Phase 4 — Feedback, Evolution & Observability
 
-Close the feedback loop, schedule memory evolution, and add metrics to validate that
-memory actually improves agent performance.
+Close the feedback loop and schedule memory evolution. Build on the baseline metrics from Phase 1.
 
 ### Stage 4.1 — Feedback Loop
 
-- **Step 4.1.1**: Outcome-based expertise reinforcement
-  After episode completion, reinforce expertise confidence for touched subjects on
-  `Success`, record negative evidence on `Failed`. Update `LastValidated`, `CommitSha`,
-  and `AccessCount` on accessed expertise. Tests verify confidence changes.
+- **Step 4.1.1**: Outcome-based reinforcement — Reinforce expertise confidence on `Success`, record negative evidence on `Failed`. Update `LastValidated`, `CommitSha`, `AccessCount`. Tests verify confidence changes.
   `expectedFileChanges`: 5
 
-- **Step 4.1.2**: Access tracking and stale-memory detection
-  Track `AccessCount` increments when expertise is retrieved. Compare `CommitSha` against
-  HEAD for staleness detection. Stale expertise gets freshness warning in `ContextWindow`.
-  `expectedFileChanges`: 4
+- **Step 4.1.2**: Staleness detection and invalidation — Compare `CommitSha` against HEAD. Detect renamed/moved symbols via `SymbolIdentity` validity window. Stale expertise gets freshness warnings. Auto-decay on confirmed invalidation.
+  `expectedFileChanges`: 5
 
 ### Stage 4.2 — Memory Evolution Scheduling
 
-- **Step 4.2.1**: Evolver checkpointing and idempotent batching
-  High-water mark tracking in `MemoryEvolver`: last-processed episode timestamp,
-  last-decay-run, last-promotion-run stored as metadata. Skip already-processed episodes.
-  Tests verify no reprocessing.
+- **Step 4.2.1**: Evolver checkpointing — High-water mark for last-processed episode, last-decay-run, last-promotion-run. Skip already-processed episodes. Tests verify no reprocessing.
   `expectedFileChanges`: 6
 
-- **Step 4.2.2**: Background memory evolution hosted service
-  `IHostedService` running `ConsolidateAsync()`, `DecayAsync()`, `PromoteAsync()` on
-  configurable intervals. Lease/lock to prevent concurrent runs. Log evolution statistics.
+- **Step 4.2.2**: Background hosted service — `IHostedService` running consolidation, decay, promotion on configurable intervals. Lease/lock for concurrency. Log evolution statistics.
   `expectedFileChanges`: 5
 
-### Stage 4.3 — Evaluation & Observability
+### Stage 4.3 — Extended Observability
 
-- **Step 4.3.1**: Retrieval metrics and context-budget tracking
-  Counters: hit rate (% of context queries with ≥1 relevant result), retrieval latency,
-  context token usage vs budget, stale-memory rate. Exposed via `IMemoryMetrics` interface.
-  Integration with existing logging. Tests with known fixtures.
+- **Step 4.3.1**: Full retrieval metrics — Extend Phase 1 metrics with stale-memory rate, tier distribution, per-provenance hit rates, context token budget usage. Structured event logging.
+  `expectedFileChanges`: 5
+
+- **Step 4.3.2**: Memory health dashboard — `memory health` command: hit rate, stale rate, tier distribution, top expertise. A/B feature flag for with-memory vs without-memory via prompt injection toggle.
   `expectedFileChanges`: 6
-
-- **Step 4.3.2**: Memory health dashboard and A/B comparison
-  `memory health` command showing hit rate, stale rate, tier distribution, top expertise.
-  Feature-flag for with-memory vs without-memory comparison via prompt injection toggle.
-  Log outcome differences.
-  `expectedFileChanges`: 5
 
 ---
 
@@ -287,50 +178,30 @@ Expose memory operations to humans (CLI) and agents (MCP tools).
 
 ### Stage 5.1 — MCP Memory Tools
 
-- **Step 5.1.1**: MCP query tools
-  `memory_search` (find expertise), `memory_context` (build full context window),
-  `memory_stats` (statistics). Register as MCP tool handlers. Tests with mock store.
-  `expectedFileChanges`: 8
+- **Step 5.1.1**: MCP query tools — `memory_search` (find expertise), `memory_context` (build context window), `memory_stats` (statistics). Register as MCP tool handlers. Tests with mock store.
+  `expectedFileChanges`: 10
 
-- **Step 5.1.2**: MCP record and evolve tools
-  `memory_record_observation`, `memory_consolidate`, `memory_decay`.
-  Tests with mock store.
+- **Step 5.1.2**: MCP record and evolve tools — `memory_record_observation`, `memory_consolidate`, `memory_decay`. Tests with mock store.
   `expectedFileChanges`: 6
 
 ### Stage 5.2 — CLI Memory Commands
 
-- **Step 5.2.1**: CLI memory inspect commands
-  `memory stats`, `memory list-episodes`, `memory list-expertise`, `memory show <id>`.
-  Table-formatted output with confidence bars and tier indicators via Spectre.Console.
-  `expectedFileChanges`: 8
+- **Step 5.2.1**: CLI inspect commands — `memory stats`, `memory list-episodes`, `memory list-expertise`, `memory show <id>`. Table-formatted output with confidence bars and tier indicators via Spectre.Console.
+  `expectedFileChanges`: 10
 
-- **Step 5.2.2**: CLI memory management commands
-  `memory consolidate`, `memory decay`, `memory seed`, `memory reindex`, `memory clear`.
-  Progress bars for long operations.
-  `expectedFileChanges`: 6
+- **Step 5.2.2**: CLI management commands — `memory consolidate`, `memory decay`, `memory seed`, `memory reindex`, `memory clear`. Progress bars.
+  `expectedFileChanges`: 7
 
 ---
 
 ## Out of Scope
 
-- **GraphRAG community detection** (arXiv:2404.16130) — Louvain/Leiden community detection
-  for automatic module discovery. Deferred until retrieval metrics (Phase 4.3) demonstrate
-  that simple graph + vector retrieval is insufficient.
-- **Full temporal knowledge graph** (arXiv:2501.13956) — `ValidFrom`/`ValidTo` temporal
-  windows on edges. Current `CommitSha` + `LastValidated` provides sufficient staleness
-  detection. Deferred until temporal queries are demonstrably needed.
-- **LLM-generated summaries for communities** — Requires LLM API budget; deferred until
-  cost model is established.
-- **RL-based memory optimization** (arXiv:2511.07800) — Trainable edge weights require a
-  reward signal infrastructure that doesn't yet exist.
-- **Multi-agent collaborative memory** (arXiv:2505.18279) — Access control and memory
-  sharing between agents is beyond the current single-agent architecture.
-- **MemGPT-style memory paging** (arXiv:2310.08560) — Current context windows fit within
-  limits; revisit if models with smaller windows are adopted.
-- **Video/multimodal memory** — Codebase is text/code only.
-- **Fine-tuning or model adaptation** — Memory is retrieved at inference time, not baked
-  into model weights.
-- **Benchmarking against academic datasets** (LoCoMo, LongMemEval) — Useful for validation
-  but not actionable for the product.
-- **Reusing `Ast.GraphDb.IGraphStore` for memory** — The code-graph store lacks domain CRUD,
-  drops metadata, and hardcodes `:CodeNode` labels.
+- **GraphRAG community detection** (arXiv:2404.16130) — Deferred until Phase 4.3 metrics show simple graph + vector retrieval is insufficient.
+- **Full temporal knowledge graph** (arXiv:2501.13956) — `ValidFrom`/`ValidTo` windows on edges. Current `CommitSha` + `LastValidated` suffices.
+- **LLM-generated community summaries** — Requires LLM API budget not yet established.
+- **RL-based memory optimization** (arXiv:2511.07800) — Trainable edge weights need reward signal infrastructure.
+- **Multi-agent collaborative memory** (arXiv:2505.18279) — Beyond current single-agent architecture.
+- **MemGPT-style memory paging** (arXiv:2310.08560) — Context windows fit within limits.
+- **Fine-tuning or model adaptation** — Memory is retrieved at inference time.
+- **Academic dataset benchmarking** (LoCoMo, LongMemEval) — Not actionable for the product.
+- **Reusing `IGraphStore` for memory** — Lacks memory CRUD, drops metadata, hardcodes `:CodeNode`.
