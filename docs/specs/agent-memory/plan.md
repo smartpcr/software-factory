@@ -1,14 +1,14 @@
 # Agent Memory — Implementation Plan
 
 > **Work Item**: Agent Memory (WI-1035)
-> **Status**: Planning (iteration 7)
+> **Status**: Planning (iteration 8)
 > **Research Basis**: [Graph-based Agent Memory Survey](https://arxiv.org/abs/2602.05665) (DEEP-PolyU)
 
 ## Problem Statement
 
 Agents start every session blank — re-discovering repo structure, re-tracing call chains, and re-learning conventions. We need a graph-based agent memory system that builds persistent expertise on top-down repository structure and call-chain context, so agents can learn and get smarter across sessions.
 
-The `AgentMemory` library already provides a domain model (`Episode`, `ExpertiseRecord`, `CallChain`, `MemoryEdge`), two storage backends (in-memory, file-system), a staged `ContextBuilder`, and a `MemoryEvolver` with consolidation, decay, promotion, and co-change detection. However, the library has **ten correctness defects** that must be fixed before further features are safe to add.
+The `AgentMemory` library already provides a domain model (`Episode`, `ExpertiseRecord`, `CallChain`, `MemoryEdge`), two storage backends (in-memory, file-system), a staged `ContextBuilder`, and a `MemoryEvolver` with consolidation, decay, promotion, and co-change detection. However, the library has **twelve correctness defects** (D1–D12) that must be fixed before further features are safe to add.
 
 ### Root Defects
 
@@ -73,11 +73,11 @@ The design adopts a **hybrid hierarchical graph** from the survey taxonomy:
 |----------|-----------|
 | **`ExpertiseRecord` stays `class`, NOT `record class`** | `record class` changes equality semantics (value equality), which would alter `HashSet`/`Dictionary` behavior in ContextBuilder and MemoryEvolver. Instead: keep `class`, change all `set` → `init`, add `With(...)` copy helper, use `ImmutableArray<T>`/`ImmutableDictionary<TK,TV>` for collections. |
 | **`TierPolicy` replaces `TierMapping`** | Single authority. `AllowedTiers(category)` → per-category allowed tier sets. `Normalize(record)` returns corrected copy. `Validate(record, previous?)` rejects invalid combos. Exhaustive `switch` on all 11 `ExpertiseCategory` values — no wildcard default. |
-| **Deterministic IDs for idempotent evolution** | `PromoteAsync` uses deterministic ID `exp-promo-{tier}-{groupKey-hash}` instead of `Guid`. `DetectCoChangesAsync` uses `edge-cc-{source-hash}-{target-hash}` for edges and `exp-cc-{files-sorted-hash}` for groups. Repeated runs converge to same state. Upsert semantics recompute confidence/metadata. |
+| **Deterministic IDs for idempotent evolution** | `PromoteAsync` uses deterministic ID `$"exp-promo-{targetTier}-{ComputeStableHash(category + '|' + sourceTier + '|' + groupKey)}"` — includes category and source tier to prevent collisions between unrelated source groups sharing a groupKey. `DetectCoChangesAsync` uses `edge-cc-{ComputeStableHash(sortedPair)}` for edges and `exp-cc-{ComputeStableHash(sortedFileList)}` for groups. Repeated runs converge to same state. Upsert semantics recompute confidence/metadata. Source IDs are used for **reconciliation** (merging new sources into existing promoted records), not for identity. |
 | **ContextBuilder AgentId/Branch propagation** | All `EpisodeFilter` instances in `GenerateCandidatesAsync` must propagate `request.AgentId` and `request.Branch`. Add `Branch` field to `EpisodeFilter` and `ContextRequest`. |
 | **Corrupted JSON quarantine, not silent recovery** | `FileSystemAgentMemoryStore.LoadAsync` renames corrupted files to `{path}.quarantine.{timestamp}`, logs a warning, returns empty store in degraded mode. `MemoryStatistics` gains `QuarantinedFileCount` and `IsDegradedStartup`. |
 | **Graph context assembly fix** | `AssembleContextWindow` must populate `ContextWindow.StructuralNodes` and `RelationalEdges` from candidates, not silently drop them. |
-| **StrictTierEnforcement** | When `true` (default): `Normalize` corrects invalid tiers silently. When `false`: `Normalize` corrects AND logs a warning. Both modes enforce; the difference is observability. Invalid records are **never** persisted in either mode. |
+| **`WarnOnTierCorrection`** | When `false` (default): `Normalize` corrects invalid tiers silently. When `true`: `Normalize` corrects AND logs `ILogger.LogWarning` with the original and corrected values. Both modes always enforce invariants — invalid records are **never** persisted. The flag controls **observability only** (whether corrections are logged), not enforcement behavior. |
 
 ### ExpertiseRecord Invariant Matrix
 
@@ -88,9 +88,9 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
 | `Tier` not in `AllowedTiers(Category)` | Replace with `DefaultTierFor(Category)` | `Normalize` |
 | `Confidence < 0` | Clamp to `0.0` | `Normalize` |
 | `Confidence > 1` | Clamp to `1.0` | `Normalize` |
-| `DerivedFromEpisodeIds` is null | Replace with `ImmutableArray<string>.Empty` | `Normalize` |
-| `PositiveEvidence` / `NegativeEvidence` is null | Replace with `ImmutableArray<EvidenceItem>.Empty` | `Normalize` |
-| `Properties` is null | Replace with `ImmutableDictionary<string,string>.Empty` | `Normalize` |
+| `DerivedFromEpisodeIds.IsDefault` (struct default) | Replace with `ImmutableArray<string>.Empty` | `Normalize` |
+| `PositiveEvidence.IsDefault` / `NegativeEvidence.IsDefault` | Replace with `ImmutableArray<EvidenceItem>.Empty` | `Normalize` |
+| `Properties` is null (reference type) | Replace with `ImmutableDictionary<string,string>.Empty` | `Normalize` |
 | Duplicate entries in `DerivedFromEpisodeIds` | Deduplicate via `Distinct()` | `Normalize` |
 | `previous` exists and `record.Tier < previous.Tier` | Throw `InvalidTierException` (demotion) | `Validate` |
 | `previous` exists and `record.Category != previous.Category` | Throw `InvalidCategoryChangeException` | `Validate` |
@@ -106,7 +106,7 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
 - **Step 1.1.1**: Make `ExpertiseRecord` fully immutable and introduce `TierPolicy`
 
   Fixes D1, D2, D3. **ExpertiseRecord.cs** changes:
-  - `Tier { get; set; }` → `Tier { get; init; }`. Remove `= MemoryTier.Interaction` default. Make `required`.
+  - `Tier { get; set; }` → `Tier { get; init; } = MemoryTier.Interaction;`. Keep the default (do **not** add `required` — see deserialization strategy below).
   - `Confidence { get; set; }` → `Confidence { get; init; }` (default 0.5 stays).
   - `EpisodeCount { get; set; }` → `EpisodeCount { get; init; }`.
   - `Summary { get; set; }` → `Summary { get; init; }`.
@@ -120,6 +120,15 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
   - `Dictionary<string, string> Properties` → `ImmutableDictionary<string, string> Properties { get; init; } = ImmutableDictionary<string, string>.Empty`.
   - Add `public ExpertiseRecord With(...)` copy helper — accepts optional params, defaults to current values.
 
+  **Why not `required Tier`**: Making `Tier` a `required init` property breaks legacy JSON deserialization — files missing a `tier` field would throw `JsonException` before `TierPolicy.Normalize` can repair them. Instead, we keep the `= MemoryTier.Interaction` default and enforce correctness at the **store boundary** via `TierPolicy.Normalize` on every load and upsert. New code paths that forget `Tier` will get the default, which `Normalize` corrects to `DefaultTierFor(category)`.
+
+  **Deserialization strategy — `ExpertiseRecordJsonConverter`**: Add a custom `JsonConverter<ExpertiseRecord>` registered in `FileSystemAgentMemoryStore.JsonOptions`. The converter handles:
+  - Missing `tier` field → defaults to `MemoryTier.Interaction` (corrected by `Normalize` on load).
+  - Unknown `tier` value → defaults to `MemoryTier.Interaction` with warning log.
+  - Missing `ImmutableArray` fields (`DerivedFromEpisodeIds`, `PositiveEvidence`, `NegativeEvidence`) → deserializes as `ImmutableArray<T>.Empty` (not `default`, avoiding `IsDefault` at source).
+  - Missing `ImmutableDictionary` field (`Properties`) → deserializes as `ImmutableDictionary<string, string>.Empty`.
+  This converter is the **first line of defense**; `TierPolicy.Normalize` is the **second** on every store load.
+
   **TierPolicy.cs** — new file:
   - `static class TierPolicy`
   - `AllowedTiers(ExpertiseCategory)` → `IReadOnlySet<MemoryTier>`. Exhaustive switch, 11 cases, no wildcard.
@@ -130,10 +139,11 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
 
   **MemoryModels.cs** — delete `TierMapping` class (lines 201–231).
   **AgentMemory.csproj** — add `System.Collections.Immutable` package reference.
+  **ExpertiseRecordJsonConverter.cs** — new file (see deserialization strategy above).
 
-  Tests: all 11 categories × `DefaultTierFor`; FailurePattern at Interaction → corrected to Query; Confidence clamping; null collections → empty; demotion throws; promotion passes; category change throws; reflection test (no public `set`); JSON round-trip with immutable collections.
+  Tests: all 11 categories × `DefaultTierFor`; FailurePattern at Interaction → corrected to Query; Confidence clamping; `IsDefault` collections → empty (see below); demotion throws; promotion passes; category change throws; reflection test (no public `set`); JSON round-trip with immutable collections; legacy JSON missing `tier` field deserializes correctly; legacy JSON missing collection fields deserializes to empty (not `IsDefault`).
 
-  `expectedFileChanges`: 8
+  `expectedFileChanges`: 9
 
 ### Stage 1.2 — Store Enforcement & Evolver Mutation Rewrite
 
@@ -159,9 +169,10 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
 - **Step 1.3.1**: Idempotent promotion with deterministic IDs
 
   Fixes D7. **MemoryEvolver.cs** `CreatePromotedExpertiseAsync`:
-  - Replace `$"exp-promo-{Guid.NewGuid():N}"` with deterministic `$"exp-promo-{targetTier}-{ComputeStableHash(groupKey)}"`.
+  - Replace `$"exp-promo-{Guid.NewGuid():N}"` with deterministic `$"exp-promo-{targetTier}-{ComputeStableHash(category + '|' + sourceTier + '|' + groupKey)}"`.
+  - The hash input includes `category` and `sourceTier` alongside `groupKey` to prevent collisions between unrelated source groups that share a groupKey (e.g., two different categories promoting to the same tier with the same file path as groupKey).
   - Before creating: check if `store.GetExpertiseAsync(promotedId)` returns existing record.
-  - If exists: **upsert** with updated confidence, episode count, derived IDs, and summary. Reconcile `PromotedTo` edges (skip existing, add missing).
+  - If exists: **upsert** with updated confidence, episode count, and summary. Reconcile source membership: merge new `DerivedFromEpisodeIds` into existing. Reconcile `PromotedTo` edges (skip existing, add missing).
   - If not exists: create new record + edges as before.
   - `ComputeStableHash` uses SHA256 truncated to 16 hex chars for deterministic IDs.
 
@@ -223,7 +234,7 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
 
 - **Step 1.5.2**: Minimal memory configuration
 
-  `AgentMemoryOptions` with `StrictTierEnforcement` (default: true), `StoragePath`, `FallbackToFileSystem` (default: true). Both modes enforce invariants; strict mode is silent, non-strict logs warnings. Wire into `ServiceCollectionExtensions.AddAgentMemory()`. Tests: strict enforcement default, store selection.
+  `AgentMemoryOptions` with `WarnOnTierCorrection` (default: false), `StoragePath`, `FallbackToFileSystem` (default: true). When `WarnOnTierCorrection` is false (default), `Normalize` corrects silently. When true, corrections are logged via `ILogger.LogWarning`. Both modes always enforce invariants. Wire into `ServiceCollectionExtensions.AddAgentMemory()`. Tests: default `WarnOnTierCorrection` is false, store selection, warning logged when enabled.
 
   `expectedFileChanges`: 4
 
@@ -390,13 +401,17 @@ Wire agent memory into the agent lifecycle with correct symbol identity.
 | No public `set` on ExpertiseRecord (reflection) | D1 | All properties are `init`-only |
 | `ImmutableArray.Add` returns new array | D2 | Original unchanged |
 | JSON round-trip preserves immutable types | D2 | Deserialized collections are `ImmutableArray`/`ImmutableDictionary` |
+| Legacy JSON missing `tier` field deserializes | D1, D2 | `ExpertiseRecordJsonConverter` defaults to `Interaction`; `Normalize` corrects |
+| Legacy JSON missing collection fields | D2 | Deserializes to `.Empty`, not `.IsDefault` |
+| `ImmutableArray.IsDefault` normalization | D2 | `Normalize` replaces `IsDefault` arrays with `.Empty` |
 | `TierPolicy.Normalize`: FailurePattern at Interaction | D3, D6 | Corrected to Query |
 | `TierPolicy.Normalize`: Confidence clamping | D3 | -0.5 → 0.0; 1.5 → 1.0 |
 | `TierPolicy.Validate`: demotion throws | D3 | Query→Interaction throws `InvalidTierException` |
 | Store upsert normalizes invalid tier | D4 | Record persisted with corrected tier |
 | Store read returns immutable instance | D5 | Attempt to mutate → compile error |
 | FailurePattern creation at Query tier | D6 | Consolidation creates with correct tier |
-| Repeated `PromoteAsync` — same IDs | D7 | Second run returns same expertise ID; fields updated |
+| Repeated `PromoteAsync` — same IDs | D7 | Second run returns same expertise ID (category+sourceTier+groupKey stable); fields updated |
+| Promotion ID includes category+sourceTier | D7 | Different categories with same groupKey produce distinct IDs |
 | Repeated `DetectCoChangesAsync` — same edge IDs | D8 | Second run returns same edge ID; weight updated |
 | Agent-scoped context excludes other agents | D9 | Query with AgentId="A" → no episodes from AgentId="B" |
 | Branch filter in context | D9 | Same-branch episodes ranked higher |
@@ -415,6 +430,7 @@ Wire agent memory into the agent lifecycle with correct symbol identity.
 - **MemGPT-style paging** — Context windows fit within current limits.
 - **Fine-tuning / model adaptation** — Memory is retrieval-time only.
 - **`record class` for ExpertiseRecord** — Equality semantic change too risky.
+- **`required` keyword on `Tier`** — Breaks legacy JSON deserialization; store-boundary enforcement via `TierPolicy.Normalize` is safer and sufficient.
 - **Optimistic concurrency** — Deferred to Phase 4 background service.
 - **Full immutability for Episode/MemoryEdge/CallChain** — Lower risk; deferred (noted as future work).
 - **Reusing `IGraphStore` for memory** — Lacks memory CRUD, hardcodes `:CodeNode` label.
