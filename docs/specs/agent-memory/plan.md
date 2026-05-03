@@ -1,105 +1,229 @@
 # Agent Memory — Implementation Plan
 
 > **Work Item**: Agent Memory (WI-1035)
-> **Status**: Planning (iteration 6)
+> **Status**: Planning (iteration 7)
 > **Research Basis**: [Graph-based Agent Memory Survey](https://arxiv.org/abs/2602.05665) (DEEP-PolyU)
 
 ## Problem Statement
 
 Agents start every session blank — re-discovering repo structure, re-tracing call chains, and re-learning conventions. We need a graph-based agent memory system that builds persistent expertise on top-down repository structure and call-chain context, so agents can learn and get smarter across sessions.
 
-The `AgentMemory` library already provides a domain model (Episode, ExpertiseRecord, CallChain, MemoryEdge), two storage backends (in-memory and file-system), a staged ContextBuilder, and a MemoryEvolver with consolidation, decay, promotion, and co-change detection. However, the library has six correctness defects that must be fixed before any further features are safe to add, and several integration gaps must be bridged before agents can actually use the memory.
+The `AgentMemory` library already provides a domain model (`Episode`, `ExpertiseRecord`, `CallChain`, `MemoryEdge`), two storage backends (in-memory, file-system), a staged `ContextBuilder`, and a `MemoryEvolver` with consolidation, decay, promotion, and co-change detection. However, the library has **ten correctness defects** that must be fixed before further features are safe to add.
 
 ### Root Defects
 
-| # | Defect | Impact |
-|---|--------|--------|
-| D1 | `ExpertiseRecord` has 8 mutable `set` properties | Callers retrieve from store and mutate live reference |
-| D2 | Collections are mutable `List<>`/`Dictionary<>` | MemoryEvolver calls `AddRange`/`Add` on retrieved objects |
-| D3 | `TierMapping` is passive — never called on upsert | Invalid tier/category combinations persist silently |
-| D4 | Stores persist without normalization/validation | No checks at persistence boundary |
-| D5 | All read paths return live mutable references | Caller mutation corrupts store state |
-| D6 | `FailurePattern` records created without `Tier` | Defaults to `Interaction`; should be `Query` |
+| # | Defect | Location | Impact |
+|---|--------|----------|--------|
+| D1 | `ExpertiseRecord` has 8 mutable `set` properties (`Tier`, `Confidence`, `EpisodeCount`, `Summary`, `LastValidated`, `CommitSha`, `Branch`, `AccessCount`) | ExpertiseRecord.cs:36–95 | Callers mutate live store references |
+| D2 | Collections `DerivedFromEpisodeIds`, `PositiveEvidence`, `NegativeEvidence`, `Properties` are mutable `List<>`/`Dictionary<>` | ExpertiseRecord.cs:52–101 | MemoryEvolver calls `.AddRange()`/`.Add()` on retrieved objects |
+| D3 | `TierMapping` is passive — never called on upsert or creation | MemoryModels.cs:201–231 | Invalid tier/category combos persist silently |
+| D4 | Stores persist without normalization/validation | InMemoryAgentMemoryStore.cs:126, FileSystemAgentMemoryStore.cs:160 | `this.expertise[record.Id] = record` with no checks |
+| D5 | Read paths return live mutable references | InMemoryAgentMemoryStore.cs:131–163, FileSystemAgentMemoryStore.cs:165–196 | Caller mutates → store state corrupted |
+| D6 | `FailurePattern` records created without `Tier` | MemoryEvolver.cs:543–561 | Defaults to `Interaction`; `DefaultTierFor(FailurePattern)` is `Query` |
+| D7 | `PromoteAsync` creates new promoted records every run — not idempotent | MemoryEvolver.cs:671–716 | Duplicate stale records accumulate |
+| D8 | `DetectCoChangesAsync` creates new `CoChangedWith` edges and co-change groups every run — not idempotent | MemoryEvolver.cs:837–879 | Duplicate edges distort retrieval |
+| D9 | `ContextBuilder.GenerateCandidatesAsync` never applies `ContextRequest.AgentId` to episode filters | ContextBuilder.cs:90–152 | Agent-scoped context includes unrelated agents' episodes |
+| D10 | `FileSystemAgentMemoryStore.LoadAsync` catches `JsonException` and returns empty dict — silently discards data | FileSystemAgentMemoryStore.cs:492–496 | Corrupted files appear as valid empty memory |
+
+### Additional Defects Discovered
+
+| # | Defect | Location | Impact |
+|---|--------|----------|--------|
+| D11 | `ContextBuilder.AssembleContextWindow` collects `StructuralNodes`/`RelationalEdges` but never includes them in output | ContextBuilder.cs:312–373 | Graph-backed retrieval produces no structural context |
+| D12 | `ContextBuilder` always pulls high-confidence `PatternKnowledge` regardless of task relevance | ContextBuilder.cs:181–187 | Unrelated institutional knowledge crowds out task-specific context |
+
+### Complete MemoryEvolver Mutation Site Audit
+
+| Method | Lines | Mutation |
+|--------|-------|----------|
+| `DecayAsync` | 336 | `expertise.Confidence = newConfidence` |
+| `ConsolidateFileExpertiseAsync` | 357–383 | `current.EpisodeCount=...; current.Confidence=...; current.DerivedFromEpisodeIds.AddRange(...); current.PositiveEvidence.Add(...); current.Summary=...` |
+| `ConsolidateSymbolExpertiseAsync` | 452–458 | `current.EpisodeCount=...; current.Confidence=...; current.DerivedFromEpisodeIds.AddRange(...); current.Summary=...` |
+| `ConsolidateFailurePatternAsync` (update) | 513–534 | `current.EpisodeCount=...; current.LastValidated=...; current.DerivedFromEpisodeIds.AddRange(...); current.NegativeEvidence.Add(...); current.Summary=...` |
+| `ConsolidateFailurePatternAsync` (create) | 543–561 | `new ExpertiseRecord { ... }` without `Tier` (D6) |
+| `CreatePromotedExpertiseAsync` | 682–697 | Creates new record with `Guid` ID every run (D7) |
+| `DetectCoChangesAsync` (edges) | 837–851 | Creates new `CoChangedWith` edges with `Guid` ID every run (D8) |
+| `DetectCoChangesAsync` (groups) | 864–877 | Creates new `CoChangeGroup` expertise with `Guid` ID every run (D8) |
+| `GetExpertiseByTierFallbackAsync` | 726 | References `TierMapping.DefaultTierFor` (will break when TierMapping deleted) |
 
 ### Key Constraints
 
 - **Persistence boundary**: Memory needs separate labels from `Ast.GraphDb.IGraphStore` (which hardcodes `:CodeNode`).
 - **Cross-backend invariant**: Tier enforcement must be uniform across InMemory, FileSystem, and future Neo4j.
-- **Graph coexistence**: Memory graph and code graph share a Neo4j instance but use separate labels — clearing one must not affect the other.
-- **Branch scoping**: Multi-worktree repos require branch-aware retrieval to avoid wrong-branch contamination.
-- **Single-writer concurrency**: Stores are single-writer per session; no optimistic concurrency in Phase 1.
+- **Graph coexistence**: Memory graph and code graph share a Neo4j instance; separate labels, clearing one must not affect the other.
+- **Branch scoping**: Multi-worktree repos require branch-aware retrieval. `EpisodeFilter` and `ContextRequest` need explicit `Branch` fields.
+- **Single-writer**: Stores are single-writer per session; no optimistic concurrency in Phase 1.
 
 ## Architectural Approach
 
-The design adopts a **hybrid hierarchical graph** from the survey taxonomy, drawing on six key systems:
+The design adopts a **hybrid hierarchical graph** from the survey taxonomy:
 
 | Source | Key Idea | Applied Here |
 |--------|----------|--------------|
 | **G-Memory** (arXiv:2506.07398) | 3-tier hierarchy: Insight → Query → Interaction | `MemoryTier` enum + `TierPolicy` enforcement mapping to repo structure |
-| **MAGMA** (arXiv:2601.03236) | Multi-graph with orthogonal views (semantic, temporal, causal) | Multi-signal reranking in `ContextBuilder` with branch-aware scoring |
-| **Zep/Graphiti** (arXiv:2501.13956) | Temporally-aware knowledge graph | `CommitSha` freshness, half-life decay, validity windows |
+| **MAGMA** (arXiv:2601.03236) | Multi-graph with orthogonal views | Multi-signal reranking in `ContextBuilder` with branch-aware scoring |
+| **Zep/Graphiti** (arXiv:2501.13956) | Temporally-aware KG | `CommitSha` freshness, half-life decay |
 | **Mem0** (arXiv:2504.19413) | Scalable graph consolidation with write gating | `MemoryEvolver` consolidation + decay + episode quality filter |
-| **HyperGraphRAG** (arXiv:2503.21322) | N-ary relation modeling via hyperedges | `CallChain` (ordered n-ary method sequences) |
-| **ExpeL** (AAAI'24) | Insight distillation from experience without fine-tuning | Episode → expertise consolidation with diversity gates |
+| **HyperGraphRAG** (arXiv:2503.21322) | N-ary relation modeling | `CallChain` (ordered n-ary method sequences) |
+| **ExpeL** (AAAI'24) | Insight distillation from experience | Episode → expertise consolidation |
 
 ### Key Design Decisions
 
 | Decision | Rationale |
 |----------|-----------|
-| **`ExpertiseRecord` stays `class`, NOT `record class`** | Avoids equality semantic change affecting `HashSet`/`Dictionary` behavior. Instead: `init`-only + `ImmutableArray`/`ImmutableDictionary` + `With(...)` copy helper. |
-| **`TierPolicy` replaces `TierMapping`** | Single authority with exhaustive switch on all 11 `ExpertiseCategory` values. Normalize → Validate at upsert boundary. |
-| **Language-aware symbol IDs** | Use Roslyn documentation comment IDs (e.g., `M:Namespace.Type.Method(ParamType)`) for C# symbols, with arity/signature to disambiguate overloads, generics, and nested types. Fallback to `path:line` for unresolved symbols. |
-| **Separate graph labels for memory vs code** | `:MemoryEpisode`, `:MemoryExpertise` labels in Neo4j alongside existing `:CodeNode`. Cross-graph references via foreign-key IDs, not native Neo4j relationships, to isolate clear/reseed operations. |
-| **Branch-aware retrieval** | Context queries prefer same-branch memory, penalize cross-branch results, and include branch mismatch warnings. Prevents wrong-worktree contamination. |
-| **Write gating for episodes** | Episode recording middleware deduplicates near-identical episodes, requires minimum evidence/outcome quality, and suppresses trivial read-only operations. Prevents memory flooding. |
-| **Single-writer concurrency** | Serialized by `SemaphoreSlim`. Deferred to Phase 4 when background service is introduced. |
+| **`ExpertiseRecord` stays `class`, NOT `record class`** | `record class` changes equality semantics (value equality), which would alter `HashSet`/`Dictionary` behavior in ContextBuilder and MemoryEvolver. Instead: keep `class`, change all `set` → `init`, add `With(...)` copy helper, use `ImmutableArray<T>`/`ImmutableDictionary<TK,TV>` for collections. |
+| **`TierPolicy` replaces `TierMapping`** | Single authority. `AllowedTiers(category)` → per-category allowed tier sets. `Normalize(record)` returns corrected copy. `Validate(record, previous?)` rejects invalid combos. Exhaustive `switch` on all 11 `ExpertiseCategory` values — no wildcard default. |
+| **Deterministic IDs for idempotent evolution** | `PromoteAsync` uses deterministic ID `exp-promo-{tier}-{groupKey-hash}` instead of `Guid`. `DetectCoChangesAsync` uses `edge-cc-{source-hash}-{target-hash}` for edges and `exp-cc-{files-sorted-hash}` for groups. Repeated runs converge to same state. Upsert semantics recompute confidence/metadata. |
+| **ContextBuilder AgentId/Branch propagation** | All `EpisodeFilter` instances in `GenerateCandidatesAsync` must propagate `request.AgentId` and `request.Branch`. Add `Branch` field to `EpisodeFilter` and `ContextRequest`. |
+| **Corrupted JSON quarantine, not silent recovery** | `FileSystemAgentMemoryStore.LoadAsync` renames corrupted files to `{path}.quarantine.{timestamp}`, logs a warning, returns empty store in degraded mode. `MemoryStatistics` gains `QuarantinedFileCount` and `IsDegradedStartup`. |
+| **Graph context assembly fix** | `AssembleContextWindow` must populate `ContextWindow.StructuralNodes` and `RelationalEdges` from candidates, not silently drop them. |
+| **StrictTierEnforcement** | When `true` (default): `Normalize` corrects invalid tiers silently. When `false`: `Normalize` corrects AND logs a warning. Both modes enforce; the difference is observability. Invalid records are **never** persisted in either mode. |
 
 ### ExpertiseRecord Invariant Matrix
 
-Every store `UpsertExpertiseAsync` enforces these invariants via `TierPolicy`:
+Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
 
 | Input Condition | Behavior | Method |
 |----------------|----------|--------|
 | `Tier` not in `AllowedTiers(Category)` | Replace with `DefaultTierFor(Category)` | `Normalize` |
-| `Confidence < 0` or `> 1` | Clamp to `[0.0, 1.0]` | `Normalize` |
-| Null collections | Replace with empty immutable collections | `Normalize` |
-| Duplicate `DerivedFromEpisodeIds` | Deduplicate via `Distinct()` | `Normalize` |
-| Demotion (`record.Tier < previous.Tier`) | Throw `InvalidTierException` | `Validate` |
-| Category change from previous record | Throw `InvalidCategoryChangeException` | `Validate` |
+| `Confidence < 0` | Clamp to `0.0` | `Normalize` |
+| `Confidence > 1` | Clamp to `1.0` | `Normalize` |
+| `DerivedFromEpisodeIds` is null | Replace with `ImmutableArray<string>.Empty` | `Normalize` |
+| `PositiveEvidence` / `NegativeEvidence` is null | Replace with `ImmutableArray<EvidenceItem>.Empty` | `Normalize` |
+| `Properties` is null | Replace with `ImmutableDictionary<string,string>.Empty` | `Normalize` |
+| Duplicate entries in `DerivedFromEpisodeIds` | Deduplicate via `Distinct()` | `Normalize` |
+| `previous` exists and `record.Tier < previous.Tier` | Throw `InvalidTierException` (demotion) | `Validate` |
+| `previous` exists and `record.Category != previous.Category` | Throw `InvalidCategoryChangeException` | `Validate` |
 
 ---
 
-## Phase 1 — Domain Hardening
+## Phase 1 — Domain Hardening & Context Correctness
 
-**Goal**: Fix all six root defects. Ordered: immutability first, then policy, then store enforcement, then migration.
+**Goal**: Fix all twelve defects. Ordered: immutability first (prevents regressions), then policy, then store enforcement, then evolver mutation rewrite, then context correctness, then persistence resilience.
 
 ### Stage 1.1 — Immutable ExpertiseRecord & TierPolicy
 
 - **Step 1.1.1**: Make `ExpertiseRecord` fully immutable and introduce `TierPolicy`
 
-  Fixes D1, D2, D3. Change all `set` → `init` on ExpertiseRecord, replace mutable collections with `ImmutableArray<T>`/`ImmutableDictionary<TK,TV>`, add `With(...)` copy helper. Create `TierPolicy.cs` with exhaustive switch (11 categories) for `AllowedTiers`, `DefaultTierFor`, `Normalize`, `Validate`. Delete passive `TierMapping` from MemoryModels.cs. Add `System.Collections.Immutable` package. Tests: tier matrix, immutability reflection, JSON round-trip.
+  Fixes D1, D2, D3. **ExpertiseRecord.cs** changes:
+  - `Tier { get; set; }` → `Tier { get; init; }`. Remove `= MemoryTier.Interaction` default. Make `required`.
+  - `Confidence { get; set; }` → `Confidence { get; init; }` (default 0.5 stays).
+  - `EpisodeCount { get; set; }` → `EpisodeCount { get; init; }`.
+  - `Summary { get; set; }` → `Summary { get; init; }`.
+  - `LastValidated { get; set; }` → `LastValidated { get; init; }`.
+  - `CommitSha { get; set; }` → `CommitSha { get; init; }`.
+  - `Branch { get; set; }` → `Branch { get; init; }`.
+  - `AccessCount { get; set; }` → `AccessCount { get; init; }`.
+  - `List<string> DerivedFromEpisodeIds` → `ImmutableArray<string> DerivedFromEpisodeIds { get; init; } = ImmutableArray<string>.Empty`.
+  - `List<EvidenceItem> PositiveEvidence` → `ImmutableArray<EvidenceItem> PositiveEvidence { get; init; } = ImmutableArray<EvidenceItem>.Empty`.
+  - `List<EvidenceItem> NegativeEvidence` → `ImmutableArray<EvidenceItem> NegativeEvidence { get; init; } = ImmutableArray<EvidenceItem>.Empty`.
+  - `Dictionary<string, string> Properties` → `ImmutableDictionary<string, string> Properties { get; init; } = ImmutableDictionary<string, string>.Empty`.
+  - Add `public ExpertiseRecord With(...)` copy helper — accepts optional params, defaults to current values.
+
+  **TierPolicy.cs** — new file:
+  - `static class TierPolicy`
+  - `AllowedTiers(ExpertiseCategory)` → `IReadOnlySet<MemoryTier>`. Exhaustive switch, 11 cases, no wildcard.
+  - `DefaultTierFor(ExpertiseCategory)` → `MemoryTier`. Exhaustive switch, 11 cases, no wildcard.
+  - `Normalize(ExpertiseRecord)` → `ExpertiseRecord`. Applies invariant matrix.
+  - `Validate(ExpertiseRecord, ExpertiseRecord?)` → throws on demotion or category change.
+  - `InvalidTierException : ArgumentException`.
+
+  **MemoryModels.cs** — delete `TierMapping` class (lines 201–231).
+  **AgentMemory.csproj** — add `System.Collections.Immutable` package reference.
+
+  Tests: all 11 categories × `DefaultTierFor`; FailurePattern at Interaction → corrected to Query; Confidence clamping; null collections → empty; demotion throws; promotion passes; category change throws; reflection test (no public `set`); JSON round-trip with immutable collections.
 
   `expectedFileChanges`: 8
 
-### Stage 1.2 — Store Enforcement
+### Stage 1.2 — Store Enforcement & Evolver Mutation Rewrite
 
-- **Step 1.2.1**: TierPolicy enforcement in stores and MemoryEvolver mutation rewrite
+- **Step 1.2.1**: TierPolicy enforcement in stores and MemoryEvolver copy-construction rewrite
 
-  Fixes D4, D5, D6. Add `TierPolicy.Normalize` + `Validate` to both `InMemoryAgentMemoryStore` and `FileSystemAgentMemoryStore` upsert paths. Rewrite all 7 MemoryEvolver in-place mutation sites to use immutable copy construction. Tests: upsert validation, consolidation immutability, decay copy semantics.
+  Fixes D4, D5, D6. **InMemoryAgentMemoryStore.cs** `UpsertExpertiseAsync`: `var normalized = TierPolicy.Normalize(record); TierPolicy.Validate(normalized, existing); this.expertise[normalized.Id] = normalized;`. Same for **FileSystemAgentMemoryStore.cs**.
 
-  `expectedFileChanges`: 8
+  **MemoryEvolver.cs** — rewrite ALL 8 mutation sites:
+  - `DecayAsync` (line 336): replace `expertise.Confidence = newConfidence` with `var decayed = expertise.With(confidence: newConfidence); await this.store.UpsertExpertiseAsync(decayed)`.
+  - `ConsolidateFileExpertiseAsync` update (lines 357–383): build new `ExpertiseRecord` via copy-construction — `new ExpertiseRecord { Id = current.Id, Subject = current.Subject, Category = current.Category, Tier = current.Tier, EpisodeCount = episodes.Count, Confidence = ..., DerivedFromEpisodeIds = current.DerivedFromEpisodeIds.AddRange(newIds), ... }`.
+  - `ConsolidateSymbolExpertiseAsync` update (lines 452–458): same copy-construction pattern.
+  - `ConsolidateFailurePatternAsync` update (lines 513–534): same pattern.
+  - `ConsolidateFailurePatternAsync` create (lines 543–561): add explicit `Tier = TierPolicy.DefaultTierFor(ExpertiseCategory.FailurePattern)` (= `Query`).
+  - `GetExpertiseByTierFallbackAsync` (line 726): replace `TierMapping.DefaultTierFor` → `TierPolicy.DefaultTierFor`.
+  - All create paths: use `ImmutableArray.CreateRange()` instead of `List<T>`.
 
-### Stage 1.3 — Migration & Basic Config
+  Tests: store rejects demotion; store normalizes invalid tier on upsert; consolidation produces new records (original unchanged); decay produces new record; FailurePattern created at Query tier.
 
-- **Step 1.3.1**: Legacy record repair-on-load
+  `expectedFileChanges`: 6
 
-  FileSystemAgentMemoryStore normalizes all deserialized records via `TierPolicy.Normalize` on load. Quarantine records with undefined `Category` values. Add `AutoNormalizedCount` and `QuarantinedCount` to MemoryStatistics. Tests: fixture with bad tiers → corrected.
+### Stage 1.3 — Idempotent Evolution
+
+- **Step 1.3.1**: Idempotent promotion with deterministic IDs
+
+  Fixes D7. **MemoryEvolver.cs** `CreatePromotedExpertiseAsync`:
+  - Replace `$"exp-promo-{Guid.NewGuid():N}"` with deterministic `$"exp-promo-{targetTier}-{ComputeStableHash(groupKey)}"`.
+  - Before creating: check if `store.GetExpertiseAsync(promotedId)` returns existing record.
+  - If exists: **upsert** with updated confidence, episode count, derived IDs, and summary. Reconcile `PromotedTo` edges (skip existing, add missing).
+  - If not exists: create new record + edges as before.
+  - `ComputeStableHash` uses SHA256 truncated to 16 hex chars for deterministic IDs.
+
+  Tests: two consecutive `PromoteAsync` runs → same record IDs, updated fields; new source episodes → existing promoted record updated; no duplicate `PromotedTo` edges.
+
+  `expectedFileChanges`: 4
+
+- **Step 1.3.2**: Idempotent co-change detection with deterministic IDs
+
+  Fixes D8. **MemoryEvolver.cs** `DetectCoChangesAsync`:
+  - Edge IDs: `$"edge-cc-{ComputeStableHash(sortedPair)}"` instead of `Guid`.
+  - Before adding edge: check `store.GetOutgoingEdgesAsync(sourceFile, CoChangedWith)` — if edge to target exists, update weight/metadata via upsert.
+  - Group IDs: `$"exp-cc-{ComputeStableHash(sortedFileList)}"` instead of `Guid`.
+  - Before creating group expertise: check `store.GetExpertiseAsync(groupId)` — if exists, upsert with updated confidence.
+
+  Tests: two consecutive `ConsolidateAsync` runs → same edge/group IDs; weight updated on second run; no duplicate edges.
+
+  `expectedFileChanges`: 3
+
+### Stage 1.4 — Context Correctness
+
+- **Step 1.4.1**: ContextBuilder AgentId/Branch filtering and graph assembly fix
+
+  Fixes D9, D11, D12. **ContextBuilder.cs** `GenerateCandidatesAsync`:
+  - Lines 90–98: add `AgentId = request.AgentId, Branch = request.Branch` to `EpisodeFilter`.
+  - Lines 112–119: same.
+  - Lines 147–152: same (neighbor episodes).
+  - Lines 181–187: gate `PatternKnowledge` retrieval on subject relevance — only include if pattern subject overlaps with request files/symbols or if no task-specific candidates exist.
+
+  **ContextBuilder.cs** `AssembleContextWindow` (lines 312–373):
+  - Add `StructuralNodes = candidates.StructuralNodes.Take(request.MaxGraphDepth * 10).ToList()`.
+  - Add `RelationalEdges = candidates.RelationalEdges.Take(request.MaxGraphDepth * 10).ToList()`.
+
+  **ContextWindow.cs** `ContextRequest`: add `public string? Branch { get; init; }`.
+  **ContextWindow.cs** `EpisodeFilter`: add `public string? Branch { get; set; }`.
+  **InMemoryAgentMemoryStore.cs** `GetEpisodesAsync`: add branch filter clause.
+  **FileSystemAgentMemoryStore.cs** `GetEpisodesAsync`: add branch filter clause.
+
+  Tests: AgentId filter applied — agent-scoped query excludes other agents' episodes; Branch filter applied — same-branch preferred; StructuralNodes/RelationalEdges present in output; PatternKnowledge gated by relevance.
 
   `expectedFileChanges`: 7
 
-- **Step 1.3.2**: Minimal memory configuration
+### Stage 1.5 — Persistence Resilience & Config
 
-  `AgentMemoryOptions` with `StrictTierEnforcement` (true), `StoragePath`, `FallbackToFileSystem` (true). Wire into `ServiceCollectionExtensions.AddAgentMemory()`. Defer `EnableNeo4j`/`EnableQdrant` flags to Phase 3/4 when those backends exist. Tests: strict enforcement default, store selection.
+- **Step 1.5.1**: Corrupted JSON quarantine and repair-on-load
+
+  Fixes D10. **FileSystemAgentMemoryStore.cs** `LoadAsync`:
+  - Replace `catch (JsonException) { return new ConcurrentDictionary<string, T>(); }` with:
+    - Rename corrupted file to `{path}.quarantine.{DateTime.UtcNow:yyyyMMddHHmmss}`.
+    - Log warning via `ILogger` (add to constructor).
+    - Set `this.isDegradedStartup = true`.
+    - Return empty dictionary.
+  - `EnsureLoadedAsync`: after loading expertise, run `TierPolicy.Normalize` on each record; persist corrected file.
+  - **MemoryStatistics**: add `int QuarantinedFileCount`, `int AutoNormalizedCount`, `bool IsDegradedStartup`.
+
+  Tests: corrupted JSON → file quarantined with timestamp; original path has clean data; `IsDegradedStartup` is true; bad-tier records normalized on load.
+
+  `expectedFileChanges`: 5
+
+- **Step 1.5.2**: Minimal memory configuration
+
+  `AgentMemoryOptions` with `StrictTierEnforcement` (default: true), `StoragePath`, `FallbackToFileSystem` (default: true). Both modes enforce invariants; strict mode is silent, non-strict logs warnings. Wire into `ServiceCollectionExtensions.AddAgentMemory()`. Tests: strict enforcement default, store selection.
 
   `expectedFileChanges`: 4
 
@@ -107,19 +231,19 @@ Every store `UpsertExpertiseAsync` enforces these invariants via `TierPolicy`:
 
 ## Phase 2 — Identity, Integration & Context Injection
 
-Wire agent memory into the agent lifecycle with correct symbol identity and branch-aware retrieval.
+Wire agent memory into the agent lifecycle with correct symbol identity.
 
 ### Stage 2.1 — Symbol Identity & Graph Interop
 
 - **Step 2.1.1**: Language-aware symbol identity resolver
 
-  `SymbolIdentity` static class with: `NormalizePath(repoRoot, absolutePath)` → repo-relative forward-slash path; `CanonicalSymbolId(language, namespace, typeName, memberName?, arity?, paramTypes?)` → language-aware stable ID using Roslyn doc-comment ID format for C#; fallback `path:line` for unresolved symbols. Add `FirstSeenCommit` / `LastSeenCommit` validity window fields on ExpertiseRecord. Update EpisodeRecorder to normalize paths. Tests: overloads, generics, nested types, constructors, partials, drive letters, worktrees, UNC, case sensitivity.
+  `SymbolIdentity` static class: `NormalizePath(repoRoot, absolutePath)` → repo-relative forward-slash path; `CanonicalSymbolId(...)` → Roslyn doc-comment ID format for C#; fallback `path:line`. Add `FirstSeenCommit`/`LastSeenCommit` validity window fields on ExpertiseRecord. Update EpisodeRecorder path normalization. Tests: overloads, generics, nested types, drive letters, worktrees.
 
   `expectedFileChanges`: 8
 
 - **Step 2.1.2**: Graph coexistence contract
 
-  Document and implement the rules for memory vs code graph coexistence: memory uses `:MemoryEpisode` / `:MemoryExpertise` labels (separate from `:CodeNode`); cross-graph references use foreign-key string IDs not native relationships; code graph clear/reseed does not delete memory nodes; memory edges to deleted code nodes are flagged as orphaned. Add `IGraphStoreAdapter.IsCodeNodeAlive(symbolId)` for orphan detection. Tests: clear code graph → memory intact; orphan detection.
+  Memory uses `:MemoryEpisode`/`:MemoryExpertise` labels; cross-graph references via foreign-key IDs; code graph clear/reseed does not delete memory nodes. Add `IGraphStoreAdapter.IsCodeNodeAlive(symbolId)` for orphan detection. Tests: clear code graph → memory intact.
 
   `expectedFileChanges`: 6
 
@@ -127,33 +251,27 @@ Wire agent memory into the agent lifecycle with correct symbol identity and bran
 
 - **Step 2.2.1**: Episode recording middleware with write gating
 
-  Hook `IEpisodeRecorder` into agent orchestrator lifecycle (start/complete). Classify `TouchType` from tool name. **Write gating**: deduplicate near-identical episodes (same agent + same files within 5 min), require minimum evidence count (≥1 observation), suppress trivial read-only episodes, require non-InProgress outcome. Tests: lifecycle, dedup, suppression.
+  Hook `IEpisodeRecorder` into orchestrator lifecycle. Write gating: dedup near-identical episodes (same agent + files within 5 min), require ≥1 observation, suppress trivial read-only, require non-InProgress outcome. Tests: lifecycle, dedup, suppression.
 
   `expectedFileChanges`: 8
 
 - **Step 2.2.2**: Symbol resolution for touched files
 
-  Resolve touched file paths → `HypergraphNode` IDs via `IGraphStoreAdapter`. Graceful degraded mode (file-only episodes when graph unavailable). Tests: with/without graph store.
+  Resolve file paths → `HypergraphNode` IDs via `IGraphStoreAdapter`. Graceful degraded mode. Tests: with/without graph store.
 
   `expectedFileChanges`: 5
 
-### Stage 2.3 — Context Injection & Branch Scoping
+### Stage 2.3 — Context Enhancement
 
-- **Step 2.3.1**: Branch-aware tier-ordered retrieval
+- **Step 2.3.1**: Branch-aware tier-ordered retrieval with provenance
 
-  Query `ITieredExpertiseStore` by tier: Insight → Query → Interaction (top-down). Token budget per tier. **Branch scoping**: prefer same-branch memory (1.0x), penalize cross-branch (0.5x), add branch-mismatch freshness warnings. Format `ContextWindow` as structured markdown with tier section labels. Tests: same-branch preference, cross-branch penalty, budget enforcement.
+  Query `ITieredExpertiseStore` by tier: Insight → Query → Interaction. Token budget per tier. Branch scoring: same-branch 1.0×, default-branch 0.7×, cross-branch 0.5×. `Provenance` enum (`AgentObserved`, `StaticAnalysis`, `GitSeeded`, `Consolidated`, `Promoted`) on `MemoryEdge`, `CallChain`, `ExpertiseRecord`. Retrieval weights by provenance. Tests: branch preference, provenance scoring.
 
-  `expectedFileChanges`: 8
+  `expectedFileChanges`: 10
 
-- **Step 2.3.2**: Provenance model
+- **Step 2.3.2**: Minimal retrieval evaluation harness
 
-  `Provenance` enum (`AgentObserved`, `StaticAnalysis`, `GitSeeded`, `Consolidated`, `Promoted`) on `MemoryEdge`, `CallChain`, `ExpertiseRecord` (init-only). Retrieval scoring weights by provenance. Tests: provenance on all creation paths.
-
-  `expectedFileChanges`: 6
-
-- **Step 2.3.3**: Minimal retrieval evaluation harness
-
-  Golden-replay test suite: 5–10 curated queries with expected retrieval results. Measures precision@k, recall, and tier distribution. Runs as integration test. Provides baseline for judging Phase 3/4 improvements. Tests: golden queries pass at threshold.
+  Golden-replay test suite: 5–10 curated queries with expected results. Measures precision@k, recall, tier distribution. Integration test baseline. Tests: golden queries pass at threshold.
 
   `expectedFileChanges`: 5
 
@@ -165,45 +283,33 @@ Wire agent memory into the agent lifecycle with correct symbol identity and bran
 
 - **Step 3.1.1**: Schema DDL, migration, and DI
 
-  Cypher DDL for `:MemoryEpisode`, `:MemoryExpertise` labels with tier/category/confidence indexes. Idempotent migration. Label-scoped constraints separate from `:CodeNode`. DI registration with `AgentMemoryOptions.EnableNeo4j`. Health check. Docker-compose update.
+  Cypher DDL for `:MemoryEpisode`, `:MemoryExpertise` with indexes. Label-scoped constraints. DI with `AgentMemoryOptions.EnableNeo4j`. Docker-compose update.
 
   `expectedFileChanges`: 10
 
-- **Step 3.1.2**: Episode CRUD in Neo4j
+- **Step 3.1.2**: Episode and expertise CRUD in Neo4j
 
-  `Neo4jMemoryStore` episode methods: create, get, query by filter, update, delete. Deserialized copies (no live references). Testcontainers integration tests.
+  `Neo4jMemoryStore` methods with `TierPolicy` enforcement on upsert. Deserialized copies. Testcontainers integration tests.
 
-  `expectedFileChanges`: 8
+  `expectedFileChanges`: 12
 
-- **Step 3.1.3**: Expertise CRUD in Neo4j
+- **Step 3.1.3**: Edges, call chains, and statistics
 
-  Expertise upsert with `TierPolicy.Normalize` + `Validate`. Tier-aware queries. Testcontainers integration tests.
-
-  `expectedFileChanges`: 8
-
-- **Step 3.1.4**: Edges, call chains, and statistics
-
-  Memory edge relationships, Cypher traversals, `ICallChainStore` implementation, tier distribution queries. Statistics aggregation. Integration tests.
+  Memory edge relationships, Cypher traversals, `ICallChainStore`, tier distribution queries. Integration tests.
 
   `expectedFileChanges`: 10
 
 ### Stage 3.2 — Structural Memory Seeder
 
-- **Step 3.2.1**: Solution and project hierarchy seeding
+- **Step 3.2.1**: Solution/project/namespace hierarchy seeding
 
-  Walk `HypergraphData.Metadata.Projects` to create `ProjectExpertise` records at Query tier via `TierPolicy.DefaultTierFor`. `ContainedIn` edges for project→solution. Idempotent (skip if existing record has higher confidence). Tests: idempotent reseeding.
+  Walk `HypergraphData` to create `ProjectExpertise` (Query), `NamespaceExpertise` (Query), `TypeExpertise` (Interaction) records. `ContainedIn` edges. Idempotent with deterministic IDs. Tests: idempotent reseeding.
 
-  `expectedFileChanges`: 7
+  `expectedFileChanges`: 10
 
-- **Step 3.2.2**: Namespace and type surface seeding
+- **Step 3.2.2**: Rename detection and rebinding
 
-  `NamespaceExpertise` (Query), `TypeExpertise` (Interaction), `MethodExpertise` (Interaction) from `HypergraphNode` data. `ContainedIn` edges for type→namespace→project. Tests: hierarchy integrity.
-
-  `expectedFileChanges`: 8
-
-- **Step 3.2.3**: Rename detection and rebinding
-
-  Detect renamed symbols by comparing old symbol IDs against new extraction. Repoint memory edges and expertise records to new IDs. Mark old IDs as aliases. Tests: rename → edges rebound, old ID lookup → redirected.
+  Compare old symbol IDs → new extraction. Repoint memory edges/expertise. Mark old IDs as aliases. Tests: rename → edges rebound.
 
   `expectedFileChanges`: 7
 
@@ -211,13 +317,13 @@ Wire agent memory into the agent lifecycle with correct symbol identity and bran
 
 - **Step 3.3.1**: Static call chain extractor
 
-  DFS from entry points through `Hyperedge` with `MethodInvocation` type. `CallChain` with `Provenance.StaticAnalysis`. Max depth 8, cycle detection. `CallChainPattern` expertise at Query tier. Tests: cycles, depth limit, entry point detection.
+  DFS through `Hyperedge` MethodInvocation. `CallChain` with `Provenance.StaticAnalysis`. Max depth 8, cycle detection. Tests: cycles, depth limit.
 
   `expectedFileChanges`: 8
 
 - **Step 3.3.2**: Git co-change seeder
 
-  Parse `git log --name-only` for co-modified file pairs. Jaccard similarity with minimum count (≥3) and threshold (≥0.3) gates. `CoChangedWith` edges with `Provenance.GitSeeded`. SHA watermark for incremental runs. Tests: Jaccard calculation, watermark skip.
+  Parse `git log --name-only`. Jaccard with min count/threshold gates. `CoChangedWith` edges with `Provenance.GitSeeded`. SHA watermark. Tests: Jaccard calculation, watermark.
 
   `expectedFileChanges`: 7
 
@@ -227,23 +333,17 @@ Wire agent memory into the agent lifecycle with correct symbol identity and bran
 
 ### Stage 4.1 — Feedback Loop
 
-- **Step 4.1.1**: Outcome-based reinforcement
+- **Step 4.1.1**: Outcome-based reinforcement and staleness detection
 
-  On episode completion, reinforce expertise for touched symbols: boost confidence for successful outcomes, reduce for failures. Immutable updates via copy construction through store upsert → TierPolicy. Cap reinforcement at 1.0. Tests: success boost, failure penalty, cap.
+  Reinforce expertise confidence on episode completion. Compare `CommitSha` against HEAD for staleness. Freshness warnings in `ContextWindow`. Tests: boost/penalty/cap, stale detection.
 
-  `expectedFileChanges`: 5
-
-- **Step 4.1.2**: Staleness detection and invalidation
-
-  Compare expertise `CommitSha` / `LastSeenCommit` against current HEAD. Mark stale expertise (file changed since last validation). Add freshness warnings to `ContextWindow`. Automatic revalidation on access when graph store available. Tests: stale detection, revalidation flow.
-
-  `expectedFileChanges`: 6
+  `expectedFileChanges`: 8
 
 ### Stage 4.2 — Memory Evolution Scheduling
 
 - **Step 4.2.1**: Evolver background service
 
-  `MemoryEvolverService : IHostedService` with configurable interval. `SemaphoreSlim` for single-writer serialization. High-water marks for incremental consolidation. Checkpoint to resume after restart. Tests: serialization, incremental run.
+  `MemoryEvolverService : IHostedService`. `SemaphoreSlim` serialization. High-water marks. Checkpoint/resume. Tests: serialization, incremental run.
 
   `expectedFileChanges`: 7
 
@@ -251,13 +351,13 @@ Wire agent memory into the agent lifecycle with correct symbol identity and bran
 
 - **Step 4.3.1**: Vector memory adapter
 
-  `IVectorMemoryAdapter` bridging to `Ast.VectorDb.IVectorStore`. Qdrant collections for episode summaries and expertise summaries. Semantic search integrated into `ContextBuilder` candidate generation. `AgentMemoryOptions.EnableQdrant` flag. Tests: semantic candidate retrieval.
+  `IVectorMemoryAdapter` bridging to `Ast.VectorDb.IVectorStore`. Qdrant collections. Semantic search in `ContextBuilder`. Tests: semantic retrieval.
 
   `expectedFileChanges`: 9
 
 - **Step 4.3.2**: Metrics and health dashboard
 
-  `IMemoryMetrics` interface: episode rate, consolidation rate, stale-memory percentage, retrieval latency, tier distribution. Golden-replay regression suite (extends Phase 2 harness). Health check endpoint aggregation. Tests: metric collection, regression thresholds.
+  `IMemoryMetrics`: episode rate, consolidation rate, stale %, retrieval latency, tier distribution. Golden-replay regression suite. Tests: metric collection.
 
   `expectedFileChanges`: 8
 
@@ -269,7 +369,7 @@ Wire agent memory into the agent lifecycle with correct symbol identity and bran
 
 - **Step 5.1.1**: MCP query and record tools
 
-  Six MCP tool definitions: `memory_search` (query expertise by subject/category/tier), `memory_context` (build context window for task), `memory_stats` (store statistics), `memory_record_observation` (manual evidence recording), `memory_consolidate` (trigger consolidation), `memory_decay` (trigger decay). JSON schema, handler implementations, integration with `IAgentMemoryStore` and `IContextBuilder`. Tests: tool invocation round-trips.
+  Six tools: `memory_search`, `memory_context`, `memory_stats`, `memory_record_observation`, `memory_consolidate`, `memory_decay`. JSON schema + handlers. Tests: round-trips.
 
   `expectedFileChanges`: 10
 
@@ -277,22 +377,44 @@ Wire agent memory into the agent lifecycle with correct symbol identity and bran
 
 - **Step 5.2.1**: CLI inspect and management commands
 
-  Subcommands: `memory stats`, `memory list-episodes`, `memory list-expertise`, `memory show <id>`, `memory consolidate`, `memory decay`, `memory seed`, `memory reindex`, `memory clear`. Spectre.Console table/tree output. Confirmation prompts for destructive operations. Tests: command parsing, output formatting.
+  Subcommands: `memory stats/list-episodes/list-expertise/show/consolidate/decay/seed/reindex/clear`. Spectre.Console output. Tests: command parsing.
 
   `expectedFileChanges`: 10
 
 ---
 
+## Verification Matrix
+
+| Test Case | Defect | Assertion |
+|-----------|--------|-----------|
+| No public `set` on ExpertiseRecord (reflection) | D1 | All properties are `init`-only |
+| `ImmutableArray.Add` returns new array | D2 | Original unchanged |
+| JSON round-trip preserves immutable types | D2 | Deserialized collections are `ImmutableArray`/`ImmutableDictionary` |
+| `TierPolicy.Normalize`: FailurePattern at Interaction | D3, D6 | Corrected to Query |
+| `TierPolicy.Normalize`: Confidence clamping | D3 | -0.5 → 0.0; 1.5 → 1.0 |
+| `TierPolicy.Validate`: demotion throws | D3 | Query→Interaction throws `InvalidTierException` |
+| Store upsert normalizes invalid tier | D4 | Record persisted with corrected tier |
+| Store read returns immutable instance | D5 | Attempt to mutate → compile error |
+| FailurePattern creation at Query tier | D6 | Consolidation creates with correct tier |
+| Repeated `PromoteAsync` — same IDs | D7 | Second run returns same expertise ID; fields updated |
+| Repeated `DetectCoChangesAsync` — same edge IDs | D8 | Second run returns same edge ID; weight updated |
+| Agent-scoped context excludes other agents | D9 | Query with AgentId="A" → no episodes from AgentId="B" |
+| Branch filter in context | D9 | Same-branch episodes ranked higher |
+| Graph nodes/edges in ContextWindow | D11 | `StructuralNodes.Count > 0` when graph available |
+| PatternKnowledge gated by relevance | D12 | Unrelated patterns excluded |
+| Corrupted JSON quarantined | D10 | File renamed to `.quarantine.*`; `IsDegradedStartup=true` |
+| Bad-tier records normalized on load | D10 | Deserialized records corrected |
+
 ## Out of Scope
 
-- **GraphRAG community detection** (arXiv:2404.16130) — Deferred until Phase 4 metrics show retrieval precision is insufficient.
-- **Full temporal knowledge graph** — `ValidFrom`/`ValidTo` on edges deferred. `CommitSha` + `LastValidated` + validity windows suffice.
-- **LLM-generated community summaries** — Requires LLM API budget not yet allocated.
-- **RL-based memory optimization** (arXiv:2511.07800) — Trainable edge weights need reward signal infrastructure.
-- **Multi-agent collaborative memory** (arXiv:2505.18279) — Beyond current single-agent architecture.
-- **MemGPT-style memory paging** (arXiv:2310.08560) — Context windows fit within current limits.
-- **Fine-tuning or model adaptation** — Memory is retrieval-time only.
-- **`record class` for ExpertiseRecord** — Equality semantic change too risky for existing `HashSet`/`Dictionary` usage.
-- **Optimistic concurrency / version fields** — Deferred to Phase 4 background service.
-- **Hardening Episode/MemoryEdge/CallChain immutability** — Lower risk; deferred until after ExpertiseRecord is stable.
+- **GraphRAG community detection** (arXiv:2404.16130) — Deferred until Phase 4 metrics show insufficient precision.
+- **Full temporal KG** — `ValidFrom`/`ValidTo` on edges deferred. `CommitSha` + validity windows suffice.
+- **LLM-generated summaries** — Requires LLM API budget.
+- **RL-based memory optimization** (arXiv:2511.07800) — Needs reward signal infrastructure.
+- **Multi-agent collaborative memory** — Beyond current single-agent architecture.
+- **MemGPT-style paging** — Context windows fit within current limits.
+- **Fine-tuning / model adaptation** — Memory is retrieval-time only.
+- **`record class` for ExpertiseRecord** — Equality semantic change too risky.
+- **Optimistic concurrency** — Deferred to Phase 4 background service.
+- **Full immutability for Episode/MemoryEdge/CallChain** — Lower risk; deferred (noted as future work).
 - **Reusing `IGraphStore` for memory** — Lacks memory CRUD, hardcodes `:CodeNode` label.
