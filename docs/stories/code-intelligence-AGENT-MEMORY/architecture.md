@@ -1,636 +1,715 @@
 # Agent Memory — Architecture
 
-## 1. Problem Statement
+## 1 Problem Statement
 
-Coding agents operate statelessly. Every session begins cold: the agent
-re-discovers repository structure, call chains, coding patterns, and
-domain conventions from scratch. Prior successes and failures are
-forgotten. The cost is measured in wasted tokens, repeated mistakes, and
-an inability to accumulate expertise across tasks.
+Coding agents today operate without persistent memory. Each session starts
+cold: the agent re-discovers repository structure, re-traces call chains, and
+re-learns domain patterns from scratch. This wastes tokens, increases latency,
+and caps the agent's effective expertise at what fits in a single context
+window.
 
-**Agent Memory** is a graph-based memory system that builds a persistent
-knowledge graph on top of repository structure and call-chain context.
-It records agent interactions as episodes, consolidates them into
-durable expertise, and retrieves relevant context subgraphs so that
-agents can learn and get smarter over time.
+**Agent Memory** solves this by building a persistent, graph-structured
+knowledge layer on top of two first-class data sources:
 
-### Design Principles
+| Source | What it captures |
+|---|---|
+| **Top-down repo structure** | Package → module → file → symbol hierarchy; ownership, visibility, layering rules. |
+| **Call-chain context** | Function-level call graphs, data-flow edges, cross-module dependencies. |
 
-| # | Principle | Rationale |
-|---|-----------|-----------|
-| 1 | **Evidence over assertion** | Expertise is promoted only when backed by sufficient episodes with measurable outcomes. |
-| 2 | **Version-aware memory** | Every fact is scoped to a code state; stale knowledge is surfaced, not silently served. |
-| 3 | **Probabilistic edges** | Static analysis is fallible. Edges carry confidence and provenance so consumers can weight them. |
-| 4 | **Repo-local by default** | Memory is isolated per repository. Only abstracted, de-identified patterns cross repo boundaries. |
-| 5 | **Token-budget-first retrieval** | The context assembler never returns more than the caller can consume. |
-| 6 | **Measure before trusting** | An evaluation harness measures whether memory actually improves agent outcomes. |
+The graph accumulates *expertise*—learned heuristics, failure patterns,
+refactoring strategies—so agents get measurably smarter across sessions.
 
----
+### Design influences
 
-## 2. Components and Responsibilities
+This architecture draws on the taxonomy established by the *Graph-based Agent
+Memory* survey (Yang et al., arXiv 2602.05665), specifically:
 
-### 2.1 Repo Structure Indexer
-
-Parses a repository into a hierarchical structural graph.
-
-| Responsibility | Detail |
-|----------------|--------|
-| File-tree walk | Enumerate files, directories, and packages from the repository root. |
-| AST parsing | Use tree-sitter grammars (with language-specific extensions) to extract symbols: classes, functions, interfaces, variables, type aliases. |
-| Metadata extraction | Capture visibility, docstrings, type signatures, line ranges, file checksums. |
-| Incremental re-index | On file change events (or git diff), re-parse only affected files and update the graph. |
-| Stable identity | Assign symbol IDs from `(repo, file_path, qualified_name, kind, language)` tuples so renames and moves can be detected. |
-
-**Outputs:** `Repository`, `Package`, `Module`, `Symbol` nodes and
-`CONTAINS` edges written to the Graph Store.
-
-### 2.2 Call-Chain Analyzer
-
-Builds cross-cutting edges on top of the structural graph.
-
-| Responsibility | Detail |
-|----------------|--------|
-| Reference extraction | Walk the AST of each symbol body to find identifiers that reference other symbols. |
-| Call resolution | Resolve call targets. Prefer compiler/LSP index when available; fall back to heuristic tree-sitter name matching. |
-| Import tracking | Record module-to-module import dependencies. |
-| Inheritance / implementation | Detect class hierarchy and interface implementation edges. |
-| Edge annotation | Every edge carries `confidence` (0.0–1.0), `analysis_backend` (`lsp` / `tree-sitter` / `heuristic`), and `resolution_kind` (`declared` / `resolved` / `possible`). |
-
-**Outputs:** `CALLS`, `REFERENCES`, `IMPORTS`, `INHERITS`, `IMPLEMENTS`
-edges written to the Graph Store.
-
-> **Scope control (v1):** Data-flow analysis (`DATA_FLOWS_TO`) is
-> deferred. V1 ships containment, imports, references, calls, and
-> inheritance — the edges with the highest confidence-to-cost ratio.
-
-### 2.3 Episode Recorder
-
-Captures each agent task session as a first-class graph entity.
-
-| Responsibility | Detail |
-|----------------|--------|
-| Session capture | Record the full agent interaction: task description, hypothesis/plan, attempted actions, tools invoked, files read/written, errors encountered. |
-| Outcome classification | Tag the episode as `success`, `failure`, `partial`, or `abandoned`, with supporting evidence (test results, CI status, human acceptance signal). |
-| Graph linkage | Create `TOUCHED_IN` edges from the episode to every `Symbol` and `Module` the agent interacted with, scoped to the commit at interaction time. |
-| Trace management | Store full interaction traces temporarily (configurable retention, default 30 days). Generate a durable normalized summary for long-term use. |
-
-**Outputs:** `Episode` nodes, `TOUCHED_IN` edges, and associated
-`EpisodeTrace` records written to the Graph Store.
-
-### 2.4 Memory Consolidator
-
-Converts raw episodes into durable, evidence-backed expertise.
-
-The consolidator is a single service but operates as a four-stage
-pipeline:
-
-```
-┌──────────────┐    ┌────────────────┐    ┌─────────────────┐    ┌─────────────────────┐
-│ Normalize    │───▶│ Mine Patterns  │───▶│ Promote / Merge │───▶│ Decay / Revalidate  │
-│ episodes     │    │                │    │ expertise       │    │ / Archive           │
-└──────────────┘    └────────────────┘    └─────────────────┘    └─────────────────────┘
-```
-
-| Stage | Responsibility |
-|-------|----------------|
-| **Normalize** | Deduplicate, canonicalize symbol references, align episodes to current HEAD. |
-| **Mine** | Group episodes by code area and task type. Identify recurring strategies, including anti-patterns (negative expertise). Require a minimum evidence threshold (default: 3 corroborating episodes) before proposing a pattern. |
-| **Promote** | Create or update `Expertise` nodes. Record `support_count`, `opposition_count`, `success_rate`, `min_code_version`, `last_verified_at`. Link via `DERIVED_FROM` (to episodes) and `APPLIES_TO` (to code nodes). |
-| **Decay / Revalidate** | Reduce confidence of expertise not reinforced within a configurable window. Archive expertise whose target code has been deleted or substantially refactored. Revalidate expertise when underlying code changes significantly. |
-
-**Outputs:** `Expertise` nodes, `DERIVED_FROM` edges, `APPLIES_TO`
-edges.
-
-### 2.5 Context Assembler
-
-Given a task, retrieves the most relevant subgraph and packages it for
-the agent's context window.
-
-Retrieval is a three-phase pipeline:
-
-```
-┌──────────────────┐    ┌──────────────┐    ┌──────────────────┐
-│ 1. Candidate     │───▶│ 2. Rerank    │───▶│ 3. Package       │
-│    Generation    │    │              │    │    & Serialize    │
-└──────────────────┘    └──────────────┘    └──────────────────┘
-```
-
-| Phase | Detail |
-|-------|--------|
-| **Candidate generation** | Multiple channels fire in parallel: (a) keyword/symbol match against the structural graph, (b) semantic embedding similarity against episode summaries and expertise, (c) structural neighborhood expansion (1–2 hops along call/import edges), (d) recency-weighted episode lookup. |
-| **Reranking** | Score candidates on a weighted combination of structural proximity, semantic relevance, temporal recency, episode frequency, expertise confidence, and freshness relative to HEAD. Deduplicate overlapping subgraphs. |
-| **Package & serialize** | Prune the ranked subgraph to fit the caller's token budget. Serialize as structured markdown or JSON. Include provenance metadata (confidence, source episode IDs, code version) so the agent can weight the information. |
-
-**Outputs:** A serialized context payload (structured markdown or JSON)
-returned to the agent runtime.
-
-### 2.6 Graph Store
-
-Persistent storage layer for all nodes, edges, and metadata.
-
-| Responsibility | Detail |
-|----------------|--------|
-| Node/edge CRUD | Standard create, read, update, delete for all node and edge types. |
-| Graph traversal | Multi-hop neighborhood queries, shortest-path, subgraph extraction. |
-| Temporal scoping | Edges and nodes carry `valid_from_commit` / `valid_to_commit` fields. Queries can request the graph "as of" a given commit. |
-| Full-text index | Inverted index on symbol names, docstrings, episode summaries, and expertise descriptions for keyword search. |
-| Vector index | Embedding index on episode summaries and expertise descriptions for semantic similarity search. |
-| Retention management | Automated archival of expired episode traces; compaction of stale graph snapshots. |
-
-**V1 implementation:** SQLite with adjacency tables (nodes table, edges
-table, full-text via FTS5, vector index via `sqlite-vec` or an
-in-process HNSW library). This avoids operational overhead. The schema
-is designed so migration to a dedicated graph database (Neo4j, etc.) is
-straightforward if traversal performance demands it.
-
-### 2.7 Evaluation Harness
-
-Measures whether memory improves agent outcomes.
-
-| Metric | Description |
-|--------|-------------|
-| Retrieval precision | Fraction of retrieved context nodes that the agent actually used. |
-| Task success delta | Success rate with memory vs. without (A/B on held-out tasks). |
-| Stale-memory error rate | Fraction of retrieved expertise that references code no longer at HEAD. |
-| Latency overhead | Wall-clock time added by context assembly. |
-| Token efficiency | Ratio of useful context tokens to total budget consumed. |
+- **Hierarchical memory storage** (HiAgent, G-Memory) — multi-level graphs
+  that mirror cognitive short-/long-term separation.
+- **Temporal knowledge graphs** (Zep, Graphiti) — edges carry validity
+  intervals so stale knowledge self-expires.
+- **RL-based memory evolution** (MAGMA, Mem-α) — reinforcement signals from
+  agent task outcomes drive graph consolidation and pruning.
+- **Multi-hop graph retrieval** (GraphRAG, SimGRAG) — traversal-based context
+  assembly rather than flat vector search.
 
 ---
 
-## 3. Data Model
-
-### 3.1 Node Types
-
-#### Repository
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `TEXT PK` | Stable identifier (e.g., `github.com/org/repo`). |
-| `name` | `TEXT` | Human-readable repository name. |
-| `url` | `TEXT` | Clone URL. |
-| `default_branch` | `TEXT` | Main branch name. |
-| `last_indexed_commit` | `TEXT` | SHA of the most recently indexed commit. |
-
-#### Package
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `TEXT PK` | `(repo_id, package_path)` composite. |
-| `name` | `TEXT` | Package/directory name. |
-| `path` | `TEXT` | Relative path from repo root. |
-| `repo_id` | `TEXT FK` | Owning repository. |
-
-#### Module
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `TEXT PK` | `(repo_id, file_path)` composite. |
-| `name` | `TEXT` | File name. |
-| `file_path` | `TEXT` | Relative path from repo root. |
-| `language` | `TEXT` | Detected language. |
-| `checksum` | `TEXT` | Content hash for change detection. |
-| `line_count` | `INT` | Total lines. |
-
-#### Symbol
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `TEXT PK` | `(repo_id, file_path, qualified_name, kind)` composite. |
-| `name` | `TEXT` | Unqualified symbol name. |
-| `qualified_name` | `TEXT` | Fully qualified name within the module. |
-| `kind` | `TEXT` | One of: `class`, `function`, `method`, `interface`, `variable`, `type_alias`, `enum`, `constant`. |
-| `signature` | `TEXT` | Type signature or parameter list. |
-| `visibility` | `TEXT` | `public`, `private`, `protected`, `internal`. |
-| `docstring` | `TEXT` | Extracted documentation. |
-| `start_line` | `INT` | Start line in source file. |
-| `end_line` | `INT` | End line in source file. |
-| `module_id` | `TEXT FK` | Containing module. |
-
-#### Episode
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `TEXT PK` | UUID. |
-| `repo_id` | `TEXT FK` | Repository context. |
-| `commit_sha` | `TEXT` | Commit at time of interaction. |
-| `agent_id` | `TEXT` | Identifier of the agent instance. |
-| `task_description` | `TEXT` | What the agent was asked to do. |
-| `hypothesis` | `TEXT` | Agent's plan or hypothesis before acting. |
-| `actions_taken` | `TEXT (JSON)` | Ordered list of actions with parameters and results. |
-| `errors_encountered` | `TEXT (JSON)` | Errors, stack traces, failure signals. |
-| `outcome` | `TEXT` | `success` / `failure` / `partial` / `abandoned`. |
-| `outcome_evidence` | `TEXT` | Test results, CI status, human feedback. |
-| `summary` | `TEXT` | LLM-generated normalized summary (durable). |
-| `started_at` | `TIMESTAMP` | Session start. |
-| `ended_at` | `TIMESTAMP` | Session end. |
-| `trace_expires_at` | `TIMESTAMP` | When the full trace is eligible for archival. |
-
-#### Expertise
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `TEXT PK` | UUID. |
-| `repo_id` | `TEXT FK NULL` | `NULL` for cross-repo transferable expertise. |
-| `area_path` | `TEXT` | Code area this expertise applies to (e.g., `src/auth`). |
-| `pattern_type` | `TEXT` | `strategy` / `anti_pattern` / `convention` / `prerequisite`. |
-| `description` | `TEXT` | Natural-language description of the pattern or rule. |
-| `preconditions` | `TEXT` | When this expertise applies. |
-| `confidence` | `REAL` | 0.0–1.0, decayed over time. |
-| `support_count` | `INT` | Number of corroborating episodes. |
-| `opposition_count` | `INT` | Number of contradicting episodes. |
-| `success_rate` | `REAL` | Outcome success rate among supporting episodes. |
-| `min_evidence` | `INT` | Minimum episodes required before this was promoted (default 3). |
-| `derived_from_commit` | `TEXT` | Earliest commit SHA in the evidence base. |
-| `last_verified_commit` | `TEXT` | Most recent commit where this expertise was confirmed. |
-| `last_reinforced_at` | `TIMESTAMP` | Last time a new episode reinforced this. |
-| `created_at` | `TIMESTAMP` | Creation time. |
-
-### 3.2 Edge Types
-
-| Edge | Source → Target | Key Fields | Description |
-|------|-----------------|------------|-------------|
-| `CONTAINS` | Package → Module, Module → Symbol | — | Hierarchical containment. |
-| `CALLS` | Symbol → Symbol | `confidence`, `analysis_backend`, `resolution_kind` | Function/method call. |
-| `REFERENCES` | Symbol → Symbol | `confidence`, `analysis_backend` | Name reference (read/use without call). |
-| `IMPORTS` | Module → Module | `import_path`, `is_reexport` | Module-level import dependency. |
-| `INHERITS` | Symbol → Symbol | — | Class inheritance. |
-| `IMPLEMENTS` | Symbol → Symbol | — | Interface implementation. |
-| `TOUCHED_IN` | Episode → Symbol | `interaction_type` (`read` / `write` / `debug`) | Which symbols an episode involved. |
-| `TOUCHED_MODULE` | Episode → Module | `interaction_type` | Which modules an episode involved. |
-| `DERIVED_FROM` | Expertise → Episode | — | Provenance link. |
-| `APPLIES_TO` | Expertise → Symbol / Module / Package | — | Where expertise is relevant. |
-
-All edges carry `valid_from_commit` and `valid_to_commit` for temporal
-scoping. Code-structural edges (`CALLS`, `REFERENCES`, `IMPORTS`,
-`INHERITS`, `IMPLEMENTS`) additionally carry `confidence` (0.0–1.0) and
-`analysis_backend` (`lsp` / `tree-sitter` / `heuristic`).
-
-### 3.3 Memory Isolation Model
+## 2 Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   Global Memory                     │
-│  Transferable expertise only (repo_id = NULL).      │
-│  No repo-specific identifiers. Abstracted patterns. │
-│  Example: "When fixing a race condition in a        │
-│  producer-consumer queue, check the lock ordering." │
-├──────────────┬──────────────┬───────────────────────┤
-│  Repo A      │  Repo B      │  Repo C              │
-│  Local graph │  Local graph │  Local graph          │
-│  + episodes  │  + episodes  │  + episodes           │
-│  + expertise │  + expertise │  + expertise           │
-└──────────────┴──────────────┴───────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Agent Runtime (caller)                       │
+│   ┌──────────┐   ┌──────────────┐   ┌────────────────────────────┐ │
+│   │  Planner  │   │  Tool Router  │   │  Context Assembler (§2.4) │ │
+│   └────┬─────┘   └──────┬───────┘   └────────────┬───────────────┘ │
+│        │                │                         │                 │
+│        ▼                ▼                         ▼                 │
+│  ┌───────────────────────────────────────────────────────────┐      │
+│  │                   Memory Gateway API                      │      │
+│  │            ingest · query · feedback · admin               │      │
+│  └──────┬──────────────┬──────────────┬──────────────┬──────┘      │
+└─────────┼──────────────┼──────────────┼──────────────┼─────────────┘
+          │              │              │              │
+   ┌──────▼──────┐ ┌─────▼──────┐ ┌────▼─────┐ ┌─────▼──────┐
+   │  Extraction │ │  Storage   │ │ Retrieval│ │ Evolution  │
+   │  Pipeline   │ │  Engine    │ │ Engine   │ │ Engine     │
+   │   (§3.1)    │ │   (§3.2)   │ │  (§3.3)  │ │  (§3.4)    │
+   └──────┬──────┘ └─────┬──────┘ └────┬─────┘ └─────┬──────┘
+          │              │              │              │
+          ▼              ▼              ▼              ▼
+   ┌──────────────────────────────────────────────────────────┐
+   │                  Unified Graph Store                      │
+   │  ┌──────────────┬──────────────┬───────────────────────┐ │
+   │  │  Structural  │  Behavioral  │  Semantic / Expertise │ │
+   │  │    Layer     │    Layer     │       Layer            │ │
+   │  └──────────────┴──────────────┴───────────────────────┘ │
+   │  ┌──────────────────────────────────────────────────────┐ │
+   │  │            Temporal Version Index                     │ │
+   │  └──────────────────────────────────────────────────────┘ │
+   │  ┌──────────────────────────────────────────────────────┐ │
+   │  │            Embedding Vector Index                     │ │
+   │  └──────────────────────────────────────────────────────┘ │
+   └──────────────────────────────────────────────────────────┘
 ```
 
-Cross-repo expertise is **promoted** from repo-local expertise only when:
-1. The pattern is language-general or tooling-general (not tied to specific APIs).
-2. It has been observed in ≥ 2 distinct repositories.
-3. All repo-specific identifiers (file paths, symbol names, internal APIs) are stripped.
+The system decomposes into **four processing engines** that implement the
+memory lifecycle (Extract → Store → Retrieve → Evolve), one **gateway API**
+that the agent runtime calls, and one **unified graph store** that holds the
+three-layer knowledge graph plus auxiliary indexes.
 
 ---
 
-## 4. Interfaces Between Components
+## 3 Components and Responsibilities
 
-### 4.1 Internal Interfaces
+### 3.1 Extraction Pipeline
+
+Transforms raw repository artifacts into graph-ready facts.
+
+| Sub-component | Input | Output | Notes |
+|---|---|---|---|
+| **StructureAnalyzer** | File tree, `package.json` / `pyproject.toml` / build manifests | `Module`, `File`, `Package` nodes + `CONTAINS` edges | Runs on clone/pull; incremental via diff. |
+| **SymbolExtractor** | Source files | `Symbol` nodes (functions, classes, interfaces, constants) + `DEFINES` edges to `File` | Uses Tree-sitter grammars — language-agnostic. |
+| **CallGraphBuilder** | AST of each symbol | `CALLS`, `IMPORTS`, `IMPLEMENTS` edges between `Symbol` nodes | Intra-repo static analysis; marks `DYNAMIC` edges when resolution is ambiguous. |
+| **DataFlowTracer** | AST + type information | `READS`, `WRITES`, `RETURNS_TYPE` edges | Optional; requires type-checker output (e.g., TSC diagnostics). |
+| **SessionTraceRecorder** | Agent tool-use logs, LLM completions | `Session`, `Action`, `Observation` nodes + `PERFORMED`, `OBSERVED` edges | Captures what the agent *did*, not just what the code *is*. |
+
+**Key design rule:** Extraction is *append-only* into a staging area. The
+Storage Engine decides when to merge staged facts into the live graph
+(§3.2 Merge Protocol).
+
+### 3.2 Storage Engine
+
+Owns the Unified Graph Store and exposes transactional write operations.
+
+| Sub-component | Responsibility |
+|---|---|
+| **GraphWriter** | Atomic upsert of nodes and edges. Maintains referential integrity. Deduplicates by canonical key (see §4 Data Model). |
+| **TemporalVersioner** | Stamps every node/edge with `[valid_from, valid_to)` intervals derived from commit SHAs. Queries can pin to a point-in-time. |
+| **EmbeddingIndexer** | On node create/update, enqueues an embedding job. Stores vectors in an ANN index (HNSW) keyed by node ID. |
+| **MergeProtocol** | Compares staged facts against the live graph. For each fact: (a) if new → insert; (b) if changed → close old interval, open new; (c) if deleted → close interval, keep tombstone. Runs per-commit or per-session. |
+
+**Storage layout:** The graph is logically partitioned into three *layers*
+(see §4) but physically lives in a single labeled-property graph database.
+Each node carries a `layer` label so queries can target one or more layers.
+
+### 3.3 Retrieval Engine
+
+Assembles context for the agent by combining graph traversal with vector
+similarity.
+
+| Sub-component | Responsibility |
+|---|---|
+| **StructuralLocator** | Given a file path or symbol name, returns the node and its k-hop neighborhood in the structural layer. Respects hierarchy: asking about a module returns its files and their top-level symbols. |
+| **CallChainWalker** | Given a symbol node, performs bounded BFS/DFS along `CALLS`/`IMPORTS` edges. Returns upstream callers, downstream callees, or full chains up to configurable depth. |
+| **SemanticSearcher** | Embedding-based ANN search over the semantic layer. Returns expertise nodes (patterns, heuristics, failure memories) ranked by cosine similarity to the query. |
+| **ContextRanker** | Takes the union of candidates from the three sub-components above. Scores each candidate on (recency × relevance × connectivity). Applies a token budget and returns a ranked, pruned subgraph serializable to markdown or JSON. |
+| **TemporalFilter** | Pre-filter applied to any retrieval path. Constrains results to nodes/edges valid at a given commit SHA or timestamp. Defaults to HEAD. |
+
+**Retrieval strategy:** The engine implements *multi-source, multi-hop*
+retrieval (per GraphRAG / SimGRAG findings). A single query fans out to
+all three layers in parallel, results are merged by the ContextRanker, and
+the final context window respects a caller-specified token budget.
+
+### 3.4 Evolution Engine
+
+Makes the graph smarter over time by processing feedback signals.
+
+| Sub-component | Responsibility |
+|---|---|
+| **FeedbackIngestor** | Receives explicit signals (agent marked a suggestion as helpful/unhelpful) and implicit signals (task succeeded/failed, test pass/fail after agent edit). Writes `Feedback` nodes linked to the `Session` that produced them. |
+| **RelevanceDecayer** | Periodic job. Reduces the `confidence` score of nodes/edges that have not been accessed or reinforced within a configurable TTL window. Nodes below a threshold are marked `DORMANT`. |
+| **ConsolidationWorker** | Merges clusters of semantically similar expertise nodes into higher-level generalizations. E.g., three specific "null-check failure" memories consolidate into one "defensive-coding pattern for nullable returns" expertise node. Uses LLM summarization. |
+| **PruningWorker** | Deletes `DORMANT` nodes whose confidence is below a hard floor and that have zero inbound edges from non-dormant nodes. Runs on a schedule (e.g., daily). Tombstones are retained for audit. |
+| **ExpertiseSynthesizer** | After a successful agent session, extracts generalizable lessons (heuristics, anti-patterns, preferred APIs) and writes them as new `Expertise` nodes in the semantic layer. This is the primary mechanism by which agents "get smarter." |
+
+**Evolution loop (inspired by MAGMA / Reflexion):**
 
 ```
-┌───────────────────┐          ┌───────────────────┐
-│  Repo Structure   │──write──▶│                   │
-│  Indexer          │          │                   │
-├───────────────────┤          │                   │
-│  Call-Chain       │──write──▶│   Graph Store     │
-│  Analyzer         │          │                   │
-├───────────────────┤          │                   │
-│  Episode          │──write──▶│                   │
-│  Recorder         │          │                   │
-├───────────────────┤          │                   │
-│  Memory           │──r/w────▶│                   │
-│  Consolidator     │          │                   │
-├───────────────────┤          │                   │
-│  Context          │──read───▶│                   │
-│  Assembler        │          │                   │
-└───────────────────┘          └───────────────────┘
+Agent Session completes
+        │
+        ▼
+  FeedbackIngestor records outcome
+        │
+        ▼
+  ExpertiseSynthesizer extracts lessons  ──►  new Expertise nodes
+        │
+        ▼
+  ConsolidationWorker merges duplicates
+        │
+        ▼
+  RelevanceDecayer adjusts scores
+        │
+        ▼
+  PruningWorker removes dead weight
 ```
 
-#### Graph Store Write API
+### 3.5 Memory Gateway API
+
+Single entry-point for the agent runtime. Stateless HTTP/gRPC service.
+
+| Endpoint | Verb | Purpose |
+|---|---|---|
+| `/ingest/commit` | POST | Trigger extraction for a commit range. |
+| `/ingest/session` | POST | Submit an agent session trace. |
+| `/query/context` | POST | Retrieve assembled context for a task. |
+| `/query/symbol` | GET | Look up a single symbol and its neighborhood. |
+| `/query/callchain` | GET | Trace call chain from a symbol. |
+| `/feedback` | POST | Submit outcome signal for a session. |
+| `/admin/stats` | GET | Graph size, layer distribution, staleness metrics. |
+| `/admin/evolve` | POST | Trigger on-demand consolidation/pruning cycle. |
+
+### 3.6 Context Assembler (agent-side)
+
+Lives inside the agent runtime (not in the memory service). Translates
+the memory service's graph-structured response into a prompt-ready
+context block.
+
+| Responsibility | Detail |
+|---|---|
+| **Format negotiation** | Converts subgraph to markdown (for chat models) or structured JSON (for tool-use models). |
+| **Token budgeting** | Caller specifies max tokens; assembler truncates least-relevant nodes first. |
+| **Priority injection** | Expertise nodes flagged `high_confidence` are placed at the top of the context block so the model sees them first. |
+| **Delta mode** | For follow-up queries within a session, returns only nodes not already in the conversation history. |
+
+---
+
+## 4 Data Model
+
+### 4.1 Node Types
+
+All nodes share a common base:
 
 ```
-interface GraphWriter {
-  upsertNode(type: NodeType, data: Record<string, any>): NodeId
-  upsertEdge(type: EdgeType, source: NodeId, target: NodeId, attrs: Record<string, any>): EdgeId
-  deleteNode(id: NodeId): void
-  deleteEdge(id: EdgeId): void
-  bulkUpsert(operations: UpsertOp[]): void
-  setValidityRange(edgeId: EdgeId, fromCommit: string, toCommit: string | null): void
+BaseNode {
+  id            : UUID           -- globally unique
+  canonical_key : string         -- dedup key (e.g., "repo:path:symbol")
+  layer         : enum(STRUCTURAL | BEHAVIORAL | SEMANTIC)
+  valid_from    : string         -- commit SHA or ISO timestamp
+  valid_to      : string | null  -- null = currently valid
+  confidence    : float [0,1]    -- 1.0 = verified fact; decays over time
+  embedding     : float[768]     -- populated by EmbeddingIndexer
+  created_at    : datetime
+  updated_at    : datetime
 }
 ```
 
-#### Graph Store Read API
+#### Structural Layer
+
+| Node | Key Fields | Canonical Key Pattern |
+|---|---|---|
+| **Repository** | `name`, `remote_url`, `default_branch` | `repo:{remote_url}` |
+| **Package** | `name`, `version`, `manager` (npm/pip/maven/…) | `repo:{repo_id}:pkg:{name}` |
+| **Module** | `path` (relative dir), `language` | `repo:{repo_id}:mod:{path}` |
+| **File** | `path`, `language`, `size_bytes`, `hash` | `repo:{repo_id}:file:{path}` |
+| **Symbol** | `name`, `kind` (function/class/interface/const/type), `signature`, `visibility` (public/private/internal), `line_start`, `line_end`, `docstring` | `repo:{repo_id}:file:{path}:sym:{name}:{kind}` |
+
+#### Behavioral Layer
+
+| Node | Key Fields | Canonical Key Pattern |
+|---|---|---|
+| **CallSite** | `caller_symbol_id`, `callee_symbol_id`, `call_type` (static/dynamic/virtual), `line` | `repo:{repo_id}:cs:{caller}→{callee}:{line}` |
+| **DataFlow** | `source_symbol_id`, `sink_symbol_id`, `flow_type` (read/write/return) | `repo:{repo_id}:df:{source}→{sink}:{type}` |
+| **Dependency** | `from_module_id`, `to_module_id`, `kind` (import/re-export/lazy) | `repo:{repo_id}:dep:{from}→{to}` |
+
+#### Semantic Layer
+
+| Node | Key Fields | Canonical Key Pattern |
+|---|---|---|
+| **Expertise** | `title`, `description`, `category` (pattern/anti-pattern/heuristic/api-preference), `source_session_ids[]`, `example_snippet` | `repo:{repo_id}:exp:{hash(title)}` |
+| **Concept** | `name`, `description`, `related_symbols[]` | `repo:{repo_id}:concept:{name}` |
+| **FailureMemory** | `error_signature`, `root_cause`, `resolution`, `recurrence_count` | `repo:{repo_id}:fail:{hash(error_signature)}` |
+| **Session** | `agent_id`, `task_description`, `outcome` (success/partial/failure), `duration_ms`, `token_usage` | `session:{uuid}` |
+| **Action** | `tool_name`, `input_summary`, `output_summary`, `symbol_ids_touched[]` | `session:{session_id}:action:{seq}` |
+| **Feedback** | `session_id`, `signal` (positive/negative/neutral), `detail` | `session:{session_id}:fb:{seq}` |
+
+### 4.2 Edge Types
+
+| Edge | Source → Target | Layer | Key Properties |
+|---|---|---|---|
+| `CONTAINS` | Repository→Package, Package→Module, Module→File, File→Symbol | Structural | `order` (positional index) |
+| `DEFINES` | File → Symbol | Structural | `line_start`, `line_end` |
+| `CALLS` | Symbol → Symbol | Behavioral | `call_type`, `line`, `is_conditional` |
+| `IMPORTS` | Module → Module | Behavioral | `kind` (static/dynamic/re-export) |
+| `IMPLEMENTS` | Symbol → Symbol | Behavioral | (class implements interface) |
+| `EXTENDS` | Symbol → Symbol | Behavioral | (class extends class) |
+| `READS` / `WRITES` | Symbol → Symbol | Behavioral | `flow_type` |
+| `RETURNS_TYPE` | Symbol → Symbol | Behavioral | `type_name` |
+| `RELATES_TO` | Concept → Symbol | Semantic | `relevance_score` |
+| `LEARNED_FROM` | Expertise → Session | Semantic | `confidence_delta` |
+| `RESOLVES` | Expertise → FailureMemory | Semantic | |
+| `SUPERSEDES` | Expertise → Expertise | Semantic | (consolidation link) |
+| `PERFORMED` | Session → Action | Semantic | `seq` |
+| `TOUCHED` | Action → Symbol | Cross-layer | |
+
+### 4.3 Temporal Versioning
+
+Every node and edge carries `[valid_from, valid_to)`. Queries that do not
+specify a version pin default to `valid_to IS NULL` (current HEAD).
+
+**Version granularity:** Structural and behavioral facts are versioned by
+commit SHA. Semantic facts (expertise, failure memories) are versioned by
+session timestamp, since they are not tied to a single commit.
+
+**Tombstoning:** When a symbol is deleted in a commit, its node's `valid_to`
+is set to that commit SHA. The node remains in the graph for historical
+queries and for expertise nodes that reference it.
+
+---
+
+## 5 Interfaces Between Components
+
+### 5.1 Extraction → Storage
 
 ```
-interface GraphReader {
-  getNode(id: NodeId): Node | null
-  getNeighbors(id: NodeId, edgeTypes: EdgeType[], direction: "in" | "out" | "both", hops: number): Subgraph
-  findNodes(query: NodeQuery): Node[]          // structured field match
-  searchText(text: string, nodeTypes: NodeType[]): ScoredNode[]   // FTS
-  searchSemantic(embedding: float[], nodeTypes: NodeType[], topK: number): ScoredNode[]  // vector
-  getSubgraphAsOf(nodeIds: NodeId[], commit: string): Subgraph    // temporal query
+interface StagedFact {
+  operation : "UPSERT" | "DELETE"
+  node?     : BaseNode            // present for UPSERT
+  edge?     : Edge                // present for UPSERT
+  source    : "commit" | "session"
+  source_ref: string              // commit SHA or session ID
+}
+
+ExtractionPipeline.flush() → StagedFact[]
+StorageEngine.merge(facts: StagedFact[], source_ref: string) → MergeReport
+```
+
+`MergeReport` contains counts: `{ inserted, updated, closed, conflicts }`.
+Conflicts (two concurrent sources updating the same canonical key) are
+resolved by last-writer-wins within the same source type, or commit-wins
+over session for cross-type conflicts.
+
+### 5.2 Agent Runtime → Memory Gateway
+
+```
+// Context retrieval — primary interface
+POST /query/context
+{
+  repo_id       : string
+  task          : string             // natural-language task description
+  entry_points  : string[]           // file paths or symbol names (optional)
+  commit_sha    : string             // version pin (optional, default HEAD)
+  include_layers: ["STRUCTURAL","BEHAVIORAL","SEMANTIC"]  // default all
+  max_tokens    : int                // token budget for response
+  session_id    : string             // to enable delta mode
+}
+
+Response {
+  subgraph : {
+    nodes  : BaseNode[]
+    edges  : Edge[]
+  }
+  expertise : Expertise[]           // top-ranked expertise nodes, separate for priority
+  token_estimate : int
+  staleness_warning : string | null // if graph is >N commits behind HEAD
 }
 ```
 
-#### Context Assembler Output Interface
+### 5.3 Agent Runtime → Feedback
 
 ```
-interface ContextPayload {
-  structural_context: {
-    modules: ModuleSummary[]
-    symbols: SymbolDetail[]
-    call_chains: CallChain[]
-  }
-  expertise: {
-    strategies: ExpertiseEntry[]
-    anti_patterns: ExpertiseEntry[]
-    conventions: ExpertiseEntry[]
-  }
-  related_episodes: {
-    similar_tasks: EpisodeSummary[]
-    recent_in_area: EpisodeSummary[]
-  }
-  metadata: {
-    repo_id: string
-    head_commit: string
-    token_budget_used: number
-    token_budget_total: number
-    retrieval_latency_ms: number
-  }
+POST /feedback
+{
+  session_id : string
+  outcome    : "success" | "partial" | "failure"
+  signals    : [
+    { node_id: string, signal: "positive" | "negative", detail?: string }
+  ]
 }
 ```
 
-### 4.2 External Interfaces
-
-| Interface | Consumer | Protocol | Description |
-|-----------|----------|----------|-------------|
-| Agent Runtime → Episode Recorder | Agent orchestrator | Function call / event | Push episode data on task start, action, and completion. |
-| Agent Runtime → Context Assembler | Agent orchestrator | Function call | Request assembled context given a task description and token budget. |
-| Repository Events → Repo Structure Indexer | Git hook / file watcher / CI webhook | Webhook / event | Trigger re-indexing on push, merge, or file change. |
-| Memory Consolidator (scheduler) | Cron / task queue | Timer | Periodic consolidation (configurable interval, default 1 hour). |
-| Evaluation Harness → Graph Store | Offline analysis | Read-only queries | Compute metrics over stored episodes and expertise. |
-
----
-
-## 5. End-to-End Sequence Flows
-
-### 5.1 Flow: Repository Ingestion (First Index)
+### 5.4 Evolution Engine Internal Contracts
 
 ```
-User                Indexer              Analyzer             Graph Store
- │                    │                    │                      │
- │─ configure repo ──▶│                    │                      │
- │                    │─ clone/access ────▶│                      │
- │                    │─ walk file tree ──▶│                      │
- │                    │                    │                      │
- │                    │ for each file:     │                      │
- │                    │─ tree-sitter parse │                      │
- │                    │─ extract symbols ──│                      │
- │                    │─ bulkUpsert ───────│─────────────────────▶│
- │                    │  (Repo, Pkg,       │                      │
- │                    │   Module, Symbol,  │                      │
- │                    │   CONTAINS edges)  │                      │
- │                    │                    │                      │
- │                    │─ hand off ────────▶│                      │
- │                    │                    │─ resolve calls ─────▶│
- │                    │                    │─ resolve imports ───▶│
- │                    │                    │─ resolve inheritance▶│
- │                    │                    │─ bulkUpsert ────────▶│
- │                    │                    │  (CALLS, IMPORTS,    │
- │                    │                    │   INHERITS, etc.     │
- │                    │                    │   with confidence)   │
- │                    │                    │                      │
- │                    │─ set last_indexed_commit ────────────────▶│
- │◀── indexing complete──────────────────────────────────────────│
-```
+FeedbackIngestor.process(feedback: Feedback) → void
+  // writes Feedback node, links to Session
 
-### 5.2 Flow: Incremental Re-Index
+ExpertiseSynthesizer.synthesize(session: Session) → Expertise[]
+  // LLM call: given session trace, extract generalizable lessons
 
-```
-Git Push Event       Indexer              Analyzer             Graph Store
- │                    │                    │                      │
- │─ webhook ─────────▶│                    │                      │
- │                    │─ git diff old..new │                      │
- │                    │                    │                      │
- │                    │ for each changed file:                    │
- │                    │─ re-parse AST ────▶│                      │
- │                    │─ diff old vs new symbols                  │
- │                    │─ upsert changed ──│─────────────────────▶│
- │                    │─ delete removed ──│─────────────────────▶│
- │                    │─ set valid_to on stale edges ───────────▶│
- │                    │                    │                      │
- │                    │─ hand off ────────▶│                      │
- │                    │                    │─ re-resolve edges ──▶│
- │                    │                    │─ upsert new edges ──▶│
- │                    │                    │  (with valid_from =  │
- │                    │                    │   new commit)        │
- │                    │─ update last_indexed_commit ─────────────▶│
-```
+ConsolidationWorker.consolidate(cluster: Expertise[]) → Expertise
+  // LLM call: merge N similar expertise nodes into one generalized node
+  // creates SUPERSEDES edges from new node to old nodes
 
-### 5.3 Flow: Agent Task with Memory-Augmented Context
+RelevanceDecayer.decay(ttl: Duration) → int
+  // returns count of nodes whose confidence was reduced
 
-```
-Agent Runtime        Context Assembler    Graph Store          Agent LLM
- │                    │                    │                      │
- │─ requestContext ──▶│                    │                      │
- │  (task_desc,       │                    │                      │
- │   token_budget,    │                    │                      │
- │   repo_id)         │                    │                      │
- │                    │                    │                      │
- │                    │── PHASE 1: Candidate Generation ──       │
- │                    │─ searchText ──────▶│                      │
- │                    │─ searchSemantic ──▶│                      │
- │                    │─ findExpertise ───▶│                      │
- │                    │─ findEpisodes ────▶│                      │
- │                    │◀─ candidate sets ──│                      │
- │                    │                    │                      │
- │                    │── PHASE 2: Expand & Rerank ──            │
- │                    │─ getNeighbors ────▶│  (1-2 hop expand)   │
- │                    │◀─ subgraphs ───────│                      │
- │                    │─ score(structural, │                      │
- │                    │   semantic, recency│                      │
- │                    │   frequency,       │                      │
- │                    │   confidence,      │                      │
- │                    │   freshness)       │                      │
- │                    │─ deduplicate       │                      │
- │                    │                    │                      │
- │                    │── PHASE 3: Package ──                    │
- │                    │─ prune to budget   │                      │
- │                    │─ serialize         │                      │
- │                    │                    │                      │
- │◀─ ContextPayload ─│                    │                      │
- │                    │                    │                      │
- │─ inject context ───────────────────────────────────────────── ▶│
- │─ send task + context ─────────────────────────────────────── ▶│
- │◀─ agent response ────────────────────────────────────────────│
-```
-
-### 5.4 Flow: Episode Recording
-
-```
-Agent Runtime        Episode Recorder     Graph Store
- │                    │                    │
- │─ onTaskStart ─────▶│                    │
- │  (task_desc,       │                    │
- │   agent_id,        │─ create Episode ──▶│
- │   repo_id,         │  (status=active)   │
- │   commit_sha)      │                    │
- │                    │                    │
- │─ onAction ────────▶│                    │
- │  (action, params,  │─ append to         │
- │   result, files)   │  actions_taken     │
- │                    │─ upsert TOUCHED_IN▶│
- │                    │                    │
- │─ onError ─────────▶│                    │
- │  (error, trace)    │─ append to         │
- │                    │  errors_encountered│
- │                    │                    │
- │─ onTaskEnd ───────▶│                    │
- │  (outcome,         │─ finalize Episode ▶│
- │   evidence)        │  (outcome, summary,│
- │                    │   ended_at,        │
- │                    │   trace_expires_at)│
- │                    │                    │
-```
-
-### 5.5 Flow: Memory Consolidation
-
-```
-Scheduler            Consolidator         Graph Store          LLM (summarizer)
- │                    │                    │                      │
- │─ trigger ─────────▶│                    │                      │
- │                    │                    │                      │
- │                    │── Stage 1: Normalize ──                  │
- │                    │─ query recent ────▶│                      │
- │                    │  unconsolidated    │                      │
- │                    │  episodes          │                      │
- │                    │◀─ episodes ────────│                      │
- │                    │─ canonicalize      │                      │
- │                    │  symbol refs       │                      │
- │                    │─ align to HEAD     │                      │
- │                    │                    │                      │
- │                    │── Stage 2: Mine ──                       │
- │                    │─ group by area +   │                      │
- │                    │  task type         │                      │
- │                    │─ identify clusters │                      │
- │                    │  with ≥ min_evidence                      │
- │                    │  (default 3)       │                      │
- │                    │                    │                      │
- │                    │── Stage 3: Promote ──                    │
- │                    │  for each cluster: │                      │
- │                    │─ summarize ────────│──────────────────── ▶│
- │                    │◀─ pattern desc ────│──────────────────── │
- │                    │─ check existing    │                      │
- │                    │  expertise ───────▶│                      │
- │                    │◀─ matches ─────────│                      │
- │                    │─ upsert Expertise ▶│                      │
- │                    │  (update counts,   │                      │
- │                    │   confidence,      │                      │
- │                    │   success_rate)    │                      │
- │                    │─ upsert DERIVED_FROM, APPLIES_TO ──────▶│
- │                    │                    │                      │
- │                    │── Stage 4: Decay ──                      │
- │                    │─ query stale ─────▶│                      │
- │                    │  expertise         │                      │
- │                    │─ reduce confidence │                      │
- │                    │  for unreinforced  │                      │
- │                    │─ archive expired ─▶│                      │
- │                    │─ revalidate against│                      │
- │                    │  current HEAD ────▶│                      │
+PruningWorker.prune(floor: float) → int
+  // returns count of nodes tombstoned
 ```
 
 ---
 
-## 6. Cross-Cutting Concerns
+## 6 End-to-End Sequence Flows
 
-### 6.1 Temporal Versioning
+### 6.1 Repository Onboarding (Cold Start)
 
-Every structural node and edge is scoped to a commit range:
+```
+Operator                ExtractionPipeline        StorageEngine        Graph Store
+  │                           │                        │                    │
+  │  POST /ingest/commit      │                        │                    │
+  │  {repo, commit_range:     │                        │                    │
+  │   "initial..HEAD"}        │                        │                    │
+  │──────────────────────────►│                        │                    │
+  │                           │  clone/checkout         │                    │
+  │                           │  StructureAnalyzer      │                    │
+  │                           │  SymbolExtractor        │                    │
+  │                           │  CallGraphBuilder       │                    │
+  │                           │  DataFlowTracer         │                    │
+  │                           │                        │                    │
+  │                           │  flush() → StagedFact[] │                    │
+  │                           │───────────────────────►│                    │
+  │                           │                        │  merge(facts)       │
+  │                           │                        │───────────────────►│
+  │                           │                        │  upsert nodes/edges│
+  │                           │                        │◄───────────────────│
+  │                           │                        │                    │
+  │                           │                        │  EmbeddingIndexer   │
+  │                           │                        │  enqueue all nodes  │
+  │                           │                        │───────────────────►│
+  │                           │                        │                    │
+  │  202 Accepted             │                        │                    │
+  │◄──────────────────────────│                        │                    │
+  │  (async; poll /admin/stats for completion)          │                    │
+```
 
-- `valid_from_commit`: the commit SHA where this fact was first observed.
-- `valid_to_commit`: the commit SHA where this fact was invalidated
-  (`NULL` means still valid at HEAD).
+**Expected volume:** A 100K-LOC TypeScript repo produces ~5,000 Symbol nodes,
+~15,000 CALLS edges, ~500 Module nodes. Onboarding completes in <5 minutes.
 
-Queries default to HEAD but can request any historical commit. The
-Context Assembler always checks freshness: if expertise was last
-verified against a commit more than N commits behind HEAD (configurable,
-default 50), it is flagged as `potentially_stale` in the payload.
+### 6.2 Incremental Update (New Commits)
 
-### 6.2 Retention and Lifecycle
+```
+CI/CD webhook             Gateway           ExtractionPipeline     StorageEngine
+  │                          │                      │                    │
+  │  POST /ingest/commit     │                      │                    │
+  │  {repo, commit_range:    │                      │                    │
+  │   "abc123..def456"}      │                      │                    │
+  │─────────────────────────►│                      │                    │
+  │                          │  diff --name-status   │                    │
+  │                          │─────────────────────►│                    │
+  │                          │                      │  parse only changed │
+  │                          │                      │  files              │
+  │                          │                      │                    │
+  │                          │                      │  flush() → facts    │
+  │                          │                      │──────────────────►│
+  │                          │                      │                    │
+  │                          │                      │  MergeProtocol:     │
+  │                          │                      │  close old intervals│
+  │                          │                      │  open new intervals │
+  │                          │                      │◄──────────────────│
+  │  202 Accepted            │                      │                    │
+  │◄─────────────────────────│                      │                    │
+```
 
-| Entity | Retention Policy |
-|--------|-----------------|
-| Episode traces (full) | 30 days (configurable), then archived to cold storage. |
-| Episode summaries | Permanent (compact, low cost). |
-| Structural graph snapshots | Retained for the last N commits (default 100). Older snapshots compacted. |
-| Expertise nodes | Permanent while `confidence > 0.1`. Below threshold → archived. |
-| Stale edges (`valid_to_commit` set) | Pruned after 90 days unless referenced by active expertise. |
+**Key invariant:** After merge, querying at `commit_sha=abc123` returns the
+old graph; querying at `commit_sha=def456` returns the new graph. Both are
+valid simultaneously.
 
-### 6.3 Negative Memory (Anti-Patterns)
+### 6.3 Agent Task Execution (Warm Query)
 
-Expertise nodes with `pattern_type = 'anti_pattern'` encode lessons
-from failures:
+```
+Agent                  ContextAssembler        Gateway         RetrievalEngine      Graph Store
+  │                          │                    │                   │                  │
+  │  "Fix null-ref in        │                    │                   │                  │
+  │   UserService.getProfile"│                    │                   │                  │
+  │─────────────────────────►│                    │                   │                  │
+  │                          │  POST /query/context                   │                  │
+  │                          │  {task, entry:      │                   │                  │
+  │                          │   ["UserService",   │                   │                  │
+  │                          │    "getProfile"],   │                   │                  │
+  │                          │   max_tokens: 8000} │                   │                  │
+  │                          │───────────────────►│                   │                  │
+  │                          │                    │                   │                  │
+  │                          │                    │  StructuralLocator │                  │
+  │                          │                    │  → File, Module    │                  │
+  │                          │                    │──────────────────►│                  │
+  │                          │                    │                   │  nodes + edges    │
+  │                          │                    │                   │◄─────────────────│
+  │                          │                    │                   │                  │
+  │                          │                    │  CallChainWalker   │                  │
+  │                          │                    │  → callers/callees │                  │
+  │                          │                    │  (depth=3)         │                  │
+  │                          │                    │──────────────────►│                  │
+  │                          │                    │                   │  call subgraph    │
+  │                          │                    │                   │◄─────────────────│
+  │                          │                    │                   │                  │
+  │                          │                    │  SemanticSearcher  │                  │
+  │                          │                    │  → "null-ref fix"  │                  │
+  │                          │                    │  expertise match   │                  │
+  │                          │                    │──────────────────►│                  │
+  │                          │                    │                   │  Expertise nodes  │
+  │                          │                    │                   │◄─────────────────│
+  │                          │                    │                   │                  │
+  │                          │                    │  ContextRanker     │                  │
+  │                          │                    │  merge + score +   │                  │
+  │                          │                    │  budget trim       │                  │
+  │                          │                    │                   │                  │
+  │                          │  Response {subgraph, expertise}        │                  │
+  │                          │◄──────────────────│                   │                  │
+  │                          │                    │                   │                  │
+  │                          │  Format to markdown │                   │                  │
+  │                          │  Apply token budget │                   │                  │
+  │                          │  Inject expertise   │                   │                  │
+  │  context_block (markdown) │                    │                   │                  │
+  │◄─────────────────────────│                    │                   │                  │
+  │                          │                    │                   │                  │
+  │  (agent uses context to  │                    │                   │                  │
+  │   complete the task)     │                    │                   │                  │
+```
 
-- "Do not use raw SQL string concatenation in `src/db/` — use the query
-  builder (3 failures recorded)."
-- "Avoid mocking the entire HTTP client in `tests/integration/` — use
-  the test server fixture instead."
+### 6.4 Post-Session Learning (Evolution Loop)
 
-Anti-patterns are surfaced in the context payload alongside positive
-strategies, clearly labeled so the agent can avoid known pitfalls.
+```
+Agent              Gateway        FeedbackIngestor   ExpertiseSynth.   ConsolidationWkr   PruningWkr
+  │                   │                  │                 │                  │                │
+  │  POST /feedback   │                  │                 │                  │                │
+  │  {session, outcome│                  │                 │                  │                │
+  │   signals[…]}     │                  │                 │                  │                │
+  │──────────────────►│                  │                 │                  │                │
+  │                   │  process()       │                 │                  │                │
+  │                   │─────────────────►│                 │                  │                │
+  │                   │                  │  write Feedback  │                  │                │
+  │                   │                  │  nodes + edges   │                  │                │
+  │                   │                  │                 │                  │                │
+  │                   │                  │  trigger synth   │                  │                │
+  │                   │                  │────────────────►│                  │                │
+  │                   │                  │                 │  LLM: extract    │                │
+  │                   │                  │                 │  lessons from    │                │
+  │                   │                  │                 │  session trace   │                │
+  │                   │                  │                 │                  │                │
+  │                   │                  │                 │  write Expertise │                │
+  │                   │                  │                 │  nodes           │                │
+  │                   │                  │                 │                  │                │
+  │                   │                  │                 │  trigger consol. │                │
+  │                   │                  │                 │─────────────────►│                │
+  │                   │                  │                 │                  │  cluster similar│
+  │                   │                  │                 │                  │  expertise;     │
+  │                   │                  │                 │                  │  LLM: merge     │
+  │                   │                  │                 │                  │  into general   │
+  │                   │                  │                 │                  │  node           │
+  │                   │                  │                 │                  │                │
+  │                   │                  │                 │                  │  trigger prune  │
+  │                   │                  │                 │                  │───────────────►│
+  │                   │                  │                 │                  │                │
+  │                   │                  │                 │                  │  decay + prune  │
+  │                   │                  │                 │                  │  dormant nodes  │
+  │  200 OK           │                  │                 │                  │                │
+  │◄──────────────────│                  │                 │                  │                │
+```
 
-### 6.4 Analysis Backend Strategy
+### 6.5 Cross-Session Expertise Recall
 
-The Call-Chain Analyzer supports multiple backends per language:
+This flow shows how expertise learned in Session A benefits Session B,
+which is the core "agent gets smarter" scenario.
 
-| Priority | Backend | Trade-offs |
-|----------|---------|------------|
-| 1 (preferred) | **LSP / compiler index** | High accuracy, requires a running language server. |
-| 2 | **Tree-sitter + scope resolution** | Good for containment and local calls; struggles with dynamic dispatch, DI, reflection. |
-| 3 | **Heuristic name matching** | Low confidence; useful for dynamic languages as a fallback. |
-
-Edges record which backend produced them. The Context Assembler can
-filter or weight by backend when precision matters.
-
-### 6.5 Error Handling
-
-| Failure Mode | Mitigation |
-|-------------|------------|
-| Tree-sitter parse failure | Log warning, skip file, continue indexing. File is marked as `parse_failed` in the module node. |
-| LSP server crash | Fall back to tree-sitter backend. Retry LSP on next indexing cycle. |
-| Consolidator LLM timeout | Retry with exponential backoff. After 3 failures, defer the batch to the next cycle. |
-| Graph Store write conflict | Last-writer-wins for structural nodes (idempotent upsert). Episodes are append-only. |
-| Stale expertise served | Flagged in context payload. Agent warned via `potentially_stale` marker. |
+```
+Session A (past)                              Session B (current)
+─────────────────                             ─────────────────
+Agent fixes a null-ref in                     Agent encounters similar
+UserService.getProfile by                     null-ref in OrderService.
+adding a guard clause.                        submit.
+       │                                             │
+       ▼                                             │
+FeedbackIngestor:                                    │
+  outcome = success                                  │
+       │                                             │
+       ▼                                             │
+ExpertiseSynthesizer:                                │
+  "When service methods return                       │
+   nullable entities from the DB,                    │
+   callers must null-check before                    │
+   accessing nested properties.                      │
+   Pattern: guard clause with                        │
+   early return."                                    │
+       │                                             │
+       ▼                                             │
+Expertise node written to                            │
+semantic layer, confidence=0.7                       │
+                                                     │
+                                              POST /query/context
+                                              task="fix null-ref in
+                                                OrderService.submit"
+                                                     │
+                                                     ▼
+                                              SemanticSearcher finds
+                                              expertise node by embedding
+                                              similarity (null-ref, guard)
+                                                     │
+                                                     ▼
+                                              ContextRanker includes it
+                                              in the assembled context
+                                                     │
+                                                     ▼
+                                              Agent sees: "Previously
+                                              learned: guard clause
+                                              pattern for nullable DB
+                                              returns" → applies same
+                                              fix, faster, first try.
+                                                     │
+                                                     ▼
+                                              POST /feedback
+                                              outcome=success,
+                                              signal=positive on
+                                              expertise node
+                                                     │
+                                                     ▼
+                                              Expertise confidence
+                                              bumped to 0.85
+```
 
 ---
 
-## 7. Technology Choices (V1)
+## 7 Key Design Decisions
 
-| Concern | Choice | Rationale |
-|---------|--------|-----------|
-| Graph storage | SQLite + adjacency tables | Zero-ops, embeddable, sufficient for single-repo scale. Migration path to Neo4j exists. |
-| Full-text search | SQLite FTS5 | Built-in, fast, supports ranking. |
-| Vector search | `sqlite-vec` or in-process HNSW | Avoids external service dependency. |
-| AST parsing | tree-sitter | Multi-language, incremental, battle-tested. |
-| LSP integration | Language-specific LSP servers (tsserver, rust-analyzer, pylsp) | High-accuracy call resolution for supported languages. |
-| Embedding model | Sentence-transformer (local) or API-based | Configurable; local for latency, API for quality. |
-| Summarization LLM | Configurable (local or API) | Used only in the consolidator, not on the hot path. |
-| Scheduling | OS-level cron or in-process timer | Consolidation is not latency-sensitive. |
+### 7.1 Why a Graph, Not a Vector Store
+
+| Concern | Vector store | Graph store |
+|---|---|---|
+| **Structural queries** ("what calls `getProfile`?") | Requires brute-force search or pre-computed lists | Direct edge traversal, O(degree) |
+| **Multi-hop reasoning** ("trace all callers of all callers of X") | Not natively supported | BFS/DFS with depth control |
+| **Temporal slicing** ("show me the call graph at commit abc123") | Must maintain N copies of embeddings | Single graph with interval predicates |
+| **Explainability** | Opaque similarity scores | Named edges with provenance |
+
+Embeddings are still used — as an *index* on graph nodes, not as the primary
+storage. This gives us the best of both worlds: semantic fuzzy matching for
+expertise recall, plus structural precision for call-chain and hierarchy
+queries.
+
+### 7.2 Why Three Layers
+
+Separating structural, behavioral, and semantic concerns enables:
+
+1. **Independent refresh cadences.** Structural/behavioral layers update on
+   every commit. Semantic layer updates on session completion — a much slower
+   cadence.
+2. **Layer-specific retrieval strategies.** Structural → deterministic
+   traversal. Behavioral → bounded graph search. Semantic → embedding ANN +
+   confidence filtering.
+3. **Access-control boundaries.** A team might share the structural layer
+   across agents but keep the semantic layer per-agent (personal expertise vs.
+   shared codebase facts).
+
+### 7.3 Temporal Versioning vs. Snapshots
+
+We use **interval-based temporal versioning** (inspired by Zep / Graphiti)
+rather than full graph snapshots because:
+
+- Storage is O(changes), not O(graph × versions).
+- Point-in-time queries are a single predicate filter, not a snapshot lookup.
+- Tombstoned nodes remain reachable for expertise nodes that reference them
+  (a deleted function can still teach the agent something).
+
+### 7.4 Confidence Decay Model
+
+Each node's `confidence` score follows:
+
+```
+confidence(t) = base_confidence × decay_factor ^ (t - last_reinforced_at)
+```
+
+Where `decay_factor` is configurable per layer (default: 0.95/day for
+semantic, 1.0 for structural/behavioral since those are anchored to code).
+
+Positive feedback resets `last_reinforced_at` and may increase
+`base_confidence` (capped at 1.0). Negative feedback applies an immediate
+multiplicative penalty (default: ×0.5).
+
+### 7.5 Token Budget Discipline
+
+The ContextRanker enforces a strict token budget to prevent context window
+blow-up. Algorithm:
+
+1. Sort all candidate nodes by `score = recency × relevance × confidence`.
+2. Greedily add nodes from highest to lowest score.
+3. For each node, estimate tokens from `len(serialized_node) / 4`.
+4. Stop when adding the next node would exceed the budget.
+5. If expertise nodes haven't been included, evict the lowest-scored
+   non-expertise node to make room (expertise gets priority).
+
+### 7.6 Consolidation Guard Rails
+
+Unsupervised LLM-based consolidation is risky (hallucinated generalizations).
+Guard rails:
+
+- Consolidation only fires when a cluster has ≥3 similar expertise nodes with
+  mean confidence ≥0.6.
+- The merged node inherits the **minimum** confidence of its constituents, not
+  the average.
+- Original nodes are marked `SUPERSEDED`, not deleted — rollback is trivial.
+- A human-reviewable audit log captures every consolidation event with
+  before/after content.
 
 ---
 
-## 8. Future Considerations (Out of Scope for V1)
+## 8 Deployment Topology
 
-| Area | Description |
-|------|-------------|
-| Data-flow analysis | Fine-grained `DATA_FLOWS_TO` edges for selected languages. |
-| Multi-agent shared memory | Collaborative memory where multiple agents contribute to and read from the same graph with access control. |
-| Active learning | Agent explicitly requests the consolidator to form expertise about a specific area. |
-| Graph neural network retrieval | GNN-based relevance scoring over the knowledge graph instead of heuristic reranking. |
-| Memory export/import | Portable memory snapshots for transferring expertise between environments. |
+```
+┌────────────────────────────────┐
+│         Agent Runtime          │
+│  (any host; calls Gateway API) │
+└──────────────┬─────────────────┘
+               │ HTTPS / gRPC
+               ▼
+┌────────────────────────────────┐
+│       Memory Gateway API       │
+│  (stateless; horizontally      │
+│   scalable behind LB)          │
+└──────┬───────────┬─────────────┘
+       │           │
+       ▼           ▼
+┌─────────┐  ┌───────────────┐
+│ Graph DB│  │ Vector Index   │
+│ (Neo4j /│  │ (pgvector /    │
+│  Age /  │  │  Qdrant /      │
+│  Memgr.)│  │  Weaviate)     │
+└─────────┘  └───────────────┘
+       │
+       ▼
+┌─────────────────────────────┐
+│   Async Worker Pool          │
+│  (Extraction, Evolution,     │
+│   Embedding jobs)            │
+│  Backed by task queue        │
+│  (e.g., Celery / Temporal)   │
+└─────────────────────────────┘
+```
+
+**Minimum viable deployment:** Single-node SQLite + HNSW in-process
+(for local dev). Scales to managed Neo4j + Qdrant + Temporal for
+production multi-repo deployments.
+
+---
+
+## 9 Observability Contract
+
+| Signal | SLI | Target |
+|---|---|---|
+| Extraction latency | p95 time from commit push to graph merge complete | < 30 s for incremental, < 5 min for onboarding |
+| Query latency | p95 time from `/query/context` request to response | < 500 ms |
+| Graph freshness | Commits behind HEAD at query time | ≤ 1 commit (async pipeline) |
+| Expertise recall precision | % of surfaced expertise nodes rated positive by agent feedback | ≥ 70% |
+| Consolidation audit rate | % of consolidation events reviewed within 7 days | 100% |
+| Pruning safety | Nodes pruned that were later re-requested within 30 days | < 1% |
+
+Each SLI has a corresponding Prometheus metric, Grafana dashboard panel,
+and PagerDuty alert with a runbook. The runbook is the deliverable.
