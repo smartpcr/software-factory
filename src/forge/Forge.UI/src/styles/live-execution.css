@@ -12,10 +12,21 @@
 .live-exec {
   display: grid;
   grid-template-columns: 1fr 360px;
+  /* Pin header to row 1 (auto) and let row 2 fill the remaining viewport.
+     Without an explicit row template, both main + aside auto-size to their
+     content and the rail's overflow:auto can't kick in (its parent never
+     gets a bounded height). */
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 16px;
   padding: 16px 24px;
   height: 100%;
   overflow: hidden;
+}
+.live-exec > main,
+.live-exec > aside {
+  /* min-height:0 lets nested overflow:auto children actually clip + scroll
+     instead of stretching the grid track to their content height. */
+  min-height: 0;
 }
 
 .live-exec__header {

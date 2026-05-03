@@ -5,6 +5,8 @@ import { useSpawnStore } from '@/state/useSpawnStore';
 import { SwarmTopbar } from './SwarmTopbar';
 import { SwarmNavBar } from './SwarmNavBar';
 import { SwarmPipelineStrip, type PipelineStageSpec, type SwarmMode } from './SwarmPipelineStrip';
+import { SwarmMasterPanel, type Selection } from './SwarmMasterPanel';
+import { SwarmDetailPanel, type DetailTab } from './SwarmDetailPanel';
 import { Toaster } from '@/board/Toaster';
 
 const PHASES: StorySpawnPhase[] = ['plan', 'decompose', 'implement', 'review', 'qa', 'done'];
@@ -26,6 +28,12 @@ export function SwarmStoryView() {
   const [artifacts, setArtifacts] = useState<StorySpawnArtifacts | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [mode, setMode] = useState<SwarmMode | null>(null);
+  const [selection, setSelection] = useState<Selection>({ kind: 'overview', id: null });
+  const [tab, setTab] = useState<DetailTab>('overview');
+  // Master defaults to collapsed (36px rail) so the tabbed detail panel
+  // takes the whole width on first render. User clicks the chevron to
+  // expand the master back to its 360px navigation list.
+  const [masterCollapsed, setMasterCollapsed] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -48,6 +56,9 @@ export function SwarmStoryView() {
     const id = setInterval(() => { void load(); }, 15_000);
     return () => { cancelled = true; clearInterval(id); };
   }, [storyId, tick]);
+
+  // When mode flips, drop selection back to overview so the master panel renders cleanly.
+  useEffect(() => { setSelection({ kind: 'overview', id: null }); }, [mode]);
 
   const stages: PipelineStageSpec[] = useMemo(() => {
     if (!detail) return [];
@@ -109,7 +120,7 @@ export function SwarmStoryView() {
     const ws = detail.workstreams;
     const phaseIdx = PHASES.indexOf(detail.spawn.phase);
     const pct = Math.round(((phaseIdx + 1) / PHASES.length) * 100);
-    const stalled = 0;     // surfaced once `WorkItemRow.trialCount === 3 ∧ score < 90` lands
+    const stalled = ws.filter((w) => w.status === 'stalled').length;
     const activePairs = ws.filter((w) => w.status === 'active' || w.status === 'review').length;
     const merged = ws.filter((w) => w.status === 'complete' || w.status === 'merging').length;
     return [
@@ -118,7 +129,7 @@ export function SwarmStoryView() {
       { k: 'Active Pairs',  v: String(activePairs),                delta: `${ws.length} workstreams`, tone: 'cyan' as const },
       { k: 'Iterations',    v: '—',                                delta: 'Σ this run' },
       { k: 'PR Throughput', v: `${merged} / ${ws.length}`,         delta: ws.length ? `${Math.round((merged / ws.length) * 100)}% merge` : '0%', tone: 'green' as const },
-      { k: 'Stalled',       v: String(stalled),                    delta: stalled ? 'esc. to lead' : '—',                                          tone: stalled ? ('red' as const) : undefined },
+      { k: 'Stalled',       v: String(stalled),                    delta: stalled ? 'esc. to lead' : '—', tone: stalled ? ('red' as const) : undefined },
     ];
   }, [detail]);
 
@@ -126,7 +137,10 @@ export function SwarmStoryView() {
     return (
       <div className="swarm-ctrl">
         <div className="shell">
-          <SwarmNavBar crumbs={[{ pre: 'ROOT', label: 'Workstreams', href: '/workstreams' }, { label: storyId, active: true }]} onBack={() => navigate('/workstreams')} />
+          <SwarmNavBar
+            crumbs={[{ pre: 'ROOT', label: 'Workstreams', href: '/workstreams' }, { label: storyId, active: true }]}
+            onBack={() => navigate('/workstreams')}
+          />
           <div className="empty">
             <div className="lbl">▌ {storyId}</div>
             <div className="sub" style={{ color: 'var(--sc-red)' }}>{err}</div>
@@ -140,7 +154,10 @@ export function SwarmStoryView() {
     return (
       <div className="swarm-ctrl">
         <div className="shell">
-          <SwarmNavBar crumbs={[{ pre: 'ROOT', label: 'Workstreams', href: '/workstreams' }, { label: storyId, active: true }]} onBack={() => navigate('/workstreams')} />
+          <SwarmNavBar
+            crumbs={[{ pre: 'ROOT', label: 'Workstreams', href: '/workstreams' }, { label: storyId, active: true }]}
+            onBack={() => navigate('/workstreams')}
+          />
           <div className="empty">
             <div className="lbl">▌ LOADING {storyId}…</div>
           </div>
@@ -165,6 +182,9 @@ export function SwarmStoryView() {
             { pre: 'ROOT', label: 'Workstreams', href: '/workstreams' },
             { pre: 'STORY', label: detail.spawn.storyId, active: true },
             ...(mode ? [{ pre: 'MODE', label: mode === 'design' ? 'Design & Plan' : mode === 'impl' ? 'Impl ⇄ Review' : 'Release', active: true }] : []),
+            ...(selection.kind !== 'overview' && selection.id
+              ? [{ pre: selection.kind.toUpperCase(), label: selection.id, active: true }]
+              : []),
           ]}
           onBack={() => navigate('/workstreams')}
         />
@@ -175,39 +195,32 @@ export function SwarmStoryView() {
         />
 
         <div className="grid-main">
-          <div className={`mode-pane${mode ? ' active' : ''}`}>
-            <section className="panel">
-              <div className="panel-hd">
-                <span>▌ {mode === 'design' ? 'DESIGN DOCS' : mode === 'impl' ? 'PHASE BOARD · NAVIGATE' : 'RELEASE GATES'}</span>
-                <span className="ix">CLICK TO DRILL</span>
-              </div>
-              <div className="panel-bd">
-                <div className="mode-stub">
-                  <div className="lbl">▌ {mode?.toUpperCase()} · MASTER PANEL</div>
-                  <div className="sub">
-                    Phase board / doc list / gate list — coming in the next pass. Once landed,
-                    selecting a row drills into the right-side detail panel with its 6 tabs:
-                    overview, conversation, arch doc, PR, QA / E2E, trace.
-                  </div>
-                </div>
-              </div>
-            </section>
-            <section className="panel">
-              <div className="panel-hd">
-                <span>▌ DETAIL · TABS</span>
-                <span className="ix">SELECT A ROW</span>
-              </div>
-              <div className="panel-bd">
-                <div className="mode-stub">
-                  <div className="lbl">▌ DETAIL PANE</div>
-                  <div className="sub">
-                    Tab body for the selected row will land here — overview / conversation / arch doc
-                    / PR / QA / trace. Hooks into existing endpoints: `/api/work-items`, `/api/prs`,
-                    `/api/work-items/:id/transcript`.
-                  </div>
-                </div>
-              </div>
-            </section>
+          <div className={`mode-pane${mode ? ' active' : ''}${masterCollapsed ? ' master-collapsed' : ''}`}>
+            {mode && (
+              <>
+                <SwarmMasterPanel
+                  mode={mode}
+                  detail={detail}
+                  artifacts={artifacts}
+                  selection={selection}
+                  onSelect={(sel) => {
+                    setSelection(sel);
+                    // Auto-expand the master when the user selects a row from the
+                    // collapsed rail (so they can see the rest of the list).
+                    if (masterCollapsed && sel.kind !== 'overview') setMasterCollapsed(false);
+                  }}
+                  collapsed={masterCollapsed}
+                  onToggleCollapsed={() => setMasterCollapsed((v) => !v)}
+                />
+                <SwarmDetailPanel
+                  mode={mode}
+                  detail={detail}
+                  selection={selection}
+                  tab={tab}
+                  onTab={setTab}
+                />
+              </>
+            )}
           </div>
         </div>
       </div>

@@ -3313,7 +3313,7 @@ This model is what the implementation in 28.1–28.12 below realises. Where a su
 >
 > **Summary.** Phase 28 is end-to-end functional. The orchestration layer is real: a `StorySpawnOrchestrator` hosted service drives the lifecycle automatically when a spawn is created or its phase advances. The architect crew produces planning artifacts on a planning branch and opens the plan PR; the engineer crew claims each ready workstream (deps honored), opens its PR; the review crew posts comments and routes them back; the engineer pushes a fix; the reviewer approves and merges; QA produces feature files in parallel and the engineer auto-implements step definitions per workstream; on completion the linked ADO work item transitions to `closed`. The agent **content production** uses a deterministic strategy (`DeterministicStoryArtifactStrategy`) so tests run without LLMs; production deployments swap a single DI binding to use real crew agents. Two test classes — `Phase28StorySpawnTests` (42 gate-only scenarios) and `Phase28OrchestratorTests` (9 end-to-end scenarios) — together pin every spec scenario; **51 tests, 100% pass**.
 >
-> **Open items from `docs/forge/workstream.md` (Q2 2026 refinement).** The decisions captured in the new "Team structure & execution model" section above introduce additional behaviour that is *spec-confirmed but not yet wired*: paired generator/evaluator execution per task, 3-trial model rotation, Fibonacci `maxTurns`/`maxIterations` derivation, the `Phase → Stage → Step` work-item taxonomy with the 20/20/20 size ceilings, the four typed plan work-items, and the "no human gate on plan artifacts" rule. Tracking checklist:
+> **Open items from `docs/forge/workstream.md` (Q2 2026 refinement).** The decisions captured in the "Team structure & execution model" section above are now folded into spec sections **28.3 – 28.8** as the canonical phase behaviour (no human gates, paired gen/eval per task, 3-trial model rotation, Fibonacci `maxTurns`/`maxIterations`, Phase → Stage → Step taxonomy with 20/20/20 size ceilings, four typed plan work-items, per-Phase test gate). The behaviour is *spec-confirmed but not yet wired*. Tracking checklist:
 >
 > - [ ] **EX.1** Effort points are validated against `{1,2,3,5,8,13}`; `maxTurns` / `maxIterations` derive automatically from points.
 > - [ ] **EX.2** Plan & coding tasks both run through a paired (generator + evaluator) loop; `assignedAgent.role` records pair assignment.
@@ -3421,6 +3421,17 @@ This model is what the implementation in 28.1–28.12 below realises. Where a su
 - [x] **28.9.9** "→ next-phase" advance button on the card surfacing the gate's 422 errors inline.
 - [x] **28.9.10** `NewWorkstreamModal.tsx` deleted; the empty-state CTA + page header now route exclusively to `SpawnStoryModal`.
 - [x] **28.9.11** Real-time updates wired via `useForgeHub.story-spawn.changed` → `useSpawnStore.bump(storyId)`; `<StoryCard>` re-fetches on tick change. Toast surfaces on `plan-pr-opened`, `decomposed`, `qa-pr-merged`, `done`, `story-closed`.
+- [~] **28.9.12** Swarm-control surface (mission-control layout from `docs/examples/swarm-control.html`) — multi-story index + per-story drill-down. Index view (`SwarmIndexView`) and story view (`SwarmStoryView`) shells exist with topbar / nav-bar / pipeline strip; story-row / phase-badge / workstream chip strip / score pill render against live spawn data. Pipeline strip drives mode (`design` / `impl` / `release`) from `StorySpawn.Phase`.
+- [ ] **28.9.13** Story-view master panel — phase board (mode `impl`), doc list (mode `design`), gate list (mode `release`). Selection has three kinds (`overview` / `phase` / `stage`); selecting a row drills the right panel.
+- [ ] **28.9.14** Story-view detail panel — six tabs: `overview · conversation · arch doc · PR · QA / E2E · trace`. Tabs auto-disable when the selection has no data; back button pops `state.history`.
+- [ ] **28.9.15** Overview tab — paired-agent cards (gen + evl, iter bars, score), 4-team swarm grid (20-cell agent grid colored by status). Wired to `assignedAgent.role` once EX.2 lands.
+- [ ] **28.9.16** Conversation tab — actor cards, iteration history, live transcript tail. Wired to `/api/work-items/:id/transcript` and the existing `liveTail` toggle pattern.
+- [ ] **28.9.17** Arch doc tab — long-form view of the four merged plan artifacts with sticky TOC.
+- [ ] **28.9.18** PR tab — file tree + side-by-side diff + comment side-rail + check-run rail. Wired to `/api/prs/:id`.
+- [ ] **28.9.19** QA tab — Gherkin scenario list (pass / fail / warn) + coverage rail per file. Wired to QA PR diff + e2e test results from Phase 27.
+- [ ] **28.9.20** Trace tab — flat event log: `time | KIND | actor | description` with kind colors (tool / gen / evl / score / pass / fail).
+- [ ] **28.9.21** Per-story view-state map in `useSwarmUiStore`: `Map<storyId, { mode, selection, tab, history, liveTail }>` so navigating between stories preserves drill-down position.
+- [ ] **28.9.22** Fleet-level attention rail — aggregate stalled / blocked / failed-build items across all spawns into the index topbar's `Stalled` meter; click-through to the offending story+stage.
 
 #### 28.10 — Artifact check-in rule
 
@@ -3528,85 +3539,103 @@ When the operator selects a story and clicks **Spawn**:
 
 1. Create `StorySpawnRow` with `Phase = "plan"`.
 2. Create a planning branch: `story/{storyId}/plan` from `main`.
-3. Assign Architect team agents (filtered from `AGENT_ALLOCATION` where `team = 'Architect'`).
-4. Architect agents produce artifacts in the planning branch:
-   - `docs/stories/{storyId}/tech-spec.md` — technology choices, constraints, risks.
-   - `docs/stories/{storyId}/architecture.md` — component diagram, data flow, API contracts.
-   - `docs/stories/{storyId}/implementation-plan.md` — ordered list of work items with estimates.
-   - `docs/stories/{storyId}/e2e-scenarios.md` — high-level end-to-end scenario descriptions.
-5. Architect agents create a PR from `story/{storyId}/plan` → `main`.
-6. **Gate**: PR must be merged before advancing to Phase 2. `StorySpawn.PlanPrId` tracks the PR.
+3. The Architect team lead allocates a **paired generator + evaluator** from the ~20 architects (`AgentAllocationLoader.ForTeam("Architect")`). Pair size, model mix, and `(maxTurns, maxIterations)` are derived from the task's Fibonacci point estimate (see "Team structure & execution model" — `maxTurns = points × 30`, `maxIterations = points × 5`, `points ∈ {1,2,3,5,8,13}`).
+4. The pair produces the four typed plan artifacts on the planning branch — one **plan work-item** per artifact, no parent/child hierarchy:
+   - `docs/stories/{storyId}/architecture.md` — work-item type `Architecture`. System diagram, component diagram, perf & reliability requirements, primary usage scenarios, deployment strategy, component-interaction descriptions, sequence/flow diagrams per scenario including edge cases.
+   - `docs/stories/{storyId}/tech-spec.md` — work-item type `TechSpec`. Library and technology choices, applicable design patterns, engineering practices, maintainability constraints.
+   - `docs/stories/{storyId}/implementation-plan.md` — work-item type `ImplementationPlan`. **Hierarchical: Phase → Stage → Step.** A *Phase* is an independent, cohesive feature whose stages must ship together. **`Stages ≤ 20` per Phase, `Steps ≤ 20` per Stage, `files-per-step ≤ 20`.** Each Phase carries a workstream tag and explicit dependency edges to other phases.
+   - `docs/stories/{storyId}/e2e-scenarios.md` (and `tests/Features/{storyId}/*.feature`) — work-item type `E2EScenarios`. Plain-English BDD scenarios in Gherkin (Reqnroll for C#, cucumber for TypeScript) grouped by phase.
+5. Each plan work-item iterates inside the pair until the evaluator's score reaches **≥ 90** within `maxIterations`. On pass, the pair commits the artifact and the work-item closes.
+6. Architect team opens a single PR from `story/{storyId}/plan` → `main` once all four work-items are closed. **No human approval gate, no Review-team review on plan artifacts.** The orchestrator merges the plan PR automatically (see `feedback_no_fakes_no_manual` — production runtime is fully agent-driven).
+7. `StorySpawn.PlanPrId` tracks the PR. Phase advances to `decompose` on PR merge.
 
 ### 28.4 — Phase 2: Decompose (Architect team)
 
 After the plan PR merges:
 
 1. Advance `Phase = "decompose"`.
-2. Architect agents read the merged plan and produce a decomposition:
-   - Split into N parallel workstreams, each with a clear scope boundary.
-   - For each workstream: title, description, acceptance criteria, estimated effort.
-   - Dependency graph between workstreams (which must complete before which).
-   - Timeline: relative ordering and estimated duration.
-3. Decomposition is persisted as `StorySpawn.DecompositionJson`.
-4. For each workstream in the decomposition:
+2. The Architect team auto-reads the merged plan (the gate at 28.10.2 verifies all four artifacts exist on `main`) and produces a decomposition. Decomposition is also a paired plan task — generator emits the workstream graph, evaluator scores it ≥ 90.
+3. The decomposition partitions the `implementation-plan.md` Phases into **parallel workstreams**. Each workstream entry carries:
+   - `title`, `description`, `acceptanceCriteria`, `effortPoints` ∈ `{1,2,3,5,8,13}`.
+   - `deps[]` — IDs of other workstreams that must merge first.
+   - `phaseRefs[]` — which Phase IDs from `implementation-plan.md` belong to this workstream.
+   - `deliverables[]` and a relative `timeline` estimate.
+4. Decomposition is persisted as `StorySpawn.DecompositionJson`.
+5. For each workstream in the decomposition:
    - Create `WorkstreamRow` with `StorySpawnId = spawn.Id`, `Status = "planning"`, branch `ws/{storyId}/{wsName}`.
-   - Populate `CardsJson` with linked work items (created or mapped from ADO).
-   - Record dependencies in a new `WorkstreamDepRow(workstreamId, dependsOnId)` table.
-5. **Gate**: operator reviews and approves the decomposition before advancing to Phase 3.
+   - Materialise the **Epic / Feature / Task** work-item hierarchy from the workstream's Phase refs: each `Phase → Epic`, each `Stage → Feature` with `parentId = Epic`, each `Step → Task` with `parentId = Stage`. All three carry `task:code` plus `kind:phase` / `kind:stage` / `kind:step` tags.
+   - Populate `CardsJson` with the resulting Epic IDs.
+   - Record inter-workstream dependencies in `WorkstreamDepRow(workstreamId, dependsOnId)`.
+6. **No human gate.** Phase advances to `implement` automatically once decomposition is persisted; the legacy `DecompositionApproved` flag is retained on the row for backward-compat but is no longer enforced. (See EX.4 in the Implementation progress checklist for the wiring task.)
 
 ### 28.5 — Phase 3: Implement (Engineer team, parallel)
 
-After decomposition is approved:
+Once decomposition is persisted:
 
 1. Advance `Phase = "implement"`.
-2. For each workstream (respecting dependency order):
-   - Assign Engineer team agents.
-   - Create branch + worktree per existing Phase 16 flow.
-   - Per work item within the workstream: run the existing generator → evaluator iteration loop (Phase 16/20).
-   - When all work items in a workstream are complete, create a PR from the workstream branch → `main`.
-3. Workstream status transitions: `planning → active → review` (when PR is created).
-4. Dependency enforcement: a workstream cannot start until all its `dependsOn` workstreams have their PRs merged.
+2. The Engineer team lead picks **ready coding tasks** — tasks whose dependency Phases / Stages / Steps are all `complete` — and assigns each to a fresh **paired agent (generator + evaluator)** from the ~20 engineers. Pair budgets derive from the task's points (`maxTurns = points × 30`, `maxIterations = points × 5`).
+3. Each workstream uses an isolated **git worktree** on its own branch (`ws/{storyId}/{wsName}`); per Phase 16 flow.
+4. Per coding task — Step is the PR-sized unit (≤ 20 files):
+   - Generator produces the change inside the worktree.
+   - Evaluator critically reviews and emits a **0–100 score**. **Score ≥ 90 passes.**
+   - The pair iterates up to `maxIterations`. An evaluator-rejected output costs one iteration; an LLM round-trip costs one turn.
+5. **3-trial model rotation on failure.** If the pair exhausts `maxIterations` below 90, the engineer team lead reassigns the task to a fresh pair with a different model mix:
+
+   | Trial | Generator             | Evaluator             |
+   |-------|-----------------------|-----------------------|
+   | 1     | `claude-opus-4.7`     | `gpt-5.5`             |
+   | 2     | `gpt-5.5`             | `claude-opus-4.7`     |
+   | 3     | `claude-opus-4.6-1M`  | `codex-5.3`           |
+
+   `WorkItemRow.trialCount` records the current trial. After three failed trials, the work-item flips to `stalled` and surfaces in the engineer-lead escalation queue. No further trial is auto-started.
+6. On pass: the worktree commits, opens a PR from `ws/{storyId}/{wsName}` → `main`, and the workstream status transitions `planning → active → review`.
+7. **Dependency enforcement.** A coding task starts only when all `dependsOn` work-items have `status = complete`. A workstream stays `blocked` until every upstream workstream's PR merges. The dependency scheduler (`SpawnDependencyScheduler`) re-evaluates after each merge.
 
 ### 28.6 — Phase 4: Review (Review team)
 
 For each PR created in Phase 3:
 
-1. Assign Review team agents (filtered from `AGENT_ALLOCATION` where `team = 'Review'`).
-2. Review agents inspect the diff, add comments.
-3. **Comment loop**: any unresolved comment is routed back to the Engineer team agent that authored the code.
-   - Engineer agent addresses the comment, pushes a fix, marks the comment as resolved.
-   - Review agent re-inspects; repeat until all threads are resolved.
-4. When all comments are resolved and build is green → Review agent approves the PR.
-5. PR merges via existing Phase 24/27 flow.
+1. The Review team lead assigns a **paired (review-author + review-evaluator)** from the ~20 reviewers (`AgentAllocationLoader.ForTeam("Review")`).
+2. The review-author inspects the diff and posts inline comments; the review-evaluator scores the review for completeness (same paired-agent pattern, same `≥ 90` bar).
+3. **Comment loop.** Open comments route back to the engineer pair recorded on the work-item's `assignedAgent.agents[]`:
+   - Engineer pair produces a fix commit on the worktree branch and marks the comment resolved.
+   - Review pair re-inspects; the cycle repeats until `PrCommentRow.State='active'` count drops to zero.
+4. **Build/test gate.** Before approval, the engineer team lead verifies that **unit + integration + e2e tests for the affected Phase pass**. A failing test reopens the loop.
+5. Review pair approves the PR; orchestrator merges via the standard Phase 24/27 flow.
+6. PR merge → work-item closes → the Step / Stage closes. **A Phase closes only when every Stage / Step under it is `complete` and the full unit + integration + e2e suite for that Phase is green.** Closing a Phase re-evaluates downstream Phases for the eligibility pool.
 
 ### 28.7 — Phase 5: QA (QA team, parallel with Phases 3–4)
 
-QA runs in parallel with implementation, starting after the plan is merged:
+QA runs in parallel with implementation, starting as soon as the plan is merged:
 
-1. Assign QA team agents (filtered from `AGENT_ALLOCATION` where `team = 'QA'`).
-2. QA agents read the plan artifacts (`e2e-scenarios.md`, `tech-spec.md`) and produce:
-   - SpecFlow/Reqnroll `.feature` files covering all acceptance criteria.
-   - Feature files are organized under `tests/Features/{storyId}/`.
-   - Each scenario is tagged with the workstream it validates.
-3. QA agents create a PR from `story/{storyId}/qa` → `main` containing the feature files.
-4. **Gate**: feature file PR must be merged before test implementation begins.
-5. After merge, hand off to Engineer team:
-   - Engineer agents implement step definitions in `tests/Steps/{storyId}/`.
-   - Engineer agents run the e2e tests; iterate until all pass.
-   - Step definition implementation is committed via a separate PR per workstream.
+1. The QA team lead assigns paired QA agents (`AgentAllocationLoader.ForTeam("QA")`) — same generator/evaluator pattern, points-derived budgets, score ≥ 90.
+2. QA pairs read the merged `e2e-scenarios.md` + `tech-spec.md` + `implementation-plan.md` and produce **Gherkin `.feature` files** grouped by Phase:
+   - Reqnroll grammar for C# code paths, Cucumber grammar for TypeScript code paths.
+   - Files land under `tests/Features/{storyId}/` with subfolder per Phase.
+   - Each scenario is tagged `@ws-{slug}` so traceability from scenario → workstream is mechanical.
+3. QA team opens a PR from `story/{storyId}/qa` → `main`. The orchestrator merges it automatically (no human gate).
+4. **Gate**: feature-file PR must be merged before step-definition work begins (the engineer pair reads `.feature` files from `main`, not from the QA branch).
+5. After merge, the Engineer team picks up step-definition work per workstream:
+   - Step definitions land under `tests/Steps/{storyId}/`.
+   - Engineer pair iterates step defs + test infra until **every scenario passes** for the Phase under test.
+   - A separate step-definition PR is opened per workstream (branch `ws/{storyId}/{wsName}-steps`); orchestrator merges automatically.
+6. Coverage warnings: if any acceptance criterion in `e2e-scenarios.md` lacks a mapped scenario, the QA pair surfaces a warning on the work-item; the team lead reassigns.
 
 ### 28.8 — Completion & story closure
 
-A story is complete when:
+A story is **releasable** when **every workstream's score ≥ 90 AND all unit / integration / e2e tests are green on `main`**. Concretely:
 
-- All workstream PRs are merged.
-- All QA feature file PRs are merged.
-- All e2e test step definition PRs are merged.
-- All e2e tests pass on the merged `main` branch.
+- Every workstream's implementation PR is merged.
+- Every workstream's step-definition PR is merged.
+- The QA feature-file PR is merged.
+- For every Phase in the implementation plan: all Stages / Steps `complete` AND the Phase's unit + integration + e2e tests pass on `main`.
+- No coding work-item is in `stalled` state.
 
-At that point: `StorySpawn.Phase = "done"`, linked work items transition to `Resolved`/`Closed` in ADO.
+At that point: `StorySpawn.Phase = "done"`, the linked ADO Feature / PBI transitions to `Resolved` / `Closed` via `IStoryProviderOps.TransitionWorkItemAsync`. Per-Phase completion is recorded so downstream phases unblock automatically as their dependencies close (`28.11.6`).
 
-### 28.9 — UI: Spawn dialog redesign
+### 28.9 — UI: Spawn dialog + swarm-control surface
+
+#### 28.9.A — Spawn dialog
 
 Replace `NewWorkstreamModal` with `SpawnStoryModal`:
 
@@ -3614,12 +3643,60 @@ Replace `NewWorkstreamModal` with `SpawnStoryModal`:
 - **Step 2 — Confirm scope**: display the selected story's details. Confirm the target repo. Click **Spawn** to begin.
 - No manual branch/worktree/epic fields — everything is derived from the story.
 
-The Workstreams view shows the spawned story as a **story card** (new component) with:
+#### 28.9.B — Swarm control surface (mission-control layout)
 
-- Story title and status badge (plan → decompose → implement → review → qa → done).
-- Expandable child workstreams underneath.
-- Phase progress bar showing which phase is active.
-- Artifacts list (linked PRs, docs, feature files).
+The Workstreams page renders as a **swarm-control surface**, adapted from `docs/examples/swarm-control.html`. The mock visualises a single story end-to-end; Forge supports many concurrent stories per product, so the layout is lifted into a two-level navigation:
+
+1. **Index level — `/workstreams`**: a list of every active `StorySpawnRow` for the product, each rendered as a *story row* (id, title, phase badge, progress, workstream pill strip, score). The shared topbar surfaces *fleet-wide* meters: total stories, in-plan / implementing / done counts, pipeline %, QA. The "Spawn story" CTA replaces the old "+ New" button.
+2. **Story level — `/workstreams/{storyId}`**: drills into a single story using the full mock layout — topbar (per-story meters), breadcrumb nav, three-stage **pipeline strip** (DESIGN & PLAN ⇄ IMPL ⇄ REVIEW + E2E ⇄ RELEASE), then a 360 px / 1fr split between a **master panel** (phase board / doc list / gate list, depending on mode) and a **detail panel with six tabs**: `overview · conversation · arch doc · PR · QA / E2E · trace`.
+
+Mode mapping for the pipeline strip is derived from `StorySpawn.Phase`:
+
+| Phase             | Pipeline mode      |
+|-------------------|--------------------|
+| `plan`, `decompose` | `design`           |
+| `implement`, `review`, `qa` | `impl`     |
+| `done`            | `release`          |
+
+Detail-panel tab contents:
+
+- **Overview** — paired-agent cards (generator + evaluator + iter bars + score), 4-team swarm grid (each team = 20-cell agent grid colored by status: idle / gen / evl / rev / e2e / stalled).
+- **Conversation** — per-stage actor cards, iteration history, live transcript tail with score-bump callouts. Wired to `/api/work-items/:id/transcript`.
+- **Arch doc** — long-form view of the four merged plan artifacts with a sticky TOC.
+- **PR** — file tree + side-by-side diff + comment side-rail + check-run rail.
+- **QA / E2E** — Gherkin scenario list with pass/fail/warn + coverage rail per file.
+- **Trace** — flat event log: `time | KIND | actor | description` with kind colors `tool · gen · evl · score · pass · fail`.
+
+Tabs auto-disable (visible but strikethrough) when the current selection has no data for them. Selection has three kinds: `overview` / `phase` / `stage`. A back button pops `state.history`.
+
+Design-token palette is scoped under `.swarm-ctrl` so the warm amber/cyan mission-control look does not leak into the rest of the app:
+
+- **Surfaces / text**: `--sc-bg`, `--sc-surface`, `--sc-text`, `--sc-text-dim`, `--sc-muted`.
+- **Status accents**: `--sc-amber` (gen / story-score / selected), `--sc-cyan` (evl / active / engineer team), `--sc-green` (pass / done / qa team / e2e), `--sc-red` (fail / stalled), `--sc-magenta` (review / score-bump / review team).
+- **Team colors**: `--sc-t-arch` = amber, `--sc-t-eng` = cyan, `--sc-t-rev` = magenta, `--sc-t-qa` = green.
+- **Score thresholds for badge classes**: `pass` ≥ 90, `warn` 75–89, `fail` < 75.
+
+A light theme inherits the host app's `data-theme="light"` attribute and swaps to a pure-white-on-cool-gray palette while keeping the same component shapes.
+
+#### 28.9.C — Multi-story index extensions
+
+Because the mock is single-story, Forge adds:
+
+- **Story-row component** — collapsed view of one spawn used in the index list (id, title, phase badge, fill-bar, workstream chips, score). Click → drill into story view.
+- **Phase-filter chip rail** + search box on the index toolbar.
+- **Per-story view-state map** in the swarm UI store: `Map<storyId, { mode, selection, tab, history, liveTail }>` — navigating between stories preserves drill-down position.
+- **Fleet-level attention rail** (planned, behind the same DI swap that wires real LLM strategy): aggregates stalled / blocked / failed-build items across all spawns into the topbar's `Stalled` meter and offers a click-through to the offending story+stage.
+- **Repo / product scoping** — the index honours the product selector in the top nav; each row's repoId is shown as a sub-label.
+
+#### 28.9.D — Realtime updates
+
+The existing `useForgeHub` SignalR plumbing already emits `story-spawn.changed`, `pr.changed`, and (after Phase 27) `build.changed`. The swarm-control surface subscribes to all three:
+
+- `story-spawn.changed` → `useSpawnStore.bump(storyId)` → both the index row and the story view re-fetch.
+- `pr.changed` (filtered by `WorkstreamRow.PrsJson`) → PR pane re-fetches diff + comments + checks.
+- `build.changed` → trace pane appends a `pass`/`fail` row; the QA-tab summary cells refresh.
+
+The "live tail" toggle on the conversation pane gates whether new transcript messages are appended automatically; a paused tail buffers the last N messages and shows a "↑ N new" pill.
 
 ### 28.10 — Artifact check-in rule
 

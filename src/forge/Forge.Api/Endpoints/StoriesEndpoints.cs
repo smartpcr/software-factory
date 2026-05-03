@@ -40,6 +40,26 @@ public static class StoriesEndpoints
         return bool.TryParse(raw, out var v) ? v : true;
     }
 
+    /// <summary>
+    /// When <c>true</c> (default), POST /spawn awaits the orchestrator drive
+    /// before returning so callers can read <c>PlanPrId</c> in the response.
+    /// Tests rely on this. When <c>false</c> (production via
+    /// <c>Forge:Stories:SpawnDriveInline=false</c> in appsettings.json), the
+    /// drive is fire-and-forget — the response returns 201 immediately and
+    /// the architect crew runs in the background. Required because real-LLM
+    /// architect runs take many minutes, which would otherwise freeze the
+    /// spawn-button on the UI. <see cref="SpawnDependencyScheduler"/> ticks
+    /// every 15 s and will re-drive the spawn if the background task falls
+    /// over.
+    /// </summary>
+    private static bool SpawnDriveInline(HttpContext ctx)
+    {
+        var cfg = ctx.RequestServices.GetService<IConfiguration>();
+        var raw = cfg?["Forge:Stories:SpawnDriveInline"];
+        if (string.IsNullOrEmpty(raw)) return true;
+        return bool.TryParse(raw, out var v) ? v : true;
+    }
+
     public static WebApplication MapStoriesEndpoints(this WebApplication app)
     {
         var grp = app.MapGroup("/api/stories").WithTags("Stories");
@@ -159,14 +179,34 @@ public static class StoriesEndpoints
         await db.SaveChangesAsync();
 
         await hub.Clients.All.SendAsync("story-spawn.changed", new { kind = "created", spawn = ToContract(spawn) });
+
         // forge_implementation.md Phase 28 — kick the orchestrator so the
-        // architect crew can produce the plan artifacts + open the plan PR
-        // before this request returns.
-        if (OrchestratorEnabled(ctx)) await orchestrator.DriveAsync(storyId, ctx.RequestAborted);
-        // Re-read so the response carries the orchestrator-mutated state
-        // (PlanPrId, QaBranch).
-        var refreshed = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == storyId);
-        return Results.Created($"/api/stories/{storyId}/spawn", ToContract(refreshed));
+        // architect crew can produce the plan artifacts + open the plan PR.
+        // Production runs fire-and-forget (Forge:Stories:SpawnDriveInline=false
+        // in appsettings.json) because real-LLM architect runs take many
+        // minutes; tests keep the inline await so PlanPrId is populated by
+        // the time the response is read.
+        if (OrchestratorEnabled(ctx))
+        {
+            if (SpawnDriveInline(ctx))
+            {
+                await orchestrator.DriveAsync(storyId, ctx.RequestAborted);
+                var refreshed = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == storyId);
+                return Results.Created($"/api/stories/{storyId}/spawn", ToContract(refreshed));
+            }
+
+            // Background drive — must NOT use ctx.RequestAborted (the HTTP
+            // request ends as soon as we return). StorySpawnOrchestrator is
+            // a singleton, so capturing it here is safe across the request
+            // boundary. Failures are logged inside DriveAsync; the
+            // SpawnDependencyScheduler will re-drive on the next 15 s tick.
+            _ = Task.Run(async () =>
+            {
+                try { await orchestrator.DriveAsync(storyId, CancellationToken.None); }
+                catch { /* swallowed — orchestrator already logs */ }
+            });
+        }
+        return Results.Created($"/api/stories/{storyId}/spawn", ToContract(spawn));
     }
 
     private static async Task<IResult> ListSpawns(ForgeDbContext db, [FromQuery] string? phase)

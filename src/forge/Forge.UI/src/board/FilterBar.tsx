@@ -80,7 +80,12 @@ export function FilterBar() {
   // relevant to what's actually rendered).
   const agentOptions = useMemo(() => {
     const seen = new Map<string, string>();
-    for (const c of cards) if (c.agent) seen.set(c.agent.id, c.agent.name || c.agent.id);
+    // Skip cards whose agent has no resolvable id — they'd collapse into
+    // a single empty-string filter option that can't be meaningfully
+    // selected.
+    for (const c of cards) {
+      if (c.agent && c.agent.id) seen.set(c.agent.id, c.agent.name || c.agent.id);
+    }
     return Array.from(seen.entries()).map(([key, label]) => ({ key, label }));
   }, [cards]);
 

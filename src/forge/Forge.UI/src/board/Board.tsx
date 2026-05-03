@@ -353,7 +353,10 @@ function computeAgentSwimlanes(cards: Card[]): Swimlane[] {
   const agentIds = new Set<string>();
   let hasUnassigned = false;
   for (const c of cards) {
-    if (c.agent) agentIds.add(c.agent.id);
+    // Cards whose agent has no resolvable id (provider-side data gap)
+    // collapse into the unassigned lane rather than producing an empty
+    // swimlane keyed on the empty string.
+    if (c.agent && c.agent.id) agentIds.add(c.agent.id);
     else hasUnassigned = true;
   }
   const lanes: Swimlane[] = [...agentIds].sort().map((aid) => {

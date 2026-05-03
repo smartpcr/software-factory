@@ -5,21 +5,25 @@ import { usePrsStore } from '@/state/usePrsStore';
 import { PrApprovalBadge } from './PrApprovalBadge';
 import type { ApprovalVerdict } from './prVerdict';
 
-function AgentChip({ id, name, role }: { id: string; name?: string | null; role?: string | null }) {
+function AgentChip({ id, name, role }: { id: string | null; name?: string | null; role?: string | null }) {
   const avatar = avatarFor(id, name);
   const tooltip = agentTooltip(id, name, role);
+  // Display label — prefer the id; if absent, fall back to the name's
+  // initials, then a generic '?'. Used in both the avatar's alt text and
+  // the text-only chip body.
+  const fallbackLabel = id ?? (name ? name.slice(0, 2).toUpperCase() : '?');
   if (avatar) {
     return (
       <img
         src={avatar}
-        alt={name || id}
+        alt={name || fallbackLabel}
         className={`agent-chip-avatar ${role ?? ''}`}
         style={{ borderColor: 'var(--bg-sunken)' }}
         title={tooltip}
       />
     );
   }
-  return <span className={`agent-chip ${role ?? ''}`} style={{ borderColor: 'var(--bg-sunken)' }} title={tooltip}>{id}</span>;
+  return <span className={`agent-chip ${role ?? ''}`} style={{ borderColor: 'var(--bg-sunken)' }} title={tooltip}>{fallbackLabel}</span>;
 }
 
 function humanInitials(author: Agent): string {
@@ -28,7 +32,8 @@ function humanInitials(author: Agent): string {
     .map((w) => w[0]?.toUpperCase() ?? '')
     .join('')
     .slice(0, 2);
-  return fromName || author.id.slice(0, 2).toUpperCase();
+  if (fromName) return fromName;
+  return (author.id ?? '?').slice(0, 2).toUpperCase();
 }
 
 /** Render real avatar or initials for human authors, agent avatar for agents.
@@ -75,7 +80,11 @@ interface Props {
   onRequestChanges?: (pr: Pr) => void;
 }
 
-function roleFor(id: string): string {
+function roleFor(id: string | null | undefined): string {
+  // Sparse provider data — ADO/GitHub PRs sometimes surface authors with
+  // a missing id (e.g. anonymous bot reviewers, deactivated accounts).
+  // Treat as 'human' rather than crashing the entire PR list.
+  if (!id) return 'human';
   if (id.startsWith('A')) return 'arch';
   if (id.startsWith('E')) return 'eng';
   if (id.startsWith('R')) return 'rev';

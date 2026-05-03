@@ -20,8 +20,12 @@ using Xunit;
 /// <summary>
 /// Phase 21 — comprehensive restart behavior tests.
 /// Organized by spec section: 21.1 migration, 21.2 clear transcript,
-/// 21.3 restart endpoint, 21.4 SkipSoulPrompt, 21.5 points-based budgets,
+/// 21.3 restart endpoint, 21.5 points-based budgets,
 /// 21.R re-execution guard, 21.I independence invariants.
+///
+/// (21.4 SkipSoulPrompt was removed — the flag was vestigial and is no
+/// longer settable from the API; soul.md always loads. The DB column
+/// remains for schema stability but is unread.)
 /// </summary>
 public class RestartBehaviorTests
 {
@@ -218,7 +222,7 @@ public class RestartBehaviorTests
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
             var resp = await client.PostAsJsonAsync(
                 "/api/crews/crew-test/plan",
-                new { workItemId = "wi-restart-1", restart = true, skipSoulPrompt = true });
+                new { workItemId = "wi-restart-1", restart = true });
             Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
 
             Assert.Equal(0, await db.Deliverables.CountAsync(d => d.WorkItemId == "wi-restart-1"));
@@ -473,78 +477,6 @@ public class RestartBehaviorTests
             await queue.EnqueueAsync("wi-dupe", "crew", "crew-dupe", default);
             var after = await db.TaskQueue.CountAsync(r => r.WorkItemId == "wi-dupe" && openStates.Contains(r.State));
             Assert.Equal(1, after);
-        }
-        finally { scope.Dispose(); f.Dispose(); }
-    }
-
-    // ════════════════════════════════════════════════════════════════════
-    //  21.4 — SkipSoulPrompt flag
-    // ════════════════════════════════════════════════════════════════════
-
-    [Fact]
-    public async Task SkipSoulPrompt_Persisted_On_Queue_Row()
-    {
-        var (f, scope, db, _) = await BootAsync();
-        try
-        {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-soul"));
-            db.WorkItems.Add(NewWorkItem("wi-soul-1", state: "active", execStatus: "failed"));
-            await db.SaveChangesAsync();
-
-            using var client = f.CreateClient();
-            client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
-            var resp = await client.PostAsJsonAsync(
-                "/api/crews/crew-soul/plan",
-                new { workItemId = "wi-soul-1", restart = true, skipSoulPrompt = true });
-            Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
-
-            var queueRow = await db.TaskQueue
-                .FirstOrDefaultAsync(r => r.WorkItemId == "wi-soul-1" && r.State != "cancelled");
-            Assert.NotNull(queueRow);
-            Assert.True(queueRow!.SkipSoulPrompt);
-        }
-        finally { scope.Dispose(); f.Dispose(); }
-    }
-
-    [Fact]
-    public async Task Normal_Enqueue_Does_Not_Set_SkipSoulPrompt()
-    {
-        var (f, scope, db, queue) = await BootAsync();
-        try
-        {
-            db.WorkItems.Add(NewWorkItem("wi-soul-2"));
-            await db.SaveChangesAsync();
-
-            var row = await queue.EnqueueAsync("wi-soul-2", "crew", "some-crew", default);
-            Assert.False(row.SkipSoulPrompt);
-        }
-        finally { scope.Dispose(); f.Dispose(); }
-    }
-
-    [Fact]
-    public async Task SkipSoulPrompt_Without_Restart_Still_Persists()
-    {
-        var (f, scope, db, _) = await BootAsync();
-        try
-        {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-soul-nr"));
-            db.WorkItems.Add(NewWorkItem("wi-soul-nr", state: "active", execStatus: "idle"));
-            await db.SaveChangesAsync();
-
-            using var client = f.CreateClient();
-            client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
-            // restart=false but skipSoulPrompt=true — independent controls.
-            var resp = await client.PostAsJsonAsync(
-                "/api/crews/crew-soul-nr/plan",
-                new { workItemId = "wi-soul-nr", restart = false, skipSoulPrompt = true });
-            Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
-
-            var queueRow = await db.TaskQueue
-                .FirstOrDefaultAsync(r => r.WorkItemId == "wi-soul-nr" && r.State != "cancelled");
-            Assert.NotNull(queueRow);
-            Assert.True(queueRow!.SkipSoulPrompt);
         }
         finally { scope.Dispose(); f.Dispose(); }
     }
@@ -811,91 +743,6 @@ public class RestartBehaviorTests
             Assert.Equal(1, await db.WorkItemLinks.CountAsync(l => l.FromId == "wi-parent" && l.ToId == "wi-child"));
         }
         finally { scope.Dispose(); f.Dispose(); }
-    }
-
-    // ════════════════════════════════════════════════════════════════════
-    //  21.4b — Soul.md loading logic (mirrors CrewQueueWorker:453-458)
-    // ════════════════════════════════════════════════════════════════════
-
-    [Fact]
-    public void SoulLoading_SkipTrue_Returns_Empty()
-    {
-        bool skipSoulPrompt = true;
-        string? agentSoulPath = @"C:\some\path\soul.md";
-        var soulMd = "";
-        if (!skipSoulPrompt && !string.IsNullOrEmpty(agentSoulPath))
-            soulMd = "should not reach here";
-        Assert.Equal("", soulMd);
-    }
-
-    [Fact]
-    public void SoulLoading_SkipFalse_NullPath_Returns_Empty()
-    {
-        bool skipSoulPrompt = false;
-        string? agentSoulPath = null;
-        var soulMd = "";
-        if (!skipSoulPrompt && !string.IsNullOrEmpty(agentSoulPath))
-            soulMd = "should not reach here";
-        Assert.Equal("", soulMd);
-    }
-
-    [Fact]
-    public void SoulLoading_SkipFalse_EmptyPath_Returns_Empty()
-    {
-        bool skipSoulPrompt = false;
-        string? agentSoulPath = "";
-        var soulMd = "";
-        if (!skipSoulPrompt && !string.IsNullOrEmpty(agentSoulPath))
-            soulMd = "should not reach here";
-        Assert.Equal("", soulMd);
-    }
-
-    [Fact]
-    public async Task SoulLoading_SkipFalse_ValidPath_Reads_File()
-    {
-        var tempFile = Path.GetTempFileName();
-        try
-        {
-            await File.WriteAllTextAsync(tempFile, "I am a soul prompt.");
-            bool skipSoulPrompt = false;
-            var soulMd = "";
-            if (!skipSoulPrompt && !string.IsNullOrEmpty(tempFile))
-            {
-                try { soulMd = await File.ReadAllTextAsync(tempFile); }
-                catch { }
-            }
-            Assert.Equal("I am a soul prompt.", soulMd);
-        }
-        finally { File.Delete(tempFile); }
-    }
-
-    [Fact]
-    public async Task SoulLoading_SkipFalse_MissingFile_Returns_Empty()
-    {
-        bool skipSoulPrompt = false;
-        var missingPath = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid()}.md");
-        var soulMd = "";
-        if (!skipSoulPrompt && !string.IsNullOrEmpty(missingPath))
-        {
-            try { soulMd = await File.ReadAllTextAsync(missingPath); }
-            catch { }
-        }
-        Assert.Equal("", soulMd);
-    }
-
-    [Fact]
-    public void EvalSoulLoading_SkipTrue_Gets_Rubric_Only()
-    {
-        // Mirrors CrewQueueWorker:779-783 — evaluator with skipSoulPrompt
-        // gets scoring rubric only, no persona prefix.
-        bool skipSoulPrompt = true;
-        var scoringRubric = "Score the work 0-100.";
-        var evalSoul = "";
-        if (!skipSoulPrompt && !string.IsNullOrEmpty("eval/soul.md"))
-            evalSoul = "eval persona";
-        var evalSoulForScoring = (string.IsNullOrEmpty(evalSoul) ? "" : evalSoul + "\n\n---\n\n")
-            + scoringRubric;
-        Assert.Equal(scoringRubric, evalSoulForScoring);
     }
 
     // ════════════════════════════════════════════════════════════════════

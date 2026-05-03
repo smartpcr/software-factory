@@ -1638,10 +1638,10 @@ export const forgeApi = {
     });
   },
 
-  async requeueWorkItem(crewId: string, workItemId: string, opts?: { restart?: boolean; skipSoulPrompt?: boolean }): Promise<unknown> {
+  async requeueWorkItem(crewId: string, workItemId: string, opts?: { restart?: boolean }): Promise<unknown> {
     return fetchJson(`/api/crews/${encodeURIComponent(crewId)}/plan`, {
       method: 'POST',
-      body: JSON.stringify({ workItemId, restart: opts?.restart ?? false, skipSoulPrompt: opts?.skipSoulPrompt ?? false }),
+      body: JSON.stringify({ workItemId, restart: opts?.restart ?? false }),
       headers: { 'X-Forge-User': writerHeader() },
     });
   },
@@ -1650,6 +1650,58 @@ export const forgeApi = {
     await fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/execution`, {
       method: 'PATCH',
       body: JSON.stringify(body),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  // Authoritative commit list for a work item's worktree branch — runs
+  // `git log --name-status origin/{base}..HEAD` server-side. Replaces the
+  // worktree-tick reconstruction the live-exec view used to do, which
+  // silently dropped commits faster than the tick interval.
+  async getWorkItemCommits(workItemId: string): Promise<{
+    worktreePath: string | null;
+    branch: string;
+    baseBranch: string;
+    ahead: number;
+    behind: number;
+    headSha: string | null;
+    commits: Array<{
+      sha: string;
+      message: string;
+      author: string;
+      at: string;
+      added: string[];
+      modified: string[];
+      deleted: string[];
+      other: Array<{ status: string; path: string; oldPath?: string | null }>;
+    }>;
+    uncommitted: { added: string[]; modified: string[]; deleted: string[] };
+  }> {
+    return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/commits`, {
+      method: 'GET',
+    });
+  },
+
+  // Single Resume — branches on the last deliverable verdict:
+  //   pass     → re-run delivery only (build gate + push + PR), skip the loop
+  //   iterate  → continue iterating (DeliverableLoop seeds the prior chain)
+  //   stalled  → ditto
+  //   reject / no deliverables → 400
+  // The optional `note` is injected into the next iter's user prompt; on
+  // the pass path it's silently ignored (no agent runs to read it).
+  async resume(workItemId: string, note?: string): Promise<{
+    workItemId: string;
+    queueId: number;
+    crewId: string;
+    mode: 'delivery-replay' | 'continue-iter';
+    priorIter: number;
+    priorScore: number;
+    priorVerdict: string;
+    noteApplied: boolean;
+  }> {
+    return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/resume`, {
+      method: 'POST',
+      body: JSON.stringify({ note: note ?? null }),
       headers: { 'X-Forge-User': writerHeader() },
     });
   },

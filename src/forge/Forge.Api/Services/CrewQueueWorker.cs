@@ -8,6 +8,7 @@ namespace Forge.Api.Services;
 
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
+using System.Text.Json;
 using Forge.Api.Agents;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
@@ -665,7 +666,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // runs asynchronously — the claim sweep doesn't wait for it.
             // Use CancellationToken.None so the agent isn't cancelled when the
             // sweep loop's token is disposed — the agent manages its own lifetime.
-            _ = Task.Run(() => RunAgentAsync(row.WorkItemId, crewId, picked!, crew, wi, row.SkipSoulPrompt, row.Kind, CancellationToken.None));
+            _ = Task.Run(() => RunAgentAsync(row.WorkItemId, crewId, picked!, crew, wi, row.Kind, CancellationToken.None));
         }
         return (claimed, skips);
     }
@@ -673,7 +674,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     // ── Agent runner kickoff ───────────────────────────────────────────────
     private async Task RunAgentAsync(
         string workItemId, string crewId, string agentId,
-        CrewRow crew, WorkItemRow? wi, bool skipSoulPrompt, string kind, CancellationToken ct)
+        CrewRow crew, WorkItemRow? wi, string kind, CancellationToken ct)
     {
         try
         {
@@ -712,9 +713,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             var invokeMode = string.Equals(invokeModeStr, "cli", StringComparison.OrdinalIgnoreCase)
                 ? AgentInvokeMode.Cli : AgentInvokeMode.Sdk;
 
-            // Soul.md — skip when the queue row has SkipSoulPrompt set (force-restart).
+            // Soul.md — always loaded when the agent has a SoulPath; the
+            // skip-soul-prompt flag was removed (no caller ever set it).
             var soulMd = "";
-            if (!skipSoulPrompt && !string.IsNullOrEmpty(agent?.SoulPath))
+            if (!string.IsNullOrEmpty(agent?.SoulPath))
             {
                 try { soulMd = await File.ReadAllTextAsync(agent.SoulPath, ct); }
                 catch { /* best effort */ }
@@ -725,7 +727,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // surfaced regardless of the agent's persona. Missing template
             // is a soft fallback (empty string) so the rest of the loop
             // still runs; tests cover the loaded path.
-            if (string.Equals(kind, TaskQueueKinds.CommentResponse, StringComparison.OrdinalIgnoreCase) && !skipSoulPrompt)
+            if (string.Equals(kind, TaskQueueKinds.CommentResponse, StringComparison.OrdinalIgnoreCase))
             {
                 var template = await AgentTemplateLoader.LoadAsync(AgentTemplateLoader.CommentResponseFile, ct);
                 if (!string.IsNullOrEmpty(template))
@@ -739,7 +741,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // Phase 27 Q27.10 — build-fix runs prepend the build-fix template
             // ahead of soul.md so the must-act rubric is surfaced regardless
             // of the agent's persona.
-            if (string.Equals(kind, TaskQueueKinds.BuildFix, StringComparison.OrdinalIgnoreCase) && !skipSoulPrompt)
+            if (string.Equals(kind, TaskQueueKinds.BuildFix, StringComparison.OrdinalIgnoreCase))
             {
                 var template = await AgentTemplateLoader.LoadAsync(AgentTemplateLoader.BuildFixFile, ct);
                 if (!string.IsNullOrEmpty(template))
@@ -756,7 +758,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             var isPlanTask = string.Equals(kind, TaskQueueKinds.Plan, StringComparison.OrdinalIgnoreCase)
                 || (string.Equals(kind, TaskQueueKinds.Work, StringComparison.OrdinalIgnoreCase)
                     && string.Equals(agent?.Role, "arch", StringComparison.OrdinalIgnoreCase));
-            if (isPlanTask && !skipSoulPrompt)
+            if (isPlanTask)
             {
                 var template = await AgentTemplateLoader.LoadAsync(AgentTemplateLoader.PlanFile, ct);
                 if (!string.IsNullOrEmpty(template))
@@ -1006,6 +1008,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     + "You MUST push before finishing — the server creates the PR automatically after you push.";
             }
 
+            // (Operator-note injection moved into the !isResumeDelivery block
+            // below so it runs after isResumeDelivery is computed and only on
+            // the path that actually invokes the agent.)
+
             // Phase 21 — per-task budgets scaled by story points.
             // Wall-clock: 30 min per point. Max turns: 30 turns per point.
             // Falls back to the global defaults when points = 0.
@@ -1020,6 +1026,113 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             this.logger.LogInformation(
                 "Starting agent invocation: wi={Wi} agent={Agent} crew={Crew} model={Model} backend={Backend} mode={Mode} worktree={Worktree} budget={Budget}m maxTurns={MaxTurns}",
                 workItemId, agentId, crewId, model, backend, invokeMode, worktreePath, taskBudget?.TotalMinutes ?? 10, taskMaxTurns ?? 0);
+
+            // Resume-delivery short-circuit — when the prior run's iter loop
+            // already produced a verdict=pass deliverable but the post-loop
+            // delivery failed (build gate, push, PR), the operator can re-
+            // dispatch with kind=resume-delivery to skip the gen+eval loop and
+            // re-run only the delivery phase. We synthesize a DeliverableLoopResult
+            // from the last persisted deliverable and fall through to the
+            // existing `if (result.FinalVerdict == "pass")` delivery branch.
+            // Only validation runs here; the actual task.prompt emit + loop
+            // invocation is gated by `isResumeDelivery` below so the agent
+            // SDK is never started.
+            var isResumeDelivery = string.Equals(kind, TaskQueueKinds.ResumeDelivery, StringComparison.OrdinalIgnoreCase);
+            DeliverableLoopResult? resumeResult = null;
+            DeliverableLoopResult? loopResult = null;
+            // Hoisted for the post-loop delivery section (used in both the
+            // normal pass-then-deliver flow and the resume-delivery path).
+            string? evaluatorAgentId = null;
+            string? evaluatorCrewId = null;
+            string loopKind = string.Equals(kind, TaskQueueKinds.CommentResponse, StringComparison.OrdinalIgnoreCase)
+                ? DeliverableKinds.CommentResponse
+                : string.Equals(kind, TaskQueueKinds.BuildFix, StringComparison.OrdinalIgnoreCase)
+                    ? DeliverableKinds.BuildFix
+                    : isPlanTask
+                        ? DeliverableKinds.Plan
+                        : DeliverableKinds.Coding;
+            if (isResumeDelivery)
+            {
+                var allDeliv = await db.Deliverables.AsNoTracking()
+                    .Where(d => d.WorkItemId == workItemId)
+                    .ToListAsync(ct);
+                var lastDeliv = allDeliv
+                    .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
+                    .FirstOrDefault();
+                if (lastDeliv?.Verdict != "pass")
+                {
+                    this.logger.LogWarning(
+                        "Resume-delivery refused: wi={Wi} last verdict={Verdict} (need 'pass')",
+                        workItemId, lastDeliv?.Verdict ?? "(none)");
+                    await this.taskChannel.EmitAsync(workItemId, "task.failed", new
+                    {
+                        agentId, crewId,
+                        error = $"Resume-delivery refused: last deliverable verdict='{lastDeliv?.Verdict ?? "(none)"}', expected 'pass'.",
+                    }, crewId: crewId, ct: ct);
+                    await this.SetExecutionStatusAsync(workItemId, ExecutionStatuses.Failed, ct);
+                    await this.CompleteQueueRowAsync(workItemId, ct);
+                    return;
+                }
+                this.logger.LogInformation(
+                    "Resume-delivery: wi={Wi} priorIter={Iter} priorScore={Score} — skipping gen+eval loop",
+                    workItemId, lastDeliv.Iter, lastDeliv.Score);
+                await this.taskChannel.EmitAsync(workItemId, "task.delivery-resumed", new
+                {
+                    agentId, crewId,
+                    priorIter = lastDeliv.Iter,
+                    priorScore = lastDeliv.Score,
+                    priorAgent = lastDeliv.GeneratorAgentId,
+                }, crewId: crewId, ct: ct);
+                resumeResult = new DeliverableLoopResult("pass", lastDeliv.Iter, lastDeliv.Score, Array.Empty<long>(), 0m);
+
+                // Pin evaluator from the prior deliverable so the PR body
+                // byline reads "evaluated by {agent}" with the same scorer
+                // that signed off on the iteration loop.
+                evaluatorAgentId = lastDeliv.EvaluatorAgentId;
+                if (!string.IsNullOrEmpty(evaluatorAgentId))
+                {
+                    var evalAgent = await db.Agents.AsNoTracking()
+                        .FirstOrDefaultAsync(a => a.Id == evaluatorAgentId, ct);
+                    evaluatorCrewId = evalAgent?.CrewId;
+                }
+            }
+
+            if (!isResumeDelivery)
+            {
+
+            // Operator-note injection — the /api/work-items/{id}/resume endpoint
+            // emits a `task.operator-note` transcript event when the operator
+            // hits Resume on a non-pass deliverable with a steering note. We
+            // pick up the latest one *since the last deliverable* so stale
+            // notes from earlier pauses don't leak into the current run, and
+            // prepend it to the user prompt so the generator sees it first.
+            var lastDelivAt = await db.Deliverables.AsNoTracking()
+                .Where(d => d.WorkItemId == workItemId)
+                .OrderByDescending(d => d.CreatedAt)
+                .Select(d => (DateTimeOffset?)d.CreatedAt)
+                .FirstOrDefaultAsync(ct);
+            var noteEvt = await db.TaskTranscriptEvents.AsNoTracking()
+                .Where(e => e.WorkItemId == workItemId && e.Kind == "task.operator-note"
+                    && (lastDelivAt == null || e.At > lastDelivAt))
+                .OrderByDescending(e => e.Id)
+                .FirstOrDefaultAsync(ct);
+            if (noteEvt is not null)
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(noteEvt.PayloadJson);
+                    if (doc.RootElement.TryGetProperty("note", out var n)
+                        && n.ValueKind == JsonValueKind.String
+                        && !string.IsNullOrWhiteSpace(n.GetString()))
+                    {
+                        prompt = "OPERATOR NOTE (steering for this iteration — read first):\n"
+                            + n.GetString()!.Trim()
+                            + "\n\n---\n\n"
+                            + prompt;
+                    }
+                }
+                catch { /* best-effort */ }
+            }
 
             // Emit the system + user prompts so the live execution view shows
             // what the agent is being asked to do.
@@ -1062,9 +1175,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 MaxTurns: taskMaxTurns);
 
             // (2) Resolve evaluator crew + agent for the gen-eval loop.
+            // (`evaluatorAgentId`/`evaluatorCrewId` are declared at the top of
+            // the function; the resume-delivery branch fills them from the
+            // last deliverable. Here we resolve them for the normal path.)
             CrewRow? evalCrew = null;
-            string? evaluatorAgentId = null;
-            string? evaluatorCrewId = null;
             if (!string.IsNullOrEmpty(crew.PairedWithCrewId))
             {
                 evalCrew = await db.Crews.AsNoTracking()
@@ -1168,7 +1282,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         ? evalCrew.EvaluatorModel
                         : evalCrew.Model;
                 var evalSoul = "";
-                if (!skipSoulPrompt && !string.IsNullOrEmpty(evalAgent?.SoulPath))
+                if (!string.IsNullOrEmpty(evalAgent?.SoulPath))
                 {
                     try { evalSoul = await File.ReadAllTextAsync(evalAgent.SoulPath, iterCt); }
                     catch { /* best effort */ }
@@ -1345,16 +1459,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 return new EvaluatorRunOutput(evalOutput.ToString(), evalCost, evalInTok, evalOutTok);
             }
 
-            // Phase 24 Q24.12 — propagate the queue row's kind into the loop so
-            // downstream consumers (cost ledger tagging, transcript events,
-            // evaluator preamble selection) can branch on it.
-            var loopKind = string.Equals(kind, TaskQueueKinds.CommentResponse, StringComparison.OrdinalIgnoreCase)
-                ? DeliverableKinds.CommentResponse
-                : string.Equals(kind, TaskQueueKinds.BuildFix, StringComparison.OrdinalIgnoreCase)
-                    ? DeliverableKinds.BuildFix
-                    : isPlanTask
-                        ? DeliverableKinds.Plan
-                        : DeliverableKinds.Coding;
+            // Phase 24 Q24.12 — `loopKind` is computed at the top of the
+            // function so downstream consumers (cost ledger tagging, transcript
+            // events, evaluator preamble selection, post-loop delivery) can
+            // branch on it from both the normal and resume-delivery paths.
 
             var loopRequest = new DeliverableLoopRequest(
                 WorkItemId: workItemId,
@@ -1373,7 +1481,15 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 Kind: loopKind,
                 WorkItemPoints: wi?.Points ?? 1);
 
-            var result = await loop.RunAsync(loopRequest, ct);
+            loopResult = await loop.RunAsync(loopRequest, ct);
+
+            } // end if (!isResumeDelivery)
+
+            // For resume-delivery, the synthesized result was set above before
+            // the prompt emit was skipped. Otherwise `loopResult` was just
+            // assigned by loop.RunAsync. Either way, the rest of the function
+            // reads from `result`.
+            var result = resumeResult ?? loopResult!;
 
             this.logger.LogInformation(
                 "Deliverable loop completed: wi={Wi} verdict={Verdict} score={Score} iters={Iters} cost={Cost}",

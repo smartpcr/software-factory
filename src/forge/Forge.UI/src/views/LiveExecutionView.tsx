@@ -65,6 +65,39 @@ export function LiveExecutionView(): JSX.Element {
     return Array.from(byIter.values()).sort((a, b) => a.iter - b.iter);
   }, [snapshot?.deliverables]);
 
+  // Resume eligibility + mode — single button that branches on the last
+  // deliverable's verdict (pass → delivery replay; iterate/stalled → continue
+  // iterating; reject/none → not eligible). The button stays *visible* but
+  // is disabled when a run is in flight, so the operator always sees the
+  // affordance and understands why it can't fire right now.
+  const lastDeliverable = useMemo<DeliverableShape | null>(() => {
+    const ds = snapshot?.deliverables ?? [];
+    return ds.length > 0 ? ds[ds.length - 1] : null;
+  }, [snapshot?.deliverables]);
+  const isRunActive = snapshot?.executionStatus === 'live'
+    || snapshot?.executionStatus === 'queued';
+  const resumeMode: 'delivery' | 'iter' | null = (() => {
+    if (!lastDeliverable) return null;
+    if (lastDeliverable.verdict === 'pass') return 'delivery';
+    if (lastDeliverable.verdict === 'iterate'
+        || lastDeliverable.verdict === 'stalled'
+        || lastDeliverable.verdict === 'stalled-budget') return 'iter';
+    return null;
+  })();
+  const canResume = resumeMode !== null;
+  const resumeDisabled = isRunActive || busy;
+  const [resumeNote, setResumeNote] = useState('');
+  const [resumeComposerOpen, setResumeComposerOpen] = useState(false);
+
+  // Auto-close the composer when a run kicks off — the action it was
+  // staging just became inapplicable, no need to keep the panel open.
+  useEffect(() => {
+    if (isRunActive && resumeComposerOpen) {
+      setResumeComposerOpen(false);
+      setResumeNote('');
+    }
+  }, [isRunActive, resumeComposerOpen]);
+
   const isSummaryMode = filter === 'summary';
   const pagerLength = isSummaryMode ? summaryIters.length : iterations.length;
   const totalIters = pagerLength;
@@ -228,6 +261,35 @@ export function LiveExecutionView(): JSX.Element {
     }
   }
 
+  async function resume(noteOverride?: string) {
+    if (!workItemId) return;
+    setBusy(true);
+    try {
+      const r = await forgeApi.resume(workItemId, noteOverride);
+      const msg = r.mode === 'delivery-replay'
+        ? `Resumed — replaying delivery from prior pass (iter ${r.priorIter}, score ${r.priorScore}).`
+        : `Resumed — continuing iteration from iter ${r.priorIter} (verdict ${r.priorVerdict}, score ${r.priorScore})${r.noteApplied ? ' with steering note' : ''}.`;
+      useToastStore.getState().show(msg, 'success');
+      setResumeComposerOpen(false);
+      setResumeNote('');
+    } catch (e) {
+      useToastStore.getState().show(
+        e instanceof Error ? e.message : 'Resume failed',
+        'danger',
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function onResumeClick() {
+    // Always open the composer so the operator gets a clear hint about
+    // what's about to run before the API call fires. For the pass path
+    // the composer is preview-only (no note input). For the iter path
+    // it includes the steering-note textarea.
+    setResumeComposerOpen(true);
+  }
+
   async function forceRestart() {
     if (!workItemId) return;
     setBusy(true);
@@ -315,6 +377,30 @@ export function LiveExecutionView(): JSX.Element {
           )}
         </div>
         <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
+          {canResume && (
+            <button
+              className="btn btn-primary"
+              style={{
+                fontSize: 11,
+                padding: '4px 10px',
+                background: resumeDisabled ? 'var(--bg-surface-2)' : 'var(--success, #10b981)',
+                borderColor: resumeDisabled ? 'var(--border)' : 'var(--success, #10b981)',
+                color: resumeDisabled ? 'var(--text-tertiary)' : undefined,
+                cursor: resumeDisabled ? 'not-allowed' : undefined,
+              }}
+              disabled={resumeDisabled}
+              onClick={onResumeClick}
+              title={
+                isRunActive
+                  ? `Resume disabled — a run is in flight (status: ${snapshot?.executionStatus}). Wait for it to finish or cancel it first.`
+                  : resumeMode === 'delivery'
+                    ? `Replay build + push + PR. Iter ${lastDeliverable?.iter} already passed (score ${lastDeliverable?.score}); no agent re-run.`
+                    : `Continue iterating from iter ${lastDeliverable?.iter} (verdict ${lastDeliverable?.verdict}, score ${lastDeliverable?.score}). Opens a note composer first.`
+              }
+            >
+              ▶ Resume
+            </button>
+          )}
           <button
             className="btn btn-primary"
             style={{ fontSize: 11, padding: '4px 10px' }}
@@ -344,6 +430,97 @@ export function LiveExecutionView(): JSX.Element {
           </button>
         </div>
       </header>
+
+      {resumeComposerOpen && canResume && (
+        <section
+          aria-label="Resume preview"
+          style={{
+            border: '1px solid var(--success, #10b981)',
+            background: 'color-mix(in srgb, var(--success, #10b981) 6%, transparent)',
+            borderRadius: 8,
+            padding: '10px 14px',
+            margin: '8px 0',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+          }}
+        >
+          {resumeMode === 'delivery' ? (
+            <>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                <strong style={{ color: 'var(--text-primary)' }}>Resume — replay delivery</strong>
+                {' — '}
+                iter {lastDeliverable?.iter} already passed (score {lastDeliverable?.score}).
+                {' '}Skips the gen+eval loop; no agent runs, no payroll.
+              </div>
+              <ul style={{ fontSize: 11, color: 'var(--text-tertiary)', margin: 0, paddingLeft: 18 }}>
+                <li>Run the build gate (<code>dotnet build Workflow.sln</code>)</li>
+                <li>Run the test gate if configured</li>
+                <li>Push <code>ws/{workItemId}</code> with <code>--force-with-lease</code></li>
+                <li>Open the PR (or update the existing one)</li>
+              </ul>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                <strong style={{ color: 'var(--text-primary)' }}>Resume — continue iterating</strong>
+                {' — '}
+                from iter {lastDeliverable?.iter}
+                {' '}(verdict <code>{lastDeliverable?.verdict}</code>, score {lastDeliverable?.score}).
+                {' '}Optional note steers the next iteration; leave blank to just iterate again.
+              </div>
+              <textarea
+                value={resumeNote}
+                onChange={(e) => setResumeNote(e.target.value)}
+                placeholder="e.g. The build was failing because of an upstream issue that has now been fixed. Verify your changes still apply cleanly and update the change summary."
+                rows={4}
+                style={{
+                  fontFamily: 'var(--font-mono, ui-monospace)',
+                  fontSize: 12,
+                  padding: 8,
+                  background: 'var(--bg-surface)',
+                  color: 'var(--text-primary)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 4,
+                  resize: 'vertical',
+                }}
+                disabled={busy}
+              />
+            </>
+          )}
+          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
+            {busy && (
+              <span style={{ fontSize: 11, color: 'var(--text-tertiary)', marginRight: 'auto' }}>
+                Enqueuing…
+              </span>
+            )}
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ fontSize: 11, padding: '4px 10px' }}
+              disabled={busy}
+              onClick={() => { setResumeComposerOpen(false); setResumeNote(''); }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ fontSize: 11, padding: '4px 10px', background: 'var(--success, #10b981)', borderColor: 'var(--success, #10b981)' }}
+              disabled={busy}
+              onClick={() => void resume(
+                resumeMode === 'iter' ? (resumeNote.trim() || undefined) : undefined,
+              )}
+            >
+              {busy
+                ? '▶ Resuming…'
+                : resumeMode === 'delivery'
+                  ? '▶ Replay delivery'
+                  : `▶ Resume ${resumeNote.trim() ? 'with note' : 'without note'}`}
+            </button>
+          </div>
+        </section>
+      )}
 
       {latestPrompt && (latestPrompt.systemPrompt || latestPrompt.userPrompt) && (
         <section className="live-exec__prompts" aria-label="Prompts">
@@ -494,7 +671,7 @@ export function LiveExecutionView(): JSX.Element {
           <button type="button" className={`live-exec__tab${tab === 'builds'   ? ' active' : ''}`} onClick={() => setTab('builds')}>Builds</button>
         </div>
         <div className="live-exec__tab-body">
-          {tab === 'worktree' && <WorktreeTab snap={worktree} transcript={transcript} />}
+          {tab === 'worktree' && <WorktreeTab snap={worktree} transcript={transcript} workItemId={workItemId} />}
           {tab === 'tokens'   && <TokensTab snap={snapshot} />}
           {tab === 'progress' && <ProgressTab snap={snapshot} />}
           {tab === 'comments' && <CommentsTab workItemId={workItemId} />}
@@ -902,80 +1079,71 @@ function groupByIteration(events: TaskTranscriptEvent[]): IterationGroup[] {
   return filtered;
 }
 
-function WorktreeTab(props: { snap: WorktreeSnapshot | null; transcript: TaskTranscriptEvent[] }): JSX.Element {
-  const { snap, transcript } = props;
-  if (!snap) {
+type CommitsResponse = Awaited<ReturnType<typeof forgeApi.getWorkItemCommits>>;
+
+function WorktreeTab(props: {
+  snap: WorktreeSnapshot | null;
+  transcript: TaskTranscriptEvent[];
+  workItemId: string | null;
+}): JSX.Element {
+  const { snap, transcript, workItemId } = props;
+
+  // Fetch commits from the authoritative `git log` endpoint when the tab
+  // opens, and re-fetch whenever the latest worktree-tick reports a new
+  // HEAD sha (agent committed). The transcript-replay reconstruction was
+  // lossy — commits faster than the tick interval lost their file list.
+  const [data, setData] = useState<CommitsResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Derive a "stable signal" from transcript so we refetch only when a new
+  // commit actually lands, not on every tick.
+  const latestTickSha = useMemo(() => {
+    for (let i = transcript.length - 1; i >= 0; i--) {
+      const e = transcript[i];
+      if (e.kind !== 'task.worktree-tick') continue;
+      const head = (e.payload as { head?: { sha?: string } } | null)?.head;
+      if (head?.sha) return head.sha;
+    }
+    return null;
+  }, [transcript]);
+
+  useEffect(() => {
+    if (!workItemId) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    forgeApi.getWorkItemCommits(workItemId)
+      .then((r) => { if (!cancelled) setData(r); })
+      .catch((e: unknown) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [workItemId, latestTickSha]);
+
+  if (!snap && !data) {
     return <div className="live-exec__empty">No worktree activity yet.</div>;
   }
 
-  // Collect commits and file changes from worktree-tick events.
-  // Dirty files accumulate before a commit; when SHA changes, those files
-  // belong to the new commit.
-  const commits = useMemo(() => {
-    const result: Array<{
-      sha: string;
-      message: string;
-      author: string;
-      at: string;
-      added: string[];
-      modified: string[];
-      deleted: string[];
-    }> = [];
-    let prevSha = '';
-    const seenShas = new Set<string>();
-    // Accumulate dirty files between commits
-    let pendingAdded = new Set<string>();
-    let pendingModified = new Set<string>();
-    let pendingDeleted = new Set<string>();
-
-    for (const evt of transcript) {
-      if (evt.kind !== 'task.worktree-tick') continue;
-      const p = evt.payload as Record<string, unknown> | null;
-      if (!p) continue;
-      const head = p.head as { sha?: string; message?: string; author?: string; at?: string } | null;
-      const paths = p.paths as { added?: string[]; modified?: string[]; deleted?: string[] } | null;
-      const sha = head?.sha ?? '';
-      if (!sha) continue;
-
-      if (sha !== prevSha && prevSha && !seenShas.has(sha)) {
-        seenShas.add(sha);
-        // The pending files are what was dirty before this commit
-        result.push({
-          sha,
-          message: head?.message ?? '',
-          author: head?.author ?? '',
-          at: head?.at ?? evt.at,
-          added: [...pendingAdded],
-          modified: [...pendingModified],
-          deleted: [...pendingDeleted],
-        });
-        pendingAdded.clear();
-        pendingModified.clear();
-        pendingDeleted.clear();
-      } else {
-        // Accumulate dirty files
-        for (const f of paths?.added ?? []) pendingAdded.add(f);
-        for (const f of paths?.modified ?? []) pendingModified.add(f);
-        for (const f of paths?.deleted ?? []) pendingDeleted.add(f);
-      }
-      prevSha = sha;
-    }
-    return result;
-  }, [transcript]);
-
-  // Also get latest dirty (uncommitted) files from the last tick
-  const lastTick = [...transcript].reverse().find((e) => e.kind === 'task.worktree-tick');
-  const dirtyPaths = (lastTick?.payload as { paths?: { added?: string[]; modified?: string[]; deleted?: string[] }; dirty?: number } | null);
-  const hasDirty = (dirtyPaths?.dirty ?? 0) > 0;
+  const commits = data?.commits ?? [];
+  const uncommitted = data?.uncommitted ?? { added: [], modified: [], deleted: [] };
+  const hasDirty = uncommitted.added.length + uncommitted.modified.length + uncommitted.deleted.length > 0;
 
   // Leaf directory name — the project convention is `ws-{workItemId}` under
   // a fixed `.worktree/` parent, so the leaf is the most useful "name" the
-  // operator recognises (it matches the agent's branch suffix). Fall back
-  // to the workstream id when no path is available (older snapshots).
-  const wtPath = snap.worktreePath ?? null;
+  // operator recognises (it matches the agent's branch suffix). Prefer the
+  // path the API resolved; fall back to the snap or the workstream id.
+  const wtPath = data?.worktreePath ?? snap?.worktreePath ?? null;
   const wtLeaf = wtPath
     ? (wtPath.split(/[\\/]/).filter(Boolean).pop() ?? wtPath)
-    : (snap.workstreamId || null);
+    : (snap?.workstreamId || null);
+
+  // Pills: prefer the API's authoritative ahead/behind + commit-derived
+  // file counts; fall back to the live snap when the API hasn't loaded.
+  const aheadCount = data?.ahead ?? snap?.ahead ?? 0;
+  const behindCount = data?.behind ?? snap?.behind ?? 0;
+  const addedCount = data ? uncommitted.added.length : (snap?.added ?? 0);
+  const modifiedCount = data ? uncommitted.modified.length : (snap?.modified ?? 0);
+  const deletedCount = data ? uncommitted.deleted.length : (snap?.deleted ?? 0);
 
   return (
     <div>
@@ -986,12 +1154,25 @@ function WorktreeTab(props: { snap: WorktreeSnapshot | null; transcript: TaskTra
         </div>
       )}
       <div className="live-exec__wt-summary">
-        <span className="live-exec__wt-pill added">+{snap.added}</span>
-        <span className="live-exec__wt-pill modified">~{snap.modified}</span>
-        <span className="live-exec__wt-pill deleted">−{snap.deleted}</span>
-        {snap.ahead > 0  && <span className="live-exec__wt-pill ahead">↑{snap.ahead}</span>}
-        {snap.behind > 0 && <span className="live-exec__wt-pill ahead">↓{snap.behind}</span>}
+        <span className="live-exec__wt-pill added">+{addedCount}</span>
+        <span className="live-exec__wt-pill modified">~{modifiedCount}</span>
+        <span className="live-exec__wt-pill deleted">−{deletedCount}</span>
+        {aheadCount > 0  && <span className="live-exec__wt-pill ahead">↑{aheadCount}</span>}
+        {behindCount > 0 && <span className="live-exec__wt-pill ahead">↓{behindCount}</span>}
+        {loading && <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>loading commits…</span>}
       </div>
+
+      {error && (
+        <div style={{
+          fontSize: 11,
+          color: 'rgb(220, 38, 38)',
+          background: 'color-mix(in srgb, rgb(220, 38, 38) 10%, transparent)',
+          border: '1px solid rgb(220, 38, 38)',
+          padding: '6px 10px', borderRadius: 4, margin: '6px 0',
+        }}>
+          ⚠ commits load failed: {error}
+        </div>
+      )}
 
       {commits.length > 0 && (
         <div className="live-exec__commits">
@@ -1006,13 +1187,24 @@ function WorktreeTab(props: { snap: WorktreeSnapshot | null; transcript: TaskTra
                 {c.added.map((p) => <div key={`a${p}`} className="live-exec__file-row added">{p}</div>)}
                 {c.modified.map((p) => <div key={`m${p}`} className="live-exec__file-row modified">{p}</div>)}
                 {c.deleted.map((p) => <div key={`d${p}`} className="live-exec__file-row deleted">{p}</div>)}
+                {c.other.map((o) => (
+                  <div key={`o${o.path}`} className="live-exec__file-row modified" title={o.oldPath ? `${o.status} from ${o.oldPath}` : o.status}>
+                    {o.status} {o.path}
+                  </div>
+                ))}
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {commits.length === 0 && snap.headSha && (
+      {commits.length === 0 && !loading && data && (
+        <div style={{ fontSize: 11, color: 'var(--text-tertiary)', padding: '8px 0' }}>
+          No commits yet on <code>{data.branch}</code>.
+        </div>
+      )}
+
+      {commits.length === 0 && !data && snap?.headSha && (
         <div className="live-exec__wt-head">
           <div className="live-exec__wt-sha">{snap.headSha.slice(0, 8)}</div>
           <div className="live-exec__wt-msg">{snap.headMessage ?? ''}</div>
@@ -1020,31 +1212,18 @@ function WorktreeTab(props: { snap: WorktreeSnapshot | null; transcript: TaskTra
         </div>
       )}
 
-      {hasDirty && dirtyPaths?.paths && (
+      {hasDirty && (
         <div className="live-exec__commit-group" style={{ opacity: 0.7 }}>
           <div className="live-exec__wt-msg" style={{ fontStyle: 'italic', fontSize: 11 }}>Uncommitted changes</div>
           <div className="live-exec__file-list">
-            {dirtyPaths.paths.added?.map((p) => <div key={`ua${p}`} className="live-exec__file-row added">{p}</div>)}
-            {dirtyPaths.paths.modified?.map((p) => <div key={`um${p}`} className="live-exec__file-row modified">{p}</div>)}
-            {dirtyPaths.paths.deleted?.map((p) => <div key={`ud${p}`} className="live-exec__file-row deleted">{p}</div>)}
+            {uncommitted.added.map((p) => <div key={`ua${p}`} className="live-exec__file-row added">{p}</div>)}
+            {uncommitted.modified.map((p) => <div key={`um${p}`} className="live-exec__file-row modified">{p}</div>)}
+            {uncommitted.deleted.map((p) => <div key={`ud${p}`} className="live-exec__file-row deleted">{p}</div>)}
           </div>
         </div>
       )}
 
-      {snap.branchDiff && (snap.branchDiff.added.length > 0 || snap.branchDiff.modified.length > 0 || snap.branchDiff.deleted.length > 0) && (
-        <div className="live-exec__commit-group">
-          <div className="live-exec__wt-msg" style={{ fontSize: 11, fontWeight: 600 }}>
-            Branch diff vs main ({snap.branchDiff.added.length + snap.branchDiff.modified.length + snap.branchDiff.deleted.length} files)
-          </div>
-          <div className="live-exec__file-list">
-            {snap.branchDiff.added.map((p) => <div key={`ba${p}`} className="live-exec__file-row added">{p}</div>)}
-            {snap.branchDiff.modified.map((p) => <div key={`bm${p}`} className="live-exec__file-row modified">{p}</div>)}
-            {snap.branchDiff.deleted.map((p) => <div key={`bd${p}`} className="live-exec__file-row deleted">{p}</div>)}
-          </div>
-        </div>
-      )}
-
-      {snap.truncated && <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>list truncated at 200 paths.</div>}
+      {snap?.truncated && <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>list truncated at 200 paths.</div>}
     </div>
   );
 }

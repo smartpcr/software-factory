@@ -137,15 +137,22 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
 
         {step === 'select' && (
           <div style={{ display: 'grid', gap: 10, marginBottom: 18 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 160px', gap: 8 }}>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: -4 }}>
+              Step 1 of 2 — pick a story below to continue. The next step lets you confirm scope + repo and click <b>Spawn</b>.
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 200px', gap: 8 }}>
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search title, id, or description…"
                 autoFocus
               />
-              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-                <option value="">Status: All</option>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                title="Filter by the story's authored-status (planning / approved / done) — separate from the spawn lifecycle."
+              >
+                <option value="">Authored status: All</option>
                 {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
@@ -177,6 +184,7 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
                   type="button"
                   onClick={() => pickStory(s)}
                   style={rowStyle}
+                  title="Click to pick this story and continue to confirm + spawn"
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline' }}>
                     <span style={{ color: 'var(--text-primary)', fontWeight: 600, fontSize: 13 }}>{s.name}</span>
@@ -186,6 +194,7 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
                       <span>{s.status}</span>
                       <span>·</span>
                       <span>{s.points} pt</span>
+                      <span style={{ marginLeft: 6, color: 'var(--accent)', fontWeight: 600 }}>Pick →</span>
                     </span>
                   </div>
                   {s.description && (

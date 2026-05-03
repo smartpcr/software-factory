@@ -1311,7 +1311,7 @@ public static class CrewsEndpoints
 
     // ── Phase 13.4 / 13.5 — pipelines ──────────────────────────────────────
 
-    public sealed record PlanRequest(string? WorkItemId = null, bool Restart = false, bool SkipSoulPrompt = false);
+    public sealed record PlanRequest(string? WorkItemId = null, bool Restart = false);
     public sealed record CodeRequest(string? StepWorkItemId = null);
 
     private static async Task<IResult> PlanStub(
@@ -1372,7 +1372,7 @@ public static class CrewsEndpoints
 
         // Enqueue the work item into the task queue so the worker can
         // route it to the agent runner when capacity is available.
-        var queueRow = await taskQueue.EnqueueAsync(wiId, "crew", id, ct, skipSoulPrompt: req.SkipSoulPrompt);
+        var queueRow = await taskQueue.EnqueueAsync(wiId, "crew", id, ct);
         await hub.Clients.All.SendAsync("queue.changed", new { kind = "enqueued", item = queueRow }, ct);
 
         // Phase 19 — fan out workitem.changed so the ExecBadge transitions

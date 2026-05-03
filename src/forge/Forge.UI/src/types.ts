@@ -9,7 +9,14 @@ export type EpicStatus = 'active' | 'merging' | 'planning';
 export type WorkstreamStatus = 'active' | 'merging' | 'review' | 'planning' | 'idle';
 
 export interface Agent {
-  id: string;
+  /**
+   * Stable identifier (e.g. crew member id like 'E1', GitHub login,
+   * ADO descriptor). Provider mappers can surface a null when the
+   * upstream payload lacks an identity (anonymous reviewers, deactivated
+   * accounts, bots without descriptors); consumers must guard before
+   * calling string operations like `startsWith` / `slice`.
+   */
+  id: string | null;
   role: Role;
   name: string;
   imageUrl?: string | null;

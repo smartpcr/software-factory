@@ -985,9 +985,10 @@ public class TaskQueueRow
     /// PATCH /api/work-items/{id}/execution, the deliverable loop reads this each iteration.</summary>
     public int? MaxIterOverride { get; set; }
 
-    /// <summary>Phase 21 — when true, the agent runner skips loading soul.md (system prompt)
-    /// for both generator and evaluator. Used by force-restart to run lean.</summary>
-    public bool SkipSoulPrompt { get; set; }
+    // Phase 21's SkipSoulPrompt flag is removed — the agent always loads
+    // soul.md + per-kind preamble. The DB column lingers (default 0) for
+    // schema-stability; the migration in Phase21Migration.cs is idempotent
+    // and a future cleanup can drop it.
 
     /// <summary>
     /// Phase 24 — discriminator for the runner to pick the prompt template.
@@ -1052,6 +1053,16 @@ public static class TaskQueueKinds
     /// under <c>docs/specs/</c> plus WIT operations.
     /// </summary>
     public const string Plan = "plan";
+
+    /// <summary>
+    /// Resume-delivery — re-runs only the post-loop delivery phase
+    /// (server-side push + build/test gate + PR creation) when the iter
+    /// loop already finished with verdict=pass but the previous delivery
+    /// failed (e.g. transient build break, push reject). The agent runner
+    /// skips the prompt + DeliverableLoop call and synthesizes the result
+    /// from the last persisted deliverable. Refused if no prior pass exists.
+    /// </summary>
+    public const string ResumeDelivery = "resume-delivery";
 }
 
 /// <summary>

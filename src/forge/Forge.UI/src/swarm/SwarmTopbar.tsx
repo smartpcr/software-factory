@@ -27,8 +27,8 @@ export function SwarmTopbar({ eyebrow, title, subtitle, meters, showClock = true
   }, [showClock]);
 
   return (
-    <header className="topbar">
-      <div className="brand">
+    <header className="sc-topbar">
+      <div className="sc-brand">
         <div className="brand-mark" />
         <div className="brand-text">
           <div className="lbl">{eyebrow}</div>

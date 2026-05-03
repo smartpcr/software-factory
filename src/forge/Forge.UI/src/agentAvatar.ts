@@ -142,16 +142,22 @@ for (const [proto, charId] of Object.entries(PROTOTYPE_ALIAS)) {
  * because `<img title>` only renders text.
  */
 export function agentTooltip(
-  id: string,
+  id: string | null | undefined,
   name?: string | null,
   role?: string | null,
   soulPath?: string | null,
 ): string {
-  const r = role ?? roleFromId(id);
+  // Provider mappers can hand us a null id (anonymous reviewers, deactivated
+  // accounts, bots without descriptors). Render with name only and 'human'
+  // role rather than crashing on roleFromId / ALLOC_BY_ID lookups.
+  const safeId = id ?? '';
+  const r = role ?? (safeId ? roleFromId(safeId) : 'human');
   const model = MODEL_BY_ROLE[r] ?? 'unknown';
-  const entry = ALLOC_BY_ID[id];
+  const entry = safeId ? ALLOC_BY_ID[safeId] : undefined;
   const caps = entry ? CAPABILITIES_BY_BUCKET[entry.role_bucket] : undefined;
-  const head = `${id}${name ? ' · ' + name : ''}`;
+  const head = safeId
+    ? `${safeId}${name ? ' · ' + name : ''}`
+    : (name ?? 'unknown');
   const meta = entry?.role_label
     ? `${entry.role_label} · ${model}`
     : `${r} · ${model}`;
