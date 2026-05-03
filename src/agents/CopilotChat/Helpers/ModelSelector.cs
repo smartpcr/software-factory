@@ -20,7 +20,7 @@ public static class ModelSelector
     /// Returns null if models cannot be fetched.
     /// </summary>
     /// <returns>A list of available models or null if unavailable.</returns>
-    public static async Task<List<ModelInfo>?> GetModelsFromSdkAsync()
+    public static async Task<IList<ModelInfo>?> GetModelsFromSdkAsync()
     {
         try
         {
