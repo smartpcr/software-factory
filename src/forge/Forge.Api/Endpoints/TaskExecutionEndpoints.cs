@@ -283,9 +283,13 @@ public static class TaskExecutionEndpoints
         int? currentScore = current?.Score;
         string? currentVerdict = current?.Verdict;
 
-        // Resolve agent full names.
+        // Resolve agent full names + the model each role is invoking with.
+        // Mirrors CrewQueueWorker's resolution order (agent override → crew
+        // default) so the UI shows the same model the runtime will dispatch.
         string? generatorAgentName = null;
         string? evaluatorAgentName = null;
+        string? generatorModel = null;
+        string? evaluatorModel = null;
         var agentIds = new HashSet<string>();
         if (!string.IsNullOrEmpty(generatorAgentId)) agentIds.Add(generatorAgentId);
         if (!string.IsNullOrEmpty(evaluatorAgentId)) agentIds.Add(evaluatorAgentId);
@@ -294,8 +298,24 @@ public static class TaskExecutionEndpoints
             var agentRows = await db.Agents.AsNoTracking()
                 .Where(a => agentIds.Contains(a.Id))
                 .ToListAsync(ct);
-            generatorAgentName = agentRows.FirstOrDefault(a => a.Id == generatorAgentId)?.Name;
-            evaluatorAgentName = agentRows.FirstOrDefault(a => a.Id == evaluatorAgentId)?.Name;
+            var genAgent = agentRows.FirstOrDefault(a => a.Id == generatorAgentId);
+            var evalAgent = agentRows.FirstOrDefault(a => a.Id == evaluatorAgentId);
+            generatorAgentName = genAgent?.Name;
+            evaluatorAgentName = evalAgent?.Name;
+
+            CrewRow? genCrew = null;
+            CrewRow? evalCrew = null;
+            if (!string.IsNullOrEmpty(generatorCrewId))
+                genCrew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == generatorCrewId, ct);
+            if (!string.IsNullOrEmpty(evaluatorCrewId))
+                evalCrew = evaluatorCrewId == generatorCrewId
+                    ? genCrew
+                    : await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == evaluatorCrewId, ct);
+
+            generatorModel = NonEmpty(genAgent?.GeneratorModel) ?? NonEmpty(genCrew?.Model);
+            evaluatorModel = NonEmpty(evalAgent?.EvaluatorModel)
+                ?? NonEmpty(evalCrew?.EvaluatorModel)
+                ?? NonEmpty(evalCrew?.Model);
         }
 
         var snap = new TaskExecutionSnapshot(
@@ -308,6 +328,8 @@ public static class TaskExecutionEndpoints
             GeneratorAgentName: generatorAgentName,
             EvaluatorAgentId: evaluatorAgentId,
             EvaluatorAgentName: evaluatorAgentName,
+            GeneratorModel: generatorModel,
+            EvaluatorModel: evaluatorModel,
             CurrentIteration: currentIter,
             CurrentScore: currentScore,
             CurrentVerdict: currentVerdict,
@@ -576,4 +598,6 @@ public static class TaskExecutionEndpoints
 
         return Results.Ok(new { workItemId = id, maxIterations = body.MaxIterations });
     }
+
+    private static string? NonEmpty(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;
 }

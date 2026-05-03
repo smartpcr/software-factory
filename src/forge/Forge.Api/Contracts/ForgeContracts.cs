@@ -1028,6 +1028,20 @@ public sealed record TaskExecutionSnapshot(
     string? GeneratorAgentName,
     string? EvaluatorAgentId,
     string? EvaluatorAgentName,
+    /// <summary>
+    /// Resolved model the generator agent is invoking with — agent override
+    /// (<c>AgentRow.GeneratorModel</c>) → crew default (<c>CrewRow.Model</c>).
+    /// Null when no agent/crew is yet known (queued before claim).
+    /// </summary>
+    string? GeneratorModel,
+    /// <summary>
+    /// Resolved model the evaluator agent is invoking with — agent override
+    /// (<c>AgentRow.EvaluatorModel</c>) → crew override (<c>CrewRow.EvaluatorModel</c>)
+    /// → crew default (<c>CrewRow.Model</c>). Required to differ from
+    /// <see cref="GeneratorModel"/> per the pair-diversity rule (enforced on
+    /// crew/agent edit endpoints).
+    /// </summary>
+    string? EvaluatorModel,
     int CurrentIteration,
     int? CurrentScore,
     string? CurrentVerdict,

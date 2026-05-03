@@ -3242,11 +3242,87 @@ A **story** is the unit of end-to-end delivery. It progresses through ordered ph
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+### Concept — Team structure & execution model
+
+> **Source-of-truth note.** This section captures the swarm-design decisions from `docs/forge/workstream.md`. They refine — and in some places tighten — the lifecycle diagram above. Where the two disagree, this section wins; the diagram is the introductory mental model only.
+
+**Four teams · ~80 agents total.** The swarm is partitioned into four crews, each ~20 agents. Each agent has a stable team affiliation and a model profile (see model rotation below). Team membership is loaded from `agents/allocation.json` via `AgentAllocationLoader.ForTeam(...)`.
+
+| Team         | Headcount | Owns                                                                  | Inputs                                  | Outputs                                                  |
+|--------------|-----------|-----------------------------------------------------------------------|-----------------------------------------|----------------------------------------------------------|
+| Architect    | ~20       | Plan phase artifacts; decomposition of impl plan into workstreams.    | Story description + linked context.     | architecture / tech-spec / implementation-plan / e2e-scenarios. |
+| Engineer     | ~20       | Implementation, review-fix loop, e2e step-definition implementation.  | Merged design docs + workstream scope.  | Code commits, PRs, fix commits, step-definition PRs.     |
+| Review       | ~20       | Per-PR review and approve/merge gate.                                 | Open ws PRs.                            | Inline comments, approvals, merges.                      |
+| QA           | ~20       | E2E `.feature` files (Gherkin) per workstream; coverage tracking.     | Merged plan + workstream list.          | `tests/Features/{storyId}/*.feature`, coverage warnings. |
+
+**Story lifecycle.** A story progresses through `design & plan → (implement ↔ review + e2e) cycle → release`. The middle is a real cycle, not a one-shot: a workstream re-enters implementation any time review surfaces an unresolved issue, and never leaves until its **score reaches 90** within the iteration cap. A story is releasable when **every workstream's score ≥ 90 and all e2e/integration tests are green on `main`**.
+
+**Plan-phase artifact contract (Architect team).** Each artifact has explicit content requirements:
+
+- `architecture.md` — system diagram, component diagram, perf & reliability requirements, primary usage scenarios, deployment strategy, component-interaction descriptions, and a flow chart / sequence diagram per scenario including edge cases.
+- `tech-spec.md` — chosen libraries / technologies, applicable design patterns, engineering practices, maintainability constraints.
+- `implementation-plan.md` — **hierarchical**: `Phase → Stage → Step`. A *Phase* is an independent, cohesive feature whose stages must ship together. **A Phase contains ≤ 20 Stages; a Stage contains ≤ 20 Steps; a Step is PR-sized and changes ≤ 20 files.** Each Phase carries a workstream tag and explicit dependency edges to other phases.
+- `e2e-scenarios.md` *and* `tests/Features/{storyId}/*.feature` — plain-English BDD scenarios in Gherkin (Reqnroll for C#, cucumber for TypeScript) grouped by phase. The Engineer team writes step definitions later; **all unit + integration + e2e tests must pass before a phase is handed to Review.**
+
+**Two task kinds.** Both kinds run through the same paired-agent loop, but they differ in hierarchy and work-item type:
+
+| Kind            | Owning team   | Work item hierarchy                          | Work item types                                                |
+|-----------------|---------------|----------------------------------------------|----------------------------------------------------------------|
+| **Plan task**   | Architect     | flat (no parent/child)                       | `Architecture`, `TechSpec`, `ImplementationPlan`, `E2EScenarios` |
+| **Coding task** | Engineer      | `Epic = Phase → Feature = Stage → Task = Step` | `Epic`, `Feature`, `Task` (existing ADO/GitHub work-item types) |
+
+Work-item rows of both kinds carry a `task:plan` or `task:code` tag plus a `kind:phase` / `kind:stage` / `kind:step` tag for coding tasks.
+
+**Effort sizing.** Every task carries an effort estimate on the **Fibonacci scale `1, 2, 3, 5, 8, 13`**. Two agent budgets are derived deterministically from the points value:
+
+- `maxTurns = points × 30`
+- `maxIterations = points × 5`
+
+These propagate into the underlying `IAgentRunner` invocation; an evaluator-rejected output costs one iteration, an LLM round-trip costs one turn. Tasks larger than 13 points are split during decomposition.
+
+**Paired-agent execution (generator ⇄ evaluator).** Every task — plan or coding — is worked by **a pair of agents**: one *generator* produces the artifact, one *evaluator* performs critical review and emits a 0–100 score. **A score ≥ 90 is passing.** The pair iterates up to `maxIterations` times within the same trial. Pairs are drawn from the owning team and tracked on the work item's `assignedAgent.agents[]` field with `role` ∈ `{generator, evaluator}`.
+
+**Model rotation across trials (coding tasks).** When a coding pair fails to reach score 90 within its iteration budget, the Engineer team lead **reassigns to a fresh pair using a different model mix**. Up to **three trials** are attempted; after the third, the task is marked **stalled** and escalated. Models swap by trial:
+
+| Trial | Generator             | Evaluator             |
+|-------|-----------------------|-----------------------|
+| 1     | `claude-opus-4.7`     | `gpt-5.5`             |
+| 2     | `gpt-5.5`             | `claude-opus-4.7`     |
+| 3     | `claude-opus-4.6-1M`  | `codex-5.3`           |
+
+The intent is that trials 1↔2 swap roles between the two leading models, and trial 3 introduces an entirely different model family. `WorkItemRow.trialCount` records the current trial number; `assignedAgent.role` records who plays generator vs evaluator on the current pair.
+
+**No review / no human gate on plan artifacts.** Plan tasks land on `main` directly once the pair reaches score 90. The plan PR is the audit trail; there is no merge-PR human approval step. (This is an intentional swarm-mode departure from the legacy "operator approves decomposition" gate — see `feedback_no_fakes_no_manual` in user memory.) Coding-task PRs *are* still reviewed by the Review team; review is a swarm step, not a human step.
+
+**Engineer hand-off context.** When the Engineer team picks up a workstream, agents must establish context from **all four** plan artifacts (`architecture`, `tech-spec`, `implementation-plan`, `e2e-scenarios`) — not just `implementation-plan.md`. The orchestrator surfaces the full set as workstream input.
+
+**Workstream lifecycle (coding side).** Each workstream uses an isolated git worktree on its own branch. The workstream lifecycle is:
+
+1. Eng lead picks the next coding task whose dependencies (other phases / stages / steps) are *implemented*.
+2. Pair claims the task; generator produces the change, evaluator scores it; iterate to ≥ 90 or hit `maxIterations`.
+3. On pass: open PR, route to Review team. On fail: reassign per the model-rotation table; on third fail, mark stalled.
+4. PR review-fix loop runs the same paired pattern (engineer-author + reviewer); merge gate is "all comments resolved + score ≥ 90 + build green".
+5. PR merge → work item closes → the Step / Stage row marks complete. **A Phase closes only when all its Stages/Steps are complete *and* all unit/integration/e2e tests for that phase pass.**
+6. Closing a Phase re-evaluates downstream phases; freshly-unblocked phases enter the eligibility pool for the dependency scheduler.
+
+This model is what the implementation in 28.1–28.12 below realises. Where a subsection mentions "engineer pair", "score 90", "trial", "Fibonacci points", or "stalled", the canonical definition lives here.
+
 ### Implementation progress
 
 > **Status legend.** `[x]` = shipped & covered by tests. `[~]` = partial — the primary path works but a corner is intentionally narrowed (noted inline). `[ ]` = explicit non-goal or deferred. CC.7 (story-level cost tracking) is the only remaining open item and the spec already lists it as a non-goal.
 >
 > **Summary.** Phase 28 is end-to-end functional. The orchestration layer is real: a `StorySpawnOrchestrator` hosted service drives the lifecycle automatically when a spawn is created or its phase advances. The architect crew produces planning artifacts on a planning branch and opens the plan PR; the engineer crew claims each ready workstream (deps honored), opens its PR; the review crew posts comments and routes them back; the engineer pushes a fix; the reviewer approves and merges; QA produces feature files in parallel and the engineer auto-implements step definitions per workstream; on completion the linked ADO work item transitions to `closed`. The agent **content production** uses a deterministic strategy (`DeterministicStoryArtifactStrategy`) so tests run without LLMs; production deployments swap a single DI binding to use real crew agents. Two test classes — `Phase28StorySpawnTests` (42 gate-only scenarios) and `Phase28OrchestratorTests` (9 end-to-end scenarios) — together pin every spec scenario; **51 tests, 100% pass**.
+>
+> **Open items from `docs/forge/workstream.md` (Q2 2026 refinement).** The decisions captured in the new "Team structure & execution model" section above introduce additional behaviour that is *spec-confirmed but not yet wired*: paired generator/evaluator execution per task, 3-trial model rotation, Fibonacci `maxTurns`/`maxIterations` derivation, the `Phase → Stage → Step` work-item taxonomy with the 20/20/20 size ceilings, the four typed plan work-items, and the "no human gate on plan artifacts" rule. Tracking checklist:
+>
+> - [ ] **EX.1** Effort points are validated against `{1,2,3,5,8,13}`; `maxTurns` / `maxIterations` derive automatically from points.
+> - [ ] **EX.2** Plan & coding tasks both run through a paired (generator + evaluator) loop; `assignedAgent.role` records pair assignment.
+> - [ ] **EX.3** Coding-task model rotation across trials 1/2/3 follows the table above; `trialCount = 3 ∧ score < 90` flips the work item to `stalled`.
+> - [ ] **EX.4** `DecompositionApproved` gate is removed for swarm-mode (architect-produced plans land directly via PR merge — no human approval).
+> - [ ] **EX.5** Implementation-plan validator rejects shapes that exceed `Stages ≤ 20`, `Steps ≤ 20`, `files-per-step ≤ 20`.
+> - [ ] **EX.6** Plan work-items are typed `Architecture` / `TechSpec` / `ImplementationPlan` / `E2EScenarios`; coding work-items map to `Epic = Phase / Feature = Stage / Task = Step`.
+> - [ ] **EX.7** Engineer crew pulls **all four** plan artifacts as context (not just `implementation-plan.md`).
+> - [ ] **EX.8** Phase-closed gate runs unit + integration + e2e for that phase before declaring the phase done; downstream phases auto-unblock on phase close.
 
 #### 28.1 — Data model
 
@@ -4131,6 +4207,129 @@ Feature: Cross-team hand-offs and phase transitions
     When the operator tries to spawn "WI-50001" again
     Then the API returns 409 Conflict
     And the error indicates a spawn already exists for this story
+```
+
+#### EX — Execution model (paired agents, points, model rotation, hierarchy)
+
+> BDD scenarios for the workstream.md decisions captured in the "Team structure & execution model" section above. These cover behaviour that is spec-pinned but not yet implemented (tracked under EX.1–EX.8 in Implementation progress).
+
+```gherkin
+@phase28 @execution-model
+Feature: Paired-agent execution & model rotation
+
+  Scenario: Effort points are restricted to the Fibonacci scale
+    Given a coding task with effort points = 4
+    When the orchestrator validates the task
+    Then the API returns 422
+    And the error indicates "Effort points must be one of {1,2,3,5,8,13}"
+
+  Scenario: Agent budgets derive from points
+    Given a coding task with effort points = 5
+    When a pair is dispatched on the task
+    Then the generator agent runs with maxTurns = 150
+    And the iteration cap is set to 25
+
+  Scenario: Generator and evaluator are recorded per task
+    Given a plan task with points = 3
+    When the architect crew claims the task
+    Then assignedAgent.role is "generator" on one agent
+    And assignedAgent.role is "evaluator" on the other
+    And both agents come from team = "Architect"
+
+  Scenario: Evaluator score below 90 triggers another iteration
+    Given a coding task with iteration count 0 and maxIterations 25
+    When the evaluator scores the generator output 84
+    Then the pair re-iterates and the iteration count becomes 1
+    And the work item state remains "active"
+
+  Scenario: Score >= 90 within iteration cap closes the trial successfully
+    Given a coding task in trial 1
+    When the evaluator scores the latest generator output 92
+    Then the pair stops iterating
+    And a PR is opened from the workstream branch
+
+  Scenario: Trial 1 failure rotates to a different model mix on trial 2
+    Given a coding task in trial 1 has exhausted maxIterations without reaching 90
+    And trial 1 used generator = "claude-opus-4.7" and evaluator = "gpt-5.5"
+    When the engineer team lead reassigns the task
+    Then the work item enters trial 2
+    And the new pair uses generator = "gpt-5.5" and evaluator = "claude-opus-4.7"
+
+  Scenario: Trial 3 introduces a different model family
+    Given a coding task in trial 2 has exhausted maxIterations without reaching 90
+    When the engineer team lead reassigns the task to a third pair
+    Then the work item enters trial 3
+    And the pair uses generator = "claude-opus-4.6-1M" and evaluator = "codex-5.3"
+
+  Scenario: Three failed trials mark the task stalled
+    Given a coding task that has just exhausted trial 3 without reaching 90
+    When the trial completes
+    Then the work item state transitions to "stalled"
+    And the task surfaces in the engineer-lead escalation queue
+    And no further trial is started automatically
+
+  Scenario: Plan tasks land on main without a human approval step
+    Given an architect pair completes a plan task with score 92
+    When the plan PR is opened
+    Then the orchestrator merges the PR automatically
+    And no decomposition-approve gate is required for swarm-mode spawns
+
+@phase28 @plan-hierarchy
+Feature: Implementation-plan hierarchy & sizing limits
+
+  Scenario: Implementation plan respects 20/20/20 ceilings
+    Given an architect-produced implementation-plan.md with:
+      | Phase | Stages |
+      | P1    | 20     |
+      | P2    | 21     |
+    When the plan validator runs
+    Then the validator rejects the plan with "Phase P2 exceeds 20 stages"
+
+  Scenario: Step PR enforces ≤ 20 file change cap
+    Given a step task whose generator commit changes 23 files
+    When the evaluator inspects the diff
+    Then the evaluator rejects the output with reason "Step exceeds 20-file PR cap"
+    And the iteration counter increments
+
+  Scenario: Coding work items map to Epic/Feature/Task hierarchy
+    Given a phase "P1" with 2 stages and 5 steps total
+    When work items are created from the implementation plan
+    Then 1 Epic work item exists for "P1"
+    And 2 Feature work items have parentId = the Epic
+    And 5 Task work items have parentId set to their Stage
+
+  Scenario: Plan work items use the four typed kinds (no hierarchy)
+    Given an architect plan task is decomposed into its four artifacts
+    When work items are created
+    Then exactly 4 work items exist with no parent:
+      | Type             |
+      | Architecture     |
+      | TechSpec         |
+      | ImplementationPlan |
+      | E2EScenarios     |
+
+  Scenario: Engineer crew receives all four plan artifacts as context
+    Given the plan PR for story "WI-77001" is merged on main
+    When an engineer pair claims the first ready workstream
+    Then the agent context includes all of:
+      | docs/stories/WI-77001/architecture.md           |
+      | docs/stories/WI-77001/tech-spec.md              |
+      | docs/stories/WI-77001/implementation-plan.md    |
+      | docs/stories/WI-77001/e2e-scenarios.md          |
+
+  Scenario: Phase closes only when its own e2e + integration tests pass
+    Given a phase "P1" has every stage / step at status "complete"
+    But the integration test suite for "P1" has 1 failure
+    When the engineer lead evaluates phase closure
+    Then phase "P1" remains "active" with reason "1 integration test failing"
+    And no downstream phases are unblocked
+
+  Scenario: Closing a phase unblocks downstream phases
+    Given phase "P2" depends on phase "P1"
+    And "P1" is the only outstanding dependency for "P2"
+    When phase "P1" closes successfully
+    Then phase "P2" is added to the eligibility pool
+    And the next dispatcher tick assigns a coding pair to its first workstream
 ```
 
 ## Phase 29 — Sync-strategy refactor: 2-hour cadence, upstream-changedate cursor, per-repo overrides, UI knob

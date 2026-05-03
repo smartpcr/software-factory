@@ -85,6 +85,26 @@ export function LiveExecutionView(): JSX.Element {
   const loadingOlder = entry?.loadingOlder ?? false;
   const hasOlderEvents = transcript.length < transcriptTotalCount;
 
+  // Derive the per-role model from the latest task.prompt event when the
+  // snapshot doesn't carry it yet (older API build, or task hasn't been
+  // re-fetched after the field was added). Snapshot value wins when present
+  // — it's resolved server-side with full agent/crew override precedence.
+  const promptModels = useMemo(() => {
+    let gen: string | null = null;
+    let ev: string | null = null;
+    for (let i = transcript.length - 1; i >= 0 && (gen === null || ev === null); i--) {
+      if (transcript[i].kind !== 'task.prompt') continue;
+      const p = transcript[i].payload as Record<string, unknown> | null;
+      if (!p || typeof p.model !== 'string' || !p.model) continue;
+      const isEvaluator = p.role === 'evaluator';
+      if (isEvaluator && ev === null) ev = p.model;
+      if (!isEvaluator && gen === null) gen = p.model;
+    }
+    return { gen, ev };
+  }, [transcript]);
+  const genModel = snapshot?.generatorModel ?? promptModels.gen ?? null;
+  const evalModel = snapshot?.evaluatorModel ?? promptModels.ev ?? null;
+
   // Extract latest system + user prompt from the most recent task.prompt event, per role.
   const latestPrompt = useMemo(() => {
     for (let i = transcript.length - 1; i >= 0; i--) {
@@ -260,6 +280,7 @@ export function LiveExecutionView(): JSX.Element {
             role="generator"
             crewName={snapshot?.generatorCrewName}
             agentName={snapshot?.generatorAgentName ?? snapshot?.generatorAgentId}
+            model={genModel}
             selected={promptRole === 'generator'}
             onClick={() => setPromptRole('generator')}
           />
@@ -268,6 +289,8 @@ export function LiveExecutionView(): JSX.Element {
             role="evaluator"
             crewName={snapshot?.evaluatorCrewName}
             agentName={snapshot?.evaluatorAgentName ?? snapshot?.evaluatorAgentId}
+            model={evalModel}
+            sameAsOther={!!genModel && !!evalModel && genModel === evalModel}
             selected={promptRole === 'evaluator'}
             onClick={() => setPromptRole('evaluator')}
           />
@@ -488,12 +511,15 @@ function PairSide(props: {
   role: 'generator' | 'evaluator';
   crewName?: string | null;
   agentName?: string | null;
+  model?: string | null;
+  sameAsOther?: boolean;
   selected?: boolean;
   onClick?: () => void;
 }): JSX.Element {
-  const { role, crewName, agentName, selected, onClick } = props;
+  const { role, crewName, agentName, model, sameAsOther, selected, onClick } = props;
   const portrait = agentName ? avatarFor(agentName, agentName) : null;
   const tip = agentName ? agentTooltip(agentName, agentName, role) : '';
+  const modelLabel = model ? formatModelLabel(model) : null;
   return (
     <div
       className="live-exec__pair-side"
@@ -529,9 +555,38 @@ function PairSide(props: {
             {crewName}
           </span>
         )}
+        {modelLabel && (
+          <span
+            className="live-exec__pair-model"
+            data-warn={sameAsOther ? 'true' : undefined}
+            title={
+              (sameAsOther ? 'Generator and evaluator share the same model — pair-diversity rule violated.\n' : '')
+              + `Model: ${model}`
+            }
+            style={{
+              fontSize: 10,
+              fontFamily: 'var(--font-mono)',
+              color: sameAsOther ? 'rgb(220, 38, 38)' : 'var(--text-tertiary)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              maxWidth: 180,
+            }}
+          >
+            {sameAsOther ? '⚠ ' : ''}{modelLabel}
+          </span>
+        )}
       </div>
     </div>
   );
+}
+
+// Trim a long backend/model id like "copilot/claude-opus-4-6-1m" or
+// "anthropic/claude-opus-4-6" down to just the model part for the header
+// chip — the full id stays in the tooltip.
+function formatModelLabel(model: string): string {
+  const slash = model.lastIndexOf('/');
+  return slash >= 0 ? model.slice(slash + 1) : model;
 }
 
 // @ts-expect-error — unused but kept for future budget display
