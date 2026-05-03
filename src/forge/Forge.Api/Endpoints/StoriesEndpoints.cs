@@ -139,16 +139,19 @@ public static class StoriesEndpoints
 
         var repoId = req?.RepoId ?? defaultRepoId;
         var now = DateTimeOffset.UtcNow;
+        var safeStoryId = StoryPaths.Safe(storyId);
         var spawn = new StorySpawnRow
         {
-            Id = $"spawn-{storyId}",
+            Id = $"spawn-{safeStoryId}",
             StoryId = storyId,
             StoryTitle = title,
             StoryDescription = description,
             StoryPoints = points,
             RepoId = repoId,
             Phase = StorySpawnPhases.Plan,
-            PlanBranch = $"story/{storyId}/plan",
+            // Branch must use the sanitized id — `:` is illegal in Windows
+            // worktree paths and crashes the orchestrator on commit.
+            PlanBranch = $"story/{safeStoryId}/plan",
             CreatedAt = now,
             UpdatedAt = now,
         };
@@ -521,7 +524,8 @@ public static class StoriesEndpoints
         foreach (var w in req.Workstreams)
         {
             var slug = titleToSlug[w.Title];
-            var wsId = $"ws-{spawn.StoryId}-{slug}".ToLowerInvariant();
+            var safeStory = StoryPaths.Safe(spawn.StoryId);
+            var wsId = $"ws-{safeStory}-{slug}".ToLowerInvariant();
             createdMap[slug] = wsId;
             var row = new WorkstreamRow
             {
@@ -529,7 +533,7 @@ public static class StoriesEndpoints
                 Sort = ++maxSort,
                 RepoId = spawn.RepoId,
                 Name = w.Title,
-                Branch = $"ws/{spawn.StoryId}/{slug}",
+                Branch = $"ws/{safeStory}/{slug}",
                 Base = "main",
                 Epic = spawn.StoryId,
                 Status = "planning",
@@ -625,16 +629,17 @@ public static class StoriesEndpoints
             .SelectMany(w => StoriesJsonHelpers.Deserialize(w.PrsJson) ?? new List<string>())
             .ToArray();
 
+        var safeStoryId = StoryPaths.Safe(storyId);
         var planArtifacts = new[]
         {
-            $"docs/stories/{storyId}/tech-spec.md",
-            $"docs/stories/{storyId}/architecture.md",
-            $"docs/stories/{storyId}/implementation-plan.md",
-            $"docs/stories/{storyId}/e2e-scenarios.md",
+            $"docs/stories/{safeStoryId}/tech-spec.md",
+            $"docs/stories/{safeStoryId}/architecture.md",
+            $"docs/stories/{safeStoryId}/implementation-plan.md",
+            $"docs/stories/{safeStoryId}/e2e-scenarios.md",
         };
         var qaArtifacts = string.IsNullOrEmpty(spawn.QaPrId)
             ? Array.Empty<string>()
-            : new[] { $"tests/Features/{storyId}/" };
+            : new[] { $"tests/Features/{safeStoryId}/" };
 
         return Results.Ok(new
         {

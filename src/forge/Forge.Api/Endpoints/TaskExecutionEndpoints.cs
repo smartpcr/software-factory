@@ -190,14 +190,14 @@ public static class TaskExecutionEndpoints
             .Where(e => e.WorkItemId == id)
             .CountAsync(ct);
 
-        // Recent transcript (last 200 events, oldest→newest for natural rendering).
+        // Recent transcript (last 500 events, oldest→newest for natural rendering).
         // Always include prompt + iteration boundary events so the UI can
         // show the prompt section and iteration pager even when the window
         // has scrolled past them.
         var transcriptRows = await db.TaskTranscriptEvents.AsNoTracking()
             .Where(e => e.WorkItemId == id)
             .OrderByDescending(e => e.Id)
-            .Take(200)
+            .Take(500)
             .ToListAsync(ct);
         var pinnedKinds = new HashSet<string>
         {

@@ -791,7 +791,7 @@ public class DeliverableRow
     /// <summary>1-based iteration counter, capped at <see cref="ScoringConstants.MaxIterations"/>.</summary>
     public int Iter { get; set; } = 1;
 
-    /// <summary>0..100. Derived verdict: ≥90 pass, 70..89 iterate, &lt;70 reject.</summary>
+    /// <summary>0..100. Derived verdict: ≥90 pass, [reject..89] iterate, &lt;reject reject. Reject threshold varies by work-item points.</summary>
     public int Score { get; set; }
 
     /// <summary>JSON object mapping each rubric dimension to its 0..weight points.</summary>

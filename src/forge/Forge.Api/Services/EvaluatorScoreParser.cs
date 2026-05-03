@@ -62,7 +62,7 @@ public static class EvaluatorScoreParser
     /// returns a non-null result; <see cref="EvaluatorScore.ParseFailed"/>
     /// is true when the input was malformed.
     /// </summary>
-    public static EvaluatorScore Parse(string? assistantText)
+    public static EvaluatorScore Parse(string? assistantText, int workItemPoints = 1)
     {
         if (string.IsNullOrWhiteSpace(assistantText)) return Fallback("empty assistant text");
 
@@ -117,7 +117,7 @@ public static class EvaluatorScoreParser
                 : string.Empty;
             if (notes.Length > MaxNotesChars) notes = notes.Substring(0, MaxNotesChars);
 
-            var derived = DeriveVerdict(score);
+            var derived = DeriveVerdict(score, workItemPoints);
             var mismatch = modelVerdict is not null && !string.Equals(modelVerdict, derived, StringComparison.OrdinalIgnoreCase);
 
             return new EvaluatorScore(
@@ -133,13 +133,14 @@ public static class EvaluatorScoreParser
     }
 
     /// <summary>
-    /// Derive verdict from score per spec §2:
-    /// <c>≥ 90 → pass; 70..89 → iterate; &lt; 70 → reject</c>.
+    /// Derive verdict from score, adjusted by work-item points:
+    /// <c>≥ 90 → pass; [reject..89] → iterate; &lt; reject → reject</c>.
+    /// The reject threshold decreases for higher-point (harder) items.
     /// </summary>
-    public static string DeriveVerdict(int score)
+    public static string DeriveVerdict(int score, int workItemPoints = 1)
     {
-        if (score >= ScoringConstants.PassThreshold)    return "pass";
-        if (score >= ScoringConstants.IterateThreshold) return "iterate";
+        if (score >= ScoringConstants.PassThreshold) return "pass";
+        if (score >= ScoringConstants.RejectThreshold(workItemPoints)) return "iterate";
         return "reject";
     }
 

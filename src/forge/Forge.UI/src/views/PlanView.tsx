@@ -58,10 +58,15 @@ export function PlanView() {
     }
   }, [selectedId, witFocusedId]);
   useEffect(() => {
-    if (witFocusedId === null && selectedId) {
+    // Mirror panel close (× button) to the board. selectedId is read via
+    // getState — keeping it out of the deps prevents this effect from
+    // firing on every card click, which would race with the effect above
+    // (witFocusedId is still the stale pre-click null in this closure)
+    // and undo the freshly-set selectedId, requiring a second click.
+    if (witFocusedId === null && useBoardStore.getState().selectedId) {
       setSelected(null);
     }
-  }, [witFocusedId, selectedId, setSelected]);
+  }, [witFocusedId, setSelected]);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [storyModalOpen, setStoryModalOpen] = useState(false);

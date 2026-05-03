@@ -20,7 +20,7 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
     public Task<IReadOnlyDictionary<string, string>> ProducePlanArtifactsAsync(
         StorySpawnRow spawn, WorkItemRow story, CancellationToken ct = default)
     {
-        var dir = $"docs/stories/{spawn.StoryId}";
+        var dir = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}";
         var techSpec = new StringBuilder()
             .AppendLine($"# Tech spec — {story.Title}")
             .AppendLine()
@@ -122,7 +122,7 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
         // depends on the workstream slug. Keeps the test fixture small but
         // gives the artifact-existence check + commit/PR flow real content.
         var slug = workstream.Id.Split('-').Last();
-        var path = $"src/.story-artifacts/{spawn.StoryId}/{slug}.md";
+        var path = $"src/.story-artifacts/{StoryPaths.Safe(spawn.StoryId)}/{slug}.md";
         var body = new StringBuilder()
             .AppendLine($"# {workstream.Name}")
             .AppendLine()
@@ -142,7 +142,7 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
         if (round == 0)
         {
             var slug = workstream.Id.Split('-').Last();
-            var path = $"src/.story-artifacts/{spawn.StoryId}/{slug}.md";
+            var path = $"src/.story-artifacts/{StoryPaths.Safe(spawn.StoryId)}/{slug}.md";
             return Task.FromResult<IReadOnlyList<ReviewComment>>(new[]
             {
                 new ReviewComment(path, 1, "Title looks too generic — please clarify the slice.", "info"),
@@ -175,7 +175,7 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
         foreach (var ws in workstreams)
         {
             var slug = ws.Id.Split('-').Last();
-            var path = $"tests/Features/{spawn.StoryId}/{slug}.feature";
+            var path = $"tests/Features/{StoryPaths.Safe(spawn.StoryId)}/{slug}.feature";
             var body = new StringBuilder()
                 .AppendLine($"@story-{spawn.StoryId} @ws-{slug}")
                 .AppendLine($"Feature: {ws.Name} — {story.Title}")
@@ -194,12 +194,12 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
         StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default)
     {
         var slug = workstream.Id.Split('-').Last();
-        var path = $"tests/Steps/{spawn.StoryId}/{slug}Steps.cs";
+        var path = $"tests/Steps/{StoryPaths.Safe(spawn.StoryId)}/{slug}Steps.cs";
         var body = new StringBuilder()
             .AppendLine("// Auto-generated step definitions for Phase 28 spawn (deterministic strategy).")
             .AppendLine($"// Workstream: {workstream.Id}")
             .AppendLine()
-            .AppendLine($"namespace Forge.Tests.Stories.{spawn.StoryId.Replace('-', '_')};")
+            .AppendLine($"namespace Forge.Tests.Stories.{StoryPaths.Safe(spawn.StoryId).Replace('-', '_')};")
             .AppendLine()
             .AppendLine("using Reqnroll;")
             .AppendLine()

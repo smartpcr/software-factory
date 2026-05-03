@@ -141,7 +141,7 @@ export function StoryList() {
               </span>
               <span style={{ width: 70 }} />
               <span style={{ width: 80 }} />
-              <span style={{ width: 60, textAlign: 'right', display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+              <span style={{ width: 140, textAlign: 'right', display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
                 {story && (
                   <>
                     <button
@@ -150,7 +150,7 @@ export function StoryList() {
                       style={editBtnStyle}
                       title="Edit story"
                     >
-                      Edit
+                      ✎ Edit
                     </button>
                     <button
                       type="button"
@@ -158,7 +158,7 @@ export function StoryList() {
                       style={deleteBtnStyle}
                       title="Delete story"
                     >
-                      ✕
+                      🗑 Delete
                     </button>
                   </>
                 )}

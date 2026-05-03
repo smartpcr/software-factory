@@ -81,7 +81,12 @@ public sealed record DeliverableLoopRequest(
     /// surfaces this string on the deliverable row + transcript events so the
     /// downstream evaluator delegate can branch).
     /// </summary>
-    string Kind = DeliverableKinds.Coding);
+    string Kind = DeliverableKinds.Coding,
+    /// <summary>
+    /// Work-item story points — used to adjust the reject/iterate threshold.
+    /// Higher-point items get a lower reject bar so more iterations are attempted.
+    /// </summary>
+    int WorkItemPoints = 1);
 
 /// <summary>
 /// Phase 24 Q24.12 — well-known values for <see cref="DeliverableLoopRequest.Kind"/>.
@@ -216,7 +221,7 @@ public sealed class DeliverableLoop : IDeliverableLoop
 
             // (b) evaluator
             var eval = await request.Evaluator(iter, gen.OutputText, ct);
-            lastScore = EvaluatorScoreParser.Parse(eval.AssistantText);
+            lastScore = EvaluatorScoreParser.Parse(eval.AssistantText, request.WorkItemPoints);
             await this.WriteUsageAsync(request.WorkItemId, pinnedEvaluator, evalCrewId, "evaluator", eval.CostUsd, eval.InputTokens, eval.OutputTokens, ct);
 
             totalCost += gen.CostUsd + eval.CostUsd;

@@ -12,6 +12,7 @@ using System.Text.RegularExpressions;
 using Forge.Api.Agents;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
+using Forge.Api.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -60,7 +61,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     public async Task<IReadOnlyDictionary<string, string>> ProducePlanArtifactsAsync(
         StorySpawnRow spawn, WorkItemRow story, CancellationToken ct = default)
     {
-        var docDir = $"docs/stories/{spawn.StoryId}";
+        // StoryPaths.Safe — story ids may contain `:` (e.g. "code-intelligence:AGENT-MEMORY")
+        // which is illegal in Windows file paths and crashes the commit
+        // step. Must match the orchestrator's gate-check encoding.
+        var docDir = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}";
         var budget = BudgetForPhase(spawn.StoryPoints, "plan");
 
         // Plan files are independent — fire 4 architect invocations in
@@ -235,8 +239,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default)
     {
         var workspace = this.PrepareWorkspace(spawn.Id, $"impl-{Slug(workstream.Id)}");
-        var repoPrefix = $"src/.story-artifacts/{spawn.StoryId}/{workstream.Id}";
-        var prompt = $$"""
+        var repoPrefix = $"src/.story-artifacts/{StoryPaths.Safe(spawn.StoryId)}/{workstream.Id}";
+        var generatorPrompt = $$"""
             You are the Engineer agent implementing workstream `{{workstream.Id}}`
             for story `{{spawn.StoryId}}`.
 
@@ -262,8 +266,48 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             spans multiple files. Reply `DONE` when finished.
             """;
 
-        await this.InvokeAsync("Engineer", spawn.Id, $"impl:{workstream.Id}", prompt, workspace,
-            BudgetForPhase(spawn.StoryPoints, "impl"), ct);
+        var evaluatorPrompt = $$"""
+            You are scoring the Engineer agent's implementation of workstream
+            `{{workstream.Id}}` (story `{{spawn.StoryId}}`).
+
+            ## Workstream
+            **{{workstream.Name}}** — {{workstream.Summary}}
+
+            ## Story
+            {{spawn.StoryTitle}}
+            {{NonEmpty(spawn.StoryDescription)}}
+
+            ## Your job
+            Read every file the engineer wrote inside the working directory
+            (use your read-only tools — view, ls, grep). Do NOT modify
+            anything; do NOT commit; do NOT push.
+
+            Score on:
+            - Real implementation vs placeholder/scaffolding (types, methods,
+              tests must be substantive).
+            - Coverage of the workstream's stated goals + acceptance criteria.
+            - Internal consistency with the story description and the merged
+              planning artifacts on `main` (architecture.md / implementation-plan.md).
+            - Obvious bugs, missing error paths, untested edge cases.
+
+            End with a fenced JSON block:
+            ```json
+            { "score": <0-100>, "notes": "<technical feedback>" }
+            ```
+            score >= 90 = pass, 70-89 = iterate (be specific in notes),
+            < 70 = reject.
+            """;
+
+        await this.RunGenEvalLoopAsync(
+            team: "Engineer",
+            workItemId: workstream.Id,
+            phaseTag: $"impl:{workstream.Id}",
+            generatorPrompt: generatorPrompt,
+            evaluatorPrompt: evaluatorPrompt,
+            workspace: workspace,
+            budget: BudgetForPhase(spawn.StoryPoints, "impl"),
+            storyPoints: spawn.StoryPoints,
+            ct: ct);
 
         var files = ReadAllFiles(workspace);
         if (files.Count == 0)
@@ -391,7 +435,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     {
         var workspace = this.PrepareWorkspace(spawn.Id, "qa");
         var wsList = string.Join("\n", workstreams.Select(w => $"- `{w.Id}`: {w.Name} — {w.Summary}"));
-        var repoPrefix = $"tests/Features/{spawn.StoryId}";
+        var repoPrefix = $"tests/Features/{StoryPaths.Safe(spawn.StoryId)}";
         var prompt = $$"""
             You are the QA agent for story `{{spawn.StoryId}}`.
 
@@ -435,7 +479,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default)
     {
         var workspace = this.PrepareWorkspace(spawn.Id, $"qa-steps-{Slug(workstream.Id)}");
-        var repoPrefix = $"tests/Steps/{spawn.StoryId}";
+        var repoPrefix = $"tests/Steps/{StoryPaths.Safe(spawn.StoryId)}";
         var prompt = $$"""
             You are the Engineer agent writing step definitions for the QA
             feature file of workstream `{{workstream.Id}}` (story `{{spawn.StoryId}}`).
@@ -526,6 +570,231 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         };
         return TimeSpan.FromSeconds(baseSeconds * multiplier);
     }
+
+    /// <summary>
+    /// Runs a generator↔evaluator iter-and-score loop for one story phase.
+    /// Each iteration the generator writes/updates files in
+    /// <paramref name="workspace"/>; the evaluator inspects them with
+    /// read-only tools and emits a JSON score. Loop continues until the
+    /// evaluator passes or hits <c>ScoringConstants.MaxIterations</c>. All
+    /// transcript events are emitted on <paramref name="workItemId"/>'s
+    /// channel so the workstream UI card lights up "live" — single-shot
+    /// <see cref="InvokeAsync"/> emits on the spawn id, which doesn't
+    /// surface on per-workstream cards.
+    /// </summary>
+    private async Task RunGenEvalLoopAsync(
+        string team,
+        string workItemId,
+        string phaseTag,
+        string generatorPrompt,
+        string evaluatorPrompt,
+        string workspace,
+        TimeSpan? budget,
+        int storyPoints,
+        CancellationToken ct)
+    {
+        var prefix = CrewIdPrefix(team);
+        using var scope = this.scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var loop = scope.ServiceProvider.GetRequiredService<IDeliverableLoop>();
+
+        var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == prefix, ct)
+            ?? await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id.StartsWith(prefix), ct)
+            ?? throw new InvalidOperationException(
+                $"No crew found for team '{team}' (looked for id '{prefix}' or prefix). Configure crews in DB.");
+
+        var (genAgentId, genContext, genBackendStr, genInvokeStr) = await this.ResolveAgentRunConfigAsync(
+            db, crew, useEvaluatorRole: false, workspace, budget, ct);
+
+        // Evaluator is best-effort — when crew has no evaluator wiring, the
+        // loop's null delegate path returns an auto-pass score so we still
+        // exit after one generator iteration.
+        string? evalAgentId = null;
+        AgentContext? evalContext = null;
+        string? evalCrewId = null;
+        var evalPrefix = crew.PairedWithCrewId;
+        CrewRow? evalCrew = !string.IsNullOrEmpty(evalPrefix)
+            ? await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == evalPrefix, ct)
+            : crew;
+        if (evalCrew is not null)
+        {
+            try
+            {
+                var (eId, eCtx, _, _) = await this.ResolveAgentRunConfigAsync(
+                    db, evalCrew, useEvaluatorRole: true, workspace, budget, ct);
+                evalAgentId = eId;
+                evalContext = eCtx;
+                evalCrewId = evalCrew.Id;
+            }
+            catch
+            {
+                // Crew has no evaluator agent / model. Loop will auto-pass.
+            }
+        }
+
+        await this.taskChannel.EmitAsync(workItemId, "story.agent-prompt", new
+        {
+            phase = phaseTag,
+            team,
+            generatorAgentId = genAgentId,
+            evaluatorAgentId = evalAgentId,
+            crewId = crew.Id,
+            evaluatorCrewId = evalCrewId,
+            workspace,
+            generatorPromptPreview = Trim(generatorPrompt, 600),
+            evaluatorPromptPreview = Trim(evaluatorPrompt, 600),
+        }, agentId: genAgentId, crewId: crew.Id, ct: ct);
+
+        async Task<GeneratorRunOutput> GeneratorDelegate(int iter, string evalNotes, CancellationToken iterCt)
+        {
+            var iterPrompt = iter == 1
+                ? generatorPrompt
+                : $"{generatorPrompt}\n\n---\n\nEvaluator feedback from iteration {iter - 1}:\n{evalNotes}";
+
+            var invocation = await this.runner.StartAsync(workItemId, genAgentId, iterPrompt, genContext, iterCt);
+            var output = new StringBuilder();
+            decimal cost = 0m;
+            long inTok = 0, outTok = 0;
+            await foreach (var evt in invocation.Events.WithCancellation(iterCt))
+            {
+                await this.taskChannel.EmitAsync(workItemId, $"task.{evt.Kind.ToString().ToLowerInvariant()}", new
+                {
+                    invocationId = invocation.InvocationId,
+                    role = "generator",
+                    agentId = genAgentId,
+                    crewId = crew.Id,
+                    text = evt.Text,
+                    toolName = evt.ToolName,
+                    toolPayload = evt.ToolPayload,
+                    error = evt.Error,
+                    inputTokens = evt.InputTokens,
+                    outputTokens = evt.OutputTokens,
+                    costUsd = evt.CostUsd,
+                }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+
+                if (!string.IsNullOrEmpty(evt.Text) && evt.Kind == AgentEventKind.Token) output.Append(evt.Text);
+                if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;
+                if (evt.InputTokens is > 0) inTok += evt.InputTokens.Value;
+                if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
+            }
+            return new GeneratorRunOutput(output.ToString(), cost, inTok, outTok);
+        }
+
+        async Task<EvaluatorRunOutput> EvaluatorDelegate(int iter, string genOutput, CancellationToken iterCt)
+        {
+            if (string.IsNullOrEmpty(evalAgentId) || evalContext is null)
+            {
+                // No evaluator configured — auto-pass so the loop exits after
+                // one generator iteration.
+                return new EvaluatorRunOutput(
+                    "{\"score\":95,\"verdict\":\"pass\",\"notes\":\"No evaluator configured; auto-pass.\"}",
+                    0m);
+            }
+            var invocation = await this.runner.StartAsync(workItemId, evalAgentId, evaluatorPrompt, evalContext, iterCt);
+            var output = new StringBuilder();
+            decimal cost = 0m;
+            long inTok = 0, outTok = 0;
+            await foreach (var evt in invocation.Events.WithCancellation(iterCt))
+            {
+                await this.taskChannel.EmitAsync(workItemId, $"task.{evt.Kind.ToString().ToLowerInvariant()}", new
+                {
+                    invocationId = invocation.InvocationId,
+                    role = "evaluator",
+                    agentId = evalAgentId,
+                    crewId = evalCrewId,
+                    text = evt.Text,
+                    toolName = evt.ToolName,
+                    toolPayload = evt.ToolPayload,
+                    error = evt.Error,
+                    inputTokens = evt.InputTokens,
+                    outputTokens = evt.OutputTokens,
+                    costUsd = evt.CostUsd,
+                }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
+
+                if (!string.IsNullOrEmpty(evt.Text) && evt.Kind == AgentEventKind.Token) output.Append(evt.Text);
+                if (evt.CostUsd.HasValue) cost += evt.CostUsd.Value;
+                if (evt.InputTokens is > 0) inTok += evt.InputTokens.Value;
+                if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
+            }
+            return new EvaluatorRunOutput(output.ToString(), cost, inTok, outTok);
+        }
+
+        var result = await loop.RunAsync(new DeliverableLoopRequest(
+            WorkItemId: workItemId,
+            CrewId: crew.Id,
+            GeneratorAgentId: genAgentId,
+            EvaluatorAgentId: evalAgentId ?? genAgentId,
+            Generator: GeneratorDelegate,
+            Evaluator: EvaluatorDelegate,
+            MaxTaskBudgetUsd: crew.MaxTaskBudgetUsd,
+            EvaluatorCrewId: evalCrewId,
+            WorkItemPoints: storyPoints), ct);
+
+        if (string.Equals(result.FinalVerdict, "reject", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Gen-eval loop for {phaseTag} ended with verdict=reject after {result.Iterations} iterations (final score {result.FinalScore}).");
+        }
+    }
+
+    /// <summary>
+    /// Resolves the agent + invocation context for one role on a crew. When
+    /// <paramref name="useEvaluatorRole"/>, prefers <c>DefaultEvaluatorAgentId</c>
+    /// + <c>EvaluatorModel</c>; otherwise <c>DefaultGeneratorAgentId</c> /
+    /// <c>Lead</c> and the crew's primary model. Throws when the role isn't
+    /// configured so callers can fall back (e.g. the gen-eval loop's null
+    /// evaluator path).
+    /// </summary>
+    private async Task<(string AgentId, AgentContext Context, string BackendStr, string InvokeStr)> ResolveAgentRunConfigAsync(
+        ForgeDbContext db, CrewRow crew, bool useEvaluatorRole,
+        string workspace, TimeSpan? budget, CancellationToken ct)
+    {
+        var agentId = useEvaluatorRole
+            ? (crew.DefaultEvaluatorAgentId ?? crew.Lead)
+            : (crew.DefaultGeneratorAgentId ?? crew.Lead)
+            ?? throw new InvalidOperationException(
+                $"Crew '{crew.Id}' has no {(useEvaluatorRole ? "Evaluator" : "Generator")} agent set.");
+
+        var agent = await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == agentId, ct);
+
+        var preferEvalModel = useEvaluatorRole;
+        var model = preferEvalModel
+            ? (NonEmptyOrNull(agent?.EvaluatorModel) ?? NonEmptyOrNull(crew.EvaluatorModel) ?? NonEmptyOrNull(agent?.GeneratorModel) ?? crew.Model)
+            : (NonEmptyOrNull(agent?.GeneratorModel) ?? crew.Model);
+        if (string.IsNullOrEmpty(model))
+        {
+            throw new InvalidOperationException($"Crew '{crew.Id}' has no Model set for the {(useEvaluatorRole ? "evaluator" : "generator")} role.");
+        }
+
+        var backendStr = !string.IsNullOrEmpty(agent?.Backend) ? agent!.Backend : crew.Backend;
+        var backend = string.Equals(backendStr, "claude", StringComparison.OrdinalIgnoreCase)
+            ? AgentBackend.Claude : AgentBackend.Copilot;
+        var invokeStr = !string.IsNullOrEmpty(agent?.InvokeMode) ? agent!.InvokeMode : crew.InvokeMode;
+        var invokeMode = string.Equals(invokeStr, "cli", StringComparison.OrdinalIgnoreCase)
+            ? AgentInvokeMode.Cli : AgentInvokeMode.Sdk;
+
+        var soul = string.Empty;
+        if (!string.IsNullOrEmpty(agent?.SoulPath) && File.Exists(agent!.SoulPath))
+        {
+            try { soul = await File.ReadAllTextAsync(agent!.SoulPath, ct); }
+            catch { /* best effort */ }
+        }
+
+        var context = new AgentContext(
+            CrewId: crew.Id,
+            Model: model,
+            SoulMd: soul,
+            WorktreePath: workspace,
+            AllowedTools: Array.Empty<string>(),
+            MaxTaskBudgetUsd: crew.MaxTaskBudgetUsd,
+            Backend: backend,
+            InvokeMode: invokeMode,
+            WallClockBudget: budget);
+
+        return (agentId, context, backendStr, invokeStr);
+    }
+
+    private static string? NonEmptyOrNull(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;
 
     private async Task InvokeAsync(string team, string spawnId, string phaseTag, string prompt, string workspace, CancellationToken ct)
         => await this.InvokeAsync(team, spawnId, phaseTag, prompt, workspace, budget: null, ct);

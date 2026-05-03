@@ -14,12 +14,22 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
 /// <summary>
-/// Phase 10.1 / 10.2 — per-user preferences. Single-user mode keys on
-/// <c>"default"</c> until a real signed-in user exists; once the operator
-/// signs in via Phase 9, the row is keyed on their UserRow.Id.
+/// Phase 10.1 / 10.2 — operator preferences + provider defaults.
+/// Forge runs as a single-operator instance, so every caller reads/writes
+/// the same row keyed on <see cref="GlobalSettingsKey"/>. Earlier builds
+/// keyed on a per-user UserRow.Id, which broke once multiple user rows
+/// accumulated (sign-in flows + e2e fixtures): the lookup picked an
+/// arbitrary "first" user, so provider defaults appeared and disappeared
+/// between page loads depending on SQLite scan order.
 /// </summary>
 public static class MeSettingsEndpoints
 {
+    /// <summary>
+    /// Sentinel UserId for the singleton settings row. Underscore prefix
+    /// to keep it sortable below real user ids and obvious in the DB.
+    /// </summary>
+    public const string GlobalSettingsKey = "_global";
+
     public static WebApplication MapMeSettingsEndpoints(this WebApplication app)
     {
         app.MapGet("/api/me/settings", GetSettings)
@@ -32,9 +42,52 @@ public static class MeSettingsEndpoints
     private static async Task<IResult> GetSettings(ForgeDbContext db, CancellationToken ct)
     {
         var userId = await ResolveUserIdAsync(db, ct);
-        var row = await db.UserSettings.AsNoTracking().FirstOrDefaultAsync(x => x.UserId == userId, ct)
-                  ?? new UserSettingsRow { UserId = userId };
+        var row = await db.UserSettings.FirstOrDefaultAsync(x => x.UserId == userId, ct);
+        if (row is null)
+        {
+            row = await SeedGlobalFromLegacyAsync(db, ct);
+        }
         return Results.Ok(MapSettings(row));
+    }
+
+    /// <summary>
+    /// One-shot migration: when no <see cref="GlobalSettingsKey"/> row
+    /// exists, build it by merging every legacy per-user row in
+    /// most-recently-updated order (first non-null wins per field). Persists
+    /// the merged row when there is anything worth keeping so the operator
+    /// doesn't have to re-enter ADO/GitHub defaults after the move from
+    /// per-user to global keying.
+    /// </summary>
+    private static async Task<UserSettingsRow> SeedGlobalFromLegacyAsync(ForgeDbContext db, CancellationToken ct)
+    {
+        var legacy = await db.UserSettings.AsNoTracking()
+            .Where(x => x.UserId != GlobalSettingsKey)
+            .ToListAsync(ct);
+        legacy.Sort((a, b) => b.UpdatedAt.CompareTo(a.UpdatedAt));
+
+        var row = new UserSettingsRow { UserId = GlobalSettingsKey, UpdatedAt = DateTimeOffset.UtcNow };
+        foreach (var l in legacy)
+        {
+            row.DefaultAdoOrgUrl       ??= l.DefaultAdoOrgUrl;
+            row.DefaultAdoProject      ??= l.DefaultAdoProject;
+            row.DefaultGitHubOwner     ??= l.DefaultGitHubOwner;
+            row.DefaultProductId       ??= l.DefaultProductId;
+            row.DefaultRepoId          ??= l.DefaultRepoId;
+            row.BrowserPreference      ??= l.BrowserPreference;
+            row.Theme                  ??= l.Theme;
+            row.PreferredAdoAccount    ??= l.PreferredAdoAccount;
+            row.PreferredGitHubAccount ??= l.PreferredGitHubAccount;
+        }
+        // NotificationsEnabled has no nullable form — keep enabled if any
+        // legacy row had it on, matching the schema default.
+        row.NotificationsEnabled = legacy.Count == 0 || legacy.Any(l => l.NotificationsEnabled);
+
+        if (legacy.Count > 0)
+        {
+            db.UserSettings.Add(row);
+            await db.SaveChangesAsync(ct);
+        }
+        return row;
     }
 
     private static async Task<IResult> PatchSettings(
@@ -73,20 +126,12 @@ public static class MeSettingsEndpoints
     }
 
     /// <summary>
-    /// Resolves the user id whose settings to read/write. In single-user
-    /// mode this is the lone signed-in UserRow if present, else the
-    /// <c>"default"</c> singleton key.
+    /// Settings are an instance-wide singleton in this build. The async
+    /// signature is preserved so both call sites stay shape-compatible
+    /// with the prior per-user resolution.
     /// </summary>
-    public static async Task<string> ResolveUserIdAsync(ForgeDbContext db, CancellationToken ct)
-    {
-        // Single-user mode: there's at most one row. SQLite can't ORDER BY
-        // DateTimeOffset, so we just take any user — keying on Id below is
-        // stable enough for first-run.
-        var first = await db.Users.AsNoTracking()
-            .Select(u => new { u.Id })
-            .FirstOrDefaultAsync(ct);
-        return first?.Id ?? "default";
-    }
+    public static Task<string> ResolveUserIdAsync(ForgeDbContext db, CancellationToken ct)
+        => Task.FromResult(GlobalSettingsKey);
 
     private static UserSettings MapSettings(UserSettingsRow r) => new(
         r.UserId,

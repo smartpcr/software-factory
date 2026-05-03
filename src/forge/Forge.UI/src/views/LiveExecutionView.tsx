@@ -683,39 +683,44 @@ function filterEvents(
   if (f === 'commits') return events.filter((e) => e.kind === 'task.commit' || e.kind === 'task.pr-opened');
   if (f === 'tools')   return events.filter((e) => e.kind === 'task.tool-call' || e.kind === 'task.tool-result');
 
-  // When generator and evaluator share the same crewId, fall back to
-  // event kind heuristics to split the transcript.
-  const sameCrews = genCrewId && evalCrewId && genCrewId === evalCrewId;
-
   const EVAL_KINDS = new Set([
     'task.iteration.scored', 'task.iteration.passed', 'task.iteration.rejected',
     'task.iteration.iterated', 'task.iteration.stalled',
   ]);
 
+  // Resolve effective agentId/crewId: top-level fields are often null,
+  // the real values live inside payload.
+  const effectiveAgent = (e: TaskTranscriptEvent): string | null | undefined => {
+    const p = e.payload as Record<string, unknown> | null;
+    return e.agentId || (p?.agentId as string) || null;
+  };
+  const effectiveCrew = (e: TaskTranscriptEvent): string | null | undefined => {
+    const p = e.payload as Record<string, unknown> | null;
+    return e.crewId || (p?.crewId as string) || null;
+  };
+
   if (f === 'generator') {
     return events.filter((e) => {
-      if (e.kind.startsWith('task.iteration')) return true; // boundaries shown in both
-      if (sameCrews) {
-        // Exclude evaluator-specific events; include everything else.
-        if (e.agentId === evalAgentId && e.agentId !== genAgentId) return false;
-        if (e.crewId && e.crewId !== genCrewId) return false;
-        return !EVAL_KINDS.has(e.kind);
-      }
-      return (genCrewId && e.crewId === genCrewId) || (!e.crewId && !evalCrewId);
+      if (e.kind.startsWith('task.iteration')) return true;
+      const agent = effectiveAgent(e);
+      const crew = effectiveCrew(e);
+      if (agent === evalAgentId && agent !== genAgentId) return false;
+      if (EVAL_KINDS.has(e.kind)) return false;
+      if (genCrewId && crew === genCrewId) return true;
+      if (genAgentId && agent === genAgentId) return true;
+      if (!crew && !agent) return true; // untagged events go to generator
+      return false;
     });
   }
   if (f === 'evaluator') {
     return events.filter((e) => {
-      if (e.kind.startsWith('task.iteration')) return true; // boundaries shown in both
-      if (sameCrews) {
-        // Only evaluator-specific events: scoring verdicts + events
-        // tagged with the evaluator agent.
-        if (EVAL_KINDS.has(e.kind)) return true;
-        if (e.agentId === evalAgentId && e.agentId !== genAgentId) return true;
-        // Also include events from the paired (different) crew.
-        return false;
-      }
-      return evalCrewId && e.crewId === evalCrewId;
+      if (e.kind.startsWith('task.iteration')) return true;
+      if (EVAL_KINDS.has(e.kind)) return true;
+      const agent = effectiveAgent(e);
+      const crew = effectiveCrew(e);
+      if (evalAgentId && agent === evalAgentId) return true;
+      if (evalCrewId && crew === evalCrewId) return true;
+      return false;
     });
   }
   return events;
@@ -796,9 +801,16 @@ function groupByIteration(events: TaskTranscriptEvent[]): IterationGroup[] {
     groups.push(current);
   }
 
+  // Filter out iterations that only have boundary-marker events (no real
+  // content loaded). This happens when the server pins iteration boundary
+  // events but the actual content events weren't in the initial load window.
+  const hasContent = (g: IterationGroup) =>
+    g.events.some((e) => !ITER_BOUNDARY_KINDS.has(e.kind));
+  const filtered = groups.filter((g, i) => i === groups.length - 1 || hasContent(g));
+
   // If we only have 1 group and no iteration markers, it's pre-iteration
   // or a single iteration — still return it so paging degrades gracefully.
-  return groups;
+  return filtered;
 }
 
 function WorktreeTab(props: { snap: WorktreeSnapshot | null; transcript: TaskTranscriptEvent[] }): JSX.Element {

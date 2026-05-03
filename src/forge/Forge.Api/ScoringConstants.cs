@@ -26,8 +26,27 @@ public static class ScoringConstants
     public const int RubricTotal = CorrectnessWeight + QualityWeight + TestsWeight + ScopeWeight + RiskWeight;
 
     // ── Verdict thresholds ──────────────────────────────────────────────
-    public const int PassThreshold    = 90; // score >= 90 → pass
-    public const int IterateThreshold = 70; // 70..89 → iterate; <70 → reject
+    public const int PassThreshold = 90; // score >= 90 → pass
+
+    /// <summary>
+    /// Points-based reject threshold. Higher-point (harder) work items get a
+    /// lower bar so the loop iterates more before giving up.
+    /// </summary>
+    public static int RejectThreshold(int points) => points switch
+    {
+        <= 1 => 70,
+        2    => 65,
+        3    => 60,
+        4    => 50,
+        5    => 40,
+        6    => 30,
+        7    => 20,
+        8    => 15,
+        _    => 10, // 9+
+    };
+
+    /// <summary>Iterate range: [RejectThreshold .. PassThreshold-1].</summary>
+    public static int IterateThreshold(int points) => RejectThreshold(points);
 
     // ── Iteration loop ──────────────────────────────────────────────────
     public const int MaxIterations = 5;

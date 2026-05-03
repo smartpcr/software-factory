@@ -1154,6 +1154,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // tools (view, grep, git diff). No generator output is stuffed into
                 // the prompt — the evaluator sees the actual deliverable, not
                 // a parroted narration of how the generator produced it.
+                var wiPointsForScoring = wi?.Points ?? 1;
+                var rejectBelowForScoring = ScoringConstants.RejectThreshold(wiPointsForScoring);
                 var evalSoulForScoring = (string.IsNullOrEmpty(evalSoul) ? "" : evalSoul + "\n\n---\n\n")
                     + "CRITICAL RULES FOR THIS SESSION:\n"
                     + "1. Use tools (view, grep, powershell) to inspect the worktree and understand what changed.\n"
@@ -1162,7 +1164,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     + "2. Do NOT modify any files. Do NOT commit, push, or run builds. Read-only inspection only.\n"
                     + "3. End your response with a fenced JSON block:\n"
                     + "```json\n{ \"score\": <0-100>, \"notes\": \"<feedback>\" }\n```\n"
-                    + "4. Score >= 90 = pass, 70-89 = iterate, < 70 = reject.\n"
+                    + $"4. Score >= 90 = pass, {rejectBelowForScoring}-89 = iterate, < {rejectBelowForScoring} = reject (adjusted for {wiPointsForScoring}-point work item).\n"
                     + "5. Your 'notes' MUST describe WHAT was changed, WHY it fixes the problem, and HOW the fix works.\n"
                     + "   Do NOT just say 'build clean, tests pass' — that is self-evident.\n"
                     + "   Focus on the technical substance: which code paths were modified, what error handling was added,\n"
@@ -1232,15 +1234,17 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // The evaluator prompt is lean — just the task context + work item
                 // title. The evaluator uses tools to inspect the worktree itself.
                 var wiTitle = wi?.Title ?? workItemId;
+                var wiPoints = wi?.Points ?? 1;
+                var rejectBelow = ScoringConstants.RejectThreshold(wiPoints);
                 var evalPrompt = "You are a critical code reviewer scoring agent work.\n\n"
                     + "IMPORTANT: You MUST end your response with a fenced JSON block in exactly this format:\n"
                     + "```json\n"
                     + "{ \"score\": <0-100>, \"notes\": \"<your review comment>\" }\n"
                     + "```\n\n"
-                    + "Scoring rubric:\n"
-                    + "- score >= 90: pass (code is correct, tested, ready to merge)\n"
-                    + "- score 70-89: iterate (has issues that need fixing — describe them in notes)\n"
-                    + "- score < 70: reject (fundamentally wrong approach)\n\n"
+                    + $"Scoring rubric (adjusted for {wiPoints}-point work item):\n"
+                    + $"- score >= 90: pass (code is correct, tested, ready to merge)\n"
+                    + $"- score {rejectBelow}-89: iterate (has issues that need fixing — describe them in notes)\n"
+                    + $"- score < {rejectBelow}: reject (fundamentally wrong approach)\n\n"
                     + "Your 'notes' field will be displayed as the **Evaluator Review** in the PR description.\n"
                     + "Write it as a review comment that covers:\n"
                     + "- What the change does and whether the approach is correct\n"
@@ -1324,7 +1328,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 Evaluator: EvaluatorDelegate,
                 MaxTaskBudgetUsd: crew.MaxTaskBudgetUsd,
                 EvaluatorCrewId: evaluatorCrewId,
-                Kind: loopKind);
+                Kind: loopKind,
+                WorkItemPoints: wi?.Points ?? 1);
 
             var result = await loop.RunAsync(loopRequest, ct);
 
