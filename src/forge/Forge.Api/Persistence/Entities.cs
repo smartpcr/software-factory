@@ -800,10 +800,10 @@ public class DeliverableRow
     /// <summary>One of: <c>pass | iterate | reject | stalled | stalled-budget | paused-eod</c>.</summary>
     public string Verdict { get; set; } = "iterate";
 
-    /// <summary>Evaluator's free-form notes (≤ 800 chars by spec, not enforced at the row level).</summary>
+    /// <summary>Evaluator's free-form notes (≤ 4000 chars by spec, not enforced at the row level).</summary>
     public string Notes { get; set; } = string.Empty;
 
-    /// <summary>Generator's change summary from the last token output (truncated to 800 chars).</summary>
+    /// <summary>Generator's iteration summary — extracted from the explicit `## Iteration Summary` / `## Change Summary` / `## Plan Summary` heading the agent emits per prompt instructions; falls back to the response tail when the heading is missing. Capped at 4000 chars.</summary>
     public string GeneratorSummary { get; set; } = string.Empty;
 
     public decimal GenCostUsd { get; set; }

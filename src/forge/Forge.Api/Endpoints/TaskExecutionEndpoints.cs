@@ -267,7 +267,8 @@ public static class TaskExecutionEndpoints
                             diskSnap.Added, diskSnap.Modified, diskSnap.Deleted,
                             diskSnap.Ahead, diskSnap.Behind, diskSnap.Dirty,
                             diskSnap.HeadSha, diskSnap.HeadMessage, diskSnap.HeadAuthor, diskSnap.HeadAt,
-                            diskSnap.Truncated, DateTimeOffset.UtcNow);
+                            diskSnap.Truncated, DateTimeOffset.UtcNow,
+                            wtPath);
 
                         // Re-subscribe the feed so future ticks are emitted.
                         worktreeFeed.Subscribe(id, string.Empty, wtPath);
@@ -327,7 +328,10 @@ public static class TaskExecutionEndpoints
             Worktree: worktree,
             ExecutionStatus: wi?.ExecutionStatus ?? ExecutionStatuses.Idle,
             TrialCount: wi?.TrialCount ?? 0,
-            MaxIterations: latestQueue?.MaxIterOverride ?? ScoringConstants.MaxIterations,
+            // Default to the points-derived cap (5 per pt) so the live-exec
+            // header reads "iter N of {pts*5}" instead of always "of 5".
+            // The runtime PATCH override on the queue row still wins.
+            MaxIterations: latestQueue?.MaxIterOverride ?? ScoringConstants.MaxIterationsForPoints(wi?.Points ?? 0),
             TranscriptTotalCount: transcriptTotalCount);
 
         return Results.Ok(snap);
@@ -423,7 +427,8 @@ public static class TaskExecutionEndpoints
         return new Deliverable(
             r.Id, r.WorkItemId, r.CrewId, r.GeneratorAgentId, r.EvaluatorAgentId,
             r.Iter, r.Score, dims, r.Verdict, r.Notes, r.GenCostUsd, r.EvalCostUsd,
-            r.JudgeAgentId, r.JudgeScore, r.JudgeNotes, r.CreatedAt);
+            r.JudgeAgentId, r.JudgeScore, r.JudgeNotes, r.CreatedAt,
+            r.GeneratorSummary ?? string.Empty);
     }
 
     /// <summary>
@@ -503,6 +508,7 @@ public static class TaskExecutionEndpoints
     {
         if (el.ValueKind != JsonValueKind.Object) return null;
         string? wsId = el.TryGetProperty("workstreamId", out var w) ? w.GetString() : null;
+        string? wtPath = el.TryGetProperty("worktreePath", out var wp) ? wp.GetString() : null;
         int added    = TryGetInt(el, "added", 0);
         int modified = TryGetInt(el, "modified", 0);
         int deleted  = TryGetInt(el, "deleted", 0);
@@ -527,7 +533,8 @@ public static class TaskExecutionEndpoints
             added, modified, deleted,
             ahead, behind, dirty,
             sha, msg, author, headAt,
-            truncated, at);
+            truncated, at,
+            wtPath);
     }
 
     private static int TryGetInt(JsonElement el, string name, int fallback)

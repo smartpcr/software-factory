@@ -774,7 +774,9 @@ public sealed record Deliverable(
     string? JudgeAgentId,
     int? JudgeScore,
     string? JudgeNotes,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    /// <summary>Generator's per-iteration summary — extracted from the `## Iteration Summary` / `## Change Summary` / `## Plan Summary` heading in the generator response. Empty when the agent didn't write one.</summary>
+    string GeneratorSummary = "");
 
 /// <summary>
 /// Phase 14.5 — dispute body. <c>JudgeScore</c> is the judge agent's
@@ -1006,7 +1008,9 @@ public sealed record WorktreeSnapshot(
     string? HeadAuthor,
     DateTimeOffset? HeadAt,
     bool Truncated,
-    DateTimeOffset At);
+    DateTimeOffset At,
+    /// <summary>Absolute filesystem path to the worktree (e.g. <c>E:\work\hci\update\.worktree\ws-WI-1035</c>). Null when the worktree is not yet attached or the tick predates the field being added.</summary>
+    string? WorktreePath = null);
 
 /// <summary>
 /// Phase 16.9 — snapshot of a work item's execution state. Returned by

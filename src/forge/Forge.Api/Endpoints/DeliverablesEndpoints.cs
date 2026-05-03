@@ -179,6 +179,7 @@ public static class DeliverablesEndpoints
             JudgeAgentId: r.JudgeAgentId,
             JudgeScore: r.JudgeScore,
             JudgeNotes: r.JudgeNotes,
-            CreatedAt: r.CreatedAt);
+            CreatedAt: r.CreatedAt,
+            GeneratorSummary: r.GeneratorSummary ?? string.Empty);
     }
 }

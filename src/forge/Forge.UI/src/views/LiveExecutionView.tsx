@@ -6,12 +6,13 @@
 // for live updates via useTaskLive (Phase 16.13).
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
-import { useTaskLive, useTaskLiveStore, type TaskTranscriptEvent, type WorktreeSnapshot } from '@/realtime/useTaskLiveStore';
+import ReactMarkdown from 'react-markdown';
+import { useTaskLive, useTaskLiveStore, type TaskTranscriptEvent, type WorktreeSnapshot, type DeliverableShape } from '@/realtime/useTaskLiveStore';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
 import { avatarFor, agentTooltip } from '@/agentAvatar';
 
-type FilterKey = 'all' | 'generator' | 'evaluator' | 'tools' | 'commits';
+type FilterKey = 'all' | 'generator' | 'evaluator' | 'tools' | 'commits' | 'summary';
 
 const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: 'all',       label: 'All' },
@@ -19,6 +20,7 @@ const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: 'evaluator', label: 'Evaluator' },
   { key: 'tools',     label: 'Tools' },
   { key: 'commits',   label: 'Commits' },
+  { key: 'summary',   label: 'Summary' },
 ];
 
 type RailTab = 'worktree' | 'tokens' | 'progress' | 'comments' | 'builds';
@@ -52,11 +54,30 @@ export function LiveExecutionView(): JSX.Element {
 
   // Phase 19 — group filtered events by iteration for paged display.
   const iterations = useMemo(() => groupByIteration(filtered), [filtered]);
-  const totalIters = iterations.length;
+
+  // Summary-mode iteration list — derived from deliverables (one per iter,
+  // dedup latest-wins for restarts). The pager works the same; just the
+  // source switches.
+  const summaryIters = useMemo<DeliverableShape[]>(() => {
+    const ds = snapshot?.deliverables ?? [];
+    const byIter = new Map<number, DeliverableShape>();
+    for (const d of ds) byIter.set(d.iter, d);
+    return Array.from(byIter.values()).sort((a, b) => a.iter - b.iter);
+  }, [snapshot?.deliverables]);
+
+  const isSummaryMode = filter === 'summary';
+  const pagerLength = isSummaryMode ? summaryIters.length : iterations.length;
+  const totalIters = pagerLength;
   const [selectedIter, setSelectedIter] = useState<number | null>(null);
+  // Reset selection when filter changes so we never index out of bounds and
+  // the user lands on the latest entry of the new view.
+  useEffect(() => { setSelectedIter(null); }, [filter]);
   // Default to the latest iteration; selectedIter===null means "follow latest".
   const activeIter = selectedIter ?? (totalIters > 0 ? totalIters - 1 : 0);
-  const visibleEvents = totalIters > 0 ? iterations[activeIter]?.events ?? [] : filtered;
+  const visibleEvents = !isSummaryMode && totalIters > 0
+    ? iterations[activeIter]?.events ?? []
+    : (!isSummaryMode ? filtered : []);
+  const activeSummary = isSummaryMode && totalIters > 0 ? summaryIters[activeIter] ?? null : null;
 
   // Reverse-chronological: newest events on top.
   const reversedEvents = useMemo(() => [...visibleEvents].reverse(), [visibleEvents]);
@@ -364,26 +385,28 @@ export function LiveExecutionView(): JSX.Element {
             >
               ◂
             </button>
-            {buildPageWindow(totalIters, activeIter).map((slot, i) =>
-              slot === 'ellipsis' ? (
-                <span key={`e${i}`} className="live-exec__iter-pager-ellipsis">…</span>
-              ) : (
+            {buildPageWindow(totalIters, activeIter).map((slot, i) => {
+              if (slot === 'ellipsis') return <span key={`e${i}`} className="live-exec__iter-pager-ellipsis">…</span>;
+              const slotLabel  = isSummaryMode ? `Iteration ${summaryIters[slot].iter}` : iterations[slot].label;
+              const slotScore  = isSummaryMode ? summaryIters[slot].score   : iterations[slot].score;
+              const slotVerdict = isSummaryMode ? summaryIters[slot].verdict : iterations[slot].verdict;
+              return (
                 <button
                   key={slot}
                   type="button"
                   className={slot === activeIter ? 'active' : ''}
                   onClick={() => setSelectedIter(slot === totalIters - 1 ? null : slot)}
-                  title={iterations[slot].label}
+                  title={slotLabel}
                 >
                   {slot + 1}
-                  {iterations[slot].score != null && (
-                    <span className={`live-exec__iter-pager-score ${iterations[slot].verdict ?? ''}`}>
-                      {iterations[slot].score}
+                  {slotScore != null && (
+                    <span className={`live-exec__iter-pager-score ${slotVerdict ?? ''}`}>
+                      {slotScore}
                     </span>
                   )}
                 </button>
-              ),
-            )}
+              );
+            })}
             <button
               type="button"
               disabled={activeIter >= totalIters - 1}
@@ -402,33 +425,39 @@ export function LiveExecutionView(): JSX.Element {
           </nav>
         )}
         <div className="live-exec__transcript" style={{ userSelect: 'text' }}>
-          {transcriptTotalCount > 0 && (
-            <div className="live-exec__transcript-count" style={{ fontSize: 11, color: 'var(--text-tertiary, #888)', padding: '4px 8px', borderBottom: '1px solid var(--border, #e5e7eb)' }}>
-              Showing 1–{transcript.length.toLocaleString()} most recent of {transcriptTotalCount.toLocaleString()} total events
-            </div>
-          )}
-          {reversedEvents.length === 0 ? (
-            <div className="live-exec__empty">
-              {entry?.loading ? 'Loading…' : 'No events yet.'}
-              {snapshot?.autoDispatchedAt == null && !entry?.loading && (
-                <div className="live-exec__empty-cta">Waiting for the lead to delegate…</div>
-              )}
-            </div>
+          {isSummaryMode ? (
+            <SummaryView deliverable={activeSummary} loading={!!entry?.loading} dispatched={snapshot?.autoDispatchedAt != null} />
           ) : (
-            reversedEvents.map((evt) => <TranscriptLine key={`${evt.id}:${evt.at}`} evt={evt} generatorCrewId={genCrewId} evaluatorCrewId={evalCrewId} />)
-          )}
-          {hasOlderEvents && (
-            <div style={{ textAlign: 'center', padding: '8px 0' }}>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                style={{ fontSize: 11, padding: '4px 12px' }}
-                disabled={loadingOlder}
-                onClick={() => workItemId && void useTaskLiveStore.getState().loadOlderEvents(workItemId)}
-              >
-                {loadingOlder ? 'Loading…' : '↑ Load older events'}
-              </button>
-            </div>
+            <>
+              {transcriptTotalCount > 0 && (
+                <div className="live-exec__transcript-count" style={{ fontSize: 11, color: 'var(--text-tertiary, #888)', padding: '4px 8px', borderBottom: '1px solid var(--border, #e5e7eb)' }}>
+                  Showing 1–{transcript.length.toLocaleString()} most recent of {transcriptTotalCount.toLocaleString()} total events
+                </div>
+              )}
+              {reversedEvents.length === 0 ? (
+                <div className="live-exec__empty">
+                  {entry?.loading ? 'Loading…' : 'No events yet.'}
+                  {snapshot?.autoDispatchedAt == null && !entry?.loading && (
+                    <div className="live-exec__empty-cta">Waiting for the lead to delegate…</div>
+                  )}
+                </div>
+              ) : (
+                reversedEvents.map((evt) => <TranscriptLine key={`${evt.id}:${evt.at}`} evt={evt} generatorCrewId={genCrewId} evaluatorCrewId={evalCrewId} />)
+              )}
+              {hasOlderEvents && (
+                <div style={{ textAlign: 'center', padding: '8px 0' }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ fontSize: 11, padding: '4px 12px' }}
+                    disabled={loadingOlder}
+                    onClick={() => workItemId && void useTaskLiveStore.getState().loadOlderEvents(workItemId)}
+                  >
+                    {loadingOlder ? 'Loading…' : '↑ Load older events'}
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       </main>
@@ -529,14 +558,19 @@ function BudgetBar(props: { label: string; spend: number; cap: number | null }):
 function TranscriptLine(props: { evt: TaskTranscriptEvent; generatorCrewId?: string | null; evaluatorCrewId?: string | null }): JSX.Element {
   const { evt, generatorCrewId, evaluatorCrewId } = props;
   if (evt.kind === 'task.iteration.scored' || evt.kind === 'task.iteration.passed' || evt.kind === 'task.iteration.rejected' || evt.kind === 'task.iteration.iterated' || evt.kind === 'task.iteration.stalled') {
-    const payload = evt.payload as { iter?: number; score?: number; verdict?: string };
+    const payload = evt.payload as { iter?: number; score?: number; verdict?: string; notes?: string };
     const verdict = payload.verdict ?? evt.kind.replace('task.iteration.', '');
     return (
-      <div className="live-exec__iter-rule">
-        <span>iter {payload.iter ?? '?'}</span>
-        <span className={`live-exec__score-chip ${verdict}`}>
-          {payload.score ?? 0} · {verdict}
-        </span>
+      <div className="live-exec__iter-block">
+        <div className="live-exec__iter-rule">
+          <span>iter {payload.iter ?? '?'}</span>
+          <span className={`live-exec__score-chip ${verdict}`}>
+            {payload.score ?? 0} · {verdict}
+          </span>
+        </div>
+        {payload.notes && (
+          <div className="live-exec__iter-notes">{payload.notes}</div>
+        )}
       </div>
     );
   }
@@ -879,8 +913,23 @@ function WorktreeTab(props: { snap: WorktreeSnapshot | null; transcript: TaskTra
   const dirtyPaths = (lastTick?.payload as { paths?: { added?: string[]; modified?: string[]; deleted?: string[] }; dirty?: number } | null);
   const hasDirty = (dirtyPaths?.dirty ?? 0) > 0;
 
+  // Leaf directory name — the project convention is `ws-{workItemId}` under
+  // a fixed `.worktree/` parent, so the leaf is the most useful "name" the
+  // operator recognises (it matches the agent's branch suffix). Fall back
+  // to the workstream id when no path is available (older snapshots).
+  const wtPath = snap.worktreePath ?? null;
+  const wtLeaf = wtPath
+    ? (wtPath.split(/[\\/]/).filter(Boolean).pop() ?? wtPath)
+    : (snap.workstreamId || null);
+
   return (
     <div>
+      {(wtLeaf || wtPath) && (
+        <div className="live-exec__wt-name" title={wtPath ?? undefined}>
+          {wtLeaf && <div className="live-exec__wt-name__leaf">{wtLeaf}</div>}
+          {wtPath && <div className="live-exec__wt-name__path">{wtPath}</div>}
+        </div>
+      )}
       <div className="live-exec__wt-summary">
         <span className="live-exec__wt-pill added">+{snap.added}</span>
         <span className="live-exec__wt-pill modified">~{snap.modified}</span>
@@ -1018,9 +1067,19 @@ function ProgressTab(props: { snap: import('@/realtime/useTaskLiveStore').TaskEx
       <div className="live-exec__iter-list">
         {deduped.map((d) => (
           <div key={d.id} className="live-exec__iter-item">
-            <span className={`live-exec__score-chip ${d.verdict}`}>iter {d.iter}: {d.score}</span>
-            <span style={{ color: 'var(--text-secondary)', flex: 1, textAlign: 'right' }}>{d.verdict}</span>
-            {d.judgeScore != null && <span className="live-exec__score-chip pass" style={{ outline: '1px dashed currentColor' }}>judge {d.judgeScore}</span>}
+            <div className="live-exec__iter-item__header">
+              <span className={`live-exec__score-chip ${d.verdict}`}>iter {d.iter}: {d.score}</span>
+              <span style={{ color: 'var(--text-secondary)', flex: 1, textAlign: 'right' }}>{d.verdict}</span>
+              {d.judgeScore != null && <span className="live-exec__score-chip pass" style={{ outline: '1px dashed currentColor' }}>judge {d.judgeScore}</span>}
+            </div>
+            {d.notes && (
+              <div className="live-exec__iter-item__notes">{d.notes}</div>
+            )}
+            {d.judgeNotes && (
+              <div className="live-exec__iter-item__notes" data-role="judge">
+                <strong>Judge:</strong> {d.judgeNotes}
+              </div>
+            )}
           </div>
         ))}
         {deduped.length === 0 && (
@@ -1033,6 +1092,68 @@ function ProgressTab(props: { snap: import('@/realtime/useTaskLiveStore').TaskEx
           <div className="live-exec__file-budget__label">file budget</div>
           <div className="live-exec__file-budget__value">≤ {snap.expectedFileChanges} files</div>
         </div>
+      )}
+    </div>
+  );
+}
+
+// Per-iteration generator + evaluator summary, rendered as markdown.
+// Driven by the iteration pager when filter === 'summary'; one deliverable
+// at a time. Sources:
+//   - `generatorSummary` — server-extracted from `## Iteration Summary` /
+//     `## Change Summary` / `## Plan Summary` in the generator response.
+//   - `notes` — the evaluator's structured 3-part review (improvements /
+//     still-needs / why-this-score), capped at 4000 chars.
+function SummaryView(props: { deliverable: DeliverableShape | null; loading: boolean; dispatched: boolean }): JSX.Element {
+  const { deliverable, loading, dispatched } = props;
+  if (!deliverable) {
+    return (
+      <div className="live-exec__empty">
+        {loading ? 'Loading…' : 'No iteration summaries yet.'}
+        {!loading && !dispatched && (
+          <div className="live-exec__empty-cta">Waiting for the lead to delegate…</div>
+        )}
+        {!loading && dispatched && (
+          <div className="live-exec__empty-cta">The first iteration's summary appears once it completes.</div>
+        )}
+      </div>
+    );
+  }
+
+  const d = deliverable;
+  const hasGen  = !!(d.generatorSummary && d.generatorSummary.trim());
+  const hasEval = !!(d.notes && d.notes.trim());
+
+  return (
+    <div className="live-exec__summary-view">
+      <div className="live-exec__summary-iter__header">
+        <span className={`live-exec__score-chip ${d.verdict}`}>iter {d.iter}: {d.score}</span>
+        <span style={{ color: 'var(--text-secondary)', flex: 1, textAlign: 'right' }}>{d.verdict}</span>
+        <span style={{ color: 'var(--text-tertiary)', fontSize: 11 }}>{new Date(d.createdAt).toLocaleString()}</span>
+      </div>
+      <section className="live-exec__summary-section" data-role="generator">
+        <div className="live-exec__summary-section__label">Generator summary</div>
+        <div className="live-exec__summary-section__body markdown-body">
+          {hasGen
+            ? <ReactMarkdown>{d.generatorSummary ?? ''}</ReactMarkdown>
+            : <em>(not provided this iteration)</em>}
+        </div>
+      </section>
+      <section className="live-exec__summary-section" data-role="evaluator">
+        <div className="live-exec__summary-section__label">Evaluator summary</div>
+        <div className="live-exec__summary-section__body markdown-body">
+          {hasEval
+            ? <ReactMarkdown>{d.notes ?? ''}</ReactMarkdown>
+            : <em>(no evaluator notes)</em>}
+        </div>
+      </section>
+      {d.judgeNotes && (
+        <section className="live-exec__summary-section" data-role="judge">
+          <div className="live-exec__summary-section__label">Judge override</div>
+          <div className="live-exec__summary-section__body markdown-body">
+            <ReactMarkdown>{d.judgeNotes}</ReactMarkdown>
+          </div>
+        </section>
       )}
     </div>
   );

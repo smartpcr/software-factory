@@ -100,6 +100,7 @@ public sealed class WorktreeChangeFeed : IHostedService, IDisposable
                         new
                         {
                             workstreamId = sub.WorkstreamId,
+                            worktreePath = sub.WorktreePath,
                             added = snap.Added,
                             modified = snap.Modified,
                             deleted = snap.Deleted,

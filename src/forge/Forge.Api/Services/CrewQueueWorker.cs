@@ -1079,9 +1079,37 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // Generator delegate: invokes the agent runner and collects output.
             async Task<GeneratorRunOutput> GeneratorDelegate(int iter, string evalNotes, CancellationToken iterCt)
             {
+                // On a retry, the generator has to know (a) the running chain
+                // of evaluator feedback and (b) what was actually committed
+                // in the prior round. Without (b) we've watched the model
+                // re-discover the codebase from scratch and re-introduce the
+                // exact diff that just got rejected (WI-1035 score collapse
+                // 72→68→35→35→10). The instruction below pins the model to
+                // diff-first inspection before any new edits.
+                // Per-iteration summary requirement — appended on every
+                // round so the deliverable row's GeneratorSummary captures
+                // *this* iteration's work (not cumulative). The Summary tab
+                // in the live-exec UI lists these per iter so the operator
+                // can see what each round actually did.
+                var iterSummaryAddendum =
+                    "\n\n---\n\n"
+                  + $"END-OF-RESPONSE REQUIREMENT (iteration {iter}):\n"
+                  + "End your response with a section titled `## Iteration Summary` covering:\n"
+                  + $"- **What changed this iteration ({iter})** — files touched, functions added/modified, tests added.\n"
+                  + "- **Why** these changes address the work item (and, on retry, the prior evaluator's feedback).\n"
+                  + "- **Notable decisions or trade-offs** — anything the evaluator should know to grade fairly.\n"
+                  + "Keep it 4-8 sentences. This section is parsed and shown verbatim in the Summary tab.";
+
                 var iterPrompt = iter == 1
-                    ? prompt
-                    : $"{prompt}\n\n---\n\nEvaluator feedback from iteration {iter - 1}:\n{evalNotes}";
+                    ? prompt + iterSummaryAddendum
+                    : $"{prompt}\n\n---\n\n{evalNotes}\n"
+                      + "---\n\n"
+                      + "BEFORE editing anything this round:\n"
+                      + "1. Run `git log --oneline -5` and `git diff HEAD~1 --stat -p` to see what the prior iteration actually committed.\n"
+                      + "2. Cross-check the prior diff against the evaluator chain above. If the chain says a specific symbol/file/contract is wrong and the prior diff did not change it, that is the gap to close — not the rest of the change.\n"
+                      + "3. If you find yourself about to write the same code that was just rejected, stop and choose a different approach (different file, different abstraction, different test).\n"
+                      + "Only after you've read the prior diff should you start editing."
+                      + iterSummaryAddendum;
 
                 var invocation = await runner.StartAsync(workItemId, agentId, iterPrompt, context, iterCt);
                 var output = new System.Text.StringBuilder();
@@ -1165,10 +1193,17 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     + "3. End your response with a fenced JSON block:\n"
                     + "```json\n{ \"score\": <0-100>, \"notes\": \"<feedback>\" }\n```\n"
                     + $"4. Score >= 90 = pass, {rejectBelowForScoring}-89 = iterate, < {rejectBelowForScoring} = reject (adjusted for {wiPointsForScoring}-point work item).\n"
-                    + "5. Your 'notes' MUST describe WHAT was changed, WHY it fixes the problem, and HOW the fix works.\n"
-                    + "   Do NOT just say 'build clean, tests pass' — that is self-evident.\n"
-                    + "   Focus on the technical substance: which code paths were modified, what error handling was added,\n"
-                    + "   what edge cases are now covered, and whether the approach is correct.\n";
+                    + "5. Your 'notes' MUST be a per-iteration review covering, in order, three labeled parts:\n"
+                    + "   **Improvements this iteration**: what the generator actually changed and what's better\n"
+                    + "      compared to the prior iteration (or vs. the work item if this is iteration 1). Cite\n"
+                    + "      specific files, functions, and tests.\n"
+                    + "   **Still needs improvement**: concrete gaps the next iteration must close — naming files,\n"
+                    + "      symbols, contracts, or behaviors. If unaddressed prior-iteration feedback persists,\n"
+                    + "      call that out explicitly so the operator can see the regression.\n"
+                    + "   **Why this score**: dimension-by-dimension rationale — correctness, quality, tests,\n"
+                    + "      scope, risk — explaining how you arrived at the number.\n"
+                    + "   Do NOT say 'build clean, tests pass' alone — that is self-evident. Use up to ~3500 chars\n"
+                    + "   total across the three parts.\n";
 
                 // Phase 24 Q24.12 / Q24.13 — comment-response runs append the
                 // must-reply rubric note so the evaluator scores against the
@@ -1245,12 +1280,14 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     + $"- score >= 90: pass (code is correct, tested, ready to merge)\n"
                     + $"- score {rejectBelow}-89: iterate (has issues that need fixing — describe them in notes)\n"
                     + $"- score < {rejectBelow}: reject (fundamentally wrong approach)\n\n"
-                    + "Your 'notes' field will be displayed as the **Evaluator Review** in the PR description.\n"
-                    + "Write it as a review comment that covers:\n"
-                    + "- What the change does and whether the approach is correct\n"
-                    + "- Why this fix addresses the root cause (or doesn't)\n"
-                    + "- Any remaining risks, edge cases, or suggestions\n"
-                    + "Do NOT mention build/test pass — that is assumed. Focus on technical substance.\n\n"
+                    + "Your 'notes' field is the per-iteration evaluator summary shown in the live-exec\n"
+                    + "Summary tab and the PR description. Structure it in three labeled parts:\n"
+                    + "  1. **Improvements this iteration** — what changed and what's better than the prior round.\n"
+                    + "  2. **Still needs improvement** — concrete gaps the next iteration must close (cite files\n"
+                    + "     and symbols). Call out unaddressed prior-iteration feedback explicitly.\n"
+                    + "  3. **Why this score** — dimension-by-dimension rationale (correctness, quality, tests,\n"
+                    + "     scope, risk) so the operator can see how the number was derived.\n"
+                    + "Do NOT say 'build clean, tests pass' alone. Focus on technical substance. ~3500 chars max.\n\n"
                     + $"Review iteration {iter} for work item: **{wiTitle}**\n\n"
                     + "Start by running `git diff HEAD~1 --stat -p` to see what was changed, "
                     + "then read the modified files to verify the approach is correct.";
@@ -1328,6 +1365,11 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 Evaluator: EvaluatorDelegate,
                 MaxTaskBudgetUsd: crew.MaxTaskBudgetUsd,
                 EvaluatorCrewId: evaluatorCrewId,
+                // Scale the iteration cap by points (5 per pt). The runtime
+                // PATCH override on the queue row still wins inside the loop
+                // (DeliverableLoop re-reads MaxIterOverride each round) — this
+                // is just the points-derived default.
+                MaxIterations: ScoringConstants.MaxIterationsForPoints(wi?.Points ?? 0),
                 Kind: loopKind,
                 WorkItemPoints: wi?.Points ?? 1);
 

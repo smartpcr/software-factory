@@ -140,6 +140,13 @@ public sealed class DeliverableLoop : IDeliverableLoop
 
         var rowIds = new List<long>();
         var totalCost = 0m;
+        // Running chain of (iter, score, verdict, notes) from every prior
+        // attempt — fed to the next generator turn so it sees the full
+        // feedback trajectory, not just the last evaluator's note. Without
+        // this the generator forgets what it's already been told and can
+        // ship the same flawed diff three rounds in a row (WI-1035 stalled
+        // at score 10 by ignoring the same root issue across iters 3-5).
+        var priorChain = new List<(int Iter, int Score, string Verdict, string Notes)>();
         var notesForNext = string.Empty;
         EvaluatorScore? lastScore = null;
         var verdict = "iterate";
@@ -170,7 +177,18 @@ public sealed class DeliverableLoop : IDeliverableLoop
             && lastPersisted.Iter < maxIter)
         {
             iter = lastPersisted.Iter;
-            notesForNext = lastPersisted.Notes ?? string.Empty;
+            // Seed the chain from every prior non-terminal row so the
+            // resumed generator turn gets the same history a fresh run
+            // would have built up in-memory.
+            var seedRows = existingDeliverables
+                .Where(d => d.Verdict is "iterate" or "stalled" or "stalled-budget")
+                .OrderBy(d => d.Iter)
+                .ThenBy(d => d.CreatedAt);
+            foreach (var d in seedRows)
+            {
+                priorChain.Add((d.Iter, d.Score, d.Verdict, d.Notes ?? string.Empty));
+            }
+            notesForNext = FormatPriorChain(priorChain);
             await this.EmitAsync(request.WorkItemId, "task.iteration.resumed", new
             {
                 resumeFromIter = iter,
@@ -226,8 +244,12 @@ public sealed class DeliverableLoop : IDeliverableLoop
 
             totalCost += gen.CostUsd + eval.CostUsd;
 
-            // (c) persist one row per iteration
-            var genSummary = gen.OutputText.Length > 800 ? gen.OutputText[^800..] : gen.OutputText;
+            // (c) persist one row per iteration. The summary is the
+            // explicit `## Iteration Summary` / `## Change Summary` /
+            // `## Plan Summary` section the generator appends per its
+            // prompt instructions; falls back to the response tail if the
+            // agent forgot the heading.
+            var genSummary = GeneratorSummaryExtractor.Extract(gen.OutputText);
             var row = new DeliverableRow
             {
                 WorkItemId = request.WorkItemId,
@@ -249,7 +271,8 @@ public sealed class DeliverableLoop : IDeliverableLoop
             rowIds.Add(row.Id);
 
             verdict = lastScore.Verdict;
-            notesForNext = lastScore.Notes;
+            priorChain.Add((iter, lastScore.Score, verdict, lastScore.Notes));
+            notesForNext = FormatPriorChain(priorChain);
 
             await this.EmitAsync(request.WorkItemId, "task.iteration.scored", new
             {
@@ -354,5 +377,31 @@ public sealed class DeliverableLoop : IDeliverableLoop
     {
         if (this.channel is null) return;
         await this.channel.EmitAsync(workItemId, kind, payload, ct: ct);
+    }
+
+    /// <summary>
+    /// Render the running chain of prior (iter, score, verdict, notes) into
+    /// the block the generator gets at the top of its next prompt. The
+    /// generator delegate splices this in under "Evaluator feedback from
+    /// iteration N-1" — the variable name there is now misleading (it's the
+    /// whole chain, not just N-1) but the rendered output makes the
+    /// trajectory explicit so the model can see "I've been told this same
+    /// thing three rounds in a row" instead of treating each round as
+    /// independent.
+    /// </summary>
+    private static string FormatPriorChain(IReadOnlyList<(int Iter, int Score, string Verdict, string Notes)> chain)
+    {
+        if (chain.Count == 0) return string.Empty;
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Prior iterations on this work item ({chain.Count} attempt{(chain.Count == 1 ? string.Empty : "s")}):");
+        sb.AppendLine();
+        foreach (var (i, s, v, n) in chain)
+        {
+            sb.AppendLine($"### Iteration {i} — score {s} ({v})");
+            sb.AppendLine(string.IsNullOrWhiteSpace(n) ? "(no notes)" : n);
+            sb.AppendLine();
+        }
+        sb.AppendLine("Read this chain carefully. If you see the same critique repeated across multiple iterations, the prior approach did not work and a different angle is required.");
+        return sb.ToString();
     }
 }

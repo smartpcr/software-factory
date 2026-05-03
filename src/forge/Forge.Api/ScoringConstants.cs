@@ -49,7 +49,30 @@ public static class ScoringConstants
     public static int IterateThreshold(int points) => RejectThreshold(points);
 
     // ── Iteration loop ──────────────────────────────────────────────────
+    /// <summary>
+    /// Floor for the iteration cap — used when a work item has no point
+    /// estimate (defensive default) and as the multiplier for
+    /// <see cref="MaxIterationsForPoints"/>. Kept named <c>MaxIterations</c>
+    /// for source-compatibility with older call sites; new code should
+    /// prefer <see cref="MaxIterationsForPoints"/>.
+    /// </summary>
     public const int MaxIterations = 5;
+
+    /// <summary>Hard ceiling so a runaway 100-point story can't spawn a 500-iteration loop.</summary>
+    public const int MaxIterationsHardCap = 50;
+
+    /// <summary>
+    /// Iteration cap derived from work-item points. The contract is "5 iterations
+    /// per point": a 1-point item gets 5 rounds, a 3-point item 15, etc. Items
+    /// with 0 / unknown points fall back to <see cref="MaxIterations"/> so the
+    /// loop still runs. Capped at <see cref="MaxIterationsHardCap"/>.
+    /// </summary>
+    public static int MaxIterationsForPoints(int points)
+    {
+        var floor = points <= 0 ? 1 : points;
+        var raw = floor * MaxIterations;
+        return raw > MaxIterationsHardCap ? MaxIterationsHardCap : raw;
+    }
 
     // ── Schedule (9-9-6) ────────────────────────────────────────────────
     public const int ShiftStartHour = 9;   // 09:00 local

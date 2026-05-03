@@ -17,6 +17,7 @@ export interface TaskTranscriptEvent {
 
 export interface WorktreeSnapshot {
   workstreamId: string;
+  worktreePath?: string | null;
   added: number;
   modified: number;
   deleted: number;
@@ -38,6 +39,7 @@ export interface DeliverableShape {
   score: number;
   verdict: string;
   notes?: string;
+  generatorSummary?: string;
   dims: Record<string, number>;
   genCostUsd: number;
   evalCostUsd: number;
@@ -145,6 +147,7 @@ async function ensureTaskConnection(): Promise<HubConnection> {
         const head = (p.head ?? null) as { sha?: string; message?: string; author?: string; at?: string } | null;
         const snap: WorktreeSnapshot = {
           workstreamId: typeof p.workstreamId === 'string' ? p.workstreamId : '',
+          worktreePath: typeof p.worktreePath === 'string' ? p.worktreePath : null,
           added:    typeof p.added    === 'number' ? p.added    : 0,
           modified: typeof p.modified === 'number' ? p.modified : 0,
           deleted:  typeof p.deleted  === 'number' ? p.deleted  : 0,

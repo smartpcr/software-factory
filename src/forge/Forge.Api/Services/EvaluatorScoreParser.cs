@@ -18,7 +18,7 @@ using System.Text.RegularExpressions;
 ///   "dims": { "correctness": 0..40, "quality": 0..25,
 ///             "tests": 0..15, "scope": 0..10, "risk": 0..10 },
 ///   "verdict": "pass" | "iterate" | "reject",
-///   "notes": "&lt;= 800 chars"
+///   "notes": "&lt;= 4000 chars"
 /// }
 /// </code>
 /// <para>
@@ -55,7 +55,14 @@ public static class EvaluatorScoreParser
         @"(?<body>\{[\s\S]*\})",
         RegexOptions.Compiled);
 
-    private const int MaxNotesChars = 800;
+    // Bumped from 800 → 4000 (2026-05-03): the prior cap chopped feedback
+    // mid-sentence, so the generator never received the actionable part of
+    // the review. WI-1035 stalled at score 10 because every iteration's
+    // notes ended at "FailurePattern records still default to…" without
+    // ever stating the fix. 4000 is generous enough to fit the rubric
+    // breakdown + a multi-paragraph fix recipe; the deliverables row stays
+    // narrow because we don't index this column.
+    private const int MaxNotesChars = 4000;
 
     /// <summary>
     /// Parse an evaluator's assistant text into a structured score. Always
@@ -111,7 +118,7 @@ public static class EvaluatorScoreParser
                 ? vEl.GetString()?.ToLowerInvariant()
                 : null;
 
-            // Notes — truncate at 800 chars per spec.
+            // Notes — truncate at MaxNotesChars per spec.
             var notes = root.TryGetProperty("notes", out var nEl) && nEl.ValueKind == JsonValueKind.String
                 ? nEl.GetString() ?? string.Empty
                 : string.Empty;
