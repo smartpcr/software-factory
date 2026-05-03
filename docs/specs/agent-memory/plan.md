@@ -132,12 +132,13 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
 
   **TierPolicy.cs** — new file:
   - `static class TierPolicy`
-  - `AllowedTiers(ExpertiseCategory)` → `IReadOnlySet<MemoryTier>`. Exhaustive switch, 11 cases, no wildcard.
-  - `DefaultTierFor(ExpertiseCategory)` → `MemoryTier`. Exhaustive switch, 11 cases, no wildcard.
-  - `Normalize(ExpertiseRecord)` → `ExpertiseRecord`. Applies invariant matrix. Logger-free — for tests, converters, and any call site without DI.
-  - `Normalize(ExpertiseRecord, ILogger?, AgentMemoryOptions?)` → `ExpertiseRecord`. Same invariant enforcement as the parameterless overload, but when `options?.WarnOnTierCorrection == true` AND `logger` is non-null, logs `ILogger.LogWarning` for each correction (original tier → corrected tier, clamped confidence, etc.). **This is the only call site for `WarnOnTierCorrection`**. Stores call this overload, passing their constructor-injected `ILogger` and `AgentMemoryOptions`.
-  - `Validate(ExpertiseRecord, ExpertiseRecord?)` → throws on demotion or category change.
+  - `AllowedTiers(ExpertiseCategory category)` → `IReadOnlySet<MemoryTier>`. Exhaustive switch, 11 cases, no wildcard.
+  - `DefaultTierFor(ExpertiseCategory category)` → `MemoryTier`. Exhaustive switch, 11 cases, no wildcard.
+  - `Normalize(ExpertiseRecord record)` → `ExpertiseRecord`. Logger-free overload for tests, converters, and non-DI call sites. Implementation: delegates to `Normalize(record, null, null)`.
+  - `Normalize(ExpertiseRecord record, ILogger? logger, AgentMemoryOptions? options)` → `ExpertiseRecord`. Core implementation — applies invariant matrix identically regardless of arguments. When `options?.WarnOnTierCorrection == true && logger is not null`, logs `logger.LogWarning(...)` for each correction (original tier → corrected tier, clamped confidence, etc.). **This is the sole call site for `WarnOnTierCorrection` behavior.** Store call pattern: `TierPolicy.Normalize(record, this.logger, this.options)` where `this.logger` is `ILogger` and `this.options` is `AgentMemoryOptions` (unwrapped from `IOptions<AgentMemoryOptions>.Value` in the store constructor — see constructor migration in Step 1.2.1).
+  - `Validate(ExpertiseRecord record, ExpertiseRecord? previous)` → throws `InvalidTierException` on demotion (e.g., Query→Interaction), throws `InvalidCategoryChangeException` on category mismatch.
   - `InvalidTierException : ArgumentException`.
+  - `InvalidCategoryChangeException : ArgumentException`.
 
   **MemoryModels.cs** — delete `TierMapping` class (lines 201–231).
   **AgentMemory.csproj** — add `System.Collections.Immutable` package reference.
@@ -151,7 +152,22 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
 
 - **Step 1.2.1**: TierPolicy enforcement in stores and MemoryEvolver copy-construction rewrite
 
-  Fixes D4, D5, D6. **InMemoryAgentMemoryStore.cs** `UpsertExpertiseAsync`: `var normalized = TierPolicy.Normalize(record, this.logger, this.options); TierPolicy.Validate(normalized, existing); this.expertise[normalized.Id] = normalized;`. Same for **FileSystemAgentMemoryStore.cs**. Both stores gain constructor parameters: `ILogger<T> logger` and `IOptions<AgentMemoryOptions> options` (added in Step 1.5.2, but stores compile with `null` logger/default options until then).
+  Fixes D4, D5, D6. Both stores add private fields `private readonly ILogger logger` and `private readonly AgentMemoryOptions options`, with **backward-compatible constructor overloads** to avoid breaking existing tests and callers.
+
+  **AgentMemoryOptions.cs** — new file (minimal, created here because stores need it for default construction; DI registration deferred to Step 1.5.2):
+  - `public class AgentMemoryOptions` with property: `bool WarnOnTierCorrection { get; set; }` (default: `false`). Additional properties (`StoragePath`, `FallbackToFileSystem`) added in Step 1.5.2.
+
+  **InMemoryAgentMemoryStore.cs** — constructor migration:
+  - Add explicit parameterless constructor (replaces implicit default): `public InMemoryAgentMemoryStore()` — sets `this.logger = NullLogger<InMemoryAgentMemoryStore>.Instance; this.options = new AgentMemoryOptions();`. Existing callers (`new InMemoryAgentMemoryStore()`) continue to compile and work identically.
+  - Add DI constructor: `public InMemoryAgentMemoryStore(ILogger<InMemoryAgentMemoryStore> logger, IOptions<AgentMemoryOptions> options)` — sets `this.logger = logger; this.options = options.Value;`. Note: `options.Value` unwraps `IOptions<AgentMemoryOptions>` to plain `AgentMemoryOptions`, matching `TierPolicy.Normalize`'s `AgentMemoryOptions?` parameter type.
+
+  **FileSystemAgentMemoryStore.cs** — constructor migration:
+  - Existing constructor `public FileSystemAgentMemoryStore(string basePath)` — add to body: `this.logger = NullLogger<FileSystemAgentMemoryStore>.Instance; this.options = new AgentMemoryOptions();`. Existing callers (`new FileSystemAgentMemoryStore(path)`) continue to compile and work identically.
+  - Add DI constructor: `public FileSystemAgentMemoryStore(string basePath, ILogger<FileSystemAgentMemoryStore> logger, IOptions<AgentMemoryOptions> options)` — sets `this.logger = logger; this.options = options.Value;`.
+
+  Both stores' `UpsertExpertiseAsync`: `var normalized = TierPolicy.Normalize(record, this.logger, this.options); TierPolicy.Validate(normalized, existing); this.expertise[normalized.Id] = normalized;`. The `this.options` field is type `AgentMemoryOptions` (not `IOptions<AgentMemoryOptions>`), so the call `TierPolicy.Normalize(record, this.logger, this.options)` is type-consistent with the `Normalize(ExpertiseRecord, ILogger?, AgentMemoryOptions?)` overload.
+
+  **ServiceCollectionExtensions** — **no changes in this step**. Factories continue to instantiate stores via backward-compatible constructors (NullLogger + default `AgentMemoryOptions`). DI constructor wiring is deferred to Step 1.5.2, which registers `AgentMemoryOptions` in DI and updates factories to use DI constructors. This avoids a forward dependency on `IOptions<AgentMemoryOptions>` DI registration.
 
   **MemoryEvolver.cs** — rewrite ALL 8 mutation sites:
   - `DecayAsync` (line 336): replace `expertise.Confidence = newConfidence` with `var decayed = expertise.With(confidence: newConfidence); await this.store.UpsertExpertiseAsync(decayed)`.
@@ -162,9 +178,9 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
   - `GetExpertiseByTierFallbackAsync` (line 726): replace `TierMapping.DefaultTierFor` → `TierPolicy.DefaultTierFor`.
   - All create paths: use `ImmutableArray.CreateRange()` instead of `List<T>`.
 
-  Tests: store rejects demotion; store normalizes invalid tier on upsert; consolidation produces new records (original unchanged); decay produces new record; FailurePattern created at Query tier.
+  Tests: store rejects demotion; store normalizes invalid tier on upsert; consolidation produces new records (original unchanged); decay produces new record; FailurePattern created at Query tier; backward-compatible `new InMemoryAgentMemoryStore()` calls `Normalize` with NullLogger/default options.
 
-  `expectedFileChanges`: 6
+  `expectedFileChanges`: 8
 
 ### Stage 1.3 — Idempotent Evolution
 
@@ -230,21 +246,45 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
   Fixes D10. **FileSystemAgentMemoryStore.cs** `LoadAsync`:
   - Replace `catch (JsonException) { return new ConcurrentDictionary<string, T>(); }` with:
     - Rename corrupted file to `{path}.quarantine.{DateTime.UtcNow:yyyyMMddHHmmss}`.
-    - Log warning via `ILogger` (add to constructor).
+    - Log warning via `this.logger` (available from constructor — see Step 1.2.1 constructor migration).
     - Set `this.isDegradedStartup = true`.
-    - Return empty dictionary.
-  - `EnsureLoadedAsync`: after loading expertise, run `TierPolicy.Normalize(record, this.logger, this.options)` on each record (using the overloaded version with logger/options from the store's constructor-injected dependencies); persist corrected file. This is where `WarnOnTierCorrection` actually fires for legacy data repair.
+    - Return empty `ConcurrentDictionary`.
+    - **Do NOT recreate the file at the original path** — the renamed quarantine file preserves the corrupt data for manual inspection. The original path remains absent (`File.Exists(path)` returns `false`) until the next `SaveAsync` writes clean data.
+  - `EnsureLoadedAsync`: after loading expertise, run `TierPolicy.Normalize(record, this.logger, this.options)` on each record; if any records were corrected, immediately `SaveAsync` the corrected collection. This is where `WarnOnTierCorrection` fires for legacy data repair.
   - **MemoryStatistics**: add `int QuarantinedFileCount`, `int AutoNormalizedCount`, `bool IsDegradedStartup`.
 
-  Tests: corrupted JSON → file quarantined with timestamp; original path has clean data; `IsDegradedStartup` is true; bad-tier records normalized on load.
+  **Quarantine lifecycle** (precise state machine):
+  1. `LoadAsync` detects `JsonException` → renames `{path}` to `{path}.quarantine.{ts}` → returns empty dict → sets `isDegradedStartup = true`.
+  2. Original path does **not** exist until the next write. `File.Exists(path)` returns `false`.
+  3. Next `SaveAsync(path, data)` creates a new file at original path with clean serialized data.
+  4. Quarantined file is preserved indefinitely for manual recovery.
+
+  Tests: (a) corrupted JSON → quarantine file exists with `.quarantine.` suffix; (b) original path does NOT exist immediately after `LoadAsync`; (c) after a subsequent `SaveAsync`, original path exists with valid JSON; (d) `IsDegradedStartup` is `true`; (e) bad-tier records normalized on `EnsureLoadedAsync` via `TierPolicy.Normalize`.
 
   `expectedFileChanges`: 5
 
 - **Step 1.5.2**: Minimal memory configuration
 
-  `AgentMemoryOptions` with `WarnOnTierCorrection` (default: false), `StoragePath`, `FallbackToFileSystem` (default: true). When `WarnOnTierCorrection` is false (default), `TierPolicy.Normalize(record, logger, options)` corrects silently. When true, corrections are logged via `ILogger.LogWarning` in `Normalize`. Both modes always enforce invariants. Wire `AgentMemoryOptions` into `ServiceCollectionExtensions.AddAgentMemory()` → stores receive `IOptions<AgentMemoryOptions>` via constructor DI → stores pass `this.options` to `TierPolicy.Normalize(record, this.logger, this.options)` on every upsert and load. The `ExpertiseRecordJsonConverter` does NOT receive options or logger (it is registered in static `JsonOptions` and performs silent defaulting only). Tests: default `WarnOnTierCorrection` is false, store selection, warning logged when `WarnOnTierCorrection=true` and tier is corrected, no warning logged when `WarnOnTierCorrection=false`.
+  **AgentMemoryOptions.cs** — update (created in Step 1.2.1, expanded here):
+  - Add properties: `string? StoragePath { get; set; }`, `bool FallbackToFileSystem { get; set; }` (default: `true`).
 
-  `expectedFileChanges`: 4
+  **Type flow** (closes the `IOptions<T>` vs `T` contract):
+  - DI container provides `IOptions<AgentMemoryOptions>` to store constructors (via `services.AddOptions<AgentMemoryOptions>()`).
+  - Store DI constructors unwrap: `this.options = options.Value` → field type is `AgentMemoryOptions`.
+  - Store methods call: `TierPolicy.Normalize(record, this.logger, this.options)` → `this.options` is `AgentMemoryOptions`, matching the `AgentMemoryOptions?` parameter.
+  - Backward-compatible constructors (parameterless/path-only) use `this.options = new AgentMemoryOptions()` → `WarnOnTierCorrection` defaults to `false` → `Normalize` corrects silently.
+  - The `ExpertiseRecordJsonConverter` is NOT affected — stays in static `JsonOptions`, no DI dependencies.
+
+  **ServiceCollectionExtensions** changes (DI constructor wiring, deferred from Step 1.2.1):
+  - All three `AddAgentMemory` overloads add `services.AddOptions<AgentMemoryOptions>()` before store registration.
+  - `AddAgentMemory()`: register `InMemoryAgentMemoryStore` via factory `sp => new InMemoryAgentMemoryStore(sp.GetRequiredService<ILogger<InMemoryAgentMemoryStore>>(), sp.GetRequiredService<IOptions<AgentMemoryOptions>>())`.
+  - `AddAgentMemoryWithFileStorage(storagePath)`: register via factory `sp => new FileSystemAgentMemoryStore(storagePath, sp.GetRequiredService<ILogger<FileSystemAgentMemoryStore>>(), sp.GetRequiredService<IOptions<AgentMemoryOptions>>())`.
+  - `AddAgentMemory<TStore>()`: unchanged (generic TStore resolved by DI; must have compatible constructor).
+  - Optional: `services.Configure<AgentMemoryOptions>(configuration.GetSection("AgentMemory"))` for appsettings binding.
+
+  Tests: (a) `new AgentMemoryOptions().WarnOnTierCorrection` is `false`; (b) DI-resolved store has logger and options injected; (c) warning logged when `WarnOnTierCorrection=true` and tier corrected; (d) no warning when `WarnOnTierCorrection=false`; (e) backward-compatible `new InMemoryAgentMemoryStore()` works with NullLogger and default options.
+
+  `expectedFileChanges`: 5
 
 ---
 
