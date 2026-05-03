@@ -1,7 +1,7 @@
 # Agent Memory — Implementation Plan
 
 > **Work Item**: Agent Memory (WI-1035)
-> **Status**: Planning (iteration 9)
+> **Status**: Planning (iteration 10)
 > **Research Basis**: [Graph-based Agent Memory Survey](https://arxiv.org/abs/2602.05665) (DEEP-PolyU)
 
 ## Problem Statement
@@ -141,7 +141,19 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
   - `InvalidCategoryChangeException : ArgumentException`.
 
   **MemoryModels.cs** — delete `TierMapping` class (lines 201–231).
-  **AgentMemory.csproj** — add `System.Collections.Immutable` package reference.
+
+  **AgentMemory.csproj** — add three package references (versions managed by Directory.Packages.props):
+  - `System.Collections.Immutable` — required for `ImmutableArray<T>` and `ImmutableDictionary<TK,TV>` on `ExpertiseRecord`.
+  - `Microsoft.Extensions.Logging.Abstractions` — required for `ILogger<T>` and `NullLogger<T>` in store constructors (Step 1.2.1) and `TierPolicy.Normalize` logging (Step 1.5.2). This package provides the `Microsoft.Extensions.Logging` namespace (interfaces) and `Microsoft.Extensions.Logging.Abstractions` namespace (`NullLogger<T>`).
+  - `Microsoft.Extensions.Options` — required for `IOptions<AgentMemoryOptions>` in store DI constructors (Step 1.2.1) and `services.AddOptions<AgentMemoryOptions>()` in `ServiceCollectionExtensions` (Step 1.5.2). This package provides the `Microsoft.Extensions.Options` namespace.
+
+  **Why all three are added in Step 1.1.1** (not deferred): Step 1.2.1 immediately introduces `ILogger<T>`, `NullLogger<T>`, and `IOptions<AgentMemoryOptions>` in store constructors. Package references must exist before those `using` directives compile. Adding them in Step 1.1.1 ensures the csproj is ready.
+
+  **Using directives** added to store files in Step 1.2.1 (listed here for completeness):
+  - `InMemoryAgentMemoryStore.cs`: add `using Microsoft.Extensions.Logging;`, `using Microsoft.Extensions.Logging.Abstractions;`, `using Microsoft.Extensions.Options;`.
+  - `FileSystemAgentMemoryStore.cs`: add `using Microsoft.Extensions.Logging;`, `using Microsoft.Extensions.Logging.Abstractions;`, `using Microsoft.Extensions.Options;`.
+  - `TierPolicy.cs` (new file): add `using Microsoft.Extensions.Logging;`.
+
   **ExpertiseRecordJsonConverter.cs** — new file (see deserialization strategy above).
 
   Tests: all 11 categories × `DefaultTierFor`; FailurePattern at Interaction → corrected to Query; Confidence clamping; `IsDefault` collections → empty (see below); demotion throws; promotion passes; category change throws; reflection test (no public `set`); JSON round-trip with immutable collections; legacy JSON missing `tier` field deserializes correctly; legacy JSON missing collection fields deserializes to empty (not `IsDefault`).
@@ -244,10 +256,13 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
 - **Step 1.5.1**: Corrupted JSON quarantine and repair-on-load
 
   Fixes D10. **FileSystemAgentMemoryStore.cs** `LoadAsync`:
+
+  **Static → instance method migration**: The current `LoadAsync<T>` is `private static async Task<ConcurrentDictionary<string, T>> LoadAsync<T>(string path, CancellationToken cancellationToken)` (line 474). It must be changed to a **private instance method** (remove `static` keyword) so it can access `this.logger` and `this.isDegradedStartup`. New signature: `private async Task<ConcurrentDictionary<string, T>> LoadAsync<T>(string path, CancellationToken cancellationToken)`. All existing call sites within `FileSystemAgentMemoryStore` already call `LoadAsync` via `this` (implicit or explicit), so removing `static` requires no call-site changes.
+
   - Replace `catch (JsonException) { return new ConcurrentDictionary<string, T>(); }` with:
     - Rename corrupted file to `{path}.quarantine.{DateTime.UtcNow:yyyyMMddHHmmss}`.
-    - Log warning via `this.logger` (available from constructor — see Step 1.2.1 constructor migration).
-    - Set `this.isDegradedStartup = true`.
+    - Log warning via `this.logger.LogWarning("Quarantined corrupted file {Path}", path)` (now accessible because method is instance, not static).
+    - Set `this.isDegradedStartup = true` (new `private bool` field on the class).
     - Return empty `ConcurrentDictionary`.
     - **Do NOT recreate the file at the original path** — the renamed quarantine file preserves the corrupt data for manual inspection. The original path remains absent (`File.Exists(path)` returns `false`) until the next `SaveAsync` writes clean data.
   - `EnsureLoadedAsync`: after loading expertise, run `TierPolicy.Normalize(record, this.logger, this.options)` on each record; if any records were corrected, immediately `SaveAsync` the corrected collection. This is where `WarnOnTierCorrection` fires for legacy data repair.
@@ -280,7 +295,7 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
   - `AddAgentMemory()`: register `InMemoryAgentMemoryStore` via factory `sp => new InMemoryAgentMemoryStore(sp.GetRequiredService<ILogger<InMemoryAgentMemoryStore>>(), sp.GetRequiredService<IOptions<AgentMemoryOptions>>())`.
   - `AddAgentMemoryWithFileStorage(storagePath)`: register via factory `sp => new FileSystemAgentMemoryStore(storagePath, sp.GetRequiredService<ILogger<FileSystemAgentMemoryStore>>(), sp.GetRequiredService<IOptions<AgentMemoryOptions>>())`.
   - `AddAgentMemory<TStore>()`: unchanged (generic TStore resolved by DI; must have compatible constructor).
-  - Optional: `services.Configure<AgentMemoryOptions>(configuration.GetSection("AgentMemory"))` for appsettings binding.
+  - Add `AddAgentMemory(Action<AgentMemoryOptions> configure)` overload: calls `services.Configure(configure)` then registers in-memory store with DI constructor. This avoids an `IConfiguration` dependency — callers bind options via a lambda: `services.AddAgentMemory(o => o.WarnOnTierCorrection = true)`. `IConfiguration`-based binding (e.g., `configuration.GetSection("AgentMemory")`) is **deferred** — it would require adding `Microsoft.Extensions.Configuration.Binder` as a package reference, which is out of scope for Phase 1. Callers needing appsettings binding can manually call `services.Configure<AgentMemoryOptions>(section)` before `AddAgentMemory()`.
 
   Tests: (a) `new AgentMemoryOptions().WarnOnTierCorrection` is `false`; (b) DI-resolved store has logger and options injected; (c) warning logged when `WarnOnTierCorrection=true` and tier corrected; (d) no warning when `WarnOnTierCorrection=false`; (e) backward-compatible `new InMemoryAgentMemoryStore()` works with NullLogger and default options.
 
@@ -466,6 +481,7 @@ Wire agent memory into the agent lifecycle with correct symbol identity.
 | Graph nodes/edges in ContextWindow | D11 | `StructuralNodes.Count > 0` when graph available |
 | PatternKnowledge gated by relevance | D12 | Unrelated patterns excluded |
 | Corrupted JSON quarantined | D10 | File renamed to `.quarantine.*`; `IsDegradedStartup=true` |
+| `LoadAsync` is instance method (not static) | D10 | `this.logger` and `this.isDegradedStartup` accessible; no call-site changes needed |
 | Bad-tier records normalized on load | D10 | Deserialized records corrected |
 | `AddMemoryEdgeAsync` upsert-by-ID | D7, D8 | Calling with same ID replaces edge; weight updated |
 | `WarnOnTierCorrection=true` logs correction | D3 | `ILogger.LogWarning` emitted when tier corrected |
@@ -481,6 +497,7 @@ Wire agent memory into the agent lifecycle with correct symbol identity.
 - **Multi-agent collaborative memory** — Beyond current single-agent architecture.
 - **MemGPT-style paging** — Context windows fit within current limits.
 - **Fine-tuning / model adaptation** — Memory is retrieval-time only.
+- **`IConfiguration`-based `AgentMemoryOptions` binding** — Requires `Microsoft.Extensions.Configuration.Binder` package. Callers can manually `services.Configure<AgentMemoryOptions>(section)` before `AddAgentMemory()`. Deferred to Phase 4.
 - **`record class` for ExpertiseRecord** — Equality semantic change too risky.
 - **`required` keyword on `Tier`** — Breaks legacy JSON deserialization; store-boundary enforcement via `TierPolicy.Normalize` is safer and sufficient.
 - **Optimistic concurrency** — Deferred to Phase 4 background service.
