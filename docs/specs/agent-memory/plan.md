@@ -1,7 +1,7 @@
 # Agent Memory — Implementation Plan
 
 > **Work Item**: Agent Memory (WI-1035)
-> **Status**: Planning (iteration 8)
+> **Status**: Planning (iteration 9)
 > **Research Basis**: [Graph-based Agent Memory Survey](https://arxiv.org/abs/2602.05665) (DEEP-PolyU)
 
 ## Problem Statement
@@ -74,10 +74,11 @@ The design adopts a **hybrid hierarchical graph** from the survey taxonomy:
 | **`ExpertiseRecord` stays `class`, NOT `record class`** | `record class` changes equality semantics (value equality), which would alter `HashSet`/`Dictionary` behavior in ContextBuilder and MemoryEvolver. Instead: keep `class`, change all `set` → `init`, add `With(...)` copy helper, use `ImmutableArray<T>`/`ImmutableDictionary<TK,TV>` for collections. |
 | **`TierPolicy` replaces `TierMapping`** | Single authority. `AllowedTiers(category)` → per-category allowed tier sets. `Normalize(record)` returns corrected copy. `Validate(record, previous?)` rejects invalid combos. Exhaustive `switch` on all 11 `ExpertiseCategory` values — no wildcard default. |
 | **Deterministic IDs for idempotent evolution** | `PromoteAsync` uses deterministic ID `$"exp-promo-{targetTier}-{ComputeStableHash(category + '|' + sourceTier + '|' + groupKey)}"` — includes category and source tier to prevent collisions between unrelated source groups sharing a groupKey. `DetectCoChangesAsync` uses `edge-cc-{ComputeStableHash(sortedPair)}` for edges and `exp-cc-{ComputeStableHash(sortedFileList)}` for groups. Repeated runs converge to same state. Upsert semantics recompute confidence/metadata. Source IDs are used for **reconciliation** (merging new sources into existing promoted records), not for identity. |
+| **`AddMemoryEdgeAsync` is upsert-by-ID** | Both `InMemoryAgentMemoryStore` and `FileSystemAgentMemoryStore` already implement `AddMemoryEdgeAsync` with dictionary-keyed-by-ID semantics (`this.edges[edge.Id] = edge`), making it an implicit upsert. When `PromoteAsync` or `DetectCoChangesAsync` uses deterministic edge IDs, calling `AddMemoryEdgeAsync` with an existing ID replaces the edge (updating `Weight`, `Metadata`, etc.). No new `UpsertMemoryEdgeAsync` method is needed — the existing interface semantics are sufficient. The `IAgentMemoryStore` XML doc for `AddMemoryEdgeAsync` should be updated to document this upsert behavior explicitly. |
 | **ContextBuilder AgentId/Branch propagation** | All `EpisodeFilter` instances in `GenerateCandidatesAsync` must propagate `request.AgentId` and `request.Branch`. Add `Branch` field to `EpisodeFilter` and `ContextRequest`. |
 | **Corrupted JSON quarantine, not silent recovery** | `FileSystemAgentMemoryStore.LoadAsync` renames corrupted files to `{path}.quarantine.{timestamp}`, logs a warning, returns empty store in degraded mode. `MemoryStatistics` gains `QuarantinedFileCount` and `IsDegradedStartup`. |
 | **Graph context assembly fix** | `AssembleContextWindow` must populate `ContextWindow.StructuralNodes` and `RelationalEdges` from candidates, not silently drop them. |
-| **`WarnOnTierCorrection`** | When `false` (default): `Normalize` corrects invalid tiers silently. When `true`: `Normalize` corrects AND logs `ILogger.LogWarning` with the original and corrected values. Both modes always enforce invariants — invalid records are **never** persisted. The flag controls **observability only** (whether corrections are logged), not enforcement behavior. |
+| **`WarnOnTierCorrection`** | When `false` (default): `Normalize` corrects invalid tiers silently. When `true`: `Normalize` corrects AND logs `ILogger.LogWarning` with the original and corrected values. Both modes always enforce invariants — invalid records are **never** persisted. The flag controls **observability only** (whether corrections are logged), not enforcement behavior. Logging occurs exclusively in `TierPolicy.Normalize(record, logger, options)` — the `ExpertiseRecordJsonConverter` does NOT log and does NOT consume this flag (it is logger-free). |
 
 ### ExpertiseRecord Invariant Matrix
 
@@ -103,9 +104,9 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
 
 ### Stage 1.1 — Immutable ExpertiseRecord & TierPolicy
 
-- **Step 1.1.1**: Make `ExpertiseRecord` fully immutable and introduce `TierPolicy`
+- **Step 1.1.1**: Make `ExpertiseRecord` immutable-after-initialization with store-boundary validation, and introduce `TierPolicy`
 
-  Fixes D1, D2, D3. **ExpertiseRecord.cs** changes:
+  Fixes D1, D2, D3. **ExpertiseRecord.cs** changes (`init` properties allow construction and JSON deserialization but prevent post-construction mutation; `TierPolicy.Normalize` at the store boundary ensures all persisted records satisfy invariants):
   - `Tier { get; set; }` → `Tier { get; init; } = MemoryTier.Interaction;`. Keep the default (do **not** add `required` — see deserialization strategy below).
   - `Confidence { get; set; }` → `Confidence { get; init; }` (default 0.5 stays).
   - `EpisodeCount { get; set; }` → `EpisodeCount { get; init; }`.
@@ -122,18 +123,19 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
 
   **Why not `required Tier`**: Making `Tier` a `required init` property breaks legacy JSON deserialization — files missing a `tier` field would throw `JsonException` before `TierPolicy.Normalize` can repair them. Instead, we keep the `= MemoryTier.Interaction` default and enforce correctness at the **store boundary** via `TierPolicy.Normalize` on every load and upsert. New code paths that forget `Tier` will get the default, which `Normalize` corrects to `DefaultTierFor(category)`.
 
-  **Deserialization strategy — `ExpertiseRecordJsonConverter`**: Add a custom `JsonConverter<ExpertiseRecord>` registered in `FileSystemAgentMemoryStore.JsonOptions`. The converter handles:
-  - Missing `tier` field → defaults to `MemoryTier.Interaction` (corrected by `Normalize` on load).
-  - Unknown `tier` value → defaults to `MemoryTier.Interaction` with warning log.
+  **Deserialization strategy — `ExpertiseRecordJsonConverter`**: Add a custom `JsonConverter<ExpertiseRecord>` registered in `FileSystemAgentMemoryStore.JsonOptions` (which remains `static readonly`). The converter is **logger-free** — it performs silent defaulting only, with no dependency on `ILogger` or `AgentMemoryOptions`:
+  - Missing `tier` field → silently defaults to `MemoryTier.Interaction` (corrected by `Normalize` on store load/upsert).
+  - Unknown `tier` value → silently defaults to `MemoryTier.Interaction` (corrected by `Normalize` on store load/upsert).
   - Missing `ImmutableArray` fields (`DerivedFromEpisodeIds`, `PositiveEvidence`, `NegativeEvidence`) → deserializes as `ImmutableArray<T>.Empty` (not `default`, avoiding `IsDefault` at source).
   - Missing `ImmutableDictionary` field (`Properties`) → deserializes as `ImmutableDictionary<string, string>.Empty`.
-  This converter is the **first line of defense**; `TierPolicy.Normalize` is the **second** on every store load.
+  The converter is the **first line of defense** (safe deserialization); `TierPolicy.Normalize` at the **store boundary** is the **second** (invariant enforcement + optional logging). All warning/observability for tier corrections happens in `Normalize`, never in the converter. This cleanly separates deserialization (static, no DI) from policy enforcement (instance-scoped, DI-aware).
 
   **TierPolicy.cs** — new file:
   - `static class TierPolicy`
   - `AllowedTiers(ExpertiseCategory)` → `IReadOnlySet<MemoryTier>`. Exhaustive switch, 11 cases, no wildcard.
   - `DefaultTierFor(ExpertiseCategory)` → `MemoryTier`. Exhaustive switch, 11 cases, no wildcard.
-  - `Normalize(ExpertiseRecord)` → `ExpertiseRecord`. Applies invariant matrix.
+  - `Normalize(ExpertiseRecord)` → `ExpertiseRecord`. Applies invariant matrix. Logger-free — for tests, converters, and any call site without DI.
+  - `Normalize(ExpertiseRecord, ILogger?, AgentMemoryOptions?)` → `ExpertiseRecord`. Same invariant enforcement as the parameterless overload, but when `options?.WarnOnTierCorrection == true` AND `logger` is non-null, logs `ILogger.LogWarning` for each correction (original tier → corrected tier, clamped confidence, etc.). **This is the only call site for `WarnOnTierCorrection`**. Stores call this overload, passing their constructor-injected `ILogger` and `AgentMemoryOptions`.
   - `Validate(ExpertiseRecord, ExpertiseRecord?)` → throws on demotion or category change.
   - `InvalidTierException : ArgumentException`.
 
@@ -149,7 +151,7 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
 
 - **Step 1.2.1**: TierPolicy enforcement in stores and MemoryEvolver copy-construction rewrite
 
-  Fixes D4, D5, D6. **InMemoryAgentMemoryStore.cs** `UpsertExpertiseAsync`: `var normalized = TierPolicy.Normalize(record); TierPolicy.Validate(normalized, existing); this.expertise[normalized.Id] = normalized;`. Same for **FileSystemAgentMemoryStore.cs**.
+  Fixes D4, D5, D6. **InMemoryAgentMemoryStore.cs** `UpsertExpertiseAsync`: `var normalized = TierPolicy.Normalize(record, this.logger, this.options); TierPolicy.Validate(normalized, existing); this.expertise[normalized.Id] = normalized;`. Same for **FileSystemAgentMemoryStore.cs**. Both stores gain constructor parameters: `ILogger<T> logger` and `IOptions<AgentMemoryOptions> options` (added in Step 1.5.2, but stores compile with `null` logger/default options until then).
 
   **MemoryEvolver.cs** — rewrite ALL 8 mutation sites:
   - `DecayAsync` (line 336): replace `expertise.Confidence = newConfidence` with `var decayed = expertise.With(confidence: newConfidence); await this.store.UpsertExpertiseAsync(decayed)`.
@@ -169,6 +171,7 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
 - **Step 1.3.1**: Idempotent promotion with deterministic IDs
 
   Fixes D7. **MemoryEvolver.cs** `CreatePromotedExpertiseAsync`:
+  - Derive `sourceTier` from `sources[0].Tier` (all sources share the same tier within a promotion group — `PromoteAsync` groups by tier before calling this method).
   - Replace `$"exp-promo-{Guid.NewGuid():N}"` with deterministic `$"exp-promo-{targetTier}-{ComputeStableHash(category + '|' + sourceTier + '|' + groupKey)}"`.
   - The hash input includes `category` and `sourceTier` alongside `groupKey` to prevent collisions between unrelated source groups that share a groupKey (e.g., two different categories promoting to the same tier with the same file path as groupKey).
   - Before creating: check if `store.GetExpertiseAsync(promotedId)` returns existing record.
@@ -184,7 +187,7 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
 
   Fixes D8. **MemoryEvolver.cs** `DetectCoChangesAsync`:
   - Edge IDs: `$"edge-cc-{ComputeStableHash(sortedPair)}"` instead of `Guid`.
-  - Before adding edge: check `store.GetOutgoingEdgesAsync(sourceFile, CoChangedWith)` — if edge to target exists, update weight/metadata via upsert.
+  - Since `AddMemoryEdgeAsync` is upsert-by-ID (see design decisions), calling it with a deterministic ID automatically replaces any existing edge — update weight/metadata in the new `MemoryEdge` object. No separate "check then update" needed.
   - Group IDs: `$"exp-cc-{ComputeStableHash(sortedFileList)}"` instead of `Guid`.
   - Before creating group expertise: check `store.GetExpertiseAsync(groupId)` — if exists, upsert with updated confidence.
 
@@ -203,15 +206,20 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
   - Lines 181–187: gate `PatternKnowledge` retrieval on subject relevance — only include if pattern subject overlaps with request files/symbols or if no task-specific candidates exist.
 
   **ContextBuilder.cs** `AssembleContextWindow` (lines 312–373):
-  - Add `StructuralNodes = candidates.StructuralNodes.Take(request.MaxGraphDepth * 10).ToList()`.
-  - Add `RelationalEdges = candidates.RelationalEdges.Take(request.MaxGraphDepth * 10).ToList()`.
+  - Change method signature from `AssembleContextWindow(List<ScoredCandidate> rankedCandidates, ContextRequest request)` to `AssembleContextWindow(List<ScoredCandidate> rankedCandidates, ContextRequest request, RetrievalCandidates candidates)` — adding the third parameter to pass through graph data that is already collected in `GenerateCandidatesAsync` but unreachable from `ScoredCandidate`.
+  - Update the caller in `BuildContextAsync` (line 81): `return this.AssembleContextWindow(rankedCandidates, request, candidates);`.
+  - Add `StructuralNodes = candidates.StructuralNodes.Take(request.MaxGraphDepth * 10).ToList()` to the returned `ContextWindow`.
+  - Add `RelationalEdges = candidates.RelationalEdges.Take(request.MaxGraphDepth * 10).ToList()` to the returned `ContextWindow`.
+  - No new types needed — `RetrievalCandidates` (internal class, line 405) already has `StructuralNodes` and `RelationalEdges` lists populated by `GenerateCandidatesAsync` (lines 140–141).
 
   **ContextWindow.cs** `ContextRequest`: add `public string? Branch { get; init; }`.
   **ContextWindow.cs** `EpisodeFilter`: add `public string? Branch { get; set; }`.
-  **InMemoryAgentMemoryStore.cs** `GetEpisodesAsync`: add branch filter clause.
-  **FileSystemAgentMemoryStore.cs** `GetEpisodesAsync`: add branch filter clause.
+  **InMemoryAgentMemoryStore.cs** `GetEpisodesAsync`: add branch filter clause — when `filter.Branch` is non-null, include only episodes matching that branch OR episodes with no branch tag (legacy/untagged data). This is **inclusive filtering**, not scoring/preference. Cross-branch episodes with an explicit different branch are excluded.
+  **FileSystemAgentMemoryStore.cs** `GetEpisodesAsync`: same branch filter clause as above.
 
-  Tests: AgentId filter applied — agent-scoped query excludes other agents' episodes; Branch filter applied — same-branch preferred; StructuralNodes/RelationalEdges present in output; PatternKnowledge gated by relevance.
+  Tests: AgentId filter applied — agent-scoped query excludes other agents' episodes; Branch filter applied — cross-branch episodes excluded when filter set, untagged episodes included; StructuralNodes/RelationalEdges present in output; PatternKnowledge gated by relevance.
+
+  **Note**: Branch **scoring/preference** (same-branch 1.0×, default-branch 0.7×, cross-branch 0.5×) is introduced in Phase 2.3 (Step 2.3.1), which replaces the hard filter with weighted ranking across all branches. Phase 1 uses simple inclusive filtering only.
 
   `expectedFileChanges`: 7
 
@@ -225,7 +233,7 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
     - Log warning via `ILogger` (add to constructor).
     - Set `this.isDegradedStartup = true`.
     - Return empty dictionary.
-  - `EnsureLoadedAsync`: after loading expertise, run `TierPolicy.Normalize` on each record; persist corrected file.
+  - `EnsureLoadedAsync`: after loading expertise, run `TierPolicy.Normalize(record, this.logger, this.options)` on each record (using the overloaded version with logger/options from the store's constructor-injected dependencies); persist corrected file. This is where `WarnOnTierCorrection` actually fires for legacy data repair.
   - **MemoryStatistics**: add `int QuarantinedFileCount`, `int AutoNormalizedCount`, `bool IsDegradedStartup`.
 
   Tests: corrupted JSON → file quarantined with timestamp; original path has clean data; `IsDegradedStartup` is true; bad-tier records normalized on load.
@@ -234,7 +242,7 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
 
 - **Step 1.5.2**: Minimal memory configuration
 
-  `AgentMemoryOptions` with `WarnOnTierCorrection` (default: false), `StoragePath`, `FallbackToFileSystem` (default: true). When `WarnOnTierCorrection` is false (default), `Normalize` corrects silently. When true, corrections are logged via `ILogger.LogWarning`. Both modes always enforce invariants. Wire into `ServiceCollectionExtensions.AddAgentMemory()`. Tests: default `WarnOnTierCorrection` is false, store selection, warning logged when enabled.
+  `AgentMemoryOptions` with `WarnOnTierCorrection` (default: false), `StoragePath`, `FallbackToFileSystem` (default: true). When `WarnOnTierCorrection` is false (default), `TierPolicy.Normalize(record, logger, options)` corrects silently. When true, corrections are logged via `ILogger.LogWarning` in `Normalize`. Both modes always enforce invariants. Wire `AgentMemoryOptions` into `ServiceCollectionExtensions.AddAgentMemory()` → stores receive `IOptions<AgentMemoryOptions>` via constructor DI → stores pass `this.options` to `TierPolicy.Normalize(record, this.logger, this.options)` on every upsert and load. The `ExpertiseRecordJsonConverter` does NOT receive options or logger (it is registered in static `JsonOptions` and performs silent defaulting only). Tests: default `WarnOnTierCorrection` is false, store selection, warning logged when `WarnOnTierCorrection=true` and tier is corrected, no warning logged when `WarnOnTierCorrection=false`.
 
   `expectedFileChanges`: 4
 
@@ -414,11 +422,15 @@ Wire agent memory into the agent lifecycle with correct symbol identity.
 | Promotion ID includes category+sourceTier | D7 | Different categories with same groupKey produce distinct IDs |
 | Repeated `DetectCoChangesAsync` — same edge IDs | D8 | Second run returns same edge ID; weight updated |
 | Agent-scoped context excludes other agents | D9 | Query with AgentId="A" → no episodes from AgentId="B" |
-| Branch filter in context | D9 | Same-branch episodes ranked higher |
+| Branch filter in context | D9 | Cross-branch episodes excluded when Branch filter set; untagged episodes included |
 | Graph nodes/edges in ContextWindow | D11 | `StructuralNodes.Count > 0` when graph available |
 | PatternKnowledge gated by relevance | D12 | Unrelated patterns excluded |
 | Corrupted JSON quarantined | D10 | File renamed to `.quarantine.*`; `IsDegradedStartup=true` |
 | Bad-tier records normalized on load | D10 | Deserialized records corrected |
+| `AddMemoryEdgeAsync` upsert-by-ID | D7, D8 | Calling with same ID replaces edge; weight updated |
+| `WarnOnTierCorrection=true` logs correction | D3 | `ILogger.LogWarning` emitted when tier corrected |
+| `WarnOnTierCorrection=false` silent correction | D3 | No log emitted; record still corrected |
+| Branch scoring in Phase 2.3 | D9 | Same-branch 1.0×, default-branch 0.7×, cross-branch 0.5× |
 
 ## Out of Scope
 
