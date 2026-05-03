@@ -229,7 +229,7 @@ interface AgentRow {
   evaluatorModel: string | null;
 }
 
-function OverviewPane({ mode, detail, selection, onSelect }: OvProps) {
+function OverviewPane({ mode, detail, selection }: OvProps) {
   const [agents, setAgents] = useState<AgentRow[]>([]);
   useEffect(() => {
     let cancelled = false;
@@ -258,7 +258,6 @@ function OverviewPane({ mode, detail, selection, onSelect }: OvProps) {
   const pairs = detail.workstreams
     .filter((w) => selection.kind !== 'phase' || selection.id === w.id)
     .map((w, i) => ({
-      wsId: w.id,
       id: `WS·${String(i + 1).padStart(2, '0')}`,
       team: pairTeamForStatus(w.status),
       cls: pairClsForStatus(w.status),
