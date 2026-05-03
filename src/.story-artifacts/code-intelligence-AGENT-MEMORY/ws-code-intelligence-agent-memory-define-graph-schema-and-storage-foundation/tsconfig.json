@@ -1,0 +1,9 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/schema" },
+    { "path": "packages/identity" },
+    { "path": "packages/graph-store" },
+    { "path": "packages/graph-sdk" }
+  ]
+}
