@@ -69,6 +69,8 @@ public class EpisodeBuilder
     private readonly IAgentMemoryStore store;
     private readonly Episode episode;
     private readonly DateTime startTime;
+    private readonly Dictionary<string, TouchType> fileTouchTypes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, TouchType> symbolTouchTypes = [];
     private bool finalized;
 
     internal EpisodeBuilder(Episode episode, IAgentMemoryStore store)
@@ -97,13 +99,15 @@ public class EpisodeBuilder
             this.episode.TouchedFiles.Add(normalized);
         }
 
+        this.fileTouchTypes[normalized] = touchType;
+
         return this;
     }
 
     /// <summary>
     /// Records a code symbol that was touched during this episode.
     /// </summary>
-    public EpisodeBuilder TouchedSymbol(string symbolId)
+    public EpisodeBuilder TouchedSymbol(string symbolId, TouchType touchType = TouchType.Read)
     {
         this.ThrowIfFinalized();
         ArgumentException.ThrowIfNullOrWhiteSpace(symbolId);
@@ -112,6 +116,8 @@ public class EpisodeBuilder
         {
             this.episode.TouchedSymbolIds.Add(symbolId);
         }
+
+        this.symbolTouchTypes[symbolId] = touchType;
 
         return this;
     }
@@ -238,6 +244,7 @@ public class EpisodeBuilder
     {
         foreach (var file in this.episode.TouchedFiles)
         {
+            this.fileTouchTypes.TryGetValue(file, out var touchType);
             await this.store.AddMemoryEdgeAsync(
                 new MemoryEdge
                 {
@@ -245,13 +252,14 @@ public class EpisodeBuilder
                     EdgeType = MemoryEdgeType.EpisodeTouchedFile,
                     SourceId = this.episode.Id,
                     TargetId = file,
-                    TouchType = TouchType.Read
+                    TouchType = touchType
                 },
                 cancellationToken);
         }
 
         foreach (var symbolId in this.episode.TouchedSymbolIds)
         {
+            this.symbolTouchTypes.TryGetValue(symbolId, out var touchType);
             await this.store.AddMemoryEdgeAsync(
                 new MemoryEdge
                 {
@@ -259,7 +267,7 @@ public class EpisodeBuilder
                     EdgeType = MemoryEdgeType.EpisodeTouchedSymbol,
                     SourceId = this.episode.Id,
                     TargetId = symbolId,
-                    TouchType = TouchType.Read
+                    TouchType = touchType
                 },
                 cancellationToken);
         }

@@ -9,15 +9,17 @@ namespace AgentMemory;
 using System.Collections.Concurrent;
 
 /// <summary>
-/// In-memory implementation of <see cref="IAgentMemoryStore"/>.
+/// In-memory implementation of <see cref="IAgentMemoryStore"/>,
+/// <see cref="ITieredExpertiseStore"/>, and <see cref="ICallChainStore"/>.
 /// Suitable for testing and single-session use. Does not persist
 /// across process restarts.
 /// </summary>
-public class InMemoryAgentMemoryStore : IAgentMemoryStore
+public class InMemoryAgentMemoryStore : IAgentMemoryStore, ITieredExpertiseStore, ICallChainStore
 {
     private readonly ConcurrentDictionary<string, Episode> episodes = new();
     private readonly ConcurrentDictionary<string, ExpertiseRecord> expertise = new();
     private readonly ConcurrentDictionary<string, MemoryEdge> edges = new();
+    private readonly ConcurrentDictionary<string, CallChain> callChains = new();
 
     /// <inheritdoc/>
     public Task RecordEpisodeAsync(Episode episode, CancellationToken cancellationToken = default)
@@ -165,6 +167,18 @@ public class InMemoryAgentMemoryStore : IAgentMemoryStore
     public Task DeleteExpertiseAsync(string id, CancellationToken cancellationToken = default)
     {
         this.expertise.TryRemove(id, out _);
+
+        // Remove associated edges (same cascade as DeleteEpisodeAsync)
+        var edgesToRemove = this.edges.Values
+            .Where(e => e.SourceId == id || e.TargetId == id)
+            .Select(e => e.Id)
+            .ToList();
+
+        foreach (var edgeId in edgesToRemove)
+        {
+            this.edges.TryRemove(edgeId, out _);
+        }
+
         return Task.CompletedTask;
     }
 
@@ -246,6 +260,141 @@ public class InMemoryAgentMemoryStore : IAgentMemoryStore
         this.episodes.Clear();
         this.expertise.Clear();
         this.edges.Clear();
+        this.callChains.Clear();
+        return Task.CompletedTask;
+    }
+
+    // ── ITieredExpertiseStore ─────────────────────────────────────────
+
+    /// <inheritdoc/>
+    public Task<IReadOnlyList<ExpertiseRecord>> GetExpertiseByTierAsync(
+        MemoryTier tier,
+        double minConfidence = 0.0,
+        int limit = 50,
+        CancellationToken cancellationToken = default)
+    {
+        var results = this.expertise.Values
+            .Where(e => e.Tier == tier && e.Confidence >= minConfidence)
+            .OrderByDescending(e => e.Confidence)
+            .Take(limit)
+            .ToList();
+
+        return Task.FromResult<IReadOnlyList<ExpertiseRecord>>(results);
+    }
+
+    /// <inheritdoc/>
+    public Task<IReadOnlyList<ExpertiseRecord>> GetExpertiseByTierAndCategoryAsync(
+        MemoryTier tier,
+        ExpertiseCategory category,
+        double minConfidence = 0.0,
+        int limit = 50,
+        CancellationToken cancellationToken = default)
+    {
+        var results = this.expertise.Values
+            .Where(e => e.Tier == tier && e.Category == category && e.Confidence >= minConfidence)
+            .OrderByDescending(e => e.Confidence)
+            .Take(limit)
+            .ToList();
+
+        return Task.FromResult<IReadOnlyList<ExpertiseRecord>>(results);
+    }
+
+    /// <inheritdoc/>
+    public Task<Dictionary<MemoryTier, int>> GetTierDistributionAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var distribution = this.expertise.Values
+            .GroupBy(e => e.Tier)
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        // Ensure all tiers are represented
+        foreach (var tier in Enum.GetValues<MemoryTier>())
+        {
+            distribution.TryAdd(tier, 0);
+        }
+
+        return Task.FromResult(distribution);
+    }
+
+    // ── ICallChainStore ───────────────────────────────────────────────
+
+    /// <inheritdoc/>
+    public Task UpsertCallChainAsync(CallChain chain, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(chain);
+        this.callChains[chain.Id] = chain;
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc/>
+    public Task<CallChain?> GetCallChainAsync(string id, CancellationToken cancellationToken = default)
+    {
+        this.callChains.TryGetValue(id, out var chain);
+        return Task.FromResult(chain);
+    }
+
+    /// <inheritdoc/>
+    public Task<IReadOnlyList<CallChain>> GetCallChainsForSymbolAsync(
+        string symbolId,
+        CancellationToken cancellationToken = default)
+    {
+        var results = this.callChains.Values
+            .Where(c => c.Steps.Any(s => s.SymbolId == symbolId) ||
+                        c.EntrySymbolId == symbolId ||
+                        c.TerminalSymbolId == symbolId)
+            .OrderByDescending(c => c.Confidence)
+            .ToList();
+
+        return Task.FromResult<IReadOnlyList<CallChain>>(results);
+    }
+
+    /// <inheritdoc/>
+    public Task<IReadOnlyList<CallChain>> GetCallChainsAsync(
+        CallChainFilter filter,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        var query = this.callChains.Values.AsEnumerable();
+
+        if (filter.ContainsSymbolId is not null)
+        {
+            query = query.Where(c => c.Steps.Any(s => s.SymbolId == filter.ContainsSymbolId));
+        }
+
+        if (filter.EntrySymbolId is not null)
+        {
+            query = query.Where(c => c.EntrySymbolId == filter.EntrySymbolId);
+        }
+
+        if (filter.PatternName is not null)
+        {
+            query = query.Where(c =>
+                c.PatternName != null &&
+                c.PatternName.Equals(filter.PatternName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (filter.MinConfidence > 0)
+        {
+            query = query.Where(c => c.Confidence >= filter.MinConfidence);
+        }
+
+        if (filter.MinObservationCount > 0)
+        {
+            query = query.Where(c => c.ObservationCount >= filter.MinObservationCount);
+        }
+
+        var results = query
+            .OrderByDescending(c => c.Confidence)
+            .Take(filter.Limit)
+            .ToList();
+
+        return Task.FromResult<IReadOnlyList<CallChain>>(results);
+    }
+
+    /// <inheritdoc/>
+    public Task DeleteCallChainAsync(string id, CancellationToken cancellationToken = default)
+    {
+        this.callChains.TryRemove(id, out _);
         return Task.CompletedTask;
     }
 }

@@ -32,6 +32,7 @@ public class ContextBuilder : IContextBuilder
 {
     private readonly IAgentMemoryStore memoryStore;
     private readonly IGraphStoreAdapter? graphAdapter;
+    private readonly ICallChainStore? callChainStore;
 
     /// <summary>
     /// Creates a context builder with memory-only retrieval.
@@ -48,6 +49,19 @@ public class ContextBuilder : IContextBuilder
         : this(memoryStore)
     {
         this.graphAdapter = graphAdapter;
+    }
+
+    /// <summary>
+    /// Creates a context builder with graph and call-chain retrieval.
+    /// </summary>
+    public ContextBuilder(
+        IAgentMemoryStore memoryStore,
+        IGraphStoreAdapter? graphAdapter,
+        ICallChainStore? callChainStore)
+        : this(memoryStore)
+    {
+        this.graphAdapter = graphAdapter;
+        this.callChainStore = callChainStore;
     }
 
     /// <inheritdoc/>
@@ -172,6 +186,18 @@ public class ContextBuilder : IContextBuilder
         candidates.Expertise.AddRange(
             highConfidenceExpertise.Where(e => !candidates.Expertise.Any(x => x.Id == e.Id)));
 
+        // 5. Call chain retrieval (if call chain store is available)
+        if (this.callChainStore is not null && request.SymbolIds.Count > 0)
+        {
+            foreach (var symbolId in request.SymbolIds)
+            {
+                var chains = await this.callChainStore.GetCallChainsForSymbolAsync(
+                    symbolId, cancellationToken);
+                var existingIds = new HashSet<string>(candidates.CallChains.Select(c => c.Id));
+                candidates.CallChains.AddRange(chains.Where(c => !existingIds.Contains(c.Id)));
+            }
+        }
+
         return candidates;
     }
 
@@ -249,6 +275,37 @@ public class ContextBuilder : IContextBuilder
             });
         }
 
+        // Score call chains
+        foreach (var chain in candidates.CallChains)
+        {
+            var score = 0.0;
+
+            // Symbol overlap: how many chain steps match the request symbols
+            var symbolOverlap = chain.Steps
+                .Count(s => request.SymbolIds.Contains(s.SymbolId));
+            score += Math.Min(0.4, symbolOverlap * 0.2);
+
+            // Confidence
+            score += chain.Confidence * 0.2;
+
+            // Observed vs. Inferred: observed chains are more reliable
+            score += chain.Source == CallChainSource.Observed ? 0.15 : 0.05;
+
+            // Observation count: frequently observed chains are more important
+            score += Math.Min(0.15, chain.ObservationCount * 0.03);
+
+            // Recency
+            var daysSinceObserved = (now - chain.LastObserved).TotalDays;
+            score += Math.Max(0, 0.1 * (1.0 - (daysSinceObserved / 90.0)));
+
+            scored.Add(new ScoredCandidate
+            {
+                Type = CandidateType.CallChain,
+                CallChain = chain,
+                Score = score
+            });
+        }
+
         return scored.OrderByDescending(c => c.Score).ToList();
     }
 
@@ -267,6 +324,12 @@ public class ContextBuilder : IContextBuilder
             .Where(c => c.Expertise!.Confidence >= request.MinConfidence)
             .Take(request.MaxExpertise)
             .Select(c => c.Expertise!)
+            .ToList();
+
+        var callChains = rankedCandidates
+            .Where(c => c.Type == CandidateType.CallChain && c.CallChain is not null)
+            .Take(request.MaxCallChains)
+            .Select(c => c.CallChain!)
             .ToList();
 
         // Build symbol familiarity from expertise scores
@@ -302,6 +365,7 @@ public class ContextBuilder : IContextBuilder
             TaskDescription = request.TaskDescription,
             RelevantEpisodes = episodes,
             Expertise = expertise,
+            CallChains = callChains,
             SymbolFamiliarity = familiarity,
             FreshnessWarnings = warnings,
             RelevanceScore = Math.Max(0, Math.Min(1.0, relevanceScore))
@@ -344,12 +408,14 @@ internal class RetrievalCandidates
     public List<ExpertiseRecord> Expertise { get; } = [];
     public List<HypergraphNode> StructuralNodes { get; } = [];
     public List<Hyperedge> RelationalEdges { get; } = [];
+    public List<CallChain> CallChains { get; } = [];
 }
 
 internal enum CandidateType
 {
     Episode,
-    Expertise
+    Expertise,
+    CallChain
 }
 
 internal class ScoredCandidate
@@ -357,5 +423,6 @@ internal class ScoredCandidate
     public required CandidateType Type { get; init; }
     public Episode? Episode { get; init; }
     public ExpertiseRecord? Expertise { get; init; }
+    public CallChain? CallChain { get; init; }
     public double Score { get; init; }
 }

@@ -45,6 +45,12 @@ public class ContextWindow
     public List<ExpertiseRecord> Expertise { get; init; } = [];
 
     /// <summary>
+    /// Call-chain context: ordered method call sequences relevant to the task.
+    /// Provides n-ary relational context beyond binary edges.
+    /// </summary>
+    public List<CallChain> CallChains { get; init; } = [];
+
+    /// <summary>
     /// Overall relevance score for this context window (0.0 to 1.0).
     /// </summary>
     public double RelevanceScore { get; set; }
@@ -90,6 +96,11 @@ public class ContextRequest
     /// Maximum number of expertise records to include.
     /// </summary>
     public int MaxExpertise { get; init; } = 20;
+
+    /// <summary>
+    /// Maximum number of call chains to include.
+    /// </summary>
+    public int MaxCallChains { get; init; } = 10;
 
     /// <summary>
     /// Maximum graph traversal depth for relational context.

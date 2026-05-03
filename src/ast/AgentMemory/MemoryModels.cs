@@ -7,6 +7,24 @@
 namespace AgentMemory;
 
 /// <summary>
+/// Hierarchical memory tier inspired by G-Memory (arXiv:2506.07398).
+/// Maps to top-down repo structure:
+/// Insight = solution-level patterns, Query = project/namespace summaries,
+/// Interaction = file-level AST and raw observations.
+/// </summary>
+public enum MemoryTier
+{
+    /// <summary>Fine-grained: file AST, method calls, raw observations.</summary>
+    Interaction = 0,
+
+    /// <summary>Mid-level: namespace/module summaries, API surfaces, dependency clusters.</summary>
+    Query = 1,
+
+    /// <summary>High-level: architectural patterns, cross-cutting concerns, conventions.</summary>
+    Insight = 2
+}
+
+/// <summary>
 /// Type of agent interaction episode.
 /// </summary>
 public enum EpisodeType
@@ -71,6 +89,12 @@ public enum ExpertiseCategory
     /// <summary>Knowledge about a project or module.</summary>
     ProjectExpertise,
 
+    /// <summary>Knowledge about a namespace or module boundary.</summary>
+    NamespaceExpertise,
+
+    /// <summary>A learned call-chain pattern (ordered sequence of method calls).</summary>
+    CallChainPattern,
+
     /// <summary>A learned coding pattern or idiom.</summary>
     PatternKnowledge,
 
@@ -116,7 +140,16 @@ public enum MemoryEdgeType
     RelatedEpisode,
 
     /// <summary>Newer expertise supersedes older expertise.</summary>
-    SupersededBy
+    SupersededBy,
+
+    /// <summary>Hierarchical containment (method→type→namespace→project).</summary>
+    ContainedIn,
+
+    /// <summary>Method A calls method B.</summary>
+    CallsMethod,
+
+    /// <summary>Lower-tier expertise was promoted to a higher tier.</summary>
+    PromotedTo
 }
 
 /// <summary>
@@ -159,4 +192,41 @@ public class EvidenceItem
 
     /// <summary>When this evidence was captured.</summary>
     public DateTime Timestamp { get; init; } = DateTime.UtcNow;
+}
+
+/// <summary>
+/// Maps <see cref="ExpertiseCategory"/> to a default <see cref="MemoryTier"/>.
+/// Prevents contradictory combinations (e.g., ArchitecturalKnowledge at Interaction tier).
+/// </summary>
+public static class TierMapping
+{
+    /// <summary>
+    /// Gets the default tier for a given expertise category.
+    /// </summary>
+    public static MemoryTier DefaultTierFor(ExpertiseCategory category) => category switch
+    {
+        ExpertiseCategory.FileExpertise => MemoryTier.Interaction,
+        ExpertiseCategory.TypeExpertise => MemoryTier.Interaction,
+        ExpertiseCategory.MethodExpertise => MemoryTier.Interaction,
+        ExpertiseCategory.ProjectExpertise => MemoryTier.Query,
+        ExpertiseCategory.NamespaceExpertise => MemoryTier.Query,
+        ExpertiseCategory.CallChainPattern => MemoryTier.Query,
+        ExpertiseCategory.PatternKnowledge => MemoryTier.Insight,
+        ExpertiseCategory.Convention => MemoryTier.Insight,
+        ExpertiseCategory.ArchitecturalKnowledge => MemoryTier.Insight,
+        ExpertiseCategory.FailurePattern => MemoryTier.Query,
+        ExpertiseCategory.CoChangeGroup => MemoryTier.Query,
+        _ => MemoryTier.Interaction
+    };
+
+    /// <summary>
+    /// Validates that a tier/category combination is reasonable.
+    /// Returns true if valid, false if contradictory.
+    /// </summary>
+    public static bool IsValidCombination(MemoryTier tier, ExpertiseCategory category)
+    {
+        var defaultTier = DefaultTierFor(category);
+        // Allow same tier or promotion to higher tier, but not demotion
+        return tier >= defaultTier;
+    }
 }

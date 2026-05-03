@@ -7,10 +7,11 @@
 namespace AgentMemory;
 
 /// <summary>
-/// Evolves agent memory over time through consolidation (episodes → expertise)
-/// and decay (reducing confidence of stale knowledge).
-/// Inspired by ExpeL (AAAI'24) for insight distillation and Mem0 for scalable
-/// graph consolidation.
+/// Evolves agent memory over time through consolidation (episodes → expertise),
+/// decay (reducing confidence of stale knowledge), promotion (Interaction → Query → Insight),
+/// and co-change detection (files modified together → CoChangedWith edges).
+/// Inspired by ExpeL (AAAI'24) for insight distillation, Mem0 for scalable
+/// graph consolidation, and G-Memory for hierarchical tier management.
 /// </summary>
 public interface IMemoryEvolver
 {
@@ -18,6 +19,7 @@ public interface IMemoryEvolver
     /// Consolidates episodes into expertise records. Episodes touching the same
     /// files or symbols with successful outcomes are aggregated into expertise.
     /// Requires diversity gates: multiple sessions/agents/task types.
+    /// Also detects co-change groups from modification-type touches.
     /// </summary>
     Task<ConsolidationResult> ConsolidateAsync(
         ConsolidationOptions options,
@@ -29,6 +31,15 @@ public interface IMemoryEvolver
     /// </summary>
     Task<DecayResult> DecayAsync(
         DecayOptions options,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Promotes high-confidence, well-evidenced expertise from lower tiers to
+    /// higher tiers (Interaction → Query → Insight). Creates new higher-tier
+    /// records linked via <see cref="MemoryEdgeType.PromotedTo"/> edges.
+    /// </summary>
+    Task<PromotionResult> PromoteAsync(
+        PromotionOptions options,
         CancellationToken cancellationToken = default);
 }
 
@@ -59,6 +70,22 @@ public class ConsolidationOptions
     /// Minimum number of failed episodes before deriving a failure pattern. Default: 2.
     /// </summary>
     public int MinFailureEpisodes { get; init; } = 2;
+
+    /// <summary>
+    /// Whether to detect co-change groups from files modified together. Default: true.
+    /// </summary>
+    public bool DetectCoChanges { get; init; } = true;
+
+    /// <summary>
+    /// Minimum number of episodes in which two files must be modified together
+    /// before a co-change edge is created. Default: 3.
+    /// </summary>
+    public int MinCoChangeOccurrences { get; init; } = 3;
+
+    /// <summary>
+    /// Minimum Jaccard similarity for co-change pairs. Default: 0.3.
+    /// </summary>
+    public double MinCoChangeJaccard { get; init; } = 0.3;
 
     /// <summary>
     /// Maximum number of episodes to process per consolidation run. Default: 500.
@@ -107,6 +134,12 @@ public class ConsolidationResult
 
     /// <summary>IDs of created/updated expertise records.</summary>
     public List<string> AffectedExpertiseIds { get; init; } = [];
+
+    /// <summary>Number of co-change edges created.</summary>
+    public int CoChangeEdgesCreated { get; set; }
+
+    /// <summary>Number of co-change group expertise records created.</summary>
+    public int CoChangeGroupsCreated { get; set; }
 }
 
 /// <summary>
@@ -122,6 +155,43 @@ public class DecayResult
 
     /// <summary>IDs of deleted expertise records.</summary>
     public List<string> DeletedIds { get; init; } = [];
+}
+
+/// <summary>
+/// Options for tier promotion.
+/// </summary>
+public class PromotionOptions
+{
+    /// <summary>
+    /// Minimum confidence for an expertise record to be promoted. Default: 0.8.
+    /// </summary>
+    public double MinConfidence { get; init; } = 0.8;
+
+    /// <summary>
+    /// Minimum number of backing episodes for promotion. Default: 5.
+    /// </summary>
+    public int MinEpisodeCount { get; init; } = 5;
+
+    /// <summary>
+    /// Minimum number of lower-tier records in a group before
+    /// they can be promoted to a higher tier. Default: 3.
+    /// </summary>
+    public int MinGroupSize { get; init; } = 3;
+}
+
+/// <summary>
+/// Result of a tier promotion run.
+/// </summary>
+public class PromotionResult
+{
+    /// <summary>Number of expertise records promoted from Interaction to Query tier.</summary>
+    public int InteractionToQuery { get; set; }
+
+    /// <summary>Number of expertise records promoted from Query to Insight tier.</summary>
+    public int QueryToInsight { get; set; }
+
+    /// <summary>IDs of newly created higher-tier expertise records.</summary>
+    public List<string> CreatedIds { get; init; } = [];
 }
 
 /// <summary>
@@ -209,6 +279,12 @@ public class MemoryEvolver : IMemoryEvolver
                 await this.ConsolidateFailurePatternAsync(
                     group.Key, groupEpisodes, result, cancellationToken);
             }
+        }
+
+        // Detect co-change groups from modification-type touches
+        if (options.DetectCoChanges)
+        {
+            await this.DetectCoChangesAsync(episodes, options, result, cancellationToken);
         }
 
         return result;
@@ -526,5 +602,327 @@ public class MemoryEvolver : IMemoryEvolver
         }
 
         return summary;
+    }
+
+    /// <inheritdoc/>
+    public async Task<PromotionResult> PromoteAsync(
+        PromotionOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var result = new PromotionResult();
+        var tieredStore = this.store as ITieredExpertiseStore;
+
+        // Promote Interaction → Query: group by namespace/project directory
+        var interactionRecords = tieredStore is not null
+            ? await tieredStore.GetExpertiseByTierAsync(
+                MemoryTier.Interaction, options.MinConfidence, limit: 10000, cancellationToken)
+            : await this.GetExpertiseByTierFallbackAsync(
+                MemoryTier.Interaction, options.MinConfidence, cancellationToken);
+
+        var promotableInteraction = interactionRecords
+            .Where(e => e.EpisodeCount >= options.MinEpisodeCount)
+            .ToList();
+
+        var interactionGroups = promotableInteraction
+            .GroupBy(e => ExtractGroupKey(e.Subject, e.Category))
+            .Where(g => g.Count() >= options.MinGroupSize);
+
+        foreach (var group in interactionGroups)
+        {
+            var promoted = await this.CreatePromotedExpertiseAsync(
+                group.Key, group.ToList(), MemoryTier.Query, cancellationToken);
+            if (promoted is not null)
+            {
+                result.InteractionToQuery++;
+                result.CreatedIds.Add(promoted.Id);
+            }
+        }
+
+        // Promote Query → Insight: group by broader pattern
+        var queryRecords = tieredStore is not null
+            ? await tieredStore.GetExpertiseByTierAsync(
+                MemoryTier.Query, options.MinConfidence, limit: 10000, cancellationToken)
+            : await this.GetExpertiseByTierFallbackAsync(
+                MemoryTier.Query, options.MinConfidence, cancellationToken);
+
+        var promotableQuery = queryRecords
+            .Where(e => e.EpisodeCount >= options.MinEpisodeCount)
+            .ToList();
+
+        var queryGroups = promotableQuery
+            .GroupBy(e => ExtractGroupKey(e.Subject, e.Category))
+            .Where(g => g.Count() >= options.MinGroupSize);
+
+        foreach (var group in queryGroups)
+        {
+            var promoted = await this.CreatePromotedExpertiseAsync(
+                group.Key, group.ToList(), MemoryTier.Insight, cancellationToken);
+            if (promoted is not null)
+            {
+                result.QueryToInsight++;
+                result.CreatedIds.Add(promoted.Id);
+            }
+        }
+
+        return result;
+    }
+
+    private async Task<ExpertiseRecord?> CreatePromotedExpertiseAsync(
+        string groupKey,
+        List<ExpertiseRecord> sources,
+        MemoryTier targetTier,
+        CancellationToken cancellationToken)
+    {
+        // Determine the appropriate category for the promoted record
+        var category = targetTier == MemoryTier.Insight
+            ? ExpertiseCategory.ArchitecturalKnowledge
+            : ExpertiseCategory.NamespaceExpertise;
+
+        var promotedId = $"exp-promo-{Guid.NewGuid():N}";
+        var promoted = new ExpertiseRecord
+        {
+            Id = promotedId,
+            Subject = groupKey,
+            Category = category,
+            Tier = targetTier,
+            Confidence = sources.Average(s => s.Confidence),
+            EpisodeCount = sources.Sum(s => s.EpisodeCount),
+            DerivedFromEpisodeIds = sources.SelectMany(s => s.DerivedFromEpisodeIds).Distinct().ToList(),
+            Summary = $"Promoted to {targetTier} from {sources.Count} {sources[0].Tier}-tier records covering '{groupKey}'.",
+            PositiveEvidence = sources
+                .SelectMany(s => s.PositiveEvidence)
+                .Take(20)
+                .ToList()
+        };
+
+        await this.store.UpsertExpertiseAsync(promoted, cancellationToken);
+
+        // Create PromotedTo edges from each source to the promoted record
+        foreach (var source in sources)
+        {
+            await this.store.AddMemoryEdgeAsync(
+                new MemoryEdge
+                {
+                    Id = $"edge-{Guid.NewGuid():N}",
+                    EdgeType = MemoryEdgeType.PromotedTo,
+                    SourceId = source.Id,
+                    TargetId = promotedId
+                },
+                cancellationToken);
+        }
+
+        return promoted;
+    }
+
+    private async Task<IReadOnlyList<ExpertiseRecord>> GetExpertiseByTierFallbackAsync(
+        MemoryTier tier,
+        double minConfidence,
+        CancellationToken cancellationToken)
+    {
+        var all = new List<ExpertiseRecord>();
+        foreach (var category in Enum.GetValues<ExpertiseCategory>())
+        {
+            if (TierMapping.DefaultTierFor(category) == tier)
+            {
+                var records = await this.store.GetExpertiseByCategoryAsync(
+                    category, minConfidence, limit: 10000, cancellationToken);
+                all.AddRange(records.Where(r => r.Tier == tier));
+            }
+        }
+
+        return all;
+    }
+
+    /// <summary>
+    /// Extracts a group key for promotion. Files group by directory,
+    /// symbols group by namespace prefix, patterns by category.
+    /// </summary>
+    internal static string ExtractGroupKey(string subject, ExpertiseCategory category)
+    {
+        return category switch
+        {
+            ExpertiseCategory.FileExpertise => ExtractDirectoryKey(subject),
+            ExpertiseCategory.TypeExpertise
+                or ExpertiseCategory.MethodExpertise
+                or ExpertiseCategory.NamespaceExpertise =>
+                ExtractNamespaceKey(subject),
+            _ => subject
+        };
+    }
+
+    private static string ExtractDirectoryKey(string filePath)
+    {
+        var normalized = filePath.Replace('\\', '/');
+        var lastSlash = normalized.LastIndexOf('/');
+        return lastSlash > 0 ? normalized[..lastSlash] : normalized;
+    }
+
+    private static string ExtractNamespaceKey(string symbolId)
+    {
+        var lastDot = symbolId.LastIndexOf('.');
+        return lastDot > 0 ? symbolId[..lastDot] : symbolId;
+    }
+
+    private async Task DetectCoChangesAsync(
+        IReadOnlyList<Episode> episodes,
+        ConsolidationOptions options,
+        ConsolidationResult result,
+        CancellationToken cancellationToken)
+    {
+        // Collect modified files per episode (ALL episodes, not just multi-file)
+        var allEpisodeModifiedFiles = new List<HashSet<string>>();
+
+        foreach (var ep in episodes.Where(e => e.Outcome is EpisodeOutcome.Success or EpisodeOutcome.Partial))
+        {
+            var edges = await this.store.GetOutgoingEdgesAsync(
+                ep.Id, MemoryEdgeType.EpisodeTouchedFile, cancellationToken);
+
+            var modifiedFiles = edges
+                .Where(e => e.TouchType is TouchType.Modified or TouchType.Created or TouchType.Deleted)
+                .Select(e => e.TargetId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            if (modifiedFiles.Count > 0)
+            {
+                allEpisodeModifiedFiles.Add(modifiedFiles);
+            }
+        }
+
+        // For co-occurrence pairs, only episodes with 2+ modified files matter
+        var multiFileEpisodes = allEpisodeModifiedFiles.Where(s => s.Count >= 2).ToList();
+
+        if (multiFileEpisodes.Count < options.MinCoChangeOccurrences)
+        {
+            return;
+        }
+
+        // File occurrence counts use ALL episodes (correct Jaccard denominator)
+        var allFiles = allEpisodeModifiedFiles
+            .SelectMany(s => s)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var fileOccurrenceCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var pairCounts = new Dictionary<string, int>();
+
+        foreach (var file in allFiles)
+        {
+            fileOccurrenceCounts[file] = allEpisodeModifiedFiles.Count(s => s.Contains(file));
+        }
+
+        for (var i = 0; i < allFiles.Count; i++)
+        {
+            for (var j = i + 1; j < allFiles.Count; j++)
+            {
+                var coCount = multiFileEpisodes.Count(s =>
+                    s.Contains(allFiles[i]) && s.Contains(allFiles[j]));
+
+                if (coCount < options.MinCoChangeOccurrences)
+                {
+                    continue;
+                }
+
+                // Jaccard similarity: |A ∩ B| / |A ∪ B|
+                var countA = fileOccurrenceCounts[allFiles[i]];
+                var countB = fileOccurrenceCounts[allFiles[j]];
+                var jaccard = (double)coCount / (countA + countB - coCount);
+
+                if (jaccard >= options.MinCoChangeJaccard)
+                {
+                    var pairKey = $"{allFiles[i]}||{allFiles[j]}";
+                    pairCounts[pairKey] = coCount;
+
+                    await this.store.AddMemoryEdgeAsync(
+                        new MemoryEdge
+                        {
+                            Id = $"edge-cc-{Guid.NewGuid():N}",
+                            EdgeType = MemoryEdgeType.CoChangedWith,
+                            SourceId = allFiles[i],
+                            TargetId = allFiles[j],
+                            Weight = jaccard,
+                            Metadata = new Dictionary<string, string>
+                            {
+                                ["coOccurrences"] = coCount.ToString(),
+                                ["jaccard"] = jaccard.ToString("F3")
+                            }
+                        },
+                        cancellationToken);
+
+                    result.CoChangeEdgesCreated++;
+                }
+            }
+        }
+
+        // Build co-change groups using connected components from strong pairs
+        if (pairCounts.Count > 0)
+        {
+            var groups = BuildCoChangeGroups(pairCounts, allFiles);
+            foreach (var group in groups.Where(g => g.Count >= 3))
+            {
+                var groupId = $"exp-cc-{Guid.NewGuid():N}";
+                var expertise = new ExpertiseRecord
+                {
+                    Id = groupId,
+                    Subject = string.Join(", ", group.Take(5)),
+                    Category = ExpertiseCategory.CoChangeGroup,
+                    Tier = MemoryTier.Query,
+                    Confidence = 0.5 + (Math.Min(0.5, group.Count * 0.05)),
+                    Summary = $"Co-change group of {group.Count} files that are frequently modified together.",
+                    Properties = new Dictionary<string, string>
+                    {
+                        ["files"] = string.Join(";", group)
+                    }
+                };
+
+                await this.store.UpsertExpertiseAsync(expertise, cancellationToken);
+                result.CoChangeGroupsCreated++;
+            }
+        }
+    }
+
+    private static List<List<string>> BuildCoChangeGroups(
+        Dictionary<string, int> pairCounts,
+        List<string> allFiles)
+    {
+        // Simple union-find for connected components
+        var parent = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in allFiles)
+        {
+            parent[file] = file;
+        }
+
+        string Find(string x)
+        {
+            while (parent[x] != x)
+            {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+
+            return x;
+        }
+
+        void Union(string a, string b)
+        {
+            var ra = Find(a);
+            var rb = Find(b);
+            if (!ra.Equals(rb, StringComparison.OrdinalIgnoreCase))
+            {
+                parent[ra] = rb;
+            }
+        }
+
+        foreach (var pair in pairCounts.Keys)
+        {
+            var parts = pair.Split("||");
+            Union(parts[0], parts[1]);
+        }
+
+        return allFiles
+            .GroupBy(f => Find(f), StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.ToList())
+            .ToList();
     }
 }

@@ -30,6 +30,12 @@ public class ExpertiseRecord
     public ExpertiseCategory Category { get; init; } = ExpertiseCategory.FileExpertise;
 
     /// <summary>
+    /// Hierarchical memory tier. Defaults to the natural tier for the category.
+    /// Higher tiers represent more abstract, cross-cutting knowledge.
+    /// </summary>
+    public MemoryTier Tier { get; set; } = MemoryTier.Interaction;
+
+    /// <summary>
     /// Confidence level from 0.0 (no confidence) to 1.0 (fully confident).
     /// Decays over time and with code churn; reinforced by access and validation.
     /// </summary>
