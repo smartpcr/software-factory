@@ -1,513 +1,633 @@
 # Agent Memory — End-to-End Scenarios
 
-> Story: `code-intelligence:AGENT-MEMORY` · 10 SP
+> Story: `code-intelligence:AGENT-MEMORY`
 >
-> Scope: graph-based agent memory over top-down repo structure and
-> call-chain context, enabling agents to learn and grow smarter over time.
+> System-under-test: Graph-based agent memory that builds expertise from
+> top-down repository structure and call-chain context, enabling agents to
+> learn and deliver increasingly accurate responses over time.
 
 ---
 
 ## Feature: Repository Structure Graph Construction
 
-Build a hierarchical knowledge graph that mirrors the top-down repository
-structure — from workspace root through modules, packages, files, classes,
-and functions — so the agent has a structural backbone for memory.
+Agents must ingest a repository's top-down directory/module hierarchy and
+produce a navigable graph where nodes represent structural units (repo →
+package → module → class → function) and edges capture containment.
 
-### Scenario: Build graph from a single-language repository
+### Scenario: Build hierarchy graph from a single-language repo
 
 ```gherkin
-Given a repository rooted at "/workspace/acme-api"
-  And the repository contains 42 source files across 6 packages
-When the agent triggers a full structure-graph build
-Then a directed acyclic graph is produced
-  And every source file appears as a node with metadata (path, language, size, last-modified)
-  And every package appears as a parent node linked to its child files via "contains" edges
-  And the root node represents the repository itself
-  And the graph contains exactly 42 file-nodes and 6 package-nodes plus 1 root-node
+Given a TypeScript repository with the layout
+  | path                        | kind     |
+  | src/                        | package  |
+  | src/auth/                   | module   |
+  | src/auth/login.ts           | file     |
+  | src/auth/login.ts::Login    | class    |
+  | src/auth/login.ts::Login.exec | method |
+When the memory extraction pipeline processes the repo root
+Then a directed acyclic graph is persisted with nodes for each structural unit
+And each node carries metadata { language, path, depth, signature }
+And containment edges connect repo → package → module → file → class → method
+And the graph root node equals the repository identifier
 ```
 
-### Scenario: Build graph from a polyglot repository
+### Scenario: Build hierarchy graph from a polyglot repo
 
 ```gherkin
-Given a repository containing TypeScript files under "src/", Python files under "scripts/", and Go files under "services/"
-When the agent triggers a full structure-graph build
-Then each language subtree is parsed with the correct language-aware parser
-  And cross-language boundary nodes (e.g., an RPC proto shared by Go and Python) are created once and linked into both subtrees
-  And the graph records the primary language on each file node
+Given a repository containing both Python and Go source trees
+  | path               | language |
+  | services/api/main.go    | Go       |
+  | services/api/handler.go | Go       |
+  | ml/train.py             | Python   |
+  | ml/model.py             | Python   |
+When the memory extraction pipeline processes the repo root
+Then each language subtree produces its own structural subgraph
+And both subgraphs share a single repo root node
+And language-specific parse rules are applied per subtree
 ```
 
-### Scenario: Incremental graph update after a commit
+### Scenario: Incremental re-index after file changes
 
 ```gherkin
-Given an existing structure graph built at commit abc1234
-  And a new commit def5678 adds 2 files, modifies 3 files, and deletes 1 file
-When the agent receives a change-set notification for def5678
-Then only the 6 affected nodes and their edges are recalculated
-  And the deleted file's node is marked as "removed" (soft-delete) with a tombstone timestamp
-  And the graph's root metadata records the new head commit def5678
-  And the total wall-clock time is less than 10% of a full rebuild
+Given a repository whose graph was previously built at commit abc123
+And a new commit def456 modifies src/auth/login.ts and adds src/auth/mfa.ts
+When an incremental extraction is triggered for the diff abc123..def456
+Then only the affected subgraph rooted at src/auth/ is rebuilt
+And the node for src/auth/mfa.ts is inserted with correct containment edges
+And unchanged subtrees retain their original node identifiers and timestamps
+And the graph version advances to def456
 ```
 
-### Scenario: Handle a repository with no parseable source files
+### Scenario: Handle empty or binary-only repository
 
 ```gherkin
-Given a repository that contains only binary assets and markdown documentation
-When the agent triggers a full structure-graph build
-Then the graph is created with directory-level nodes only
-  And a warning event "no-parseable-sources" is emitted
-  And the agent does not fail or produce an empty graph
-```
-
-### Scenario: Handle deeply nested directory trees
-
-```gherkin
-Given a repository with a directory depth of 25 levels
-When the agent triggers a full structure-graph build
-Then every level is represented in the graph without stack overflow or recursion-depth errors
-  And the graph's maximum path length equals 25
+Given a repository that contains only binary assets (images, compiled objects)
+When the memory extraction pipeline processes the repo root
+Then a repo root node is created with zero structural children
+And an informational event is emitted: "no parseable source files found"
+And the agent gracefully falls back to file-listing context only
 ```
 
 ---
 
-## Feature: Call-Chain Context Extraction
+## Feature: Call-Chain Extraction and Graph Linking
 
-Extract intra- and inter-file call relationships so the agent understands
-how functions invoke each other, forming a call graph overlaid on the
-structure graph.
+The system must analyse source code to extract function/method call
+relationships and store them as directed edges in the memory graph, layered
+on top of the structural hierarchy.
 
-### Scenario: Extract direct function calls within a single file
+### Scenario: Extract direct call edges within a module
 
 ```gherkin
-Given a Python file "order_service.py" containing functions create_order(), validate_inventory(), and charge_payment()
-  And create_order() calls validate_inventory() then charge_payment()
-When the agent extracts call-chain context for "order_service.py"
-Then the call graph contains edges:
-  | caller          | callee             |
-  | create_order    | validate_inventory |
-  | create_order    | charge_payment     |
-  And each edge records the call site's line number and column offset
+Given module src/orders/checkout.ts containing
+  | caller                    | callee                       |
+  | Checkout.process          | PaymentGateway.charge        |
+  | Checkout.process          | InventoryService.reserve     |
+  | PaymentGateway.charge     | Logger.info                  |
+When call-chain extraction runs on src/orders/checkout.ts
+Then directed "calls" edges are created for each caller → callee pair
+And each edge carries metadata { callsite_line, is_async, arity }
+And callee nodes are resolved to their structural graph counterparts
 ```
 
-### Scenario: Extract cross-file call chains
+### Scenario: Extract cross-module call edges
 
 ```gherkin
-Given "api/handler.py" imports and calls "services/billing.py::invoice()"
-  And "services/billing.py::invoice()" calls "db/models.py::save_invoice()"
-When the agent extracts the transitive call chain starting from "api/handler.py::handle_request()"
-Then the resulting chain is:
-  handle_request → invoice → save_invoice
-  And each hop carries the source file path and symbol name
-```
-
-### Scenario: Detect and label recursive and circular call chains
-
-```gherkin
-Given function A() calls B(), B() calls C(), and C() calls A()
-When the agent extracts call-chain context for the containing module
-Then the cycle A → B → C → A is detected
-  And every edge participating in the cycle is annotated with "cycle: true"
-  And the agent emits a "cycle-detected" event with the ordered list of participants
-  And graph traversal terminates without infinite looping
-```
-
-### Scenario: Handle dynamic dispatch and virtual calls
-
-```gherkin
-Given an interface "PaymentProcessor" with implementations "StripeProcessor" and "PayPalProcessor"
-  And "checkout()" calls "processor.charge()" via interface dispatch
-When the agent extracts call-chain context
-Then the call graph records a polymorphic edge from checkout() to PaymentProcessor.charge()
-  And subsidiary edges link to StripeProcessor.charge() and PayPalProcessor.charge()
-  And each subsidiary edge is annotated with "dispatch: dynamic"
+Given module A at src/auth/login.ts calling validateToken from src/crypto/jwt.ts
+When call-chain extraction runs on the full repository
+Then a "calls" edge links Login.exec → Jwt.validateToken across modules
+And the edge is annotated with { cross_module: true, source_module, target_module }
 ```
 
 ### Scenario: Handle unresolved external dependencies
 
 ```gherkin
-Given "analytics.py" calls "pandas.DataFrame.groupby()" from an external library
-  And the external library source is not present in the repository
-When the agent extracts call-chain context
-Then the call graph creates a stub node for "pandas.DataFrame.groupby"
-  And the stub node is typed as "external-dependency"
-  And no error is raised for the missing source
+Given a function src/api/handler.ts::fetchData that calls axios.get
+And axios is a third-party npm package not present in the repo source
+When call-chain extraction encounters the axios.get call
+Then a stub node is created with kind = "external_dependency" and package = "axios"
+And a "calls" edge links fetchData → axios.get(stub)
+And the stub node is flagged as unresolvable for deeper traversal
+```
+
+### Scenario: Detect and represent recursive and cyclic call chains
+
+```gherkin
+Given function A calls function B and function B calls function A
+When call-chain extraction processes both files
+Then both directed edges A → B and B → A are stored
+And a "cycle" annotation is attached to the strongly-connected component {A, B}
+And graph traversal APIs expose a max_depth parameter to prevent infinite walks
+```
+
+### Scenario: Extract call chains involving higher-order functions
+
+```gherkin
+Given a function applyMiddleware(handler: Handler) that invokes handler()
+And a callsite applyMiddleware(authCheck) in src/server.ts
+When call-chain extraction runs
+Then an edge applyMiddleware → authCheck is created with { indirect: true }
+And the edge metadata records the parameter position through which the call flows
 ```
 
 ---
 
-## Feature: Memory Storage — Knowledge Graph Persistence
+## Feature: Graph-Based Memory Storage
 
-Store the combined structure + call-chain graph in a durable, versioned
-knowledge graph, supporting temporal queries and hierarchical memory
-(episodic, semantic, procedural layers as described in the graph-memory
-taxonomy).
+Extracted structural and call-chain information must be persisted as a
+knowledge graph that supports versioning, temporal queries, and
+hierarchical retrieval — aligning with the KG + hierarchical storage
+patterns from the GraphMemory taxonomy.
 
-### Scenario: Persist graph to durable storage on first build
+### Scenario: Persist graph with schema-versioned storage
 
 ```gherkin
-Given the agent has completed a full structure-graph build and call-chain extraction
-  And no prior graph exists in storage
-When the agent persists the graph
-Then the storage backend contains all nodes and edges
-  And every node carries a creation timestamp equal to the build time
-  And a version record "v1" is created linking to commit SHA and build metadata
+Given the extraction pipeline produces a graph with 1,200 nodes and 3,400 edges
+When the graph is committed to storage
+Then all nodes and edges are written atomically within a single transaction
+And a schema_version field is set on the graph metadata
+And the storage layer supports both node-by-ID lookup and subgraph traversal
 ```
 
-### Scenario: Query historical graph state at a prior version
+### Scenario: Temporal versioning across commits
 
 ```gherkin
-Given the graph has been updated through versions v1, v2, and v3
-When a consumer requests the graph state "as-of v1"
-Then the returned graph contains only nodes and edges that existed at v1
-  And nodes added in v2 or v3 are absent
-  And nodes deleted between v1 and v3 are present
+Given graph snapshots exist for commits c1, c2, and c3
+When the agent queries "what did function Checkout.process call at commit c1?"
+Then the retrieval layer returns the call edges as they existed at c1
+And does not include edges added in c2 or c3
 ```
 
-### Scenario: Hierarchical memory layers are maintained
+### Scenario: Hierarchical memory tiers for large repositories
 
 ```gherkin
-Given the agent processes a repository over 5 sessions
-When the memory is queried for its layers
-Then three distinct layers exist:
-  | layer      | description                                                  |
-  | episodic   | per-session interaction records (queries asked, files touched)|
-  | semantic   | consolidated facts (module purposes, key abstractions)       |
-  | procedural | learned patterns (common fix strategies, refactoring recipes)|
-  And each layer's nodes link back to source evidence in the structure graph
+Given a monorepo with 50,000 source files
+When the graph is stored
+Then nodes are organized into tiers: repo → workspace → package → module → symbol
+And retrieval supports tier-bounded queries (e.g., "all symbols in package X")
+And summary nodes are pre-computed at the package level for fast top-down navigation
 ```
 
-### Scenario: Enforce storage size limits
+### Scenario: Deduplication of shared utility nodes
 
 ```gherkin
-Given the agent memory storage quota is set to 500 MB
-  And the current graph occupies 480 MB
-When a new extraction would add 50 MB of nodes
-Then the agent triggers a compaction cycle before persisting
-  And the compaction merges low-value episodic memories older than 30 days
-  And the post-compaction graph plus new data fits within the 500 MB quota
-  And no semantic or procedural memory is lost during compaction
+Given utility function logError is imported and called from 40 different modules
+When the graph is stored
+Then exactly one node exists for logError
+And 40 inbound "calls" edges reference that single node
+And the node carries a hotness score reflecting its fan-in count
 ```
 
 ---
 
-## Feature: Context Retrieval for Agent Tasks
+## Feature: Context Retrieval for Agent Reasoning
 
-When an agent needs context to answer a question, fix a bug, or plan a
-refactor, the memory system retrieves relevant subgraphs efficiently.
+When an agent needs context to answer a question or perform a task, it
+retrieves subgraphs from memory using similarity-based, graph-traversal,
+and rule-based strategies.
 
-### Scenario: Retrieve context for a symbol lookup
+### Scenario: Retrieve local call neighbourhood for a function
 
 ```gherkin
-Given the agent memory contains the full graph for "acme-api"
-When the agent queries "What does the function calculate_tax() do and who calls it?"
-Then the retrieval returns:
-  | node               | relationship     |
-  | calculate_tax      | definition       |
-  | order_total        | calls            |
-  | invoice_generator  | calls            |
-  And the returned subgraph includes the function's docstring, parameters, and return type
-  And retrieval completes in under 200 ms for a graph of 10,000 nodes
+Given the agent is asked "what does Checkout.process do?"
+When the retrieval layer receives the query
+Then it locates the Checkout.process node in the graph
+And returns a 2-hop neighbourhood: direct callees and their callees
+And the returned subgraph is serialized into a context window of ≤ 4,000 tokens
+And each node in the context includes its docstring and signature
 ```
 
-### Scenario: Retrieve context scoped to a pull-request diff
+### Scenario: Retrieve top-down structural context for navigation
 
 ```gherkin
-Given a pull request modifies files A.py, B.py, and C.py
-When the agent retrieves memory scoped to the PR diff
-Then the subgraph includes:
-  - nodes for all symbols defined in A.py, B.py, and C.py
-  - all direct callers and callees of modified symbols (1-hop neighborhood)
-  - any semantic memory entries tagged to these files
-  And symbols in unmodified files outside the 1-hop radius are excluded
+Given the agent is asked "give me an overview of the auth module"
+When the retrieval layer processes the query
+Then it returns the subgraph rooted at src/auth/ down to symbol depth
+And symbols are ranked by fan-in (most-called first)
+And the response includes module-level summary text from the pre-computed tier
 ```
 
-### Scenario: Retrieve context with recency bias
+### Scenario: Similarity-based retrieval for fuzzy queries
 
 ```gherkin
-Given the agent has interacted with module "auth" 12 times in the last 7 days
-  And the agent has interacted with module "logging" once 90 days ago
-When the agent queries for context related to "authentication flow"
-Then results from "auth" are ranked higher than results from "logging"
-  And the ranking formula weights recency at 40%, frequency at 30%, and semantic relevance at 30%
+Given the agent is asked "where is payment handled?"
+And no node is named exactly "payment"
+When similarity retrieval runs against node embeddings
+Then the top-k nodes with highest cosine similarity to "payment" are returned
+And the results include PaymentGateway, Checkout.process, and BillingService
+And each result includes a relevance score ∈ [0, 1]
 ```
 
-### Scenario: Retrieve context when memory is empty
+### Scenario: Context budget enforcement
 
 ```gherkin
-Given the agent memory graph has not been initialized for this repository
-When the agent queries "Explain the payment module"
-Then the system returns an empty result set
-  And emits an event "memory-not-initialized"
-  And suggests the action "Run a full structure-graph build first"
-  And does not hallucinate or fabricate context
+Given the retrieved subgraph would exceed the agent's context window (128k tokens)
+When the context serializer prepares the payload
+Then it prunes low-relevance leaf nodes first (lowest fan-in, deepest depth)
+And retains all nodes on the shortest path from the query node to the root
+And the final payload fits within the declared token budget
+And a truncation warning is included in the response metadata
 ```
 
-### Scenario: Retrieve context across repository boundaries
+### Scenario: Retrieve context across multiple related queries in one session
 
 ```gherkin
-Given the agent has memory graphs for repositories "frontend-app" and "backend-api"
-  And "frontend-app" makes HTTP calls to endpoints defined in "backend-api"
-When the agent queries "What backend endpoints does the checkout page use?"
-Then the retrieval traverses the cross-repo link edges
-  And returns endpoint nodes from "backend-api" connected to the checkout component in "frontend-app"
-```
-
----
-
-## Feature: Agent Learning — Expertise Accumulation
-
-The agent accumulates expertise over repeated interactions: remembering
-past decisions, consolidating patterns, and surfacing learned insights
-without being explicitly re-taught.
-
-### Scenario: Learn from a successful bug fix
-
-```gherkin
-Given the agent assisted in fixing a null-pointer bug in "user_service.py"
-  And the fix involved adding a guard clause before calling "profile.load()"
-When the same pattern (unguarded nullable call to profile.load()) appears in "admin_service.py"
-Then the agent proactively suggests "Add a null-check before profile.load() — this pattern caused bug #1234"
-  And the suggestion references the prior fix's commit SHA and timestamp
-```
-
-### Scenario: Consolidate repeated observations into semantic memory
-
-```gherkin
-Given the agent has observed across 5 sessions that module "payments" always validates input via "schema.validate()" before processing
-When the agent is asked "How should I add a new payment method?"
-Then the response includes the learned pattern: "All payment methods must pass schema.validate() before processing"
-  And the pattern is stored as a semantic memory node with confidence score ≥ 0.8
-  And the node links to the 5 episodic memory entries that evidenced it
-```
-
-### Scenario: Decay stale expertise when codebase changes
-
-```gherkin
-Given the agent has a procedural memory "Use ORM method save() for persistence"
-  And a recent refactor replaced all save() calls with a repository-pattern "repo.persist()"
-When the agent next assists with a persistence task
-Then the stale procedural memory is demoted (confidence reduced below 0.3)
-  And a new procedural memory "Use repo.persist() for persistence" is created with confidence ≥ 0.7
-  And the agent does not suggest the deprecated save() pattern
-```
-
-### Scenario: Resist learning from a single anomalous event
-
-```gherkin
-Given the agent observed a one-time hotfix that bypassed the standard review process
-When the agent is asked about the team's deployment workflow
-Then the hotfix event is not promoted to semantic or procedural memory
-  And the episodic record exists but is annotated "single-occurrence, low-generalizability"
-  And the agent's response describes the standard process, not the exception
-```
-
-### Scenario: Agent demonstrates improved performance over time
-
-```gherkin
-Given the agent has processed 50 sessions against repository "acme-api"
-When the agent's retrieval accuracy is measured on a held-out set of 20 context-lookup queries
-Then the accuracy at session 50 is at least 15% higher than at session 1
-  And the mean retrieval latency at session 50 is no worse than at session 1
+Given the agent has already retrieved context for "auth flow"
+And the agent now asks "how does the auth flow interact with billing?"
+When the retrieval layer processes the follow-up query
+Then it merges the previously retrieved auth subgraph with the billing subgraph
+And cross-module edges between auth and billing are included
+And duplicate nodes are not repeated in the merged context
 ```
 
 ---
 
-## Feature: Memory Evolution — Graph Maintenance and Self-Healing
+## Feature: Memory Evolution and Agent Learning
 
-The memory graph must evolve as the codebase evolves: merging duplicate
-nodes, pruning orphans, and re-indexing after large-scale refactors.
+The memory graph must evolve over time — both through structural updates
+(new commits) and through experiential learning (agent interactions),
+enabling the agent to become progressively more effective.
 
-### Scenario: Merge duplicate nodes after a file rename
+### Scenario: Record successful resolution as episodic memory
 
 ```gherkin
-Given "utils/helpers.py" is renamed to "core/helpers.py"
-  And the old node "utils/helpers.py" and new node "core/helpers.py" share identical content hashes
-When the agent runs a graph-evolution cycle
-Then the two nodes are merged into a single node at "core/helpers.py"
-  And all edges formerly pointing to "utils/helpers.py" are redirected
-  And a provenance record captures the rename event with old and new paths
+Given the agent successfully resolves a bug in Checkout.process
+And the resolution involved modifying PaymentGateway.charge and adding a retry
+When the task completes with a positive outcome signal
+Then an episodic memory node is created with { task_type, affected_nodes, resolution_summary }
+And the episodic node is linked to Checkout.process and PaymentGateway.charge
+And the episodic node carries a timestamp and a confidence score
 ```
 
-### Scenario: Prune orphan nodes after bulk deletion
+### Scenario: Reinforce frequently useful subgraphs
 
 ```gherkin
-Given 30 source files in the "legacy/" directory have been deleted from the repository
-When the agent runs a graph-evolution cycle
-Then all 30 file nodes and their descendant symbol nodes are marked as pruned
-  And edges to pruned nodes are removed from the active graph
-  And a pruning summary event lists all affected paths
-  And the pruned nodes remain accessible in the temporal history for rollback
+Given the agent has retrieved the auth → jwt → crypto subgraph 15 times in 30 days
+And 13 of those retrievals led to successful task completions
+When the reinforcement loop runs
+Then the relevance weight of edges in that subgraph is increased
+And future queries touching "auth" will rank jwt and crypto nodes higher
+And the weight adjustment is bounded to prevent runaway amplification
 ```
 
-### Scenario: Re-index after a major framework migration
+### Scenario: Decay stale episodic memories
 
 ```gherkin
-Given the repository migrated from Express.js to Fastify
-  And 80% of route-handler files changed their export signatures
-When the agent detects that the change-set exceeds the "major-refactor" threshold (>60% of nodes modified)
-Then the agent triggers a full graph rebuild instead of incremental updates
-  And procedural memories referencing Express-specific patterns are flagged for review
-  And a "migration-detected" event is emitted with before/after framework metadata
+Given an episodic memory from 90 days ago referencing a function that has since been deleted
+When the memory evolution sweep runs
+Then the episodic node's confidence score is decayed by the configured half-life factor
+And if the referenced structural node no longer exists, the episodic node is marked "orphaned"
+And orphaned episodic nodes are excluded from retrieval unless explicitly requested
 ```
 
-### Scenario: Self-heal corrupted graph edges
+### Scenario: Consolidate repeated patterns into procedural memory
 
 ```gherkin
-Given a storage fault has left 5 edges pointing to non-existent target nodes
-When the agent runs its periodic integrity check
-Then the 5 dangling edges are identified and quarantined
-  And a repair attempt re-resolves each edge's target by symbol name
-  And successfully re-linked edges are restored; unresolvable edges are deleted with an audit log entry
-  And the integrity check completes without crashing the memory service
+Given the agent has resolved 5 similar "null-check missing" bugs in different services
+When the consolidation process analyses episodic memory clusters
+Then a procedural memory node is created: "null-check pattern"
+And it links to the common code pattern and recommended fix template
+And future similar bugs trigger retrieval of this procedural node before code search
 ```
 
----
-
-## Feature: Concurrency, Consistency, and Failure Handling
-
-The memory system operates in a multi-agent, potentially multi-repo
-environment. It must handle concurrent access, partial failures, and
-conflicting writes.
-
-### Scenario: Concurrent reads during a graph write
+### Scenario: Learn from failed tasks
 
 ```gherkin
-Given agent-A is writing a graph update for commit xyz789
-  And agent-B issues a read query at the same time
-When agent-B's read executes
-Then agent-B receives a consistent snapshot from the last committed version
-  And agent-B does not see partially-written nodes from agent-A's in-progress update
-  And agent-A's write is not blocked or slowed by agent-B's read
-```
-
-### Scenario: Concurrent writes from two agents
-
-```gherkin
-Given agent-A and agent-B both attempt to update the graph for the same file simultaneously
-When both writes are submitted
-Then one write wins via optimistic concurrency (version vector comparison)
-  And the losing agent receives a conflict error with the winning version
-  And the losing agent can retry with a merged changeset
-  And no data is silently lost
-```
-
-### Scenario: Recover from a crashed extraction mid-flight
-
-```gherkin
-Given the agent is extracting call-chain context and has processed 200 of 400 files
-  And the process crashes due to an out-of-memory error on file 201
-When the agent restarts
-Then it detects the incomplete extraction via a checkpoint record
-  And resumes from file 201 without re-processing files 1–200
-  And the final graph is identical to what a full uninterrupted run would produce
-```
-
-### Scenario: Storage backend is temporarily unavailable
-
-```gherkin
-Given the graph storage backend is unreachable for 30 seconds
-When the agent attempts to persist a graph update during the outage
-Then the update is queued in a local write-ahead log
-  And the agent continues serving reads from the last-known-good in-memory cache
-  And when the backend recovers, the queued update is flushed within 10 seconds
-  And no duplicate nodes are created from the retry
-```
-
-### Scenario: Handle graph exceeding maximum supported size
-
-```gherkin
-Given a monorepo with 500,000 source files
-  And the resulting graph would contain over 5 million nodes
-When the agent attempts a full build
-Then the build partitions the graph into sub-graphs by top-level module
-  And each sub-graph is built and stored independently
-  And cross-partition edges are stored in a separate federation index
-  And queries transparently span partitions via the federation layer
+Given the agent attempted to refactor DataService but introduced a regression
+And the regression was caught by CI and the agent's change was reverted
+When the failure is recorded
+Then an episodic memory node is created with { outcome: "failure", root_cause, reverted_commit }
+And the failure node is linked to the affected structural nodes
+And future tasks touching DataService will surface the failure memory as a caution
 ```
 
 ---
 
-## Feature: Security and Access Control
+## Feature: Edge Cases — Repository and Graph Integrity
 
-Memory may contain sensitive context. The system must enforce access
-boundaries and prevent leakage across tenants or repositories.
-
-### Scenario: Enforce tenant isolation in a multi-tenant deployment
+### Scenario: Repository with deeply nested directory structure (> 20 levels)
 
 ```gherkin
-Given tenant-A owns repository "alpha" and tenant-B owns repository "beta"
-When tenant-A queries the memory system
-Then only nodes and edges from repository "alpha" are returned
-  And no nodes, edges, or metadata from repository "beta" are visible
-  And audit logs record the tenant-scoped query
+Given a repository with a directory nesting depth of 25 levels
+When the structure extraction pipeline runs
+Then all 25 levels are represented in the graph
+And the configurable max_depth parameter (default 30) is not exceeded
+And performance remains within SLA (< 60 seconds for 10,000 files)
 ```
 
-### Scenario: Redact secrets accidentally committed to the graph
+### Scenario: Repository with symlinks and circular directory references
 
 ```gherkin
-Given a source file containing an API key "sk-live-abc123" was processed into the graph
-  And the secret is embedded in a node's raw-content field
-When the secret scanner runs during the next evolution cycle
-Then the node's raw-content field is redacted to "sk-live-***"
-  And an alert "secret-in-memory" is emitted with the node ID and file path
-  And the un-redacted value is not recoverable from the graph's temporal history
+Given a repository where lib/utils is a symlink pointing to ../shared/utils
+And shared/utils contains a symlink back to lib/
+When the structure extraction pipeline runs
+Then symlinks are resolved to their canonical paths
+And circular symlink chains are detected and broken after one resolution
+And a warning event is emitted listing the circular symlink paths
 ```
 
-### Scenario: Respect .gitignore and exclusion patterns
+### Scenario: Extremely large file with thousands of functions
 
 ```gherkin
-Given the repository's .gitignore excludes "secrets/", "*.env", and "node_modules/"
-When the agent triggers a structure-graph build
-Then no nodes are created for files matching the exclusion patterns
-  And the build log records how many files were skipped and why
+Given a generated file api/routes.ts containing 2,500 route handler functions
+When call-chain extraction processes the file
+Then all 2,500 functions are represented as nodes
+And extraction completes within the per-file timeout (default 30 seconds)
+And if the timeout is exceeded, partial results are stored and the file is flagged for retry
 ```
 
----
-
-## Feature: Observability and Diagnostics
-
-Operators need visibility into memory health, build status, and retrieval
-quality to run the system in production.
-
-### Scenario: Emit metrics after every graph build
+### Scenario: Concurrent graph writes from parallel extraction workers
 
 ```gherkin
-Given the agent completes a structure-graph build
-Then the following metrics are emitted:
-  | metric                     | type      |
-  | graph.build.duration_ms    | histogram |
-  | graph.nodes.total          | gauge     |
-  | graph.edges.total          | gauge     |
-  | graph.build.files_skipped  | counter   |
-  | graph.build.errors         | counter   |
-  And each metric carries labels for repository, commit SHA, and build type (full/incremental)
+Given two extraction workers process packages A and B simultaneously
+When both workers attempt to commit their subgraphs to storage
+Then optimistic concurrency control prevents lost updates
+And if a conflict is detected, the later writer retries with a merged base
+And the final graph contains complete subgraphs for both A and B
 ```
 
-### Scenario: Emit retrieval quality feedback loop
+### Scenario: Corrupt or unparseable source file
 
 ```gherkin
-Given the agent retrieves a context subgraph for a developer query
-  And the developer rates the result as "not helpful"
-When the feedback is recorded
-Then an event "retrieval-feedback-negative" is emitted with the query fingerprint and subgraph ID
-  And the episodic memory for this interaction is annotated with the negative signal
-  And the retrieval ranking model schedules a weight adjustment for the next training cycle
+Given a file src/broken.ts has a syntax error that prevents AST parsing
+When the extraction pipeline encounters the file
+Then an error event is logged with { file, error_type, line_number }
+And the file node is created in the structural graph with status = "parse_error"
+And remaining files in the same module continue to be processed without interruption
 ```
 
-### Scenario: Health check reports graph staleness
+### Scenario: Graph storage reaches capacity limits
 
 ```gherkin
-Given the last graph update was 48 hours ago
-  And the repository has received 12 commits since the last update
-When the health-check endpoint is called
-Then it returns status "degraded"
-  And the response body includes:
-  | field               | value          |
-  | last_update_age_hrs | 48             |
-  | pending_commits     | 12             |
-  | recommendation      | "trigger incremental update" |
+Given the graph storage backend has a configured maximum of 5,000,000 nodes
+And the current graph contains 4,999,000 nodes
+And a new extraction would add 50,000 nodes
+When the extraction pipeline attempts to commit
+Then the system emits a capacity warning before the write
+And the operator is notified via the alerting channel
+And the write proceeds if soft-limit mode is enabled, or is rejected if hard-limit mode is enabled
+And the rejection includes a recommendation to archive older graph versions
 ```
 
 ---
 
-_End of scenarios. 16 features, 35 scenarios covering happy paths, edge
-cases, concurrency, security, observability, and learning/evolution._
+## Feature: Edge Cases — Retrieval Robustness
+
+### Scenario: Query for a symbol that exists in multiple branches
+
+```gherkin
+Given function processOrder exists in both main and feature/v2 branches
+And the graphs for both branches are stored
+When the agent queries "processOrder" without specifying a branch
+Then the retrieval layer defaults to the repository's default branch (main)
+And the response includes a note: "also found in branches: feature/v2"
+```
+
+### Scenario: Query with zero matching nodes
+
+```gherkin
+Given the agent asks "explain the Kubernetes deployment pipeline"
+And no node in the graph matches "Kubernetes" or "deployment pipeline"
+When similarity retrieval returns zero results above the relevance threshold
+Then the agent receives an empty context payload with reason = "no_matching_nodes"
+And the agent falls back to general knowledge without hallucinating repo-specific details
+```
+
+### Scenario: Retrieve context when the graph is mid-update
+
+```gherkin
+Given a graph re-index is in progress for commit def456
+And the agent queries for Checkout.process during the re-index
+When the retrieval layer processes the query
+Then it serves results from the last fully committed snapshot (abc123)
+And the response metadata includes { snapshot: "abc123", update_in_progress: true }
+And no partial or inconsistent subgraph is ever returned
+```
+
+### Scenario: Excessive fan-out on a hub node
+
+```gherkin
+Given node Logger.info has 800 inbound call edges
+When the agent queries "what calls Logger.info?"
+Then the retrieval layer applies pagination: returns the first 50 callers sorted by recency
+And the response includes { total_callers: 800, page: 1, page_size: 50 }
+And the agent can request subsequent pages if needed
+```
+
+---
+
+## Feature: End-to-End Learning Loop
+
+These scenarios validate the full cycle: ingest → store → retrieve → act →
+learn — confirming the agent genuinely improves over repeated interactions.
+
+### Scenario: Agent answers a structural question more accurately after learning
+
+```gherkin
+Given the agent was asked "what modules depend on AuthService?" on day 1
+And it returned 3 out of 5 actual dependents (60% recall)
+And the missing 2 dependents were identified during code review and fed back
+When the agent is asked the same question on day 8
+Then the memory graph has been updated with the corrected dependency edges
+And the agent returns all 5 dependents (100% recall)
+And the retrieval path includes the episodic memory of the prior correction
+```
+
+### Scenario: Agent reuses procedural memory to accelerate a fix
+
+```gherkin
+Given procedural memory exists for "add null-check before database call"
+And the agent encounters a new NullReferenceException in OrderService.save
+When the agent retrieves context for the error
+Then the procedural memory node is included in the context
+And the agent proposes a fix matching the learned pattern within 1 retrieval round
+And the fix is applied without requiring additional call-chain exploration
+```
+
+### Scenario: Agent avoids a previously failed approach
+
+```gherkin
+Given episodic memory records a failed refactor of DataService using strategy "inline all helpers"
+And the failure was caused by exceeding the function length lint rule
+When the agent is asked to refactor DataService again
+Then the failure episodic node is surfaced in the context
+And the agent explicitly avoids the "inline all helpers" strategy
+And the agent's proposed approach references the prior failure as justification
+```
+
+### Scenario: Multi-session continuity — agent retains expertise across restarts
+
+```gherkin
+Given the agent built expertise over 20 sessions analysing the payments module
+And the agent process is restarted (new session)
+When the agent is asked "summarize the payments architecture"
+Then it retrieves the persisted graph and episodic memories from prior sessions
+And the response quality matches or exceeds that of the 20th session
+And no re-indexing of the repository is required for the response
+```
+
+### Scenario: Cold start — first interaction with an unknown repository
+
+```gherkin
+Given the agent has never seen repository github.com/acme/widget
+When the agent is asked "explain the architecture of this repo"
+Then the extraction pipeline runs a full structural and call-chain analysis
+And a progress indicator reports extraction status to the user
+And upon completion, the agent delivers a top-down architectural summary
+And the built graph is persisted for all subsequent queries
+And total cold-start time for a 10,000-file repo is under 5 minutes
+```
+
+---
+
+## Feature: Cross-Repository Memory and Context Linking
+
+When a repository depends on other indexed repositories, the memory system
+must resolve external-symbol stubs across graph boundaries so agents receive
+complete call-chain context.
+
+### Scenario: Resolve cross-repo call edges during retrieval
+
+```gherkin
+Given graphs exist for both "acme/backend" and "acme/shared-lib"
+And "acme/backend" has external-symbol stubs referencing functions in "acme/shared-lib"
+When the agent queries for the 2-hop call neighbourhood of "auth.authenticate"
+    with cross-repo linking enabled
+Then stubs are resolved to concrete nodes in "acme/shared-lib"
+And the returned subgraph spans both repositories
+And each node carries a "source_repository" attribute identifying its origin
+```
+
+### Scenario: Cross-repo linking respects per-repository permissions
+
+```gherkin
+Given agent "agent-A" has read access to "acme/backend"
+And agent "agent-A" does not have access to "acme/secret-lib"
+And "acme/backend" graph contains external-symbol stubs referencing "acme/secret-lib"
+When agent-A queries with cross-repo linking enabled
+Then stubs referencing "acme/secret-lib" remain unresolved
+And no content from "acme/secret-lib" is included in the response
+And the response metadata notes "1 cross-repo reference withheld: insufficient access"
+```
+
+### Scenario: Cross-repo stub where target repository is not yet indexed
+
+```gherkin
+Given "acme/backend" references "acme/payments" via import
+And "acme/payments" has never been extracted into the graph store
+When the agent queries with cross-repo linking enabled
+Then the stub node for "acme/payments" symbols remains with kind = "external_dependency"
+And the response metadata includes a suggestion: "index acme/payments for deeper context"
+And the rest of the subgraph is returned without error
+```
+
+---
+
+## Feature: Security, Access Control, and Data Integrity
+
+Graph memory must enforce repository-level access controls, validate data
+integrity, and maintain an audit trail for all agent interactions.
+
+### Scenario: Agent can only query graphs for repositories it has access to
+
+```gherkin
+Given agent "agent-A" has read access to "acme/backend"
+And agent "agent-A" does not have access to "acme/secret-ops"
+When agent-A queries for context from "acme/secret-ops"
+Then the retrieval service returns an access-denied error
+    with reason "insufficient-repository-access"
+And the request is recorded in the audit log with agent ID, repository, and denial reason
+```
+
+### Scenario: Graph data integrity validation
+
+```gherkin
+Given a graph has been committed for "acme/backend" at commit abc123
+When the integrity checker runs
+Then every "calls" edge references existing source and target nodes
+And every child edge's target node references back to its parent
+And no orphan nodes exist (every node is reachable from a root)
+And the checker reports status "integrity-ok"
+```
+
+### Scenario: Tampered graph data is detected
+
+```gherkin
+Given a node's metadata has been externally modified outside the extraction pipeline
+When the integrity checker runs
+Then the checker detects the checksum mismatch on the tampered node
+And flags the node with status "integrity-violation"
+And an alert is raised to the operator
+And the node is excluded from retrieval results until re-extracted
+```
+
+### Scenario: Agent identity is validated when recording outcome signals
+
+```gherkin
+Given agent "agent-A" attempts to report an outcome signal with agent ID "agent-B"
+When the evolution service receives the signal
+Then the service validates the caller's authenticated identity
+And rejects the signal with error "agent-id-mismatch"
+And records the attempted identity mismatch in the security audit log
+```
+
+### Scenario: Audit trail for all graph mutations
+
+```gherkin
+Given the graph for "acme/backend" undergoes extraction, consolidation, and
+    compaction operations over a 7-day period
+When an operator queries the audit log for "acme/backend"
+Then every mutation (node create, update, tombstone, merge, purge) is listed
+And each entry includes timestamp, operation type, actor (pipeline or agent), and affected node IDs
+And the audit log is append-only and tamper-evident
+
+```
+
+---
+
+## Feature: Resilience and Operational Edge Cases
+
+### Scenario: Network partition between agent and memory service
+
+```gherkin
+Given the agent's connection to the retrieval service is interrupted
+When the agent attempts to query graph memory
+Then the agent receives a timeout error within the configured SLA (default 10 seconds)
+And the agent falls back to local cache if a prior retrieval result is cached
+And when connectivity is restored the agent's deferred outcome signals are flushed
+    to the evolution service in order
+```
+
+### Scenario: Memory service recovers from crash mid-extraction
+
+```gherkin
+Given an extraction pipeline is processing commit def456
+And the service crashes after committing 60% of the subgraph nodes
+When the service restarts
+Then the incomplete transaction is rolled back automatically
+And the graph remains at the last fully committed version (abc123)
+And the extraction for def456 is retried from scratch
+And an incident event is recorded with crash diagnostics
+```
+
+### Scenario: Conflicting outcome signals from different agents
+
+```gherkin
+Given agent-A reports a positive-outcome for the subgraph around "billing.charge"
+And agent-B reports a negative-outcome for the same subgraph within the same time window
+When the expertise scoring job runs
+Then both signals are recorded independently with their agent IDs
+And the expertise score reflects the net effect of both signals
+And a "conflicting-signals" annotation is attached for operator review
+```
+
+### Scenario: Graph compaction reclaims space from tombstoned nodes
+
+```gherkin
+Given 50 successive incremental extractions have accumulated tombstoned nodes
+When a compaction job runs
+Then all tombstoned nodes older than the retention window are permanently removed
+And the remaining graph is structurally identical to a fresh full extraction at HEAD
+And storage size decreases measurably
+And the compaction event is logged with before/after node counts and bytes reclaimed
+```
