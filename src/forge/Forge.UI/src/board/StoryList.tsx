@@ -24,6 +24,7 @@ export function StoryList() {
 
   const cards = useBoardStore((s) => s.cards);
   const setSelected = useBoardStore((s) => s.setSelected);
+  const setSelectedStory = useBoardStore((s) => s.setSelectedStory);
   const activeFilter = useBoardStore((s) => s.activeFilter);
   const epicFilter = useBoardStore((s) => s.epicFilter);
   const agentFilter = useBoardStore((s) => s.agentFilter);
@@ -105,34 +106,53 @@ export function StoryList() {
           <div key={id} style={{ marginBottom: 2 }}>
             {/* Story header row */}
             <div style={storyRowStyle}>
-              <button
-                type="button"
-                onClick={() => toggle(id)}
+              <div
                 style={{
                   display: 'flex',
                   alignItems: 'center',
                   flex: 2,
                   minWidth: 0,
-                  background: 'transparent',
-                  border: 'none',
-                  color: 'inherit',
-                  font: 'inherit',
-                  fontWeight: 600,
-                  padding: 0,
-                  cursor: 'pointer',
-                  textAlign: 'left',
                   gap: 8,
                 }}
-                title={story?.description || undefined}
               >
-                <svg width="10" height="10" viewBox="0 0 10 10" style={{ flexShrink: 0, transition: 'transform 150ms', transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}>
-                  <path d="M2 3 L5 6 L8 3" stroke="currentColor" fill="none" strokeWidth="1.4" strokeLinecap="round" />
-                </svg>
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 }}>
-                  {story?.name ?? 'No story'}
-                </span>
-                <span style={countBadge}>{groupCards.length}</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); toggle(id); }}
+                  style={chevronBtnStyle}
+                  title={isCollapsed ? 'Expand' : 'Collapse'}
+                  aria-label={isCollapsed ? 'Expand story' : 'Collapse story'}
+                >
+                  <svg width="10" height="10" viewBox="0 0 10 10" style={{ flexShrink: 0, transition: 'transform 150ms', transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}>
+                    <path d="M2 3 L5 6 L8 3" stroke="currentColor" fill="none" strokeWidth="1.4" strokeLinecap="round" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { if (story) setSelectedStory(story.id); }}
+                  disabled={!story}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    flex: 1,
+                    minWidth: 0,
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'inherit',
+                    font: 'inherit',
+                    fontWeight: 600,
+                    padding: 0,
+                    cursor: story ? 'pointer' : 'default',
+                    textAlign: 'left',
+                    gap: 8,
+                  }}
+                  title={story ? (story.description || 'Open story detail') : undefined}
+                >
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 }}>
+                    {story?.name ?? 'No story'}
+                  </span>
+                  <span style={countBadge}>{groupCards.length}</span>
+                </button>
+              </div>
               <span style={{ width: 80, textAlign: 'center', fontSize: 11 }}>
                 {story?.status ?? '—'}
               </span>
@@ -301,6 +321,21 @@ const storyRowStyle: React.CSSProperties = {
   fontSize: 13,
   fontWeight: 600,
   textAlign: 'left',
+};
+
+const chevronBtnStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 18,
+  height: 18,
+  flexShrink: 0,
+  background: 'transparent',
+  border: 'none',
+  color: 'inherit',
+  padding: 0,
+  cursor: 'pointer',
+  borderRadius: 'var(--radius-sm)',
 };
 
 const editBtnStyle: React.CSSProperties = {

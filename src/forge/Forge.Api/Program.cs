@@ -331,8 +331,15 @@ using (var scope = app.Services.CreateScope())
         }
         if (orphaned.Count > 0) await db.SaveChangesAsync();
     }
-    // Seed is skipped — real data is committed in forge.db.
+    // Prototype data seed (cards/PRs/workstreams) is intentionally skipped —
+    // real data is committed in forge.db.
     // await ForgeSeed.EnsureSeededAsync(db);
+    //
+    // Crew + prototype-agent catalog IS reconciled on every boot so the
+    // canonical 8 crews + A1/A2/E4/E7/E9/R3/R5/Q2/XD agents stay static
+    // even after past test pollution flipped fields like crew-eng.Shift.
+    // The pass is idempotent: a clean DB sees zero writes.
+    await ForgeSeed.EnsureCrewCatalogAsync(db);
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.
     await Forge.Api.Endpoints.CrewsEndpoints.ApplyAutoAssignAsync(db, caller: "boot", ct: default);
@@ -340,6 +347,96 @@ using (var scope = app.Services.CreateScope())
     // all 8 crews and guarantee each day/night shift has ≥ 2 members.
     var startupLogger = scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("ForgeSeed");
     await ForgeSeed.EnsureStartupConfigAsync(db, startupLogger);
+}
+
+// One-time CLI scrub of test fixture rows that leaked into the prod DB
+// before the test factory's tripwire landed. Default is dry-run; pass
+// --apply to actually delete. Exits without starting the web host so it
+// can run while Forge.Api is otherwise idle.
+//   dotnet run --project src/forge/Forge.Api -- --scrub-test-artifacts
+//   dotnet run --project src/forge/Forge.Api -- --scrub-test-artifacts --apply
+if (args.Contains("--scrub-test-artifacts"))
+{
+    var apply = args.Contains("--apply");
+    using var scrubScope = app.Services.CreateScope();
+    var scrubDb = scrubScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+    var scrubLogger = scrubScope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("ForgeSeed.Scrub");
+    var report = await ForgeSeed.ScrubTestArtifactsAsync(scrubDb, dryRun: !apply, scrubLogger);
+
+    Console.WriteLine($"[Scrub] mode={(apply ? "APPLIED" : "DRY-RUN")}");
+    Console.WriteLine($"  crews deleted:                    {report.CrewsDeleted}");
+    if (report.CrewIdsDeleted.Count > 0)
+    {
+        Console.WriteLine($"    {string.Join(", ", report.CrewIdsDeleted)}");
+    }
+    Console.WriteLine($"  agents deleted:                   {report.AgentsDeleted}");
+    if (report.AgentIdsDeleted.Count > 0)
+    {
+        Console.WriteLine($"    {string.Join(", ", report.AgentIdsDeleted)}");
+    }
+    Console.WriteLine($"  crew_members deleted:             {report.CrewMembersDeleted}");
+    Console.WriteLine($"  crew_history deleted:             {report.CrewHistoryDeleted}");
+    Console.WriteLine($"  agent_history deleted:            {report.AgentHistoryDeleted}");
+    Console.WriteLine($"  agent_usage deleted:              {report.AgentUsageDeleted}");
+    Console.WriteLine($"  agent_level_history deleted:      {report.AgentLevelHistoryDeleted}");
+    Console.WriteLine($"  deliverables deleted:             {report.DeliverablesDeleted}");
+    Console.WriteLine($"  task_queue.routed_to_crew nulled: {report.TaskQueueRoutedNulled}");
+    Console.WriteLine($"  task_queue.preferred_agent nulled:{report.TaskQueuePreferredNulled}");
+    Console.WriteLine($"  agent_assignments.crew_id nulled: {report.AgentAssignmentCrewNulled}");
+    if (!apply)
+    {
+        Console.WriteLine();
+        Console.WriteLine("DRY-RUN — no changes written. Re-run with --apply to commit.");
+    }
+    return;
+}
+
+// One-time CLI scrub of mocked story spawns + workstreams left over from
+// integration tests / fixture runs that wrote into the prod DB. Keeps the
+// real `code-intelligence:AGENT-MEMORY` story and its 5 workstreams.
+//   dotnet run --project src/forge/Forge.Api -- --scrub-mocked-spawns
+//   dotnet run --project src/forge/Forge.Api -- --scrub-mocked-spawns --apply
+if (args.Contains("--scrub-mocked-spawns"))
+{
+    var apply = args.Contains("--apply");
+    using var spawnScope = app.Services.CreateScope();
+    var spawnDb = spawnScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+    var spawnLogger = spawnScope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("ForgeSeed.SpawnScrub");
+
+    // The single real story spawn currently in the DB. If you need to keep
+    // additional spawns, extend this list before re-running.
+    var keepSpawns = new[] { "spawn-code-intelligence-AGENT-MEMORY" };
+    // Empty here = all kept workstreams come from the kept spawns. Add ad-hoc
+    // workstream ids (no spawn) to this list to preserve them.
+    var keepWorkstreams = Array.Empty<string>();
+
+    var report = await ForgeSeedSpawnScrub.ScrubMockedSpawnsAsync(
+        spawnDb, keepSpawns, keepWorkstreams, dryRun: !apply, spawnLogger);
+
+    Console.WriteLine($"[SpawnScrub] mode={(apply ? "APPLIED" : "DRY-RUN")}");
+    Console.WriteLine($"  story_spawns deleted:    {report.StorySpawnsDeleted}");
+    Console.WriteLine($"  workstreams deleted:     {report.WorkstreamsDeleted}");
+    Console.WriteLine($"  workstream_deps deleted: {report.WorkstreamDepsDeleted}");
+    Console.WriteLine();
+    Console.WriteLine($"  kept spawns: {string.Join(", ", keepSpawns)}");
+    Console.WriteLine();
+    if (report.StorySpawnIdsDeleted.Count > 0)
+    {
+        Console.WriteLine("  spawns to delete:");
+        foreach (var id in report.StorySpawnIdsDeleted) Console.WriteLine($"    {id}");
+    }
+    if (report.WorkstreamIdsDeleted.Count > 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine("  workstreams to delete:");
+        foreach (var id in report.WorkstreamIdsDeleted) Console.WriteLine($"    {id}");
+    }
+    if (!apply)
+    {
+        Console.WriteLine();
+        Console.WriteLine("DRY-RUN — no changes written. Re-run with --apply to commit.");
+    }
+    return;
 }
 
 app.UseExceptionHandler();

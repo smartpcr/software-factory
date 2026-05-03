@@ -693,6 +693,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     "Skipping agent run: wi={Wi} already in state={State}, marking completed",
                     workItemId, freshWi.State);
                 await this.CompleteQueueRowAsync(workItemId, ct);
+                await this.SetExecutionStatusAsync(workItemId, ExecutionStatuses.Completed, ct);
                 return;
             }
 
@@ -1786,6 +1787,11 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         if (!string.IsNullOrEmpty(wiRepo.AdoProject))
                             prProjectName = wiRepo.AdoProject;
                     }
+                    else if (wiRepo is not null && repoKind == "github")
+                    {
+                        prRepoName = wiRepo.GhRepo;
+                        prProjectName = wiRepo.GhOwner;
+                    }
 
                     var provider = providers.FirstOrDefault(p => p.Kind == repoKind && p.IsConfigured)
                         ?? providers.FirstOrDefault(p => p.IsConfigured);
@@ -2093,7 +2099,14 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 return;
             }
 
-            // Transition queue row: picked-up → completed.
+            // Success — delivery verified above (branch pushed + PR opened).
+            // Transition queue row to completed and explicitly set
+            // ExecutionStatus = Completed. Status must be set explicitly:
+            // CompleteQueueRowAsync no longer touches ExecutionStatus, so a
+            // failure path that completes the queue row but fails to set
+            // Failed (e.g. exception between calls) cannot leak through as
+            // a stale Completed.
+            await this.SetExecutionStatusAsync(workItemId, ExecutionStatuses.Completed, ct);
             await this.CompleteQueueRowAsync(workItemId, ct);
             await this.taskChannel.EmitAsync(workItemId, "task.completed", new
             {
@@ -2171,6 +2184,17 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
     private async Task CompleteQueueRowAsync(string workItemId, CancellationToken ct)
     {
+        // Queue-row completion only. ExecutionStatus is owned by the caller
+        // and must be set explicitly via SetExecutionStatusAsync — the
+        // success path sets Completed AFTER delivery has been verified
+        // (branch pushed + PR opened); failure paths set Failed before
+        // calling this method. Coupling "queue row completed" to
+        // "execution status = completed" let failure paths leak through:
+        // CompleteQueueRowAsync set Completed implicitly, then a follow-up
+        // SetExecutionStatusAsync(Failed) had to overwrite it, and any
+        // exception (scope dispose, ct cancellation) between the two left
+        // the work item showing Completed even though delivery failed and
+        // no PR was created.
         try
         {
             using var scope = this.scopeFactory.CreateScope();
@@ -2186,17 +2210,6 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             {
                 await queue.CompleteAsync(row.Id, ct);
                 await this.BroadcastQueueChangedAsync(row, "completed", ct);
-            }
-
-            // Phase 19 — mark execution as completed (success path;
-            // failure path sets "failed" separately in the catch block).
-            var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
-            if (wi is not null && wi.ExecutionStatus == ExecutionStatuses.Live)
-            {
-                wi.ExecutionStatus = ExecutionStatuses.Completed;
-                wi.UpdatedAt = DateTimeOffset.UtcNow;
-                await db.SaveChangesAsync(ct);
-                await this.BroadcastWorkItemChangedAsync(wi, "exec-completed", ct, db);
             }
         }
         catch (Exception ex)

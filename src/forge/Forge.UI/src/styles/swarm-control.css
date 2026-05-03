@@ -980,7 +980,16 @@
 .swarm-ctrl .gate-card.pending .gate-bar .fill { background: var(--sc-muted); }
 
 /* ─── DETAIL PANEL — TABS ───────────────────────────────────────────── */
-.swarm-ctrl .detail-panel { display: grid; grid-template-rows: auto 1fr; min-height: 0; min-width: 0; }
+/* `.sc-detail-panel` (not `.detail-panel`) — the unscoped name collides
+ * with the slide-in drawer pattern in detail-panel.css which sets
+ * `position: fixed; width: 420px; transform: translateX(100%)` and
+ * hijacks the grid layout. */
+.swarm-ctrl .sc-detail-panel {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+  min-width: 0;
+}
 .swarm-ctrl .tabs {
   display: flex;
   background: var(--sc-surface-2);
@@ -1060,6 +1069,11 @@
 .swarm-ctrl .pair.review::before  { background: var(--sc-magenta); }
 .swarm-ctrl .pair.e2e::before     { background: var(--sc-green); }
 .swarm-ctrl .pair.stalled::before { background: var(--sc-red); animation: sc-pulse 0.8s infinite; }
+.swarm-ctrl .pair.selected {
+  border-color: var(--sc-amber);
+  box-shadow: 0 0 0 1px var(--sc-amber-d), 0 0 14px rgba(255, 179, 71, 0.16);
+}
+.swarm-ctrl .pair.selected:hover { border-color: var(--sc-amber); }
 
 .swarm-ctrl .pair-hd { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; gap: 6px; }
 .swarm-ctrl .pair-id { font-family: var(--sc-font-display); font-size: 10px; letter-spacing: 0.16em; color: var(--sc-text); }
@@ -1253,4 +1267,185 @@
   .swarm-ctrl .sr-score { display: none; }
   .swarm-ctrl .ov-split { grid-template-columns: 1fr; }
   .swarm-ctrl .ov-split-r { display: none; }
+}
+
+/* ── Document tab (design mode → doc selection) ───────────────────────── */
+
+.swarm-ctrl .doc-pane {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  height: 100%;
+  min-height: 0;
+}
+
+.swarm-ctrl .doc-toc {
+  border-right: 1px solid var(--sc-border);
+  background: var(--sc-surface-2);
+  padding: 14px 0 8px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.swarm-ctrl .doc-toc-hd {
+  padding: 0 14px 10px;
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: var(--sc-text-dim);
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--sc-border);
+  margin-bottom: 8px;
+}
+.swarm-ctrl .doc-toc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.swarm-ctrl .doc-toc-item {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 8px;
+  padding: 7px 14px;
+  font-family: var(--sc-font-mono);
+  font-size: 11px;
+  color: var(--sc-text-dim);
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  align-items: center;
+}
+.swarm-ctrl .doc-toc-item:hover { color: var(--sc-text); background: var(--sc-surface-3); }
+.swarm-ctrl .doc-toc-item.active {
+  color: var(--sc-amber);
+  background: var(--sc-surface-3);
+  border-left-color: var(--sc-amber);
+}
+.swarm-ctrl .doc-toc-item .no {
+  color: var(--sc-muted);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+.swarm-ctrl .doc-toc-item.active .no { color: var(--sc-amber-d); }
+.swarm-ctrl .doc-toc-item .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.swarm-ctrl .doc-body {
+  padding: 18px 28px 32px;
+  overflow-y: auto;
+  min-height: 0;
+  font-family: var(--sc-font-mono);
+  color: var(--sc-text);
+  line-height: 1.55;
+}
+
+.swarm-ctrl .doc-body-hd {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: var(--sc-text-dim);
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed var(--sc-border-2);
+}
+.swarm-ctrl .doc-body-hd-l { display: flex; gap: 6px; flex-wrap: wrap; }
+.swarm-ctrl .doc-body-hd-r { white-space: nowrap; }
+.swarm-ctrl .doc-badge {
+  padding: 2px 7px;
+  border: 1px solid var(--sc-amber-d);
+  color: var(--sc-amber);
+  background: transparent;
+  font-size: 8px;
+  letter-spacing: 0.16em;
+}
+
+.swarm-ctrl .doc-title {
+  font-family: var(--sc-font-display);
+  font-weight: 600;
+  font-size: 22px;
+  letter-spacing: 0.04em;
+  color: var(--sc-text);
+  margin: 6px 0 8px;
+  line-height: 1.2;
+}
+.swarm-ctrl .doc-subtitle {
+  font-family: var(--sc-font-mono);
+  font-size: 12px;
+  color: var(--sc-text-dim);
+  margin: 0 0 18px;
+}
+.swarm-ctrl .doc-subtitle .dot { color: var(--sc-muted); }
+
+.swarm-ctrl .doc-pr-strip {
+  display: flex;
+  gap: 22px;
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: var(--sc-text-dim);
+  text-transform: uppercase;
+  padding: 8px 0 18px;
+  border-bottom: 1px solid var(--sc-border);
+  margin-bottom: 18px;
+}
+.swarm-ctrl .doc-pr-strip b {
+  color: var(--sc-amber);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.swarm-ctrl .doc-section { margin: 22px 0 10px; }
+.swarm-ctrl .doc-section-h {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin: 0 0 10px;
+  font-family: var(--sc-font-display);
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--sc-text);
+}
+.swarm-ctrl .doc-section-no {
+  color: var(--sc-muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+.swarm-ctrl .doc-section-t {
+  letter-spacing: 0.18em;
+  color: var(--sc-amber);
+}
+.swarm-ctrl .doc-p {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--sc-text);
+  white-space: pre-wrap;
+}
+.swarm-ctrl .doc-p code {
+  font-family: var(--sc-font-mono);
+  font-size: 11px;
+  color: var(--sc-amber);
+  background: var(--sc-surface-2);
+  padding: 1px 5px;
+  border: 1px solid var(--sc-border-2);
+}
+.swarm-ctrl .doc-p strong { color: var(--sc-text); font-weight: 600; }
+.swarm-ctrl .doc-code {
+  font-family: var(--sc-font-mono);
+  font-size: 11px;
+  color: var(--sc-text);
+  background: var(--sc-surface-2);
+  border: 1px solid var(--sc-border);
+  border-left: 2px solid var(--sc-amber-d);
+  padding: 10px 14px;
+  margin: 0 0 14px;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+@media (max-width: 1180px) {
+  .swarm-ctrl .doc-pane { grid-template-columns: 200px 1fr; }
+}
+@media (max-width: 880px) {
+  .swarm-ctrl .doc-pane { grid-template-columns: 1fr; }
+  .swarm-ctrl .doc-toc { display: none; }
 }

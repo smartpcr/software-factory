@@ -19,6 +19,22 @@ public static class ForgeSeed
 
     public const string DefaultRepoId = "atlas-platform";
 
+    /// <summary>
+    /// Reconcile the static crew + prototype-agent catalog. Safe to call on
+    /// every boot against a populated prod DB: structural fields on the
+    /// canonical 8 crews are snapped back to spec, the prototype agents
+    /// (A1/A2/E4/E7/E9/R3/R5/Q2/XD) get their Role re-pulled from
+    /// <c>agents/allocation.json</c>, and lead↔CrewId mismatches are healed.
+    /// Does NOT seed prototype cards/PRs/workstreams (that path lives in
+    /// <see cref="EnsureSeededAsync"/> and is gated on empty epics).
+    /// </summary>
+    public static async Task EnsureCrewCatalogAsync(ForgeDbContext db)
+    {
+        await EnsureSeedCrewsAsync(db);
+        await EnsureSeedAgentsAsync(db);
+        await EnsureRosterBackfillAsync(db);
+    }
+
     public static async Task EnsureSeededAsync(ForgeDbContext db)
     {
         // Phase 8.3 — products / repos seed runs independently of the prototype
@@ -394,8 +410,13 @@ public static class ForgeSeed
         // Map character-id → allocation entry for O(1) lookup.
         var byCharId = allocation.ToDictionary(a => a.Id, StringComparer.OrdinalIgnoreCase);
 
-        // -- 1) Heal the eight prototype rows (and XD): name + crew + SoulPath
-        // come from the matching allocation entry under the alias mapping.
+        // -- 1) Heal the eight prototype rows (and XD): name + SoulPath +
+        // Role come from the matching allocation entry under the alias
+        // mapping. Role is RECONCILED (snapped back to allocation.json on
+        // every boot) so test mutations cannot stick. CrewId is left to
+        // EnsureRosterBackfillAsync below — it knows about Lead↔CrewId
+        // invariants that the alias map alone can't see (e.g. crew-eng
+        // is led by E4 even though E4's crew_role is "arch").
         var sort = 0;
         foreach (var (proto, charId) in prototypeAlias)
         {
@@ -406,6 +427,10 @@ public static class ForgeSeed
                 var row = existing.First(a => a.Id == proto);
                 if (string.IsNullOrEmpty(row.SoulPath)) row.SoulPath = SoulFor(charId);
                 if (row.Name == "Probe") row.Name = entry.Name;
+                if (!string.Equals(row.Role, entry.CrewRole, StringComparison.OrdinalIgnoreCase))
+                {
+                    row.Role = entry.CrewRole;
+                }
                 if (string.IsNullOrEmpty(row.CrewId)) row.CrewId = crewId;
             }
             else
@@ -522,10 +547,11 @@ public static class ForgeSeed
 
     private static async Task EnsureSeedCrewsAsync(ForgeDbContext db)
     {
-        var existingIds = (await db.Crews.Select(c => c.Id).ToListAsync()).ToHashSet();
-
-        // Canonical model + quotas for all crews (configurable at the seed
-        // level; reconciled on every boot by EnsureStartupConfigAsync).
+        // Canonical model + quotas for all crews. Pricing/quota fields are
+        // owned by EnsureStartupConfigAsync (which re-asserts them on every
+        // boot); we set them here only for the insert path so a freshly-
+        // created row carries sane defaults before EnsureStartupConfigAsync
+        // runs.
         const string RuntimeModel      = "claude-opus-4.6-1m";
         const decimal InputPrice       = 15m;
         const decimal OutputPrice      = 75m;
@@ -535,35 +561,70 @@ public static class ForgeSeed
         const decimal DailyBudget      = 5000m;
         const decimal PerTaskBudget    = 2500m;
 
-        var dayCrews = new[]
+        // Canonical-8 spec. Fields below the comment line are STRUCTURAL
+        // (the crew's identity in the org chart) and are reconciled to these
+        // values on every boot — overriding any stale write from past test
+        // pollution. Lead, Backend, InvokeMode, capabilities, timezone, and
+        // schedule-enabled are operator-mutable and intentionally NOT touched.
+        var spec = new (string Id, int Sort, string Name, string Summary, string Shift, string? ParentCrewId, string PairRole, string? PairedWithCrewId, string DefaultLead)[]
         {
-            new CrewRow { Id = "crew-eng",  Sort = 0, Name = "Engineering",  Summary = "Cuts PRs, ships features, keeps tests green.",        Lead = "E4", Model = RuntimeModel, ModelInputPricePerMTok = InputPrice, ModelOutputPricePerMTok = OutputPrice, EvaluatorModel = EvalModel, MaxConcurrent = ConcurrentCap, WeeklyCap = WeekCap, DailyBudgetUsd = DailyBudget, MaxTaskBudgetUsd = PerTaskBudget, Shift = "day",   PairRole = "generator", PairedWithCrewId = "crew-eng-night" },
-            new CrewRow { Id = "crew-rev",  Sort = 1, Name = "Review",       Summary = "Reads every diff, catches what engineers missed.",   Lead = "R3", Model = RuntimeModel, ModelInputPricePerMTok = InputPrice, ModelOutputPricePerMTok = OutputPrice, EvaluatorModel = EvalModel, MaxConcurrent = ConcurrentCap, WeeklyCap = WeekCap, DailyBudgetUsd = DailyBudget, MaxTaskBudgetUsd = PerTaskBudget, Shift = "day" },
-            new CrewRow { Id = "crew-arch", Sort = 2, Name = "Architecture", Summary = "Frames problems, owns ADRs, keeps blast radii small.", Lead = "A1", Model = RuntimeModel, ModelInputPricePerMTok = InputPrice, ModelOutputPricePerMTok = OutputPrice, EvaluatorModel = EvalModel, MaxConcurrent = ConcurrentCap, WeeklyCap = WeekCap, DailyBudgetUsd = DailyBudget, MaxTaskBudgetUsd = PerTaskBudget, Shift = "day",   PairRole = "generator", PairedWithCrewId = "crew-arch-night" },
-            new CrewRow { Id = "crew-qa",   Sort = 3, Name = "QA",           Summary = "Fuzzes, soaks, watches the dials.",                   Lead = "Q2", Model = RuntimeModel, ModelInputPricePerMTok = InputPrice, ModelOutputPricePerMTok = OutputPrice, EvaluatorModel = EvalModel, MaxConcurrent = ConcurrentCap, WeeklyCap = WeekCap, DailyBudgetUsd = DailyBudget, MaxTaskBudgetUsd = PerTaskBudget, Shift = "day" },
+            ("crew-eng",        0, "Engineering",          "Cuts PRs, ships features, keeps tests green.",          "day",   null,         "generator",  "crew-eng-night",  "E4"),
+            ("crew-rev",        1, "Review",               "Reads every diff, catches what engineers missed.",      "day",   null,         "standalone", null,              "R3"),
+            ("crew-arch",       2, "Architecture",         "Frames problems, owns ADRs, keeps blast radii small.",  "day",   null,         "generator",  "crew-arch-night", "A1"),
+            ("crew-qa",         3, "QA",                   "Fuzzes, soaks, watches the dials.",                     "day",   null,         "standalone", null,              "Q2"),
+            ("crew-eng-night",  4, "Engineering (Night)",  "Engineering — 21:00–09:00 night band.",                 "night", "crew-eng",   "evaluator",  "crew-eng",        ""),
+            ("crew-rev-night",  5, "Review (Night)",       "Review — 21:00–09:00 night band.",                      "night", "crew-rev",   "standalone", null,              ""),
+            ("crew-arch-night", 6, "Architecture (Night)", "Architecture — 21:00–09:00 night band.",                "night", "crew-arch",  "evaluator",  "crew-arch",       ""),
+            ("crew-qa-night",   7, "QA (Night)",           "QA — 21:00–09:00 night band.",                          "night", "crew-qa",    "standalone", null,              ""),
         };
 
-        // Phase 18 — night sibling per team. Same model + pricing so a
-        // night-shift dispatch costs the same as a day one; ParentCrewId
-        // points at the day crew so the existing hierarchy panel groups
-        // them under their team. Lead is set later by EnsureNightShiftSplitAsync
-        // once the agent split picks the first night-mover.
-        var nightCrews = new[]
-        {
-            new CrewRow { Id = "crew-eng-night",  Sort = 4, Name = "Engineering (Night)",  Summary = "Engineering — 21:00–09:00 night band.",        Lead = null, ParentCrewId = "crew-eng",  Model = RuntimeModel, ModelInputPricePerMTok = InputPrice, ModelOutputPricePerMTok = OutputPrice, EvaluatorModel = EvalModel, MaxConcurrent = ConcurrentCap, WeeklyCap = WeekCap, DailyBudgetUsd = DailyBudget, MaxTaskBudgetUsd = PerTaskBudget, Shift = "night", PairRole = "evaluator", PairedWithCrewId = "crew-eng" },
-            new CrewRow { Id = "crew-rev-night",  Sort = 5, Name = "Review (Night)",       Summary = "Review — 21:00–09:00 night band.",             Lead = null, ParentCrewId = "crew-rev",  Model = RuntimeModel, ModelInputPricePerMTok = InputPrice, ModelOutputPricePerMTok = OutputPrice, EvaluatorModel = EvalModel, MaxConcurrent = ConcurrentCap, WeeklyCap = WeekCap, DailyBudgetUsd = DailyBudget, MaxTaskBudgetUsd = PerTaskBudget, Shift = "night" },
-            new CrewRow { Id = "crew-arch-night", Sort = 6, Name = "Architecture (Night)", Summary = "Architecture — 21:00–09:00 night band.",       Lead = null, ParentCrewId = "crew-arch", Model = RuntimeModel, ModelInputPricePerMTok = InputPrice, ModelOutputPricePerMTok = OutputPrice, EvaluatorModel = EvalModel, MaxConcurrent = ConcurrentCap, WeeklyCap = WeekCap, DailyBudgetUsd = DailyBudget, MaxTaskBudgetUsd = PerTaskBudget, Shift = "night", PairRole = "evaluator", PairedWithCrewId = "crew-arch" },
-            new CrewRow { Id = "crew-qa-night",   Sort = 7, Name = "QA (Night)",           Summary = "QA — 21:00–09:00 night band.",                 Lead = null, ParentCrewId = "crew-qa",   Model = RuntimeModel, ModelInputPricePerMTok = InputPrice, ModelOutputPricePerMTok = OutputPrice, EvaluatorModel = EvalModel, MaxConcurrent = ConcurrentCap, WeeklyCap = WeekCap, DailyBudgetUsd = DailyBudget, MaxTaskBudgetUsd = PerTaskBudget, Shift = "night" },
-        };
+        var specIds = spec.Select(s => s.Id).ToList();
+        var existing = await db.Crews
+            .Where(c => specIds.Contains(c.Id))
+            .ToListAsync();
+        var byId = existing.ToDictionary(c => c.Id, StringComparer.OrdinalIgnoreCase);
 
-        var added = false;
-        foreach (var c in dayCrews.Concat(nightCrews))
+        var changed = false;
+        foreach (var s in spec)
         {
-            if (existingIds.Contains(c.Id)) continue;
-            db.Crews.Add(c);
-            added = true;
+            if (byId.TryGetValue(s.Id, out var row))
+            {
+                // Reconcile structural fields — overwrite even if a test
+                // (or any other writer) flipped them. Lead is preserved.
+                if (row.Sort             != s.Sort)             { row.Sort = s.Sort; changed = true; }
+                if (row.Name             != s.Name)             { row.Name = s.Name; changed = true; }
+                if (row.Summary          != s.Summary)          { row.Summary = s.Summary; changed = true; }
+                if (row.Shift            != s.Shift)            { row.Shift = s.Shift; changed = true; }
+                if (row.ParentCrewId     != s.ParentCrewId)     { row.ParentCrewId = s.ParentCrewId; changed = true; }
+                if (row.PairRole         != s.PairRole)         { row.PairRole = s.PairRole; changed = true; }
+                if (row.PairedWithCrewId != s.PairedWithCrewId) { row.PairedWithCrewId = s.PairedWithCrewId; changed = true; }
+            }
+            else
+            {
+                db.Crews.Add(new CrewRow
+                {
+                    Id = s.Id,
+                    Sort = s.Sort,
+                    Name = s.Name,
+                    Summary = s.Summary,
+                    Lead = string.IsNullOrEmpty(s.DefaultLead) ? null : s.DefaultLead,
+                    Model = RuntimeModel,
+                    ModelInputPricePerMTok = InputPrice,
+                    ModelOutputPricePerMTok = OutputPrice,
+                    EvaluatorModel = EvalModel,
+                    MaxConcurrent = ConcurrentCap,
+                    WeeklyCap = WeekCap,
+                    DailyBudgetUsd = DailyBudget,
+                    MaxTaskBudgetUsd = PerTaskBudget,
+                    Shift = s.Shift,
+                    ParentCrewId = s.ParentCrewId,
+                    PairRole = s.PairRole,
+                    PairedWithCrewId = s.PairedWithCrewId,
+                });
+                changed = true;
+            }
         }
-        if (added) await db.SaveChangesAsync();
+        if (changed) await db.SaveChangesAsync();
     }
 
     /// <summary>
@@ -1092,4 +1153,259 @@ public static class ForgeSeed
 
         await db.SaveChangesAsync();
     }
+
+    /// <summary>
+    /// One-time scrub of test fixture rows that leaked into the prod DB
+    /// before <c>ForgeWebApplicationFactory</c>'s in-memory config tripwire
+    /// landed (the factory used to race on a global env var, so any test
+    /// class calling <c>db.Crews.Add(new CrewRow {...})</c> wrote into
+    /// <c>E:\forge\forge.db</c>).
+    ///
+    /// <para>
+    /// Canonical sets:
+    /// <list type="bullet">
+    ///   <item><description>crews — the 8 ids in <see cref="EnsureSeedCrewsAsync"/>.</description></item>
+    ///   <item><description>agents — every id in <c>agents/allocation.json</c> plus the
+    ///         prototype aliases (A1/A2/E4/E7/E9/R3/R5/Q2) plus XD.</description></item>
+    /// </list>
+    /// </para>
+    /// <para>
+    /// Scrub deletes from: crews, crew_members, crew_history, agents,
+    /// agent_history, agent_usage, agent_level_history, deliverables.
+    /// Nullable refs in task_queue (RoutedToCrewId, PreferredAgentId) and
+    /// agent_assignments (CrewId) are nulled rather than deleted so live
+    /// queue rows aren't lost — orphaned routes will fall back to default
+    /// dispatch.
+    /// </para>
+    /// <para>
+    /// Idempotent. <paramref name="dryRun"/> = true (default) only counts
+    /// rows that would be touched; pass false to actually delete.
+    /// </para>
+    /// </summary>
+    public static async Task<ScrubReport> ScrubTestArtifactsAsync(ForgeDbContext db, bool dryRun, ILogger? logger = null)
+    {
+        var canonicalCrewIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "crew-eng", "crew-rev", "crew-arch", "crew-qa",
+            "crew-eng-night", "crew-rev-night", "crew-arch-night", "crew-qa-night",
+        };
+
+        var allocation = LoadAllocation(FindRepoRoot());
+        var canonicalAgentIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "A1", "A2", "E4", "E7", "E9", "R3", "R5", "Q2", "XD",
+        };
+        foreach (var entry in allocation)
+        {
+            if (!string.IsNullOrEmpty(entry.Id)) canonicalAgentIds.Add(entry.Id);
+        }
+
+        var report = new ScrubReport();
+
+        // ── crew_members: any row referencing a non-canonical crew or agent.
+        var staleMembers = await db.CrewMembers
+            .Where(m => !canonicalCrewIds.Contains(m.CrewId) || !canonicalAgentIds.Contains(m.AgentId))
+            .ToListAsync();
+        report.CrewMembersDeleted = staleMembers.Count;
+        if (!dryRun) db.CrewMembers.RemoveRange(staleMembers);
+
+        // ── crew_history: rows for non-canonical crews.
+        var staleHistory = await db.CrewHistory
+            .Where(h => !canonicalCrewIds.Contains(h.CrewId))
+            .ToListAsync();
+        report.CrewHistoryDeleted = staleHistory.Count;
+        if (!dryRun) db.CrewHistory.RemoveRange(staleHistory);
+
+        // ── agent_history: rows for non-canonical agents.
+        var staleAgentHistory = await db.AgentHistory
+            .Where(h => !canonicalAgentIds.Contains(h.AgentId))
+            .ToListAsync();
+        report.AgentHistoryDeleted = staleAgentHistory.Count;
+        if (!dryRun) db.AgentHistory.RemoveRange(staleAgentHistory);
+
+        // ── agent_usage: cost-ledger rows for non-canonical crew or agent.
+        var staleUsage = await db.AgentUsage
+            .Where(u => !canonicalCrewIds.Contains(u.CrewId) || !canonicalAgentIds.Contains(u.AgentId))
+            .ToListAsync();
+        report.AgentUsageDeleted = staleUsage.Count;
+        if (!dryRun) db.AgentUsage.RemoveRange(staleUsage);
+
+        // ── agent_level_history: rows for non-canonical agents.
+        var staleLevels = await db.AgentLevelHistory
+            .Where(h => !canonicalAgentIds.Contains(h.AgentId))
+            .ToListAsync();
+        report.AgentLevelHistoryDeleted = staleLevels.Count;
+        if (!dryRun) db.AgentLevelHistory.RemoveRange(staleLevels);
+
+        // ── deliverables: rows for non-canonical crew or any participant agent.
+        var staleDeliverables = await db.Deliverables
+            .Where(d =>
+                !canonicalCrewIds.Contains(d.CrewId)
+                || !canonicalAgentIds.Contains(d.GeneratorAgentId)
+                || !canonicalAgentIds.Contains(d.EvaluatorAgentId)
+                || (d.JudgeAgentId != null && !canonicalAgentIds.Contains(d.JudgeAgentId)))
+            .ToListAsync();
+        report.DeliverablesDeleted = staleDeliverables.Count;
+        if (!dryRun) db.Deliverables.RemoveRange(staleDeliverables);
+
+        // ── task_queue: live queue rows. Don't delete — null out refs so
+        // orphaned routes fall back to default dispatch.
+        var taskRows = await db.TaskQueue
+            .Where(t =>
+                (t.RoutedToCrewId != null && !canonicalCrewIds.Contains(t.RoutedToCrewId))
+                || (t.PreferredAgentId != null && !canonicalAgentIds.Contains(t.PreferredAgentId)))
+            .ToListAsync();
+        foreach (var t in taskRows)
+        {
+            if (t.RoutedToCrewId != null && !canonicalCrewIds.Contains(t.RoutedToCrewId))
+            {
+                report.TaskQueueRoutedNulled++;
+                if (!dryRun) t.RoutedToCrewId = null;
+            }
+            if (t.PreferredAgentId != null && !canonicalAgentIds.Contains(t.PreferredAgentId))
+            {
+                report.TaskQueuePreferredNulled++;
+                if (!dryRun) t.PreferredAgentId = null;
+            }
+        }
+
+        // ── agent_assignments: null CrewId for non-canonical crews.
+        var staleAssignments = await db.AgentAssignments
+            .Where(a => a.CrewId != null && !canonicalCrewIds.Contains(a.CrewId))
+            .ToListAsync();
+        report.AgentAssignmentCrewNulled = staleAssignments.Count;
+        if (!dryRun) foreach (var a in staleAssignments) a.CrewId = null;
+
+        // ── agents: delete non-canonical rows. Done AFTER agent_history /
+        // agent_usage / agent_level_history removal so no FK-style orphans.
+        var staleAgents = await db.Agents
+            .Where(a => !canonicalAgentIds.Contains(a.Id))
+            .ToListAsync();
+        report.AgentsDeleted = staleAgents.Count;
+        report.AgentIdsDeleted = staleAgents.Select(a => a.Id).OrderBy(s => s).ToList();
+        if (!dryRun) db.Agents.RemoveRange(staleAgents);
+
+        // ── crews: delete non-canonical rows last.
+        var staleCrews = await db.Crews
+            .Where(c => !canonicalCrewIds.Contains(c.Id))
+            .ToListAsync();
+        report.CrewsDeleted = staleCrews.Count;
+        report.CrewIdsDeleted = staleCrews.Select(c => c.Id).OrderBy(s => s).ToList();
+        if (!dryRun) db.Crews.RemoveRange(staleCrews);
+
+        if (!dryRun) await db.SaveChangesAsync();
+
+        logger?.LogInformation(
+            "Scrub {Mode}: crews={Crews} agents={Agents} crew_members={Members} crew_history={History} agent_history={AgentHistory} agent_usage={Usage} agent_level_history={Levels} deliverables={Deliverables} task_queue.routed_nulled={Routed} task_queue.preferred_nulled={Preferred} agent_assignments.crew_nulled={Assignments}",
+            dryRun ? "DRY-RUN" : "APPLIED",
+            report.CrewsDeleted, report.AgentsDeleted, report.CrewMembersDeleted, report.CrewHistoryDeleted,
+            report.AgentHistoryDeleted, report.AgentUsageDeleted, report.AgentLevelHistoryDeleted,
+            report.DeliverablesDeleted, report.TaskQueueRoutedNulled, report.TaskQueuePreferredNulled,
+            report.AgentAssignmentCrewNulled);
+
+        return report;
+    }
+}
+
+/// <summary>
+/// Result of <see cref="ForgeSeed.ScrubTestArtifactsAsync"/>. All counts are
+/// rows touched; in dry-run mode the DB is unchanged but the counts reflect
+/// what an apply pass would do.
+/// </summary>
+public sealed class ScrubReport
+{
+    public int CrewsDeleted { get; set; }
+    public int AgentsDeleted { get; set; }
+    public int CrewMembersDeleted { get; set; }
+    public int CrewHistoryDeleted { get; set; }
+    public int AgentHistoryDeleted { get; set; }
+    public int AgentUsageDeleted { get; set; }
+    public int AgentLevelHistoryDeleted { get; set; }
+    public int DeliverablesDeleted { get; set; }
+    public int TaskQueueRoutedNulled { get; set; }
+    public int TaskQueuePreferredNulled { get; set; }
+    public int AgentAssignmentCrewNulled { get; set; }
+    public List<string> CrewIdsDeleted { get; set; } = new();
+    public List<string> AgentIdsDeleted { get; set; } = new();
+}
+
+public static class ForgeSeedSpawnScrub
+{
+    /// <summary>
+    /// Drop test-fixture story spawns + workstreams. Keeps any spawn whose
+    /// <c>Id</c> is in <paramref name="keepSpawnIds"/> and any workstream
+    /// whose <c>Id</c> is in <paramref name="keepWorkstreamIds"/>. Orphan
+    /// workstreams (no <c>StorySpawnId</c>) are dropped unless explicitly
+    /// kept.
+    ///
+    /// <para>
+    /// Cascades to <c>workstream_deps</c>. Does NOT touch <c>prs</c>,
+    /// <c>cards</c>, or <c>work_items</c> — those carry independently
+    /// synced data whose lifecycle is decoupled from the spawn loop.
+    /// </para>
+    /// </summary>
+    public static async Task<SpawnScrubReport> ScrubMockedSpawnsAsync(
+        ForgeDbContext db,
+        IReadOnlyCollection<string> keepSpawnIds,
+        IReadOnlyCollection<string> keepWorkstreamIds,
+        bool dryRun,
+        ILogger? logger = null)
+    {
+        var keepSpawns = new HashSet<string>(keepSpawnIds, StringComparer.OrdinalIgnoreCase);
+        var keepWorkstreams = new HashSet<string>(keepWorkstreamIds, StringComparer.OrdinalIgnoreCase);
+
+        var report = new SpawnScrubReport();
+
+        // ── workstreams: anything not in the explicit keep list, or whose
+        // spawn isn't kept either, is removed.
+        var allWs = await db.Workstreams.ToListAsync();
+        var staleWs = allWs.Where(w =>
+        {
+            if (keepWorkstreams.Contains(w.Id)) return false;
+            if (!string.IsNullOrEmpty(w.StorySpawnId) && keepSpawns.Contains(w.StorySpawnId!)) return false;
+            return true;
+        }).ToList();
+        var staleWsIds = staleWs.Select(w => w.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        report.WorkstreamsDeleted = staleWs.Count;
+        report.WorkstreamIdsDeleted = staleWs.Select(w => w.Id).OrderBy(s => s).ToList();
+
+        // ── workstream_deps: any row referencing a stale workstream on
+        // either side. Composite PK so RemoveRange handles cascade safely.
+        var allDeps = await db.WorkstreamDeps.ToListAsync();
+        var staleDeps = allDeps.Where(d =>
+            staleWsIds.Contains(d.WorkstreamId) || staleWsIds.Contains(d.DependsOnId)).ToList();
+        report.WorkstreamDepsDeleted = staleDeps.Count;
+
+        // ── story_spawns: anything not in the keep list.
+        var allSpawns = await db.StorySpawns.ToListAsync();
+        var staleSpawns = allSpawns.Where(s => !keepSpawns.Contains(s.Id)).ToList();
+        report.StorySpawnsDeleted = staleSpawns.Count;
+        report.StorySpawnIdsDeleted = staleSpawns.Select(s => s.Id).OrderBy(s => s).ToList();
+
+        if (!dryRun)
+        {
+            // Delete deps first (composite FK), then workstreams, then spawns.
+            db.WorkstreamDeps.RemoveRange(staleDeps);
+            db.Workstreams.RemoveRange(staleWs);
+            db.StorySpawns.RemoveRange(staleSpawns);
+            await db.SaveChangesAsync();
+        }
+
+        logger?.LogInformation(
+            "Spawn scrub {Mode}: workstreams={Ws} (orphans included) workstream_deps={Deps} story_spawns={Spawns}",
+            dryRun ? "DRY-RUN" : "APPLIED",
+            report.WorkstreamsDeleted, report.WorkstreamDepsDeleted, report.StorySpawnsDeleted);
+
+        return report;
+    }
+}
+
+public sealed class SpawnScrubReport
+{
+    public int WorkstreamsDeleted { get; set; }
+    public int WorkstreamDepsDeleted { get; set; }
+    public int StorySpawnsDeleted { get; set; }
+    public List<string> WorkstreamIdsDeleted { get; set; } = new();
+    public List<string> StorySpawnIdsDeleted { get; set; } = new();
 }

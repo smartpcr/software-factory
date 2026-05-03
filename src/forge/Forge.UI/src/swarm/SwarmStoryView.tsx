@@ -215,6 +215,7 @@ export function SwarmStoryView() {
                 <SwarmDetailPanel
                   mode={mode}
                   detail={detail}
+                  artifacts={artifacts}
                   selection={selection}
                   tab={tab}
                   onTab={setTab}

@@ -111,7 +111,6 @@ public static class WorkItemsEndpoints
     private static async Task<IResult> List(
         HttpContext ctx,
         ForgeDbContext db,
-        string? productId,
         string? repoId,
         string? iterationRef,
         string? state,
@@ -127,13 +126,14 @@ public static class WorkItemsEndpoints
     {
         var query = db.WorkItems.AsNoTracking().AsQueryable();
 
-        // Scope to repos belonging to the active product.
-        if (!string.IsNullOrWhiteSpace(productId))
+        // Scope to repos belonging to the active product. Honors `?productId=`,
+        // the `X-Forge-Product-Id` header, and the default-product fallback —
+        // matches CardsEndpoints / PrsEndpoints / WorkstreamsEndpoints. Pass
+        // `productId=all` to bypass scoping.
+        var scope = await ProductScope.ResolveAsync(ctx, db, ct);
+        if (!scope.IsAll)
         {
-            var repoIds = await db.Repos.AsNoTracking()
-                .Where(r => r.ProductId == productId)
-                .Select(r => r.Id)
-                .ToListAsync(ct);
+            var repoIds = scope.RepoIds!;
             query = query.Where(w => w.RepoId != null && repoIds.Contains(w.RepoId));
         }
 
@@ -737,6 +737,11 @@ public static class WorkItemsEndpoints
                 prRepoName = ExtractAdoRepoName(repo.RemoteUrl);
                 if (!string.IsNullOrEmpty(repo.AdoProject))
                     prProjectName = repo.AdoProject;
+            }
+            else if (repo is not null && repoKind == "github")
+            {
+                prRepoName = repo.GhRepo;
+                prProjectName = repo.GhOwner;
             }
         }
 

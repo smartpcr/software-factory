@@ -1,28 +1,35 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { StorySpawnDetail } from '@/api/forgeApi';
+import type { StorySpawnArtifacts, StorySpawnDetail } from '@/api/forgeApi';
 import type { SwarmMode } from './SwarmPipelineStrip';
 import type { Selection } from './SwarmMasterPanel';
+import { DocumentPane } from './DocumentPane';
 
-export type DetailTab = 'overview' | 'conv' | 'arch' | 'pr' | 'qa' | 'trace';
+export type DetailTab =
+  | 'overview' | 'conv' | 'arch' | 'pr' | 'qa' | 'trace'
+  | 'document' | 'impl' | 'contributors';
 
 interface Props {
   mode: SwarmMode;
   detail: StorySpawnDetail;
+  artifacts: StorySpawnArtifacts | null;
   selection: Selection;
   tab: DetailTab;
   onTab: (t: DetailTab) => void;
 }
 
 const TAB_LABELS: { key: DetailTab; label: string }[] = [
-  { key: 'overview', label: 'Overview' },
-  { key: 'conv',     label: 'Conversation' },
-  { key: 'arch',     label: 'Arch Doc' },
-  { key: 'pr',       label: 'PR' },
-  { key: 'qa',       label: 'QA / E2E' },
-  { key: 'trace',    label: 'Trace' },
+  { key: 'overview',     label: 'Overview' },
+  { key: 'document',     label: 'Document' },
+  { key: 'conv',         label: 'Conversation' },
+  { key: 'arch',         label: 'Arch Doc' },
+  { key: 'pr',           label: 'PR' },
+  { key: 'impl',         label: 'Impl Progress' },
+  { key: 'contributors', label: 'Contributors' },
+  { key: 'qa',           label: 'QA / E2E' },
+  { key: 'trace',        label: 'Trace' },
 ];
 
-export function SwarmDetailPanel({ mode, detail, selection, tab, onTab }: Props) {
+export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTab }: Props) {
   const tabsAvailable = useMemo(() => availableTabs(mode, selection, detail), [mode, selection, detail]);
 
   // If the current tab isn't available for this selection, jump to the first available.
@@ -33,28 +40,40 @@ export function SwarmDetailPanel({ mode, detail, selection, tab, onTab }: Props)
     }
   }, [tabsAvailable, tab, onTab]);
 
+  // Order tabs visually as they appear in `tabsAvailable` so the doc-mode
+  // tab strip reads `Document · Conversation · PR · Impl Progress · Contributors`
+  // rather than the canonical order from TAB_LABELS.
+  const tabsToRender = tabsAvailable
+    .map((k) => TAB_LABELS.find((t) => t.key === k))
+    .filter((t): t is { key: DetailTab; label: string } => !!t);
+
   return (
-    <section className="panel detail-panel">
+    <section className="panel sc-detail-panel">
       <div className="tabs">
-        {TAB_LABELS.map((t) => {
-          const enabled = tabsAvailable.includes(t.key);
-          return (
-            <button
-              key={t.key}
-              className={`tab${tab === t.key ? ' active' : ''}${enabled ? '' : ' disabled'}`}
-              onClick={() => enabled && onTab(t.key)}
-              disabled={!enabled}
-              type="button"
-            >
-              {t.label}
-              <span className="ct">{tabCount(t.key, mode, selection, detail)}</span>
-            </button>
-          );
-        })}
+        {tabsToRender.map((t) => (
+          <button
+            key={t.key}
+            className={`tab${tab === t.key ? ' active' : ''}`}
+            onClick={() => onTab(t.key)}
+            type="button"
+          >
+            {t.label}
+            <span className="ct">{tabCount(t.key, mode, selection, detail, artifacts)}</span>
+          </button>
+        ))}
       </div>
       <div className="tab-body">
         <div className={`tab-pane${tab === 'overview' ? ' active' : ''}`}>
           {tab === 'overview' && <OverviewPane mode={mode} detail={detail} selection={selection} />}
+        </div>
+        <div className={`tab-pane${tab === 'document' ? ' active' : ''}`}>
+          {tab === 'document' && selection.kind === 'doc' && selection.id && (
+            <DocumentPane
+              docId={selection.id}
+              planPr={artifacts?.plan.pr ?? null}
+              planBranch={artifacts?.plan.branch ?? null}
+            />
+          )}
         </div>
         <div className={`tab-pane${tab === 'conv' ? ' active' : ''}`}>
           {tab === 'conv' && <Placeholder
@@ -72,6 +91,18 @@ export function SwarmDetailPanel({ mode, detail, selection, tab, onTab }: Props)
           {tab === 'pr' && <Placeholder
             label="PR tab"
             sub="file tree + side-by-side diff + comment side-rail + check-run rail. Wired to /api/prs/:id."
+          />}
+        </div>
+        <div className={`tab-pane${tab === 'impl' ? ' active' : ''}`}>
+          {tab === 'impl' && <Placeholder
+            label="impl progress tab"
+            sub="per-section completion rail derived from the implementation-plan doc. Wired once impl-plan section ↔ workstream mapping lands."
+          />}
+        </div>
+        <div className={`tab-pane${tab === 'contributors' ? ' active' : ''}`}>
+          {tab === 'contributors' && <Placeholder
+            label="contributors tab"
+            sub="agent-by-agent edit history with per-section authorship. Wired to git blame on the doc file."
           />}
         </div>
         <div className={`tab-pane${tab === 'qa' ? ' active' : ''}`}>
@@ -94,6 +125,15 @@ export function SwarmDetailPanel({ mode, detail, selection, tab, onTab }: Props)
 /* ─── TAB AVAILABILITY ───────────────────────────────────────────────── */
 
 function availableTabs(mode: SwarmMode, sel: Selection, detail: StorySpawnDetail): DetailTab[] {
+  if (sel.kind === 'doc') {
+    // Doc-centric tab strip: the document body is the headline; everything
+    // else hangs off the doc's lifecycle (plan PR, contributors, downstream
+    // implementation progress that this doc seeded).
+    const tabs: DetailTab[] = ['document', 'conv'];
+    if (detail.spawn.planPrId) tabs.push('pr');
+    tabs.push('impl', 'contributors');
+    return tabs;
+  }
   // Overview is always available — even at story root.
   const tabs: DetailTab[] = ['overview'];
   if (sel.kind === 'phase') {
@@ -103,9 +143,6 @@ function availableTabs(mode: SwarmMode, sel: Selection, detail: StorySpawnDetail
       if (ws.prs.length > 0) tabs.push('pr');
     }
     if (mode === 'impl') tabs.push('qa', 'trace');
-  } else if (sel.kind === 'doc') {
-    tabs.push('arch', 'conv');
-    if (detail.spawn.planPrId) tabs.push('pr');
   } else if (sel.kind === 'gate') {
     tabs.push('trace');
   } else {
@@ -115,18 +152,63 @@ function availableTabs(mode: SwarmMode, sel: Selection, detail: StorySpawnDetail
   return tabs;
 }
 
-function tabCount(tab: DetailTab, mode: SwarmMode, sel: Selection, detail: StorySpawnDetail): string {
+function tabCount(
+  tab: DetailTab,
+  mode: SwarmMode,
+  sel: Selection,
+  detail: StorySpawnDetail,
+  artifacts: StorySpawnArtifacts | null,
+): string {
   if (tab === 'pr') {
     if (sel.kind === 'phase') {
       const ws = detail.workstreams.find((w) => w.id === sel.id);
       return String(ws?.prs.length ?? 0);
     }
-    if (sel.kind === 'doc' && detail.spawn.planPrId) return '1';
+    if (sel.kind === 'doc' && detail.spawn.planPrId) {
+      // Render the actual plan PR id (e.g. "PR-1812") rather than just a count
+      // so the tab strip matches the mock.
+      return shortPrId(detail.spawn.planPrId);
+    }
     return '0';
+  }
+  if (tab === 'document' && sel.kind === 'doc') {
+    return '·';
+  }
+  if (tab === 'conv' && sel.kind === 'doc') {
+    // Mocked count of in-thread comments / scratch refs until a real
+    // comment-stream API lands.
+    return '·';
+  }
+  if (tab === 'contributors' && sel.kind === 'doc') {
+    return String(contributorCountForDoc(sel.id, artifacts));
+  }
+  if (tab === 'impl' && sel.kind === 'doc') {
+    return String(detail.workstreams.length);
   }
   if (tab === 'overview' && sel.kind === 'overview') return String(detail.workstreams.length);
   if (tab === 'arch' && mode === 'design') return '4';
   return '·';
+}
+
+function shortPrId(id: string): string {
+  // Accept "PR #1812" / "PR-1812" / "1812" forms — render as compact "PR-1812"
+  // for the tab chip.
+  const trimmed = id.replace(/^pr[\s#-]*/i, '');
+  return `PR-${trimmed}`;
+}
+
+/** Mocked contributor counts per doc key — matches DocumentPane's MOCKS. */
+function contributorCountForDoc(docId: string | null, _artifacts: StorySpawnArtifacts | null): number {
+  if (!docId) return 0;
+  const key = docId.startsWith('doc:') ? docId.slice(4) : docId;
+  switch (key) {
+    case 'architecture':         return 3;
+    case 'tech-spec':            return 2;
+    case 'implementation-plan':  return 2;
+    case 'e2e-scenarios':        return 2;
+    case 'decomposition':        return 1;
+    default:                     return 0;
+  }
 }
 
 /* ─── OVERVIEW PANE ──────────────────────────────────────────────────── */
@@ -147,7 +229,7 @@ interface AgentRow {
   evaluatorModel: string | null;
 }
 
-function OverviewPane({ mode, detail, selection }: OvProps) {
+function OverviewPane({ mode, detail, selection, onSelect }: OvProps) {
   const [agents, setAgents] = useState<AgentRow[]>([]);
   useEffect(() => {
     let cancelled = false;
@@ -176,6 +258,7 @@ function OverviewPane({ mode, detail, selection }: OvProps) {
   const pairs = detail.workstreams
     .filter((w) => selection.kind !== 'phase' || selection.id === w.id)
     .map((w, i) => ({
+      wsId: w.id,
       id: `WS·${String(i + 1).padStart(2, '0')}`,
       team: pairTeamForStatus(w.status),
       cls: pairClsForStatus(w.status),
@@ -220,45 +303,44 @@ function OverviewPane({ mode, detail, selection }: OvProps) {
             </div>
           ) : (
             <div className="pairs">
-              {pairs.map((p) => (
-                <div key={p.id} className={`pair ${p.cls}`}>
-                  <div className="pair-hd">
-                    <div className="pair-id">
-                      <span className="team">{p.team}</span>{p.id}
-                    </div>
-                    <div className="pair-task" title={p.task}>{p.task}</div>
-                  </div>
-                  <div className="pair-agents">
-                    <div className="agent-tag gen">
-                      <span className="role">GENERATOR</span>
-                      <span className="name">{p.gen}</span>
-                      <span className="model">{p.genM}</span>
-                    </div>
-                    <div className="pair-link">⇄</div>
-                    <div className="agent-tag evl">
-                      <span className="role">EVALUATOR</span>
-                      <span className="name">{p.evl}</span>
-                      <span className="model">{p.evlM}</span>
-                    </div>
-                  </div>
-                  <div className="pair-meters">
-                    {p.meters.map((m, i) => (
-                      <div className="pair-m" key={i}>
-                        <div className="k">{m.k}</div>
-                        <div className="v">{m.v}</div>
+              {pairs.map((p) => {
+                const isSelected = selection.kind === 'phase' && selection.id === p.wsId;
+                return (
+                  <div
+                    key={p.wsId}
+                    className={`pair ${p.cls}${isSelected ? ' selected' : ''}`}
+                    onClick={() => onSelect({ kind: 'phase', id: p.wsId })}
+                  >
+                    <div className="pair-hd">
+                      <div className="pair-id">
+                        <span className="team">{p.team}</span>{p.id}
                       </div>
-                    ))}
-                  </div>
-                  <div className="iter-bars">
-                    {[1,2,3,4,5].map((n) => (
-                      <div key={n} className={`iter-bar${n === 1 ? ' curr' : ''}`} style={{ height: 24 }}>
-                        <div className="fill" style={{ height: `${n === 1 ? 60 : 0}%` }} />
-                        <span className="lbl">·</span>
+                      <div className="pair-task" title={p.task}>{p.task}</div>
+                    </div>
+                    <div className="pair-agents">
+                      <div className="agent-tag gen">
+                        <span className="role">GENERATOR</span>
+                        <span className="name">{p.gen}</span>
+                        <span className="model">{p.genM}</span>
                       </div>
-                    ))}
+                      <div className="pair-link">⇄</div>
+                      <div className="agent-tag evl">
+                        <span className="role">EVALUATOR</span>
+                        <span className="name">{p.evl}</span>
+                        <span className="model">{p.evlM}</span>
+                      </div>
+                    </div>
+                    <div className="pair-meters">
+                      {p.meters.map((m, i) => (
+                        <div className="pair-m" key={i}>
+                          <div className="k">{m.k}</div>
+                          <div className="v">{m.v}</div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

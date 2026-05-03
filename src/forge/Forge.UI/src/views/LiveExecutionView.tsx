@@ -76,6 +76,10 @@ export function LiveExecutionView(): JSX.Element {
   }, [snapshot?.deliverables]);
   const isRunActive = snapshot?.executionStatus === 'live'
     || snapshot?.executionStatus === 'queued';
+  // Once execution is completed, all retry-style actions are off — the work
+  // is done. The work item lifecycle owns re-opening; from this view, the
+  // only forward action is closing the panel.
+  const isCompleted = snapshot?.executionStatus === 'completed';
   const resumeMode: 'delivery' | 'iter' | null = (() => {
     if (!lastDeliverable) return null;
     if (lastDeliverable.verdict === 'pass') return 'delivery';
@@ -85,7 +89,7 @@ export function LiveExecutionView(): JSX.Element {
     return null;
   })();
   const canResume = resumeMode !== null;
-  const resumeDisabled = isRunActive || busy;
+  const resumeDisabled = isRunActive || busy || isCompleted;
   const [resumeNote, setResumeNote] = useState('');
   const [resumeComposerOpen, setResumeComposerOpen] = useState(false);
 
@@ -391,11 +395,13 @@ export function LiveExecutionView(): JSX.Element {
               disabled={resumeDisabled}
               onClick={onResumeClick}
               title={
-                isRunActive
-                  ? `Resume disabled — a run is in flight (status: ${snapshot?.executionStatus}). Wait for it to finish or cancel it first.`
-                  : resumeMode === 'delivery'
-                    ? `Replay build + push + PR. Iter ${lastDeliverable?.iter} already passed (score ${lastDeliverable?.score}); no agent re-run.`
-                    : `Continue iterating from iter ${lastDeliverable?.iter} (verdict ${lastDeliverable?.verdict}, score ${lastDeliverable?.score}). Opens a note composer first.`
+                isCompleted
+                  ? 'Resume disabled — execution is completed. Re-open the work item to retry.'
+                  : isRunActive
+                    ? `Resume disabled — a run is in flight (status: ${snapshot?.executionStatus}). Wait for it to finish or cancel it first.`
+                    : resumeMode === 'delivery'
+                      ? `Replay build + push + PR. Iter ${lastDeliverable?.iter} already passed (score ${lastDeliverable?.score}); no agent re-run.`
+                      : `Continue iterating from iter ${lastDeliverable?.iter} (verdict ${lastDeliverable?.verdict}, score ${lastDeliverable?.score}). Opens a note composer first.`
               }
             >
               ▶ Resume
@@ -404,27 +410,39 @@ export function LiveExecutionView(): JSX.Element {
           <button
             className="btn btn-primary"
             style={{ fontSize: 11, padding: '4px 10px' }}
-            disabled={busy}
+            disabled={busy || isCompleted}
             onClick={() => void forceRestart()}
-            title="Cancel active run and restart the conversation from scratch"
+            title={
+              isCompleted
+                ? 'Restart disabled — execution is completed.'
+                : 'Cancel active run and restart the conversation from scratch'
+            }
           >
             ⟳ Restart
           </button>
           <button
             className="btn btn-secondary"
             style={{ fontSize: 11, padding: '4px 10px' }}
-            disabled={busy}
+            disabled={busy || isCompleted}
             onClick={() => void requeue()}
-            title="Cancel current queue entry and re-enqueue to the same crew"
+            title={
+              isCompleted
+                ? 'Re-queue disabled — execution is completed.'
+                : 'Cancel current queue entry and re-enqueue to the same crew'
+            }
           >
             ↻ Re-queue
           </button>
           <button
             className="btn btn-secondary"
             style={{ fontSize: 11, padding: '4px 10px', color: 'var(--danger, #ef4444)' }}
-            disabled={busy}
+            disabled={busy || isCompleted}
             onClick={() => void cancelAndRequeue()}
-            title="Cancel queue entry and clear agent assignment — returns to unassigned state"
+            title={
+              isCompleted
+                ? 'Unassign disabled — execution is completed.'
+                : 'Cancel queue entry and clear agent assignment — returns to unassigned state'
+            }
           >
             ✕ Unassign
           </button>

@@ -9,6 +9,7 @@ import { Board } from '@/board/Board';
 import { FilterBar } from '@/board/FilterBar';
 import { WorkItemDetailPanel } from '@/workitems/WorkItemDetailPanel';
 import { DetailPanel } from '@/board/DetailPanel';
+import { StoryDetailPanel } from '@/board/StoryDetailPanel';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 import { useWitStore } from '@/workitems/useWitStore';
 import { ExecBoard } from '@/workitems/ExecBoard';
@@ -33,6 +34,8 @@ export function PlanView() {
   const move = useBoardStore((s) => s.move);
   const setSelected = useBoardStore((s) => s.setSelected);
   const selectedId = useBoardStore((s) => s.selectedId);
+  const selectedStoryId = useBoardStore((s) => s.selectedStoryId);
+  const setSelectedStory = useBoardStore((s) => s.setSelectedStory);
   const cards = useBoardStore((s) => s.cards);
   const burndown = useMemo(() => computeBurndown(cards), [cards]);
 
@@ -156,7 +159,7 @@ export function PlanView() {
   }
 
   useHotkeys('n', (e) => { e.preventDefault(); setModalOpen(true); });
-  useHotkeys('escape', () => { setSelected(null); setModalOpen(false); });
+  useHotkeys('escape', () => { setSelected(null); setSelectedStory(null); setModalOpen(false); });
   useHotkeys('/', (e) => {
     e.preventDefault();
     const search = document.querySelector<HTMLInputElement>('.filter-bar .filter-search input');
@@ -272,7 +275,11 @@ export function PlanView() {
           )}
         </div>
 
-        {selectedWorkItem ? (
+        {selectedStoryId ? (
+          <div>
+            <StoryDetailPanel storyId={selectedStoryId} />
+          </div>
+        ) : selectedWorkItem ? (
           <div style={{ width: 420, flexShrink: 0, borderLeft: '1px solid var(--border)', overflow: 'auto' }}>
             <WorkItemDetailPanel item={selectedWorkItem} />
           </div>
