@@ -1,7 +1,7 @@
 # Agent Memory — Implementation Plan
 
 > **Work Item**: Agent Memory (WI-1035)
-> **Status**: Planning (iteration 10)
+> **Status**: Planning (iteration 11)
 > **Research Basis**: [Graph-based Agent Memory Survey](https://arxiv.org/abs/2602.05665) (DEEP-PolyU)
 
 ## Problem Statement
@@ -142,14 +142,16 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
 
   **MemoryModels.cs** — delete `TierMapping` class (lines 201–231).
 
-  **AgentMemory.csproj** — add three package references (versions managed by Directory.Packages.props):
-  - `System.Collections.Immutable` — required for `ImmutableArray<T>` and `ImmutableDictionary<TK,TV>` on `ExpertiseRecord`.
-  - `Microsoft.Extensions.Logging.Abstractions` — required for `ILogger<T>` and `NullLogger<T>` in store constructors (Step 1.2.1) and `TierPolicy.Normalize` logging (Step 1.5.2). This package provides the `Microsoft.Extensions.Logging` namespace (interfaces) and `Microsoft.Extensions.Logging.Abstractions` namespace (`NullLogger<T>`).
-  - `Microsoft.Extensions.Options` — required for `IOptions<AgentMemoryOptions>` in store DI constructors (Step 1.2.1) and `services.AddOptions<AgentMemoryOptions>()` in `ServiceCollectionExtensions` (Step 1.5.2). This package provides the `Microsoft.Extensions.Options` namespace.
+  **AgentMemory.csproj** — add two package references (versions managed by `Directory.Packages.props`, which already has central `PackageVersion` entries for both):
+  - `Microsoft.Extensions.Logging.Abstractions` — required for `ILogger<T>` and `NullLogger<T>` in store constructors (Step 1.2.1) and `TierPolicy.Normalize` logging (Step 1.5.2). This package provides the `Microsoft.Extensions.Logging` namespace (interfaces) and `Microsoft.Extensions.Logging.Abstractions` namespace (`NullLogger<T>`). Central version: `Directory.Packages.props` line 64 (`10.0.6`).
+  - `Microsoft.Extensions.Options` — required for `IOptions<AgentMemoryOptions>` in store DI constructors (Step 1.2.1) and `services.AddOptions<AgentMemoryOptions>()` in `ServiceCollectionExtensions` (Step 1.5.2). This package provides the `Microsoft.Extensions.Options` namespace. Central version: `Directory.Packages.props` line 59 (`10.0.6`).
 
-  **Why all three are added in Step 1.1.1** (not deferred): Step 1.2.1 immediately introduces `ILogger<T>`, `NullLogger<T>`, and `IOptions<AgentMemoryOptions>` in store constructors. Package references must exist before those `using` directives compile. Adding them in Step 1.1.1 ensures the csproj is ready.
+  **`System.Collections.Immutable` does NOT need a package reference**: The project targets `net8.0` (set in `Directory.Build.props`). `System.Collections.Immutable` is part of the .NET 8 shared framework — `ImmutableArray<T>`, `ImmutableDictionary<TK,TV>`, and all related types are available via the implicit framework reference without any NuGet package. Adding a `PackageReference` would be unnecessary and would also fail `dotnet restore` because `Directory.Packages.props` has no central `PackageVersion` entry for `System.Collections.Immutable`. Only a `using System.Collections.Immutable;` directive is needed in source files.
 
-  **Using directives** added to store files in Step 1.2.1 (listed here for completeness):
+  **Why both packages are added in Step 1.1.1** (not deferred): Step 1.2.1 immediately introduces `ILogger<T>`, `NullLogger<T>`, and `IOptions<AgentMemoryOptions>` in store constructors. Package references must exist before those `using` directives compile. Adding them in Step 1.1.1 ensures the csproj is ready.
+
+  **Using directives** added to source files (listed here for completeness):
+  - `ExpertiseRecord.cs`: add `using System.Collections.Immutable;` (framework namespace, no NuGet package).
   - `InMemoryAgentMemoryStore.cs`: add `using Microsoft.Extensions.Logging;`, `using Microsoft.Extensions.Logging.Abstractions;`, `using Microsoft.Extensions.Options;`.
   - `FileSystemAgentMemoryStore.cs`: add `using Microsoft.Extensions.Logging;`, `using Microsoft.Extensions.Logging.Abstractions;`, `using Microsoft.Extensions.Options;`.
   - `TierPolicy.cs` (new file): add `using Microsoft.Extensions.Logging;`.
@@ -291,13 +293,14 @@ Every store `UpsertExpertiseAsync` enforces via `TierPolicy`:
   - The `ExpertiseRecordJsonConverter` is NOT affected — stays in static `JsonOptions`, no DI dependencies.
 
   **ServiceCollectionExtensions** changes (DI constructor wiring, deferred from Step 1.2.1):
-  - All three `AddAgentMemory` overloads add `services.AddOptions<AgentMemoryOptions>()` before store registration.
-  - `AddAgentMemory()`: register `InMemoryAgentMemoryStore` via factory `sp => new InMemoryAgentMemoryStore(sp.GetRequiredService<ILogger<InMemoryAgentMemoryStore>>(), sp.GetRequiredService<IOptions<AgentMemoryOptions>>())`.
-  - `AddAgentMemoryWithFileStorage(storagePath)`: register via factory `sp => new FileSystemAgentMemoryStore(storagePath, sp.GetRequiredService<ILogger<FileSystemAgentMemoryStore>>(), sp.GetRequiredService<IOptions<AgentMemoryOptions>>())`.
+  - All three `AddAgentMemory` overloads add `services.AddOptions<AgentMemoryOptions>()` before store registration. This ensures `IOptions<AgentMemoryOptions>` is always resolvable via DI.
+  - **Logger resolution uses `GetService` + fallback, NOT `GetRequiredService`**: Because `AddAgentMemory` must work standalone (`new ServiceCollection().AddAgentMemory().BuildServiceProvider()`) without requiring callers to register logging first, all factory lambdas resolve loggers via `sp.GetService<ILogger<T>>() ?? NullLogger<T>.Instance`. This matches the backward-compatible constructor pattern (Step 1.2.1) where parameterless constructors use `NullLogger<T>.Instance`. Callers who have registered `services.AddLogging()` get proper logging; callers who haven't get silent NullLogger. **Do NOT use `GetRequiredService<ILogger<T>>()`** — that would throw if logging is not registered.
+  - `AddAgentMemory()`: register `InMemoryAgentMemoryStore` via factory `sp => new InMemoryAgentMemoryStore(sp.GetService<ILogger<InMemoryAgentMemoryStore>>() ?? NullLogger<InMemoryAgentMemoryStore>.Instance, sp.GetRequiredService<IOptions<AgentMemoryOptions>>())`. Note: `IOptions` uses `GetRequiredService` because `AddOptions` is called above; `ILogger` uses `GetService` + fallback.
+  - `AddAgentMemoryWithFileStorage(storagePath)`: register via factory `sp => new FileSystemAgentMemoryStore(storagePath, sp.GetService<ILogger<FileSystemAgentMemoryStore>>() ?? NullLogger<FileSystemAgentMemoryStore>.Instance, sp.GetRequiredService<IOptions<AgentMemoryOptions>>())`.
   - `AddAgentMemory<TStore>()`: unchanged (generic TStore resolved by DI; must have compatible constructor).
-  - Add `AddAgentMemory(Action<AgentMemoryOptions> configure)` overload: calls `services.Configure(configure)` then registers in-memory store with DI constructor. This avoids an `IConfiguration` dependency — callers bind options via a lambda: `services.AddAgentMemory(o => o.WarnOnTierCorrection = true)`. `IConfiguration`-based binding (e.g., `configuration.GetSection("AgentMemory")`) is **deferred** — it would require adding `Microsoft.Extensions.Configuration.Binder` as a package reference, which is out of scope for Phase 1. Callers needing appsettings binding can manually call `services.Configure<AgentMemoryOptions>(section)` before `AddAgentMemory()`.
+  - Add `AddAgentMemory(Action<AgentMemoryOptions> configure)` overload: calls `services.Configure(configure)` then registers in-memory store with DI constructor (using `GetService<ILogger>() ?? NullLogger.Instance` pattern). This avoids an `IConfiguration` dependency — callers bind options via a lambda: `services.AddAgentMemory(o => o.WarnOnTierCorrection = true)`. `IConfiguration`-based binding (e.g., `services.Configure<AgentMemoryOptions>(configuration.GetSection("AgentMemory"))`) is **deferred** — it requires `Microsoft.Extensions.Options.ConfigurationExtensions` (which provides the `Configure<TOptions>(IConfiguration)` extension method), not `Microsoft.Extensions.Configuration.Binder`. `Directory.Packages.props` already has a central version for `Microsoft.Extensions.Options.ConfigurationExtensions` (line 60, version `9.0.0`), so a future step only needs to add the `PackageReference` to `AgentMemory.csproj`. Callers needing appsettings binding today can manually call `services.Configure<AgentMemoryOptions>(section)` before `AddAgentMemory()` if they have the package.
 
-  Tests: (a) `new AgentMemoryOptions().WarnOnTierCorrection` is `false`; (b) DI-resolved store has logger and options injected; (c) warning logged when `WarnOnTierCorrection=true` and tier corrected; (d) no warning when `WarnOnTierCorrection=false`; (e) backward-compatible `new InMemoryAgentMemoryStore()` works with NullLogger and default options.
+  Tests: (a) `new AgentMemoryOptions().WarnOnTierCorrection` is `false`; (b) DI-resolved store has logger and options injected (with and without `services.AddLogging()`); (c) warning logged when `WarnOnTierCorrection=true` and tier corrected; (d) no warning when `WarnOnTierCorrection=false`; (e) backward-compatible `new InMemoryAgentMemoryStore()` works with NullLogger and default options; (f) `new ServiceCollection().AddAgentMemory().BuildServiceProvider().GetRequiredService<IAgentMemoryStore>()` succeeds without `AddLogging()` (logger resolves to NullLogger via fallback).
 
   `expectedFileChanges`: 5
 
@@ -486,6 +489,8 @@ Wire agent memory into the agent lifecycle with correct symbol identity.
 | `AddMemoryEdgeAsync` upsert-by-ID | D7, D8 | Calling with same ID replaces edge; weight updated |
 | `WarnOnTierCorrection=true` logs correction | D3 | `ILogger.LogWarning` emitted when tier corrected |
 | `WarnOnTierCorrection=false` silent correction | D3 | No log emitted; record still corrected |
+| Standalone DI without `AddLogging()` | All | `new ServiceCollection().AddAgentMemory().BuildServiceProvider()` resolves store with NullLogger fallback; no throw |
+| DI with `AddLogging()` uses real logger | All | `services.AddLogging().AddAgentMemory()` → store receives real `ILogger<T>`, not NullLogger |
 | Branch scoring in Phase 2.3 | D9 | Same-branch 1.0×, default-branch 0.7×, cross-branch 0.5× |
 
 ## Out of Scope
@@ -497,7 +502,7 @@ Wire agent memory into the agent lifecycle with correct symbol identity.
 - **Multi-agent collaborative memory** — Beyond current single-agent architecture.
 - **MemGPT-style paging** — Context windows fit within current limits.
 - **Fine-tuning / model adaptation** — Memory is retrieval-time only.
-- **`IConfiguration`-based `AgentMemoryOptions` binding** — Requires `Microsoft.Extensions.Configuration.Binder` package. Callers can manually `services.Configure<AgentMemoryOptions>(section)` before `AddAgentMemory()`. Deferred to Phase 4.
+- **`IConfiguration`-based `AgentMemoryOptions` binding** — Requires `Microsoft.Extensions.Options.ConfigurationExtensions` package (which provides `services.Configure<TOptions>(IConfiguration)`). `Directory.Packages.props` already has a central version (line 60, `9.0.0`), so a future step only needs to add the `PackageReference` to `AgentMemory.csproj`. Callers can manually `services.Configure<AgentMemoryOptions>(section)` before `AddAgentMemory()` if they have the package. Deferred to Phase 4.
 - **`record class` for ExpertiseRecord** — Equality semantic change too risky.
 - **`required` keyword on `Tier`** — Breaks legacy JSON deserialization; store-boundary enforcement via `TierPolicy.Normalize` is safer and sufficient.
 - **Optimistic concurrency** — Deferred to Phase 4 background service.
