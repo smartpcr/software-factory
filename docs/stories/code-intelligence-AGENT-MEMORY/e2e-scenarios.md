@@ -340,68 +340,72 @@ Feature: Expertise Layer — Agent Learning and Write-Back
     And the agent session ID is "copilot-session-42"
 
   Scenario: 4.1 — Record a Pitfall expertise entry
+    # RecordExpertiseAsync signature per architecture.md §5.3:
+    #   (targetNodeId, kind, content, sourceAgent)
     When the agent calls IEvolutionEngine.RecordExpertiseAsync with:
-      | field       | value                                                                   |
-      | Kind        | pitfall                                                                 |
-      | Title       | Null-deref in HypergraphNode.Metadata access                            |
-      | Body        | Accessing Metadata keys without null-check causes NRE when key missing  |
-      | AppliesTo   | ["/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"]               |
-      | Scope       | exact                                                                   |
-      | SourceAgent | copilot-session-42                                                      |
-    Then a new expertise node is created with:
-      | field    | value                            |
-      | Id       | expertise:pitfall:<hash8>        |
-      | NodeType | Pitfall                          |
-      | Metadata.MemoryLayer | expertise              |
-      | Metadata.Confidence  | 1.0                    |
-      | Metadata.Title       | Null-deref in HypergraphNode.Metadata access |
-      | Metadata.SourceAgent | copilot-session-42     |
+      | field        | value                                                                                          |
+      | TargetNodeId | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode                                          |
+      | Kind         | Pitfall                                                                                        |
+      | Content      | Null-deref in HypergraphNode.Metadata access — accessing keys without null-check causes NRE    |
+      | SourceAgent  | copilot-session-42                                                                             |
+    Then a new ExpertiseEntry is persisted in the expertise table with:
+      | field        | value                                                          |
+      | Id           | expertise:pitfall:<hash8>                                      |
+      | Kind         | Pitfall                                                        |
+      | Confidence   | 1.0                                                            |
+      | SourceAgent  | copilot-session-42                                             |
+      | TargetNodeId | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode          |
+      | ContentHash  | non-null (SHA-256 of Content)                                  |
     And an APPLIES_TO edge is created:
       | EdgeType       | SemanticRelation | Roles.expertise              | Roles.target                                           |
       | MemoryRelation | APPLIES_TO       | expertise:pitfall:<hash8>    | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode  |
-    And the expertise node's embedding is computed from "pitfall: Null-deref in HypergraphNode.Metadata access\n<body>"
-    And an audit_log entry is written with operation "Create" and entity_type "Pitfall"
+    And the ExpertiseEntry's embedding is computed from the Content field
+    And an audit_log entry is written with operation "record_expertise"
 
   Scenario: 4.2 — Record a Pattern expertise entry
-    When the agent calls RecordExpertiseAsync with Kind = "pattern" and:
-      | Title     | Composition-over-inheritance wrapper pattern                          |
-      | Body      | MemoryNode wraps HypergraphNode via Inner property, not inheritance   |
-      | AppliesTo | ["/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"]             |
-    Then a Pattern node is created with Metadata.ExpertiseKind = "pattern"
-    And Metadata.Confidence = 1.0
+    When the agent calls RecordExpertiseAsync with:
+      | field        | value                                                                           |
+      | TargetNodeId | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode                           |
+      | Kind         | Pattern                                                                         |
+      | Content      | Composition-over-inheritance wrapper pattern — MemoryNode wraps HypergraphNode via Inner property, not inheritance |
+      | SourceAgent  | copilot-session-42                                                              |
+    Then a Pattern ExpertiseEntry is created with Kind = Pattern and Confidence = 1.0
 
   Scenario: 4.3 — Record a Preference expertise entry
-    When the agent records Kind = "preference":
-      | Title     | Always use this. qualifier for instance members         |
-      | Body      | Per .editorconfig, all C# instance members use this.    |
-      | AppliesTo | ["/"]                                                    |
-      | Scope     | subtree                                                 |
-    Then a Preference node is created with APPLIES_TO scope = "subtree"
+    When the agent calls RecordExpertiseAsync with:
+      | field        | value                                                              |
+      | TargetNodeId | /                                                                  |
+      | Kind         | Preference                                                         |
+      | Content      | Always use this. qualifier for instance members — per .editorconfig, all C# instance members use this. |
+      | SourceAgent  | copilot-session-42                                                 |
+    Then a Preference ExpertiseEntry is created with Confidence = 1.0
     And the APPLIES_TO edge targets the repo root "/"
 
   Scenario: 4.4 — Record an Insight expertise entry
-    When the agent records Kind = "insight":
-      | Title     | CodeIntelligence analyzers are independent and composable              |
-      | Body      | Each of the 27 analyzers in CodeIntelligence/Analyzers/ can run independently |
-      | AppliesTo | ["/src/ast/CodeIntelligence"]                                         |
-    Then an Insight node is created linked to the CodeIntelligence package
+    When the agent calls RecordExpertiseAsync with:
+      | field        | value                                                                                        |
+      | TargetNodeId | /src/ast/CodeIntelligence                                                                    |
+      | Kind         | Insight                                                                                      |
+      | Content      | CodeIntelligence analyzers are independent and composable — each of the 27 analyzers in CodeIntelligence/Analyzers/ can run independently |
+      | SourceAgent  | copilot-session-42                                                                           |
+    Then an Insight ExpertiseEntry is created with TargetNodeId = "/src/ast/CodeIntelligence"
 
   Scenario: 4.5 — Duplicate expertise triggers DERIVED_FROM edge
-    Given an existing Pitfall node "expertise:pitfall:a1a11111" with Title
+    Given an existing ExpertiseEntry "expertise:pitfall:a1a11111" with Content
       "Metadata access may throw KeyNotFoundException"
-    And it applies to "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
-    When the agent records a new Pitfall with Title
-      "Null-deref in HypergraphNode.Metadata access"
+    And it targets "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
+    When the agent records a new Pitfall with Content
+      "Null-deref in HypergraphNode.Metadata access — similar underlying issue"
     And the cosine similarity between old and new expertise > SimilarityThreshold (0.85)
     Then a DERIVED_FROM edge is created:
       | SemanticRelation | Roles.derived                | Roles.source                 |
       | DERIVED_FROM     | expertise:pitfall:<new_hash> | expertise:pitfall:a1a11111   |
     And a consolidation is scheduled
 
-  Scenario: 4.6 — Expertise with invalid AppliesTo target is rejected
-    When the agent calls RecordExpertiseAsync with AppliesTo = ["/nonexistent/path::Foo"]
+  Scenario: 4.6 — Expertise with invalid target node is rejected
+    When the agent calls RecordExpertiseAsync with targetNodeId = "/nonexistent/path::Foo"
     Then the call fails with a validation error indicating the target node does not exist
-    And no expertise node is created
+    And no ExpertiseEntry is created
     And no audit_log entry is written
 
   Scenario: 4.7 — Expertise with ext: extension metadata key
@@ -633,57 +637,57 @@ entries, and generates community summaries (per `architecture.md` §3.5).
 Feature: Evolution Engine — Consolidation and Decay
 
   Background:
-    Given the graph at commit_index 10 with multiple expertise nodes
+    Given the graph at commit_index 10 with multiple ExpertiseEntry records
 
   Scenario: 8.1 — Consolidation merges overlapping expertise via SUPERSEDES
-    Given 3 Pitfall nodes about "null handling in Metadata access":
+    Given 3 Pitfall ExpertiseEntry records about "null handling in Metadata access":
       | Id                         | Confidence | SourceAgent          |
       | expertise:pitfall:aa11bb22 | 0.8        | copilot-session-10   |
       | expertise:pitfall:cc33dd44 | 0.9        | copilot-session-15   |
       | expertise:pitfall:ee55ff66 | 1.0        | copilot-session-20   |
-    When IEvolutionEngine.ConsolidateAsync runs for scope "/src/ast/Ast.Core"
-    Then 1 merged expertise node is produced
+    When IEvolutionEngine.ConsolidateAsync runs
+    Then 1 merged ExpertiseEntry is produced
     And SUPERSEDES edges are created:
       | SemanticRelation | Roles.newer                   | Roles.older                   |
       | SUPERSEDES       | expertise:pitfall:<merged>    | expertise:pitfall:aa11bb22    |
       | SUPERSEDES       | expertise:pitfall:<merged>    | expertise:pitfall:cc33dd44    |
       | SUPERSEDES       | expertise:pitfall:<merged>    | expertise:pitfall:ee55ff66    |
-    And the ConsolidationReport shows:
+    And the ConsolidationResult shows:
       | field       | value |
       | Merged      | 3     |
       | Superseded  | 3     |
 
   Scenario: 8.2 — Time-based decay with centrality boost
-    Given an expertise node with initial Confidence = 1.0 created 1095 days ago
+    Given an ExpertiseEntry with initial Confidence = 1.0 created 1095 days ago
     And the target code node has normalized_pagerank = 0.6
     When decay is computed during retrieval
     Then the decayed confidence is approximately:
       1.0 × 2^(−1095 / 1095) × (1.0 + 0.5 × 0.6) = 0.5 × 1.3 = 0.65
-    And the expertise node remains active (0.65 > ArchiveConfidenceFloor 0.1)
+    And the ExpertiseEntry remains active (0.65 > ArchiveConfidenceFloor 0.1)
 
   Scenario: 8.3 — Event-based decay on major code change
-    Given an expertise node with Confidence = 0.8
+    Given an ExpertiseEntry with Confidence = 0.8
     And its APPLIES_TO target's ContentHash changes (major change, not whitespace)
     When DecayStaleExpertiseAsync runs
-    Then the expertise Confidence becomes 0.8 × StaleDecayFactor (0.5) = 0.4
-    And the expertise node remains active (0.4 > ArchiveConfidenceFloor 0.1)
+    Then the ExpertiseEntry Confidence becomes 0.8 × StaleDecayFactor (0.5) = 0.4
+    And the ExpertiseEntry remains active (0.4 > ArchiveConfidenceFloor 0.1)
 
   Scenario: 8.4 — Event-based decay on minor change
-    Given an expertise node with Confidence = 0.3
+    Given an ExpertiseEntry with Confidence = 0.3
     And its target has a whitespace-only ContentHash change
     When DecayStaleExpertiseAsync runs
-    Then the expertise Confidence becomes 0.3 × MinorDecayFactor (0.9) = 0.27
-    And the expertise node remains active (0.27 > ArchiveConfidenceFloor 0.1)
+    Then the ExpertiseEntry Confidence becomes 0.3 × MinorDecayFactor (0.9) = 0.27
+    And the ExpertiseEntry remains active (0.27 > ArchiveConfidenceFloor 0.1)
 
   Scenario: 8.5 — Expertise below ArchiveConfidenceFloor is soft-deleted
-    Given an expertise node with Confidence = 0.08 (below ArchiveConfidenceFloor 0.1)
+    Given an ExpertiseEntry with Confidence = 0.08 (below ArchiveConfidenceFloor 0.1)
     When DecayStaleExpertiseAsync runs
-    Then the expertise node is soft-deleted (VersionRange.Until set to current commit)
+    Then the ExpertiseEntry is soft-deleted (removed from default retrieval)
     And it no longer appears in default ExpertiseRecall results
-    But GetNodeAtCommitAsync with a prior commit still returns it
+    But historical queries can still find it via the audit_log
 
   Scenario: 8.6 — Community summarization produces Topic nodes
-    When ConsolidateAsync runs community detection (Louvain) on the structural layer
+    When DetectCommunitiesAsync runs community detection (Louvain) on CALLS/SIMILAR_TO edges
     Then Topic nodes are created for each detected community with LLM-generated summary_prose
     And each Topic node has NodeType = "Topic" and Metadata["MemoryLayer"] = "semantic"
     And BELONGS_TO_CLUSTER edges link member nodes to their Topic node:
@@ -707,20 +711,20 @@ Feature: Cross-Session Learning — Memory Compounds Over Time
     Given a fresh repository with the src/ast/ subtree
     When IncrementalSync onboards the repo at commit_index 1
     Then the graph has Structural and Call-Chain layers populated
-    And 0 expertise nodes exist
+    And 0 expertise entries exist in the expertise table
 
     # Session 2: Agent learns a pattern
     When agent "copilot-session-A" completes a task in Ast.Core
-    And records a Pattern: "Composition wrappers for backward compatibility"
-      applying to "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
-    Then 1 expertise node exists with Confidence = 1.0
+    And calls RecordExpertiseAsync for a Pattern: "Composition wrappers for backward compatibility"
+      with targetNodeId "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
+    Then 1 ExpertiseEntry exists with Confidence = 1.0
 
     # Session 3: Another agent retrieves and learns more
     When agent "copilot-session-B" queries for context about HypergraphNode
     Then the Hybrid retrieval includes the Pattern in "## Known Expertise"
-    When "copilot-session-B" records an Insight: "GetEnhancedEmbeddingText includes source code up to 2000 chars"
-      applying to "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEnhancedEmbeddingText"
-    Then 2 expertise nodes exist
+    When "copilot-session-B" calls RecordExpertiseAsync for an Insight: "GetEnhancedEmbeddingText includes source code up to 2000 chars"
+      with targetNodeId "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEnhancedEmbeddingText"
+    Then 2 ExpertiseEntry records exist
 
     # Code change triggers decay
     When the developer refactors HypergraphNode in commit "fff6666" (commit_index 10)
@@ -730,7 +734,7 @@ Feature: Cross-Session Learning — Memory Compounds Over Time
 
     # Session 4: Next agent sees decayed but still-active expertise
     When agent "copilot-session-C" queries for HypergraphNode context
-    Then both expertise entries appear with their decayed Confidence values
+    Then both ExpertiseEntry records appear with their decayed Confidence values
     And the Context Assembler injects "⚠ stale — target code changed" marker
 
   Scenario: 9.2 — Cross-branch expertise visibility
@@ -741,11 +745,11 @@ Feature: Cross-Session Learning — Memory Compounds Over Time
     And if the target's ContentHash differs between branches,
       the Context Assembler marks the expertise as "⚠ stale — target code changed"
 
-  Scenario: 9.3 — 10 sessions produce >= 5 retrievable expertise nodes
-    Given 10 agent sessions each record at least 1 expertise entry
+  Scenario: 9.3 — 10 sessions produce >= 5 retrievable expertise entries
+    Given 10 agent sessions each call RecordExpertiseAsync at least once
       across different code targets in src/ast/
     When the Evolution Engine has run consolidation after session 10
-    Then at least 5 expertise nodes with Confidence > 0.7 exist
+    Then at least 5 ExpertiseEntry records with Confidence > 0.7 exist
     And ExpertiseRecall retrieval surfaces them ranked by Confidence
     # Success criterion from tech-spec §10: "After 10 agent sessions, ≥ 5 expertise nodes with confidence > 0.7"
 ```
@@ -768,7 +772,7 @@ Feature: MCP Tool Interface — External Agent Integration
     And the MCP server is running with 5 registered tools:
       | tool_name                | maps_to                                    |
       | memory_query             | IMemoryRetrievalEngine.RetrieveAsync()      |
-      | memory_status            | IMemoryGraphStore.GetStatisticsAsync()       |
+      | memory_status            | IMemoryGraphStore.GetMemoryStatisticsAsync() |
       | memory_record_expertise  | IEvolutionEngine.RecordExpertiseAsync()     |
       | memory_sync              | IIncrementalSync.ApplyDiffAsync()           |
       | memory_consolidate       | IEvolutionEngine.ConsolidateAsync()         |
