@@ -253,20 +253,40 @@ function OverviewPane({ mode, detail, selection }: OvProps) {
     : selection.id ?? '';
 
   // Pair cards: one per workstream (the generator / evaluator pair that owns it).
-  // `assignedAgent.role` is not yet on the contract (EX.2) — show pair shape with
-  // role-derived names from the workstream id and TBD models.
+  // All values are sourced from the StorySpawnWorkstreamSummary contract — the
+  // backend joins WorkstreamRow.AgentsJson + the deliverables table + the
+  // agent_usage cost ledger so we don't need per-card round-trips.
+  const agentsById = new Map(agents.map((a) => [a.id, a]));
+  const displayName = (id: string | null | undefined): string => {
+    if (!id) return '—';
+    const a = agentsById.get(id);
+    return a?.name ?? id;
+  };
+  const modelFor = (id: string | null | undefined, role: 'gen' | 'evl'): string => {
+    if (!id) return '—';
+    const a = agentsById.get(id);
+    if (!a) return '—';
+    return (role === 'gen' ? a.generatorModel : a.evaluatorModel) ?? '—';
+  };
+  const teamFor = (id: string | null | undefined): string => {
+    if (!id) return 'ENG';
+    const a = agentsById.get(id);
+    if (!a?.crewId) return 'ENG';
+    const team = a.crewId.replace(/^crew-/, '').replace(/-night$/, '');
+    return team.toUpperCase();
+  };
   const pairs = detail.workstreams
     .filter((w) => selection.kind !== 'phase' || selection.id === w.id)
     .map((w, i) => ({
       id: `WS·${String(i + 1).padStart(2, '0')}`,
-      team: pairTeamForStatus(w.status),
+      team: teamFor(w.latestGenAgentId ?? w.agents?.[0]),
       cls: pairClsForStatus(w.status),
       task: w.name,
-      gen:  '—',
-      genM: 'tbd',
-      evl:  '—',
-      evlM: 'tbd',
-      meters: pairMetersForStatus(w.status),
+      gen:  displayName(w.latestGenAgentId ?? w.agents?.[0]),
+      genM: modelFor(w.latestGenAgentId ?? w.agents?.[0], 'gen'),
+      evl:  displayName(w.latestEvalAgentId ?? w.agents?.[1]),
+      evlM: modelFor(w.latestEvalAgentId ?? w.agents?.[1], 'evl'),
+      meters: pairMetersForWorkstream(w),
       status: w.status,
     }));
 
@@ -302,44 +322,37 @@ function OverviewPane({ mode, detail, selection }: OvProps) {
             </div>
           ) : (
             <div className="pairs">
-              {pairs.map((p) => {
-                const isSelected = selection.kind === 'phase' && selection.id === p.wsId;
-                return (
-                  <div
-                    key={p.wsId}
-                    className={`pair ${p.cls}${isSelected ? ' selected' : ''}`}
-                    onClick={() => onSelect({ kind: 'phase', id: p.wsId })}
-                  >
-                    <div className="pair-hd">
-                      <div className="pair-id">
-                        <span className="team">{p.team}</span>{p.id}
-                      </div>
-                      <div className="pair-task" title={p.task}>{p.task}</div>
+              {pairs.map((p) => (
+                <div key={p.id} className={`pair ${p.cls}`}>
+                  <div className="pair-hd">
+                    <div className="pair-id">
+                      <span className="team">{p.team}</span>{p.id}
                     </div>
-                    <div className="pair-agents">
-                      <div className="agent-tag gen">
-                        <span className="role">GENERATOR</span>
-                        <span className="name">{p.gen}</span>
-                        <span className="model">{p.genM}</span>
-                      </div>
-                      <div className="pair-link">⇄</div>
-                      <div className="agent-tag evl">
-                        <span className="role">EVALUATOR</span>
-                        <span className="name">{p.evl}</span>
-                        <span className="model">{p.evlM}</span>
-                      </div>
+                    <div className="pair-task" title={p.task}>{p.task}</div>
+                  </div>
+                  <div className="pair-agents">
+                    <div className="agent-tag gen">
+                      <span className="role">GENERATOR</span>
+                      <span className="name">{p.gen}</span>
+                      <span className="model">{p.genM}</span>
                     </div>
-                    <div className="pair-meters">
-                      {p.meters.map((m, i) => (
-                        <div className="pair-m" key={i}>
-                          <div className="k">{m.k}</div>
-                          <div className="v">{m.v}</div>
-                        </div>
-                      ))}
+                    <div className="pair-link">⇄</div>
+                    <div className="agent-tag evl">
+                      <span className="role">EVALUATOR</span>
+                      <span className="name">{p.evl}</span>
+                      <span className="model">{p.evlM}</span>
                     </div>
                   </div>
-                );
-              })}
+                  <div className="pair-meters">
+                    {p.meters.map((m, i) => (
+                      <div className="pair-m" key={i}>
+                        <div className="k">{m.k}</div>
+                        <div className="v">{m.v}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -383,13 +396,6 @@ function OverviewPane({ mode, detail, selection }: OvProps) {
 
 /* ─── helpers ───────────────────────────────────────────────────────── */
 
-function pairTeamForStatus(status: string): string {
-  if (status === 'review' || status === 'merging') return 'REV';
-  if (status === 'complete') return 'QA';
-  if (status === 'planning' || status === 'blocked') return 'ARCH';
-  return 'ENG';
-}
-
 function pairClsForStatus(status: string): string {
   if (status === 'review' || status === 'merging') return 'review';
   if (status === 'complete') return 'e2e';
@@ -397,17 +403,35 @@ function pairClsForStatus(status: string): string {
   return '';
 }
 
-function pairMetersForStatus(status: string): { k: string; v: string }[] {
-  if (status === 'review' || status === 'merging') {
-    return [{ k: 'COMMENTS', v: '—' }, { k: 'REQ-CHG', v: '—' }, { k: 'SCORE', v: '—' }];
-  }
-  if (status === 'complete') {
-    return [{ k: 'PASS', v: '—' }, { k: 'FAIL', v: '0' }, { k: 'COVER', v: '—' }];
-  }
-  if (status === 'stalled') {
-    return [{ k: 'TRIAL', v: '3/3' }, { k: 'LAST SCR', v: '—' }, { k: 'STATE', v: 'stalled' }];
-  }
-  return [{ k: 'TURNS', v: '—' }, { k: 'FILES', v: '—' }, { k: 'ELAPSED', v: '—' }];
+/** Real-data meters: TURNS = deliverables.count; SCORE = latest deliverable
+ *  (or '—' if none); ELAPSED = since-latest-deliverable; COST = sum of
+ *  agent_usage rows for this workstream. */
+function pairMetersForWorkstream(w: import('@/api/forgeApi').StorySpawnWorkstreamSummary): { k: string; v: string }[] {
+  const iter = w.iter ?? 0;
+  const score = w.latestScore;
+  const elapsed = w.lastActiveAt ? formatElapsed(w.lastActiveAt) : '—';
+  const cost = w.costUsd ?? 0;
+  return [
+    { k: 'TURNS',   v: iter > 0 ? String(iter) : '—' },
+    { k: 'SCORE',   v: score == null ? '—' : String(score) },
+    { k: 'ELAPSED', v: elapsed },
+    { k: 'COST',    v: cost > 0 ? `$${cost.toFixed(2)}` : '—' },
+  ];
+}
+
+function formatElapsed(iso: string): string {
+  const t = Date.parse(iso);
+  if (isNaN(t)) return '—';
+  const ms = Date.now() - t;
+  if (ms < 0) return '—';
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60)    return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60)    return `${min}m`;
+  const hr  = Math.floor(min / 60);
+  if (hr  < 48)    return `${hr}h ${min % 60}m`;
+  const day = Math.floor(hr / 24);
+  return `${day}d`;
 }
 
 function prettyId(id: string): string {

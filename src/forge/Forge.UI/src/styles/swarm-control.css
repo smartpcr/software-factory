@@ -356,12 +356,13 @@
 .swarm-ctrl .pipeline .stage.active {
   background: linear-gradient(180deg, rgba(255,179,71,0.05), transparent);
 }
-.swarm-ctrl .pipeline .stage.active::after {
-  content: '';
-  position: absolute; left: 0; right: 0; bottom: 0;
-  height: 2px;
-  background: var(--sc-amber);
-  box-shadow: 0 0 12px rgba(255,179,71,0.45);
+/* Selected stage (the mode the user has drilled into) gets a full amber
+ * border so it reads as "you are here" regardless of which lifecycle state
+ * the stage is in (done / active / queued). The 2px box-shadow inset paints
+ * inside the cell so it never collides with the strip's outer 1px border. */
+.swarm-ctrl .pipeline .stage.selected {
+  box-shadow: inset 0 0 0 2px var(--sc-amber);
+  background: rgba(255, 179, 71, 0.06);
 }
 .swarm-ctrl .pipeline .stage.done .num,
 .swarm-ctrl .pipeline .stage.done .lbl  { color: var(--sc-green); }
@@ -1069,11 +1070,6 @@
 .swarm-ctrl .pair.review::before  { background: var(--sc-magenta); }
 .swarm-ctrl .pair.e2e::before     { background: var(--sc-green); }
 .swarm-ctrl .pair.stalled::before { background: var(--sc-red); animation: sc-pulse 0.8s infinite; }
-.swarm-ctrl .pair.selected {
-  border-color: var(--sc-amber);
-  box-shadow: 0 0 0 1px var(--sc-amber-d), 0 0 14px rgba(255, 179, 71, 0.16);
-}
-.swarm-ctrl .pair.selected:hover { border-color: var(--sc-amber); }
 
 .swarm-ctrl .pair-hd { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; gap: 6px; }
 .swarm-ctrl .pair-id { font-family: var(--sc-font-display); font-size: 10px; letter-spacing: 0.16em; color: var(--sc-text); }
@@ -1105,7 +1101,7 @@
 .swarm-ctrl .agent-tag.evl .role { color: var(--sc-cyan); }
 .swarm-ctrl .pair-link { color: var(--sc-muted); font-family: var(--sc-font-mono); font-size: 14px; text-align: center; }
 
-.swarm-ctrl .pair-meters { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-bottom: 7px; }
+.swarm-ctrl .pair-meters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 7px; }
 .swarm-ctrl .pair-m { background: var(--sc-surface); border: 1px solid var(--sc-border); padding: 4px 6px; line-height: 1.15; }
 .swarm-ctrl .pair-m .k { font-family: var(--sc-font-display); font-size: 8px; letter-spacing: 0.16em; color: var(--sc-muted); }
 .swarm-ctrl .pair-m .v { font-family: var(--sc-font-mono); font-size: 11px; color: var(--sc-text); font-weight: 600; }

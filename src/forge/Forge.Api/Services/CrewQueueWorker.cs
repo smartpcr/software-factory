@@ -116,6 +116,14 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     /// </summary>
     private volatile bool shuttingDown;
 
+    // Interlocked latch: 0 = not run, 1 = ran. Forge.Api.Tests' WebApplicationFactory
+    // hosting the DI graph alongside the prod server (or any future code path that
+    // accidentally re-invokes this sweep) caused 4036 spurious boot-recovery rows
+    // in task_queue_history — every claim was racing with a recovery reset every
+    // few hundred ms, ratio ~1:1 against `claimed`. After-the-fact: prevent any
+    // post-boot call from doing work; log so the second-caller is identifiable.
+    private int bootRecoveryLatch;
+
     private readonly WorktreeChangeFeed worktreeFeed;
 
     public CrewQueueWorker(
@@ -227,6 +235,20 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     // ── Boot recovery — requeue picked-up items from previous run ─────────
     private async Task<int> SweepBootRecoveryAsync(CancellationToken ct)
     {
+        // Single-shot per process. The intended caller is StartAsync exactly
+        // once. A second invocation (test factory hosting this DI graph in the
+        // same process as the prod server, future refactor wiring this into
+        // the timer loop, etc.) would race with normal claims and produce a
+        // boot-recovery → claimed → boot-recovery loop on every queue row.
+        if (Interlocked.CompareExchange(ref this.bootRecoveryLatch, 1, 0) != 0)
+        {
+            this.logger.LogWarning(
+                "SweepBootRecoveryAsync called more than once per process — second call ignored. "
+                + "Stack: {Stack}",
+                Environment.StackTrace);
+            return 0;
+        }
+
         using var scope = this.scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
 
@@ -1779,19 +1801,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     var providers = scope.ServiceProvider
                         .GetRequiredService<IEnumerable<Forge.Api.Providers.IForgeProvider>>();
                     var repoKind = !string.IsNullOrEmpty(wiRepo?.Kind) ? wiRepo.Kind : "ado";
-                    string? prRepoName = null;
-                    string? prProjectName = null;
-                    if (wiRepo is not null && repoKind == "ado")
-                    {
-                        prRepoName = ExtractAdoRepoName(wiRepo.RemoteUrl);
-                        if (!string.IsNullOrEmpty(wiRepo.AdoProject))
-                            prProjectName = wiRepo.AdoProject;
-                    }
-                    else if (wiRepo is not null && repoKind == "github")
-                    {
-                        prRepoName = wiRepo.GhRepo;
-                        prProjectName = wiRepo.GhOwner;
-                    }
+                    var (prRepoName, prProjectName) = Forge.Api.Providers.PrCoordsResolver.Resolve(wiRepo, repoKind);
 
                     var provider = providers.FirstOrDefault(p => p.Kind == repoKind && p.IsConfigured)
                         ?? providers.FirstOrDefault(p => p.IsConfigured);
@@ -3115,20 +3125,4 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         return null;
     }
 
-    /// <summary>
-    /// Extracts the ADO repository name from a remote URL.
-    /// E.g. <c>https://dev.azure.com/org/project/_git/reponame</c> → <c>reponame</c>.
-    /// </summary>
-    private static string? ExtractAdoRepoName(string? remoteUrl)
-    {
-        if (string.IsNullOrEmpty(remoteUrl)) return null;
-        if (!Uri.TryCreate(remoteUrl, UriKind.Absolute, out var uri)) return null;
-        var segs = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        var gitIdx = Array.IndexOf(segs, "_git");
-        if (gitIdx >= 0 && gitIdx + 1 < segs.Length)
-        {
-            return segs[gitIdx + 1].TrimEnd('/');
-        }
-        return null;
-    }
 }

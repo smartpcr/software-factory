@@ -44,6 +44,12 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
     internal ForgeWebApplicationFactory(Dictionary<string, string?>? extraConfig)
     {
         this.extraConfig = extraConfig ?? new();
+        // One-way "we're in a test" signal honored by Program.cs's
+        // AddDbContext delegate. Set to "1" only — never unset and never
+        // varied per test, so parallel xUnit tests can't race on it the
+        // way they raced on the old per-test FORGE_DB_PATH value. Program.cs
+        // refuses to open the prod DB path when this flag is set.
+        Environment.SetEnvironmentVariable("FORGE_TEST_GUARDRAIL", "1");
         // Copy production DB to the per-instance temp path so the test
         // starts with realistic schema and seed data. If the prod DB
         // doesn't exist (CI / fresh clone), the empty temp file will get

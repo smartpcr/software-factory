@@ -75,6 +75,20 @@ export interface StorySpawnWorkstreamSummary {
   cards: string[];
   prs: string[];
   deps: string[];
+  /** Phase 28+ — live runtime fields surfaced from the deliverables /
+   *  agent_usage tables. All optional so older clients keep working and
+   *  workstreams that haven't claimed yet (planning) report zeroes. */
+  agents?: string[];
+  iter?: number;
+  latestScore?: number | null;
+  latestVerdict?: string | null;
+  latestGenAgentId?: string | null;
+  latestEvalAgentId?: string | null;
+  lastActiveAt?: string | null;
+  costUsd?: number;
+  commits?: number;
+  ahead?: number;
+  behind?: number;
 }
 
 export interface StorySpawnDetail {

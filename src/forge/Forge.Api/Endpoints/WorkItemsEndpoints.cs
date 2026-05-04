@@ -732,17 +732,7 @@ public static class WorkItemsEndpoints
         {
             var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
             if (!string.IsNullOrEmpty(repo?.Kind)) repoKind = repo.Kind;
-            if (repo is not null && repoKind == "ado")
-            {
-                prRepoName = ExtractAdoRepoName(repo.RemoteUrl);
-                if (!string.IsNullOrEmpty(repo.AdoProject))
-                    prProjectName = repo.AdoProject;
-            }
-            else if (repo is not null && repoKind == "github")
-            {
-                prRepoName = repo.GhRepo;
-                prProjectName = repo.GhOwner;
-            }
+            (prRepoName, prProjectName) = PrCoordsResolver.Resolve(repo, repoKind);
         }
 
         var provider = providers.FirstOrDefault(p => p.Kind == repoKind && p.IsConfigured)
@@ -779,15 +769,6 @@ public static class WorkItemsEndpoints
 
         Forge.Api.Services.SystemNotify.PrCreated(id, pr.Id);
         return Results.Ok(new { prId = pr.Id, prTitle = pr.Title });
-    }
-
-    /// <summary>Extract the ADO repository name from a remote URL.</summary>
-    private static string? ExtractAdoRepoName(string? remoteUrl)
-    {
-        if (string.IsNullOrEmpty(remoteUrl)) return null;
-        // https://dev.azure.com/org/project/_git/reponame
-        var idx = remoteUrl.LastIndexOf("/_git/", StringComparison.OrdinalIgnoreCase);
-        return idx >= 0 ? remoteUrl[(idx + 6)..] : null;
     }
 
     // ----- helpers --------------------------------------------------------

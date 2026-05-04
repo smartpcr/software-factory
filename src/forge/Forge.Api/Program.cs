@@ -70,12 +70,53 @@ builder.Services.AddCors(options =>
     var bootstrapped = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
     var bootstrapLock = new object();
 
+    const string ProdDbDefault = @"E:\forge\forge.db";
+
+    // Defense-in-depth against tests writing to the production DB. The
+    // factory tripwire in `ForgeWebApplicationFactory.ConfigureServices`
+    // catches the case where `Forge:Db:Path` resolves to the prod default,
+    // but it's been bypassed twice now (most recently 2026-05-03 — 18 stale
+    // crews + 12 stale agents had to be scrubbed). This second layer trips
+    // when Program.cs is hosting inside a test process and somehow ends up
+    // pointed at the prod path anyway. Two independent signals:
+    //   1. An xUnit (or Microsoft.AspNetCore.TestHost) assembly is loaded
+    //      in the AppDomain — a test runner is hosting us.
+    //   2. The `FORGE_TEST_GUARDRAIL=1` env var is set — `ForgeWebApplicationFactory`
+    //      sets this in its ctor as a one-way flag (set to "1" only, never
+    //      unset, so parallel xUnit tests don't race on it the way they
+    //      raced on the old per-test `FORGE_DB_PATH` value).
+    static bool IsHostedInTestProcess()
+    {
+        if (string.Equals(Environment.GetEnvironmentVariable("FORGE_TEST_GUARDRAIL"), "1", StringComparison.Ordinal))
+            return true;
+        foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            var name = a.GetName().Name;
+            if (name is null) continue;
+            if (name.StartsWith("xunit", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(name, "Microsoft.AspNetCore.TestHost", StringComparison.Ordinal)) return true;
+            if (string.Equals(name, "Microsoft.AspNetCore.Mvc.Testing", StringComparison.Ordinal)) return true;
+        }
+        return false;
+    }
+
     builder.Services.AddDbContext<ForgeDbContext>((sp, opt) =>
     {
         var cfg = sp.GetRequiredService<IConfiguration>();
-        var dbPath = cfg["Forge:Db:Path"] ?? @"E:\forge\forge.db";
+        var dbPath = cfg["Forge:Db:Path"] ?? ProdDbDefault;
         if (!Path.IsPathFullyQualified(dbPath))
             dbPath = Path.GetFullPath(dbPath);
+
+        if (string.Equals(dbPath, ProdDbDefault, StringComparison.OrdinalIgnoreCase) && IsHostedInTestProcess())
+        {
+            throw new InvalidOperationException(
+                $"Refusing to open the production Forge DB ('{ProdDbDefault}') from a test process. " +
+                $"This indicates the test factory's Forge:Db:Path override did not reach Program.cs's " +
+                $"AddDbContext delegate (the factory adds an in-memory IConfiguration source via " +
+                $"ConfigureWebHost.ConfigureAppConfiguration; if that source is being shadowed by " +
+                $"appsettings.json, the override silently fails). Inspect ForgeWebApplicationFactory " +
+                $"and the IConfiguration source order before re-running tests.");
+        }
 
         bool needBootstrap;
         lock (bootstrapLock)

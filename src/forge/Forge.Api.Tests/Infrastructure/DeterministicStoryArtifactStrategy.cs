@@ -4,16 +4,30 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-namespace Forge.Api.Services.Stories;
+namespace Forge.Api.Tests.Infrastructure;
 
 using System.Text;
 using Forge.Api.Persistence;
+using Forge.Api.Services.Stories;
 
 /// <summary>
-/// Default <see cref="IStoryArtifactStrategy"/> — produces realistic,
-/// deterministic markdown / feature / step content from templates so the
-/// Phase 28 lifecycle is drivable in tests without an LLM. Output is a
-/// function of (spawn, story, workstream) so re-runs are byte-identical.
+/// TEST-ONLY <see cref="IStoryArtifactStrategy"/> — produces deterministic
+/// markdown / feature / step content from templates so the Phase 28
+/// orchestrator lifecycle is drivable in xUnit without an LLM.
+///
+/// <para>
+/// This class lives in the test assembly on purpose. Production must never
+/// be able to bind it: the spec says every plan / decompose / impl artifact
+/// is real LLM output, and a templated stub leaking into prod paths leaves
+/// behind on-disk files (under <c>docs/stories/&lt;story&gt;/</c>) that look
+/// like real plans but ignore the actual story description. We removed an
+/// instance of exactly that pollution by moving this class out of the
+/// production assembly.
+/// </para>
+/// <para>
+/// Output is a function of (spawn, story, workstream) so re-runs are
+/// byte-identical.
+/// </para>
 /// </summary>
 public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
 {

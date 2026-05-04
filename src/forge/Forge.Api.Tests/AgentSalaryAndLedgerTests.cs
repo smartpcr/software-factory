@@ -218,6 +218,7 @@ public class AgentSalaryAndLedgerTests
             new CopilotServerManager(
                 Options.Create(new AgentRunnerOptions()),
                 NullLogger<CopilotServerManager>.Instance),
+            Array.Empty<Forge.Api.Auth.IAuthService>(),
             NullLogger<AgentRunnerDispatcher>.Instance);
 
         var ctx = new AgentContext(
