@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/GraphMemory.Tests/GraphMemory.Tests.csproj" />
+    <Project Path="src/GraphMemory/GraphMemory.csproj" />
+  </Folder>
+</Solution>

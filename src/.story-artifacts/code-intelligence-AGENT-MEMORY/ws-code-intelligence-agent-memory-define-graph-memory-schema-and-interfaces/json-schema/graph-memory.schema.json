@@ -1,0 +1,4002 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://code-intelligence.dev/schemas/graph-memory/0.3.0",
+  "title": "CodeGraph",
+  "description": "Code knowledge graph schema v0.3.0",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "id",
+    "nodes",
+    "edges",
+    "metadata"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "0.3.0"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GraphNode"
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GraphEdge"
+      }
+    },
+    "metadata": {
+      "$ref": "#/$defs/GraphMetadata"
+    }
+  },
+  "$defs": {
+    "GraphMetadata": {
+      "type": "object",
+      "required": [
+        "createdAt",
+        "updatedAt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "createdBy": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "commitSha": {
+          "type": "string"
+        },
+        "repositoryRoot": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "extensions": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^x-"
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    "Provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "analyzer": {
+          "type": "string"
+        },
+        "analyzerVersion": {
+          "type": "string"
+        },
+        "analyzedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "commitSha": {
+          "type": "string"
+        }
+      }
+    },
+    "VersionRange": {
+      "type": "object",
+      "required": [
+        "introducedIn",
+        "lastSeenIn"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "introducedIn": {
+          "type": "string"
+        },
+        "lastSeenIn": {
+          "type": "string"
+        },
+        "removedIn": {
+          "type": "string"
+        }
+      }
+    },
+    "Layer": {
+      "type": "string",
+      "enum": [
+        "structural",
+        "call_chain",
+        "semantic",
+        "expertise"
+      ]
+    },
+    "SourceLocation": {
+      "type": "object",
+      "required": [
+        "filePath",
+        "startLine",
+        "endLine"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "filePath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "startColumn": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "endColumn": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "FunctionParameter": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "typeAnnotation": {
+          "type": "string"
+        },
+        "isOptional": {
+          "type": "boolean"
+        },
+        "defaultValue": {
+          "type": "string"
+        }
+      }
+    },
+    "SymbolKind": {
+      "type": "string",
+      "enum": [
+        "enum",
+        "enum_member",
+        "constant",
+        "namespace",
+        "decorator",
+        "other"
+      ]
+    },
+    "CallSite": {
+      "type": "object",
+      "required": [
+        "line"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "column": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "ImportedSymbol": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "alias": {
+          "type": "string"
+        }
+      }
+    },
+    "ExpertiseEvidence": {
+      "type": "object",
+      "required": [
+        "source"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "InheritanceMechanism": {
+      "type": "string",
+      "enum": [
+        "extends",
+        "implements",
+        "mixin"
+      ]
+    },
+    "GraphNode": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "repo"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "languages"
+              ],
+              "properties": {
+                "url": {
+                  "type": "string"
+                },
+                "defaultBranch": {
+                  "type": "string"
+                },
+                "languages": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "package"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "packageManager"
+              ],
+              "properties": {
+                "packageManager": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "registryUrl": {
+                  "type": "string"
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "module"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "packageName": {
+                  "type": "string"
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "directory"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "file"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "language": {
+                  "type": "string"
+                },
+                "loc": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "hash": {
+                  "type": "string"
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "class"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "filePath",
+                "startLine",
+                "endLine"
+              ],
+              "properties": {
+                "filePath": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "startLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "endLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "startColumn": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "endColumn": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "isAbstract": {
+                  "type": "boolean"
+                },
+                "isExported": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "interface"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "filePath",
+                "startLine",
+                "endLine"
+              ],
+              "properties": {
+                "filePath": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "startLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "endLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "startColumn": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "endColumn": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "isExported": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "type_alias"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "filePath",
+                "startLine",
+                "endLine"
+              ],
+              "properties": {
+                "filePath": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "startLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "endLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "startColumn": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "endColumn": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "typeExpression": {
+                  "type": "string"
+                },
+                "isExported": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "function"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "filePath",
+                "startLine",
+                "endLine",
+                "parameters"
+              ],
+              "properties": {
+                "filePath": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "startLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "endLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "startColumn": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "endColumn": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "isAsync": {
+                  "type": "boolean"
+                },
+                "isGenerator": {
+                  "type": "boolean"
+                },
+                "isExported": {
+                  "type": "boolean"
+                },
+                "parameters": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/FunctionParameter"
+                  }
+                },
+                "returnType": {
+                  "type": "string"
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "method"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "filePath",
+                "startLine",
+                "endLine",
+                "parameters"
+              ],
+              "properties": {
+                "filePath": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "startLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "endLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "startColumn": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "endColumn": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "isAsync": {
+                  "type": "boolean"
+                },
+                "isStatic": {
+                  "type": "boolean"
+                },
+                "isExported": {
+                  "type": "boolean"
+                },
+                "visibility": {
+                  "type": "string",
+                  "enum": [
+                    "public",
+                    "protected",
+                    "private"
+                  ]
+                },
+                "parameters": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/FunctionParameter"
+                  }
+                },
+                "returnType": {
+                  "type": "string"
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "variable"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "filePath",
+                "startLine",
+                "endLine",
+                "variableKind"
+              ],
+              "properties": {
+                "filePath": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "startLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "endLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "startColumn": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "endColumn": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "variableKind": {
+                  "type": "string",
+                  "enum": [
+                    "const",
+                    "let",
+                    "var",
+                    "property"
+                  ]
+                },
+                "isExported": {
+                  "type": "boolean"
+                },
+                "typeAnnotation": {
+                  "type": "string"
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "enum"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "filePath",
+                "startLine",
+                "endLine"
+              ],
+              "properties": {
+                "filePath": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "startLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "endLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "startColumn": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "endColumn": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "isExported": {
+                  "type": "boolean"
+                },
+                "members": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "symbol"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "filePath",
+                "startLine",
+                "endLine",
+                "symbolKind"
+              ],
+              "properties": {
+                "filePath": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "startLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "endLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "startColumn": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "endColumn": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "symbolKind": {
+                  "$ref": "#/$defs/SymbolKind"
+                },
+                "isExported": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "semantic_cluster"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "centroid": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "memberCount": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "topic"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "keywords": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "expertise_note"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "content"
+              ],
+              "properties": {
+                "content": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "author": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "pattern"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "content"
+              ],
+              "properties": {
+                "content": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "pitfall"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "content"
+              ],
+              "properties": {
+                "content": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high"
+                  ]
+                },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "preference"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "content"
+              ],
+              "properties": {
+                "content": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "author": {
+                  "type": "string"
+                },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "insight"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "content"
+              ],
+              "properties": {
+                "content": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "source": {
+                  "type": "string"
+                },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "workspace"
+            },
+            "name": {
+              "type": "string"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "rootPath"
+              ],
+              "properties": {
+                "rootPath": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "repoIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "description": {
+                  "type": "string"
+                }
+              }
+            },
+            "qualifiedName": {
+              "type": "string"
+            },
+            "repoId": {
+              "type": "string"
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "contentHash": {
+              "type": "string"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        }
+      ]
+    },
+    "GraphEdge": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "contains"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "order": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "calls"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "callSite": {
+                  "$ref": "#/$defs/CallSite"
+                },
+                "isConditional": {
+                  "type": "boolean"
+                },
+                "isDynamic": {
+                  "type": "boolean"
+                },
+                "isAsync": {
+                  "type": "boolean"
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "called_by"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "callSite": {
+                  "$ref": "#/$defs/CallSite"
+                },
+                "isConditional": {
+                  "type": "boolean"
+                },
+                "isDynamic": {
+                  "type": "boolean"
+                },
+                "isAsync": {
+                  "type": "boolean"
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "imports"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "importedSymbols": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/ImportedSymbol"
+                  }
+                },
+                "isTypeOnly": {
+                  "type": "boolean"
+                },
+                "isDefault": {
+                  "type": "boolean"
+                },
+                "isReExport": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "re_exports"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "importedSymbols": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/ImportedSymbol"
+                  }
+                },
+                "isTypeOnly": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "inherits"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "mechanism"
+              ],
+              "properties": {
+                "mechanism": {
+                  "$ref": "#/$defs/InheritanceMechanism"
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "overrides"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "callsSuper": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "implements"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "isPartial": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "instantiates"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "typeArguments": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "exports"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "exportedSymbols": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/ImportedSymbol"
+                  }
+                },
+                "isDefault": {
+                  "type": "boolean"
+                },
+                "isTypeOnly": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "expertise"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "weight",
+                "confidence"
+              ],
+              "properties": {
+                "weight": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "insight": {
+                  "type": "string"
+                },
+                "reinforcementCount": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "relationship": {
+                  "type": "string"
+                },
+                "lastUpdated": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "observationCount": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "sourceAgent": {
+                  "type": "string"
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/ExpertiseEvidence"
+                  }
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "applies_to"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "scope": {
+                  "type": "string"
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "similar_to"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "cosine_similarity"
+              ],
+              "properties": {
+                "cosine_similarity": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "algorithm": {
+                  "type": "string"
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "belongs_to_cluster"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "strength": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "supersedes"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "reason": {
+                  "type": "string"
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "derived_from"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "method": {
+                  "type": "string"
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "frequently_used_with"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "coOccurrenceCount": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "strength": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "window": {
+                  "type": "string"
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "depends_on"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "dependencyType": {
+                  "type": "string"
+                },
+                "versionConstraint": {
+                  "type": "string"
+                },
+                "isDev": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "source",
+            "target",
+            "properties"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "const": "references"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "referenceKind": {
+                  "type": "string"
+                },
+                "isWeak": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "provenance": {
+              "$ref": "#/$defs/Provenance"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "versionRange": {
+              "$ref": "#/$defs/VersionRange"
+            },
+            "snapshotId": {
+              "type": "string"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "sourceRepoId": {
+              "type": "string"
+            },
+            "targetRepoId": {
+              "type": "string"
+            },
+            "extensions": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^x-"
+              },
+              "additionalProperties": true
+            }
+          }
+        }
+      ]
+    }
+  }
+}
