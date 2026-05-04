@@ -1,373 +1,546 @@
-# Implementation Plan — Agent Memory via Graph-Structured Code Intelligence
+# Implementation Plan: Agent Memory via Graph-Based Code Intelligence
 
-> **Story:** `code-intelligence:AGENT-MEMORY` · 10 SP
->
-> **Objective:** Build a graph-based agent memory system that captures top-down
-> repository structure and call-chain context, enabling agents to accumulate
-> expertise and produce increasingly informed responses over time.
+## Problem Statement
 
----
+Agents operating on codebases lack persistent, structured memory. Each session
+starts cold — the agent re-discovers the same call chains, module boundaries,
+and architectural patterns every time. This plan delivers a **graph-based
+agent memory** system that captures **top-down repo structure** and
+**call-chain context** as a queryable knowledge graph, enabling agents to
+accumulate expertise and retrieve relevant context efficiently.
 
-## 1  Problem Statement
-
-Today's coding agents treat every session as a blank slate. They re-discover
-the same architectural patterns, re-trace the same call chains, and re-learn
-the same domain idioms on every invocation. The cost compounds: token waste,
-latency, and brittle context windows that force aggressive summarisation.
-
-We need a **persistent, graph-structured memory layer** that:
-
-1. Models a repository's top-down structure (repo → packages → modules → classes → functions) as a navigable hierarchy.
-2. Captures call-chain and data-flow relationships as directed edges so the agent can reason about causality without re-parsing.
-3. Evolves with the codebase — insertions, deletions, refactors — without full rebuilds.
-4. Serves retrieval queries at agent-interaction latency (< 500 ms p95).
-
-### Research Basis
-
-This plan is anchored on the taxonomy from the *Graph-based Agent Memory*
-survey (Yang et al., arXiv:2602.05665) and draws specifically from:
-
-| Concept | Source | Adaptation |
-|---|---|---|
-| Multi-graph orthogonal views | MAGMA (arXiv:2601.03236) | Separate structural, call-chain, temporal, and semantic graphs over the same codebase |
-| Temporal knowledge graph | Zep / Graphiti (arXiv:2501.13956) | Track code evolution across commits with timestamped edges |
-| Hierarchical memory | HiAgent (ACL'25), G-Memory (arXiv:2506.07398) | Map the natural module→class→function hierarchy into a tiered graph |
-| Community summarisation | GraphRAG (arXiv:2404.16130) | Pre-generate architectural summaries per package/module community |
-| Production memory layer | Mem0 (arXiv:2504.19413) | Extract → consolidate → retrieve lifecycle for agent-facing API |
-| RL-guided retrieval | Memory-R1 (arXiv:2508.19828), Mem-α (arXiv:2509.25911) | Train a lightweight retrieval policy that improves with agent feedback |
+The design draws on the taxonomy from the [Graph-based Agent Memory
+survey](https://arxiv.org/abs/2602.05665) (Yang et al., 2026) and its
+companion resource list at
+[DEEP-PolyU/Awesome-GraphMemory](https://github.com/DEEP-PolyU/Awesome-GraphMemory),
+adapting the memory lifecycle (extraction → storage → retrieval → evolution) to
+the code-intelligence domain.
 
 ---
 
-## 2  Architecture Overview
+## Architecture Overview
+
+The graph is organized into four trust-separated layers:
+
+| Layer | Contents | Source | Trust Level |
+|-------|----------|--------|-------------|
+| **Fact** | Structural hierarchy (repo → dir → file → class → function), call edges, import edges, inheritance/implements edges | AST parsing, language analysis | High — deterministic |
+| **Derived** | Embeddings, LLM-generated summaries, computed centrality scores | Embedding models, LLM | Medium — regenerable |
+| **Interaction** | Agent query logs, retrieval hits, usefulness signals, annotations | Agent runtime | Medium — empirical |
+| **Temporal** | Commit provenance, modification timestamps, version snapshots | Git history | High — deterministic |
+
+Separating facts from derived knowledge ensures agents can trust structural
+data while treating summaries and patterns as advisory.
+
+### Graph Schema (Core Node and Edge Types)
+
+**Node types:**
+
+| Node Type | Key Properties |
+|-----------|----------------|
+| `Repository` | name, root_path, default_branch |
+| `Directory` | path, depth |
+| `File` | path, language, hash, loc |
+| `Module` | qualified_name, file_ref |
+| `Class` | name, qualified_name, docstring_hash |
+| `Function` | name, qualified_name, signature, is_exported, complexity |
+| `Type` | name, qualified_name, kind (interface/enum/alias) |
+| `Symbol` | name, kind, scope |
+| `ExpertiseNote` | summary, pattern_type, confidence, source |
+
+**Edge types:**
+
+| Edge Type | From → To | Layer |
+|-----------|-----------|-------|
+| `CONTAINS` | Directory → File, File → Class, Class → Function, etc. | Fact |
+| `CALLS` | Function → Function | Fact |
+| `IMPORTS` | File → File (or Module → Module) | Fact |
+| `INHERITS` | Class → Class | Fact |
+| `IMPLEMENTS` | Class → Type | Fact |
+| `REFERENCES` | Function → Symbol | Fact |
+| `DEPENDS_ON` | Module → Module (transitive) | Derived |
+| `SIMILAR_TO` | any → any (embedding cosine > threshold) | Derived |
+| `MODIFIED_IN` | any → Commit | Temporal |
+| `ANNOTATED_BY` | any → ExpertiseNote | Interaction |
+
+**Identity model:** Every code node carries a **canonical ID** formed as
+`{repo}:{language}:{qualified_name}:{content_hash_short}`. The qualified name
+provides stability across commits; the content hash disambiguates when
+signatures diverge. A reconciliation table maps old IDs to current IDs after
+renames/moves (detected via git rename tracking + AST signature matching).
+
+---
+
+## Phase 0 — Evaluation Contract & Schema Foundation
+
+**Goal:** Establish success criteria before writing extraction code. Define the
+queries the memory system must answer, build a gold-standard test set, and lock
+the storage schema.
+
+### Work Items
+
+| ID | Item | Parallel-safe? |
+|----|------|----------------|
+| 0.1 | Define **top-10 agent queries** the memory must support (see below) | Yes |
+| 0.2 | Build **2–3 fixture repos** with known structure for validation | Yes |
+| 0.3 | Create **gold-standard context sets**: for each query on each fixture, the expected nodes/edges returned | Depends on 0.1, 0.2 |
+| 0.4 | Lock **graph schema** (node types, edge types, property contracts) | Yes |
+| 0.5 | Implement **storage layer** — graph persistence with CRUD | Depends on 0.4 |
+| 0.6 | Define **canonical identity** scheme and reconciliation table | Yes |
+| 0.7 | Set up **evaluation harness** — precision/recall/MRR over gold sets | Depends on 0.3, 0.5 |
+
+### Target Agent Queries (initial set)
+
+1. "What does function `X` do and who calls it?"
+2. "Show me the call chain from endpoint `A` down to data access layer."
+3. "What modules does file `F` depend on (transitively)?"
+4. "Find all implementations of interface `I`."
+5. "What changed in module `M` since commit `C`?"
+6. "Find functions similar to `X` (by signature/embedding)."
+7. "What is the architectural pattern used in directory `D`?"
+8. "Which functions are most central (highest fan-in) in this repo?"
+9. "Show me the error-handling pattern in this codebase."
+10. "What did the agent learn about module `M` from previous sessions?"
+
+### Hard Dependencies
+
+- Phase 1 cannot start until 0.4 (schema) and 0.5 (storage) are complete.
+- Evaluation harness (0.7) should be ready before Phase 1 ends, so extraction
+  output can be validated immediately.
+
+### Deliverables
+
+- `schema.ts` (or equivalent): typed graph schema with node/edge definitions
+- `storage/` module: graph CRUD abstraction (single backend — no premature
+  abstraction)
+- `eval/` module: harness + fixture repos + gold sets
+- `IDENTITY.md`: canonical ID specification
+
+---
+
+## Phase 1 — Structural Extraction (Top-Down Repo Graph)
+
+**Goal:** Parse a repository top-down and populate the Fact layer with
+structural nodes and `CONTAINS` edges. **Single language first** (TypeScript),
+with a parser-plugin interface for adding languages later.
+
+### Work Items
+
+| ID | Item | Parallel-safe? |
+|----|------|----------------|
+| 1.1 | Implement **repo walker**: enumerate directories and files, create `Repository`, `Directory`, `File` nodes with `CONTAINS` edges | Yes |
+| 1.2 | Implement **TypeScript AST parser plugin**: extract `Module`, `Class`, `Function`, `Type` nodes from each file | Yes |
+| 1.3 | Wire parser output into **graph storage**: create nodes with canonical IDs, attach to file via `CONTAINS` | Depends on 0.5 |
+| 1.4 | Extract **exported symbol** metadata (is_exported, visibility) | Part of 1.2 |
+| 1.5 | Generate **provenance metadata** for each node (source=AST, extraction_version, file_hash) | Part of 1.3 |
+| 1.6 | Run **evaluation harness** against fixture repos — validate structural queries (#1, #8 from query list) | Depends on 1.3 |
+| 1.7 | Implement **Python AST parser plugin** (second language) | Parallel with 1.3–1.6 |
+
+### Parser Plugin Interface
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                    Agent Runtime                     │
-│  ┌──────────┐  ┌────────────┐  ┌──────────────────┐ │
-│  │ Planning  │  │  Retrieval │  │  Memory Writer   │ │
-│  │  Engine   │◄─┤  Gateway   │  │  (post-action)   │ │
-│  └──────────┘  └─────┬──────┘  └────────┬─────────┘ │
-└──────────────────────┼──────────────────┼────────────┘
-                       │                  │
-              ┌────────▼──────────────────▼────────┐
-              │        Memory Service (gRPC/REST)  │
-              │  ┌──────────────────────────────┐  │
-              │  │   Query Planner / Router     │  │
-              │  └──────┬───────────────────────┘  │
-              │         │                          │
-              │  ┌──────▼──────────────────────┐   │
-              │  │   Graph Store (multi-view)   │  │
-              │  │  ┌────────┐ ┌────────────┐  │   │
-              │  │  │Struct- │ │ Call-Chain  │  │   │
-              │  │  │ural    │ │ (Causal)   │  │   │
-              │  │  │Graph   │ │ Graph      │  │   │
-              │  │  ├────────┤ ├────────────┤  │   │
-              │  │  │Temporal│ │ Semantic   │  │   │
-              │  │  │Graph   │ │ Index      │  │   │
-              │  │  └────────┘ └────────────┘  │   │
-              │  └─────────────────────────────┘   │
-              │  ┌─────────────────────────────┐   │
-              │  │  Evolution Engine            │   │
-              │  │  (consolidation, decay, RL)  │   │
-              │  └─────────────────────────────┘   │
-              └────────────────────────────────────┘
+interface LanguageParser {
+  language: string;
+  supportedExtensions: string[];
+  parse(filePath: string, content: string): ParseResult;
+}
+
+interface ParseResult {
+  modules: ModuleNode[];
+  classes: ClassNode[];
+  functions: FunctionNode[];
+  types: TypeNode[];
+  symbols: SymbolNode[];
+}
 ```
 
-### 2.1  Four Orthogonal Graph Views (MAGMA-inspired)
+Each parser plugin returns a flat list of typed nodes; the orchestrator wires
+them into the graph with `CONTAINS` edges and canonical IDs.
 
-Following MAGMA's principle of decoupling memory representation from retrieval
-logic, we maintain four specialised graph views over the same underlying nodes:
+### Hard Dependencies
 
-| View | Node types | Edge semantics | Primary query pattern |
-|---|---|---|---|
-| **Structural** | Repo, Package, Module, Class, Function, Variable | `contains`, `imports`, `exports` | "What's in package X?", "Where is class Y defined?" |
-| **Call-Chain (Causal)** | Function, Method, Constructor | `calls`, `instantiates`, `overrides`, `implements` | "What calls function Z?", "Trace the data flow from A → B" |
-| **Temporal** | Any node | `added_in`, `modified_in`, `removed_in` (commit SHA + timestamp) | "What changed since last Tuesday?", "Who introduced this pattern?" |
-| **Semantic** | Any node (via embedding) | `similar_to` (cosine > threshold), `co-occurs_with` | "Find modules related to authentication", "What else uses this pattern?" |
+- Requires Phase 0 schema and storage.
+- Parser plugin interface must be defined before 1.2 and 1.7 can start.
 
-All four views share a **canonical node identity** (language-agnostic fully-qualified name + file path + span) so cross-view joins are O(1).
+### Deliverables
 
-### 2.2  Hierarchical Memory Tiers
-
-Inspired by HiAgent's working-memory management and G-Memory's hierarchical
-tracing, the graph organises into three tiers with different granularity and
-TTL characteristics:
-
-| Tier | Scope | Contents | Retention |
-|---|---|---|---|
-| **L0 — Session** | Current agent session | Hot working set, recent tool calls, in-flight hypotheses | Session lifetime; promoted to L1 on success |
-| **L1 — Repository** | Single repo, persisted | Structural graph, call-chain graph, community summaries, agent annotations | Indefinite; pruned by staleness score |
-| **L2 — Organisation** | Cross-repo | Shared architectural patterns, common dependency expertise, org conventions | Indefinite; curated by evolution engine |
+- `parsers/typescript.ts`: TS parser plugin
+- `parsers/python.ts`: Python parser plugin
+- `extraction/structural.ts`: repo walker + orchestrator
+- Fixture repos fully indexed and passing eval queries
 
 ---
 
-## 3  Phased Work Breakdown
+## Phase 2 — Semantic Extraction (Call Chains & Relationships)
 
-### Phase 0 — Foundation: Graph Schema & Storage Layer
+**Goal:** Add `CALLS`, `IMPORTS`, `INHERITS`, `IMPLEMENTS`, and `REFERENCES`
+edges to the Fact layer. This is the call-chain context the story specifically
+targets.
 
-**Goal:** Stand up the persistent graph store and define the canonical schema
-that every subsequent phase writes to.
+### Work Items
 
-| ID | Work Item | Parallel? | Hard Dependency |
-|---|---|---|---|
-| 0.1 | **Schema design** — Define node types (Repo, Package, Module, Class, Function, Variable, Commit), edge types (see §2.1 table), and property bags (span, hash, embedding vector, staleness score). Produce a machine-readable schema file (JSON-Schema or Protobuf). | — | None |
-| 0.2 | **Storage backend selection & setup** — Evaluate Neo4j (mature, Cypher), FalkorDB (Redis-compatible, low-latency), or a lightweight embedded option (e.g., Kuzu, DuckDB + extension). Decision criteria: sub-500ms traversal on a 500K-node graph, vector-index support, temporal edge properties. Stand up the chosen backend with CI. | Parallel with 0.1 | None |
-| 0.3 | **Graph SDK** — Thin TypeScript/Python client library wrapping the store. API surface: `upsertNode`, `upsertEdge`, `query(cypher)`, `vectorSearch(embedding, topK)`, `subgraphAround(nodeId, hops)`. Unit-test with fixture data. | — | 0.1, 0.2 |
-| 0.4 | **Canonical identity scheme** — Implement the fully-qualified-name resolver that produces stable node IDs across renames and moves (content-hash fallback). | Parallel with 0.3 | 0.1 |
+| ID | Item | Parallel-safe? |
+|----|------|----------------|
+| 2.1 | Extract **intra-file call edges** from AST (function → function within same file) | Yes |
+| 2.2 | Extract **import declarations** and resolve to target files/modules → create `IMPORTS` edges | Yes |
+| 2.3 | Resolve **cross-file call edges** using import graph + symbol table | Depends on 2.2 |
+| 2.4 | Extract **inheritance** (`extends`) and **implements** edges from class declarations | Yes |
+| 2.5 | Build **transitive dependency edges** (`DEPENDS_ON`) via depth-limited BFS over imports+calls (max depth configurable, default 5) | Depends on 2.3 |
+| 2.6 | Implement **call-chain query**: given a function, return the full call tree up/down to configurable depth | Depends on 2.5 |
+| 2.7 | Run **evaluation harness** — validate call-chain queries (#2, #3, #4 from query list) | Depends on 2.6 |
 
-**Exit criteria:** A test harness can create a 10K-node graph, insert 50K edges
-across all four view types, and answer a 3-hop traversal in < 200 ms.
+### Cross-File Resolution Strategy
 
----
+1. Parse all import statements to build a file-level import graph.
+2. Build a global symbol table: `{ qualified_name → node_id }`.
+3. For each unresolved call in a function body, look up the symbol in the
+   import chain, then in the global table.
+4. Unresolved calls are stored as `CALLS` edges with `resolved: false` and
+   a `target_name` property for later resolution.
 
-### Phase 1 — Memory Extraction: Repo-Structure & Call-Chain Ingest
+**Scope exclusion (deferred):** Data-flow analysis (parameter passing, return
+value tracking) requires compiler/type-checker integration beyond AST walking.
+Deferred to a later iteration to avoid drag on the MVP.
 
-**Goal:** Parse real repositories into the structural and call-chain graph
-views. This is the "Memory Extraction" stage of the survey taxonomy.
+### Hard Dependencies
 
-| ID | Work Item | Parallel? | Hard Dependency |
-|---|---|---|---|
-| 1.1 | **Language-server integration harness** — Build an adapter that drives LSP (or Tree-sitter for languages without reliable LSP) to extract: symbol definitions, references, call hierarchies, type hierarchies. Output: a stream of `(node, edge)` tuples in canonical schema. | — | 0.3 |
-| 1.2 | **Structural graph builder** — Consume the LSP stream and populate the structural view: repo→package→module→class→function→variable containment tree plus import/export edges. Handle partial parses gracefully (log warnings, don't abort). | — | 1.1 |
-| 1.3 | **Call-chain graph builder** — From the same LSP stream, populate `calls`, `instantiates`, `overrides`, `implements` edges. For dynamic languages where static analysis is incomplete, insert edges with a `confidence` property < 1.0. | Parallel with 1.2 | 1.1 |
-| 1.4 | **Incremental update pipeline** — Given a git diff (list of changed files), re-extract only affected subtrees and merge into the existing graph via upsert. Deletions mark nodes as `tombstoned` rather than hard-deleting (needed for temporal view). Validate: re-indexing a 10-file diff on a 100K-node graph completes in < 5 s. | — | 1.2, 1.3 |
-| 1.5 | **Smoke test on real repos** — Run the full ingest on at least two non-trivial open-source repos (one TypeScript, one Python, each > 50K LoC). Validate node counts against `cloc` / symbol-count baselines. | — | 1.4 |
+- Phase 1 structural nodes must exist to attach edges.
+- Items 2.1–2.4 are parallel-safe once Phase 1 is complete.
+- Item 2.5 depends on 2.3 (needs cross-file edges).
 
-**Exit criteria:** Structural and call-chain views are populated and queryable
-for both test repos. Incremental updates work for single-commit diffs.
+### Deliverables
 
----
-
-### Phase 2 — Memory Storage: Temporal & Semantic Views
-
-**Goal:** Complete the four-view model by adding temporal commit tracking and
-semantic embeddings. This is the "Memory Storage" stage.
-
-| ID | Work Item | Parallel? | Hard Dependency |
-|---|---|---|---|
-| 2.1 | **Temporal edge annotator** — Walk git history (configurable depth, default 90 days) and attach `added_in(commit)`, `modified_in(commit)`, `removed_in(commit)` edges to every node whose file was touched. Store commit metadata (author, timestamp, message) as commit-node properties. | — | 1.4 |
-| 2.2 | **Semantic embedding pipeline** — For each function/class node, generate an embedding from: (a) the docstring/comment if present, (b) the signature + first N lines of body, (c) the FQN path. Use a code-embedding model (e.g., `text-embedding-3-small` or `voyage-code-3`). Store vectors in the graph store's vector index or a sidecar index (HNSW via `pgvector` or `usearch`). | Parallel with 2.1 | 1.2 |
-| 2.3 | **Community detection & summarisation** — Run Leiden or Louvain community detection on the structural graph. For each community of ≥ 5 nodes, generate a one-paragraph natural-language summary using an LLM (architecture description, responsibility, key public interfaces). Store as a `CommunitySummary` node linked to its members. This follows the GraphRAG approach. | — | 2.2 |
-| 2.4 | **Staleness scoring** — Assign each node a staleness score = f(days_since_last_touch, number_of_recent_commits_touching_neighbours, agent_access_count). This score drives eviction in the evolution engine (Phase 5). | Parallel with 2.3 | 2.1 |
-
-**Exit criteria:** All four graph views are populated. Community summaries
-exist for the test repos. Vector search returns sensible "related function"
-results.
+- `extraction/semantic.ts`: call/import/type edge extractor
+- `extraction/symbol-table.ts`: global symbol resolution
+- `queries/call-chain.ts`: call-chain traversal query
+- Eval queries #2, #3, #4 passing on fixture repos
 
 ---
 
-### Phase 3 — Memory Retrieval: Query Gateway
+## Phase 3 — Retrieval & Context Assembly
 
-**Goal:** Build the retrieval API that the agent runtime calls. This maps to the
-"Memory Retrieval" stage, combining similarity-based, graph-based, and
-rule-based strategies.
+**Goal:** Build the retrieval system that agents actually call. Combines graph
+traversal with optional vector similarity for hybrid search.
 
-| ID | Work Item | Parallel? | Hard Dependency |
-|---|---|---|---|
-| 3.1 | **Query intent classifier** — A lightweight classifier (can be rule-based initially, upgraded to a fine-tuned model in Phase 5) that maps an incoming natural-language or structured query to one or more retrieval strategies: `structural_traversal`, `call_chain_trace`, `temporal_range`, `semantic_search`, `community_summary`. | — | 0.3 |
-| 3.2 | **Retrieval strategy executors** — Implement each strategy as a pluggable module: | — | Phase 2 complete |
-|  | • `StructuralTraversal` — BFS/DFS from a given node within the containment hierarchy. | | |
-|  | • `CallChainTrace` — Forward/backward reachability on the causal graph, bounded by depth. | | |
-|  | • `TemporalRange` — Filter nodes/edges by commit timestamp window. | | |
-|  | • `SemanticSearch` — Vector-similarity lookup, re-ranked by graph proximity to the query's anchor node. | | |
-|  | • `CommunitySummary` — Return pre-generated summaries for relevant communities. | | |
-| 3.3 | **Result fusion & ranking** — When multiple strategies fire, merge results with a weighted reciprocal-rank fusion. Weights are initially hand-tuned; Phase 5 learns them. Cap total context returned to a configurable token budget (default 8K tokens). | — | 3.1, 3.2 |
-| 3.4 | **Memory Service API** — Expose the retrieval gateway as a gRPC + REST service. Endpoints: | — | 3.3 |
-|  | • `POST /query` — Free-form query, returns ranked context snippets. | | |
-|  | • `POST /trace` — Given a function ID, returns its call-chain neighbourhood. | | |
-|  | • `POST /context` — Given a file path + cursor position, returns the most relevant structural + semantic context for that editing location. | | |
-|  | • `GET /summary/{community_id}` — Returns the community summary. | | |
-| 3.5 | **Latency validation** — Benchmark all endpoints on the 100K-node test graph. p50 < 100 ms, p95 < 500 ms. Profile and index-tune as needed. | — | 3.4 |
+### Work Items
 
-**Exit criteria:** An agent can call the Memory Service and receive relevant,
-ranked code context for structural, causal, temporal, and semantic queries
-within the latency budget.
+| ID | Item | Parallel-safe? |
+|----|------|----------------|
+| 3.1 | Implement **graph traversal queries**: neighbors, ancestors, descendants, shortest path between nodes | Yes |
+| 3.2 | Implement **node embedding pipeline**: generate embeddings for function signatures + docstrings, store as node properties | Yes |
+| 3.3 | Implement **hybrid retrieval**: given a natural-language query, (a) embed the query, (b) find top-K similar nodes, (c) expand each via graph neighbors | Depends on 3.1, 3.2 |
+| 3.4 | Implement **context assembly**: rank retrieved nodes, serialize into a token-budgeted context window (respecting LLM context limits) | Depends on 3.3 |
+| 3.5 | Implement **relevance scoring** function: `score = w1 * structural_distance + w2 * semantic_similarity + w3 * centrality + w4 * recency` | Depends on 3.1 |
+| 3.6 | Implement **multi-round retrieval**: initial broad search → agent feedback → refine via graph neighbors (inspired by the "multi-round retrieval" strategies in the survey) | Depends on 3.3 |
+| 3.7 | Run **full evaluation** against gold sets — measure precision@K, recall@K, MRR | Depends on 3.4 |
 
----
-
-### Phase 4 — Agent Integration: Read Path & Write Path
-
-**Goal:** Wire the memory system into the actual agent runtime so agents both
-*consume* and *produce* memory.
-
-| ID | Work Item | Parallel? | Hard Dependency |
-|---|---|---|---|
-| 4.1 | **Read-path integration** — Modify the agent's context-assembly pipeline to call the Memory Service before each LLM invocation. The retrieval gateway response is injected into the system prompt or a dedicated `<memory>` block. Implement a token-budget arbiter that balances memory context vs. user-provided context vs. tool output. | — | 3.4 |
-| 4.2 | **Write-path: post-action memory writer** — After the agent completes an action (edit, test run, explanation), extract learnings and write them back to the graph: | — | 3.4 |
-|  | • **Structural updates** — If the agent created/moved/deleted files, trigger incremental re-extraction (Phase 1.4). | | |
-|  | • **Annotations** — Agent can attach short annotations to nodes: "This function is the main entry point for auth flow", "Known flaky — timeout under load". Stored as `Annotation` nodes with `author=agent`, timestamp. | | |
-|  | • **Outcome signals** — Record whether the agent's action succeeded or failed, linked to the memory context that was retrieved. This is the reward signal for Phase 5 RL. | | |
-| 4.3 | **Session memory (L0) management** — Implement the session-scoped working-memory tier. On session start, pre-load a configurable seed context (e.g., community summaries for recently-touched packages). On session end, promote successful annotations and discovered patterns to L1. | — | 4.1, 4.2 |
-| 4.4 | **MCP tool exposure** — Expose memory operations as MCP (Model Context Protocol) tools so any MCP-compatible agent can call them: `memory_query`, `memory_trace`, `memory_annotate`, `memory_context`. | Parallel with 4.3 | 3.4 |
-
-**Exit criteria:** An agent session that modifies code in repo A can, in a
-subsequent session on the same repo, retrieve the annotations and structural
-context from the first session without re-parsing.
-
----
-
-### Phase 5 — Memory Evolution: Consolidation, Decay & Learning
-
-**Goal:** Make the memory system self-improving. This maps to the "Memory
-Evolution" stage — the system prunes stale knowledge, consolidates redundant
-entries, and learns better retrieval policies from agent outcomes.
-
-| ID | Work Item | Parallel? | Hard Dependency |
-|---|---|---|---|
-| 5.1 | **Consolidation engine** — Periodically (configurable, default nightly): | — | Phase 4 complete |
-|  | • Merge duplicate or near-duplicate annotations on the same node. | | |
-|  | • Re-run community detection if the structural graph changed by > N% since last run. | | |
-|  | • Regenerate community summaries for affected communities. | | |
-|  | • Compact tombstoned nodes older than the temporal retention window. | | |
-| 5.2 | **Decay & eviction** — Nodes and edges whose staleness score exceeds a threshold are demoted: L1 → archived, Annotations → soft-deleted. Access by the agent resets the staleness clock (recency signal). | Parallel with 5.1 | 2.4 |
-| 5.3 | **Retrieval-policy learning (RL-lite)** — Collect `(query, retrieved_context, action, outcome)` tuples from 4.2. Train a lightweight reward model (logistic regression or small MLP) that predicts outcome quality from retrieval features (strategy weights, graph distance, staleness, embedding similarity). Use the learned weights to replace the hand-tuned fusion weights in 3.3. Retrain weekly. | — | 4.2, 3.3 |
-| 5.4 | **Cross-repo pattern extraction (L2)** — For organisations with multiple repos, identify recurring architectural patterns (e.g., "controller → service → repository" layering) via subgraph isomorphism on the structural graphs. Promote these patterns to L2 as reusable expertise templates. | Parallel with 5.3 | 4.3 |
-| 5.5 | **Feedback loop telemetry** — Instrument the full loop: extraction → storage → retrieval → agent action → outcome → evolution. Emit OpenTelemetry spans so we can measure: retrieval hit rate, context utilisation ratio (how much retrieved memory the agent actually used), and outcome correlation. | Parallel with 5.1 | Phase 4 complete |
-
-**Exit criteria:** After 100+ agent sessions on a test repo, the retrieval
-fusion weights have shifted measurably from initial values, and retrieval
-precision (measured by context-utilisation ratio) has improved by ≥ 10%
-relative.
-
----
-
-### Phase 6 — Hardening & Production Readiness
-
-**Goal:** Make the system reliable, observable, and deployable.
-
-| ID | Work Item | Parallel? | Hard Dependency |
-|---|---|---|---|
-| 6.1 | **Auth & multi-tenancy** — Ensure graph data is isolated per-organisation. Implement RBAC so agents can only read/write memory for repos they have access to. | — | 3.4 |
-| 6.2 | **Backup & restore** — Automated graph snapshots (daily). Point-in-time restore tested. | Parallel with 6.1 | 0.2 |
-| 6.3 | **Rate limiting & circuit breakers** — Protect the Memory Service from runaway agent loops. Configurable per-session write rate limits. Circuit breaker on the embedding pipeline (external model calls). | Parallel with 6.1 | 3.4 |
-| 6.4 | **Integration test suite** — End-to-end tests: clone a repo → ingest → query → mutate → re-ingest → verify graph consistency. Run in CI on every PR to the memory service. | — | Phase 5 complete |
-| 6.5 | **Documentation & runbooks** — Operator guide: deployment, configuration knobs, alerting thresholds. Developer guide: extending the schema, adding a new retrieval strategy, onboarding a new language. | Parallel with 6.4 | All phases |
-
-**Exit criteria:** The system passes a 72-hour soak test under simulated
-multi-agent load (10 concurrent sessions, 5 repos, continuous
-ingest + query). No data loss, no p95 > 1 s, no memory leaks.
-
----
-
-## 4  Dependency Graph (Critical Path)
+### Context Assembly Algorithm
 
 ```
-Phase 0 (Foundation)
+1. Parse agent query → extract intent + mentioned symbols
+2. If symbols found → anchor search on matching graph nodes
+3. If no symbols → fall back to embedding similarity search
+4. For each anchor node:
+   a. Walk CALLS edges up/down (configurable depth)
+   b. Walk CONTAINS edges up to file/module level
+   c. Walk IMPORTS edges to direct dependencies
+5. Score all collected nodes via relevance function
+6. Sort by score, pack into context window until token budget exhausted
+7. Return context + provenance metadata (which nodes, why selected)
+```
+
+### Hard Dependencies
+
+- Requires populated graph from Phase 1 + 2.
+- Embedding pipeline (3.2) can start as soon as Phase 1 nodes exist.
+- Hybrid retrieval (3.3) needs both graph traversal and embeddings.
+
+### Deliverables
+
+- `retrieval/traversal.ts`: graph query primitives
+- `retrieval/embedding.ts`: embedding generation + similarity search
+- `retrieval/hybrid.ts`: hybrid retrieval orchestrator
+- `retrieval/context.ts`: context assembly + token budgeting
+- `retrieval/scoring.ts`: relevance scoring function
+- Eval report with precision/recall/MRR numbers
+
+---
+
+## Phase 4 — Incremental Updates & Temporal Tracking
+
+**Goal:** The graph must stay current as code changes. Implement diff-aware
+incremental updates with proper dependency invalidation, and attach temporal
+metadata for recency-aware retrieval.
+
+### Work Items
+
+| ID | Item | Parallel-safe? |
+|----|------|----------------|
+| 4.1 | Implement **change detection**: given two commits, compute changed files via `git diff --name-status` | Yes |
+| 4.2 | Implement **dependency invalidation**: when file F changes, identify all nodes that import/call into F and mark them `dirty` | Depends on 4.1 |
+| 4.3 | Implement **incremental re-extraction**: re-parse dirty files, reconcile nodes (update existing, create new, tombstone deleted) using canonical IDs | Depends on 4.2 |
+| 4.4 | Implement **rename/move detection**: use git rename tracking + AST signature matching to update canonical ID mappings | Depends on 4.3 |
+| 4.5 | Attach **`MODIFIED_IN`** temporal edges linking nodes to commits | Depends on 4.3 |
+| 4.6 | Implement **staleness scoring**: combine recency, centrality (high fan-in code is important even if old), and retrieval frequency — avoid naive "not touched = stale" | Depends on 4.5 |
+| 4.7 | Implement **full-rebuild fallback**: periodic reconciliation pass that re-indexes from scratch and diffs against existing graph to catch drift | Depends on 4.3 |
+| 4.8 | Implement **branch awareness**: memory queries scoped to a branch; graph overlays for feature branches that merge back to main | Depends on 4.5 |
+
+### Invalidation Model
+
+```
+On file change (F):
+  1. Re-parse F → extract new nodes/edges
+  2. Diff against existing nodes for F → apply creates/updates/deletes
+  3. For each deleted/changed exported symbol in F:
+     a. Find all IMPORTS edges pointing to F
+     b. Find all CALLS edges targeting symbols in F
+     c. Mark source nodes of those edges as "needs-reverify"
+  4. Re-resolve edges for "needs-reverify" nodes
+  5. Update MODIFIED_IN temporal edges
+```
+
+### Hard Dependencies
+
+- Requires Phase 1 + 2 extraction pipeline.
+- Can run in parallel with Phase 3 retrieval work.
+- Branch awareness (4.8) depends on temporal edges (4.5).
+
+### Deliverables
+
+- `update/change-detector.ts`: git-diff-based change detection
+- `update/invalidator.ts`: dependency invalidation engine
+- `update/reconciler.ts`: incremental node reconciliation
+- `update/temporal.ts`: commit provenance + staleness scoring
+- Validation: modify fixture repos, verify graph stays consistent
+
+---
+
+## Phase 5 — Agent API & Integration
+
+**Goal:** Expose the memory system as a callable service that agents use to
+retrieve context and write back learnings.
+
+### Work Items
+
+| ID | Item | Parallel-safe? |
+|----|------|----------------|
+| 5.1 | Define **Agent Memory API** contract (OpenAPI or MCP tool schema) | Yes |
+| 5.2 | Implement **read endpoints**: query context, get call chain, find similar, get module summary | Depends on Phase 3 |
+| 5.3 | Implement **write endpoints**: annotate node, record useful/not-useful signal, add expertise note | Depends on 5.1 |
+| 5.4 | Implement **agent interaction logging**: record every query + retrieved context + agent feedback into Interaction layer | Depends on 5.2, 5.3 |
+| 5.5 | Build **MCP tool wrapper** so the memory is usable from MCP-compatible agents | Depends on 5.2 |
+| 5.6 | Implement **observability**: structured logs tracing query → retrieval path → context assembly → agent decision | Depends on 5.4 |
+| 5.7 | End-to-end **integration test**: agent performs a multi-turn coding task using memory, verify context quality | Depends on all above |
+
+### API Surface (Draft)
+
+```
+memory.query(
+  query: string,
+  options: {
+    repo: string,
+    branch?: string,
+    maxTokens?: number,
+    depth?: number,
+    includeCallChain?: boolean,
+    includeImports?: boolean,
+  }
+) → ContextResult {
+  nodes: RankedNode[],
+  edges: Edge[],
+  provenance: ProvenanceTrace[],
+  tokenCount: number,
+}
+
+memory.annotate(
+  nodeId: string,
+  annotation: {
+    type: "useful" | "not_useful" | "expertise_note",
+    content?: string,
+    agentSessionId: string,
+  }
+) → void
+
+memory.getCallChain(
+  functionId: string,
+  direction: "callers" | "callees" | "both",
+  depth: number,
+) → CallChainResult
+
+memory.findSimilar(
+  query: string | nodeId: string,
+  topK: number,
+) → SimilarNode[]
+```
+
+### Hard Dependencies
+
+- Read endpoints depend on Phase 3 retrieval system.
+- Write endpoints depend on graph storage (Phase 0).
+- MCP wrapper depends on read/write endpoints.
+
+### Deliverables
+
+- `api/memory-api.ts`: API implementation
+- `api/mcp-tool.ts`: MCP tool definition
+- `api/logging.ts`: interaction logging
+- Integration test suite
+
+---
+
+## Phase 6 — Expertise & Learning (Post-MVP)
+
+**Goal:** Enable the memory to accumulate cross-cutting expertise over time —
+the "agent gets smarter" requirement. This phase is explicitly **post-MVP**;
+it depends on having working retrieval (Phase 3), interaction logging
+(Phase 5), and enough usage data to extract meaningful patterns.
+
+### Work Items
+
+| ID | Item | Parallel-safe? |
+|----|------|----------------|
+| 6.1 | Implement **usage analytics**: aggregate which nodes are queried most, which lead to successful agent outcomes | Depends on Phase 5 interaction logs |
+| 6.2 | Implement **pattern extraction**: identify recurring code patterns (error handling, middleware chains, etc.) via clustering over frequently co-retrieved subgraphs | Depends on 6.1 |
+| 6.3 | Create **ExpertiseNote nodes**: attach summarized patterns to relevant modules/directories as `ANNOTATED_BY` edges | Depends on 6.2 |
+| 6.4 | Implement **memory consolidation**: merge redundant expertise notes, prune low-confidence notes, update summaries as patterns evolve | Depends on 6.3 |
+| 6.5 | Implement **LLM-generated summaries** for modules/directories (background, async, cached, regenerable) | Parallel with 6.1–6.4 |
+| 6.6 | Implement **cross-session learning**: load expertise from previous sessions, let agents build on prior knowledge | Depends on 6.3 |
+
+### Key Design Decisions
+
+- **Expertise is derived, not asserted.** Expertise nodes are generated from
+  observed retrieval patterns and agent feedback, not from one-shot LLM
+  generation. This ensures the memory learns from actual usage.
+- **Confidence model.** Each ExpertiseNote carries a confidence score based on
+  the number of supporting observations, recency, and agent feedback
+  (useful/not-useful signals).
+- **LLM summaries are optional.** They are generated in the background, cached,
+  and tagged with provenance. They do not block core graph operations and can
+  be regenerated at any time.
+
+### Hard Dependencies
+
+- Requires substantial interaction data from Phase 5 to be meaningful.
+- Memory consolidation (6.4) requires expertise notes (6.3).
+
+### Deliverables
+
+- `expertise/analytics.ts`: usage aggregation
+- `expertise/patterns.ts`: pattern extraction
+- `expertise/consolidation.ts`: merge/prune engine
+- `expertise/summaries.ts`: LLM summary pipeline
+- Evaluation: measure whether expertise improves retrieval quality over time
+
+---
+
+## Dependency Graph
+
+```
+Phase 0: Schema & Eval Foundation
   │
-  ├──► Phase 1 (Extraction)
-  │       │
-  │       ├──► Phase 2 (Storage: temporal + semantic)  ◄── parallel-safe within
-  │       │       │
-  │       │       └──► Phase 3 (Retrieval Gateway)
-  │       │               │
-  │       │               └──► Phase 4 (Agent Integration)
-  │       │                       │
-  │       │                       └──► Phase 5 (Evolution)
-  │       │                               │
-  │       │                               └──► Phase 6 (Hardening)
-  │       │
-  │       └──(1.4 incremental update also feeds 2.1 temporal annotator)
-  │
-  └──► 0.4 (identity scheme) feeds into 1.1
+  ├──→ Phase 1: Structural Extraction ──→ Phase 2: Semantic Extraction
+  │         │                                    │
+  │         │              ┌─────────────────────┤
+  │         │              │                     │
+  │         ▼              ▼                     ▼
+  │    Phase 4: Incremental Updates    Phase 3: Retrieval & Context
+  │         │                                    │
+  │         └──────────┬─────────────────────────┘
+  │                    │
+  │                    ▼
+  │              Phase 5: Agent API & Integration
+  │                    │
+  │                    ▼
+  └──────────── Phase 6: Expertise & Learning (post-MVP)
 ```
 
-**Critical path:** 0.1 → 0.3 → 1.1 → 1.2 → 1.4 → 2.1 → 2.3 → 3.2 → 3.3 → 3.4 → 4.1 → 5.3
+**Critical path:** 0 → 1 → 2 → 3 → 5
 
-**Parallel-safe items** (can be worked by a second engineer at any time once
-their dependency is met):
-
-- 0.4 (parallel with 0.3)
-- 1.3 (parallel with 1.2)
-- 2.2 (parallel with 2.1)
-- 2.4 (parallel with 2.3)
-- 4.4 (parallel with 4.3)
-- 5.1, 5.2, 5.4, 5.5 (all parallel with 5.3)
-- 6.1, 6.2, 6.3, 6.5 (all parallel with 6.4)
+**Parallel tracks:**
+- Phase 4 (incremental updates) can proceed alongside Phase 3 once Phase 2 is
+  complete.
+- Embedding pipeline (3.2) can start as soon as Phase 1 nodes exist.
+- Python parser (1.7) is parallel with TS parser integration testing.
+- Evaluation harness improvements run continuously.
+- Fixture repo construction is parallel with Phase 0 schema work.
 
 ---
 
-## 5  Key Technical Decisions & Trade-offs
+## MVP Boundary
 
-### 5.1  Graph Backend
+The **MVP** (Phases 0–5) delivers:
 
-| Option | Pros | Cons | Recommendation |
-|---|---|---|---|
-| **Neo4j** | Mature Cypher, APOC library, built-in vector index | Heavy JVM footprint, commercial licence for clustering | Good for production at scale |
-| **FalkorDB** | Redis-compatible, sub-ms reads, Apache-2.0 | Younger ecosystem, no native vector index (need sidecar) | Best for latency-sensitive deployments |
-| **Kuzu** | Embedded, zero-ops, columnar storage, fast analytics | No server mode, limited tooling | Best for single-machine / dev-loop use |
-
-**Recommendation:** Start with Kuzu for Phase 0–2 (fast iteration, no infra). Migrate to Neo4j or FalkorDB when multi-tenant / multi-service deployment is needed (Phase 6).
-
-### 5.2  Embedding Model
-
-Use a **code-specialised** embedding model. Candidates:
-
-- `voyage-code-3` — best-in-class on code retrieval benchmarks.
-- `text-embedding-3-small` (OpenAI) — good balance of cost and quality.
-- `nomic-embed-code` — open-weight, self-hostable.
-
-The embedding pipeline must be **swappable** (interface-based) because models
-improve rapidly.
-
-### 5.3  LLM Usage Budget
-
-LLM calls are the most expensive part of the pipeline. Minimise them:
-
-- **Community summaries** are generated once per community, re-generated only
-  on structural change (not on every query).
-- **Annotation extraction** uses a small/fast model (Haiku-class) — this runs
-  on every agent session end.
-- **Retrieval** is LLM-free (graph traversal + vector search + fusion). The
-  LLM is only involved in the final answer generation, which is the agent's
-  responsibility, not the memory service's.
-
-### 5.4  Incremental vs. Full Rebuild
-
-Full graph rebuild is O(repo size) and may take minutes for large repos. The
-incremental pipeline (Phase 1.4) is critical for developer experience:
-
-- On each `git pull` or file save, only re-extract changed files.
-- Use content hashing to detect true changes vs. whitespace-only diffs.
-- Cascade: if function F's signature changed, re-check all callers of F in the
-  call-chain view (bounded fan-out).
+| Capability | Status |
+|------------|--------|
+| Top-down repo structure graph | ✅ MVP |
+| Call-chain context (calls, imports, inherits) | ✅ MVP |
+| Hybrid retrieval (graph + vector) | ✅ MVP |
+| Token-budgeted context assembly | ✅ MVP |
+| Incremental graph updates | ✅ MVP |
+| Agent-callable API (MCP tool) | ✅ MVP |
+| Branch-aware queries | ✅ MVP |
+| TypeScript support | ✅ MVP |
+| Python support | ✅ MVP |
+| Data-flow analysis | ❌ Deferred |
+| Expertise/pattern learning | ❌ Post-MVP (Phase 6) |
+| Multi-language parity beyond TS/Python | ❌ Deferred |
+| Agent write-back & self-evolution | ⚠️ Basic in MVP, full in Phase 6 |
 
 ---
 
-## 6  Risks & Mitigations
+## Risk Register
 
-| Risk | Likelihood | Impact | Mitigation |
-|---|---|---|---|
-| **LSP extraction is unreliable for dynamic languages** | High | Medium | Fall back to Tree-sitter AST parsing; mark extracted edges with `confidence < 1.0`; allow agent annotations to correct errors |
-| **Graph grows unbounded for large monorepos** | Medium | High | Staleness-based eviction (Phase 5.2); scope ingest to configured subtrees; archive cold nodes to blob storage |
-| **Embedding model quality degrades on niche languages** | Medium | Medium | Make embedding model swappable; support per-language model overrides; supplement with TF-IDF fallback |
-| **RL-based retrieval policy overfits to small feedback set** | Medium | Low | Require minimum 100 outcome samples before activating learned weights; always blend with rule-based baseline (floor weight 0.3) |
-| **Latency regression as graph scales** | Low | High | Index-tune continuously; enforce p95 SLO in CI; consider graph partitioning by package |
-| **Agent writes incorrect annotations** | High | Medium | All annotations carry `confidence` and `source=agent`; consolidation engine (5.1) flags conflicting annotations for human review |
-
----
-
-## 7  Success Metrics
-
-| Metric | Baseline (no memory) | Target (Phase 4 complete) | Target (Phase 5 complete) |
-|---|---|---|---|
-| **Context relevance** (% of retrieved tokens the agent actually uses) | N/A | ≥ 40% | ≥ 55% |
-| **Retrieval latency** p95 | N/A | < 500 ms | < 500 ms |
-| **Incremental ingest time** (10-file diff, 100K-node graph) | N/A | < 5 s | < 5 s |
-| **Agent task success rate** (on SWE-Bench-lite subset) | Baseline X% | X + 5% | X + 10% |
-| **Token cost per session** (memory-augmented vs. naive re-read) | 1.0× | 0.7× | 0.6× |
-| **Retrieval precision improvement** (via RL weights) | — | — | ≥ 10% relative over hand-tuned |
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| Cross-file symbol resolution accuracy | High — incorrect call edges poison the graph | Start with direct imports only; track resolution confidence; keep unresolved edges explicit |
+| Graph size for large repos (100K+ files) | Medium — slow queries, high storage | Implement lazy loading; index only changed subtrees; use graph partitioning by module |
+| LLM summary quality/cost | Medium — hallucinated summaries degrade trust | Make summaries optional, background, regenerable; tag provenance; keep them out of core retrieval ranking |
+| Incremental update consistency | High — stale graph worse than no graph | Dependency invalidation; periodic full reconciliation; dirty-state tracking |
+| Symbol identity across renames | Medium — broken IDs fragment history | Git rename tracking + AST signature matching; reconciliation table; fallback to full rebuild |
+| Branch isolation complexity | Medium — wrong-branch data in retrieval | Scope all queries to a branch; use graph overlays for feature branches |
+| Embedding model drift | Low — similarity rankings shift | Version embeddings; re-embed on model change; A/B test retrieval quality |
 
 ---
 
-## 8  Open Questions (to resolve before Phase 1 starts)
+## Technology Recommendations
 
-1. **Language scope for V1:** TypeScript + Python? Or include Go / Java / C#
-   from the start? (Recommendation: TS + Python for V1; add others in a follow-up story.)
-2. **Graph backend:** Confirm Kuzu-first strategy or jump straight to Neo4j
-   if the team already has Neo4j operational expertise.
-3. **Embedding model hosting:** Use a managed API (OpenAI / Voyage) or
-   self-host (Nomic)? Depends on data-residency requirements.
-4. **L2 cross-repo memory:** Is this in-scope for this story's 10 SP, or
-   should 5.4 be split into a separate story? (Recommendation: split it out.)
-5. **MCP tool surface:** Confirm the MCP tool names and schemas align with the
-   existing agent tool registry.
+| Concern | Recommendation | Rationale |
+|---------|---------------|-----------|
+| Graph storage | **Neo4j Community** (dev/staging) with bolt protocol; evaluate lighter alternatives (SQLite + adjacency tables) for embedded use | Mature Cypher query language, good traversal performance, large ecosystem |
+| AST parsing | **TypeScript Compiler API** (ts-morph) for TS; **tree-sitter** for Python and future languages | ts-morph gives type-checked AST; tree-sitter is fast, multi-language, incremental |
+| Embeddings | **OpenAI text-embedding-3-small** or **Nomic Embed** for code | Good code understanding, reasonable cost, small vector size |
+| Vector index | **In-graph property** (small repos) or **pgvector/Qdrant sidecar** (large repos) | Avoid a separate vector DB until scale demands it |
+| API surface | **MCP tool protocol** with TypeScript SDK | Native integration with MCP-compatible agents |
+| Observability | **OpenTelemetry spans** on every retrieval path | Structured tracing without vendor lock-in |
+
+---
+
+## Open Questions
+
+1. **Language priority beyond TS/Python.** Should we target Go, Java, C# next?
+   Driven by which codebases agents operate on most.
+2. **Graph storage at scale.** At what repo size does Neo4j become a bottleneck?
+   Need benchmarking data from Phase 0 fixture repos.
+3. **Embedding model choice.** Code-specialized models (CodeBERT, StarCoder
+   embeddings) vs. general-purpose (OpenAI). Need A/B comparison on retrieval
+   quality.
+4. **Expertise extraction triggers.** How many interaction samples are needed
+   before pattern extraction is meaningful? Needs empirical calibration in
+   Phase 6.
+5. **Multi-repo memory.** Should the graph span multiple repositories (monorepo
+   scenario)? Architectural decision needed before Phase 1 if cross-repo edges
+   are required.
+
+---
+
+## References
+
+- Yang et al., "Graph-based Agent Memory: Taxonomy, Techniques, and
+  Applications," arXiv:2602.05665, 2026.
+- [Awesome-GraphMemory](https://github.com/DEEP-PolyU/Awesome-GraphMemory) —
+  curated resource list.
+- Zep/Graphiti — temporal knowledge graph for agent memory (arXiv:2501.13956).
+- Mem0 — production-ready agent memory with graph storage (arXiv:2504.19413).
+- MAGMA — multi-graph agentic memory architecture (arXiv:2601.03236).
+- HiAgent — hierarchical working memory for long-horizon tasks (ACL'25).
+- Microsoft GraphRAG — graph-based RAG for summarization (arXiv:2404.16130).
