@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 30
+> **Status:** Iteration 31
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -15,7 +15,7 @@
 > | Document | Owns | Current state |
 > |---|---|---|
 > | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Currently at iteration 23. Aligned on structural/naming points. Sixteen alignment items (A1–A16) tracked in §8.1, all resolved. A13–A16 added in iteration 28 (node-ID format, `LastTouched` type, `MemoryNode.Version` nullability, expertise hash input). |
-> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Currently at latest iteration. Substantially updated to align with canonical vocabulary — uses correct names (`IMemoryGraphStore`, `ExpertiseEntry`, composition wrappers, `VersionRange?`, correct method signatures). Remaining minor presentational gaps catalogued in §8.2 below. `architecture.md` governs on all conflicts. |
+> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Currently at latest iteration. Fully aligned with canonical vocabulary — uses correct names (`IMemoryGraphStore`, `ExpertiseEntry`, composition wrappers, `VersionRange?`, correct method signatures), correctly specifies both hash formulas (ContentHash and Id hash8). One minor presentational gap catalogued in §8.2 below. `architecture.md` governs on all conflicts. |
 > | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Currently at latest iteration. Contains 10 divergences catalogued in §8.3 below — all semantically correct or out-of-scope. |
 
 ---
@@ -722,26 +722,26 @@ CREATE INDEX idx_audit_session ON audit_log(session_id);
 
 `AnnotationKeyRegistry` defines the well-known `Metadata` keys:
 
-| Key | Type | Layer | Owner |
+| Key | Type | Layer / Scope | Owner |
 |---|---|---|---|
-| `MemoryLayer` | `string` | All | Extraction Pipeline |
+| `MemoryLayer` | `string` | All nodes and edges | Extraction Pipeline |
 | `SemanticRelation` | `string` | All edges | Extraction Pipeline / Evolution Engine |
-| `ContentHash` | `string` | Structural, Call-Chain | Extraction Pipeline |
-| `SinceCommit` | `string` | All | Temporal Model |
-| `SinceIndex` | `int` | All | Temporal Model |
-| `UntilCommit` | `string?` | All | Temporal Model / Incremental Sync |
-| `UntilIndex` | `int?` | All | Temporal Model / Incremental Sync |
-| `Summary` | `string` | Semantic (Topic) | Evolution Engine |
-| `MemberCount` | `int` | Semantic (Topic) | Evolution Engine |
+| `ContentHash` | `string` | In-repo nodes only (Structural, Call-Chain). **Not** on External boundary nodes. | Extraction Pipeline |
+| `SinceCommit` | `string` | In-repo nodes and all edges. **Not** on External boundary nodes (§4.3). | Temporal Model |
+| `SinceIndex` | `int` | In-repo nodes and all edges. **Not** on External boundary nodes (§4.3). | Temporal Model |
+| `UntilCommit` | `string?` | In-repo nodes and all edges. **Not** on External boundary nodes. | Temporal Model / Incremental Sync |
+| `UntilIndex` | `int?` | In-repo nodes and all edges. **Not** on External boundary nodes. | Temporal Model / Incremental Sync |
+| `Summary` | `string` | Semantic (Topic nodes) | Evolution Engine |
+| `MemberCount` | `int` | Semantic (Topic, SemanticCluster nodes) | Evolution Engine |
 | `SimilarityScore` | `double` | Semantic (`SIMILAR_TO` edges) | Semantic Indexer |
 | `OriginalEdgeType` | `string` | Code-derived edges | Extraction Pipeline |
 | `Confidence` | `double` | Call-Chain edges, Expertise edges | Extraction Pipeline / Evolution Engine |
 | `Stale` | `bool` | Call-Chain edges | Incremental Sync |
-| `QualifiedName` | `string` | All nodes | Extraction Pipeline |
-| `Package` | `string` | External nodes | Extraction Pipeline — package/assembly name (e.g., `"Microsoft.CodeAnalysis"`) |
-| `LastTouched` | `string` | All nodes | Incremental Sync (ISO-8601 wall-clock; informational — not used for graph filtering) |
-| `Embedding` | `float[]` | All nodes (serialized) | Semantic Indexer |
-| `EmbeddingModel` | `string` | Nodes with embeddings | Semantic Indexer |
+| `QualifiedName` | `string` | In-repo nodes and External nodes | Extraction Pipeline |
+| `Package` | `string` | External boundary nodes only | Extraction Pipeline — package/assembly name (e.g., `"Microsoft.CodeAnalysis"`) |
+| `LastTouched` | `string` | In-repo nodes only. **Not** on External boundary nodes (they are timeless — §4.3). | Incremental Sync (ISO-8601 wall-clock; informational — not used for graph filtering) |
+| `Embedding` | `float[]` | In-repo nodes only (serialized). **Not** on External boundary nodes (they are never embedded — §4.2). | Semantic Indexer |
+| `EmbeddingModel` | `string` | In-repo nodes with embeddings | Semantic Indexer |
 
 Agent-authored extension keys use the `ext:` prefix (e.g., `ext:team-owner`).
 Keys without `ext:` prefix that are not in the registry produce a validation
@@ -1313,11 +1313,11 @@ both long-resolved items and newly identified divergences.
 | A13 | Node ID leading-slash format | **Resolved (iteration 28).** Architecture §4.2 previously showed `"{relativePath}::{qualifiedName}"` without leading `/`. E2e-scenarios (line 22) explicitly state "leading `/` always present" for in-repo nodes, and all Gherkin tables use `/src/ast/...` format. Tech-spec §7.1 also omits the leading `/` in its ID format summary (e.g., `src/ast/...` without `/`). Architecture §4.2 now reads `"/{relativePath}::{qualifiedName}"` with explicit leading `/`; this is canonical and governs over both tech-spec and e2e-scenarios. External and expertise node IDs do not start with `/`. |
 | A14 | `LastTouched` metadata type | **Resolved (iteration 28).** Architecture §4.5 previously typed `LastTouched` as `int`. Tech-spec §7.3 types it as `string (ISO-8601)` with description "Wall-clock time of last extraction (informational)." Architecture §4.5 now types it as `string` (ISO-8601), matching the tech-spec. Wall-clock timestamps are informational and not used for graph filtering (§4.3). |
 | A15 | `MemoryNode.Version` nullability | **Resolved (iteration 28).** Architecture §4.1 previously declared `VersionRange Version { get; }` (non-nullable) on `MemoryNode`. Since External boundary nodes are timeless (§4.3, §4.2), `MemoryNode.Version` is now `VersionRange? Version` (nullable) to accommodate External nodes wrapped as `MemoryNode`. |
-| A16 | Expertise hash input in tech-spec | **Resolved (iteration 28).** Tech-spec §7.1 uses `SHA-256(Content + TargetNodeId)` for the expertise-entry `hash8`. Architecture §4.2 canonically specifies `SHA-256(Title + Body + TargetNodeId)` (reflecting the `Title`/`Body` split per D-5 in §8.2.2). Architecture governs; tech-spec's `Content` is stale shorthand for `Title + Body`. |
+| A16 | Expertise hash input in tech-spec | **Resolved (iteration 28).** Tech-spec §7.1 uses `SHA-256(Content + TargetNodeId)` for the expertise-entry `hash8`. Architecture §4.2 canonically specifies `SHA-256(Title + Body + TargetNodeId)` (reflecting the `Title`/`Body` split per tech-spec D5). Architecture governs; tech-spec's `Content` is stale shorthand for `Title + Body`. |
 
 ### 8.2 Alignment with `implementation-plan.md` (Current Iteration)
 
-The implementation-plan has been **substantially updated** and now uses
+The implementation-plan has been **fully aligned** and now uses
 canonical vocabulary defined in this document. Its header states: "when
 literal names or values here conflict with `architecture.md`, follow
 `architecture.md`."
@@ -1352,17 +1352,15 @@ iterations, have been corrected in the implementation-plan:
 - **Project placement:** MCP tools in `Ast.Memory/Mcp/`, CLI in
   `Ast.Memory/Cli/`, no files created in `Ast.GraphDb/`.
 
-**Remaining presentational gaps (3 items):**
+**Remaining presentational gap (1 item):**
 
-These are minor documentation shorthand in the implementation-plan that do
+This is minor documentation shorthand in the implementation-plan that does
 not affect correctness. The implementation-plan's header defers to this
 document on all conflicts.
 
 | # | impl-plan says | Canonical (this doc) | Governing § |
 |---|---|---|---|
-| R-1 | Stage 1.1 `ExpertiseEntry.ContentHash` described as "SHA-256 of Title+Body" without mentioning that the ID `hash8` uses `SHA-256(Title+Body+TargetNodeId)` | `ContentHash` = SHA-256(Title+Body) for dedup; `Id` hash8 = SHA-256(Title+Body+TargetNodeId) for uniqueness — two distinct hashes | §4.2 |
-| R-2 | `MemoryEdge.Version` property listed as `VersionRange Version` without explicit non-nullable annotation | `VersionRange Version` is non-nullable (all edges carry versioning, per §4.3) — impl-plan is correct but could be more explicit | §4.1, §4.3 |
-| R-3 | Expertise hash input in Stage 1.1 test scenario shows `SHA-256(Title+Body+TargetNodeId)` correctly but does not note the distinct `ContentHash` field uses `SHA-256(Title+Body)` | Both formulas exist — `hash8` for ID uses `Title+Body+TargetNodeId`, `ContentHash` for dedup uses `Title+Body` | §4.2 |
+| R-1 | `MemoryEdge.Version` property listed as `VersionRange Version` without explicit non-nullable annotation | `VersionRange Version` is non-nullable (all edges carry versioning, per §4.3) — impl-plan is correct but could be more explicit | §4.1, §4.3 |
 
 ### 8.3 Alignment with `e2e-scenarios.md` (Current Iteration)
 
@@ -1387,5 +1385,5 @@ behaviors match the architecture.
 ### 8.4 Net Assessment
 
 - **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Sixteen alignment items (A1–A16) tracked, all resolved. Tech-spec §12.2 confirms "No remaining conflicts." Tech-spec's own header references architecture.md at "iteration 25" — this is stale iteration metadata in the tech-spec; the alignment conclusions (A1–A16) remain valid. Three stale presentation items remain in the tech-spec (not conflicts — this document governs): (1) §7.1 line 173 shows ID format without leading `/` (governed by A13); (2) §7.1 line 171 uses `SHA-256(Content + TargetNodeId)` instead of `SHA-256(Title + Body + TargetNodeId)` (governed by A16); (3) §8.4 uses column names `valid_from_idx`/`valid_until_idx` while architecture §4.4 uses `since_index`/`until_index` (architecture governs — tech-spec §8.4 is a quick-reference, not normative).
-- **implementation-plan ↔ architecture:** Substantially aligned. The implementation-plan has been updated to use canonical vocabulary: correct interface names, composition wrappers, `VersionRange?` nullability, correct method signatures, canonical scoring weights and constants, and correct project placement. Three minor presentational gaps remain (R-1 through R-3 in §8.2), none affecting correctness. The implementation-plan's own header defers to this document on all conflicts.
+- **implementation-plan ↔ architecture:** Fully aligned on vocabulary, composition model, interface signatures, scoring weights, constants, node-ID format, and project placement. The implementation-plan correctly specifies both the `ContentHash` formula (SHA-256 of Title+Body for dedup) and the `Id` hash8 formula (SHA-256 of Title+Body+TargetNodeId for uniqueness) in its model definitions and test scenarios. One minor presentational gap remains (R-1 in §8.2: `MemoryEdge.Version` non-nullable annotation), not affecting correctness. The implementation-plan's own header defers to this document on all conflicts.
 - **e2e-scenarios ↔ architecture:** 10 divergences catalogued in §8.3, all either presentation shorthand (semantically correct) or out-of-scope features. Two scenarios (E2E-5, E2E-8) exercise out-of-scope features and should be tagged `@deferred`. E2E-6 (unqualified IDs) and E2E-7 (`ext::` prefix) are presentation shorthand; canonical formats are in §4.2.
