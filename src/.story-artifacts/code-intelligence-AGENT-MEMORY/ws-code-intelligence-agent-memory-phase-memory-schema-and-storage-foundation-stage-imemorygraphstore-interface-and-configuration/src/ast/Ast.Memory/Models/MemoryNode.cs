@@ -19,41 +19,23 @@ public class MemoryNode
     public HypergraphNode Inner { get; }
 
     /// <summary>
-    /// Temporal version range. Null for External boundary nodes which are timeless.
-    /// Per architecture.md §4.3.
+    /// Temporal version range. Null when no temporal metadata is present,
+    /// which is expected for External boundary nodes (timeless per architecture.md §4.3).
     /// </summary>
     public VersionRange? Version { get; }
 
     public MemoryNode(HypergraphNode inner)
     {
-        Inner = inner ?? throw new ArgumentNullException(nameof(inner));
-        Version = ExtractVersion(inner.Metadata);
+        this.Inner = inner ?? throw new ArgumentNullException(nameof(inner));
+        this.Version = VersionRangeHelper.ExtractVersion(inner.Metadata);
     }
 
     /// <summary>Memory layer from metadata (e.g. "structural", "semantic").</summary>
-    public string MemoryLayer => Inner.Metadata[MemoryMetadataKeys.MemoryLayer];
+    public string MemoryLayer => MetadataHelper.GetRequiredString(this.Inner.Metadata, MemoryMetadataKeys.MemoryLayer);
 
     /// <summary>Node kind forwarded from the inner node's NodeType.</summary>
-    public string NodeKind => Inner.NodeType;
+    public string NodeKind => this.Inner.NodeType;
 
     /// <summary>Content hash from metadata.</summary>
-    public string ContentHash => Inner.Metadata[MemoryMetadataKeys.ContentHash];
-
-    private static VersionRange? ExtractVersion(Dictionary<string, string> metadata)
-    {
-        if (!metadata.TryGetValue(MemoryMetadataKeys.SinceCommit, out var since))
-            return null;
-
-        if (!metadata.TryGetValue(MemoryMetadataKeys.SinceIndex, out var sinceIndexStr)
-            || !int.TryParse(sinceIndexStr, out var sinceIndex))
-            return null;
-
-        string? until = metadata.TryGetValue(MemoryMetadataKeys.UntilCommit, out var u) ? u : null;
-        int? untilIndex = metadata.TryGetValue(MemoryMetadataKeys.UntilIndex, out var ui)
-                          && int.TryParse(ui, out var parsed)
-            ? parsed
-            : null;
-
-        return new VersionRange(since, sinceIndex, until, untilIndex);
-    }
+    public string ContentHash => MetadataHelper.GetRequiredString(this.Inner.Metadata, MemoryMetadataKeys.ContentHash);
 }

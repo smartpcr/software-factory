@@ -8,151 +8,241 @@ namespace Ast.Memory.Tests;
 
 using System.Reflection;
 using Ast.Core;
-using Ast.GraphDb.Interfaces;
+using Ast.GraphDb;
 using Ast.Memory.Interfaces;
 using Ast.Memory.Models;
-using Xunit;
 
-/// <summary>
-/// Scenario: IMemoryGraphStore contract —
-/// Given the IMemoryGraphStore interface,
-/// When compiled,
-/// Then it extends IGraphStore and declares all 12 methods from architecture.md §5.1.
-/// </summary>
+[TestClass]
 public class IMemoryGraphStoreContractTests
 {
     private static readonly Type InterfaceType = typeof(IMemoryGraphStore);
 
-    [Fact]
+    [TestMethod]
     public void ExtendsIGraphStore()
     {
-        Assert.True(typeof(IGraphStore).IsAssignableFrom(InterfaceType),
-            "IMemoryGraphStore must extend IGraphStore.");
+        typeof(IGraphStore).IsAssignableFrom(InterfaceType).Should().BeTrue(
+            "IMemoryGraphStore must extend IGraphStore");
     }
 
-    [Theory]
-    [InlineData("GetNodesByLayerAsync")]
-    [InlineData("GetEdgesBySemanticRelationAsync")]
-    [InlineData("UpsertNodeAsync")]
-    [InlineData("RetireNodeAsync")]
-    [InlineData("RetireEdgeAsync")]
-    [InlineData("UpdateEdgeMetadataAsync")]
-    [InlineData("GetExpertiseForNodeAsync")]
-    [InlineData("UpsertExpertiseAsync")]
-    [InlineData("ArchiveExpertiseAsync")]
-    [InlineData("GetArchivedExpertiseAsync")]
-    [InlineData("GetMemoryStatisticsAsync")]
-    [InlineData("LogAuditAsync")]
-    public void DeclaresRequiredMethod(string methodName)
+    [TestMethod]
+    public void ExtendsIAsyncDisposable()
     {
-        var methods = InterfaceType.GetMethods(BindingFlags.Public | BindingFlags.Instance);
-        Assert.Contains(methods, m => m.Name == methodName);
+        typeof(IAsyncDisposable).IsAssignableFrom(InterfaceType).Should().BeTrue(
+            "IMemoryGraphStore must be IAsyncDisposable via IGraphStore");
     }
 
-    [Fact]
+    [TestMethod]
     public void DeclaresExactly12Methods()
     {
-        // IMemoryGraphStore's own methods (not inherited from IGraphStore/IDisposable)
-        var ownMethods = InterfaceType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
-        Assert.Equal(12, ownMethods.Length);
+        var methods = InterfaceType.GetMethods(
+            BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+        methods.Should().HaveCount(12,
+            "architecture.md §5.1 defines exactly 12 methods");
     }
 
-    [Fact]
-    public void GetNodesByLayerAsync_ReturnsMemoryNodes()
+    [TestMethod]
+    public void GetNodesByLayerAsync_Signature()
     {
-        var method = InterfaceType.GetMethod("GetNodesByLayerAsync");
-        Assert.NotNull(method);
-        Assert.Equal(typeof(Task<IReadOnlyList<MemoryNode>>), method!.ReturnType);
+        var m = GetMethod(nameof(IMemoryGraphStore.GetNodesByLayerAsync));
+        m.ReturnType.Should().Be(typeof(Task<IReadOnlyList<MemoryNode>>));
+        var p = m.GetParameters();
+        p.Should().HaveCount(5);
+        p[0].ParameterType.Should().Be(typeof(string));            // memoryLayer
+        p[1].ParameterType.Should().Be(typeof(int?));              // atCommitIndex
+        p[2].ParameterType.Should().Be(typeof(NodeFilter));        // filter (nullable ref)
+        p[3].ParameterType.Should().Be(typeof(int));               // limit
+        p[4].ParameterType.Should().Be(typeof(CancellationToken)); // cancellationToken
     }
 
-    [Fact]
-    public void GetEdgesBySemanticRelationAsync_ReturnsMemoryEdges()
+    [TestMethod]
+    public void GetEdgesBySemanticRelationAsync_Signature()
     {
-        var method = InterfaceType.GetMethod("GetEdgesBySemanticRelationAsync");
-        Assert.NotNull(method);
-        Assert.Equal(typeof(Task<IReadOnlyList<MemoryEdge>>), method!.ReturnType);
+        var m = GetMethod(nameof(IMemoryGraphStore.GetEdgesBySemanticRelationAsync));
+        m.ReturnType.Should().Be(typeof(Task<IReadOnlyList<MemoryEdge>>));
+        var p = m.GetParameters();
+        p.Should().HaveCount(5);
+        p[0].ParameterType.Should().Be(typeof(string));            // semanticRelation
+        p[1].ParameterType.Should().Be(typeof(string));            // memoryLayer (nullable ref)
+        p[2].ParameterType.Should().Be(typeof(int?));              // atCommitIndex
+        p[3].ParameterType.Should().Be(typeof(int));               // limit
+        p[4].ParameterType.Should().Be(typeof(CancellationToken));
     }
 
-    [Fact]
-    public void UpsertNodeAsync_AcceptsHypergraphNodeAndVersionRange()
+    [TestMethod]
+    public void UpsertNodeAsync_Signature()
     {
-        var methods = InterfaceType.GetMethods().Where(m => m.Name == "UpsertNodeAsync").ToList();
-        // Should have the overload with VersionRange (declared on IMemoryGraphStore)
-        var versionedOverload = methods.FirstOrDefault(m =>
-        {
-            var parameters = m.GetParameters();
-            return parameters.Any(p => p.ParameterType == typeof(VersionRange));
-        });
-        Assert.NotNull(versionedOverload);
-        var parms = versionedOverload!.GetParameters();
-        Assert.Equal(typeof(HypergraphNode), parms[0].ParameterType);
-        Assert.Equal(typeof(VersionRange), parms[1].ParameterType);
-        Assert.Equal(typeof(CancellationToken), parms[2].ParameterType);
+        var m = GetMethod(nameof(IMemoryGraphStore.UpsertNodeAsync));
+        m.ReturnType.Should().Be(typeof(Task));
+        var p = m.GetParameters();
+        p.Should().HaveCount(3);
+        p[0].ParameterType.Should().Be(typeof(HypergraphNode));
+        p[1].ParameterType.Should().Be(typeof(VersionRange));
+        p[2].ParameterType.Should().Be(typeof(CancellationToken));
     }
 
-    [Fact]
-    public void RetireNodeAsync_AcceptsNodeIdAndCommitIndex()
+    [TestMethod]
+    public void RetireNodeAsync_Signature()
     {
-        var method = InterfaceType.GetMethod("RetireNodeAsync");
-        Assert.NotNull(method);
-        var parms = method!.GetParameters();
-        Assert.Equal(typeof(string), parms[0].ParameterType);
-        Assert.Equal(typeof(int), parms[1].ParameterType);
+        var m = GetMethod(nameof(IMemoryGraphStore.RetireNodeAsync));
+        m.ReturnType.Should().Be(typeof(Task));
+        var p = m.GetParameters();
+        p.Should().HaveCount(3);
+        p[0].ParameterType.Should().Be(typeof(string));
+        p[1].ParameterType.Should().Be(typeof(int));
+        p[2].ParameterType.Should().Be(typeof(CancellationToken));
     }
 
-    [Fact]
-    public void RetireEdgeAsync_AcceptsEdgeIdAndCommitIndex()
+    [TestMethod]
+    public void RetireEdgeAsync_Signature()
     {
-        var method = InterfaceType.GetMethod("RetireEdgeAsync");
-        Assert.NotNull(method);
-        var parms = method!.GetParameters();
-        Assert.Equal(typeof(string), parms[0].ParameterType);
-        Assert.Equal(typeof(int), parms[1].ParameterType);
+        var m = GetMethod(nameof(IMemoryGraphStore.RetireEdgeAsync));
+        m.ReturnType.Should().Be(typeof(Task));
+        var p = m.GetParameters();
+        p.Should().HaveCount(3);
+        p[0].ParameterType.Should().Be(typeof(string));
+        p[1].ParameterType.Should().Be(typeof(int));
+        p[2].ParameterType.Should().Be(typeof(CancellationToken));
     }
 
-    [Fact]
-    public void UpdateEdgeMetadataAsync_AcceptsMetadataDictionary()
+    [TestMethod]
+    public void UpdateEdgeMetadataAsync_Signature()
     {
-        var method = InterfaceType.GetMethod("UpdateEdgeMetadataAsync");
-        Assert.NotNull(method);
-        var parms = method!.GetParameters();
-        Assert.Equal(typeof(string), parms[0].ParameterType);
-        Assert.Equal(typeof(IDictionary<string, object?>), parms[1].ParameterType);
+        var m = GetMethod(nameof(IMemoryGraphStore.UpdateEdgeMetadataAsync));
+        m.ReturnType.Should().Be(typeof(Task));
+        var p = m.GetParameters();
+        p.Should().HaveCount(3);
+        p[0].ParameterType.Should().Be(typeof(string));
+        p[1].ParameterType.Should().Be(typeof(IDictionary<string, object?>));
+        p[2].ParameterType.Should().Be(typeof(CancellationToken));
     }
 
-    [Fact]
-    public void GetExpertiseForNodeAsync_ReturnsExpertiseEntries()
+    [TestMethod]
+    public void GetExpertiseForNodeAsync_Signature()
     {
-        var method = InterfaceType.GetMethod("GetExpertiseForNodeAsync");
-        Assert.NotNull(method);
-        Assert.Equal(typeof(Task<IReadOnlyList<ExpertiseEntry>>), method!.ReturnType);
+        var m = GetMethod(nameof(IMemoryGraphStore.GetExpertiseForNodeAsync));
+        m.ReturnType.Should().Be(typeof(Task<IReadOnlyList<ExpertiseEntry>>));
+        var p = m.GetParameters();
+        p.Should().HaveCount(3);
+        p[0].ParameterType.Should().Be(typeof(string));
+        p[1].ParameterType.Should().Be(typeof(double));
+        p[2].ParameterType.Should().Be(typeof(CancellationToken));
     }
 
-    [Fact]
-    public void UpsertExpertiseAsync_AcceptsExpertiseEntry()
+    [TestMethod]
+    public void UpsertExpertiseAsync_Signature()
     {
-        var method = InterfaceType.GetMethod("UpsertExpertiseAsync");
-        Assert.NotNull(method);
-        Assert.Equal(typeof(ExpertiseEntry), method!.GetParameters()[0].ParameterType);
+        var m = GetMethod(nameof(IMemoryGraphStore.UpsertExpertiseAsync));
+        m.ReturnType.Should().Be(typeof(Task));
+        var p = m.GetParameters();
+        p.Should().HaveCount(2);
+        p[0].ParameterType.Should().Be(typeof(ExpertiseEntry));
+        p[1].ParameterType.Should().Be(typeof(CancellationToken));
     }
 
-    [Fact]
-    public void GetMemoryStatisticsAsync_ReturnsStatistics()
+    [TestMethod]
+    public void ArchiveExpertiseAsync_Signature()
     {
-        var method = InterfaceType.GetMethod("GetMemoryStatisticsAsync");
-        Assert.NotNull(method);
-        Assert.Equal(typeof(Task<MemoryGraphStatistics>), method!.ReturnType);
+        var m = GetMethod(nameof(IMemoryGraphStore.ArchiveExpertiseAsync));
+        m.ReturnType.Should().Be(typeof(Task));
+        var p = m.GetParameters();
+        p.Should().HaveCount(2);
+        p[0].ParameterType.Should().Be(typeof(string));
+        p[1].ParameterType.Should().Be(typeof(CancellationToken));
     }
 
-    [Fact]
-    public void LogAuditAsync_AcceptsSessionIdOperationAndDetail()
+    [TestMethod]
+    public void GetArchivedExpertiseAsync_Signature()
     {
-        var method = InterfaceType.GetMethod("LogAuditAsync");
-        Assert.NotNull(method);
-        var parms = method!.GetParameters();
-        Assert.Equal(typeof(string), parms[0].ParameterType);   // sessionId
-        Assert.Equal(typeof(string), parms[1].ParameterType);   // operation
-        Assert.Equal(typeof(object), parms[2].ParameterType);   // detail
-        Assert.Equal(typeof(CancellationToken), parms[3].ParameterType);
+        var m = GetMethod(nameof(IMemoryGraphStore.GetArchivedExpertiseAsync));
+        m.ReturnType.Should().Be(typeof(Task<IReadOnlyList<ExpertiseEntry>>));
+        var p = m.GetParameters();
+        p.Should().HaveCount(3);
+        p[0].ParameterType.Should().Be(typeof(string));  // nullable ref
+        p[1].ParameterType.Should().Be(typeof(int));
+        p[2].ParameterType.Should().Be(typeof(CancellationToken));
+    }
+
+    [TestMethod]
+    public void GetMemoryStatisticsAsync_Signature()
+    {
+        var m = GetMethod(nameof(IMemoryGraphStore.GetMemoryStatisticsAsync));
+        m.ReturnType.Should().Be(typeof(Task<MemoryGraphStatistics>));
+        var p = m.GetParameters();
+        p.Should().HaveCount(1);
+        p[0].ParameterType.Should().Be(typeof(CancellationToken));
+    }
+
+    [TestMethod]
+    public void LogAuditAsync_Signature()
+    {
+        var m = GetMethod(nameof(IMemoryGraphStore.LogAuditAsync));
+        m.ReturnType.Should().Be(typeof(Task));
+        var p = m.GetParameters();
+        p.Should().HaveCount(4);
+        p[0].ParameterType.Should().Be(typeof(string));
+        p[1].ParameterType.Should().Be(typeof(string));
+        p[2].ParameterType.Should().Be(typeof(object));
+        p[3].ParameterType.Should().Be(typeof(CancellationToken));
+    }
+
+    [TestMethod]
+    public void GetNodesByLayerAsync_OptionalParametersAreNullable()
+    {
+        var m = GetMethod(nameof(IMemoryGraphStore.GetNodesByLayerAsync));
+        var p = m.GetParameters();
+
+        // atCommitIndex (int?) is a Nullable<int> value type
+        p[1].ParameterType.Should().Be(typeof(int?), "atCommitIndex should be nullable");
+
+        // filter (NodeFilter?) is a nullable reference type — NullabilityInfoContext surfaces this
+        var ctx = new NullabilityInfoContext();
+        var filterNullability = ctx.Create(p[2]);
+        filterNullability.ReadState.Should().Be(NullabilityState.Nullable,
+            "filter parameter should be annotated as nullable");
+    }
+
+    [TestMethod]
+    public void GetEdgesBySemanticRelationAsync_OptionalParametersAreNullable()
+    {
+        var m = GetMethod(nameof(IMemoryGraphStore.GetEdgesBySemanticRelationAsync));
+        var p = m.GetParameters();
+        var ctx = new NullabilityInfoContext();
+
+        // memoryLayer (string?) should be nullable
+        var layerNullability = ctx.Create(p[1]);
+        layerNullability.ReadState.Should().Be(NullabilityState.Nullable,
+            "memoryLayer parameter should be annotated as nullable");
+
+        // atCommitIndex (int?) should be nullable
+        p[2].ParameterType.Should().Be(typeof(int?), "atCommitIndex should be nullable");
+    }
+
+    [TestMethod]
+    public void GetArchivedExpertiseAsync_TargetNodeIdIsNullable()
+    {
+        var m = GetMethod(nameof(IMemoryGraphStore.GetArchivedExpertiseAsync));
+        var p = m.GetParameters();
+        var ctx = new NullabilityInfoContext();
+
+        var nullability = ctx.Create(p[0]);
+        nullability.ReadState.Should().Be(NullabilityState.Nullable,
+            "targetNodeId parameter should be annotated as nullable");
+    }
+
+    [TestMethod]
+    public void MemoryOptions_NullableBackendEndpoints()
+    {
+        var opts = new MemoryOptions();
+        opts.SqlitePath.Should().BeNull("SqlitePath has no default");
+        opts.Neo4jUri.Should().BeNull("Neo4jUri has no default");
+        opts.QdrantEndpoint.Should().BeNull("QdrantEndpoint has no default");
+    }
+
+    private static MethodInfo GetMethod(string name)
+    {
+        var method = InterfaceType.GetMethod(name,
+            BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+        method.Should().NotBeNull($"interface must declare method '{name}'");
+        return method!;
     }
 }
