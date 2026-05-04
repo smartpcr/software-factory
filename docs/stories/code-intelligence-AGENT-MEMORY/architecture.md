@@ -165,10 +165,21 @@ All use `HyperedgeType.MemoryRelation` (a single new enum value added to
 | `SUPERSEDES` | Expertise | Evolution Engine (consolidation) | `newer`, `older` |
 | `DERIVED_FROM` | Expertise | Evolution Engine (consolidation) | `derived`, `source` |
 
-**Uniform filtering:** Every edge carries `Metadata["SemanticRelation"]` with
-its canonical name. This is the **sole** edge-filtering mechanism used by the
-Retrieval Engine. The `HyperedgeType` enum is preserved for backward
-compatibility but is never used as a retrieval filter.
+**Edge-kind filtering:** Every edge carries `Metadata["SemanticRelation"]`
+with its canonical name. When the Retrieval Engine needs to **discriminate
+between canonical edge kinds** (e.g., selecting `CONTAINS` but not `CALLS`),
+it filters by `Metadata["SemanticRelation"]` — never by `HyperedgeType`.
+The inherited `IGraphStore` helpers `GetCallersAsync` and `GetCalleesAsync`
+perform fixed-traversal logic (always follow `MethodInvocation` /
+`ConstructorInvocation` / `CmdletCall` edge types) and are used as-is for
+`CallTrace` mode. The `HyperedgeType` enum is preserved for backward
+compatibility with `IGraphStore` consumers outside the memory layer.
+
+**`GetEdgesForNodeAsync` usage:** The inherited `IGraphStore.GetEdgesForNodeAsync(nodeId, edgeTypes?)`
+method accepts optional `HyperedgeType` filters. Memory retrieval code
+always passes `edgeTypes: null` (retrieve all edges for the node) and then
+applies a `SemanticRelation` post-filter on the returned set. This ensures
+edge-kind discrimination is always by canonical name, not by enum value.
 
 ### 2.3 Retired Names
 
@@ -210,7 +221,7 @@ All configurable parameters. Implementations read from `MemoryOptions`.
 | `semantic` | 0.25 | Cosine similarity of query embedding to node embedding |
 | `centrality` | 0.20 | Normalized fan-in from `CALLS` edges (PageRank-light) |
 | `recency` | 0.15 | `1.0 − (HEAD_idx − node_sinceIdx) / max_distance`, clamped [0,1] |
-| `expertise` | 0.10 | Max `Confidence` of any non-archived `APPLIES_TO` edge targeting the node; 0.0 when none |
+| `expertise` | 0.10 | Max **effective confidence** of any non-archived `APPLIES_TO` expertise targeting the node; 0.0 when none. Effective confidence = `stored_confidence × time_factor` — see §3.5.1 for definitions. |
 ---
 
 ## 3. Components
@@ -390,8 +401,9 @@ Three internal stages:
    When budget is tight, collapses child nodes into parent summaries
    (HiAgent pattern). Deduplicates same code span reached via multiple paths.
 
-Edge filtering throughout retrieval uses `Metadata["SemanticRelation"]`
-exclusively (§2.2).
+Edge-kind discrimination throughout retrieval uses `Metadata["SemanticRelation"]`
+(§2.2). Inherited fixed-traversal helpers (`GetCallersAsync`, `GetCalleesAsync`)
+are used directly for `CallTrace` mode without additional filtering.
 
 ### 3.4 Context Assembler
 
@@ -462,48 +474,64 @@ Definitions:
   At `age_days = 0`, `time_factor = 1.0` (no reduction).
   At `age_days = effective_half_life`, `time_factor = 0.5`.
 
-**Combined formula:**
+**Combined formula (two named concepts):**
+
+- **`stored_confidence`** — the durable value in `ExpertiseEntry.Confidence`.
+  Modified **only** by event-driven decays (code changes). This is the single
+  persisted confidence value.
+- **`effective_confidence`** — a transient, computed-on-read value that
+  incorporates time-based decay. **Never persisted** to the database.
 
 ```
-final_confidence = event_adjusted_confidence × time_factor
+effective_confidence = stored_confidence × time_factor
 ```
 
-Where `event_adjusted_confidence` is the stored `Confidence` value (already
+Where `stored_confidence` is the durable `Confidence` column (already
 incorporating all prior event-driven decays). Because `time_factor ≤ 1.0`,
-the result never exceeds `event_adjusted_confidence`. Because event-driven
+the result never exceeds `stored_confidence`. Because event-driven
 decays only reduce the stored value, **confidence never increases through
 decay**.
 
 **Important execution semantics:**
-- Time-based decay **overwrites** `final_confidence` each run — it does not
-  multiply with a previously time-decayed value. The input is always the
-  durable `event_adjusted_confidence` (the stored Confidence after event
-  decays), and `age_days` is always computed from `CreatedAt`. This ensures
-  idempotency.
-- Event-driven decay **does** mutate the stored base: each code change
+- Time-based decay **recomputes** `effective_confidence` from scratch each
+  time it is needed — it does not compound with a previously computed value.
+  The inputs are always the durable `stored_confidence` and the entry's
+  `CreatedAt` date. This ensures **idempotency**: calling
+  `DecayStaleExpertiseAsync` twice with the same clock produces the same
+  `effective_confidence`.
+- **`stored_confidence` is never modified by time-based decay.** Only
+  event-driven decay (code changes) mutates the persisted `Confidence`
+  field. Time-based decay is a pure function of stored state + current time.
+- Event-driven decay **does** mutate `stored_confidence`: each code change
   permanently reduces the stored `Confidence`. This is intentional — if code
   changes 3 times, all three event decays apply: `1.0 × 0.5 × 0.5 × 0.9 = 0.225`.
 - `centrality_boost` is computed from the current graph state (dynamic). If a
   node gains more callers, its expertise decays slower going forward. This
   cannot increase confidence — it only slows the rate of decrease.
+- **Retrieval scoring** also uses `effective_confidence` (computed on read) —
+  see §2.4 expertise signal.
 
-**Worked example:** An expertise entry created 1095 days ago with stored
-`Confidence = 0.5` (reduced from 1.0 by one prior substantive code change),
-targeting a node with `normalized_pagerank = 0.6`:
+**Worked example:** An expertise entry created 1095 days ago with
+`stored_confidence = 0.5` (reduced from 1.0 by one prior substantive code
+change), targeting a node with `normalized_pagerank = 0.6`:
 
 1. `centrality_boost = 1.0 + 0.5 × 0.6 = 1.3`
 2. `effective_half_life = 1095 × 1.3 = 1423.5 days`
 3. `time_factor = 2^(−1095 / 1423.5) ≈ 0.58`
-4. `final_confidence = 0.5 × 0.58 = 0.29`
+4. `effective_confidence = 0.5 × 0.58 = 0.29`
+
+Re-running one hour later: `age_days` increases by ~0.04, `time_factor`
+barely changes, and `effective_confidence` is recomputed from the same
+`stored_confidence = 0.5` — demonstrating idempotency.
 
 **Anti-example (incorrect):** Do NOT compute
 `stored_confidence × time_factor × centrality_boost`. Placing
-`centrality_boost` as an output multiplier would push final confidence
-above the event-adjusted value (e.g., `0.5 × 0.58 × 1.3 = 0.377 > 0.29`),
+`centrality_boost` as an output multiplier would push effective confidence
+above the stored value (e.g., `0.5 × 0.58 × 1.3 = 0.377 > 0.29`),
 violating the monotonic-decrease invariant. `centrality_boost` modifies
 the **exponent denominator** (extends the half-life), not the output.
 
-**Archival:** Entries whose `final_confidence` drops below
+**Archival:** Entries whose `effective_confidence` drops below
 `ArchiveConfidenceFloor` (0.1) are soft-deleted via
 `IMemoryGraphStore.ArchiveExpertiseAsync` (sets `archived = 1`). Archived
 entries are excluded from `GetExpertiseForNodeAsync` but remain accessible
@@ -610,8 +638,13 @@ These hold at all times and are enforced by the implementation:
 5. Node IDs follow the canonical format (§4.2) and are immutable once assigned.
 6. `VersionRange` semantics are immutable — `SinceIndex` never changes; only
    `UntilIndex` is set (once) by retirement.
-7. Confidence never increases through the decay pathway.
+7. Confidence never increases through the decay pathway. `stored_confidence`
+   is modified only by event-driven decay (code changes); `effective_confidence`
+   is a transient computation never persisted (§3.5.1).
 8. `MemoryNode` and `MemoryEdge` use composition, never inheritance from base types.
+9. All persisted edges are binary (cardinality = 2) — `Hyperedge.NodeIds` always
+   has exactly 2 entries in the memory layer, mapped to `source_id`/`target_id`
+   per the role convention in §4.4.
 
 ---
 
@@ -820,6 +853,46 @@ domain-specific columns (`confidence`, `archived`, `embedding` BLOB) that
 do not map to the `nodes` schema. The `Hyperedge.NodeIds` list in the
 in-memory representation contains entity IDs from either table.
 
+**Binary edge constraint and Hyperedge-to-row mapping:**
+
+All edges persisted by `Ast.Memory` are **binary** (exactly 2 participating
+nodes), even though `Ast.Core`'s `Hyperedge` class supports n-ary hyperedges
+via `NodeIds: List<string>`. The in-memory `Hyperedge` is mapped to the
+binary `edges` table as follows:
+
+- `Hyperedge.NodeIds` always contains exactly 2 IDs.
+- `Hyperedge.Roles` (type `Dictionary<string, string>`, key = nodeId,
+  value = roleName — per `Ast.Core/HypergraphModels.cs` line 204) maps each
+  participant to its canonical role from the edge taxonomy (§2.2).
+- **Source/target convention:** The first role listed in §2.2's "Roles"
+  column maps to `source_id`; the second maps to `target_id`:
+
+| Canonical edge | Source role | Target role | `source_id` | `target_id` |
+|---|---|---|---|---|
+| `CONTAINS` | `parent` | `child` | parent node ID | child node ID |
+| `DEPENDS_ON` | `importer` | `imported` | importing node ID | imported node ID |
+| `CALLS` | `caller` | `callee` | calling node ID | called node ID |
+| `EXTENDS` | `subclass` | `superclass` | subclass node ID | superclass node ID |
+| `IMPLEMENTS` | `implementor` | `interface` | implementing node ID | interface node ID |
+| `REFERENCES` | `source` | `target` | source node ID | target node ID |
+| `SIMILAR_TO` | `node_a` | `node_b` | first node ID | second node ID |
+| `BELONGS_TO_CLUSTER` | `member` | `cluster` | member node ID | Topic node ID |
+| `APPLIES_TO` | `expertise` | `target` | `expertise.id` | `nodes.id` |
+| `SUPERSEDES` | `newer` | `older` | merged `expertise.id` | original `expertise.id` |
+| `DERIVED_FROM` | `derived` | `source` | derived `expertise.id` | source `expertise.id` |
+
+When constructing an `Hyperedge` for persistence, the code populates:
+```csharp
+new Hyperedge
+{
+    Id = edgeId,
+    EdgeType = HyperedgeType.MemoryRelation,  // or code-derived type
+    NodeIds = [sourceNodeId, targetNodeId],
+    Roles = new() { [sourceNodeId] = "expertise", [targetNodeId] = "target" },
+    Metadata = new() { ["SemanticRelation"] = "APPLIES_TO", ["MemoryLayer"] = "expertise" }
+}
+```
+
 **`expertise` table:**
 
 | Column | Type | Description |
@@ -994,6 +1067,10 @@ public interface IMemoryGraphStore : IGraphStore
 **Key behaviors:**
 
 - `GetExpertiseForNodeAsync` excludes entries where `archived = true`.
+  The `minConfidence` threshold is evaluated against the **stored confidence**
+  (`ExpertiseEntry.Confidence`) — the durable, event-adjusted value. Callers
+  that need time-decay-aware filtering compute `effective_confidence` on
+  the returned entries (see §3.5.1) and apply their own threshold.
 - `ArchiveExpertiseAsync` sets `archived = true` (soft-delete); `GetArchivedExpertiseAsync` returns only archived entries.
 - `UpsertNodeAsync` serializes writes via `SemaphoreSlim(1,1)` (SQLite) or ACID transactions (Neo4j) — see §3.7.
 - `RetireNodeAsync` cascades retirement to all edges connected to the node.
@@ -1290,12 +1367,16 @@ IMemoryRetrievalEngine.RetrieveAsync(request)
   │       │
   │       ├─ StructuralDrill:
   │       │   └─ BFS from seed along CONTAINS/DEPENDS_ON edges
-  │       │       └─ IMemoryGraphStore.GetEdgesForNodeAsync(seedId, [ClassDefinition, ...])
+  │       │       ├─ IMemoryGraphStore.GetEdgesForNodeAsync(seedId, edgeTypes: null)
+  │       │       └─ Post-filter: edge.Metadata["SemanticRelation"] ∈ {"CONTAINS", "DEPENDS_ON"}
+  │       │       Note: if request.AtCommitIndex is set, only edges active at
+  │       │             that commit are traversed (temporal filter on since/until_index)
   │       │
   │       ├─ CallTrace:
   │       │   └─ Forward/backward traversal along CALLS/EXTENDS/IMPLEMENTS
   │       │       ├─ IMemoryGraphStore.GetCallersAsync(nodeId, depth=2)
   │       │       └─ IMemoryGraphStore.GetCalleesAsync(nodeId, depth=2)
+  │       │       Note: inherited fixed-traversal helpers (use HyperedgeType internally)
   │       │
   │       ├─ SemanticSearch:
   │       │   ├─ IEmbeddingGenerator.GenerateEmbeddingAsync(queryText)
@@ -1312,7 +1393,8 @@ IMemoryRetrievalEngine.RetrieveAsync(request)
   │       ├─ semantic    = cosine similarity of query embedding to node (weight 0.25)
   │       ├─ centrality  = normalized fan-in PageRank (weight 0.20)
   │       ├─ recency     = commit-index proximity to HEAD (weight 0.15)
-  │       └─ expertise   = max Confidence of APPLIES_TO expertise (weight 0.10)
+  │       └─ expertise   = max effective_confidence of APPLIES_TO expertise (weight 0.10)
+  │       │               effective_confidence = stored_confidence × time_factor (§3.5.1)
   │       Output: List<ScoredMemoryNode> sorted by descending CompositeScore
   │
   ├─(4)─ BudgetController: enforce token budget
@@ -1365,10 +1447,15 @@ IEvolutionEngine.RecordExpertiseAsync(targetNodeId, kind, title, body, sourceAge
   │           [VectorPoint { Id=entryId, Vector=embedding, Payload={Kind, TargetNodeId} }])
   │
   ├─(7)─ Create APPLIES_TO edge: expertise → target code node
-  │       └─ IMemoryGraphStore.CreateEdgeAsync(Hyperedge {
-  │             EdgeType = MemoryRelation,
-  │             Metadata = { SemanticRelation="APPLIES_TO", MemoryLayer="expertise" },
-  │             Roles = { expertise=entryId, target=targetNodeId }
+  │       └─ IMemoryGraphStore.CreateEdgeAsync(new Hyperedge {
+  │             Id = $"edge:{entryId}→{targetNodeId}",
+  │             EdgeType = HyperedgeType.MemoryRelation,
+  │             NodeIds = [entryId, targetNodeId],
+  │             Roles = new() { [entryId] = "expertise", [targetNodeId] = "target" },
+  │             Metadata = new() {
+  │               ["SemanticRelation"] = "APPLIES_TO",
+  │               ["MemoryLayer"] = "expertise"
+  │             }
   │           })
   │
   └─(8)─ Audit log
@@ -1470,19 +1557,20 @@ IEvolutionEngine.DecayStaleExpertiseAsync(options)
   ├─(1)─ Load all active (non-archived) expertise entries
   │
   ├─(2)─ For each entry:
-  │       ├─ Compute age_days = (UtcNow − CreatedAt).TotalDays
+  │       ├─ Read stored_confidence = entry.Confidence (event-adjusted, durable)
+  │       ├─ Compute age_days = (UtcNow − entry.CreatedAt).TotalDays
   │       ├─ Look up target node's normalized PageRank → centrality_boost
   │       │   └─ centrality_boost = 1.0 + CentralityBoostFactor × normalized_pagerank
   │       ├─ effective_half_life = DecayHalfLifeDays × centrality_boost
   │       ├─ time_factor = 2^(−age_days / effective_half_life)
-  │       ├─ final_confidence = stored_confidence × time_factor
-  │       │   (stored_confidence already reflects event-driven decays — §3.5.1)
-  │       ├─ If final_confidence < ArchiveConfidenceFloor (0.1):
+  │       ├─ effective_confidence = stored_confidence × time_factor
+  │       │   (stored_confidence is the durable base — §3.5.1)
+  │       ├─ If effective_confidence < ArchiveConfidenceFloor (0.1):
   │       │   └─ IMemoryGraphStore.ArchiveExpertiseAsync(entryId)
-  │       └─ Else: update entry.Confidence = final_confidence
-  │           └─ IMemoryGraphStore.UpsertExpertiseAsync(entry)
+  │       └─ Else: no persistence needed — stored_confidence is unchanged;
+  │           effective_confidence is a transient computation (idempotent on re-run)
   │
-  └─(3)─ Audit log
+  └─(3)─ Audit log (record entries evaluated, archived count)
 
 Return: DecayResult { EntriesEvaluated, EntriesDecayed, EntriesArchived }
 ```
@@ -1544,11 +1632,14 @@ shapes, formulas, constants, and interface signatures.
 | A-7 | `RecordExpertiseAsync` signature | Canonical in §5.3. e2e-scenarios aligned. |
 | A-8 | `ArchiveExpertiseAsync` on `IMemoryGraphStore` | Canonical in §5.1. Implementation-plan Stage 1.3 aligned. |
 | A-9 | `RestoreArchivedExpertiseAsync` on `IEvolutionEngine` | Canonical in §5.3. |
-| A-10 | Decay formula: `final = event_adjusted × time_factor` | Canonical in §3.5.1. tech-spec defers to architecture.md. |
+| A-10 | Decay formula: `effective = stored × time_factor` | Canonical in §3.5.1. Two named concepts: `stored_confidence` (durable, event-adjusted) and `effective_confidence` (transient, computed on read). tech-spec defers to architecture.md. |
 | A-11 | External-node temporal carve-out (NULL `since_index`) | Canonical in §4.3. Siblings adopted. |
 | A-12 | MemoryNode/MemoryEdge use composition, not inheritance | Canonical in §4.1. Implementation-plan Stage 1.1 aligned. |
 | A-13 | Edge `source_id`/`target_id` are polymorphic logical references | Canonical in §4.4. Expertise-layer edges reference `expertise.id`, not `nodes.id`. |
 | A-14 | HyperedgeType enum has 44 existing values; MemoryRelation brings total to 45 | Canonical in §1.3, §4.6. tech-spec §1.1 says "44 enum values" — correct for its table entry but its prose ("24 .csproj projects, 13 test projects") uses different project counts; architecture.md governs (26 total: 11 production, 15 test/benchmark). |
+| A-15 | Edge-kind filtering: SemanticRelation post-filter, not HyperedgeType | Canonical in §2.2. Retrieval uses `GetEdgesForNodeAsync(nodeId, null)` + SemanticRelation post-filter. Inherited `GetCallersAsync`/`GetCalleesAsync` are fixed-traversal helpers. |
+| A-16 | Binary edge constraint and role-to-source/target mapping | Canonical in §4.4. All persisted edges are binary (cardinality 2). Role mapping table defines source/target convention. |
+| A-17 | `stored_confidence` never modified by time-based decay | Canonical in §3.5.1. `DecayStaleExpertiseAsync` computes `effective_confidence` but only persists archival status. Sequence flow §6.5 aligned. |
 
 ### 8.2 Implementation-Plan Divergences
 
