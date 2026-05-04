@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 38
+> **Status:** Iteration 39
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -15,7 +15,7 @@
 > | Document | Owns | Current state |
 > |---|---|---|
 > | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | At iteration 23 (not updated since). Seventeen alignment items (A1–A17) adjudicated in §8.1. Ten stale text items inventoried in §8.4 (TS-S1 through TS-S10); architecture governs on all. |
-> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Fully aligned with canonical vocabulary. Two minor presentational gaps (R-1, R-2 in §8.2). |
+> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Uses canonical vocabulary; defers to this doc on conflicts. Two active divergences (R-1, R-2 in §8.2): R-2 is high-impact (`UpsertEdgeAsync` missing from method list and implementation steps). |
 > | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | All 10 previously-catalogued divergences (E2E-1 through E2E-10) corrected in current iteration. No remaining divergences. |
 
 ---
@@ -100,7 +100,7 @@ dependencies, never mutated beyond the two additive changes above.
 | **Ast.GraphDb** | `IGraphStore : IAsyncDisposable, IDisposable` — `IGraphStore.cs`; `Neo4jGraphStore` — `Neo4jGraphStore.cs`; `NodeFilter`, `GraphPath`, `NodeWithDepth` — `GraphModels.cs` | `Ast.Memory` defines `IMemoryGraphStore` extending `IGraphStore` in its own project. Zero files in `Ast.GraphDb/` modified. |
 | **Ast.Embedding** | `IEmbeddingGenerator : IDisposable` — `IEmbeddingGenerator.cs`; `CodeEmbeddingService` — `CodeEmbeddingService.cs`; `EmbeddingGeneratorOptions.ModelName` defaults to `"nomic-embed-text"` — `EmbeddingModels.cs` | Reuse directly. `Ast.Memory` calls `GenerateBatchEmbeddingsAsync()`. |
 | **Ast.Query** | `ICodeQuery` — `ICodeQuery.cs`; `HybridQueryService` — `HybridQueryService.cs`; `ScoredNode` — `QueryModels.cs` | Reference only. `Ast.Memory` defines `IMemoryRetrievalEngine` that internally composes `ICodeQuery`. |
-| **Ast.VectorDb** | `IVectorStore : IDisposable` — `IVectorStore.cs`; `QdrantVectorStore` — `QdrantVectorStore.cs` | Reference only. Reuse for team mode; `Ast.Memory` adds in-process HNSW adapter for local. |
+| **Ast.VectorDb** | `IVectorStore : IDisposable` — `IVectorStore.cs` (9 members: `Name`, `CreateCollectionAsync`, `CollectionExistsAsync`, `DeleteCollectionAsync`, `UpsertAsync`, `SearchAsync`, `GetAsync`, `DeleteAsync`, `CountAsync`, `IsAvailableAsync`); `QdrantVectorStore` — `QdrantVectorStore.cs` | Reference only. Reuse `QdrantVectorStore` for team mode; `Ast.Memory` adds `SqliteVssVectorStore` (in `Storage/SqliteVssVectorStore.cs`) implementing `IVectorStore` for local mode via sqlite-vss extension. Zero files in `Ast.VectorDb/` modified. |
 | **Ast.Lsp** | LSP integration — `src/ast/Ast.Lsp/` | Optional enrichment — pipeline never blocks on LSP. No modifications. |
 | **CodeIntelligence** | 27 analyzers in `Analyzers/`, 4 detectors in `Detectors/`, `RelationshipGraphBuilder` in `Graph/` | Consume as call-chain / structural edge source. No modifications. |
 | **Ast.Cli** | CLI host — `Program.cs` uses Spectre.Console.Cli with manual `AddCommand<T>()` registration (7 commands: parse, enrich, embed, index, query, pipeline, stats — lines 17–44). | Additive: `config.AddBranch("memory", ...)` + project ref to `Ast.Memory`. |
@@ -254,7 +254,8 @@ src/ast/
     Context/             ← ContextAssembler, BudgetController
     Evolution/           ← EvolutionEngine, ConsolidationService, DecayService
     Sync/                ← IncrementalSync, GitDiffDriver
-    Storage/             ← SqliteGraphStore, Neo4jMemoryGraphStore
+    Storage/             ← SqliteGraphStore, Neo4jMemoryGraphStore,
+                            SqliteVssVectorStore
     Schema/              ← AnnotationKeyRegistry
     Mcp/                 ← MemoryMcpToolRegistration, MemoryMcpHandler
     Cli/                 ← MemoryCommandModule
@@ -304,13 +305,39 @@ nodes/edges for diffing by `IncrementalSync`.
 **Responsibility:** Persist and query the four-layer graph and associated
 vector embeddings.
 
+#### Graph Store Implementations
+
 | Implementation | Backing store | Use case |
 |---|---|---|
-| `SqliteGraphStore` | SQLite + FTS5 + sqlite-vss | Local / single-developer mode. Zero infrastructure. |
-| `Neo4jMemoryGraphStore` | Neo4j (via existing `Ast.GraphDb`) + Qdrant (via existing `Ast.VectorDb`) | Team / CI mode. Shared graph across developers. |
+| `SqliteGraphStore` | SQLite + FTS5 | Local / single-developer mode. Zero infrastructure. |
+| `Neo4jMemoryGraphStore` | Neo4j (via existing `Ast.GraphDb`) | Team / CI mode. Shared graph across developers. |
 
 Both implement `IMemoryGraphStore` (§5.1). Selection is via DI configuration
 in `ServiceCollectionExtensions.cs`.
+
+#### Vector Store Implementations
+
+Vector storage uses the existing `IVectorStore` interface from `Ast.VectorDb`.
+`Ast.Memory` does **not** define a new vector interface — it consumes
+`IVectorStore` as an injected dependency. The DI container wires one of:
+
+| Implementation | Project | Backing store | Use case |
+|---|---|---|---|
+| `SqliteVssVectorStore` | `Ast.Memory` (`Storage/SqliteVssVectorStore.cs`) | sqlite-vss extension (HNSW index on the same SQLite database used by `SqliteGraphStore`) | Local mode — zero infrastructure |
+| `QdrantVectorStore` | `Ast.VectorDb` (existing, unmodified) | Qdrant vector database | Team mode — shared vector index |
+
+`SqliteVssVectorStore` implements all 9 members of `IVectorStore` by
+translating collection operations into sqlite-vss virtual table commands.
+Embeddings are stored in a `vss_embeddings` virtual table co-located in the
+same SQLite database file as the graph tables (§4.4). This keeps local mode
+as a single-file deployment (the `.db` file contains both graph and vector
+data).
+
+Both `SemanticIndexer` (§3.1) and the Retrieval Engine's `SemanticSearch`
+mode (§3.3) access vectors exclusively through `IVectorStore` — they are
+backend-agnostic.
+
+#### Auxiliary Tables
 
 The storage layer also maintains:
 
@@ -759,6 +786,19 @@ CREATE INDEX idx_expertise_target ON expertise(target_node_id);
 CREATE INDEX idx_expertise_kind ON expertise(kind);
 CREATE INDEX idx_expertise_archived ON expertise(archived);
 CREATE INDEX idx_audit_session ON audit_log(session_id);
+
+-- Vector storage (sqlite-vss extension — local mode only)
+-- SqliteVssVectorStore manages this virtual table via IVectorStore methods.
+-- Collection names map to separate vss tables (e.g., vss_memory_embeddings).
+CREATE VIRTUAL TABLE vss_memory_embeddings USING vss0(
+    embedding(768)            -- nomic-embed-text dimension
+);
+-- Mapping table: links vss rowid to node/expertise ID
+CREATE TABLE vss_id_map (
+    rowid   INTEGER PRIMARY KEY,
+    node_id TEXT NOT NULL UNIQUE   -- references nodes.id or expertise.id
+);
+CREATE INDEX idx_vss_id_map_node ON vss_id_map(node_id);
 ```
 
 ### 4.5 Metadata Key Registry
@@ -1394,24 +1434,28 @@ uses real symbols from this repository's `src/ast/CodeIntelligence/` project.
 
 | Mode | Graph Store | Vector Store | Infrastructure | Use Case |
 |---|---|---|---|---|
-| **Local** | `SqliteGraphStore` (SQLite + FTS5 + sqlite-vss) | In-process HNSW (via sqlite-vss) | Zero — single file on disk | Solo developer, CI pipeline |
-| **Team** | `Neo4jMemoryGraphStore` (Neo4j via `Ast.GraphDb`) | Qdrant (via `Ast.VectorDb`) | `docker-compose.yml` (existing in `src/ast/`) | Shared team graph, server deployment |
+| **Local** | `SqliteGraphStore` (SQLite + FTS5) | `SqliteVssVectorStore` (sqlite-vss HNSW, same `.db` file) | Zero — single file on disk | Solo developer, CI pipeline |
+| **Team** | `Neo4jMemoryGraphStore` (Neo4j via `Ast.GraphDb`) | `QdrantVectorStore` (via existing `Ast.VectorDb`) | `docker-compose.yml` (existing in `src/ast/`) | Shared team graph, server deployment |
 
 Backend selection is via DI configuration:
 
 ```csharp
-// Local mode
+// Local mode — single-file deployment
 services.AddMemoryGraph(options => {
     options.Backend = MemoryBackend.Sqlite;
     options.SqlitePath = "~/.ast-memory/graph.db";
 });
+// Registers: SqliteGraphStore as IMemoryGraphStore
+//            SqliteVssVectorStore as IVectorStore (same .db file)
 
-// Team mode
+// Team mode — shared infrastructure
 services.AddMemoryGraph(options => {
     options.Backend = MemoryBackend.Neo4j;
     options.Neo4jUri = "bolt://localhost:7687";
     options.QdrantEndpoint = "localhost:6334";
 });
+// Registers: Neo4jMemoryGraphStore as IMemoryGraphStore
+//            QdrantVectorStore as IVectorStore (existing impl from Ast.VectorDb)
 ```
 
 ---
@@ -1452,10 +1496,10 @@ side (inventoried in §8.4 "Stale text inventory").
 
 ### 8.2 Alignment with `implementation-plan.md` (Current Iteration)
 
-The implementation-plan has been **fully aligned** and now uses
-canonical vocabulary defined in this document. Its header states: "when
-literal names or values here conflict with `architecture.md`, follow
-`architecture.md`."
+The implementation-plan uses canonical vocabulary and defers to this
+document on all conflicts (its header states: "when literal names or values
+here conflict with `architecture.md`, follow `architecture.md`"). Most
+categories of previously-catalogued conflicts have been corrected.
 
 **Resolved divergences (no longer present in implementation-plan):**
 
@@ -1473,9 +1517,6 @@ iterations, have been corrected in the implementation-plan:
   with `Scope`, `Evidence`, `Archived`, `SourceAgent`.
 - **Method signatures:** `RecordExpertiseAsync(targetNodeId, kind, title,
   body, sourceAgent, scope?, evidence?)` matches §5.3.
-- **Interface methods:** `IMemoryGraphStore` declares all 13 methods per §5.1
-  (including `UpsertEdgeAsync`, `RetireEdgeAsync`, `ArchiveExpertiseAsync`,
-  `GetArchivedExpertiseAsync`, `UpdateEdgeMetadataAsync`).
 - **Interface placement:** `ApplyDiffAsync` on `IIncrementalSync` with
   correct `(repoRoot, fromCommit, toCommit)` signature per §5.4.
 - **Scoring weights:** Uses canonical 0.30/0.25/0.20/0.15/0.10 per §2.4.
@@ -1487,16 +1528,16 @@ iterations, have been corrected in the implementation-plan:
 - **Project placement:** MCP tools in `Ast.Memory/Mcp/`, CLI in
   `Ast.Memory/Cli/`, no files created in `Ast.GraphDb/`.
 
-**Remaining presentational gaps (2 items):**
+**Active divergences (2 items — architecture governs):**
 
-These are minor documentation shorthand in the implementation-plan that do
-not affect correctness. The implementation-plan's header defers to this
-document on all conflicts.
+| # | impl-plan says | Canonical (this doc) | Impact | Governing § |
+|---|---|---|---|---|
+| R-1 | `MemoryEdge.Version` property listed as `VersionRange Version` without explicit non-nullable annotation | `VersionRange Version` is non-nullable (all edges carry versioning, per §4.3). Impl-plan is correct but could be more explicit. | Low — no behavioral difference | §4.1, §4.3 |
+| R-2 | `IMemoryGraphStore` test scenario (Stage 1.2) lists 12 methods and omits `UpsertEdgeAsync` from the method enumeration. Edge creation in Stage 1.3 (`SqliteGraphStore`) does not reference `UpsertEdgeAsync`. | **Canonical interface has 13 methods** (§5.1): the 12 listed in impl-plan **plus** `UpsertEdgeAsync(Hyperedge, VersionRange, CancellationToken)`. All edge creation/update flows (StructureBuilder, CallChainAnalyzer, SemanticIndexer, EvolutionEngine) **must** use `UpsertEdgeAsync` — not inherited `IGraphStore` methods — to set `since_index`/`until_index` and denormalized `semantic_rel`/`memory_layer` columns. The implementation-plan should update Stage 1.2 test expectation to 13 methods and add `UpsertEdgeAsync` to Stage 1.3 implementation steps. | High — affects all edge-writing code paths | §5.1 |
 
-| # | impl-plan says | Canonical (this doc) | Governing § |
-|---|---|---|---|
-| R-1 | `MemoryEdge.Version` property listed as `VersionRange Version` without explicit non-nullable annotation | `VersionRange Version` is non-nullable (all edges carry versioning, per §4.3) — impl-plan is correct but could be more explicit | §4.1, §4.3 |
-| R-2 | `IMemoryGraphStore` listed with 12 methods; edge creation via inherited `IGraphStore` methods | Canonical: 13 methods — `UpsertEdgeAsync(Hyperedge, VersionRange, CancellationToken)` added for edge versioning parity with `UpsertNodeAsync` (§5.1). All edge creation/update flows must use this method to set `since_index`/`until_index` and denormalized columns. | §5.1 |
+These are active divergences, not mere presentational gaps. The
+implementation-plan should be updated in its next iteration to match this
+document's definitions. Until then, architecture governs.
 
 ### 8.3 Alignment with `e2e-scenarios.md` (Current Iteration)
 
@@ -1553,20 +1594,21 @@ traceability:
 | TS-S9 | §8.4 line 289 | Decay formula: `confidence × 2^(−age_days / 1095) × (1.0 + 0.5 × normalized_pagerank)` — centrality multiplies the output | Canonical formula: `final = event_adjusted_confidence × 2^(−age_days / (DecayHalfLifeDays × centrality_boost))` — centrality extends the half-life; `age_days` = days since `CreatedAt`; time-based decay is idempotent (§3.5 worked example) | Architecture governs |
 | TS-S10 | §11, D5 line 337 | Decay formula: `initial_confidence × 2^(…) × centrality_boost` — uses `initial_confidence` and centrality as output multiplier | Canonical uses `event_adjusted_confidence` (stored `Confidence` reflecting prior event-driven decays) and centrality modifies the half-life, not the output (§3.5). D5 captures the operator's intent correctly (3-year half-life, centrality factor) but the formula notation is imprecise | Architecture governs |
 
-#### Stale text remaining in `implementation-plan.md`
+#### Active divergences in `implementation-plan.md`
 
-Two minor presentational gaps (R-1, R-2 in §8.2):
+Two active divergences documented in §8.2 (R-1, R-2):
 
-- **R-1:** `MemoryEdge.Version` property listed without explicit non-nullable
+- **R-1:** `MemoryEdge.Version` listed without explicit non-nullable
   annotation. Correct behavior (all edges carry versioning per §4.3) but
-  could be more explicit.
-- **R-2:** `IMemoryGraphStore` listed with 12 methods; edge creation shown
-  via inherited `IGraphStore` methods. Canonical interface has 13 methods —
-  `UpsertEdgeAsync(Hyperedge, VersionRange, CancellationToken)` was added
-  for edge versioning parity with `UpsertNodeAsync`. Implementation-plan
-  should update method count and edge-creation sequences accordingly.
+  could be more explicit. Low impact.
+- **R-2:** `IMemoryGraphStore` test scenario lists 12 methods; `UpsertEdgeAsync`
+  is missing from both the method enumeration (Stage 1.2) and the
+  `SqliteGraphStore` implementation steps (Stage 1.3). Canonical interface
+  has 13 methods — all edge-writing code paths must call `UpsertEdgeAsync`
+  to set `since_index`/`until_index` and denormalized columns. **High impact
+  — impl-plan should update in next iteration.**
 
-Neither is a conflict — architecture governs.
+Architecture governs on both.
 
 #### Stale text remaining in `e2e-scenarios.md`
 
