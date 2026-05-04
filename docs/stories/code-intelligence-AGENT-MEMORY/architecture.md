@@ -2,8 +2,6 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 48
->
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
 > concurrency semantics. When sibling documents
@@ -12,11 +10,11 @@
 > thresholds, **this document governs**. Sibling documents own their
 > respective scopes:
 >
-> | Document | Owns | Alignment status |
+> | Document | Owns | Alignment status (verified against current sibling content) |
 > |---|---|---|
-> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Last updated iteration 23. Contains 12 stale-wording locations enumerated in §8.1 (including 2 vector-backend mismatches added in iteration 47). Architecture governs on all naming/data-model conflicts. |
-> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Defers to this doc on conflicts. **Active divergences (3):** (1) Stage 1.2 lists 12 `IMemoryGraphStore` methods, omitting `UpsertEdgeAsync` (canonical: 13 methods, §5.1). (2) Stage 2.1 persists edges via "inherited `IGraphStore` edge-creation methods" instead of `UpsertEdgeAsync`. (3) Stage 5.3 decay formula places `centrality_boost` as output multiplier instead of exponent-denominator modifier (§3.5). See §8.2. |
-> | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Fully aligned. Uses canonical vocabulary throughout. |
+> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Contains 12 stale-wording locations enumerated in §8.1. Architecture governs on all naming/data-model conflicts. Tech-spec's own §12.2 states "No remaining conflicts" — the 12 items are documentation wording debt, not semantic disagreements. |
+> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Defers to this doc on conflicts (its header explicitly states so). **Active divergences (3):** (1) Stage 1.2 line 49 lists 12 `IMemoryGraphStore` methods, omitting `UpsertEdgeAsync` (canonical: 13 methods, §5.1). (2) Stage 2.1 line 126 persists edges via "inherited `IGraphStore` edge-creation methods" instead of `UpsertEdgeAsync`. (3) Stage 5.3 line 318 decay formula places `centrality_boost` as output multiplier instead of exponent-denominator modifier (§3.5). See §8.2 for details. |
+> | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Fully aligned. Its header confirms all 10 divergence items (E2E-1 through E2E-10) have been corrected. Uses canonical vocabulary (correct edge names, qualified node IDs with leading `/`, single-colon `ext:` prefix, separate `Title`/`Body` fields). |
 
 ---
 
@@ -274,7 +272,7 @@ src/ast/
 |---|---|---|
 | **Structure Builder** | `StructureBuilder` | Walks existing `HypergraphData` (produced by `Ast.Csharp` / `Ast.PowerShell` parsers) and emits Structural-layer nodes (Repo, Workspace (monorepo only), Package, Module, Class, Function) with `CONTAINS` and `DEPENDS_ON` edges. |
 | **Call-Chain Analyzer** | `CallChainAnalyzer` | Reads `Hyperedge` entries of type `MethodInvocation`, `ConstructorInvocation`, `CmdletCall`, etc. and emits Call-Chain-layer edges (`CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES`). |
-| **Semantic Indexer** | `SemanticIndexer` | Batches nodes through `IEmbeddingGenerator.GenerateBatchEmbeddingsAsync()` (from existing `Ast.Embedding`), stores resulting vectors in two places — (1) `Metadata["Embedding"]` on each node via `IMemoryGraphStore.UpsertNodeAsync()` and (2) the vector index via `IVectorStore.UpsertAsync(collectionName, IEnumerable<VectorPoint> points, CancellationToken)` where each node is wrapped as a `VectorPoint { Id = nodeId, Vector = embedding, Payload = { MemoryLayer, NodeType } }` for ANN retrieval — then computes pairwise cosine similarity and creates `SIMILAR_TO` edges where cosine ≥ `SimilarityThreshold` (0.85). |
+| **Semantic Indexer** | `SemanticIndexer` | Batches nodes through `IEmbeddingGenerator.GenerateBatchEmbeddingsAsync()` (from existing `Ast.Embedding`), stores resulting vectors in two places — (1) `Metadata["Embedding"]` on each node via `IMemoryGraphStore.UpsertNodeAsync()` and (2) the vector index via `IVectorStore.UpsertAsync("memory_embeddings", IEnumerable<VectorPoint> points, CancellationToken)` where each node is wrapped as a `VectorPoint { Id = nodeId, Vector = embedding, Payload = { MemoryLayer, NodeType } }` for ANN retrieval — then computes pairwise cosine similarity and creates `SIMILAR_TO` edges where cosine ≥ `SimilarityThreshold` (0.85). Note: expertise embeddings use a separate collection `"memory_expertise"` (§3.2.2). |
 | **Fact Normalizer** | `FactNormalizer` | Deduplicates nodes across languages (e.g., a C# class and its PowerShell caller) and assigns canonical IDs. |
 
 **Dependency chain:** `StructureBuilder` → `CallChainAnalyzer` → `SemanticIndexer` (sequential — each stage requires the previous stage's nodes to exist).
@@ -338,6 +336,45 @@ data).
 Both `SemanticIndexer` (§3.1) and the Retrieval Engine's `SemanticSearch`
 mode (§3.3) access vectors exclusively through `IVectorStore` — they are
 backend-agnostic.
+
+#### 3.2.2 Expertise Embedding Storage
+
+Expertise entries store embeddings in **two locations**, mirroring the
+dual-storage pattern used for code-node embeddings:
+
+1. **`expertise.embedding` BLOB column** (§4.4) — the authoritative copy
+   of the `float[]` vector, persisted by `IMemoryGraphStore.UpsertExpertiseAsync`.
+   Used for fast in-row access when the expertise entry is already loaded
+   (e.g., by `GetExpertiseForNodeAsync`).
+
+2. **`IVectorStore` collection `memory_expertise`** — an ANN-indexed copy
+   persisted by `IEvolutionEngine.RecordExpertiseAsync` via
+   `IVectorStore.UpsertAsync("memory_expertise", [VectorPoint { Id = expertiseId, Vector = embedding, Payload = { ["Kind"] = kind, ["TargetNodeId"] = targetNodeId } }])`.
+   Used for two purposes:
+   - **Consolidation similarity lookup:** `ConsolidationService` calls
+     `IVectorStore.SearchAsync("memory_expertise", entryEmbedding, topK,
+     filter?)` to find candidate entries with cosine ≥ `SimilarityThreshold`
+     (0.85), then verifies the exact cosine on the loaded BLOB to confirm
+     before merging.
+   - **ExpertiseRecall retrieval mode:** When the query text describes a
+     pattern or concept (not a specific code symbol), the Retrieval Engine
+     embeds the query and calls `IVectorStore.SearchAsync("memory_expertise",
+     queryVector, topK)` to find semantically relevant expertise entries,
+     then follows their `APPLIES_TO` edges to discover the associated code
+     nodes. This complements the edge-traversal path (which finds expertise
+     linked to already-discovered code nodes).
+
+**Collection separation:** Code-node embeddings are stored in the
+`memory_embeddings` collection; expertise embeddings are stored in the
+`memory_expertise` collection. This separation allows `VectorFilter` to
+target the correct entity type without payload-based filtering, and keeps
+the expertise vector index small relative to the code-node index.
+
+**Lifecycle:** When expertise is archived (§3.5 Decay), its vector is
+**not** removed from the `memory_expertise` collection — the
+`ConsolidationService` needs to access archived-entry vectors to avoid
+re-creating duplicates. Vectors are only deleted when the expertise entry
+is permanently purged (a future admin operation, not in scope for MVP).
 
 #### 3.2.1 `IVectorStore` Interface — Full Signatures (from `Ast.VectorDb`)
 
@@ -403,12 +440,14 @@ public interface IVectorStore : IDisposable
 | `FilterCondition` | `Field: string`, `Operator: FilterOperator`, `Value: object` | `FilterOperator` enum: `Equals`, `NotEquals`, `GreaterThan`, `GreaterThanOrEqual`, `LessThan`, `LessThanOrEqual`, `In`, `NotIn`, `Contains` |
 
 **`SqliteVssVectorStore` mapping:** The `collectionName` parameter maps to
-per-collection virtual tables (e.g., `vss_{collectionName}`). Create
-translates to `CREATE VIRTUAL TABLE vss_{name} USING vss0(...)`. Search
-translates to `SELECT rowid, distance FROM vss_{name} WHERE ...`. The
-`vss_id_map` table (§4.4) bridges sqlite-vss integer rowids to string node
-IDs. The `Payload` dictionary is serialized to a JSON column in a companion
-metadata table alongside each virtual-table row.
+per-collection virtual tables (e.g., `vss_memory_embeddings` for code
+nodes, `vss_memory_expertise` for expertise entries). Create translates
+to `CREATE VIRTUAL TABLE vss_{name} USING vss0(...)`. Search translates
+to `SELECT rowid, distance FROM vss_{name} WHERE ...`. The `vss_id_map`
+table (§4.4) bridges sqlite-vss integer rowids to string node/expertise
+IDs, with a `collection` column to disambiguate. The `Payload` dictionary
+is serialized to a JSON column in a companion metadata table alongside
+each virtual-table row.
 
 #### Auxiliary Tables
 
@@ -430,8 +469,14 @@ The engine has three internal stages:
    values based on the query shape:
    - `StructuralDrill` — BFS from a seed node along `CONTAINS`/`DEPENDS_ON`.
    - `CallTrace` — forward/backward traversal along `CALLS`/`EXTENDS`/`IMPLEMENTS`.
-   - `SemanticSearch` — embed query text via a single local call to `IEmbeddingGenerator.GenerateEmbeddingAsync()` (HC5), then ANN lookup via `IVectorStore.SearchAsync(collectionName, queryVector, limit, filter?, ct)` against pre-computed node embeddings (stored at extraction time by `SemanticIndexer`). Returns `IReadOnlyList<VectorSearchResult>` — the Retrieval Engine uses each result's `Id` to resolve the graph node and `Score` as the `semantic` signal (weight 0.25). See §3.2.1 for full `IVectorStore` signatures and types.
-   - `ExpertiseRecall` — filter nodes by `APPLIES_TO` edges from Expertise layer.
+   - `SemanticSearch` — embed query text via a single local call to `IEmbeddingGenerator.GenerateEmbeddingAsync()` (HC5), then ANN lookup via `IVectorStore.SearchAsync("memory_embeddings", queryVector, limit, filter?, ct)` against pre-computed node embeddings (stored at extraction time by `SemanticIndexer`). Returns `IReadOnlyList<VectorSearchResult>` — the Retrieval Engine uses each result's `Id` to resolve the graph node and `Score` as the `semantic` signal (weight 0.25). See §3.2.1 for full `IVectorStore` signatures and types.
+   - `ExpertiseRecall` — two-path lookup: (1) follow `APPLIES_TO` edges
+     inbound to code nodes already discovered by other modes (edge-traversal
+     path); (2) embed query text and call
+     `IVectorStore.SearchAsync("memory_expertise", queryVector, topK)` to
+     find semantically relevant expertise entries, then follow their
+     `APPLIES_TO` edges to discover additional code nodes (semantic path,
+     §3.2.2). Results from both paths are merged and deduplicated.
    - `Hybrid` — combine all four modes (default for free-text queries).
 
 2. **Ranker** (`Ranker`) — scores candidate nodes using the 5-signal weighted
@@ -482,7 +527,7 @@ summarization — the mechanisms by which the graph improves over sessions.
 | Sub-component | Class | Description |
 |---|---|---|
 | **Write-back** | `EvolutionEngine.RecordExpertiseAsync()` | Creates `ExpertiseEntry` nodes (§4.2) linked to code nodes via `APPLIES_TO` edges. Each entry has a `Title` (headline), `Body` (detailed description), `Confidence` value (0.0–1.0), `ExpertiseKind` (`Pattern`, `Pitfall`, `Preference`, `Insight`), `Scope` (`"exact"` or `"subtree"`), optional `Evidence` citations, and `SourceAgent` provenance. |
-| **Consolidation** | `ConsolidationService` | LLM-powered merge of semantically similar expertise entries (cosine ≥ `SimilarityThreshold`). Creates `SUPERSEDES` edge from merged entry to originals. Acquires a write-level lock to prevent concurrent merges. |
+| **Consolidation** | `ConsolidationService` | Finds candidate pairs via `IVectorStore.SearchAsync("memory_expertise", entryEmbedding, topK)` (§3.2.2), verifies exact cosine ≥ `SimilarityThreshold` (0.85) on loaded BLOB embeddings, then performs LLM-powered merge of confirmed pairs. Creates `SUPERSEDES` edge from merged entry to originals. Acquires a write-level lock to prevent concurrent merges. |
 | **Decay** | `DecayService` | Two independent decay mechanisms. Their effects compose but are computed separately — event-driven decay modifies the stored `Confidence` immediately, and time-based decay is applied as an idempotent envelope on top. **(a) Event-driven decay** — triggered by `IncrementalSync` when a target code node's `ContentHash` changes. `StaleDecayFactor` (0.5) is applied on substantive code changes; `MinorDecayFactor` (0.9) on whitespace/comment-only changes. Applied immediately at sync time: `Confidence ← Confidence × factor`. Each `ContentHash` change triggers exactly one event-driven decay. The result is persisted to `ExpertiseEntry.Confidence` immediately. **(b) Time-based decay** — applied periodically (or on demand via `DecayStaleExpertiseAsync`). This is an **idempotent** computation: re-running it with the same inputs produces the same output (it overwrites, not multiplies). Definition of `age_days`: `age_days = (DateTime.UtcNow − ExpertiseEntry.CreatedAt).TotalDays` — always measured from the entry's creation date, not from the last decay run. Formula: `time_factor = 2^(−age_days / effective_half_life)`, where `effective_half_life = DecayHalfLifeDays × centrality_boost` and `centrality_boost = 1.0 + CentralityBoostFactor × normalized_pagerank` (range 1.0–1.5). The time factor is bounded [0.0, 1.0]: at `age_days = 0`, `time_factor = 1.0` (no reduction); at `age_days = effective_half_life`, `time_factor = 0.5`. **Combined formula:** `final_confidence = event_adjusted_confidence × time_factor`, where `event_adjusted_confidence` is the stored `Confidence` value (which already incorporates all prior event-driven decays). Because `time_factor ≤ 1.0`, the result never exceeds `event_adjusted_confidence`. Because event-driven decays only reduce the stored value, and time-based decay only applies a ≤ 1.0 multiplier on top, **confidence never increases** through decay. A node with `centrality_boost = 1.5` has an effective half-life of 1095 × 1.5 = 1642.5 days (high-centrality code retains expertise longer). **Worked example:** An expertise entry created 1095 days ago with `Confidence = 0.5` (reduced from 1.0 by one prior event-driven `StaleDecayFactor` application), targeting a node with `normalized_pagerank = 0.6`: `centrality_boost = 1.0 + 0.5 × 0.6 = 1.3`; `effective_half_life = 1095 × 1.3 = 1423.5 days`; `time_factor = 2^(−1095 / 1423.5) ≈ 0.58`; `final = 0.5 × 0.58 = 0.29`. Entries whose `final_confidence` drops below `ArchiveConfidenceFloor` (0.1) are soft-deleted via `IMemoryGraphStore.ArchiveExpertiseAsync` (sets `archived = 1` in storage, excluded from `GetExpertiseForNodeAsync` results). Archived entries can be restored via `IEvolutionEngine.RestoreArchivedExpertiseAsync` or inspected via `IMemoryGraphStore.GetArchivedExpertiseAsync`. |
 | **Community Detection** | `EvolutionEngine.DetectCommunitiesAsync()` | Louvain algorithm over `CALLS`/`SIMILAR_TO` edges → creates `BELONGS_TO_CLUSTER` edges and `Topic` summary nodes in the Semantic layer (GraphRAG pattern). |
 
@@ -956,17 +1001,27 @@ CREATE INDEX idx_expertise_archived ON expertise(archived);
 CREATE INDEX idx_audit_session ON audit_log(session_id);
 
 -- Vector storage (sqlite-vss extension — local mode only)
--- SqliteVssVectorStore manages this virtual table via IVectorStore methods.
--- Collection names map to separate vss tables (e.g., vss_memory_embeddings).
+-- SqliteVssVectorStore manages these virtual tables via IVectorStore methods.
+-- Two collections: memory_embeddings (code nodes) and memory_expertise (expertise entries).
+
+-- Code-node embeddings (§3.1 SemanticIndexer)
 CREATE VIRTUAL TABLE vss_memory_embeddings USING vss0(
     embedding(768)            -- nomic-embed-text dimension
 );
+
+-- Expertise-entry embeddings (§3.2.2)
+CREATE VIRTUAL TABLE vss_memory_expertise USING vss0(
+    embedding(768)            -- same model dimension
+);
+
 -- Mapping table: links vss rowid to node/expertise ID
 CREATE TABLE vss_id_map (
     rowid   INTEGER PRIMARY KEY,
-    node_id TEXT NOT NULL UNIQUE   -- references nodes.id or expertise.id
+    node_id TEXT NOT NULL UNIQUE,  -- references nodes.id or expertise.id
+    collection TEXT NOT NULL       -- "memory_embeddings" or "memory_expertise"
 );
 CREATE INDEX idx_vss_id_map_node ON vss_id_map(node_id);
+CREATE INDEX idx_vss_id_map_collection ON vss_id_map(collection);
 ```
 
 ### 4.5 Metadata Key Registry
@@ -1407,7 +1462,7 @@ Agent/CLI                     ExtractionPipeline       Parsers            IMemor
   │                                │  float[][] embeddings                     │                      │                      │
   │                                │◀──────────────────────────────────────────────────────────────────│                      │
   │                                │                      │                    │                      │                      │
-  │                                │  UpsertAsync(collectionName,             │                      │                      │
+  │                                │  UpsertAsync("memory_embeddings",            │                      │                      │
   │                                │    [VectorPoint{Id=nodeId,               │                      │                      │
   │                                │     Vector=embedding}]) ×N               │                      │                      │
   │                                │  (store vectors for ANN retrieval)        │                      │                      │
@@ -1447,7 +1502,7 @@ Agent                  MCP/CLI              RetrievalEngine        QueryPlanner 
   │                      │                       │    float[] qEmbed   │              │                │                    │                 │                  │
   │                      │                       │◀──────────────────────────────────────────────────│                    │                 │                  │
   │                      │                       │    ANN lookup       │              │                │                    │                 │                  │
-  │                      │                       │    SearchAsync(collectionName,             │                │                    │                 │                  │
+  │                      │                       │    SearchAsync("memory_embeddings",        │                │                    │                 │                  │
   │                      │                       │      qEmbed, topK, filter?)                │                │                    │                 │                  │
   │                      │                       │──────────────────────────────────▶│                │                    │                 │                  │
   │                      │                       │    IReadOnlyList<VectorSearchResult>      │                │                    │                 │                  │
@@ -1478,42 +1533,51 @@ Agent                  MCP/CLI              RetrievalEngine        QueryPlanner 
 ### 6.3 Expertise Write-Back (Post-Session Learning)
 
 ```
-Agent                  MCP/CLI              EvolutionEngine       IMemoryGraphStore   IEmbeddingGenerator
-  │                      │                       │                      │                     │
-  │  memory_record_      │                       │                      │                     │
-  │  expertise(node,     │                       │                      │                     │
-  │   kind, title, body) │                       │                      │                     │
-  │─────────────────────▶│                       │                      │                     │
-  │                      │  RecordExpertiseAsync  │                      │                     │
-  │                      │──────────────────────▶│                      │                     │
-  │                      │                       │  Validate target     │                     │
-  │                      │                       │  GetNodeAsync(id)    │                     │
-  │                      │                       │─────────────────────▶│                     │
-  │                      │                       │  node (or null)      │                     │
-  │                      │                       │◀─────────────────────│                     │
-  │                      │                       │                      │                     │
-  │                      │                       │  Embed title + body  │                     │
-  │                      │                       │  GenerateEmbeddingAsync(title + " " + body) │
-  │                      │                       │───────────────────────────────────────────▶│
-  │                      │                       │  float[] embedding   │                     │
-  │                      │                       │◀───────────────────────────────────────────│
-  │                      │                       │                      │                     │
-  │                      │                       │  Build ExpertiseEntry│                     │
-  │                      │                       │  id = "expertise:{kind}:{hash8}"           │
-  │                      │                       │  hash8 = SHA-256(Title+Body+TargetNodeId)  │
-  │                      │                       │  Create APPLIES_TO edge                    │
-  │                      │                       │                      │                     │
-  │                      │                       │  UpsertExpertiseAsync(entry)                │
-  │                      │                       │─────────────────────▶│                     │
-  │                      │                       │  UpsertEdgeAsync(APPLIES_TO, version)       │
-  │                      │                       │─────────────────────▶│                     │
-  │                      │                       │  LogAuditAsync(...)  │                     │
-  │                      │                       │─────────────────────▶│                     │
-  │                      │                       │                      │                     │
-  │                      │  ExpertiseEntry       │                      │                     │
-  │                      │◀──────────────────────│                      │                     │
-  │  ExpertiseEntry      │                       │                      │                     │
-  │◀─────────────────────│                       │                      │                     │
+Agent                  MCP/CLI              EvolutionEngine       IMemoryGraphStore   IEmbeddingGenerator   IVectorStore
+  │                      │                       │                      │                     │                  │
+  │  memory_record_      │                       │                      │                     │                  │
+  │  expertise(node,     │                       │                      │                     │                  │
+  │   kind, title, body) │                       │                      │                     │                  │
+  │─────────────────────▶│                       │                      │                     │                  │
+  │                      │  RecordExpertiseAsync  │                      │                     │                  │
+  │                      │──────────────────────▶│                      │                     │                  │
+  │                      │                       │  Validate target     │                     │                  │
+  │                      │                       │  GetNodeAsync(id)    │                     │                  │
+  │                      │                       │─────────────────────▶│                     │                  │
+  │                      │                       │  node (or null)      │                     │                  │
+  │                      │                       │◀─────────────────────│                     │                  │
+  │                      │                       │                      │                     │                  │
+  │                      │                       │  Embed title + body  │                     │                  │
+  │                      │                       │  GenerateEmbeddingAsync(title + " " + body) │                  │
+  │                      │                       │───────────────────────────────────────────▶│                  │
+  │                      │                       │  float[] embedding   │                     │                  │
+  │                      │                       │◀───────────────────────────────────────────│                  │
+  │                      │                       │                      │                     │                  │
+  │                      │                       │  Build ExpertiseEntry│                     │                  │
+  │                      │                       │  id = "expertise:{kind}:{hash8}"           │                  │
+  │                      │                       │  hash8 = SHA-256(Title+Body+TargetNodeId)  │                  │
+  │                      │                       │  Create APPLIES_TO edge                    │                  │
+  │                      │                       │                      │                     │                  │
+  │                      │                       │  UpsertExpertiseAsync(entry)                │                  │
+  │                      │                       │  (stores embedding in expertise.embedding BLOB)                │
+  │                      │                       │─────────────────────▶│                     │                  │
+  │                      │                       │  UpsertEdgeAsync(APPLIES_TO, version)       │                  │
+  │                      │                       │─────────────────────▶│                     │                  │
+  │                      │                       │                      │                     │                  │
+  │                      │                       │  Index expertise embedding for ANN lookup   │                  │
+  │                      │                       │  UpsertAsync("memory_expertise",            │                  │
+  │                      │                       │    [VectorPoint{Id=expertiseId,             │                  │
+  │                      │                       │     Vector=embedding,                       │                  │
+  │                      │                       │     Payload={Kind,TargetNodeId}}])           │                  │
+  │                      │                       │──────────────────────────────────────────────────────────────▶│
+  │                      │                       │                      │                     │                  │
+  │                      │                       │  LogAuditAsync(...)  │                     │                  │
+  │                      │                       │─────────────────────▶│                     │                  │
+  │                      │                       │                      │                     │                  │
+  │                      │  ExpertiseEntry       │                      │                     │                  │
+  │                      │◀──────────────────────│                      │                     │                  │
+  │  ExpertiseEntry      │                       │                      │                     │                  │
+  │◀─────────────────────│                       │                      │                     │                  │
 ```
 
 ### 6.4 Incremental Sync (Git Commit)
@@ -1565,7 +1629,7 @@ Git hook / Watcher      IncrementalSync         GitDiffDriver      ExtractionPip
   │                          │  ── Step 9: Re-embed changed nodes ──     │                    │                    │                │
   │                          │  SemanticIndexer.IndexAsync(changedNodes) │                    │                    │                │
   │                          │  (re-embeds via IEmbeddingGenerator,      │                    │                    │                │
-  │                          │   upserts vectors via IVectorStore.UpsertAsync(collectionName, [VectorPoint{...}]),
+  │                          │   upserts vectors via IVectorStore.UpsertAsync("memory_embeddings", [VectorPoint{...}]),
   │                          │   retires old SIMILAR_TO edges,           │                    │                    │                │
   │                          │   creates new SIMILAR_TO edges)           │                    │                    │                │
   │                          │──────────────────────────────────────────────────────────────────────────────────────────────────────▶│                │
@@ -1663,65 +1727,77 @@ without requiring the sibling document to be updated first.
 
 ### 8.1 `tech-spec.md`
 
-Tech-spec.md was last updated at iteration 23. It contains twelve
-locations where wording diverges from the canonical definitions in this
-document. None of these represent open disagreements — implementors
-follow this document's definitions (§2–§7) for all naming, schema, and
-formula details. The 12 stale-wording locations:
+Tech-spec.md contains twelve wording locations where its text diverges
+from the canonical definitions in this document. None represent open
+disagreements — the tech-spec's own §12.2 states "No remaining
+conflicts," and implementors follow this document's definitions (§2–§7)
+for all naming, schema, and formula details. The divergences are
+documentation wording debt, not semantic disagreements.
 
-1. **§7.1 Node Types table — `SemanticCluster` row.** Tech-spec lists
-   `SemanticCluster` as a separate node type alongside `Topic`.
+**Verified divergence catalog** (line numbers reference the current
+tech-spec content):
+
+1. **§7.1 Node Types table, line 169 — `SemanticCluster` row.** Tech-spec
+   lists `SemanticCluster` as a separate node type alongside `Topic`.
    Canonical: only `Topic` nodes exist for community clusters (§4.2);
    `SemanticCluster` is retired (§2.3).
-2. **§7.1 Node Types table — `ExpertiseEntry` row.** Uses `source_session`
-   field name. Canonical: field is `SourceAgent` (§4.2).
-3. **§7.1 Node Types table — `ExpertiseEntry` row.** Hash formula says
-   `SHA-256(Content + TargetNodeId)` with single `Content` field.
-   Canonical: `SHA-256(Title + Body + TargetNodeId)` with separate
+2. **§7.1 Node Types table, line 171 — `ExpertiseEntry` row.** Uses
+   `source_session` field name. Canonical: field is `SourceAgent` (§4.2).
+3. **§7.1 Node Types table, line 171 — `ExpertiseEntry` row.** Hash
+   formula says `SHA-256(Content + TargetNodeId)` with single `Content`
+   field. Canonical: `SHA-256(Title + Body + TargetNodeId)` with separate
    `Title` and `Body` fields (§4.2).
-4. **§7.1 ID format note.** IDs shown without leading `/` (e.g.,
-   `src/ast/...`). Canonical: all in-repo node IDs start with `/`
+4. **§7.1 ID format note, line 173.** IDs shown without leading `/`
+   (e.g., `src/ast/...`). Canonical: all in-repo node IDs start with `/`
    (e.g., `/src/ast/...`) per §4.2.
-5. **§7.4 Temporal Model.** References `valid_from_idx` / `valid_until_idx`
-   in the correction note. Canonical column names: `since_index` /
-   `until_index` (§4.4).
-6. **§8.4 Evolution — Decay row formula.** Uses
+5. **§7.4 Temporal Model, line 226.** References `valid_from_idx` /
+   `valid_until_idx` in the correction note. Canonical column names:
+   `since_index` / `until_index` (§4.4).
+6. **§8.4 Evolution — Decay row, line 289.** Uses
    `confidence × 2^(−age_days / 1095) × centrality_boost` with
    `centrality_boost` as an output multiplier. Canonical: centrality
    modifies the half-life in the exponent denominator:
    `final = event_adjusted_confidence × 2^(−age_days / (DecayHalfLifeDays
    × centrality_boost))` (§3.5). Centrality as output multiplier would
    incorrectly increase confidence above the event-adjusted value.
-7. **§7.3 Annotation Metadata table — `VersionRange` key.** Shows
-   `VersionRange` as a single Metadata key with a JSON object value.
-   Canonical: VersionRange is decomposed into four separate Metadata
-   keys (`SinceCommit`, `SinceIndex`, `UntilCommit`, `UntilIndex`) and
-   four separate SQLite columns (§4.4, §4.5).
-8. **§8.2 Storage — `commits` table schema.** Uses column name
+7. **§7.3 Annotation Metadata table, line 200 — `VersionRange` key.**
+   Shows `VersionRange` as a single Metadata key with a JSON object
+   value. Canonical: VersionRange is decomposed into four separate
+   Metadata keys (`SinceCommit`, `SinceIndex`, `UntilCommit`,
+   `UntilIndex`) and four separate SQLite columns (§4.4, §4.5).
+8. **§8.2 Storage — `commits` table schema, line 258.** Uses column name
    `parent_sha`. Canonical: the `commits` table has columns `sha`,
    `commit_index`, `timestamp`, `author` — no `parent_sha` column (§4.4).
-9. **§8.2 Storage — `nodes` table schema.** Uses column names
+9. **§8.2 Storage — `nodes` table schema, line 259.** Uses column names
    `embedding_blob`, `hash`, `valid_from_idx`, `valid_until_idx`.
    Canonical: `content_hash` (not `hash`), `since_index` (not
    `valid_from_idx`), `until_index` (not `valid_until_idx`), and
    embeddings are stored in the `vss_memory_embeddings` virtual table
    via `IVectorStore`, not as a blob column in `nodes` (§4.4).
-10. **§8.2 Storage — `edges` table schema.** Uses `confidence` as a
-    dedicated column and `valid_from_idx` / `valid_until_idx`. Canonical:
-    `Confidence` lives in `metadata` JSON; temporal columns are
+10. **§8.2 Storage — `edges` table schema, line 260.** Uses `confidence`
+    as a dedicated column and `valid_from_idx` / `valid_until_idx`.
+    Canonical: `Confidence` lives in `metadata` JSON; temporal columns are
     `since_index` / `until_index`; the table also has denormalized
     `semantic_rel` and `memory_layer` columns (§4.4).
-11. **§1.1 Existing Infrastructure table — `Ast.VectorDb` row.** Says
-    `Ast.Memory` adds "in-process HNSW adapter for local mode."
+11. **§1.1 Existing Infrastructure table, line 45 — `Ast.VectorDb` row.**
+    Says `Ast.Memory` adds "in-process HNSW adapter for local mode."
     Canonical: local mode uses `SqliteVssVectorStore` implementing the
     existing `IVectorStore` interface via the sqlite-vss extension (§3.2),
     not a standalone in-process HNSW adapter. The `IVectorStore` types
     (`VectorPoint`, `VectorSearchResult`, `VectorFilter`) are consumed
     unchanged from `Ast.VectorDb` (§3.2.1).
-12. **§8.2 Storage — Deployment table.** Lists "sqlite-vss or in-process
-    HNSW (usearch)" as the vector backend for local mode. Canonical:
-    only `SqliteVssVectorStore` is supported for local mode (§3.2).
-    There is no usearch backend in the architecture.
+12. **§8.2 Storage — Deployment table, line 253.** Lists "sqlite-vss or
+    in-process HNSW (usearch)" as the vector backend for local mode.
+    Canonical: only `SqliteVssVectorStore` is supported for local mode
+    (§3.2). There is no usearch backend in the architecture.
+
+**Expertise-vector storage note:** The tech-spec §8.4 Evolution section
+(line 289) mentions that expertise write-back "Embeds title + body via
+`IEmbeddingGenerator`" but does not describe the dual-storage pattern.
+Canonical: expertise embeddings are stored in both the `expertise.embedding`
+BLOB column and the `memory_expertise` IVectorStore collection (§3.2.2).
+The tech-spec's omission is documentation debt — it does not contradict
+the canonical model, it simply does not describe the ANN-indexing step.
 
 ### 8.2 `implementation-plan.md`
 
@@ -1729,12 +1805,14 @@ The implementation-plan defers to this document on all naming/data-model
 conflicts (its header explicitly states: "when literal names or values
 here conflict with `architecture.md`, follow `architecture.md`").
 
-**Active divergence requiring correction in the next impl-plan iteration:**
+**Active divergences requiring correction** (verified against current
+impl-plan content):
 
-The impl-plan's Stage 1.2 (line 49) lists 12 methods for
-`IMemoryGraphStore` and its test scenario (line 55) says "declares all
-12 methods." **The canonical `IMemoryGraphStore` interface declares 13
-methods** (§5.1). The missing method is:
+**Divergence 1 — Missing `UpsertEdgeAsync` (Stage 1.2, line 49):**
+The impl-plan lists 12 methods for `IMemoryGraphStore` and its test
+scenario (line 55) says "declares all 12 methods." **The canonical
+`IMemoryGraphStore` interface declares 13 methods** (§5.1). The missing
+method is:
 
 ```csharp
 Task UpsertEdgeAsync(Hyperedge edge, VersionRange version, CancellationToken ct = default);
@@ -1762,16 +1840,36 @@ SemanticIndexer, EvolutionEngine) must use `UpsertEdgeAsync` — not
 `semantic_rel`, and `memory_layer` denormalized columns on the `edges`
 table (§4.4).
 
-Additionally, the impl-plan's Stage 5.3 uses an incorrect decay formula
-(`current_confidence × 2^(…) × centrality_boost`) that places
+**Divergence 2 — Edge persistence via inherited methods (Stage 2.1,
+line 126):** The impl-plan says "Persist nodes and edges via
+`IMemoryGraphStore.UpsertNodeAsync` and inherited `IGraphStore`
+edge-creation methods." Canonical: edges must be persisted via
+`IMemoryGraphStore.UpsertEdgeAsync` (not inherited `IGraphStore` methods)
+to populate the denormalized `since_index`, `until_index`, `semantic_rel`,
+and `memory_layer` columns.
+
+**Divergence 3 — Decay formula (Stage 5.3, line 318):** Uses
+`current_confidence × 2^(…) × centrality_boost` that places
 `centrality_boost` as an output multiplier, which would incorrectly
-increase confidence. The canonical formula (§3.5) places centrality in
-the exponent denominator: `final = event_adjusted_confidence ×
-2^(−age_days / (DecayHalfLifeDays × centrality_boost))`.
+increase confidence above the event-adjusted value. The canonical formula
+(§3.5) places centrality in the exponent denominator:
+`final = event_adjusted_confidence × 2^(−age_days / (DecayHalfLifeDays
+× centrality_boost))`.
 
 Other naming/schema items (composition wrappers, `ExpertiseEntry` naming,
 `Title`+`Body` fields, node ID format, `archived` column) have been
 corrected in the implementation-plan.
+
+**Expertise-vector storage note:** The impl-plan's Stage 5.1 (line 295)
+correctly describes expertise embedding via `IEmbeddingGenerator` but
+does not include the `IVectorStore.UpsertAsync("memory_expertise", ...)`
+call that indexes the expertise embedding for ANN lookup. Canonical:
+expertise embeddings are stored in both the BLOB column and the
+`memory_expertise` IVectorStore collection (§3.2.2). The Stage 5.2
+consolidation code (line 306) references "cosine similarity of
+embeddings ≥ SimilarityThreshold" — this similarity is computed via
+`IVectorStore.SearchAsync("memory_expertise", ...)`, not by loading and
+comparing BLOBs in-memory.
 
 **Vector-store interaction note:** The impl-plan's Stage 2.3
 (SemanticIndexer) says "Store vectors in Qdrant (team mode via
@@ -1783,10 +1881,20 @@ points, CancellationToken)` where each node is wrapped as a `VectorPoint`
 
 ### 8.3 `e2e-scenarios.md`
 
-Fully aligned. The e2e-scenarios document uses canonical vocabulary
-throughout: correct edge names, qualified node IDs with leading `/`,
-single-colon `ext:` prefix, separate `Title`/`Body` fields, and correct
-scenario descriptions for all 13 features (82 scenarios).
+Fully aligned. The e2e-scenarios document's header (lines 17–25) confirms
+all 10 divergence items (E2E-1 through E2E-10) have been corrected. The
+document uses canonical vocabulary throughout: correct edge names,
+qualified node IDs with leading `/`, single-colon `ext:` prefix, separate
+`Title`/`Body` fields, correct `RecordExpertiseAsync` signature, and
+correct scenario descriptions for all 13 features (82 scenarios).
+
+**Expertise-vector coverage note:** The e2e-scenarios Feature 4
+(Expertise layer) tests expertise write-back and retrieval via `APPLIES_TO`
+edges but does not include a scenario for the `memory_expertise` vector
+collection ANN-indexed lookup path described in §3.2.2. This is a
+coverage gap — a future scenario should verify that
+`IVectorStore.SearchAsync("memory_expertise", ...)` finds semantically
+similar expertise entries during consolidation and ExpertiseRecall mode.
 
 ### 8.4 Existing `AgentMemory` Project
 
