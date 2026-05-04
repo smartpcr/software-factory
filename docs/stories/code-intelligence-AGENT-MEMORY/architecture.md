@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 29
+> **Status:** Iteration 30
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -15,7 +15,7 @@
 > | Document | Owns | Current state |
 > |---|---|---|
 > | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Currently at iteration 23. Aligned on structural/naming points. Sixteen alignment items (A1–A16) tracked in §8.1, all resolved. A13–A16 added in iteration 28 (node-ID format, `LastTouched` type, `MemoryNode.Version` nullability, expertise hash input). |
-> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Currently at latest iteration. Contains 32 naming/data-model divergences from canonical vocabulary — all catalogued in §8.2 below with canonical resolutions. `architecture.md` governs on all conflicts. |
+> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Currently at latest iteration. Substantially updated to align with canonical vocabulary — uses correct names (`IMemoryGraphStore`, `ExpertiseEntry`, composition wrappers, `VersionRange?`, correct method signatures). Remaining minor presentational gaps catalogued in §8.2 below. `architecture.md` governs on all conflicts. |
 > | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Currently at latest iteration. Contains 10 divergences catalogued in §8.3 below — all semantically correct or out-of-scope. |
 
 ---
@@ -738,6 +738,7 @@ CREATE INDEX idx_audit_session ON audit_log(session_id);
 | `Confidence` | `double` | Call-Chain edges, Expertise edges | Extraction Pipeline / Evolution Engine |
 | `Stale` | `bool` | Call-Chain edges | Incremental Sync |
 | `QualifiedName` | `string` | All nodes | Extraction Pipeline |
+| `Package` | `string` | External nodes | Extraction Pipeline — package/assembly name (e.g., `"Microsoft.CodeAnalysis"`) |
 | `LastTouched` | `string` | All nodes | Incremental Sync (ISO-8601 wall-clock; informational — not used for graph filtering) |
 | `Embedding` | `float[]` | All nodes (serialized) | Semantic Indexer |
 | `EmbeddingModel` | `string` | Nodes with embeddings | Semantic Indexer |
@@ -1316,79 +1317,52 @@ both long-resolved items and newly identified divergences.
 
 ### 8.2 Alignment with `implementation-plan.md` (Current Iteration)
 
-The implementation-plan contains **32 naming, data-model, and numeric
-divergences** from canonical vocabulary defined in this document. **These are
-documentation debt in the implementation-plan, not unresolved conflicts.** This
-document governs on all points (per the implementation-plan's own header, which
-states: "when literal names or values here conflict with `architecture.md`,
-follow `architecture.md`").
+The implementation-plan has been **substantially updated** and now uses
+canonical vocabulary defined in this document. Its header states: "when
+literal names or values here conflict with `architecture.md`, follow
+`architecture.md`."
 
-Tech-spec §12.3 independently catalogues 25 of these items and confirms the
-canonical resolutions. Three additional conflicts (S-5 and D-5, plus method-name
-conflicts S-3, S-4) are catalogued below.
+**Resolved divergences (no longer present in implementation-plan):**
 
-#### 8.2.1 Naming & Type Conflicts (4 items)
+The following categories of conflicts, previously catalogued in earlier
+iterations, have been corrected in the implementation-plan:
 
-| # | impl-plan says | Canonical (this doc) | Governing § |
-|---|---|---|---|
-| N-1 | `ExpertiseNote` | **`ExpertiseEntry`** | §2.3, §4.2 |
-| N-2 | `IMemoryStore` | **`IMemoryGraphStore`** | §2.3, §5.1 |
-| N-3 | Separate `IExpertiseStore` | Merged into **`IEvolutionEngine`** | §2.3, §5.3 |
-| N-4 | `AgentMemoryService` composes `IExpertiseStore` | Compose **`IEvolutionEngine`** | §5.3 |
+- **Naming:** Uses `ExpertiseEntry` (not `ExpertiseNote`), `IMemoryGraphStore`
+  (not `IMemoryStore`), `ExpertiseKind` (not `PatternType`),
+  `Neo4jMemoryGraphStore` (not `Neo4jMemoryStore`).
+- **Composition:** `MemoryNode` contains `HypergraphNode Inner` (not
+  inheritance). `MemoryEdge` contains `Hyperedge Inner` (not inheritance).
+- **`VersionRange` nullability:** `MemoryNode.Version` is `VersionRange?`
+  (nullable for External boundary nodes).
+- **ExpertiseEntry fields:** Uses `Title` + `Body` (not single `Content`),
+  with `Scope`, `Evidence`, `Archived`, `SourceAgent`.
+- **Method signatures:** `RecordExpertiseAsync(targetNodeId, kind, title,
+  body, sourceAgent, scope?, evidence?)` matches §5.3.
+- **Interface methods:** `IMemoryGraphStore` declares all 12 methods per §5.1
+  (including `RetireEdgeAsync`, `ArchiveExpertiseAsync`,
+  `GetArchivedExpertiseAsync`, `UpdateEdgeMetadataAsync`).
+- **Interface placement:** `ApplyDiffAsync` on `IIncrementalSync` with
+  correct `(repoRoot, fromCommit, toCommit)` signature per §5.4.
+- **Scoring weights:** Uses canonical 0.30/0.25/0.20/0.15/0.10 per §2.4.
+- **Constants:** Uses `DecayHalfLifeDays=1095`, `TokenBudgetDefault=8000`,
+  `TokenBudgetCeiling=32000` per §2.4.
+- **Node ID format:** Uses `"/{relativePath}::{qualifiedName}"` with leading
+  `/` per §4.2.
+- **Storage schema:** Uses `archived` column in `expertise` table per §4.4.
+- **Project placement:** MCP tools in `Ast.Memory/Mcp/`, CLI in
+  `Ast.Memory/Cli/`, no files created in `Ast.GraphDb/`.
 
-#### 8.2.2 Data Model Conflicts (6 items)
+**Remaining presentational gaps (3 items):**
 
-| # | impl-plan says | Canonical (this doc) | Governing § |
-|---|---|---|---|
-| D-1 | `MemoryNode` extends `HypergraphNode` (inheritance) | **Composition wrapper** (`HypergraphNode Inner { get; }`) | §4.1 |
-| D-2 | `MemoryEdge` extends `Hyperedge` (inheritance) | **Composition wrapper** (`Hyperedge Inner { get; }`) | §4.1 |
-| D-3 | `PatternType` enum | **`ExpertiseKind`** enum | §2.3, §4.2 |
-| D-4 | Separate `Annotation.cs` entity | **No separate class** — `Metadata` keys + `AnnotationKeyRegistry` | §4.5 |
-| D-5 | `ExpertiseEntry` with single `Content` field | **`Title` + `Body`** (two fields), plus `Scope` ("exact"\|"subtree") and `Evidence` (list of `Citation`) | §4.2 |
-| D-6 | `MemoryNode` with non-nullable `VersionRange Version` (Stage 1.1) | **`VersionRange? Version`** (nullable) — External boundary nodes are timeless and have no `VersionRange` (§4.3). `MemoryNode.Version` must be `VersionRange?` to accommodate wrapping External nodes. Test scenarios using `memoryNode.Version.SinceIndex` must guard for null. | §4.1, §4.3 (A15) |
-
-#### 8.2.3 ID Format Conflicts (2 items)
-
-| # | impl-plan says | Canonical (this doc) | Governing § |
-|---|---|---|---|
-| I-1 | `{repo}:{language}:{fqn}:{hash_short}` | **`"/{relativePath}::{qualifiedName}"`** (path-based, leading `/` for all in-repo nodes) | §4.2 |
-| I-2 | `IdReconciliationTable` with `ID_MAPS_TO` Neo4j edges | ID format per §4.2; backing is implementation choice | §4.2 |
-
-#### 8.2.4 Edge Name Conflicts (4 items)
-
-| # | impl-plan says | Canonical (this doc) | Governing § |
-|---|---|---|---|
-| E-1 | `CALLED_BY` as stored edge | **Reverse traversal** of `CALLS`, not stored | §2.3 |
-| E-2 | `INHERITS` edge | **`EXTENDS`** | §2.2, §2.3 |
-| E-3 | `IMPORTS` edge | **`DEPENDS_ON`** | §2.2, §2.3 |
-| E-4 | `DependencyInvalidator` walks `IMPORTS` | Walk **`DEPENDS_ON`** | §2.2, §2.3 |
-
-#### 8.2.5 Numeric / Threshold Conflicts (5 items)
+These are minor documentation shorthand in the implementation-plan that do
+not affect correctness. The implementation-plan's header defers to this
+document on all conflicts.
 
 | # | impl-plan says | Canonical (this doc) | Governing § |
 |---|---|---|---|
-| T-1 | `semantic=0.3` weight | **`semantic=0.25`** | §2.4 |
-| T-2 | `centrality=0.15` weight | **`centrality=0.20`** | §2.4 |
-| T-3 | `MaxTokens` default = 32768 | Default = **8,000**; ceiling = 32,000 | §2.4 |
-| T-4 | Decay half-life = 60 days | **`DecayHalfLifeDays = 1095`** (3 years) | §2.4 |
-| T-5 | Decay formula `e^(−λ×days)` | **`confidence × 2^(−age_days/1095) × (1.0 + 0.5 × normalized_pagerank)`** (base-2, with centrality boost) | §2.4, §3.5 |
-
-#### 8.2.6 Other Conflicts (9 items)
-
-| # | impl-plan says | Canonical (this doc) | Governing § |
-|---|---|---|---|
-| M-1 | No explicit embedding model | **`nomic-embed-text`** (768 dims) | §1.3 |
-| S-1 | `IMemoryStore` with annotation CRUD | **`IMemoryGraphStore`** with `GetNodesByLayerAsync`, `UpsertNodeAsync`, etc. | §5.1 |
-| S-2 | `Neo4jMemoryStore` | **`Neo4jMemoryGraphStore`** implementing `IMemoryGraphStore` | §3.2, §5.1 |
-| S-3 | `IMemoryGraphStore` with `ApplyDiffAsync(GraphDiff, ...)`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, `FindByNameAsync`, `RebuildVectorIndexAsync`, `ResolveCommitIndexAsync`, `RegisterCommitAsync` (Stage 1.2) | Canonical methods per §5.1: `GetNodesByLayerAsync`, `GetEdgesBySemanticRelationAsync`, `UpsertNodeAsync`, `RetireNodeAsync`, `GetExpertiseForNodeAsync`, `UpsertExpertiseAsync`, `GetMemoryStatisticsAsync`, `LogAuditAsync`. Traversal uses inherited `IGraphStore` methods. Vector search goes through `IVectorStore` (separate DI dependency), not through graph store. | §5.1 |
-| S-4 | `ApplyDiffAsync` on `IMemoryGraphStore` | `ApplyDiffAsync` belongs to **`IIncrementalSync`** (different interface); it takes `(repoRoot, fromCommit, toCommit)` not `(GraphDiff, commitSha)` | §5.4 |
-| S-5 | `RecordExpertiseAsync(targetNodeId, kind, content, sourceAgent)` | Canonical: `RecordExpertiseAsync(targetNodeId, kind, title, body, sourceAgent, scope?, evidence?)` — separate `title`/`body` parameters, optional `scope` and `evidence` | §5.3 |
-| S-6 | No `RetireEdgeAsync` in interface | Canonical: `IMemoryGraphStore.RetireEdgeAsync(edgeId, untilCommitIndex)` — sets `UntilIndex` on a single edge without retiring its endpoint nodes | §5.1 |
-| S-7 | No `ArchiveExpertiseAsync` in interface | Canonical: `IMemoryGraphStore.ArchiveExpertiseAsync(expertiseId)` — soft-deletes expertise; `GetArchivedExpertiseAsync` retrieves archived entries | §5.1 |
-| S-8 | No `archived` column in expertise table | Canonical: `expertise.archived INT NOT NULL DEFAULT 0` — set to `1` by `ArchiveExpertiseAsync`, excluded from `GetExpertiseForNodeAsync` | §4.4 |
-| P-1 | `IMemoryStore.cs` in `Ast.GraphDb` | **`IMemoryGraphStore`** in `Ast.Memory/Interfaces/` — no files in `Ast.GraphDb` created/modified | §3.0, §5.1 |
-| P-2 | `Neo4jMemoryStore.cs` | **`Neo4jMemoryGraphStore`** in `Ast.Memory/Storage/`, **composing** existing `Neo4jGraphStore` | §3.2 |
-| P-3 | MCP files in `Ast.Cli` | MCP tools in **`Ast.Memory/Mcp/`**; CLI commands in `Ast.Memory/Cli/`. Only additive `config.AddBranch("memory", ...)` in `Ast.Cli`. | §3.8 |
+| R-1 | Stage 1.1 `ExpertiseEntry.ContentHash` described as "SHA-256 of Title+Body" without mentioning that the ID `hash8` uses `SHA-256(Title+Body+TargetNodeId)` | `ContentHash` = SHA-256(Title+Body) for dedup; `Id` hash8 = SHA-256(Title+Body+TargetNodeId) for uniqueness — two distinct hashes | §4.2 |
+| R-2 | `MemoryEdge.Version` property listed as `VersionRange Version` without explicit non-nullable annotation | `VersionRange Version` is non-nullable (all edges carry versioning, per §4.3) — impl-plan is correct but could be more explicit | §4.1, §4.3 |
+| R-3 | Expertise hash input in Stage 1.1 test scenario shows `SHA-256(Title+Body+TargetNodeId)` correctly but does not note the distinct `ContentHash` field uses `SHA-256(Title+Body)` | Both formulas exist — `hash8` for ID uses `Title+Body+TargetNodeId`, `ContentHash` for dedup uses `Title+Body` | §4.2 |
 
 ### 8.3 Alignment with `e2e-scenarios.md` (Current Iteration)
 
@@ -1412,6 +1386,6 @@ behaviors match the architecture.
 
 ### 8.4 Net Assessment
 
-- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Sixteen alignment items (A1–A16) tracked, all resolved. A13–A16 (added in iteration 28) fix four consistency gaps: node-ID leading-slash format, `LastTouched` metadata type, `MemoryNode.Version` nullability for External nodes, and expertise hash input formula. Tech-spec §12.2 confirms "No remaining conflicts." Tech-spec's own header references architecture.md at "iteration 25" — this is stale metadata in the tech-spec (architecture is now at iteration 29); the alignment conclusions (A1–A16) remain valid. Tech-spec §7.1 line 173 still shows ID format without leading `/` (e.g., `src/ast/...` instead of `/src/ast/...`) and line 171 still uses `SHA-256(Content + TargetNodeId)` instead of `SHA-256(Title + Body + TargetNodeId)` — both are stale shorthand governed by A13 and A16 respectively. Tech-spec §8.4 uses column names `valid_from_idx`/`valid_until_idx` in its schema sketch while architecture §4.4 uses `since_index`/`until_index`; architecture governs (tech-spec §8.4 is a quick-reference, not normative).
-- **implementation-plan ↔ architecture:** 32 naming/numeric/method-signature divergences, all with stated canonical resolutions. D-6 (added in iteration 29) catalogues the `MemoryNode.VersionRange` nullability gap: impl-plan Stage 1.1 declares `VersionRange Version` (non-nullable), but canonical is `VersionRange? Version` (nullable for External nodes, per §4.1 and A15). These are documentation debt in the implementation-plan, not unresolved design conflicts. The implementation-plan's own header defers to this document on all conflicts. Implementers who follow the canonical values from this document will produce correct code.
-- **e2e-scenarios ↔ architecture:** 10 divergences, all semantically correct or out-of-scope. Two scenarios (E2E-5, E2E-8) exercise out-of-scope features and should be tagged `@deferred`. E2E-6 (unqualified IDs) and E2E-7 (`ext::` prefix) are presentation shorthand; canonical formats are in §4.2. Node ID format with leading `/` is now explicitly specified in both this document (§4.2) and e2e-scenarios — no remaining inconsistency.
+- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Sixteen alignment items (A1–A16) tracked, all resolved. Tech-spec §12.2 confirms "No remaining conflicts." Tech-spec's own header references architecture.md at "iteration 25" — this is stale iteration metadata in the tech-spec; the alignment conclusions (A1–A16) remain valid. Three stale presentation items remain in the tech-spec (not conflicts — this document governs): (1) §7.1 line 173 shows ID format without leading `/` (governed by A13); (2) §7.1 line 171 uses `SHA-256(Content + TargetNodeId)` instead of `SHA-256(Title + Body + TargetNodeId)` (governed by A16); (3) §8.4 uses column names `valid_from_idx`/`valid_until_idx` while architecture §4.4 uses `since_index`/`until_index` (architecture governs — tech-spec §8.4 is a quick-reference, not normative).
+- **implementation-plan ↔ architecture:** Substantially aligned. The implementation-plan has been updated to use canonical vocabulary: correct interface names, composition wrappers, `VersionRange?` nullability, correct method signatures, canonical scoring weights and constants, and correct project placement. Three minor presentational gaps remain (R-1 through R-3 in §8.2), none affecting correctness. The implementation-plan's own header defers to this document on all conflicts.
+- **e2e-scenarios ↔ architecture:** 10 divergences catalogued in §8.3, all either presentation shorthand (semantically correct) or out-of-scope features. Two scenarios (E2E-5, E2E-8) exercise out-of-scope features and should be tagged `@deferred`. E2E-6 (unqualified IDs) and E2E-7 (`ext::` prefix) are presentation shorthand; canonical formats are in §4.2.
