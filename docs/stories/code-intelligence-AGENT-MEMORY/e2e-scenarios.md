@@ -159,13 +159,13 @@ Feature: Structural Layer — Repository Structure Graph Construction
     And 2 files contain syntax errors that prevent Roslyn AST construction
     When the extraction pipeline processes the repository
     Then the graph contains Module nodes for all 20 files
-    And the 2 failed files have Metadata["ParseStatus"] = "failed"
+    And the 2 failed files produce Module nodes but no Class or Function children
     And the 18 successful files have Class and Function children
     And the ExtractionResult reports:
-      | field         | value |
-      | NodesCreated  | >= 20 |
+      | field         | value      |
+      | NodesCreated  | >= 20      |
       | Errors        | length = 2 |
-    And a diagnostic summary reports 2 files with ParseStatus "failed"
+    # ExtractionResult.Errors lists the 2 parse failures (architecture.md §5.4)
 
   Scenario: 1.8 — HyperedgeType enum values map to CONTAINS edges
     Given the extraction pipeline encounters a ClassDefinition HyperedgeType
@@ -221,7 +221,8 @@ Feature: Call-Chain Layer — Call Graph Extraction
       | SemanticRelation | Roles.callee                                                     | Confidence |
       | CALLS            | /src/ast/Ast.GraphDb/Neo4jGraphStore.cs::Neo4jGraphStore.CreateNodeAsync | 0.5       |
     And each edge has Metadata["Confidence"] between 0.5 and 0.7
-    And Metadata["IsPolymorphic"] = true on each edge
+    # Polymorphic dispatch is indicated by the reduced Confidence value
+    # (direct calls have Confidence = 1.0; dynamic dispatch = 0.5–0.7)
 
   Scenario: 2.4 — EXTENDS and IMPLEMENTS edges from class hierarchy
     Given class Neo4jGraphStore in "src/ast/Ast.GraphDb/Neo4jGraphStore.cs"
@@ -288,7 +289,7 @@ Feature: Semantic Layer — Embedding and Similarity
 
   Background:
     Given the structural and call-chain layers are populated for "src/ast/"
-    And the embedding model is "nomic-embed-text" (per architecture.md §4.7)
+    And the embedding model is "nomic-embed-text" (per architecture.md §1.3)
 
   Scenario: 3.1 — Code nodes receive embeddings at extraction time
     When the semantic indexer processes all Function and Class nodes
@@ -301,8 +302,8 @@ Feature: Semantic Layer — Embedding and Similarity
     Given two Function nodes with cosine similarity 0.91 (above SimilarityThreshold 0.85)
     When the semantic indexer computes pairwise similarity
     Then a SIMILAR_TO edge is created:
-      | EdgeType       | SemanticRelation | Metadata.CosineSim | Metadata.MemoryLayer |
-      | MemoryRelation | SIMILAR_TO       | 0.91               | semantic             |
+      | EdgeType       | SemanticRelation | Metadata.SimilarityScore | Metadata.MemoryLayer |
+      | MemoryRelation | SIMILAR_TO       | 0.91                     | semantic             |
     And the edge has exactly 2 NodeIds with Roles "node_a" and "node_b"
 
   Scenario: 3.3 — Below-threshold pairs do NOT create edges
@@ -310,13 +311,18 @@ Feature: Semantic Layer — Embedding and Similarity
     When the semantic indexer computes pairwise similarity
     Then no SIMILAR_TO edge is created between them
 
-  Scenario: 3.4 — Vector search returns ranked results
+  Scenario: 3.4 — SemanticSearch retrieval returns ranked results
     Given the vector index has been built for all code nodes
-    When the agent calls IVectorStore.SearchAsync with query embedding for "extract hypergraph from C# code" and topK = 5
-    Then the result contains at most 5 VectorSearchResult entries
+    When the agent calls IMemoryRetrievalEngine.RetrieveAsync with:
+      | field          | value                                   |
+      | QueryText      | extract hypergraph from C# code         |
+      | Mode           | SemanticSearch                          |
+      | TokenBudget    | 4000                                    |
+    Then the RetrievalResult.Nodes contains ranked ScoredMemoryNode entries
     And the top result is likely a node from "src/ast/Ast.Csharp/CSharpHyperedgeExtractor.cs"
     # Its embedding text contains "extract" and "hyperedge" terms
-    And each VectorSearchResult has a Score between 0.0 and 1.0
+    And each ScoredMemoryNode has SemanticScore between 0.0 and 1.0
+    And RetrievalResult.ModesExecuted contains SemanticSearch
 
   Scenario: 3.5 — Embedding model version tracked per node
     Given a node was embedded with model "nomic-embed-text"
@@ -333,7 +339,7 @@ Feature: Semantic Layer — Embedding and Similarity
 Agents record expertise (Pattern, Pitfall, Preference, Insight) as typed
 Expertise-layer nodes linked to code targets via `APPLIES_TO` edges.
 The Evolution Engine manages write-back, consolidation, and decay
-(per `architecture.md` §3.5 and §5.4).
+(per `architecture.md` §3.5 and §5.3).
 
 ```gherkin
 Feature: Expertise Layer — Agent Learning and Write-Back
@@ -393,17 +399,17 @@ Feature: Expertise Layer — Agent Learning and Write-Back
       | SourceAgent  | copilot-session-42                                                                           |
     Then an Insight ExpertiseEntry is created with TargetNodeId = "/src/ast/CodeIntelligence"
 
-  Scenario: 4.5 — Duplicate expertise triggers DERIVED_FROM edge
+  Scenario: 4.5 — Similar expertise detected at write-time schedules consolidation
     Given an existing ExpertiseEntry "expertise:pitfall:a1a11111" with Content
       "Metadata access may throw KeyNotFoundException"
     And it targets "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
     When the agent records a new Pitfall with Content
       "Null-deref in HypergraphNode.Metadata access — similar underlying issue"
     And the cosine similarity between old and new expertise > SimilarityThreshold (0.85)
-    Then a DERIVED_FROM edge is created:
-      | SemanticRelation | Roles.derived                | Roles.source                 |
-      | DERIVED_FROM     | expertise:pitfall:<new_hash> | expertise:pitfall:a1a11111   |
-    And a consolidation is scheduled
+    Then the new ExpertiseEntry is created with its own APPLIES_TO edge
+    And a consolidation is scheduled for the next ConsolidateAsync run
+    # DERIVED_FROM edges are NOT created at write-time — they are produced
+    # by ConsolidateAsync during consolidation (architecture.md §2.2, §6.5)
 
   Scenario: 4.6 — Expertise with invalid target node is rejected
     When the agent calls RecordExpertiseAsync with targetNodeId = "/nonexistent/path::Foo"
@@ -646,7 +652,7 @@ Feature: Evolution Engine — Consolidation and Decay
   Background:
     Given the graph at commit_index 10 with multiple ExpertiseEntry records
 
-  Scenario: 8.1 — Consolidation merges overlapping expertise via SUPERSEDES
+  Scenario: 8.1 — Consolidation merges overlapping expertise via SUPERSEDES and DERIVED_FROM
     Given 3 Pitfall ExpertiseEntry records about "null handling in Metadata access":
       | Id                         | Confidence | SourceAgent          |
       | expertise:pitfall:aa11bb22 | 0.8        | copilot-session-10   |
@@ -654,11 +660,17 @@ Feature: Evolution Engine — Consolidation and Decay
       | expertise:pitfall:ee55ff66 | 1.0        | copilot-session-20   |
     When IEvolutionEngine.ConsolidateAsync runs
     Then 1 merged ExpertiseEntry is produced
-    And SUPERSEDES edges are created:
+    And SUPERSEDES edges are created from merged to originals:
       | SemanticRelation | Roles.newer                   | Roles.older                   |
       | SUPERSEDES       | expertise:pitfall:<merged>    | expertise:pitfall:aa11bb22    |
       | SUPERSEDES       | expertise:pitfall:<merged>    | expertise:pitfall:cc33dd44    |
       | SUPERSEDES       | expertise:pitfall:<merged>    | expertise:pitfall:ee55ff66    |
+    And DERIVED_FROM edges are created from merged to sources (provenance):
+      | SemanticRelation | Roles.derived                 | Roles.source                  |
+      | DERIVED_FROM     | expertise:pitfall:<merged>    | expertise:pitfall:aa11bb22    |
+      | DERIVED_FROM     | expertise:pitfall:<merged>    | expertise:pitfall:cc33dd44    |
+      | DERIVED_FROM     | expertise:pitfall:<merged>    | expertise:pitfall:ee55ff66    |
+    # Per architecture.md §6.5: consolidation produces both SUPERSEDES and DERIVED_FROM edges
     And the ConsolidationResult shows:
       | field       | value |
       | Merged      | 3     |
@@ -667,31 +679,36 @@ Feature: Evolution Engine — Consolidation and Decay
   Scenario: 8.2 — Time-based decay with centrality boost
     Given an ExpertiseEntry with initial Confidence = 1.0 created 1095 days ago
     And the target code node has normalized_pagerank = 0.6
-    When decay is computed during retrieval
+    When DecayStaleExpertiseAsync runs time-based decay
     Then the decayed confidence is approximately:
       1.0 × 2^(−1095 / 1095) × (1.0 + 0.5 × 0.6) = 0.5 × 1.3 = 0.65
     And the ExpertiseEntry remains active (0.65 > ArchiveConfidenceFloor 0.1)
+    # Time-based decay runs periodically or on-demand via
+    # IEvolutionEngine.DecayStaleExpertiseAsync (architecture.md §3.5)
 
   Scenario: 8.3 — Event-based decay on major code change
     Given an ExpertiseEntry with Confidence = 0.8
     And its APPLIES_TO target's ContentHash changes (major change, not whitespace)
-    When DecayStaleExpertiseAsync runs
+    When IncrementalSync detects the ContentHash change during ApplyDiffAsync
     Then the ExpertiseEntry Confidence becomes 0.8 × StaleDecayFactor (0.5) = 0.4
     And the ExpertiseEntry remains active (0.4 > ArchiveConfidenceFloor 0.1)
+    # Event-driven decay is applied immediately at sync time (architecture.md §3.5)
 
   Scenario: 8.4 — Event-based decay on minor change
     Given an ExpertiseEntry with Confidence = 0.3
     And its target has a whitespace-only ContentHash change
-    When DecayStaleExpertiseAsync runs
+    When IncrementalSync detects the minor ContentHash change during ApplyDiffAsync
     Then the ExpertiseEntry Confidence becomes 0.3 × MinorDecayFactor (0.9) = 0.27
     And the ExpertiseEntry remains active (0.27 > ArchiveConfidenceFloor 0.1)
+    # Whitespace/comment-only changes apply MinorDecayFactor instead of StaleDecayFactor
 
   Scenario: 8.5 — Expertise below ArchiveConfidenceFloor is soft-deleted
     Given an ExpertiseEntry with Confidence = 0.08 (below ArchiveConfidenceFloor 0.1)
     When DecayStaleExpertiseAsync runs
-    Then the ExpertiseEntry is soft-deleted (removed from default retrieval)
+    Then the ExpertiseEntry is soft-deleted (archived = true in the expertise table)
     And it no longer appears in default ExpertiseRecall results
-    But historical queries can still find it via the audit_log
+    But it remains in the expertise table and can be found via explicit archived queries
+    # Per architecture.md §3.5: "retained in storage with archived = true, excluded from retrieval"
 
   Scenario: 8.6 — Community summarization produces Topic nodes
     When DetectCommunitiesAsync runs community detection (Louvain) on CALLS/SIMILAR_TO edges
@@ -716,7 +733,7 @@ Feature: Cross-Session Learning — Memory Compounds Over Time
   Scenario: 9.1 — Full lifecycle: onboard → learn → sync → recall
     # Session 1: Onboard and discover
     Given a fresh repository with the src/ast/ subtree
-    When IncrementalSync onboards the repo at commit_index 1
+    When IExtractionPipeline.ExtractAsync onboards the repo at commit_index 1
     Then the graph has Structural and Call-Chain layers populated
     And 0 expertise entries exist in the expertise table
 
@@ -860,15 +877,12 @@ Feature: MCP Tool Interface — External Agent Integration
         "arguments": {}
       }
       """
-    Then the response includes:
-      | field               | assertion      |
-      | nodeCount           | > 0            |
-      | edgeCount           | > 0            |
-      | expertiseCount      | >= 0           |
-      | lastSyncCommitSha   | non-null       |
-      | lastSyncCommitIndex | > 0            |
-    And counts are segmented by MemoryLayer (structural, call_chain, semantic, expertise)
-    # Response maps to MemoryGraphStatistics returned by IMemoryGraphStore.GetMemoryStatisticsAsync()
+    Then the response maps to MemoryGraphStatistics (from IMemoryGraphStore.GetMemoryStatisticsAsync)
+    And the response includes per-layer node and edge counts for:
+      structural, call_chain, semantic, expertise
+    And the response includes total expertise entry count (>= 0)
+    And the response includes last sync commit information
+    # The MemoryGraphStatistics type is returned by GetMemoryStatisticsAsync (architecture.md §5.1)
 
   Scenario: 10.6 — memory_sync triggers incremental graph update
     When an MCP client sends:
@@ -882,16 +896,16 @@ Feature: MCP Tool Interface — External Agent Integration
         }
       }
       """
-    Then the response reports:
-      | field           | type |
-      | filesChanged    | int  |
-      | nodesAdded      | int  |
-      | nodesRetired    | int  |
-      | edgesAdded      | int  |
-      | edgesRetired    | int  |
-      | expertiseDecayed| int  |
-      | duration        | timespan |
-    # Response maps to SyncResult returned by IIncrementalSync.ApplyDiffAsync()
+    Then the response maps to SyncResult (from IIncrementalSync.ApplyDiffAsync) with fields:
+      | field              | type     |
+      | FilesChanged       | int      |
+      | NodesAdded         | int      |
+      | NodesRetired       | int      |
+      | EdgesAdded         | int      |
+      | EdgesRetired       | int      |
+      | ExpertiseDecayed   | int      |
+      | Duration           | timespan |
+    # SyncResult is defined in architecture.md §5.4
     And only files changed between the two commits are re-extracted
 
   Scenario: 10.7 — memory_consolidate merges overlapping expertise
@@ -903,7 +917,8 @@ Feature: MCP Tool Interface — External Agent Integration
       }
       """
     Then the response reports merged count and superseded count
-    And SUPERSEDES edges are created for merged entries
+    And SUPERSEDES and DERIVED_FROM edges are created for merged entries
+    # Per architecture.md §6.5: consolidation produces both edge types
 
   Scenario: 10.8 — memory_query with tokenBudget exceeding ceiling
     When an MCP client sends memory_query with tokenBudget = 50000
@@ -990,7 +1005,8 @@ Feature: Performance and Storage — Non-Functional Requirements
     Given a graph with 50,000 nodes (SQLite backend, single machine)
     When 100 Hybrid retrieval queries are executed
     Then the p95 latency is below 500 milliseconds
-    And no retrieval query makes external network calls (per tech-spec HC5)
+    And no retrieval query contacts a cloud API, remote service, or the internet (per tech-spec HC5)
+    # The single local Ollama call (http://localhost:11434) for query embedding is permitted
 
   Scenario: 12.2 — Incremental sync latency < 2s for single file
     Given a repository with 500K LOC
@@ -1008,11 +1024,16 @@ Feature: Performance and Storage — Non-Functional Requirements
     Then both queries succeed without deadlock or corruption
     And writes are serialized via in-process mutex (not optimistic concurrency)
 
-  Scenario: 12.5 — Retrieval uses pre-computed embeddings only
-    When a retrieval query executes
-    Then no calls to IEmbeddingGenerator occur for code-node embeddings during retrieval
-    # Embeddings are pre-computed at extraction and write-back time (tech-spec HC5)
-    # The query text itself is embedded via one local Ollama call to compare against stored vectors
+  Scenario: 12.5 — Retrieval uses pre-computed embeddings for code nodes
+    When a retrieval query executes with Mode = Hybrid
+    Then code-node embeddings are NOT recomputed — they were pre-computed at extraction time
+    # At query time, IEmbeddingGenerator.GenerateEmbeddingAsync IS called once
+    # to embed the query text (per architecture.md §3.3 step 2, §5.2 Ranker).
+    # This single local Ollama call is the only embedding operation during retrieval.
+    # If IEmbeddingGenerator is unavailable, semantic search is skipped and the
+    # remaining modes (structural, call-chain, expertise) proceed (architecture.md §3.3).
+    And the query text is embedded via one IEmbeddingGenerator.GenerateEmbeddingAsync call
+    And that call goes to the local Ollama service (per tech-spec HC5)
 
   Scenario: 12.6 — Audit trail completeness
     Given a sequence of operations: onboard, sync, record expertise, consolidate
@@ -1076,5 +1097,5 @@ Feature: Graph Schema Integrity — Edge and Metadata Validation
     And the Class node ID is "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
     And the Function node ID is "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEmbeddingText"
     And the repo root node ID is "/"
-    # Per architecture.md §4.4
+    # Per architecture.md §4.2
 ```
