@@ -2,10 +2,10 @@
 
 **Story:** `code-intelligence:AGENT-MEMORY`  
 **Points:** 10  
-**Status:** DRAFT — Iteration 11  
+**Status:** DRAFT — Iteration 12  
 
 > **Companion documents** (written in parallel — referenced by name, not duplicated):
-> - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, and ID format. Currently at iteration 15.
+> - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, and ID format. Currently at iteration 16.
 > - [`implementation-plan.md`](implementation-plan.md) — phased work items, deliverables, evaluation harness.
 > - [`e2e-scenarios.md`](e2e-scenarios.md) — BDD Gherkin acceptance scenarios (13 features, 78 scenarios covering Structural Extraction, Call-Chain, Semantic, Expertise, Temporal Versioning, Hybrid Retrieval, Incremental Sync, Evolution, Cross-Session Learning, MCP Tool Interface, Backward Compatibility, Performance & Storage, and Graph Schema Integrity).
 >
@@ -378,13 +378,13 @@ All previously-pending conflicts between this document and `architecture.md` are
 
 ### 12.3 Alignment with `implementation-plan.md`
 
-The implementation-plan contains 25 naming, data-model, numeric, and project-mutation divergences from canonical vocabulary defined in `architecture.md` (across 8 categories in architecture.md §10.1.1 through §10.1.8). **These are not unresolved conflicts** — each has a defined canonical resolution, and `architecture.md` governs on all points (see this document's header).
+The implementation-plan contains 25 naming, data-model, numeric, and project-mutation divergences from canonical vocabulary defined in `architecture.md` (catalogued in architecture.md §10.2). **These are not unresolved conflicts** — each has a defined canonical resolution, and `architecture.md` governs on all points (see this document's header).
 
 > **Implementer directive:** When the implementation-plan's literal text (class names, interface names, edge names, scoring weights, ID formats, defaults) conflicts with `architecture.md`, **follow `architecture.md`**. The implementation-plan describes *work items and phasing*; the canonical vocabulary and values come from `architecture.md`. The conflicts listed below are documentation debt in the implementation-plan that will be corrected in its next iteration. They do not affect this tech-spec's correctness or completeness.
 
 The 25 items are catalogued in `architecture.md` §10.1 (the single source of truth for cross-document conflicts). This tech-spec mirrors them below in summarized form for implementer awareness. Each item's canonical value is stated inline; the architecture.md section number provides the governing reference.
 
-#### 12.3.1 Naming & Type Conflicts (4 items — architecture.md §10.1.1)
+#### 12.3.1 Naming & Type Conflicts (4 items)
 
 | # | impl-plan says | Canonical value | Governing §|
 |---|------|----------------|-----|
@@ -393,7 +393,7 @@ The 25 items are catalogued in `architecture.md` §10.1 (the single source of tr
 | N-3 | Separate `IExpertiseStore` (Stage 1.2) | Merged into **`IEvolutionEngine`** | arch §2.3, §5.4 |
 | N-4 | `AgentMemoryService` composes `IExpertiseStore` (Stage 5.1) | Compose **`IEvolutionEngine`** | arch §5.4 |
 
-#### 12.3.2 Data Model Conflicts (4 items — architecture.md §10.1.2)
+#### 12.3.2 Data Model Conflicts (4 items)
 
 | # | impl-plan says | Canonical value | Governing §|
 |---|------|----------------|-----|
@@ -402,14 +402,14 @@ The 25 items are catalogued in `architecture.md` §10.1 (the single source of tr
 | D-3 | `PatternType` enum name | **`ExpertiseKind`** enum; class = `ExpertiseEntry`; field = `Kind` | arch §2.3, §5.4 |
 | D-4 | Separate `Annotation.cs` entity | **No separate class** — `Metadata` key/value pairs + `AnnotationKeyRegistry` | arch §4.5 |
 
-#### 12.3.3 ID Format Conflicts (2 items — architecture.md §10.1.3)
+#### 12.3.3 ID Format Conflicts (2 items)
 
 | # | impl-plan says | Canonical value | Governing §|
 |---|------|----------------|-----|
 | I-1 | `{repo}:{language}:{fqn}:{hash_short}` | **`"{filePath}::{qualifiedName}"`** (path-based) | arch §4.4 |
 | I-2 | `IdReconciliationTable` backed by `ID_MAPS_TO` Neo4j edges | ID *format* must follow §4.4; backing is implementation choice | arch §4.4 |
 
-#### 12.3.4 Edge Name Conflicts (4 items — architecture.md §10.1.4)
+#### 12.3.4 Edge Name Conflicts (4 items)
 
 | # | impl-plan says | Canonical value | Governing §|
 |---|------|----------------|-----|
@@ -418,7 +418,7 @@ The 25 items are catalogued in `architecture.md` §10.1 (the single source of tr
 | E-3 | `IMPORTS` edge (Stage 2.2) | **`DEPENDS_ON`** | arch §2.2, §2.3 |
 | E-4 | `DependencyInvalidator` walks `IMPORTS` (Stage 4.2) | Walk **`DEPENDS_ON`** | arch §2.2, §2.3 |
 
-#### 12.3.5 Numeric / Threshold Conflicts (5 items — architecture.md §10.1.5)
+#### 12.3.5 Numeric / Threshold Conflicts (5 items)
 
 | # | impl-plan says | Canonical value | Governing §|
 |---|------|----------------|-----|
@@ -428,7 +428,7 @@ The 25 items are catalogued in `architecture.md` §10.1 (the single source of tr
 | T-4 | Decay half-life = 60 days (Stage 6.3) | **`DecayHalfLifeDays = 1095`** (3 years) | arch §2.4 |
 | T-5 | Decay formula `e^(-λ × days)` (Stage 6.3) | **`2^(−age/1095) × centrality_boost`** (base-2) | arch §3.5 |
 
-#### 12.3.6 Embedding Model (1 item — architecture.md §10.1.6)
+#### 12.3.6 Embedding Model (1 item)
 
 | # | impl-plan says | Canonical value | Governing §|
 |---|------|----------------|-----|
@@ -436,14 +436,14 @@ The 25 items are catalogued in `architecture.md` §10.1 (the single source of tr
 
 > Matches existing `EmbeddingGeneratorOptions.ModelName` (`src/ast/Ast.Embedding/EmbeddingModels.cs:119`) and `EmbeddingConfiguration.ModelName` (`src/ast/Ast.Core/AstConfiguration.cs:96`).
 
-#### 12.3.7 Storage Interface (2 items — architecture.md §10.1.7)
+#### 12.3.7 Storage Interface (2 items)
 
 | # | impl-plan says | Canonical value | Governing §|
 |---|------|----------------|-----|
 | S-1 | `IMemoryStore` with `UpsertAnnotationAsync`, `GetAnnotationsAsync`, etc. | **`IMemoryGraphStore`** with `ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, etc. | arch §5.2 |
 | S-2 | `Neo4jMemoryStore` with annotation CRUD | **`Neo4jMemoryGraphStore`** implementing `IMemoryGraphStore` | arch §3.2, §5.2 |
 
-#### 12.3.8 Project Mutation Policy (3 items — architecture.md §10.1.8)
+#### 12.3.8 Project Mutation Policy (3 items)
 
 | # | impl-plan says | Canonical value | Governing §|
 |---|------|----------------|-----|
@@ -453,7 +453,7 @@ The 25 items are catalogued in `architecture.md` §10.1 (the single source of tr
 
 #### 12.3.9 Net Assessment
 
-All 25 items have **stated canonical resolutions** in architecture.md §10.1. The implementation-plan describes valid *work items and phasing* that remain useful for project management — only the literal names, values, and data-model shapes need updating. Implementers who follow the canonical values from architecture.md will produce correct code. These divergences do not represent ambiguity in the tech-spec or architecture; they represent documentation debt in the implementation-plan.
+All 25 items have **stated canonical resolutions** in architecture.md §10.2. The implementation-plan describes valid *work items and phasing* that remain useful for project management — only the literal names, values, and data-model shapes need updating. Implementers who follow the canonical values from architecture.md will produce correct code. These divergences do not represent ambiguity in the tech-spec or architecture; they represent documentation debt in the implementation-plan.
 
 ### 12.4 Annotation Schema: Curated Registry (D4)
 
@@ -495,10 +495,10 @@ The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 78
 
 | # | Item | Status |
 |---|------|--------|
-| X-1 | Architecture.md §10.3 TS-1 confirms tech-spec and architecture list the same implementation-plan conflicts | ✅ **Resolved.** Architecture.md §10.3 TS-1 now says "✅ Consistent — same conflicts listed here in §10.1." This tech-spec §12.3 mirrors all 25 items across 8 categories (§12.3.1 through §12.3.8), matching architecture.md §10.1.1 through §10.1.8. Counts are consistent. |
+| X-1 | Architecture.md §10.1 confirms tech-spec is fully aligned; §10.2 lists the same implementation-plan conflicts | ✅ **Resolved.** Architecture.md §10.1 confirms "All conflicts resolved as of tech-spec.md iteration 10." Architecture.md §10.2 lists the same implementation-plan divergences catalogued here in §12.3. Counts are consistent. |
 | X-2 | All implementation-plan conflicts (§12.3) have canonical resolutions | ✅ **Resolved.** Each item has a stated canonical value from architecture.md. §12.3 is reframed as documentation debt in the sibling document, not as unresolved conflicts in this tech-spec. Implementers follow architecture.md canonical values. |
-| X-3 | Architecture.md §10.3 TS-4 confirms `ExtractionOptions.EmbeddingModel` default fixed to `"nomic-embed-text"` in iteration 12 | ✅ **Resolved.** Tech-spec §12.2 and source-code model note updated to reflect this alignment. All three sources (codebase, architecture.md, tech-spec) now agree on `"nomic-embed-text"`. |
-| X-4 | Architecture.md §10.3 TS-5 confirms project mutation policy alignment | ✅ **Resolved.** Two additive changes to existing projects: (1) `HyperedgeType.MemoryRelation` in `Ast.Core`, (2) `config.AddBranch("memory", ...)` in `Ast.Cli/Program.cs`. All new interfaces/implementations in `Ast.Memory`. Matches HC8. |
+| X-3 | Architecture.md §10.1 confirms `ExtractionOptions.EmbeddingModel` default fixed to `"nomic-embed-text"` | ✅ **Resolved.** Tech-spec §12.2 and source-code model note updated to reflect this alignment. All three sources (codebase, architecture.md, tech-spec) now agree on `"nomic-embed-text"`. |
+| X-4 | Architecture.md §10.1 confirms project mutation policy alignment | ✅ **Resolved.** Two additive changes to existing projects: (1) `HyperedgeType.MemoryRelation` in `Ast.Core`, (2) `config.AddBranch("memory", ...)` in `Ast.Cli/Program.cs`. All new interfaces/implementations in `Ast.Memory`. Matches HC8. |
 
 ---
 
@@ -520,4 +520,4 @@ The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 78
 
 ---
 
-*End of tech spec — Iteration 11. All open questions from Iteration 1 are resolved via operator decisions D1–D6. Iteration 11 fixes: (1) updated architecture.md iteration reference from 14 to 15 (current); (2) corrected e2e-scenarios feature/scenario count from "7 features, 30+ scenarios" to "13 features, 78 scenarios" — the e2e document grew to include MCP Tool Interface (Feature 10), Backward Compatibility (Feature 11), Performance & Storage (Feature 12), and Graph Schema Integrity (Feature 13); (3) added `External` node type to §7.1 Node Types table — an out-of-repo boundary stub node defined in architecture.md §4.2; (4) expanded §12.6 e2e alignment section with Features 10–13 coverage notes, including E2E-7 (boundary node ID format) previously omitted; (5) updated test count from "970+" to "~997" (verified via `[TestMethod]` attribute count across 13 test projects).*
+*End of tech spec — Iteration 12. All open questions from Iteration 1 are resolved via operator decisions D1–D6. Iteration 12 fixes: (1) updated architecture.md iteration reference from 15 to 16 (current); (2) updated tech-spec iteration label from 11 to 12; (3) verified e2e-scenarios feature/scenario counts remain accurate (13 features, 78 scenarios); (4) confirmed architecture.md §10.1 alignment table — all entries still current with no new divergences; (5) verified source-code references (embedding model defaults, HyperedgeType enum count, existing project list) remain accurate against latest codebase.*
