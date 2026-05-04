@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 39
+> **Status:** Iteration 40
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -15,7 +15,7 @@
 > | Document | Owns | Current state |
 > |---|---|---|
 > | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | At iteration 23 (not updated since). Seventeen alignment items (A1–A17) adjudicated in §8.1. Ten stale text items inventoried in §8.4 (TS-S1 through TS-S10); architecture governs on all. |
-> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Uses canonical vocabulary; defers to this doc on conflicts. Two active divergences (R-1, R-2 in §8.2): R-2 is high-impact (`UpsertEdgeAsync` missing from method list and implementation steps). |
+> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Uses canonical vocabulary; defers to this doc on conflicts. Three active divergences (R-1, R-2, R-3 in §8.2): R-2 (`UpsertEdgeAsync` missing from method list and implementation steps) and R-3 (decay formula uses centrality_boost as output multiplier instead of half-life extension) are high-impact. |
 > | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | All 10 previously-catalogued divergences (E2E-1 through E2E-10) corrected in current iteration. No remaining divergences. |
 
 ---
@@ -100,7 +100,7 @@ dependencies, never mutated beyond the two additive changes above.
 | **Ast.GraphDb** | `IGraphStore : IAsyncDisposable, IDisposable` — `IGraphStore.cs`; `Neo4jGraphStore` — `Neo4jGraphStore.cs`; `NodeFilter`, `GraphPath`, `NodeWithDepth` — `GraphModels.cs` | `Ast.Memory` defines `IMemoryGraphStore` extending `IGraphStore` in its own project. Zero files in `Ast.GraphDb/` modified. |
 | **Ast.Embedding** | `IEmbeddingGenerator : IDisposable` — `IEmbeddingGenerator.cs`; `CodeEmbeddingService` — `CodeEmbeddingService.cs`; `EmbeddingGeneratorOptions.ModelName` defaults to `"nomic-embed-text"` — `EmbeddingModels.cs` | Reuse directly. `Ast.Memory` calls `GenerateBatchEmbeddingsAsync()`. |
 | **Ast.Query** | `ICodeQuery` — `ICodeQuery.cs`; `HybridQueryService` — `HybridQueryService.cs`; `ScoredNode` — `QueryModels.cs` | Reference only. `Ast.Memory` defines `IMemoryRetrievalEngine` that internally composes `ICodeQuery`. |
-| **Ast.VectorDb** | `IVectorStore : IDisposable` — `IVectorStore.cs` (9 members: `Name`, `CreateCollectionAsync`, `CollectionExistsAsync`, `DeleteCollectionAsync`, `UpsertAsync`, `SearchAsync`, `GetAsync`, `DeleteAsync`, `CountAsync`, `IsAvailableAsync`); `QdrantVectorStore` — `QdrantVectorStore.cs` | Reference only. Reuse `QdrantVectorStore` for team mode; `Ast.Memory` adds `SqliteVssVectorStore` (in `Storage/SqliteVssVectorStore.cs`) implementing `IVectorStore` for local mode via sqlite-vss extension. Zero files in `Ast.VectorDb/` modified. |
+| **Ast.VectorDb** | `IVectorStore : IDisposable` — `IVectorStore.cs` (10 members: `Name`, `CreateCollectionAsync`, `CollectionExistsAsync`, `DeleteCollectionAsync`, `UpsertAsync`, `SearchAsync`, `GetAsync`, `DeleteAsync`, `CountAsync`, `IsAvailableAsync`); `QdrantVectorStore` — `QdrantVectorStore.cs` | Reference only. Reuse `QdrantVectorStore` for team mode; `Ast.Memory` adds `SqliteVssVectorStore` (in `Storage/SqliteVssVectorStore.cs`) implementing `IVectorStore` for local mode via sqlite-vss extension. Zero files in `Ast.VectorDb/` modified. |
 | **Ast.Lsp** | LSP integration — `src/ast/Ast.Lsp/` | Optional enrichment — pipeline never blocks on LSP. No modifications. |
 | **CodeIntelligence** | 27 analyzers in `Analyzers/`, 4 detectors in `Detectors/`, `RelationshipGraphBuilder` in `Graph/` | Consume as call-chain / structural edge source. No modifications. |
 | **Ast.Cli** | CLI host — `Program.cs` uses Spectre.Console.Cli with manual `AddCommand<T>()` registration (7 commands: parse, enrich, embed, index, query, pipeline, stats — lines 17–44). | Additive: `config.AddBranch("memory", ...)` + project ref to `Ast.Memory`. |
@@ -326,7 +326,7 @@ Vector storage uses the existing `IVectorStore` interface from `Ast.VectorDb`.
 | `SqliteVssVectorStore` | `Ast.Memory` (`Storage/SqliteVssVectorStore.cs`) | sqlite-vss extension (HNSW index on the same SQLite database used by `SqliteGraphStore`) | Local mode — zero infrastructure |
 | `QdrantVectorStore` | `Ast.VectorDb` (existing, unmodified) | Qdrant vector database | Team mode — shared vector index |
 
-`SqliteVssVectorStore` implements all 9 members of `IVectorStore` by
+`SqliteVssVectorStore` implements all 10 members of `IVectorStore` by
 translating collection operations into sqlite-vss virtual table commands.
 Embeddings are stored in a `vss_embeddings` virtual table co-located in the
 same SQLite database file as the graph tables (§4.4). This keeps local mode
@@ -1528,12 +1528,13 @@ iterations, have been corrected in the implementation-plan:
 - **Project placement:** MCP tools in `Ast.Memory/Mcp/`, CLI in
   `Ast.Memory/Cli/`, no files created in `Ast.GraphDb/`.
 
-**Active divergences (2 items — architecture governs):**
+**Active divergences (3 items — architecture governs):**
 
 | # | impl-plan says | Canonical (this doc) | Impact | Governing § |
 |---|---|---|---|---|
 | R-1 | `MemoryEdge.Version` property listed as `VersionRange Version` without explicit non-nullable annotation | `VersionRange Version` is non-nullable (all edges carry versioning, per §4.3). Impl-plan is correct but could be more explicit. | Low — no behavioral difference | §4.1, §4.3 |
-| R-2 | `IMemoryGraphStore` test scenario (Stage 1.2) lists 12 methods and omits `UpsertEdgeAsync` from the method enumeration. Edge creation in Stage 1.3 (`SqliteGraphStore`) does not reference `UpsertEdgeAsync`. | **Canonical interface has 13 methods** (§5.1): the 12 listed in impl-plan **plus** `UpsertEdgeAsync(Hyperedge, VersionRange, CancellationToken)`. All edge creation/update flows (StructureBuilder, CallChainAnalyzer, SemanticIndexer, EvolutionEngine) **must** use `UpsertEdgeAsync` — not inherited `IGraphStore` methods — to set `since_index`/`until_index` and denormalized `semantic_rel`/`memory_layer` columns. The implementation-plan should update Stage 1.2 test expectation to 13 methods and add `UpsertEdgeAsync` to Stage 1.3 implementation steps. | High — affects all edge-writing code paths | §5.1 |
+| R-2 | `IMemoryGraphStore` test scenario (Stage 1.2) lists 12 methods and omits `UpsertEdgeAsync` from the method enumeration. Edge creation in Stage 1.3 (`SqliteGraphStore`) does not reference `UpsertEdgeAsync`. Stage 2.1 (StructureBuilder, line 126) says "inherited `IGraphStore` edge-creation methods" instead of `UpsertEdgeAsync`. | **Canonical interface has 13 methods** (§5.1): the 12 listed in impl-plan **plus** `UpsertEdgeAsync(Hyperedge, VersionRange, CancellationToken)`. All edge creation/update flows (StructureBuilder, CallChainAnalyzer, SemanticIndexer, EvolutionEngine) **must** use `UpsertEdgeAsync` — not inherited `IGraphStore` methods — to set `since_index`/`until_index` and denormalized `semantic_rel`/`memory_layer` columns. The implementation-plan should update Stage 1.2 test expectation to 13 methods and add `UpsertEdgeAsync` to Stage 1.3 implementation steps. | High — affects all edge-writing code paths | §5.1 |
+| R-3 | Stage 5.3 (DecayService, line 318) uses formula `decayed_confidence = current_confidence × 2^(−age_days / DecayHalfLifeDays) × centrality_boost` — centrality_boost as an output multiplier, which would cause confidence to **increase** (centrality_boost ranges 1.0–1.5). | **Canonical formula** (§3.5): `final = event_adjusted_confidence × 2^(−age_days / (DecayHalfLifeDays × centrality_boost))` — centrality_boost extends the **half-life** (in the exponent denominator), not the output. This ensures confidence **never increases** through decay. The impl-plan's test scenario description ("slowing decay by 50%") correctly describes the architectural intent, but the formula contradicts it. | High — incorrect formula would violate the invariant that confidence never increases through decay | §3.5, §2.4 |
 
 These are active divergences, not mere presentational gaps. The
 implementation-plan should be updated in its next iteration to match this
@@ -1596,19 +1597,29 @@ traceability:
 
 #### Active divergences in `implementation-plan.md`
 
-Two active divergences documented in §8.2 (R-1, R-2):
+Three active divergences documented in §8.2 (R-1, R-2, R-3):
 
 - **R-1:** `MemoryEdge.Version` listed without explicit non-nullable
   annotation. Correct behavior (all edges carry versioning per §4.3) but
   could be more explicit. Low impact.
 - **R-2:** `IMemoryGraphStore` test scenario lists 12 methods; `UpsertEdgeAsync`
   is missing from both the method enumeration (Stage 1.2) and the
-  `SqliteGraphStore` implementation steps (Stage 1.3). Canonical interface
-  has 13 methods — all edge-writing code paths must call `UpsertEdgeAsync`
-  to set `since_index`/`until_index` and denormalized columns. **High impact
-  — impl-plan should update in next iteration.**
+  `SqliteGraphStore` implementation steps (Stage 1.3). Stage 2.1
+  (StructureBuilder, line 126) says "inherited `IGraphStore` edge-creation
+  methods" instead of `UpsertEdgeAsync`. Canonical interface has 13
+  methods — all edge-writing code paths must call `UpsertEdgeAsync` to set
+  `since_index`/`until_index` and denormalized columns. **High impact —
+  impl-plan should update in next iteration.**
+- **R-3:** Stage 5.3 (DecayService, line 318) uses decay formula with
+  `centrality_boost` as an output multiplier (`× centrality_boost`), which
+  would cause confidence to increase. Canonical formula has
+  `centrality_boost` extending the half-life (inside the exponent
+  denominator), ensuring confidence never increases through decay. The
+  test descriptions correctly describe the intended behavior ("slowing
+  decay by 50%") but the formula contradicts the canonical one. **High
+  impact — impl-plan should correct the formula in next iteration.**
 
-Architecture governs on both.
+Architecture governs on all three.
 
 #### Stale text remaining in `e2e-scenarios.md`
 
