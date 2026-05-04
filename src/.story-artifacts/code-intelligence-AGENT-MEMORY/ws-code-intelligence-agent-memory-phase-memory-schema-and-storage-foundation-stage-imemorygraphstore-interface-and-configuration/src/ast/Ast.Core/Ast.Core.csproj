@@ -7,6 +7,11 @@
     <LangVersion>12</LangVersion>
     <RootNamespace>Ast.Core</RootNamespace>
     <AssemblyName>Ast.Core</AssemblyName>
+    <IsPackable>true</IsPackable>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
 
 </Project>
