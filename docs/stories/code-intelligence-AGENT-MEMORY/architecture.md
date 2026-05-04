@@ -14,8 +14,8 @@
 >
 > | Document | Owns | Alignment status |
 > |---|---|---|
-> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Last updated iteration 23. Contains stale wording in 10 locations (§8.1). Architecture governs on all naming/data-model conflicts. |
-> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Defers to this doc on conflicts. **Active divergence:** Stage 1.2 (line 49, 55) lists 12 `IMemoryGraphStore` methods, omitting `UpsertEdgeAsync`; the canonical interface has 13 methods (§5.1). This must be corrected in the impl-plan's next iteration. See §8.2 for details. |
+> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Last updated iteration 23. Contains 9 stale-wording locations enumerated in §8.1. Architecture governs on all naming/data-model conflicts. |
+> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Defers to this doc on conflicts. **Active divergences (3):** (1) Stage 1.2 lists 12 `IMemoryGraphStore` methods, omitting `UpsertEdgeAsync` (canonical: 13 methods, §5.1). (2) Stage 2.1 persists edges via "inherited `IGraphStore` edge-creation methods" instead of `UpsertEdgeAsync`. (3) Stage 5.3 decay formula places `centrality_boost` as output multiplier instead of exponent-denominator modifier (§3.5). See §8.2. |
 > | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Fully aligned. Uses canonical vocabulary throughout. |
 
 ---

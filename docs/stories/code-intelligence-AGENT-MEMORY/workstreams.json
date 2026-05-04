@@ -205,50 +205,5 @@
     "workstreamId": "ws-code-intelligence-agent-memory-phase-mcp-tools-cli-and-integration-stage-end-to-end-integration-tests",
     "branch": "ws/code-intelligence-AGENT-MEMORY/phase-mcp-tools-cli-and-integration-stage-end-to-end-integration-tests",
     "status": "planning"
-  },
-  {
-    "title": "Define graph memory schema and interfaces",
-    "description": "Design the node types (repo, module, file, class, function, variable), edge types (contains, calls, imports, inherits, expertise), and property bags for the code knowledge graph. Publish TypeScript interfaces and a JSON-Schema document that all downstream workstreams code against.",
-    "anchor": null,
-    "contentHash": null,
-    "workstreamId": "ws-code-intelligence-agent-memory-define-graph-memory-schema-and-interfaces",
-    "branch": "ws/code-intelligence-AGENT-MEMORY/define-graph-memory-schema-and-interfaces",
-    "status": "review"
-  },
-  {
-    "title": "Build code extraction pipeline",
-    "description": "Implement extractors that walk a repository top-down and produce graph nodes and edges conforming to the schema. Use tree-sitter for AST parsing to extract call chains, import graphs, and class hierarchies across TypeScript and Python. The pipeline should be incremental\u2014able to re-extract only changed files on subsequent runs.",
-    "anchor": null,
-    "contentHash": null,
-    "workstreamId": "ws-code-intelligence-agent-memory-build-code-extraction-pipeline",
-    "branch": "ws/code-intelligence-AGENT-MEMORY/build-code-extraction-pipeline",
-    "status": "planning"
-  },
-  {
-    "title": "Implement graph storage backend",
-    "description": "Build a persistence layer that stores the code knowledge graph with efficient traversal and update operations. Use an adjacency-list representation backed by SQLite for local/single-agent use, with an abstract interface that can be swapped for a networked graph DB later. Support CRUD on nodes/edges, subgraph queries by depth, and bulk upsert for extraction pipeline output.",
-    "anchor": null,
-    "contentHash": null,
-    "workstreamId": "ws-code-intelligence-agent-memory-implement-graph-storage-backend",
-    "branch": "ws/code-intelligence-AGENT-MEMORY/implement-graph-storage-backend",
-    "status": "planning"
-  },
-  {
-    "title": "Build context retrieval engine",
-    "description": "Implement retrieval strategies that query the knowledge graph to construct relevant context windows for an agent given a focal point (e.g., a file, function, or user question). Support three retrieval modes: structural walk (top-down from repo root), call-chain traversal (follow callers/callees), and similarity-based (embed node summaries and do nearest-neighbor). Output a ranked, token-budget-aware context payload.",
-    "anchor": null,
-    "contentHash": null,
-    "workstreamId": "ws-code-intelligence-agent-memory-build-context-retrieval-engine",
-    "branch": "ws/code-intelligence-AGENT-MEMORY/build-context-retrieval-engine",
-    "status": "planning"
-  },
-  {
-    "title": "Implement memory evolution and learning loop",
-    "description": "Build the feedback mechanism where agent interactions enrich the graph over time. When an agent successfully uses a code path, boost expertise edges. When an agent discovers undocumented relationships, insert new edges. Support temporal decay so stale knowledge fades. This is the \u0027getting smarter\u0027 layer\u2014the graph improves with use.",
-    "anchor": null,
-    "contentHash": null,
-    "workstreamId": "ws-code-intelligence-agent-memory-implement-memory-evolution-and-learning-loop",
-    "branch": "ws/code-intelligence-AGENT-MEMORY/implement-memory-evolution-and-learning-loop",
-    "status": "planning"
   }
 ]
