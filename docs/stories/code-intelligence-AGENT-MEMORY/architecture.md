@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 24
+> **Status:** Iteration 25
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -14,8 +14,8 @@
 >
 > | Document | Owns | Current state |
 > |---|---|---|
-> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Iteration 15+. Aligned on structural/naming points. Three new alignment items (A9–A11) added in architecture iteration 24 for ExpertiseEntry fields, entity classification, and External node Metadata. All resolved. |
-> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Iteration 15+. Contains 28 naming/data-model divergences from canonical vocabulary — all catalogued in §8.2 below with canonical resolutions. `architecture.md` governs on all conflicts. |
+> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Iteration 15+. Aligned on structural/naming points. Three alignment items (A9–A11) for ExpertiseEntry fields, entity classification, and External node Metadata — all resolved. Iteration 25 adds A12 (temporal-model External-node carve-out) — resolved. |
+> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Iteration 15+. Contains 28 naming/data-model divergences from canonical vocabulary — all catalogued in §8.2 below with canonical resolutions. `architecture.md` governs on all conflicts. Iteration 25 adds S-6 (missing `RetireEdgeAsync`), S-7 (missing `ArchiveExpertiseAsync`), S-8 (missing expertise `archived` column). |
 > | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Iteration 15+. Contains 10 divergences catalogued in §8.3 below — all semantically correct or out-of-scope. |
 
 ---
@@ -359,7 +359,7 @@ summarization — the mechanisms by which the graph improves over sessions.
 |---|---|---|
 | **Write-back** | `EvolutionEngine.RecordExpertiseAsync()` | Creates `ExpertiseEntry` nodes (§4.2) linked to code nodes via `APPLIES_TO` edges. Each entry has a `Title` (headline), `Body` (detailed description), `Confidence` value (0.0–1.0), `ExpertiseKind` (`Pattern`, `Pitfall`, `Preference`, `Insight`), `Scope` (`"exact"` or `"subtree"`), optional `Evidence` citations, and `SourceAgent` provenance. |
 | **Consolidation** | `ConsolidationService` | LLM-powered merge of semantically similar expertise entries (cosine ≥ `SimilarityThreshold`). Creates `SUPERSEDES` edge from merged entry to originals. Acquires a write-level lock to prevent concurrent merges. |
-| **Decay** | `DecayService` | Two decay mechanisms applied **multiplicatively** (both reduce confidence; their effects compound): (a) **Event-driven** — triggered by `IncrementalSync` when a target code node's `ContentHash` changes. `StaleDecayFactor` (0.5) is applied on substantive code changes; `MinorDecayFactor` (0.9) on whitespace/comment-only changes. Applied immediately at sync time — each `ContentHash` change triggers exactly one event-driven decay. (b) **Time-based** — applied periodically (or on demand via `DecayStaleExpertiseAsync`): `decayed_confidence = current_confidence × 2^(−age_days / DecayHalfLifeDays) × centrality_boost`, where `centrality_boost = 1.0 + CentralityBoostFactor × normalized_pagerank` (range 1.0–1.5). Uses base-2 exponential so that `DecayHalfLifeDays` (1,095 = 3 years) is the exact half-life. `current_confidence` already reflects any prior event-driven decays. Entries below `ArchiveConfidenceFloor` (0.1) are soft-deleted (retained in storage with `archived = true`, excluded from retrieval). |
+| **Decay** | `DecayService` | Two decay mechanisms applied **multiplicatively** (both reduce confidence; their effects compound): (a) **Event-driven** — triggered by `IncrementalSync` when a target code node's `ContentHash` changes. `StaleDecayFactor` (0.5) is applied on substantive code changes; `MinorDecayFactor` (0.9) on whitespace/comment-only changes. Applied immediately at sync time — each `ContentHash` change triggers exactly one event-driven decay. (b) **Time-based** — applied periodically (or on demand via `DecayStaleExpertiseAsync`): `decayed_confidence = current_confidence × 2^(−age_days / DecayHalfLifeDays) × centrality_boost`, where `centrality_boost = 1.0 + CentralityBoostFactor × normalized_pagerank` (range 1.0–1.5). Uses base-2 exponential so that `DecayHalfLifeDays` (1,095 = 3 years) is the exact half-life. `current_confidence` already reflects any prior event-driven decays. Entries below `ArchiveConfidenceFloor` (0.1) are soft-deleted via `IMemoryGraphStore.ArchiveExpertiseAsync` (sets `archived = 1` in storage, excluded from `GetExpertiseForNodeAsync` results). Archived entries can be restored via `IEvolutionEngine.RestoreArchivedExpertiseAsync` or inspected via `IMemoryGraphStore.GetArchivedExpertiseAsync`. |
 | **Community Detection** | `EvolutionEngine.DetectCommunitiesAsync()` | Louvain algorithm over `CALLS`/`SIMILAR_TO` edges → creates `BELONGS_TO_CLUSTER` edges and `Topic` summary nodes in the Semantic layer (GraphRAG pattern). |
 
 ### 3.6 Incremental Sync
@@ -378,8 +378,11 @@ On trigger:
    `IExtractionPipeline.ExtractFilesAsync(repoRoot, changedPaths, ...)`,
    diff old vs. new nodes, upsert changes, set `UntilIndex` on removed
    nodes/edges.
-3. For deleted files: set `UntilIndex` on all nodes/edges rooted in that file.
-4. Propagate invalidation: mark downstream `CALLS` edges for re-validation.
+3. For deleted files: set `UntilIndex` on all nodes/edges rooted in that file
+   (via `RetireNodeAsync`, which cascades to edges; plus individual
+   `RetireEdgeAsync` for orphaned edges not caught by cascade).
+4. Propagate invalidation: mark downstream `CALLS` edges for re-validation
+   via `UpdateEdgeMetadataAsync(edgeId, { "Stale": true })`.
 5. Re-run `SemanticIndexer` on changed nodes only (incremental embedding).
 
 ```csharp
@@ -504,7 +507,10 @@ External nodes have `Id` format `"ext:{package}:{qualifiedName}"`, no
 `LineStart`/`LineEnd`, empty `FilePath`, and `Language` set to the package
 ecosystem (e.g., `"C#"` for NuGet, `"JavaScript"` for npm). They participate
 in `CALLS`, `REFERENCES`, and `DEPENDS_ON` edges but are never extracted,
-embedded, or versioned.
+embedded, or versioned. Edges *to* External nodes carry `VersionRange` from
+the in-repo endpoint's perspective (the edge's `since_index` tracks when the
+reference was first seen, and `until_index` tracks when it was removed by
+`RetireEdgeAsync` during incremental sync).
 
 #### Expertise Nodes (Expertise layer)
 
@@ -539,6 +545,11 @@ public class ExpertiseEntry
 
     public double Confidence { get; set; } = 1.0;
     // [0.0, 1.0] — decays over time and on code changes
+
+    public bool Archived { get; set; } = false;
+    // true = soft-deleted (Confidence dropped below ArchiveConfidenceFloor)
+    // Excluded from GetExpertiseForNodeAsync; visible via GetArchivedExpertiseAsync.
+    // Can be restored via IEvolutionEngine.RestoreArchivedExpertiseAsync.
 
     public required string SourceAgent { get; init; }
     // Agent session identifier for provenance
@@ -579,7 +590,11 @@ public enum ExpertiseKind
 
 ### 4.3 Temporal Model (Dual-Axis)
 
-Every node and edge carries a `VersionRange`:
+Every node and edge carries a `VersionRange` — **except External boundary
+nodes** (§4.2), which represent out-of-repo dependencies and are timeless
+(no `SinceCommit`, `SinceIndex`, `UntilCommit`, or `UntilIndex`). External
+nodes are never retired by incremental sync; they are garbage-collected only
+during full re-extraction when no edge references them.
 
 ```csharp
 public record VersionRange(
@@ -591,10 +606,12 @@ public record VersionRange(
 ```
 
 **Axis 1 — Commit index (primary).** All point-in-time queries use integer
-comparison:
+comparison. External nodes (which lack `VersionRange`) are always included —
+they are boundary stubs, not versioned entities:
 
 ```sql
-WHERE since_index <= @target AND (until_index IS NULL OR until_index > @target)
+WHERE (since_index IS NULL /* External nodes */
+       OR (since_index <= @target AND (until_index IS NULL OR until_index > @target)))
 ```
 
 **Axis 2 — Wall-clock timestamp (secondary).** Available via join to the
@@ -620,8 +637,8 @@ CREATE TABLE nodes (
     line_start  INT,
     line_end    INT,
     metadata    TEXT NOT NULL,           -- JSON
-    since_sha   TEXT NOT NULL,
-    since_index INT NOT NULL,
+    since_sha   TEXT,                    -- NULL for External boundary nodes
+    since_index INT,                     -- NULL for External boundary nodes
     until_sha   TEXT,
     until_index INT,
     content_hash TEXT
@@ -635,8 +652,8 @@ CREATE TABLE edges (
     metadata        TEXT NOT NULL,        -- JSON
     semantic_rel    TEXT NOT NULL,        -- denormalized from metadata
     memory_layer    TEXT NOT NULL,        -- denormalized from metadata
-    since_index     INT NOT NULL,
-    until_index     INT
+    since_index     INT,                  -- NULL for edges to/from External nodes
+    until_index     INT                   -- set by RetireEdgeAsync
 );
 
 CREATE TABLE expertise (
@@ -647,6 +664,7 @@ CREATE TABLE expertise (
     target_node_id  TEXT NOT NULL REFERENCES nodes(id),
     scope           TEXT NOT NULL DEFAULT 'exact',  -- 'exact' or 'subtree'
     confidence      REAL NOT NULL DEFAULT 1.0,
+    archived        INT NOT NULL DEFAULT 0,  -- 1 = soft-deleted (below ArchiveConfidenceFloor)
     source_agent    TEXT NOT NULL,
     evidence        TEXT,                 -- JSON array of Citation objects
     embedding       BLOB,                -- float[] serialized
@@ -677,8 +695,10 @@ CREATE INDEX idx_nodes_file ON nodes(file_path);
 CREATE INDEX idx_nodes_since ON nodes(since_index);
 CREATE INDEX idx_edges_semantic ON edges(semantic_rel);
 CREATE INDEX idx_edges_layer ON edges(memory_layer);
+CREATE INDEX idx_edges_since ON edges(since_index);
 CREATE INDEX idx_expertise_target ON expertise(target_node_id);
 CREATE INDEX idx_expertise_kind ON expertise(kind);
+CREATE INDEX idx_expertise_archived ON expertise(archived);
 CREATE INDEX idx_audit_session ON audit_log(session_id);
 ```
 
@@ -777,7 +797,24 @@ public interface IMemoryGraphStore : IGraphStore
         int untilCommitIndex,
         CancellationToken ct = default);
 
-    /// Retrieve expertise entries for a target node.
+    /// Soft-delete a single edge: set UntilIndex.
+    /// Used by IncrementalSync when a call-chain or dependency relationship
+    /// is removed but both endpoint nodes survive.
+    Task RetireEdgeAsync(
+        string edgeId,
+        int untilCommitIndex,
+        CancellationToken ct = default);
+
+    /// Update Metadata on an existing edge (e.g., set Stale flag,
+    /// update Confidence after re-validation).
+    Task UpdateEdgeMetadataAsync(
+        string edgeId,
+        IDictionary<string, object?> metadataUpdates,
+        CancellationToken ct = default);
+
+    /// Retrieve non-archived expertise entries for a target node.
+    /// Excludes entries where archived = true. Use GetArchivedExpertiseAsync
+    /// to inspect soft-deleted entries.
     Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(
         string targetNodeId,
         double minConfidence = 0.0,
@@ -786,6 +823,18 @@ public interface IMemoryGraphStore : IGraphStore
     /// Store or update an expertise entry.
     Task UpsertExpertiseAsync(
         ExpertiseEntry entry,
+        CancellationToken ct = default);
+
+    /// Soft-delete an expertise entry (set archived = true).
+    /// Called by DecayService when Confidence drops below ArchiveConfidenceFloor.
+    Task ArchiveExpertiseAsync(
+        string expertiseId,
+        CancellationToken ct = default);
+
+    /// Retrieve archived (soft-deleted) expertise entries for review/restore.
+    Task<IReadOnlyList<ExpertiseEntry>> GetArchivedExpertiseAsync(
+        string? targetNodeId = null,
+        int limit = 50,
         CancellationToken ct = default);
 
     /// Get graph statistics segmented by layer.
@@ -891,7 +940,16 @@ public interface IEvolutionEngine
         CancellationToken ct = default);
 
     /// Apply decay to stale expertise entries.
+    /// Entries whose Confidence drops below ArchiveConfidenceFloor (0.1) are
+    /// archived via IMemoryGraphStore.ArchiveExpertiseAsync.
     Task<DecayResult> DecayStaleExpertiseAsync(
+        CancellationToken ct = default);
+
+    /// Restore an archived expertise entry (un-archive), resetting its
+    /// Confidence to a caller-supplied value (default 0.5).
+    Task<ExpertiseEntry> RestoreArchivedExpertiseAsync(
+        string expertiseId,
+        double restoredConfidence = 0.5,
         CancellationToken ct = default);
 
     /// Run community detection and generate Topic summaries.
@@ -1234,10 +1292,11 @@ both long-resolved items and newly identified divergences.
 | A9 | ExpertiseEntry field names | **Resolved in iteration 24.** Tech-spec §7.1 uses `title`, `body`, `source_session`. This document (§4.2) now uses `Title`, `Body`, `SourceAgent` (with `Scope` and `Evidence`). The field name difference (`source_session` vs `SourceAgent`) is documentation shorthand in tech-spec — both refer to the agent session identifier. `SourceAgent` is canonical. |
 | A10 | ExpertiseEntry entity vs node type | **Resolved.** Tech-spec §7.1 lists `ExpertiseEntry` under "Node Types" for schema reference convenience. Canonically, `ExpertiseEntry` is **not** a `HypergraphNode` — it is a first-class entity stored in its own `expertise` table (§4.2, §4.4) and linked to code nodes via `APPLIES_TO` edges. Tech-spec's presentation is a summary shorthand, not a contradiction. |
 | A11 | External node Metadata keys | **Resolved in iteration 24.** Tech-spec §7.1 lists External nodes with `package`, `fqn` properties. This document (§4.2) now explicitly specifies `Metadata["Package"]` and `Metadata["QualifiedName"]` keys for External nodes, resolving the implicit-vs-explicit gap. |
+| A12 | Temporal-model External-node carve-out | **Resolved in iteration 25.** Tech-spec S4 says "every node and edge carries a `VersionRange`" but External nodes are timeless (no VCS presence). This document (§4.3) now explicitly states External boundary nodes are exempt from `VersionRange`; temporal queries include them via `WHERE since_index IS NULL` (External) or range-match (versioned). The SQLite schema (§4.4) makes `since_sha` and `since_index` nullable. |
 
 ### 8.2 Alignment with `implementation-plan.md` (Iteration 24)
 
-The implementation-plan contains **28 naming, data-model, and numeric
+The implementation-plan contains **31 naming, data-model, and numeric
 divergences** from canonical vocabulary defined in this document. **These are
 documentation debt in the implementation-plan, not unresolved conflicts.** This
 document governs on all points (per the implementation-plan's own header, which
@@ -1303,6 +1362,9 @@ conflicts S-3, S-4) are catalogued below.
 | S-3 | `IMemoryGraphStore` with `ApplyDiffAsync(GraphDiff, ...)`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, `FindByNameAsync`, `RebuildVectorIndexAsync`, `ResolveCommitIndexAsync`, `RegisterCommitAsync` (Stage 1.2) | Canonical methods per §5.1: `GetNodesByLayerAsync`, `GetEdgesBySemanticRelationAsync`, `UpsertNodeAsync`, `RetireNodeAsync`, `GetExpertiseForNodeAsync`, `UpsertExpertiseAsync`, `GetMemoryStatisticsAsync`, `LogAuditAsync`. Traversal uses inherited `IGraphStore` methods. Vector search goes through `IVectorStore` (separate DI dependency), not through graph store. | §5.1 |
 | S-4 | `ApplyDiffAsync` on `IMemoryGraphStore` | `ApplyDiffAsync` belongs to **`IIncrementalSync`** (different interface); it takes `(repoRoot, fromCommit, toCommit)` not `(GraphDiff, commitSha)` | §5.4 |
 | S-5 | `RecordExpertiseAsync(targetNodeId, kind, content, sourceAgent)` | Canonical: `RecordExpertiseAsync(targetNodeId, kind, title, body, sourceAgent, scope?, evidence?)` — separate `title`/`body` parameters, optional `scope` and `evidence` | §5.3 |
+| S-6 | No `RetireEdgeAsync` in interface | Canonical: `IMemoryGraphStore.RetireEdgeAsync(edgeId, untilCommitIndex)` — sets `UntilIndex` on a single edge without retiring its endpoint nodes | §5.1 |
+| S-7 | No `ArchiveExpertiseAsync` in interface | Canonical: `IMemoryGraphStore.ArchiveExpertiseAsync(expertiseId)` — soft-deletes expertise; `GetArchivedExpertiseAsync` retrieves archived entries | §5.1 |
+| S-8 | No `archived` column in expertise table | Canonical: `expertise.archived INT NOT NULL DEFAULT 0` — set to `1` by `ArchiveExpertiseAsync`, excluded from `GetExpertiseForNodeAsync` | §4.4 |
 | P-1 | `IMemoryStore.cs` in `Ast.GraphDb` | **`IMemoryGraphStore`** in `Ast.Memory/Interfaces/` — no files in `Ast.GraphDb` created/modified | §3.0, §5.1 |
 | P-2 | `Neo4jMemoryStore.cs` | **`Neo4jMemoryGraphStore`** in `Ast.Memory/Storage/`, **composing** existing `Neo4jGraphStore` | §3.2 |
 | P-3 | MCP files in `Ast.Cli` | MCP tools in **`Ast.Memory/Mcp/`**; CLI commands in `Ast.Memory/Cli/`. Only additive `config.AddBranch("memory", ...)` in `Ast.Cli`. | §3.8 |
@@ -1329,6 +1391,6 @@ behaviors match the architecture.
 
 ### 8.4 Net Assessment
 
-- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Three new alignment items (A9–A11) added in iteration 24 to resolve ExpertiseEntry field names, entity-vs-node classification, and External node Metadata keys. All resolved — no remaining conflicts.
-- **implementation-plan ↔ architecture:** 28 naming/numeric/method-signature divergences (27 existing + 1 new `RecordExpertiseAsync` signature), all with stated canonical resolutions. These are documentation debt in the implementation-plan. The implementation-plan's own header defers to this document on all conflicts. Implementers who follow the canonical values from this document will produce correct code.
-- **e2e-scenarios ↔ architecture:** 10 divergences (9 existing + 1 new expertise parameter format), all semantically correct or out-of-scope. Two scenarios (E2E-5, E2E-8) exercise out-of-scope features and should be tagged `@deferred`.
+- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Twelve alignment items (A1–A12) tracked, all resolved. A12 (iteration 25) resolves the temporal-model carve-out for External boundary nodes. No remaining conflicts.
+- **implementation-plan ↔ architecture:** 31 naming/numeric/method-signature divergences (28 existing + 3 new: `RetireEdgeAsync`, `ArchiveExpertiseAsync`, expertise `archived` column), all with stated canonical resolutions. These are documentation debt in the implementation-plan. The implementation-plan's own header defers to this document on all conflicts. Implementers who follow the canonical values from this document will produce correct code.
+- **e2e-scenarios ↔ architecture:** 10 divergences (9 existing + 1 expertise parameter format), all semantically correct or out-of-scope. Two scenarios (E2E-5, E2E-8) exercise out-of-scope features and should be tagged `@deferred`.
