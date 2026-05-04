@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 26
+> **Status:** Iteration 27
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -14,7 +14,7 @@
 >
 > | Document | Owns | Current state |
 > |---|---|---|
-> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Currently at iteration 22. Aligned on structural/naming points. Twelve alignment items (A1–A12) tracked in §8.1, all resolved. |
+> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Currently at iteration 23. Aligned on structural/naming points. Twelve alignment items (A1–A12) tracked in §8.1, all resolved. |
 > | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Currently at latest iteration. Contains 31 naming/data-model divergences from canonical vocabulary — all catalogued in §8.2 below with canonical resolutions. `architecture.md` governs on all conflicts. |
 > | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Currently at latest iteration. Contains 10 divergences catalogued in §8.3 below — all semantically correct or out-of-scope. |
 
@@ -87,7 +87,7 @@ projects receive additive-only changes:**
    `HyperedgeType` enum (lines 12–69).
 2. **`Ast.Cli`** (`src/ast/Ast.Cli/Program.cs`) — additive
    `config.AddBranch("memory", ...)` block appended after the existing 7
-   `config.AddCommand<T>()` registrations (lines 17–41). A project reference
+   `config.AddCommand<T>()` registrations (lines 17–44). A project reference
    to `Ast.Memory` is added to `Ast.Cli.csproj`.
 
 All new code ships as **`Ast.Memory`** (+ `Ast.Memory.UnitTests` +
@@ -103,7 +103,7 @@ dependencies, never mutated beyond the two additive changes above.
 | **Ast.VectorDb** | `IVectorStore : IDisposable` — `IVectorStore.cs`; `QdrantVectorStore` — `QdrantVectorStore.cs` | Reference only. Reuse for team mode; `Ast.Memory` adds in-process HNSW adapter for local. |
 | **Ast.Lsp** | LSP integration — `src/ast/Ast.Lsp/` | Optional enrichment — pipeline never blocks on LSP. No modifications. |
 | **CodeIntelligence** | 27 analyzers in `Analyzers/`, 4 detectors in `Detectors/`, `RelationshipGraphBuilder` in `Graph/` | Consume as call-chain / structural edge source. No modifications. |
-| **Ast.Cli** | CLI host — `Program.cs` uses Spectre.Console.Cli with manual `AddCommand<T>()` registration (7 commands: parse, enrich, embed, index, query, pipeline, stats). | Additive: `config.AddBranch("memory", ...)` + project ref to `Ast.Memory`. |
+| **Ast.Cli** | CLI host — `Program.cs` uses Spectre.Console.Cli with manual `AddCommand<T>()` registration (7 commands: parse, enrich, embed, index, query, pipeline, stats — lines 17–44). | Additive: `config.AddBranch("memory", ...)` + project ref to `Ast.Memory`. |
 
 ### 1.4 Research Foundations
 
@@ -1287,7 +1287,7 @@ This section tracks known discrepancies with sibling documents. All three
 siblings now exist and have been read for this iteration. Each entry is either
 resolved (with the canonical answer) or flagged for the next iteration.
 
-### 8.1 Alignment with `tech-spec.md` (Iteration 22)
+### 8.1 Alignment with `tech-spec.md` (Iteration 23)
 
 Most conflicts between this document and `tech-spec.md` are **resolved**.
 Tech-spec §12.2 confirms general alignment. The following table includes
@@ -1405,6 +1405,6 @@ behaviors match the architecture.
 
 ### 8.4 Net Assessment
 
-- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Twelve alignment items (A1–A12) tracked, all resolved. A12 resolves the temporal-model carve-out: External boundary nodes are timeless (no `VersionRange`), but edges to/from External nodes are versioned normally from the in-repo endpoint's perspective. No remaining conflicts.
+- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Twelve alignment items (A1–A12) tracked, all resolved. Tech-spec §12.2 confirms "No remaining conflicts." Tech-spec's own header references architecture.md at "iteration 25" — this is stale metadata in the tech-spec (architecture is now at iteration 27); the alignment conclusions remain valid. A12 resolves the temporal-model carve-out: External boundary nodes are timeless (no `VersionRange`), but edges to/from External nodes are versioned normally from the in-repo endpoint's perspective.
 - **implementation-plan ↔ architecture:** 31 naming/numeric/method-signature divergences, all with stated canonical resolutions. These are documentation debt in the implementation-plan, not unresolved design conflicts. The implementation-plan's own header defers to this document on all conflicts. Implementers who follow the canonical values from this document will produce correct code.
 - **e2e-scenarios ↔ architecture:** 10 divergences, all semantically correct or out-of-scope. Two scenarios (E2E-5, E2E-8) exercise out-of-scope features and should be tagged `@deferred`.
