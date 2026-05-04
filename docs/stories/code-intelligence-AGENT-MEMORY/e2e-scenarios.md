@@ -109,8 +109,8 @@ Feature: Structural Layer — Repository Structure Graph Construction
       | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser.ParseCode  | Function |
       | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser.ParseRepository | Function |
     And the Module node is linked to Package "/src/ast/Ast.PowerShell" via CONTAINS
-    And a DEPENDS_ON edge exists from the Module to the System.Management.Automation namespace
-      (external, so no graph edge — only internal DEPENDS_ON edges are stored)
+    And no DEPENDS_ON edge is created for System.Management.Automation
+      because external dependencies are out of scope (tech-spec §3 O2)
 
   Scenario: 1.5 — Repository with no parseable source files
     Given a test directory containing only:
@@ -132,8 +132,8 @@ Feature: Structural Layer — Repository Structure Graph Construction
     And the 18 successful files have Class and Function children
     And the Snapshot.Stats reports:
       | field         | value |
-      | Nodes         | >= 18 |
-      | files_failed  | 2     |
+      | Nodes         | >= 20 |
+    And a diagnostic summary reports 2 files with ParseStatus "failed"
 
   Scenario: 1.7 — HyperedgeType enum values map to CONTAINS edges
     Given the extraction pipeline encounters a ClassDefinition HyperedgeType
@@ -192,8 +192,8 @@ Feature: Call-Chain Layer — Call Graph Extraction
     And Metadata["IsPolymorphic"] = true on each edge
 
   Scenario: 2.4 — EXTENDS and IMPLEMENTS edges from class hierarchy
-    Given class CSharpHyperedgeExtractor exists in "src/ast/Ast.Csharp/"
-    And class Neo4jGraphStore implements interface IGraphStore
+    Given class Neo4jGraphStore in "src/ast/Ast.GraphDb/Neo4jGraphStore.cs"
+      implements interface IGraphStore in "src/ast/Ast.GraphDb/IGraphStore.cs"
     When the call-chain analyzer processes "src/ast/Ast.GraphDb/"
     Then an IMPLEMENTS edge is created:
       | SemanticRelation | Roles.implementor | Roles.interface |
@@ -202,27 +202,22 @@ Feature: Call-Chain Layer — Call Graph Extraction
     And Metadata["SemanticRelation"] = "IMPLEMENTS"
 
   Scenario: 2.5 — Cross-language call edges (C# ↔ PowerShell)
-    Given a PowerShell script at "scripts/dev.ps1" contains a C# type reference:
+    Given a test fixture PowerShell script at "tests/fixtures/invoke-processor.ps1" containing:
       """
       $processor = [Ast.Core.RepositoryProcessor]::new($repoPath)
       $processor.Process()
       """
-    And the C# method RepositoryProcessor.Process exists at
-      "src/ast/Ast.Core/RepositoryProcessor.cs"
-    When RepositoryProcessor.Process is called with the full repo
-      (cross-language references are extracted internally during processing)
-    Then a CrossLanguageMethodCall edge is created between the PS reference node
-      and the C# RepositoryProcessor.Process node
-    And the PS reference node has:
-      | field    | value                   |
-      | Id       | cross_<md5hash12>       |
-      | NodeType | method_call             |
-      | Language | powershell              |
-      | FilePath | scripts/dev.ps1         |
-    And the edge has Metadata["SemanticRelation"] = "CALLS"
+    And the C# class RepositoryProcessor exists at
+      "src/ast/Ast.Core/RepositoryProcessor.cs" with method Process
+    When the extraction pipeline processes both files
+    Then a CrossLanguageMethodCall edge is created:
+      | SemanticRelation | Roles.caller                                                                | Roles.callee                                                                  |
+      | CALLS            | /tests/fixtures/invoke-processor.ps1::<ScriptBlock>.Process                  | /src/ast/Ast.Core/RepositoryProcessor.cs::RepositoryProcessor.Process         |
+    And the caller node has Language = "PowerShell" and the callee has Language = "C#"
     And the edge has Metadata["OriginalEdgeType"] = "CrossLanguageMethodCall"
     And the edge's IsCrossLanguage property returns true
-      (per Hyperedge.IsCrossLanguage — Languages.Distinct().Count() > 1)
+      (per Hyperedge.IsCrossLanguage at HypergraphModels.cs line 210: Languages.Distinct().Count() > 1)
+    And the edge's Languages list contains both "PowerShell" and "C#"
 
   Scenario: 2.6 — Recursive call does not cause infinite expansion
     Given a function calls itself recursively
@@ -912,7 +907,7 @@ Feature: Performance and Storage — Non-Functional Requirements
 
   Scenario: 12.6 — Audit trail completeness
     Given a sequence of operations: onboard, sync, record expertise, consolidate
-    When GetAuditLogAsync is queried
+    When the audit_log table is queried
     Then all 4 operations appear in chronological order
     And each entry has session_id, timestamp, operation type, and detail JSON
     Per tech-spec HC7
