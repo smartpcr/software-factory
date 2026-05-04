@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 23
+> **Status:** Iteration 24
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -14,9 +14,9 @@
 >
 > | Document | Owns | Current state |
 > |---|---|---|
-> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Iteration 15. Fully aligned — tech-spec §12.2 confirms no remaining conflicts with this doc. |
-> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Iteration 15+. Contains 27 naming/data-model divergences from canonical vocabulary — all catalogued in §8.2 below with canonical resolutions. `architecture.md` governs on all conflicts. |
-> | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Iteration 15+. Contains 9 presentation-level divergences catalogued in §8.3 below — all semantically correct. |
+> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Iteration 15+. Aligned on structural/naming points. Three new alignment items (A9–A11) added in architecture iteration 24 for ExpertiseEntry fields, entity classification, and External node Metadata. All resolved. |
+> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Iteration 15+. Contains 28 naming/data-model divergences from canonical vocabulary — all catalogued in §8.2 below with canonical resolutions. `architecture.md` governs on all conflicts. |
+> | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Iteration 15+. Contains 10 divergences catalogued in §8.3 below — all semantically correct or out-of-scope. |
 
 ---
 
@@ -357,7 +357,7 @@ summarization — the mechanisms by which the graph improves over sessions.
 
 | Sub-component | Class | Description |
 |---|---|---|
-| **Write-back** | `EvolutionEngine.RecordExpertiseAsync()` | Creates `ExpertiseEntry` nodes (§4.2) linked to code nodes via `APPLIES_TO` edges. Each entry has a `Confidence` value (0.0–1.0), `ExpertiseKind` (`Pattern`, `Pitfall`, `Preference`, `Insight`), and `SourceAgent` provenance. |
+| **Write-back** | `EvolutionEngine.RecordExpertiseAsync()` | Creates `ExpertiseEntry` nodes (§4.2) linked to code nodes via `APPLIES_TO` edges. Each entry has a `Title` (headline), `Body` (detailed description), `Confidence` value (0.0–1.0), `ExpertiseKind` (`Pattern`, `Pitfall`, `Preference`, `Insight`), `Scope` (`"exact"` or `"subtree"`), optional `Evidence` citations, and `SourceAgent` provenance. |
 | **Consolidation** | `ConsolidationService` | LLM-powered merge of semantically similar expertise entries (cosine ≥ `SimilarityThreshold`). Creates `SUPERSEDES` edge from merged entry to originals. Acquires a write-level lock to prevent concurrent merges. |
 | **Decay** | `DecayService` | Two decay mechanisms applied **multiplicatively** (both reduce confidence; their effects compound): (a) **Event-driven** — triggered by `IncrementalSync` when a target code node's `ContentHash` changes. `StaleDecayFactor` (0.5) is applied on substantive code changes; `MinorDecayFactor` (0.9) on whitespace/comment-only changes. Applied immediately at sync time — each `ContentHash` change triggers exactly one event-driven decay. (b) **Time-based** — applied periodically (or on demand via `DecayStaleExpertiseAsync`): `decayed_confidence = current_confidence × 2^(−age_days / DecayHalfLifeDays) × centrality_boost`, where `centrality_boost = 1.0 + CentralityBoostFactor × normalized_pagerank` (range 1.0–1.5). Uses base-2 exponential so that `DecayHalfLifeDays` (1,095 = 3 years) is the exact half-life. `current_confidence` already reflects any prior event-driven decays. Entries below `ArchiveConfidenceFloor` (0.1) are soft-deleted (retained in storage with `archived = true`, excluded from retrieval). |
 | **Community Detection** | `EvolutionEngine.DetectCommunitiesAsync()` | Louvain algorithm over `CALLS`/`SIMILAR_TO` edges → creates `BELONGS_TO_CLUSTER` edges and `Topic` summary nodes in the Semantic layer (GraphRAG pattern). |
@@ -415,7 +415,7 @@ tools registered in `Ast.Memory/Mcp/`. The handler logic lives entirely in
 |---|---|---|
 | `memory_query` | `IMemoryRetrievalEngine.RetrieveAsync()` | Hybrid context retrieval with configurable mode and budget |
 | `memory_status` | `IMemoryGraphStore.GetMemoryStatisticsAsync()` | Graph statistics (node/edge counts by layer) |
-| `memory_record_expertise` | `IEvolutionEngine.RecordExpertiseAsync()` | Write an expertise entry |
+| `memory_record_expertise` | `IEvolutionEngine.RecordExpertiseAsync()` | Write an expertise entry (title, body, kind, target) |
 | `memory_sync` | `IIncrementalSync.ApplyDiffAsync()` | Trigger incremental sync |
 | `memory_consolidate` | `IEvolutionEngine.ConsolidateAsync()` | Run consolidation (admin) |
 
@@ -492,6 +492,20 @@ public class MemoryEdge
 `ContentHash`, no `VersionRange`, and no embedding. They serve as termination
 points for `DEPENDS_ON` and `CALLS` edges that cross the repository boundary.
 
+External-node Metadata keys:
+
+| Key | Type | Description |
+|---|---|---|
+| `MemoryLayer` | `string` | Always `"call_chain"` |
+| `Package` | `string` | Package/assembly name (e.g., `"Microsoft.CodeAnalysis"`) |
+| `QualifiedName` | `string` | Fully-qualified type/member name, or `"*"` for package-level stubs |
+
+External nodes have `Id` format `"ext:{package}:{qualifiedName}"`, no
+`LineStart`/`LineEnd`, empty `FilePath`, and `Language` set to the package
+ecosystem (e.g., `"C#"` for NuGet, `"JavaScript"` for npm). They participate
+in `CALLS`, `REFERENCES`, and `DEPENDS_ON` edges but are never extracted,
+embedded, or versioned.
+
 #### Expertise Nodes (Expertise layer)
 
 Expertise entries are **not** `HypergraphNode` instances. They are first-class
@@ -504,16 +518,24 @@ public class ExpertiseEntry
 {
     public required string Id { get; init; }
     // Format: "expertise:{kind}:{hash8}" where hash8 = first 8 chars of
-    // SHA-256(Content + TargetNodeId)
+    // SHA-256(Title + Body + TargetNodeId)
 
     public required ExpertiseKind Kind { get; init; }
     // Pattern, Pitfall, Preference, Insight
 
-    public required string Content { get; init; }
-    // Free-text expertise description
+    public required string Title { get; init; }
+    // Short headline summarizing the expertise (e.g., "Fragile null-handling in processRefund")
+
+    public required string Body { get; init; }
+    // Detailed description of the expertise observation
 
     public required string TargetNodeId { get; init; }
-    // Code node this expertise applies to
+    // Primary code node this expertise applies to.
+    // Additional targets may be linked via APPLIES_TO edges.
+
+    public string Scope { get; init; } = "exact";
+    // "exact" = applies to this node only; "subtree" = applies to this node
+    // and all its structural children
 
     public double Confidence { get; set; } = 1.0;
     // [0.0, 1.0] — decays over time and on code changes
@@ -521,15 +543,20 @@ public class ExpertiseEntry
     public required string SourceAgent { get; init; }
     // Agent session identifier for provenance
 
+    public IReadOnlyList<Citation> Evidence { get; init; } = [];
+    // Supporting evidence from the session that created this entry
+
     public float[]? Embedding { get; set; }
-    // Pre-computed embedding of Content
+    // Pre-computed embedding of Title + Body
 
     public string? ContentHash { get; set; }
-    // SHA-256 of Content — for deduplication
+    // SHA-256 of Title + Body — for deduplication
 
     public DateTime CreatedAt { get; init; }
     public DateTime? UpdatedAt { get; set; }
 }
+
+public record Citation(string NodeId, string? CommitSha, string? Snippet);
 
 public enum ExpertiseKind
 {
@@ -615,10 +642,13 @@ CREATE TABLE edges (
 CREATE TABLE expertise (
     id              TEXT PRIMARY KEY,
     kind            TEXT NOT NULL,        -- ExpertiseKind enum name
-    content         TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    body            TEXT NOT NULL,
     target_node_id  TEXT NOT NULL REFERENCES nodes(id),
+    scope           TEXT NOT NULL DEFAULT 'exact',  -- 'exact' or 'subtree'
     confidence      REAL NOT NULL DEFAULT 1.0,
     source_agent    TEXT NOT NULL,
+    evidence        TEXT,                 -- JSON array of Citation objects
     embedding       BLOB,                -- float[] serialized
     content_hash    TEXT,
     created_at      DATETIME NOT NULL,
@@ -848,8 +878,11 @@ public interface IEvolutionEngine
     Task<ExpertiseEntry> RecordExpertiseAsync(
         string targetNodeId,
         ExpertiseKind kind,
-        string content,
+        string title,
+        string body,
         string sourceAgent,
+        string scope = "exact",
+        IReadOnlyList<Citation>? evidence = null,
         CancellationToken ct = default);
 
     /// Consolidate similar expertise entries (LLM-powered merge).
@@ -1047,7 +1080,7 @@ Agent                  MCP/CLI              EvolutionEngine       IMemoryGraphSt
   │                      │                       │                      │                     │
   │  memory_record_      │                       │                      │                     │
   │  expertise(node,     │                       │                      │                     │
-  │   kind, content)     │                       │                      │                     │
+  │   kind, title, body) │                       │                      │                     │
   │─────────────────────▶│                       │                      │                     │
   │                      │  RecordExpertiseAsync  │                      │                     │
   │                      │──────────────────────▶│                      │                     │
@@ -1057,14 +1090,15 @@ Agent                  MCP/CLI              EvolutionEngine       IMemoryGraphSt
   │                      │                       │  node (or null)      │                     │
   │                      │                       │◀─────────────────────│                     │
   │                      │                       │                      │                     │
-  │                      │                       │  Embed content       │                     │
-  │                      │                       │  GenerateEmbeddingAsync(content)            │
+  │                      │                       │  Embed title + body  │                     │
+  │                      │                       │  GenerateEmbeddingAsync(title + " " + body) │
   │                      │                       │───────────────────────────────────────────▶│
   │                      │                       │  float[] embedding   │                     │
   │                      │                       │◀───────────────────────────────────────────│
   │                      │                       │                      │                     │
   │                      │                       │  Build ExpertiseEntry│                     │
   │                      │                       │  id = "expertise:{kind}:{hash8}"           │
+  │                      │                       │  hash8 = SHA-256(Title+Body+TargetNodeId)  │
   │                      │                       │  Create APPLIES_TO edge                    │
   │                      │                       │                      │                     │
   │                      │                       │  UpsertExpertiseAsync(entry)                │
@@ -1125,7 +1159,8 @@ Git hook / Watcher      IncrementalSync         GitDiffDriver      ExtractionPip
 This is not a single API call but a multi-session lifecycle:
 
 1. **Session 1:** Agent fixes a null-dereference bug in `PaymentService.processRefund()`.
-   Agent calls `RecordExpertiseAsync` with `Kind=Pitfall`, content describing
+   Agent calls `RecordExpertiseAsync` with `Kind=Pitfall`,
+   `title="Fragile null-handling in processRefund"`, and `body` describing
    the fragile null-handling and how callers in `OrderController` assume non-null.
 
 2. **Session 2:** A different agent (or the same agent in a new session) works
@@ -1180,11 +1215,11 @@ This section tracks known discrepancies with sibling documents. All three
 siblings now exist and have been read for this iteration. Each entry is either
 resolved (with the canonical answer) or flagged for the next iteration.
 
-### 8.1 Alignment with `tech-spec.md` (Iteration 15)
+### 8.1 Alignment with `tech-spec.md` (Iteration 24)
 
-All conflicts between this document and `tech-spec.md` are **resolved**.
-Tech-spec §12.2 confirms: "No remaining conflicts between this document and
-`architecture.md`."
+Most conflicts between this document and `tech-spec.md` are **resolved**.
+Tech-spec §12.2 confirms general alignment. The following table includes
+both long-resolved items and newly identified divergences.
 
 | # | Topic | Resolution |
 |---|---|---|
@@ -1196,10 +1231,13 @@ Tech-spec §12.2 confirms: "No remaining conflicts between this document and
 | A6 | Scoring weights | Aligned: tech-spec §8.3 uses the canonical 5-signal weighted model (0.30/0.25/0.20/0.15/0.10) from §2.4 of this doc. |
 | A7 | Composition wrappers | Aligned: tech-spec HC8, §4 confirm `MemoryNode`/`MemoryEdge` use composition (`Inner` property), not inheritance, matching §4.1 of this doc. |
 | A8 | Token budget | Aligned: tech-spec HC1 clarifies 32K ceiling, 8K default — matching §2.4 of this doc. |
+| A9 | ExpertiseEntry field names | **Resolved in iteration 24.** Tech-spec §7.1 uses `title`, `body`, `source_session`. This document (§4.2) now uses `Title`, `Body`, `SourceAgent` (with `Scope` and `Evidence`). The field name difference (`source_session` vs `SourceAgent`) is documentation shorthand in tech-spec — both refer to the agent session identifier. `SourceAgent` is canonical. |
+| A10 | ExpertiseEntry entity vs node type | **Resolved.** Tech-spec §7.1 lists `ExpertiseEntry` under "Node Types" for schema reference convenience. Canonically, `ExpertiseEntry` is **not** a `HypergraphNode` — it is a first-class entity stored in its own `expertise` table (§4.2, §4.4) and linked to code nodes via `APPLIES_TO` edges. Tech-spec's presentation is a summary shorthand, not a contradiction. |
+| A11 | External node Metadata keys | **Resolved in iteration 24.** Tech-spec §7.1 lists External nodes with `package`, `fqn` properties. This document (§4.2) now explicitly specifies `Metadata["Package"]` and `Metadata["QualifiedName"]` keys for External nodes, resolving the implicit-vs-explicit gap. |
 
-### 8.2 Alignment with `implementation-plan.md` (Iteration 15+)
+### 8.2 Alignment with `implementation-plan.md` (Iteration 24)
 
-The implementation-plan contains **27 naming, data-model, and numeric
+The implementation-plan contains **28 naming, data-model, and numeric
 divergences** from canonical vocabulary defined in this document. **These are
 documentation debt in the implementation-plan, not unresolved conflicts.** This
 document governs on all points (per the implementation-plan's own header, which
@@ -1207,8 +1245,8 @@ states: "when literal names or values here conflict with `architecture.md`,
 follow `architecture.md`").
 
 Tech-spec §12.3 independently catalogues 25 of these items and confirms the
-canonical resolutions. Two additional method-name conflicts (S-3, S-4) are
-catalogued below in §8.2.6.
+canonical resolutions. Three additional conflicts (S-5 and D-5, plus method-name
+conflicts S-3, S-4) are catalogued below.
 
 #### 8.2.1 Naming & Type Conflicts (4 items)
 
@@ -1219,7 +1257,7 @@ catalogued below in §8.2.6.
 | N-3 | Separate `IExpertiseStore` | Merged into **`IEvolutionEngine`** | §2.3, §5.3 |
 | N-4 | `AgentMemoryService` composes `IExpertiseStore` | Compose **`IEvolutionEngine`** | §5.3 |
 
-#### 8.2.2 Data Model Conflicts (4 items)
+#### 8.2.2 Data Model Conflicts (5 items)
 
 | # | impl-plan says | Canonical (this doc) | Governing § |
 |---|---|---|---|
@@ -1227,6 +1265,7 @@ catalogued below in §8.2.6.
 | D-2 | `MemoryEdge` extends `Hyperedge` (inheritance) | **Composition wrapper** (`Hyperedge Inner { get; }`) | §4.1 |
 | D-3 | `PatternType` enum | **`ExpertiseKind`** enum | §2.3, §4.2 |
 | D-4 | Separate `Annotation.cs` entity | **No separate class** — `Metadata` keys + `AnnotationKeyRegistry` | §4.5 |
+| D-5 | `ExpertiseEntry` with single `Content` field | **`Title` + `Body`** (two fields), plus `Scope` ("exact"\|"subtree") and `Evidence` (list of `Citation`) | §4.2 |
 
 #### 8.2.3 ID Format Conflicts (2 items)
 
@@ -1254,7 +1293,7 @@ catalogued below in §8.2.6.
 | T-4 | Decay half-life = 60 days | **`DecayHalfLifeDays = 1095`** (3 years) | §2.4 |
 | T-5 | Decay formula `e^(−λ×days)` | **`confidence × 2^(−age_days/1095) × (1.0 + 0.5 × normalized_pagerank)`** (base-2, with centrality boost) | §2.4, §3.5 |
 
-#### 8.2.6 Other Conflicts (8 items)
+#### 8.2.6 Other Conflicts (9 items)
 
 | # | impl-plan says | Canonical (this doc) | Governing § |
 |---|---|---|---|
@@ -1263,16 +1302,17 @@ catalogued below in §8.2.6.
 | S-2 | `Neo4jMemoryStore` | **`Neo4jMemoryGraphStore`** implementing `IMemoryGraphStore` | §3.2, §5.1 |
 | S-3 | `IMemoryGraphStore` with `ApplyDiffAsync(GraphDiff, ...)`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, `FindByNameAsync`, `RebuildVectorIndexAsync`, `ResolveCommitIndexAsync`, `RegisterCommitAsync` (Stage 1.2) | Canonical methods per §5.1: `GetNodesByLayerAsync`, `GetEdgesBySemanticRelationAsync`, `UpsertNodeAsync`, `RetireNodeAsync`, `GetExpertiseForNodeAsync`, `UpsertExpertiseAsync`, `GetMemoryStatisticsAsync`, `LogAuditAsync`. Traversal uses inherited `IGraphStore` methods. Vector search goes through `IVectorStore` (separate DI dependency), not through graph store. | §5.1 |
 | S-4 | `ApplyDiffAsync` on `IMemoryGraphStore` | `ApplyDiffAsync` belongs to **`IIncrementalSync`** (different interface); it takes `(repoRoot, fromCommit, toCommit)` not `(GraphDiff, commitSha)` | §5.4 |
+| S-5 | `RecordExpertiseAsync(targetNodeId, kind, content, sourceAgent)` | Canonical: `RecordExpertiseAsync(targetNodeId, kind, title, body, sourceAgent, scope?, evidence?)` — separate `title`/`body` parameters, optional `scope` and `evidence` | §5.3 |
 | P-1 | `IMemoryStore.cs` in `Ast.GraphDb` | **`IMemoryGraphStore`** in `Ast.Memory/Interfaces/` — no files in `Ast.GraphDb` created/modified | §3.0, §5.1 |
 | P-2 | `Neo4jMemoryStore.cs` | **`Neo4jMemoryGraphStore`** in `Ast.Memory/Storage/`, **composing** existing `Neo4jGraphStore` | §3.2 |
 | P-3 | MCP files in `Ast.Cli` | MCP tools in **`Ast.Memory/Mcp/`**; CLI commands in `Ast.Memory/Cli/`. Only additive `config.AddBranch("memory", ...)` in `Ast.Cli`. | §3.8 |
 
-### 8.3 Alignment with `e2e-scenarios.md` (Iteration 15+)
+### 8.3 Alignment with `e2e-scenarios.md` (Iteration 24)
 
 The e2e-scenarios document covers **13 features with 82 Gherkin scenarios**.
-It contains 9 presentation-level divergences from canonical vocabulary. All
-are semantically correct — the scenario behaviors match the architecture. The
-divergences are documentation shorthand, not true conflicts.
+It contains 10 divergences from canonical vocabulary, all either presentation
+shorthand (semantically correct) or out-of-scope features. The scenario
+behaviors match the architecture.
 
 | # | Topic | Scenario | Resolution |
 |---|---|---|---|
@@ -1285,9 +1325,10 @@ divergences are documentation shorthand, not true conflicts.
 | E2E-7 | `ext::` prefix for boundary nodes | 2.4 | Canonical format: `"ext:{package}:{qualifiedName}"` per §4.2. |
 | E2E-8 | Cross-repo memory transfer | 6.4 | Out of scope per tech-spec O2. Recommend tagging `@deferred`. |
 | E2E-9 | Concurrent write conflict errors | 3.4 | Architecture specifies serialized writes (§3.7). Scenario should test write serialization, not optimistic-concurrency errors. |
+| E2E-10 | Expertise `content` parameter in Gherkin steps | 4.x, 6.x | Canonical: `RecordExpertiseAsync` takes `title` and `body` as separate parameters (§5.3). Gherkin steps using a single `content` field should be split into `title` and `body` parameters. |
 
 ### 8.4 Net Assessment
 
-- **tech-spec ↔ architecture:** Fully aligned. Zero remaining conflicts.
-- **implementation-plan ↔ architecture:** 27 naming/numeric/method-signature divergences, all with stated canonical resolutions. These are documentation debt in the implementation-plan. The implementation-plan's own header defers to this document on all conflicts. Implementers who follow the canonical values from this document will produce correct code.
-- **e2e-scenarios ↔ architecture:** 9 presentation-level divergences, all semantically correct. Two scenarios (E2E-5, E2E-8) exercise out-of-scope features and should be tagged `@deferred`.
+- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Three new alignment items (A9–A11) added in iteration 24 to resolve ExpertiseEntry field names, entity-vs-node classification, and External node Metadata keys. All resolved — no remaining conflicts.
+- **implementation-plan ↔ architecture:** 28 naming/numeric/method-signature divergences (27 existing + 1 new `RecordExpertiseAsync` signature), all with stated canonical resolutions. These are documentation debt in the implementation-plan. The implementation-plan's own header defers to this document on all conflicts. Implementers who follow the canonical values from this document will produce correct code.
+- **e2e-scenarios ↔ architecture:** 10 divergences (9 existing + 1 new expertise parameter format), all semantically correct or out-of-scope. Two scenarios (E2E-5, E2E-8) exercise out-of-scope features and should be tagged `@deferred`.
