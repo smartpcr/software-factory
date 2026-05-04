@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 46
+> **Status:** Iteration 47
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -14,7 +14,7 @@
 >
 > | Document | Owns | Alignment status |
 > |---|---|---|
-> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Last updated iteration 23. Contains 10 stale-wording locations enumerated in §8.1. Architecture governs on all naming/data-model conflicts. |
+> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Last updated iteration 23. Contains 12 stale-wording locations enumerated in §8.1 (including 2 vector-backend mismatches added in iteration 47). Architecture governs on all naming/data-model conflicts. |
 > | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Defers to this doc on conflicts. **Active divergences (3):** (1) Stage 1.2 lists 12 `IMemoryGraphStore` methods, omitting `UpsertEdgeAsync` (canonical: 13 methods, §5.1). (2) Stage 2.1 persists edges via "inherited `IGraphStore` edge-creation methods" instead of `UpsertEdgeAsync`. (3) Stage 5.3 decay formula places `centrality_boost` as output multiplier instead of exponent-denominator modifier (§3.5). See §8.2. |
 > | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Fully aligned. Uses canonical vocabulary throughout. |
 
@@ -102,7 +102,7 @@ dependencies, never mutated beyond the two additive changes above.
 | **Ast.GraphDb** | `IGraphStore : IAsyncDisposable, IDisposable` — `IGraphStore.cs`; `Neo4jGraphStore` — `Neo4jGraphStore.cs`; `NodeFilter`, `GraphPath`, `NodeWithDepth` — `GraphModels.cs` | `Ast.Memory` defines `IMemoryGraphStore` extending `IGraphStore` in its own project. Zero files in `Ast.GraphDb/` modified. |
 | **Ast.Embedding** | `IEmbeddingGenerator : IDisposable` — `IEmbeddingGenerator.cs`; `CodeEmbeddingService` — `CodeEmbeddingService.cs`; `EmbeddingGeneratorOptions.ModelName` defaults to `"nomic-embed-text"` — `EmbeddingModels.cs` | Reuse directly. `Ast.Memory` calls `GenerateBatchEmbeddingsAsync()`. |
 | **Ast.Query** | `ICodeQuery` — `ICodeQuery.cs`; `HybridQueryService` — `HybridQueryService.cs`; `ScoredNode` — `QueryModels.cs` | Reference only. `Ast.Memory` defines `IMemoryRetrievalEngine` that internally composes `ICodeQuery`. |
-| **Ast.VectorDb** | `IVectorStore : IDisposable` — `IVectorStore.cs` (10 members: `Name`, `CreateCollectionAsync`, `CollectionExistsAsync`, `DeleteCollectionAsync`, `UpsertAsync`, `SearchAsync`, `GetAsync`, `DeleteAsync`, `CountAsync`, `IsAvailableAsync`); `QdrantVectorStore` — `QdrantVectorStore.cs` | Reference only. Reuse `QdrantVectorStore` for team mode; `Ast.Memory` adds `SqliteVssVectorStore` (in `Storage/SqliteVssVectorStore.cs`) implementing `IVectorStore` for local mode via sqlite-vss extension. Zero files in `Ast.VectorDb/` modified. |
+| **Ast.VectorDb** | `IVectorStore : IDisposable` — `IVectorStore.cs` (10 members — see §3.2.1 for full signatures); `QdrantVectorStore` — `QdrantVectorStore.cs`; `VectorPoint` (`Id: string`, `Vector: float[]`, `Payload: Dictionary<string,object>`), `VectorSearchResult` (`Id: string`, `Score: float`, `Vector?: float[]`, `Payload: Dictionary<string,object>`), `VectorFilter` (`Must/Should/MustNot: List<FilterCondition>`), `VectorStoreOptions` — all in `VectorModels.cs` | Reference only. Reuse `QdrantVectorStore` for team mode; `Ast.Memory` adds `SqliteVssVectorStore` (in `Storage/SqliteVssVectorStore.cs`) implementing `IVectorStore` for local mode via sqlite-vss extension. Zero files in `Ast.VectorDb/` modified. |
 | **Ast.Lsp** | LSP integration — `src/ast/Ast.Lsp/` | Optional enrichment — pipeline never blocks on LSP. No modifications. |
 | **CodeIntelligence** | 27 analyzers in `Analyzers/`, 4 detectors in `Detectors/`, `RelationshipGraphBuilder` in `Graph/` | Consume as call-chain / structural edge source. No modifications. |
 | **Ast.Cli** | CLI host — `Program.cs` uses Spectre.Console.Cli with manual `AddCommand<T>()` registration (7 commands: parse, enrich, embed, index, query, pipeline, stats — lines 17–41). | Additive: `config.AddBranch("memory", ...)` + project ref to `Ast.Memory`. |
@@ -274,7 +274,7 @@ src/ast/
 |---|---|---|
 | **Structure Builder** | `StructureBuilder` | Walks existing `HypergraphData` (produced by `Ast.Csharp` / `Ast.PowerShell` parsers) and emits Structural-layer nodes (Repo, Workspace (monorepo only), Package, Module, Class, Function) with `CONTAINS` and `DEPENDS_ON` edges. |
 | **Call-Chain Analyzer** | `CallChainAnalyzer` | Reads `Hyperedge` entries of type `MethodInvocation`, `ConstructorInvocation`, `CmdletCall`, etc. and emits Call-Chain-layer edges (`CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES`). |
-| **Semantic Indexer** | `SemanticIndexer` | Batches nodes through `IEmbeddingGenerator.GenerateBatchEmbeddingsAsync()` (from existing `Ast.Embedding`), stores resulting vectors in two places — (1) `Metadata["Embedding"]` on each node via `IMemoryGraphStore.UpsertNodeAsync()` and (2) the vector index via `IVectorStore.UpsertAsync()` for ANN retrieval — then computes pairwise cosine similarity and creates `SIMILAR_TO` edges where cosine ≥ `SimilarityThreshold` (0.85). |
+| **Semantic Indexer** | `SemanticIndexer` | Batches nodes through `IEmbeddingGenerator.GenerateBatchEmbeddingsAsync()` (from existing `Ast.Embedding`), stores resulting vectors in two places — (1) `Metadata["Embedding"]` on each node via `IMemoryGraphStore.UpsertNodeAsync()` and (2) the vector index via `IVectorStore.UpsertAsync(collectionName, IEnumerable<VectorPoint> points, CancellationToken)` where each node is wrapped as a `VectorPoint { Id = nodeId, Vector = embedding, Payload = { MemoryLayer, NodeType } }` for ANN retrieval — then computes pairwise cosine similarity and creates `SIMILAR_TO` edges where cosine ≥ `SimilarityThreshold` (0.85). |
 | **Fact Normalizer** | `FactNormalizer` | Deduplicates nodes across languages (e.g., a C# class and its PowerShell caller) and assigns canonical IDs. |
 
 **Dependency chain:** `StructureBuilder` → `CallChainAnalyzer` → `SemanticIndexer` (sequential — each stage requires the previous stage's nodes to exist).
@@ -328,8 +328,8 @@ Vector storage uses the existing `IVectorStore` interface from `Ast.VectorDb`.
 | `SqliteVssVectorStore` | `Ast.Memory` (`Storage/SqliteVssVectorStore.cs`) | sqlite-vss extension (HNSW index on the same SQLite database used by `SqliteGraphStore`) | Local mode — zero infrastructure |
 | `QdrantVectorStore` | `Ast.VectorDb` (existing, unmodified) | Qdrant vector database | Team mode — shared vector index |
 
-`SqliteVssVectorStore` implements all 10 members of `IVectorStore` by
-translating collection operations into sqlite-vss virtual table commands.
+`SqliteVssVectorStore` implements all 10 members of `IVectorStore` (§3.2.1)
+by translating collection operations into sqlite-vss virtual table commands.
 Embeddings are stored in a `vss_embeddings` virtual table co-located in the
 same SQLite database file as the graph tables (§4.4). This keeps local mode
 as a single-file deployment (the `.db` file contains both graph and vector
@@ -338,6 +338,77 @@ data).
 Both `SemanticIndexer` (§3.1) and the Retrieval Engine's `SemanticSearch`
 mode (§3.3) access vectors exclusively through `IVectorStore` — they are
 backend-agnostic.
+
+#### 3.2.1 `IVectorStore` Interface — Full Signatures (from `Ast.VectorDb`)
+
+The `IVectorStore` interface defines 10 members. All methods are consumed
+unchanged by `Ast.Memory`; the key interaction types live in
+`Ast.VectorDb/VectorModels.cs`.
+
+```csharp
+namespace Ast.VectorDb;
+
+public interface IVectorStore : IDisposable
+{
+    string Name { get; }
+
+    Task CreateCollectionAsync(
+        string collectionName, int vectorSize,
+        CancellationToken cancellationToken = default);
+
+    Task<bool> CollectionExistsAsync(
+        string collectionName,
+        CancellationToken cancellationToken = default);
+
+    Task DeleteCollectionAsync(
+        string collectionName,
+        CancellationToken cancellationToken = default);
+
+    Task UpsertAsync(
+        string collectionName,
+        IEnumerable<VectorPoint> points,
+        CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<VectorSearchResult>> SearchAsync(
+        string collectionName,
+        float[] queryVector,
+        int limit = 10,
+        VectorFilter? filter = null,
+        CancellationToken cancellationToken = default);
+
+    Task<VectorPoint?> GetAsync(
+        string collectionName, string id,
+        CancellationToken cancellationToken = default);
+
+    Task DeleteAsync(
+        string collectionName, IEnumerable<string> ids,
+        CancellationToken cancellationToken = default);
+
+    Task<long> CountAsync(
+        string collectionName,
+        CancellationToken cancellationToken = default);
+
+    Task<bool> IsAvailableAsync(
+        CancellationToken cancellationToken = default);
+}
+```
+
+**Key types** (all from `Ast.VectorDb/VectorModels.cs`):
+
+| Type | Fields | Usage in memory layer |
+|---|---|---|
+| `VectorPoint` | `Id: string` (required), `Vector: float[]` (required), `Payload: Dictionary<string,object>` | Created by `SemanticIndexer`: `new VectorPoint { Id = nodeId, Vector = embedding, Payload = { ["MemoryLayer"] = layer, ["NodeType"] = nodeType } }` |
+| `VectorSearchResult` | `Id: string`, `Score: float`, `Vector: float[]?`, `Payload: Dictionary<string,object>` | Returned by `SearchAsync`; Retrieval Engine uses `Id` to resolve graph nodes and `Score` as the `semantic` signal |
+| `VectorFilter` | `Must: List<FilterCondition>`, `Should: List<FilterCondition>`, `MustNot: List<FilterCondition>` | Used by Retrieval Engine to filter by `MemoryLayer` payload field during ANN search |
+| `FilterCondition` | `Field: string`, `Operator: FilterOperator`, `Value: object` | `FilterOperator` enum: `Equals`, `NotEquals`, `GreaterThan`, `GreaterThanOrEqual`, `LessThan`, `LessThanOrEqual`, `In`, `NotIn`, `Contains` |
+
+**`SqliteVssVectorStore` mapping:** The `collectionName` parameter maps to
+per-collection virtual tables (e.g., `vss_{collectionName}`). Create
+translates to `CREATE VIRTUAL TABLE vss_{name} USING vss0(...)`. Search
+translates to `SELECT rowid, distance FROM vss_{name} WHERE ...`. The
+`vss_id_map` table (§4.4) bridges sqlite-vss integer rowids to string node
+IDs. The `Payload` dictionary is serialized to a JSON column in a companion
+metadata table alongside each virtual-table row.
 
 #### Auxiliary Tables
 
@@ -359,7 +430,7 @@ The engine has three internal stages:
    values based on the query shape:
    - `StructuralDrill` — BFS from a seed node along `CONTAINS`/`DEPENDS_ON`.
    - `CallTrace` — forward/backward traversal along `CALLS`/`EXTENDS`/`IMPLEMENTS`.
-   - `SemanticSearch` — embed query text via a single local call to `IEmbeddingGenerator.GenerateEmbeddingAsync()` (HC5), then ANN lookup via `IVectorStore.SearchAsync()` against pre-computed node embeddings (stored at extraction time by `SemanticIndexer`). The vector store returns matching node IDs with similarity scores; the Ranker uses these as the `semantic` signal (weight 0.25).
+   - `SemanticSearch` — embed query text via a single local call to `IEmbeddingGenerator.GenerateEmbeddingAsync()` (HC5), then ANN lookup via `IVectorStore.SearchAsync(collectionName, queryVector, limit, filter?, ct)` against pre-computed node embeddings (stored at extraction time by `SemanticIndexer`). Returns `IReadOnlyList<VectorSearchResult>` — the Retrieval Engine uses each result's `Id` to resolve the graph node and `Score` as the `semantic` signal (weight 0.25). See §3.2.1 for full `IVectorStore` signatures and types.
    - `ExpertiseRecall` — filter nodes by `APPLIES_TO` edges from Expertise layer.
    - `Hybrid` — combine all four modes (default for free-text queries).
 
@@ -451,7 +522,8 @@ On trigger:
    to `CALLS` edges whose caller or callee signature changed.
 9. Re-run `SemanticIndexer` on changed nodes only: re-compute embeddings
    via `IEmbeddingGenerator`, update the vector index via
-   `IVectorStore.UpsertAsync()`, then recalculate `SIMILAR_TO` edges. Old
+   `IVectorStore.UpsertAsync(collectionName, [VectorPoint{...}])` (§3.2.1),
+   then recalculate `SIMILAR_TO` edges. Old
    `SIMILAR_TO` edges that referenced retired or re-embedded nodes are
    retired via `RetireEdgeAsync`; new `SIMILAR_TO` edges are created where
    cosine ≥ `SimilarityThreshold`.
@@ -1284,7 +1356,7 @@ Ast.Memory
   ├── Ast.Core           (existing — HypergraphNode, Hyperedge, HyperedgeType)
   ├── Ast.GraphDb         (existing — IGraphStore, NodeFilter, GraphPath)
   ├── Ast.Embedding       (existing — IEmbeddingGenerator)
-  ├── Ast.VectorDb        (existing — IVectorStore)
+  ├── Ast.VectorDb        (existing — IVectorStore, VectorPoint, VectorSearchResult, VectorFilter)
   ├── Ast.Query           (existing — ICodeQuery)
   ├── Ast.Csharp          (existing — C# parser)
   └── Ast.PowerShell      (existing — PowerShell parser)
@@ -1335,7 +1407,9 @@ Agent/CLI                     ExtractionPipeline       Parsers            IMemor
   │                                │  float[][] embeddings                     │                      │                      │
   │                                │◀──────────────────────────────────────────────────────────────────│                      │
   │                                │                      │                    │                      │                      │
-  │                                │  UpsertAsync(nodeId, embedding) ×N       │                      │                      │
+  │                                │  UpsertAsync(collectionName,             │                      │                      │
+  │                                │    [VectorPoint{Id=nodeId,               │                      │                      │
+  │                                │     Vector=embedding}]) ×N               │                      │                      │
   │                                │  (store vectors for ANN retrieval)        │                      │                      │
   │                                │──────────────────────────────────────────────────────────────────────────────────────────▶│
   │                                │                      │                    │                      │                      │
@@ -1373,9 +1447,10 @@ Agent                  MCP/CLI              RetrievalEngine        QueryPlanner 
   │                      │                       │    float[] qEmbed   │              │                │                    │                 │                  │
   │                      │                       │◀──────────────────────────────────────────────────│                    │                 │                  │
   │                      │                       │    ANN lookup       │              │                │                    │                 │                  │
-  │                      │                       │    SearchAsync(qEmbed, topK)       │                │                    │                 │                  │
+  │                      │                       │    SearchAsync(collectionName,             │                │                    │                 │                  │
+  │                      │                       │      qEmbed, topK, filter?)                │                │                    │                 │                  │
   │                      │                       │──────────────────────────────────▶│                │                    │                 │                  │
-  │                      │                       │    [(nodeId, score)] │              │                │                    │                 │                  │
+  │                      │                       │    IReadOnlyList<VectorSearchResult>      │                │                    │                 │                  │
   │                      │                       │◀──────────────────────────────────│                │                    │                 │                  │
   │                      │                       │  ExpertiseRecall: filter by APPLIES_TO edges via IMemoryGraphStore      │                 │                  │
   │                      │                       │  → candidate nodes  │              │                │                    │                 │                  │
@@ -1490,7 +1565,7 @@ Git hook / Watcher      IncrementalSync         GitDiffDriver      ExtractionPip
   │                          │  ── Step 9: Re-embed changed nodes ──     │                    │                    │                │
   │                          │  SemanticIndexer.IndexAsync(changedNodes) │                    │                    │                │
   │                          │  (re-embeds via IEmbeddingGenerator,      │                    │                    │                │
-  │                          │   upserts vectors via IVectorStore,       │                    │                    │                │
+  │                          │   upserts vectors via IVectorStore.UpsertAsync(collectionName, [VectorPoint{...}]),
   │                          │   retires old SIMILAR_TO edges,           │                    │                    │                │
   │                          │   creates new SIMILAR_TO edges)           │                    │                    │                │
   │                          │──────────────────────────────────────────────────────────────────────────────────────────────────────▶│                │
@@ -1588,11 +1663,11 @@ without requiring the sibling document to be updated first.
 
 ### 8.1 `tech-spec.md`
 
-Tech-spec.md was last updated at iteration 23. It contains ten locations
-where wording diverges from the canonical definitions in this document.
-None of these represent open disagreements — implementors follow this
-document's definitions (§2–§7) for all naming, schema, and formula
-details. The 10 stale-wording locations:
+Tech-spec.md was last updated at iteration 23. It contains twelve
+locations where wording diverges from the canonical definitions in this
+document. None of these represent open disagreements — implementors
+follow this document's definitions (§2–§7) for all naming, schema, and
+formula details. The 12 stale-wording locations:
 
 1. **§7.1 Node Types table — `SemanticCluster` row.** Tech-spec lists
    `SemanticCluster` as a separate node type alongside `Topic`.
@@ -1636,6 +1711,17 @@ details. The 10 stale-wording locations:
     `Confidence` lives in `metadata` JSON; temporal columns are
     `since_index` / `until_index`; the table also has denormalized
     `semantic_rel` and `memory_layer` columns (§4.4).
+11. **§1.1 Existing Infrastructure table — `Ast.VectorDb` row.** Says
+    `Ast.Memory` adds "in-process HNSW adapter for local mode."
+    Canonical: local mode uses `SqliteVssVectorStore` implementing the
+    existing `IVectorStore` interface via the sqlite-vss extension (§3.2),
+    not a standalone in-process HNSW adapter. The `IVectorStore` types
+    (`VectorPoint`, `VectorSearchResult`, `VectorFilter`) are consumed
+    unchanged from `Ast.VectorDb` (§3.2.1).
+12. **§8.2 Storage — Deployment table.** Lists "sqlite-vss or in-process
+    HNSW (usearch)" as the vector backend for local mode. Canonical:
+    only `SqliteVssVectorStore` is supported for local mode (§3.2).
+    There is no usearch backend in the architecture.
 
 ### 8.2 `implementation-plan.md`
 
@@ -1686,6 +1772,14 @@ the exponent denominator: `final = event_adjusted_confidence ×
 Other naming/schema items (composition wrappers, `ExpertiseEntry` naming,
 `Title`+`Body` fields, node ID format, `archived` column) have been
 corrected in the implementation-plan.
+
+**Vector-store interaction note:** The impl-plan's Stage 2.3
+(SemanticIndexer) says "Store vectors in Qdrant (team mode via
+`IVectorStore`) or sqlite-vss (local mode)" without specifying the
+`IVectorStore` call signatures. Canonical calls use
+`IVectorStore.UpsertAsync(string collectionName, IEnumerable<VectorPoint>
+points, CancellationToken)` where each node is wrapped as a `VectorPoint`
+(§3.2.1). Implementors should consult §3.2.1 for exact types.
 
 ### 8.3 `e2e-scenarios.md`
 
