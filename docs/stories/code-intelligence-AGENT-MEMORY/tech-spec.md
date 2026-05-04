@@ -2,10 +2,10 @@
 
 **Story:** `code-intelligence:AGENT-MEMORY`  
 **Points:** 10  
-**Status:** DRAFT — Iteration 20  
+**Status:** DRAFT — Iteration 21  
 
 > **Companion documents** (written in parallel — referenced by name, not duplicated):
-> - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, ID format, and constants. Defines graph layers (§2.1), edge taxonomy (§2.2), retired names (§2.3), and constants/thresholds (§2.4). Currently at iteration 23. Its header table references tech-spec at "Iteration 15" — this is stale metadata; the alignment conclusions (A1–A8 in §8.1) remain valid.
+> - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, ID format, and constants. Defines graph layers (§2.1), edge taxonomy (§2.2), retired names (§2.3), and constants/thresholds (§2.4). Currently at iteration 24. Its header table references tech-spec at "Iteration 15" — this is stale metadata; the alignment conclusions (A1–A8 in §8.1) remain valid.
 > - [`implementation-plan.md`](implementation-plan.md) — phased work items (6 phases), deliverables, evaluation harness. Contains 27 naming/data-model divergences from canonical vocabulary (catalogued in architecture.md §8.2, mirrored in §12.3 of this document); `architecture.md` governs on all conflicts.
 > - [`e2e-scenarios.md`](e2e-scenarios.md) — BDD Gherkin acceptance scenarios (13 features, 82 scenarios covering Structural Extraction, Call-Chain, Semantic, Expertise, Temporal Versioning, Hybrid Retrieval, Incremental Sync, Evolution, Cross-Session Learning, MCP Tool Interface, Backward Compatibility, Performance & Storage, and Graph Schema Integrity). Architecture.md §8.3 catalogues 9 presentation-level divergences, all semantically correct.
 >
@@ -17,7 +17,7 @@
 
 ## 1. Problem Statement
 
-Coding agents today are stateless across sessions: every invocation starts from scratch, re-discovering repository topology, ownership boundaries, call chains, and architectural invariants through brute-force search. This wastes tokens, inflates latency, and — critically — prevents the agent from *learning*. An agent that has fixed three null-dereference bugs in `PaymentService.processRefund()` should know, without re-reading every file, that `processRefund` has fragile null-handling and that its callers in `OrderController` rely on a non-null return.
+Coding agents today are stateless across sessions: every invocation starts from scratch, re-discovering repository topology, ownership boundaries, call chains, and architectural invariants through brute-force search. This wastes tokens, inflates latency, and — critically — prevents the agent from *learning*. An agent that has repeatedly diagnosed `ErrorHandlingAnalyzer.AnalyzeErrorHandling()` (`src/ast/CodeIntelligence/Analyzers/ErrorHandlingAnalyzer.cs`) as missing a catch-all case should know, without re-reading every file, that this analyzer has fragile exception logic and that its caller `RepositoryAnalysisService.AnalyzeRepositoryAsync()` (`src/ast/CodeIntelligence/Services/RepositoryAnalysisService.cs`) depends on non-null results from all analyzer methods.
 
 The goal is a **persistent, graph-structured agent memory** that:
 
@@ -170,7 +170,7 @@ Components map to `src/ast/` projects as detailed in `architecture.md` §1.3.
 | `Topic` | Semantic | `title`, `summary_prose` | GraphRAG-inspired cluster summary. |
 | `ExpertiseEntry` | Expertise | `title`, `body`, `confidence`, `source_session`, `kind` (`ExpertiseKind`: Pattern, Pitfall, Preference, Insight) | Agent-authored knowledge node. Differentiated by `Kind` field, not by `NodeType`. ID format: `"expertise:{kind}:{hash8}"` where `hash8` = first 8 chars of SHA-256(`Content` + `TargetNodeId`). Linked to code targets via `APPLIES_TO` edges. See `ExpertiseEntry` class and `ExpertiseKind` enum in `architecture.md` §4.2. |
 
-**ID format:** Path-based strings: `"{filePath}::{qualifiedName}"` for symbols (e.g., `/src/auth/login::AuthService.validate`), `"{filePath}"` for files, `"/"` for repo root. All IDs are `string` — no GUIDs or integer IDs.
+**ID format:** Path-based strings: `"{filePath}::{qualifiedName}"` for symbols (e.g., `src/ast/CodeIntelligence/Services/RepositoryAnalysisService.cs::RepositoryAnalysisService.AnalyzeRepositoryAsync`), `"{filePath}"` for files (e.g., `src/ast/Ast.GraphDb/IGraphStore.cs`), `"/"` for repo root. All IDs are `string` — no GUIDs or integer IDs.
 
 ### 7.2 Edge Types
 
@@ -437,7 +437,7 @@ The 27 items are catalogued in `architecture.md` §8.2 (the single source of tru
 
 | # | impl-plan says | Canonical value | Governing §|
 |---|------|----------------|-----|
-| S-1 | `IMemoryStore` with `UpsertAnnotationAsync`, `GetAnnotationsAsync`, etc. | **`IMemoryGraphStore`** with `ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, etc. | arch §5.1 |
+| S-1 | `IMemoryStore` with `UpsertAnnotationAsync`, `GetAnnotationsAsync`, etc. | **`IMemoryGraphStore`** with canonical methods per arch §5.1: `GetNodesByLayerAsync`, `GetEdgesBySemanticRelationAsync`, `UpsertNodeAsync`, `RetireNodeAsync`, `GetExpertiseForNodeAsync`, `UpsertExpertiseAsync`, `GetMemoryStatisticsAsync`, `LogAuditAsync`. Traversal uses inherited `IGraphStore` methods. Vector search goes through `IVectorStore` (separate DI dependency). | arch §5.1 |
 | S-2 | `Neo4jMemoryStore` with annotation CRUD | **`Neo4jMemoryGraphStore`** implementing `IMemoryGraphStore` | arch §3.2, §5.1 |
 | S-3 | `IMemoryGraphStore` with `ApplyDiffAsync(GraphDiff, ...)`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, `FindByNameAsync`, `RebuildVectorIndexAsync`, `ResolveCommitIndexAsync`, `RegisterCommitAsync` | Canonical methods per arch §5.1: `GetNodesByLayerAsync`, `GetEdgesBySemanticRelationAsync`, `UpsertNodeAsync`, `RetireNodeAsync`, `GetExpertiseForNodeAsync`, `UpsertExpertiseAsync`, `GetMemoryStatisticsAsync`, `LogAuditAsync`. Traversal uses inherited `IGraphStore` methods. Vector search goes through `IVectorStore` (separate DI dependency), not through graph store. | arch §5.1 |
 | S-4 | `ApplyDiffAsync` on `IMemoryGraphStore` | `ApplyDiffAsync` belongs to **`IIncrementalSync`** (different interface); it takes `(repoRoot, fromCommit, toCommit)` not `(GraphDiff, commitSha)` | arch §5.4 |
@@ -466,7 +466,7 @@ Per operator decision, `Metadata` keys on memory nodes are governed by a curated
 
 Expertise nodes are **globally visible** regardless of the current git branch. Implementation details:
 
-- The `commits` table records which branch each commit belongs to (provenance), but `IMemoryGraphStore.TraverseAsync` does **not** filter by branch lineage.
+- The `commits` table records which branch each commit belongs to (provenance), but retrieval (via inherited `IGraphStore` methods such as `GetCallersAsync`, `GetCalleesAsync`, `FindPathsAsync`, and `IMemoryGraphStore.GetNodesByLayerAsync`) does **not** filter by branch lineage.
 - When the agent queries expertise, all active (non-tombstoned) expertise nodes are candidates.
 - **Staleness heuristic:** If an expertise node's `APPLIES_TO` target has a different `ContentHash` on the current branch vs. the commit where the expertise was written, the Context Assembler injects a `⚠ stale — target code has changed since this expertise was recorded` marker into the prompt.
 - **Merge conflicts:** Not applicable — expertise nodes are additive, not merge-conflicting. Two agents writing contradictory expertise on different branches produce two nodes; the Evolution Engine's consolidation step (LLM-powered) resolves contradictions post-merge via `SUPERSEDES` edges.
@@ -478,7 +478,7 @@ The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 82
 - **E2E-1:** Scenario 4.1 uses `called_by` as a result-table label. This is a reverse traversal of `CALLS`, not a stored edge — consistent with this spec §7.2 and D2 (retired names). Scenario is behaviorally correct.
 - **E2E-2/3/4:** Scenarios use presentation aliases (`direct_call`, `polymorphic`, `recursive`) for edge types. All map to `CALLS` edges with varying `Confidence` values — consistent with §7.2.
 - **E2E-5:** Scenario 2.7 uses `service_call` edge type for cross-service RPC. This is out of scope per this spec §3 O1 (runtime/dynamic tracing excluded). Architecture.md §8.3 recommends tagging this scenario `@deferred`.
-- **E2E-6:** Scenarios use unqualified symbol IDs (e.g., `AuthService.login`) as abbreviations. Canonical format is path-based per §7.1 (e.g., `/src/auth/login::AuthService.login`).
+- **E2E-6:** Scenarios use unqualified symbol IDs (e.g., `AuthService.login`) as abbreviations. Canonical format is path-based per §7.1 (e.g., `src/ast/Ast.GraphDb/Neo4jGraphStore.cs::Neo4jGraphStore.CreateNodeAsync`).
 - **E2E-7:** Scenario 2.4 uses `ext::` prefix for boundary nodes. Canonical format: `"ext:{package}:{qualifiedName}"` per `architecture.md` §4.2. Semantics: stub nodes, `NodeType = "External"`, no embedding, no `VersionRange`.
 - **E2E-8:** Scenario 6.4 describes cross-repo memory transfer — out of scope per this spec §3 O2. Should be tagged `@deferred`.
 - **E2E-9:** Scenario 3.4 describes conflict errors on concurrent writes. Architecture specifies SQLite WAL mode (serialized writes, no optimistic-concurrency errors) for local and Neo4j for team mode. The scenario should be adjusted to test write serialization, not conflict errors — consistent with R6 in this spec.
@@ -494,7 +494,7 @@ The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 82
 
 | # | Item | Status |
 |---|------|--------|
-| X-1 | Architecture.md §8.1 confirms tech-spec is fully aligned; §8.2 lists the same implementation-plan conflicts | ✅ **Resolved.** Architecture.md §8.1 (titled "Alignment with `tech-spec.md` (Iteration 15)") confirms "All conflicts between this document and `tech-spec.md` are resolved." The "(Iteration 15)" label in §8.1's heading and the header table (line 17) are stale metadata — tech-spec is now at iteration 20 — but the alignment conclusions (A1–A8) remain valid and accurate because no substantive changes have occurred to the aligned content since iteration 15. Architecture.md §8.2 lists 27 implementation-plan divergences; this tech-spec §12.3 mirrors all 27 with identical canonical resolutions. |
+| X-1 | Architecture.md §8.1 confirms tech-spec is fully aligned; §8.2 lists the same implementation-plan conflicts | ✅ **Resolved.** Architecture.md §8.1 (titled "Alignment with `tech-spec.md` (Iteration 15)") confirms "All conflicts between this document and `tech-spec.md` are resolved." The "(Iteration 15)" label in §8.1's heading and the header table (line 17) are stale metadata — tech-spec is now at iteration 21 — but the alignment conclusions (A1–A8) remain valid and accurate because no substantive changes have occurred to the aligned content since iteration 15. Architecture.md §8.2 lists 27 implementation-plan divergences; this tech-spec §12.3 mirrors all 27 with identical canonical resolutions. |
 | X-2 | All implementation-plan conflicts (§12.3) have canonical resolutions | ✅ **Resolved.** All 27 items have stated canonical values from architecture.md. §12.3 is reframed as documentation debt in the sibling document, not as unresolved conflicts in this tech-spec. Implementers follow architecture.md canonical values. |
 | X-3 | Architecture.md §8.1 confirms `ExtractionOptions.EmbeddingModel` default fixed to `"nomic-embed-text"` | ✅ **Resolved.** Tech-spec §12.2 and source-code model note updated to reflect this alignment. All three sources (codebase, architecture.md, tech-spec) now agree on `"nomic-embed-text"`. |
 | X-4 | Architecture.md §8.1 confirms project mutation policy alignment | ✅ **Resolved.** Two additive changes to existing projects: (1) `HyperedgeType.MemoryRelation` in `Ast.Core`, (2) `config.AddBranch("memory", ...)` in `Ast.Cli/Program.cs`. All new interfaces/implementations in `Ast.Memory`. Matches HC8. |
@@ -520,4 +520,4 @@ The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 82
 
 ---
 
-*End of tech spec — Iteration 20. All open questions from Iteration 1 are resolved via operator decisions D1–D6. Iteration 20 fixes: (1) reconciled O6 per-agent/per-repo contradiction — O6 now explicitly states the graph is per-repository (consistent with architecture.md §1.2), excluding only G-Memory-style coordinated sharing protocols; (2) updated implementation-plan divergence count from 25 to **27** — added S-3 and S-4 (method-signature conflicts from architecture.md §8.2.6) to §12.3.7; (3) verified X-5 — architecture.md §8.3 and header table both say "82 scenarios", matching actual e2e-scenarios.md content (no discrepancy); (4) updated all iteration metadata to 20; (5) clarified stale iteration references in architecture.md header table are metadata-only with no substantive conflicts.*
+*End of tech spec — Iteration 21. All open questions from Iteration 1 are resolved via operator decisions D1–D6. Iteration 21 fixes: (1) fixed `IMemoryGraphStore` contradictions — S-1 canonical value column now lists the correct canonical methods (`GetNodesByLayerAsync`, `UpsertNodeAsync`, etc.) instead of the stale non-canonical methods (`ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`); (2) fixed §12.5 reference to non-existent `IMemoryGraphStore.TraverseAsync` — replaced with correct inherited `IGraphStore` methods (`GetCallersAsync`, `GetCalleesAsync`, `FindPathsAsync`) plus `IMemoryGraphStore.GetNodesByLayerAsync`; (3) replaced invented problem-statement example (`PaymentService.processRefund()` / `OrderController`) with real repo anchor (`ErrorHandlingAnalyzer.AnalyzeErrorHandling()` / `RepositoryAnalysisService.AnalyzeRepositoryAsync()` from `src/ast/CodeIntelligence/`); (4) replaced invented ID example (`/src/auth/login::AuthService.validate`) with real repo anchor (`src/ast/CodeIntelligence/Services/RepositoryAnalysisService.cs::RepositoryAnalysisService.AnalyzeRepositoryAsync`); (5) updated architecture.md iteration reference from 23 to 24.*
