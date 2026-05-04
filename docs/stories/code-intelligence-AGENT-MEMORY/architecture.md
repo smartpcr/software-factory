@@ -425,6 +425,21 @@ The Graph Traverser resolves `SemanticRelations` by matching against
 comparison, not an enum match. Memory-only edges (whose `HyperedgeType` is
 `MemoryRelation`) are reached exclusively through this path.
 
+#### Cross-branch expertise visibility (operator decision D3)
+
+Per operator decision D3 (resolved in `tech-spec.md` §11), expertise-layer
+nodes are **globally visible** regardless of the current git branch. The
+`IMemoryGraphStore.TraverseAsync` method does **not** filter expertise by
+branch lineage. All active (non-tombstoned) expertise nodes are candidates
+during retrieval. Staleness is detected by comparing the expertise node's
+target `ContentHash` against the current branch's version of the target code.
+When there is a mismatch, the Context Assembler injects a warning marker:
+`⚠ stale — target code has changed since this expertise was recorded`.
+
+Contradictions between expertise nodes written on different branches are
+resolved by the Evolution Engine's consolidation step (LLM-powered) which
+produces `SUPERSEDES` edges to pick a winner.
+
 ### 3.4 Context Assembler
 
 **Responsibility:** Transform ranked memory fragments into a structured
@@ -451,6 +466,27 @@ over time.
 | **Write-back** | Agent emits a structured annotation (pattern, pitfall, preference). | Creates an Expertise node, links it via `APPLIES_TO` edges to the structural/call-chain nodes the annotation references. |
 | **Consolidation** | Scheduled (e.g., post-PR-merge) or manual. | LLM-powered pass that reads overlapping expertise nodes and merges them: confirms, supersedes, or retracts. Produces `SUPERSEDES` edges. |
 | **Decay** | On every retrieval. | Expertise nodes whose `APPLIES_TO` targets have been deleted or substantially rewritten have their confidence scores reduced. Nodes below a threshold are archived (soft-deleted). |
+
+**Decay mechanisms (operator decision D5):**
+
+Two independent decay mechanisms operate on expertise confidence:
+
+1. **Time-based decay (Ebbinghaus-inspired, 3-year half-life):** Applies on
+   every retrieval. Formula:
+   `decayed_confidence = initial_confidence × 2^(−age_days / 1095) × centrality_boost`
+   where `centrality_boost = 1.0 + 0.5 × normalized_pagerank` (range 1.0–1.5).
+   High-centrality nodes (hubs in the call graph) decay ~50 % slower than leaf
+   nodes. Configurable via `MemoryStoreOptions.DecayHalfLifeDays` (default:
+   1095 = 3 years).
+2. **Event-based decay (on code change):** A one-time multiplicative penalty
+   when the target node's `ContentHash` changes:
+   - Major change (signature, logic): `StaleDecayFactor = 0.5`
+   - Minor change (whitespace, comment-only): `MinorDecayFactor = 0.9`
+   Expertise nodes whose confidence falls below `ArchiveConfidenceFloor = 0.1`
+   are soft-deleted (see §3.3 configurable thresholds).
+
+These mechanisms are additive: a node may experience both time-based decay and
+an event-based penalty if its target is modified.
 | **Community Summarization** | On structural change exceeding a threshold. | Inspired by GraphRAG community summaries. Detects tightly coupled clusters in the structural + call-chain layers and generates or updates a prose summary stored as a `Topic` node in the Semantic layer. |
 
 ### 3.6 Incremental Sync
@@ -545,7 +581,7 @@ HypergraphNode (from Ast.Core — unchanged)
     ├── VersionRange    : { Since: string (commit SHA), SinceIndex: int, Until: string? (commit SHA or null), UntilIndex: int? }
     ├── ContentHash     : string   ← SHA-256 of source span
     ├── LastTouched     : string   ← ISO-8601 timestamp (wall-clock)
-    ├── Embedding       : float[]  ← dense vector (dim = model-dependent, e.g., 768)
+    ├── Embedding       : float[]  ← dense vector (dim = model-dependent; general-purpose model per D1)
     ├── Summary         : string   ← LLM-generated one-liner
     ├── QualifiedName   : string   ← e.g., "Ast.Core.HypergraphNode.GetEmbeddingText"
     └── ... (language-specific extras)
@@ -693,9 +729,14 @@ lifecycle differs by node origin:
 | **Re-embedding on code change** | During incremental sync, when a node's `ContentHash` changes | Same as initial extraction | Old vector is overwritten in-place (same node ID) |
 
 **Model consistency:** All nodes use the same embedding model (configured in
-`ExtractionOptions.EmbeddingModel`, default: `code-embedding-v2`, dimension
-768). Mixing models produces incomparable vectors, so model changes require a
-full re-embedding pass (triggered via `ast memory reindex --reembed`).
+`ExtractionOptions.EmbeddingModel`). Per operator decision D1 (resolved in
+`tech-spec.md` §11), the default is a **general-purpose text-embedding model**
+(e.g., `text-embedding-3-small`). This simplifies the pipeline — a single
+model, single vector dimension — and handles natural-language task descriptions
+and expertise prose fluently alongside code symbols. The `IEmbeddingGenerator`
+abstraction in `Ast.Embedding` makes model swapping a config change. Mixing
+models produces incomparable vectors, so model changes require a full
+re-embedding pass (triggered via `ast memory reindex --reembed`).
 
 **Vector index consistency:** The vector index is a secondary index over the
 graph store. It is updated synchronously during `ApplyDiffAsync` (for code
@@ -873,7 +914,7 @@ public class ExtractionOptions
 {
     public required IReadOnlyList<string> Languages { get; init; }
     public bool EnableLsp { get; init; }
-    public string EmbeddingModel { get; init; } = "code-embedding-v2"; // dimension 768 — see §4.4
+    public string EmbeddingModel { get; init; } = "text-embedding-3-small"; // general-purpose per D1 — see §4.4
     public long MaxFileSize { get; init; } = 1_048_576; // 1 MB
 }
 
@@ -1423,10 +1464,14 @@ every known contradiction in sibling documents with the resolution.
 | Edge filtering | `TraversalPlan.SemanticRelations` (string list) is the **sole** filter; `TraversalPlan.EdgeTypes` is deprecated | §5.2 |
 | Expertise model class | `ExpertiseEntry` (for write-back input); expertise nodes are `HypergraphNode` with `NodeType` ∈ {`"Pattern"`, `"Pitfall"`, `"Preference"`, `"Insight"`} | §4.3, §5.4 |
 | Retrieval scoring | 5-signal weighted model with canonical defaults: structural=0.30, semantic=0.25, centrality=0.20, recency=0.15, expertise=0.10 (sum=1.0). Full table in §3.3. | §3.3, §6.3 |
-| Embedding model | `code-embedding-v2`, dimension 768. Configured in `ExtractionOptions.EmbeddingModel`. | §4.4, §5.1 |
+| Embedding model | General-purpose text-embedding (e.g., `text-embedding-3-small`). Operator decision D1 in `tech-spec.md` §11. Configured in `ExtractionOptions.EmbeddingModel`. | §4.4, §5.1 |
 | Similarity threshold | Cosine ≥ 0.85 for `SIMILAR_TO` and `DERIVED_FROM` edges | §3.3, §4.6.2 |
 | Token budget | Per-query default = 8 K tokens; system ceiling = 32 K tokens (configurable) | §3.3, §5.3 |
 | Embedding lifecycle | Three triggers: extraction time, write-back time, consolidation time | §4.4 |
+| Cross-branch expertise | Expertise-layer nodes are globally visible across branches; no branch-lineage filtering on retrieval. Operator decision D3 in `tech-spec.md` §11. | §3.3 |
+| Expertise decay — time-based | 3-year half-life (1095 days), factored by structural centrality (PageRank): `decayed_confidence = initial_confidence × 2^(−age_days / 1095) × (1.0 + 0.5 × normalized_pagerank)`. Operator decision D5. | §3.5 |
+| Expertise decay — event-based | One-time `StaleDecayFactor = 0.5` on major code change; `MinorDecayFactor = 0.9` on whitespace/comment-only change. `ArchiveConfidenceFloor = 0.1`. | §3.3, §3.5 |
+| Annotation governance | Curated `AnnotationKeyRegistry` for well-known keys; agent extension keys use `ext:` prefix. Operator decision D4. | §9.1, `tech-spec.md` §12.2 |
 
 ### 9.2 Known Contradictions in Sibling Documents
 
@@ -1454,6 +1499,11 @@ sibling document should be updated to match in its next iteration.**
 | C16 | `tech-spec.md` | §5 S5 | Lists retrieval modes including `EXPERTISE_RECALL` and `HYBRID` without specifying scoring weights | §3.3 canonical scoring table defines all 5 signals and weights | **Compatible.** Tech-spec delegates scoring details to architecture.md. No contradiction, but tech-spec should reference §3.3 for the scoring formula. |
 | C17 | `tech-spec.md` | §5 HC1 | Token budget "default: 32 K tokens" — implies per-query default is 32 K | §3.3, §5.3: System ceiling = 32 K; per-query default = 8 K tokens | **The 32 K value in HC1 is the system ceiling** (max allowed value for `TokenBudget`). The per-query default is 8 K. Agents may request up to 32 K; the Budget Controller never exceeds it. |
 | C18 | `e2e-scenarios.md` | Scenario 2.3 | Polymorphic call confidence = `0.5` for all candidates | §3.3 configurable thresholds: dynamic dispatch confidence = `0.5`–`0.7` (range, not single value) | **Compatible.** The scenario uses `0.5` as a concrete example within the allowed range. The implementation should compute per-candidate confidence based on resolution heuristics. |
+| C19 | `tech-spec.md` | §12.1 (pending) | Notes architecture.md should update default model reference from `code-embedding-v2` to general-purpose per D1 | §4.4 now specifies general-purpose (e.g., `text-embedding-3-small`) per D1 | **Resolved in this iteration.** Architecture §4.4 and §5.1 updated. |
+| C20 | `tech-spec.md` | §12.1 (pending) | Notes architecture.md should document cross-branch expertise visibility per D3 | §3.3 now includes "Cross-branch expertise visibility" subsection per D3 | **Resolved in this iteration.** Architecture §3.3 updated. |
+| C21 | `tech-spec.md` | §12.1 (pending) | Notes architecture.md should add 3-year time-based decay formula per D5 | §3.5 now includes full dual decay mechanism (time-based + event-based) per D5 | **Resolved in this iteration.** Architecture §3.5 updated. |
+| C22 | `implementation-plan.md` | Stage 3.1 | `MemoryQueryOptions.MaxTokens` default = 32768 | §5.3: `RetrievalQuery.TokenBudget` default = 8000; system ceiling = 32 K | **Use 8 K per-query default.** 32 K is the ceiling, not the default. Implementation plan should use `TokenBudget = 8000`. |
+| C23 | `implementation-plan.md` | Stage 1.1 | `Annotation.cs` as a separate model class with its own temporal fields | §4.1: Annotations are stored in `Metadata` on `HypergraphNode`; no separate `Annotation` class | **No separate `Annotation` class.** Simple annotations go in `Metadata`; structured expertise uses `ExpertiseEntry` write-back via `IEvolutionEngine`. |
 
 ---
 
