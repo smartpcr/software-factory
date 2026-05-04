@@ -137,31 +137,44 @@ public sealed class StorySpawnOrchestrator
         // Phase-specific drivers. Review/QA also re-run the implement pass
         // so blocked-then-unblocked downstream workstreams get picked up
         // when their dependency PR merges (28.5.7 / 28.11.6).
+        // Top-level catch ensures any unhandled phase failure is surfaced
+        // as LastError rather than crashing the scheduler tick.
         var advanced = false;
-        switch (spawn.Phase)
+        try
         {
-            case StorySpawnPhases.Plan:
-                advanced |= await this.DrivePlanAsync(db, hub, spawn, story, repo, forceResume, ct);
-                break;
-            case StorySpawnPhases.Decompose:
-                advanced |= await this.DriveDecomposeAsync(db, hub, spawn, story, repo, ct);
-                break;
-            case StorySpawnPhases.Implement:
-                advanced |= await this.DriveImplementAsync(db, hub, spawn, story, repo, ct);
-                advanced |= await this.DriveReviewAsync(db, hub, spawn, story, repo, ct);
-                break;
-            case StorySpawnPhases.Review:
-                advanced |= await this.DriveImplementAsync(db, hub, spawn, story, repo, ct);
-                advanced |= await this.DriveReviewAsync(db, hub, spawn, story, repo, ct);
-                break;
-            case StorySpawnPhases.Qa:
-                advanced |= await this.DriveImplementAsync(db, hub, spawn, story, repo, ct);
-                advanced |= await this.DriveReviewAsync(db, hub, spawn, story, repo, ct);
-                advanced |= await this.DriveQaAsync(db, hub, spawn, story, repo, ct);
-                break;
-            case StorySpawnPhases.Done:
-                advanced |= await this.DriveDoneAsync(db, hub, spawn, story, repo, ct);
-                break;
+            switch (spawn.Phase)
+            {
+                case StorySpawnPhases.Plan:
+                    advanced |= await this.DrivePlanAsync(db, hub, spawn, story, repo, forceResume, ct);
+                    break;
+                case StorySpawnPhases.Decompose:
+                    advanced |= await this.DriveDecomposeAsync(db, hub, spawn, story, repo, ct);
+                    break;
+                case StorySpawnPhases.Implement:
+                    advanced |= await this.DriveImplementAsync(db, hub, spawn, story, repo, ct);
+                    advanced |= await this.DriveReviewAsync(db, hub, spawn, story, repo, ct);
+                    break;
+                case StorySpawnPhases.Review:
+                    advanced |= await this.DriveImplementAsync(db, hub, spawn, story, repo, ct);
+                    advanced |= await this.DriveReviewAsync(db, hub, spawn, story, repo, ct);
+                    break;
+                case StorySpawnPhases.Qa:
+                    advanced |= await this.DriveImplementAsync(db, hub, spawn, story, repo, ct);
+                    advanced |= await this.DriveReviewAsync(db, hub, spawn, story, repo, ct);
+                    advanced |= await this.DriveQaAsync(db, hub, spawn, story, repo, ct);
+                    break;
+                case StorySpawnPhases.Done:
+                    advanced |= await this.DriveDoneAsync(db, hub, spawn, story, repo, ct);
+                    break;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            this.logger?.LogError(ex,
+                "Orchestrator phase '{Phase}' failed for spawn {SpawnId} ({StoryId}).",
+                spawn.Phase, spawn.Id, spawn.StoryId);
+            await PersistLastErrorAsync(db, spawn.Id,
+                $"{spawn.Phase} failed: {ex.Message}", hub, ct);
         }
         return advanced;
     }

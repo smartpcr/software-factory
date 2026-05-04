@@ -44,23 +44,22 @@ public static class StoriesEndpoints
     }
 
     /// <summary>
-    /// When <c>true</c> (default), POST /spawn awaits the orchestrator drive
-    /// before returning so callers can read <c>PlanPrId</c> in the response.
-    /// Tests rely on this. When <c>false</c> (production via
-    /// <c>Forge:Stories:SpawnDriveInline=false</c> in appsettings.json), the
-    /// drive is fire-and-forget — the response returns 201 immediately and
-    /// the architect crew runs in the background. Required because real-LLM
-    /// architect runs take many minutes, which would otherwise freeze the
-    /// spawn-button on the UI. <see cref="SpawnDependencyScheduler"/> ticks
-    /// every 15 s and will re-drive the spawn if the background task falls
-    /// over.
+    /// When <c>true</c>, POST /spawn awaits the orchestrator drive before
+    /// returning so callers can read <c>PlanPrId</c> in the response. Tests
+    /// set <c>Forge:Stories:SpawnDriveInline=true</c> in the test factory.
+    /// When <c>false</c> (the default), the drive is fire-and-forget — the
+    /// response returns 201 immediately and the architect crew runs in the
+    /// background. Real-LLM architect runs take many minutes, which would
+    /// otherwise freeze the spawn-button on the UI.
+    /// <see cref="SpawnDependencyScheduler"/> ticks every 15 s and will
+    /// re-drive the spawn if the background task falls over.
     /// </summary>
     private static bool SpawnDriveInline(HttpContext ctx)
     {
         var cfg = ctx.RequestServices.GetService<IConfiguration>();
         var raw = cfg?["Forge:Stories:SpawnDriveInline"];
-        if (string.IsNullOrEmpty(raw)) return true;
-        return bool.TryParse(raw, out var v) ? v : true;
+        if (string.IsNullOrEmpty(raw)) return false;
+        return bool.TryParse(raw, out var v) ? v : false;
     }
 
     public static WebApplication MapStoriesEndpoints(this WebApplication app)

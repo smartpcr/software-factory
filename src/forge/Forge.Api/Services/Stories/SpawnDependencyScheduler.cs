@@ -79,7 +79,16 @@ public sealed class SpawnDependencyScheduler : BackgroundService
 
         foreach (var (sid, spawnId) in active)
         {
-            await orchestrator.DriveAsync(sid, ct);
+            try
+            {
+                await orchestrator.DriveAsync(sid, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                this.logger?.LogWarning(ex,
+                    "DriveAsync failed for spawn {SpawnId} (story {StoryId}); will retry next interval.",
+                    spawnId, sid);
+            }
 
             // Phase 42 — catch-all reconcile pass. Per-iter commit + Resume/Restart
             // hooks already cover the active cases; this tick is the safety net
