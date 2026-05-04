@@ -413,6 +413,22 @@ public class AdoProvider : IForgeProvider
         return AdoMapper.ToPr(doc.RootElement, this.EffectiveProject);
     }
 
+    public async Task ClosePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        var client = this.NewClient(ctx);
+        var num = id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('#');
+        var payload = JsonSerializer.Serialize(new { status = "abandoned" });
+        using var msg = new HttpRequestMessage(new HttpMethod("PATCH"),
+            $"{this.EffectiveProject}/_apis/git/repositories/{this.options.Repository}/pullrequests/{num}?api-version=7.1")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        resp.EnsureSuccessStatusCode();
+    }
+
     public async Task<BuildStatus?> TriggerBuildAsync(string branch, ProviderCallContext ctx, CancellationToken ct = default)
     {
         this.RequireConfigured();

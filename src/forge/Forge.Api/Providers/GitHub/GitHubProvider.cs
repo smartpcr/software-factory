@@ -648,6 +648,21 @@ public class GitHubProvider : IForgeProvider
     public Task ApprovePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) =>
         this.PostReviewAsync(id, "APPROVE", body: null, ctx, ct);
 
+    public async Task ClosePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default)
+    {
+        this.RequireConfigured();
+        var client = await this.NewClientAsync(ctx, ct);
+        var (repo, num) = this.ResolvePrCoords(id);
+        var payload = JsonSerializer.Serialize(new { state = "closed" });
+        using var msg = new HttpRequestMessage(HttpMethod.Patch, $"repos/{repo}/pulls/{num}")
+        {
+            Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json"),
+        };
+        var resp = await client.SendAsync(msg, ct);
+        this.health.RecordResponse(resp);
+        resp.EnsureSuccessStatusCode();
+    }
+
     public Task RequestChangesOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) =>
         this.PostReviewAsync(id, "REQUEST_CHANGES", body, ctx, ct);
 

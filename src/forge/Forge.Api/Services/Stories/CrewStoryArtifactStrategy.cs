@@ -457,6 +457,30 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                         "Per-iter commit failed for {File} iter {Iter}; loop continues.",
                         spec.FileName, iter);
                 }
+
+                // Phase 42 — when the implementation-plan committed, kick the
+                // reconciler so workstream rows + workstreams.json track the
+                // latest plan structure (cancel obsolete, add new, re-prompt
+                // in-flight). Best-effort: a reconcile failure must not break
+                // the gen/eval loop; the scheduler tick will retry shortly.
+                if (string.Equals(spec.FileName, "implementation-plan.md", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        using var rscope = this.scopeFactory.CreateScope();
+                        var reconciler = rscope.ServiceProvider.GetService<PlanReconciler>();
+                        if (reconciler is not null)
+                        {
+                            await reconciler.ReconcileAsync(spawn.Id, ct);
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        this.logger?.LogWarning(ex,
+                            "Per-iter reconcile failed for spawn {SpawnId} iter {Iter}; loop continues.",
+                            spawn.Id, iter);
+                    }
+                }
             },
             ct: ct);
 
@@ -523,6 +547,65 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     public async Task<IReadOnlyList<DecompositionWorkstream>> ProduceDecompositionAsync(
         StorySpawnRow spawn, WorkItemRow story, CancellationToken ct = default)
     {
+        // Phase 42 — derive the decomposition directly from the merged
+        // implementation-plan.md. The plan is the contract; the architect's
+        // earlier "make up 2-6 workstreams" prompt produced output that
+        // could disagree with the plan. Now we read the plan, parse its
+        // Phase/Stage tree, and emit one workstream per Stage. The
+        // PlanReconciler uses the same canonicalisation, so initial decomp
+        // and any later reconcile pass produce identical workstream sets
+        // for the same plan.
+        var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
+        var planPath = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}/implementation-plan.md";
+
+        RepoRow? repo = null;
+        if (!string.IsNullOrEmpty(spawn.RepoId))
+        {
+            using var lookup = this.scopeFactory.CreateScope();
+            var db = lookup.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId, ct);
+        }
+
+        string? planMd = null;
+        if (repo is not null)
+        {
+            try { planMd = await this.git.ReadFileAsync(repo, planBranch, planPath, ct); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                this.logger?.LogWarning(ex,
+                    "ProduceDecomposition: failed to read {Path} from {Branch}; falling back to LLM-only path.",
+                    planPath, planBranch);
+            }
+        }
+
+        var canonical = PlanParser.Parse(planMd);
+        var stages = canonical.AllStages().ToList();
+
+        if (stages.Count > 0)
+        {
+            // Plan-derived path — deterministic. Each Stage becomes one
+            // workstream; deps stay empty by default (the plan's stated
+            // sequencing is captured in stage ordering, not as cross-stage
+            // dependencies, at v0). The reconciler can only join stages back
+            // to rows when the title matches what the plan parser produced,
+            // so use the canonical name verbatim.
+            return stages.Select(s => new DecompositionWorkstream(
+                Title: s.Name,
+                Description: s.Steps.Count == 0
+                    ? $"Stage {s.PhaseNumber}.{s.StageNumber}"
+                    : string.Join(" ", s.Steps.Take(3).Select(st => st.Text)),
+                AcceptanceCriteria: (IReadOnlyList<string>)s.TestScenarios.ToList(),
+                Deps: (IReadOnlyList<string>)Array.Empty<string>(),
+                Deliverables: (IReadOnlyList<string>)Array.Empty<string>(),
+                Timeline: string.Empty,
+                EstimatedEffort: string.Empty,
+                PlanAnchor: s.Anchor,
+                PlanContentHash: s.ContentHash)).ToList();
+        }
+
+        // Fallback — plan file is missing or unparseable. Keep the original
+        // LLM prompt path so the orchestrator still makes forward progress
+        // (the reconciler will re-align the rows once the plan lands).
         var workspace = this.PrepareWorkspace(spawn.Id, "decompose");
         var prompt = $$"""
             You are the Architect agent decomposing story `{{spawn.StoryId}}`

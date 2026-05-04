@@ -275,6 +275,8 @@ builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryGitOps, Forge.Api
 builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryProviderOps, Forge.Api.Services.Stories.ProviderStoryProviderOps>();
 builder.Services.AddSingleton<Forge.Api.Services.Stories.StorySpawnOrchestrator>();
 builder.Services.AddSingleton<Forge.Api.Services.Stories.SpawnDependencyScheduler>();
+// Phase 42 — keeps WorkstreamRow/WorkItemRow in lockstep with implementation-plan.md.
+builder.Services.AddSingleton<Forge.Api.Services.Stories.PlanReconciler>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.Stories.SpawnDependencyScheduler>());
 
 // Phase 41 — boot-time sweep that re-fires plan-doc Resume loops killed by
@@ -344,6 +346,14 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
     await db.Database.EnsureCreatedAsync();
+    // Phase 42 must run BEFORE any migration that issues an EF query against
+    // workstreams / work_items. EF's SELECT lists every mapped column on
+    // WorkstreamRow / WorkItemRow — including the Phase 42 additions — so an
+    // existing DB without those columns throws SQLITE 'no such column' as
+    // soon as e.g. Phase 38's backfill calls db.WorkItems.ToListAsync().
+    // The migration's pragma probe is a no-op when the columns already exist
+    // (fresh DB created by EnsureCreatedAsync), so running it first is safe.
+    await Phase42Migration.ApplyAsync(db);
     // Phase 8.2 — additive schema upgrade for existing dev DBs that pre-date Phase 8.
     await Phase8Migration.ApplyAsync(db);
     // Phase 11.4 — agent_usage cost ledger.
@@ -413,6 +423,9 @@ using (var scope = app.Services.CreateScope())
     // Resume kicked off via /spawn/artifacts/{key}/resume survives a
     // process restart (StoryResumeRecoveryService re-fires unfinished keys).
     await Phase41Migration.ApplyAsync(db);
+    // Phase 42 already ran at the top of this scope (must precede the EF
+    // queries in Phase 38 / Phase 40 that select all WorkItem / Workstream
+    // columns including the new PlanAnchor / PlanContentHash).
     // Phase 29 — cancel orphaned validation runs left from a previous crash/restart.
     {
         var now = DateTime.UtcNow.ToString("O");

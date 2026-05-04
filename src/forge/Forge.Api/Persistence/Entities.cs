@@ -175,6 +175,23 @@ public class WorkstreamRow
     /// architect's decomposition.
     /// </summary>
     public string? StorySpawnId { get; set; }
+
+    /// <summary>
+    /// Phase 42 — stable slug derived from the originating Stage in
+    /// <c>implementation-plan.md</c> (e.g. <c>phase-2/stage-1-add-cancel-button</c>).
+    /// The reconciler joins persisted workstreams to plan stages by this anchor;
+    /// renames preserve the anchor, deletions drop it. Null on legacy / pre-reconciler
+    /// rows — the reconciler leaves those alone.
+    /// </summary>
+    public string? PlanAnchor { get; set; }
+
+    /// <summary>
+    /// Phase 42 — SHA-256 of the Stage's body in <c>implementation-plan.md</c>
+    /// at the moment the workstream was last reconciled. A change here with the
+    /// same <see cref="PlanAnchor"/> means "same stage, scope edited" — the
+    /// reconciler updates Summary + re-prompts engineers on open PRs.
+    /// </summary>
+    public string? PlanContentHash { get; set; }
 }
 
 public class WsEventRow
@@ -1474,6 +1491,21 @@ public class WorkItemRow
     /// satisfy.
     /// </summary>
     public int CommentResponseStallCount { get; set; }
+
+    /// <summary>
+    /// Phase 42 — stable slug from the originating Implementation Step in
+    /// <c>implementation-plan.md</c> (e.g. <c>phase-2/stage-1/step-3</c>). Joins
+    /// step-level work items back to the plan so the reconciler can detect
+    /// added / removed / re-parented steps. Null on legacy rows.
+    /// </summary>
+    public string? PlanAnchor { get; set; }
+
+    /// <summary>
+    /// Phase 42 — SHA-256 of the Step's body at last reconcile. Mirrors
+    /// <see cref="WorkstreamRow.PlanContentHash"/>; lets the reconciler
+    /// distinguish "step text changed" from "step moved/renamed".
+    /// </summary>
+    public string? PlanContentHash { get; set; }
 }
 
 /// <summary>

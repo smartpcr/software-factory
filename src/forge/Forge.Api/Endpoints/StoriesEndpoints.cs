@@ -81,6 +81,11 @@ public static class StoriesEndpoints
         grp.MapPost("/{storyId}/spawn/artifacts/{key}/resume", ResumeArtifact).WithName("ResumeStoryArtifact");
         grp.MapPost("/{storyId}/spawn/artifacts/{key}/cancel", CancelArtifact).WithName("CancelStoryArtifact");
         grp.MapPost("/{storyId}/spawn/artifacts/{key}/restart", RestartArtifact).WithName("RestartStoryArtifact");
+        // Phase 42 — manual force-reconcile of workstreams + workitems against the current
+        // implementation-plan.md. The other triggers (per-iter commit, Resume/Restart of the
+        // implementation-plan artifact, scheduler tick) cover automatic cases; this one is for
+        // operator-driven recovery after a manual edit on the plan branch.
+        grp.MapPost("/{storyId}/spawn/reconcile", Reconcile).WithName("ReconcileStorySpawn");
 
         return app;
     }
@@ -570,6 +575,23 @@ public static class StoriesEndpoints
             if (spawn is null || story is null) return;
 
             await strategy.ResumeSingleArtifactAsync(spawn, story, key, ct);
+
+            // Phase 42 — when the resumed artifact is implementation-plan.md,
+            // re-reconcile workstreams against the (potentially updated) plan
+            // so the DB + workstreams.json stay in lockstep.
+            if (string.Equals(key, "implementation-plan", StringComparison.OrdinalIgnoreCase))
+            {
+                var reconciler = scope.ServiceProvider.GetService<Forge.Api.Services.Stories.PlanReconciler>();
+                if (reconciler is not null)
+                {
+                    try { await reconciler.ReconcileAsync(spawnId, ct); }
+                    catch (Exception rex) when (rex is not OperationCanceledException)
+                    {
+                        // Reconcile failure should not surface as a Resume failure;
+                        // the scheduler tick will retry shortly.
+                    }
+                }
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -798,6 +820,38 @@ public static class StoriesEndpoints
             eventsCleaned = events.Count,
             queueRowsCancelled = queueRows.Count,
         });
+    }
+
+    /// <summary>
+    /// Phase 42 — force-reconcile workstreams + workitems against the current
+    /// <c>implementation-plan.md</c> on the spawn's plan branch. The other
+    /// triggers (per-iter commit, Resume/Restart of the implementation-plan
+    /// artifact, scheduler tick) cover automatic cases; this endpoint is for
+    /// operator-driven recovery (e.g. after a manual edit on the plan branch
+    /// or a stuck reconciler tick).
+    /// </summary>
+    private static async Task<IResult> Reconcile(
+        HttpContext ctx,
+        string storyId,
+        ForgeDbContext db,
+        Forge.Api.Services.Stories.PlanReconciler reconciler)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var spawn = await db.StorySpawns.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        var report = await reconciler.ReconcileAsync(spawn.Id, ctx.RequestAborted);
+        if (report is null)
+        {
+            return Results.Problem(
+                title: "Reconcile produced no result",
+                detail: "The plan file may not yet be on the plan branch (plan phase not started?).",
+                statusCode: 409);
+        }
+        return Results.Ok(report);
     }
 
     /// <summary>

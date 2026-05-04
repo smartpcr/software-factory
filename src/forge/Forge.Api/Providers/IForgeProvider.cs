@@ -63,6 +63,9 @@ public interface IForgeProvider
     /// <summary>Posts a comment to a PR.</summary>
     Task CommentOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default);
 
+    /// <summary>Closes/abandons a PR without merging.</summary>
+    Task ClosePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default);
+
     /// <summary>Merges a PR. Returns the merged-state PR.</summary>
     Task<Pr> MergePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default);
 

@@ -282,6 +282,7 @@ public class WorkItemSyncUpsertTests
         public Task CommentOnWorkItemAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
         public Task<Pr> CreatePullRequestAsync(NewPullRequestRequest req, ProviderCallContext ctx, CancellationToken ct = default) => throw new NotImplementedException();
         public Task ApprovePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
+        public Task ClosePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
         public Task RequestChangesOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
         public Task CommentOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default) => Task.CompletedTask;
         public Task<Pr> MergePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) => throw new NotImplementedException();

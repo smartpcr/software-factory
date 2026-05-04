@@ -487,13 +487,23 @@ public static class WorkstreamsEndpoints
     /// POST /api/workstreams/{id}/restart — nuke everything for this workstream
     /// and start fresh: delete deliverables, clear workspace, reset git branch,
     /// reset status to active, re-enter the gen/eval loop from iter 1.
+    ///
+    /// <para>The git cleanup is critical: delete the remote branch, remove the
+    /// local worktree, and delete the local branch ref so
+    /// <see cref="RealStoryGitOps.EnsureBranchAsync"/> creates a clean branch
+    /// from <c>origin/main</c> instead of reusing the stale one. Without this,
+    /// the new run inherits files from the previous attempt (observed:
+    /// 2026-05-04, NodeJS artifacts from a prior run leaked into a C#
+    /// workstream creating a 2k-file PR with node_modules).</para>
     /// </summary>
     private static async Task<IResult> Restart(
         HttpContext ctx,
         string id,
         ForgeDbContext db,
+        IAgentRunner runner,
         IHubContext<ForgeHub> hub,
         IConfiguration config,
+        IEnumerable<IForgeProvider> providers,
         StorySpawnOrchestrator orchestrator)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -502,28 +512,88 @@ public static class WorkstreamsEndpoints
         var ws = await db.Workstreams.FirstOrDefaultAsync(w => w.Id == id);
         if (ws is null) return Results.Problem(title: $"Workstream {id} not found", statusCode: 404);
 
-        // 1. Delete all deliverables for this workstream
+        // ── 0. Cancel in-flight work (mirrors Cancel endpoint logic) ────
+        try { await runner.CancelByTaskAsync(id, ctx.RequestAborted); }
+        catch { /* best-effort — don't block restart if runner is down */ }
+
+        var queueRows = await db.TaskQueue
+            .Where(q => q.WorkItemId == id && q.State != "completed" && q.State != "cancelled")
+            .ToListAsync();
+        foreach (var q in queueRows)
+        {
+            q.State = "cancelled";
+            q.CompletedAt = DateTimeOffset.UtcNow;
+            q.LastUpdatedAt = DateTimeOffset.UtcNow;
+        }
+        await db.SaveChangesAsync();
+
+        // ── 1. Delete all deliverables for this workstream ──────────────
         var deliverables = await db.Deliverables.Where(d => d.WorkItemId == id).ToListAsync();
         db.Deliverables.RemoveRange(deliverables);
 
-        // 2. Delete transcript events
+        // ── 2. Delete transcript events ─────────────────────────────────
         var events = await db.TaskTranscriptEvents.Where(e => e.WorkItemId == id).ToListAsync();
         db.TaskTranscriptEvents.RemoveRange(events);
 
-        // 3. Reset workstream status
+        // ── 3. Delete open questions ────────────────────────────────────
+        var questions = await db.DeliverableQuestions.Where(q => q.WorkItemId == id).ToListAsync();
+        db.DeliverableQuestions.RemoveRange(questions);
+
+        // ── 4. Close upstream PRs and deactivate local rows ─────────────
+        var prIds = ParseStringList(ws.PrsJson);
+        foreach (var prId in prIds)
+        {
+            var prRow = await db.Prs.FirstOrDefaultAsync(p => p.Id == prId);
+            if (prRow is null) continue;
+
+            // Close the PR upstream (GitHub / ADO) so it doesn't block the
+            // new PR on the same branch name.
+            if (!string.IsNullOrEmpty(prRow.Provider) && !string.IsNullOrEmpty(prRow.WebUrl))
+            {
+                try
+                {
+                    var provider = providers.FirstOrDefault(p =>
+                        string.Equals(p.Kind, prRow.Provider, StringComparison.OrdinalIgnoreCase) && p.IsConfigured);
+                    if (provider is not null)
+                    {
+                        // Use the existing PATCH endpoint to close the PR.
+                        // GitHub: PATCH /repos/{owner}/{repo}/pulls/{number} { "state": "closed" }
+                        await provider.ClosePullRequestAsync(prId, ProviderCallContext.Anonymous, ctx.RequestAborted);
+                    }
+                }
+                catch { /* best-effort — PR may already be closed or deleted */ }
+            }
+
+            prRow.IsActive = false;
+            prRow.Col = "abandoned";
+            prRow.UpdatedAt = DateTimeOffset.UtcNow.ToString("O");
+        }
+
+        // ── 5. Reset workstream status ──────────────────────────────────
         ws.Status = "active";
         ws.PrsJson = "[]";
         ws.Commits = 0;
         ws.Ahead = 0;
         ws.Behind = 0;
         ws.Conflicts = 0;
+        ws.AgentsJson = "[]";
+
+        // Reset the work-item execution status so the orchestrator can
+        // re-assign agents and re-claim the workstream.
+        var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id);
+        if (wi is not null)
+        {
+            wi.ExecutionStatus = null;
+            wi.AssignedAgentJson = null;
+            wi.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
         await db.SaveChangesAsync();
 
-        // 4. Clear the cached workspace
+        // ── 6. Clear the cached workspace ───────────────────────────────
         var dbPath = config["Forge:Db:Path"] ?? @"E:\forge\forge.db";
         var stateDir = System.IO.Path.GetDirectoryName(dbPath) ?? @"E:\forge";
         var spawnSlug = ws.StorySpawnId ?? "";
-        // Check both slug conventions (dashes and underscores)
         foreach (var slug in new[] { spawnSlug, spawnSlug.Replace('-', '_') })
         {
             var wsDir = System.IO.Path.Combine(stateDir, "storyworkspaces", slug, $"impl-{id}");
@@ -534,35 +604,43 @@ public static class WorkstreamsEndpoints
             }
         }
 
-        // 5. Reset git branch to main (if worktree exists)
+        // ── 7. Nuke git branch — worktree, local ref, AND remote ────────
         if (!string.IsNullOrEmpty(ws.Branch))
         {
             var repoRow = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == ws.RepoId);
-            var cloneRoot = repoRow?.CloneRoot ?? @"C:\forge\workflow";
-            var sanitized = ws.Branch.Replace('/', '-');
-            var wtPath = System.IO.Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitized}");
-            if (System.IO.Directory.Exists(wtPath))
+            if (repoRow is not null && !string.IsNullOrEmpty(repoRow.CloneRoot)
+                && System.IO.Directory.Exists(repoRow.CloneRoot))
             {
-                try
+                var cloneRoot = repoRow.CloneRoot;
+                var sanitized = SanitizeBranchSlug(ws.Branch);
+                var wtPath = System.IO.Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitized}");
+
+                // (a) Remove worktree (if registered)
+                await RunGitQuietAsync(cloneRoot, "worktree", "remove", "--force", wtPath);
+
+                // (b) Delete directory if it survived the remove
+                if (System.IO.Directory.Exists(wtPath))
                 {
-                    var psi = new System.Diagnostics.ProcessStartInfo("git", $"reset --hard origin/main")
-                    {
-                        WorkingDirectory = wtPath,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        UseShellExecute = false,
-                    };
-                    using var p = System.Diagnostics.Process.Start(psi);
-                    p?.WaitForExit(10_000);
+                    try { System.IO.Directory.Delete(wtPath, recursive: true); }
+                    catch { /* locked files — will be pruned on next tick */ }
                 }
-                catch { /* best effort */ }
+
+                // (c) Prune stale worktree refs
+                await RunGitQuietAsync(cloneRoot, "worktree", "prune");
+
+                // (d) Delete local branch ref so EnsureWorktreeAsync
+                //     doesn't resurrect old history.
+                await RunGitQuietAsync(cloneRoot, "branch", "-D", ws.Branch);
+
+                // (e) Delete remote branch so EnsureBranchAsync creates
+                //     a fresh one from origin/main.
+                await RunGitQuietAsync(cloneRoot, "push", "origin", "--delete", ws.Branch);
             }
         }
 
         await hub.Clients.All.SendAsync("workstream.changed", new { kind = "restarted", id });
 
-        // 6. Fire-and-forget: re-drive the story so the orchestrator picks up
-        //    this workstream and re-enters the gen/eval loop.
+        // ── 8. Re-drive the story orchestrator ──────────────────────────
         if (!string.IsNullOrEmpty(ws.StorySpawnId))
         {
             var spawn = await db.StorySpawns.AsNoTracking()
@@ -578,6 +656,53 @@ public static class WorkstreamsEndpoints
         }
 
         return Results.Ok(new { id, status = "restarted", deliverablesCleaned = deliverables.Count, eventsCleaned = events.Count });
+    }
+
+    /// <summary>
+    /// Sanitize a branch name into a filesystem-safe slug. Must match
+    /// <see cref="RealStoryGitOps"/>'s <c>SanitizeBranchSlug</c> exactly
+    /// so we target the correct worktree directory.
+    /// </summary>
+    private static string SanitizeBranchSlug(string branch)
+    {
+        var sb = new System.Text.StringBuilder(branch.Length);
+        foreach (var c in branch)
+        {
+            sb.Append(char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '-');
+        }
+        return sb.ToString().Trim('-');
+    }
+
+    /// <summary>Best-effort git command — returns exit code, never throws.</summary>
+    private static async Task<int> RunGitQuietAsync(string cwd, params string[] args)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("git")
+            {
+                WorkingDirectory = cwd,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            foreach (var a in args) psi.ArgumentList.Add(a);
+            using var p = System.Diagnostics.Process.Start(psi);
+            if (p is null) return -1;
+            await p.WaitForExitAsync();
+            return p.ExitCode;
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
+    private static List<string> ParseStringList(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return new List<string>();
+        try { return System.Text.Json.JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>(); }
+        catch { return new List<string>(); }
     }
 
     /// <summary>

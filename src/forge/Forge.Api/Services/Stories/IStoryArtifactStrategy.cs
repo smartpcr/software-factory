@@ -72,7 +72,14 @@ public interface IStoryArtifactStrategy
         StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default);
 }
 
-/// <summary>One workstream entry in a decomposition.</summary>
+/// <summary>
+/// One workstream entry in a decomposition. <see cref="PlanAnchor"/> +
+/// <see cref="PlanContentHash"/> (Phase 42) are populated when the entry came
+/// from <c>implementation-plan.md</c>; null on the LLM-only fallback path.
+/// When non-null, <see cref="StorySpawnOrchestrator.PersistDecompositionAsync"/>
+/// uses the anchor to build a stable workstream id so the reconciler can
+/// later find the row.
+/// </summary>
 public sealed record DecompositionWorkstream(
     string Title,
     string Description,
@@ -80,7 +87,9 @@ public sealed record DecompositionWorkstream(
     IReadOnlyList<string> Deps,
     IReadOnlyList<string> Deliverables,
     string Timeline,
-    string EstimatedEffort);
+    string EstimatedEffort,
+    string? PlanAnchor = null,
+    string? PlanContentHash = null);
 
 /// <summary>One review-comment payload the strategy wants posted.</summary>
 public sealed record ReviewComment(string FilePath, int Line, string Body, string Severity);

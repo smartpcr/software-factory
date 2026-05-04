@@ -479,8 +479,14 @@ public sealed class StorySpawnOrchestrator
         var titleToId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var w in ws)
         {
-            var slug = SlugFor(w.Title);
-            var wsId = $"ws-{GitSafe(spawn.StoryId)}-{slug}".ToLowerInvariant();
+            // Phase 42 — when the entry came from implementation-plan.md the
+            // anchor is the stable id basis so the reconciler joins back to
+            // the same row on later passes. Fallback (LLM-only path with no
+            // anchor): keep the original title-slug derivation.
+            var idSlug = !string.IsNullOrEmpty(w.PlanAnchor)
+                ? w.PlanAnchor!.Replace('/', '-').Replace('@', '-')
+                : SlugFor(w.Title);
+            var wsId = $"ws-{GitSafe(spawn.StoryId)}-{idSlug}".ToLowerInvariant();
             titleToId[w.Title] = wsId;
             // Idempotent — leave any pre-existing row alone.
             if (await db.Workstreams.AnyAsync(x => x.Id == wsId, ct)) continue;
@@ -490,7 +496,7 @@ public sealed class StorySpawnOrchestrator
                 Sort = ++maxSort,
                 RepoId = spawn.RepoId,
                 Name = w.Title,
-                Branch = $"ws/{GitSafe(spawn.StoryId)}/{slug}",
+                Branch = $"ws/{GitSafe(spawn.StoryId)}/{idSlug}",
                 Base = "main",
                 Epic = spawn.StoryId,
                 Status = "planning",
@@ -501,6 +507,8 @@ public sealed class StorySpawnOrchestrator
                 Summary = w.Description,
                 BarStart = 0, BarEnd = 5, Planned = true,
                 StorySpawnId = spawn.Id,
+                PlanAnchor = w.PlanAnchor,
+                PlanContentHash = w.PlanContentHash,
             });
 
             // Phase 38 (Layer B.2) — back the workstream with a real
@@ -526,6 +534,8 @@ public sealed class StorySpawnOrchestrator
                     Priority = "med",
                     CreatedAt = DateTimeOffset.UtcNow,
                     UpdatedAt = DateTimeOffset.UtcNow,
+                    PlanAnchor = w.PlanAnchor,
+                    PlanContentHash = w.PlanContentHash,
                 });
             }
         }

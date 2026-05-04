@@ -1,9 +1,7 @@
 // Renders the architect's decomposition (spawn.DecompositionJson) as a
-// list of workstream cards instead of the empty markdown view that the
-// regular DocumentPane would show for `doc:decomposition`. Surfaces title,
-// effort, description, acceptance criteria, deliverables, and dep arrows
-// so the operator can see what each engineer pair is going to build and in
-// what order — without having to read raw JSON.
+// list of workstream cards OR as raw formatted JSON, toggle-switched so
+// the operator can read what each engineer pair is going to build either
+// as a diagram (cards + dep arrows) or as the source-of-truth JSON.
 import { useEffect, useMemo, useState } from 'react';
 import { forgeApi, type StorySpawnDecomposeWorkstream } from '@/api/forgeApi';
 
@@ -16,10 +14,15 @@ interface ParsedWorkstream extends StorySpawnDecomposeWorkstream {
   ix: number;
 }
 
+type ViewMode = 'cards' | 'json';
+
 export function DecompositionView({ storyId }: Props) {
   const [items, setItems] = useState<ParsedWorkstream[] | null>(null);
+  const [rawJson, setRawJson] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [approved, setApproved] = useState(false);
+  const [view, setView] = useState<ViewMode>('cards');
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -31,8 +34,10 @@ export function DecompositionView({ storyId }: Props) {
         const raw = r.spawn.decompositionJson;
         if (!raw) {
           setItems([]);
+          setRawJson('');
           return;
         }
+        setRawJson(raw);
         const parsed = JSON.parse(raw) as StorySpawnDecomposeWorkstream[];
         if (!Array.isArray(parsed)) {
           setItems([]);
@@ -48,6 +53,25 @@ export function DecompositionView({ storyId }: Props) {
     const id = setInterval(() => { void load(); }, 12_000);
     return () => { cancelled = true; clearInterval(id); };
   }, [storyId]);
+
+  // Pretty-printed JSON for the json view. Re-format the stored string so
+  // the indentation is consistent regardless of how the server serialised it.
+  const prettyJson = useMemo(() => {
+    if (!rawJson) return '';
+    try { return JSON.stringify(JSON.parse(rawJson), null, 2); }
+    catch { return rawJson; }
+  }, [rawJson]);
+
+  async function copyJson() {
+    try {
+      await navigator.clipboard.writeText(prettyJson);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API can be denied (insecure context, headless test). Fail silent;
+      // the user can still select-all + copy from the <pre> block.
+    }
+  }
 
   if (error) return <div className="doc-pane"><div className="doc-body"><pre style={{ color: 'var(--sc-red)' }}>{error}</pre></div></div>;
   if (items === null) return <div className="doc-pane"><div className="doc-body"><em style={{ color: 'var(--sc-text-dim)' }}>loading decomposition…</em></div></div>;
@@ -81,12 +105,41 @@ export function DecompositionView({ storyId }: Props) {
               ? 'Approved · engineer crew is dispatching against these workstreams.'
               : 'Pending approval — orchestrator advances to IMPLEMENT once approved.'}
           </div>
+          <div className="decomp-header__actions">
+            <div className="decomp-view-toggle" role="tablist" aria-label="Decomposition view">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={view === 'cards'}
+                className={`decomp-view-toggle__btn${view === 'cards' ? ' is-active' : ''}`}
+                onClick={() => setView('cards')}
+              >diagram</button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={view === 'json'}
+                className={`decomp-view-toggle__btn${view === 'json' ? ' is-active' : ''}`}
+                onClick={() => setView('json')}
+              >workstreams.json</button>
+            </div>
+            {view === 'json' && (
+              <button
+                type="button"
+                className="decomp-view-toggle__copy"
+                onClick={() => { void copyJson(); }}
+              >{copied ? 'copied ✓' : 'copy'}</button>
+            )}
+          </div>
         </header>
-        <ul className="decomp-list">
-          {items.map((w) => (
-            <DecompositionCard key={w.ix} ws={w} all={items} />
-          ))}
-        </ul>
+        {view === 'cards' ? (
+          <ul className="decomp-list">
+            {items.map((w) => (
+              <DecompositionCard key={w.ix} ws={w} all={items} />
+            ))}
+          </ul>
+        ) : (
+          <pre className="decomp-json"><code>{prettyJson}</code></pre>
+        )}
       </div>
     </div>
   );

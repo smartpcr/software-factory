@@ -1778,6 +1778,51 @@
   font-family: var(--sc-font-mono); font-size: 11px;
   color: var(--sc-text-dim); margin-top: 4px;
 }
+.swarm-ctrl .decomp-header__actions {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 10px;
+}
+.swarm-ctrl .decomp-view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--sc-border);
+  border-radius: 4px; overflow: hidden;
+}
+.swarm-ctrl .decomp-view-toggle__btn {
+  background: transparent; border: 0;
+  padding: 5px 12px;
+  font-family: var(--sc-font-display); font-size: 9px;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--sc-text-dim); cursor: pointer;
+}
+.swarm-ctrl .decomp-view-toggle__btn + .decomp-view-toggle__btn {
+  border-left: 1px solid var(--sc-border);
+}
+.swarm-ctrl .decomp-view-toggle__btn:hover { color: var(--sc-text); }
+.swarm-ctrl .decomp-view-toggle__btn.is-active {
+  background: var(--sc-amber-d); color: var(--sc-bg);
+}
+.swarm-ctrl .decomp-view-toggle__copy {
+  background: transparent;
+  border: 1px solid var(--sc-border); border-radius: 3px;
+  padding: 4px 10px;
+  font-family: var(--sc-font-display); font-size: 9px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--sc-text-dim); cursor: pointer;
+}
+.swarm-ctrl .decomp-view-toggle__copy:hover {
+  color: var(--sc-cyan); border-color: var(--sc-cyan-d);
+}
+.swarm-ctrl .decomp-json {
+  margin: 0;
+  background: var(--sc-surface);
+  border-left: 3px solid var(--sc-amber-d);
+  padding: 14px 16px;
+  border-radius: 4px;
+  font-family: var(--sc-font-mono); font-size: 12px;
+  line-height: 1.5; color: var(--sc-text);
+  white-space: pre; overflow: auto;
+  max-height: calc(100vh - 260px);
+}
 .swarm-ctrl .decomp-list {
   list-style: none; padding: 0; margin: 0;
   display: grid; gap: 14px;
