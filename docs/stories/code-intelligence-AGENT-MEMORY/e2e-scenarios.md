@@ -50,8 +50,11 @@ Feature: Structural Layer — Repository Structure Graph Construction
   Scenario: 1.1 — Ingest src/ast/ and produce structural layer graph
     When the extraction pipeline processes the repository root
     Then the graph contains a Repo root node with Id "/" and NodeType "Repo"
-    # Workspace nodes are absent because this repo is a single-workspace layout
-    # (architecture.md §4.2: "absent in single-package repos")
+    # Workspace nodes are absent: this repo has no monorepo layout with separate
+    # workspace directories (e.g., /packages/frontend/, /packages/backend/).
+    # Packages are directly under the Repo root. (architecture.md §4.2:
+    # "Monorepo child; absent in single-package repos" — and here, packages
+    # share a flat layout without an intermediate Workspace level.)
     And no Workspace nodes exist in the graph
     And Package nodes exist for each non-test .csproj, including:
       | node_id                   | NodeType | Metadata.MemoryLayer |
@@ -101,9 +104,10 @@ Feature: Structural Layer — Repository Structure Graph Construction
       | SemanticRelation | Roles.importer                              | Roles.imported         |
       | DEPENDS_ON       | /src/ast/Ast.Csharp/CSharpHyperedgeExtractor.cs | /src/ast/Ast.Core  |
     # External imports produce External boundary stub nodes (architecture.md §4.2, §4.4)
+    # DEPENDS_ON from a using directive creates a package-level External stub node
     And an External boundary node is created:
       | node_id                                  | NodeType | Metadata.MemoryLayer |
-      | ext:Microsoft.CodeAnalysis:SyntaxTree    | External | call_chain           |
+      | ext:Microsoft.CodeAnalysis:*             | External | call_chain           |
     And the External node has no ContentHash, no VersionRange, and no Embedding
     And a DEPENDS_ON edge connects the module to the External boundary node
 
@@ -227,18 +231,19 @@ Feature: Call-Chain Layer — Call Graph Extraction
     And Metadata["SemanticRelation"] = "IMPLEMENTS"
 
   Scenario: 2.5 — Cross-language call edges (C# ↔ PowerShell)
-    Given a PowerShell source file "scripts/dev.ps1" exists in the repository
-    And the file contains a line invoking a C# type:
+    Given a PowerShell test fixture file "test-fixtures/invoke-csharp.ps1" contains:
       """
       $processor = [Ast.Core.RepositoryProcessor]::new($repoPath)
       $processor.Process()
       """
+    # Note: scripts/dev.ps1 in this repo is a UI dev launcher; this scenario
+    # uses a synthetic fixture to exercise the CrossLanguageMethodCall path.
     And the C# class RepositoryProcessor exists at
       "src/ast/Ast.Core/RepositoryProcessor.cs" with method Process
     When the extraction pipeline processes both files
     Then a CrossLanguageMethodCall edge is created:
-      | SemanticRelation | Roles.caller                                         | Roles.callee                                                          |
-      | CALLS            | /scripts/dev.ps1::<ScriptBlock>.Process               | /src/ast/Ast.Core/RepositoryProcessor.cs::RepositoryProcessor.Process |
+      | SemanticRelation | Roles.caller                                                  | Roles.callee                                                          |
+      | CALLS            | /test-fixtures/invoke-csharp.ps1::<ScriptBlock>.Process       | /src/ast/Ast.Core/RepositoryProcessor.cs::RepositoryProcessor.Process |
     And the caller node has Language = "PowerShell" and the callee has Language = "C#"
     And the edge has Metadata["OriginalEdgeType"] = "CrossLanguageMethodCall"
     And the edge's IsCrossLanguage property returns true
