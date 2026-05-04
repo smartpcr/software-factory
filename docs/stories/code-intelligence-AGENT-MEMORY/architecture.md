@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 14
+> **Status:** Iteration 15
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, and interface signatures.
@@ -361,6 +361,44 @@ Three transformations:
 
 **Performance target:** < 2 seconds for single-file change on repos ≤ 500K LOC.
 
+### 3.7 Concurrency Model
+
+The memory graph supports concurrent reads with serialized writes. The
+concurrency strategy differs by deployment mode:
+
+#### Local (SQLite)
+
+- **WAL mode** (`PRAGMA journal_mode=WAL`) enables concurrent readers
+  alongside a single writer.
+- **In-process write mutex** (`SemaphoreSlim(1,1)`) serializes all write
+  operations (`ApplyDiffAsync`, `RecordExpertiseAsync`, `DecayStaleExpertiseAsync`).
+  No optimistic-concurrency conflicts are raised — writes queue and execute
+  in order.
+- **File-system watcher debounce** (`IncrementalSyncDebounceMs = 1000`)
+  prevents write storms during rapid saves.
+- **Isolation:** Each `SqliteGraphStore` instance owns a single `SqliteConnection`.
+  Only one `ast` process should write to a given database file at a time.
+  Multiple readers (e.g., concurrent MCP tool calls) are safe under WAL.
+
+#### Team (Neo4j + Qdrant)
+
+- Neo4j natively supports concurrent readers and writers with ACID transactions.
+- `Neo4jMemoryGraphStore.ApplyDiffAsync` executes within a single Neo4j
+  transaction — all inserts, updates, and tombstones are atomic.
+- **Write contention:** Multiple agents writing expertise concurrently is safe
+  because `RecordExpertiseAsync` creates new nodes (no read-modify-write).
+  Consolidation (`ConsolidateAsync`) acquires a distributed advisory lock
+  (Neo4j `apoc.lock.nodes()` or application-level lease) to prevent concurrent
+  merge operations.
+- Qdrant vector operations are idempotent (upsert semantics).
+
+#### Invariants (both modes)
+
+- Reads never block on writes and never return partial diffs.
+- A `Snapshot` is created per successful `ApplyDiffAsync` — point-in-time
+  queries via `GetNodeAtCommitAsync` always see a consistent graph state.
+- The audit log is append-only and lock-free (inserts only, no updates).
+
 ---
 
 ## 4. Data Model
@@ -431,6 +469,7 @@ All nodes are `HypergraphNode` instances. The `NodeType` property and
 | `Module` | structural | `file_path`, `language`, `hash` | One per source file |
 | `Class` | structural | `name`, `fqn`, `is_abstract`, `is_exported` | Classes, interfaces, structs, enums, records |
 | `Function` | structural | `name`, `fqn`, `signature`, `line_start`, `line_end` | Leaf structural node |
+| `External` | call_chain | `package`, `fqn` | Out-of-repo boundary symbol (stub — no embedding, no `VersionRange`). ID format: `"ext:{package}:{qualifiedName}"` (§4.4). |
 
 #### Semantic Nodes
 
@@ -491,6 +530,14 @@ All IDs are **`string`** — no GUIDs, UUIDs, or integers.
 | Expertise node | `"expertise:{kind}:{hash8}"` | `"expertise:pitfall:a1b2c3d4"` |
 | SemanticCluster | `"cluster:{hash8}"` | `"cluster:e5f6a7b8"` |
 | Topic | `"topic:{hash8}"` | `"topic:c9d0e1f2"` |
+| External / boundary node | `"ext:{package}:{qualifiedName}"` | `"ext:Microsoft.CodeAnalysis:SyntaxNode"` |
+
+**External / boundary nodes** are out-of-repo symbols referenced by in-repo
+code (e.g., NuGet/npm dependencies). They are created as stub nodes with
+`NodeType = "External"`, `Metadata["MemoryLayer"] = "call_chain"`, and no
+`ContentHash` or `VersionRange`. They participate in `CALLS` and `REFERENCES`
+edges but are never extracted or embedded. The `ext:` prefix ensures they
+never collide with in-repo path-based IDs.
 
 Edge IDs are deterministic: `"{sourceId}→{relation}→{targetId}"`.
 
@@ -1380,7 +1427,9 @@ tool surface defined in §5.6, which maps 1:1 to internal C# interfaces.
 ### 10.1 Alignment with implementation-plan.md
 
 Implementers following `implementation-plan.md` **MUST** apply the corrections
-below. Future iterations of `implementation-plan.md` should incorporate these.
+below. All conflicts are **resolved** — this architecture document governs.
+Future iterations of `implementation-plan.md` should incorporate these
+canonical resolutions. No open questions remain between these two documents.
 
 #### 10.1.1 Naming & Type Conflicts
 
@@ -1475,8 +1524,8 @@ When `implementation-plan.md` is next updated, these changes should be applied:
 ### 10.2 Alignment with e2e-scenarios.md
 
 The e2e-scenarios document uses presentation-friendly names that diverge from
-canonical vocabulary. These are acceptable in Gherkin scenarios (which test
-behavior, not internal names) but implementers must map them correctly.
+canonical vocabulary. All divergences below are **resolved** — implementers
+map scenario labels to canonical names as specified.
 
 | # | e2e-scenarios.md says | Canonical equivalent (this doc) | Notes |
 |---|---|---|---|
@@ -1486,9 +1535,9 @@ behavior, not internal names) but implementers must map them correctly.
 | E2E-4 | Scenario 2.5 uses `recursive` as `edge_type` | Canonical: a self-referencing **`CALLS`** edge (same node in both `caller` and `callee` roles). | Implementers emit `CALLS` edge. |
 | E2E-5 | Scenario 2.7 uses `service_call` as `edge_type` | Cross-service RPC is **out of scope** for MVP (tech-spec §3 O1 — runtime/dynamic tracing excluded). If implemented later, it would be a `CALLS` edge with `Metadata["CrossService"] = true` and `Protocol` metadata. | Deferred per O1. |
 | E2E-6 | Scenario 1.2/2.4/4.1 uses unqualified symbol IDs like `AuthService.login` | Canonical node IDs use **path-based format** `"{filePath}::{qualifiedName}"` (§4.4), e.g., `/src/auth/login::AuthService.login`. Scenario table entries are abbreviations for readability. | Implementers use full path-based IDs. |
-| E2E-7 | Scenario 2.4 uses `ext::` prefix for boundary nodes | Canonical format for external/boundary nodes is not yet defined (external dependencies are out-of-repo). Recommended: `"ext:{package}:{qualifiedName}"` (e.g., `"ext:@aws-sdk/client-kms:KMS.encrypt"`). | Aligns with §4.4 ID philosophy. |
+| E2E-7 | Scenario 2.4 uses `ext::` prefix for boundary nodes | Canonical format for external/boundary nodes: **`"ext:{package}:{qualifiedName}"`** (e.g., `"ext:Microsoft.CodeAnalysis:SyntaxNode"`). Defined in §4.4 with full semantics: stub nodes, `NodeType = "External"`, no embedding, no `VersionRange`. | ✅ Resolved — §4.4 defines format and semantics. |
 | E2E-8 | Scenario 6.4 describes cross-repo memory transfer | **Out of scope** per tech-spec §3 O2 (multi-repository federation excluded). This scenario is aspirational and should be tagged `@deferred`. | No conflict — future work. |
-| E2E-9 | Scenario 3.4 describes conflict errors on concurrent writes | Architecture specifies **SQLite WAL mode** for local (concurrent reads, serialized writes via in-process mutex) and **Neo4j** for team mode (native concurrency). No "conflict error" is raised — writes are serialized. Scenario should be adjusted to test write serialization, not optimistic-concurrency conflicts. | Scenario needs update. |
+| E2E-9 | Scenario 3.4 describes conflict errors on concurrent writes | Architecture specifies a **serialized write model** (§3.7): SQLite WAL + in-process mutex for local; Neo4j ACID transactions for team. No optimistic-concurrency "conflict error" is raised — writes are queued and execute in order. Scenario should test **write serialization** (second write completes after first), not conflict detection. | ✅ Resolved — §3.7 defines concurrency model. |
 
 ### 10.3 Alignment with tech-spec.md (Detail)
 
@@ -1500,4 +1549,4 @@ All conflicts resolved. See §10.0 for the complete alignment table.
 | TS-2 | tech-spec.md §11 D2 specifies "purely programmatic" agent API | ✅ Fulfilled by §5.6 MCP tool definitions (5 typed tools, no query DSL). |
 | TS-3 | tech-spec.md §11 D1 specifies general-purpose embedding model | ✅ Fulfilled by §4.7 (all nodes use same general-purpose model). |
 | TS-4 | `ExtractionOptions.EmbeddingModel` default | ✅ Both now specify `"nomic-embed-text"` — matching the actual codebase default in `EmbeddingGeneratorOptions.ModelName` (`src/ast/Ast.Embedding/EmbeddingModels.cs:119`). |
-| TS-5 | Project mutation policy | ✅ This doc (iteration 14) explicitly states: `IMemoryGraphStore` is defined in `Ast.Memory`, not `Ast.GraphDb`. Two additive changes to existing projects: (1) one enum value `HyperedgeType.MemoryRelation` in `Ast.Core`, (2) `config.AddBranch("memory", ...)` lines in `Ast.Cli/Program.cs` + project reference to `Ast.Memory` in `Ast.Cli.csproj`. No existing code is modified — only additive lines. tech-spec HC8 is satisfied. |
+| TS-5 | Project mutation policy | ✅ This doc explicitly states: `IMemoryGraphStore` is defined in `Ast.Memory`, not `Ast.GraphDb`. Two additive changes to existing projects: (1) one enum value `HyperedgeType.MemoryRelation` in `Ast.Core`, (2) `config.AddBranch("memory", ...)` lines in `Ast.Cli/Program.cs` + project reference to `Ast.Memory` in `Ast.Cli.csproj`. No existing code is modified — only additive lines. tech-spec HC8 is satisfied. |
