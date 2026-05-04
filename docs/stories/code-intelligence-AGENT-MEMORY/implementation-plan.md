@@ -5,78 +5,115 @@
 > Build graph-based agent memory on top-down repo structure and call-chain
 > context so that agents can learn and get smarter across sessions.
 >
+> **Canonical authority:** [`architecture.md`](architecture.md) governs all
+> naming, data model, edge taxonomy, ID format, interface signatures, and
+> constants. This plan describes *work items and phasing*; when literal names
+> or values here conflict with `architecture.md`, follow `architecture.md`.
+>
 > Companion docs (written in parallel — referenced by name, not duplicated):
-> - `architecture.md` — component diagram, graph layers, data model
-> - `tech-spec.md` — schema, lifecycle, constraints, risks
-> - `e2e-scenarios.md` — Gherkin acceptance scenarios
+> - [`architecture.md`](architecture.md) — component diagram, graph layers, data model, interfaces
+> - [`tech-spec.md`](tech-spec.md) — problem statement, constraints, risks, success criteria
+> - [`e2e-scenarios.md`](e2e-scenarios.md) — Gherkin acceptance scenarios
 
 ## Approach
 
-This plan extends the **existing `src/ast/` C# infrastructure** (Ast.Core,
-Ast.GraphDb, Ast.Embedding, Ast.VectorDb, Ast.Query, CodeIntelligence — 437+
-tests today) with four new capabilities:
+This plan extends the **existing `src/ast/` C# infrastructure** (24 `.csproj`
+projects, 13 test projects, 970+ tests) with a single new project —
+**`Ast.Memory`** — plus `Ast.Memory.UnitTests` and
+`Ast.Memory.IntegrationTests`. **No existing project is modified** except for
+one additive enum value (`HyperedgeType.MemoryRelation`) in `Ast.Core`.
 
-1. **Memory-layer models** — `ExpertiseNote`, annotation schema, temporal
-   `version_range` on nodes/edges, audit log.
-2. **Context assembly** — token-budgeted context construction from graph
-   traversal + vector similarity (hybrid retrieval).
-3. **Incremental sync** — diff-aware re-extraction with dependency
-   invalidation and rename tracking.
-4. **Agent API** — MCP tool surface for query, annotate, call-chain, and
-   expertise write-back.
+All new interfaces (`IMemoryGraphStore`, `IMemoryRetrievalEngine`,
+`IEvolutionEngine`, `IExtractionPipeline`, `IIncrementalSync`) are defined
+**within `Ast.Memory`**. Existing projects are referenced via project
+dependencies, never mutated (architecture.md §3.0).
 
 The graph schema and lifecycle follow the taxonomy from the Graph-based Agent
-Memory survey (Yang et al., arXiv:2602.05665) — Extraction → Storage →
-Retrieval → Evolution — adapted to code intelligence.
+Memory survey (Yang et al., arXiv:2602.05665) — **Extraction → Storage →
+Retrieval → Evolution** — adapted to code intelligence. Four orthogonal graph
+layers (Structural, Call-Chain, Semantic, Expertise) with temporal versioning
+via dual-axis `VersionRange` (commit-index + wall-clock).
 
 **Technology stack (anchored to existing repo):**
 
-| Concern | Existing | New/Extended |
-|---------|----------|--------------|
-| AST parsing | `Ast.Core` (C# via Roslyn), `Ast.Csharp`, `Ast.PowerShell` | No new parsers in MVP; leverage existing extractors |
-| Graph storage | `Ast.GraphDb` / `IGraphStore` / `Neo4jGraphStore` | Add `MemoryGraphStore` wrapper with annotation + temporal tables |
-| Embeddings | `Ast.Embedding` / `IEmbeddingGenerator` | Reuse; add batch embedding for memory nodes |
-| Vector search | `Ast.VectorDb` / `IVectorStore` / `QdrantVectorStore` | Reuse; add memory-scoped collection |
-| Queries | `Ast.Query` / `ICodeQuery` / `HybridQueryService` | Extend with `IMemoryQuery` and context assembly |
-| Detection rules | `CodeIntelligence` analyzers (28 analyzers) | Wire detected relationships into memory graph |
+| Concern | Existing project | How memory layer uses it |
+|---------|------------------|------------------------|
+| AST parsing | `Ast.Core` (`HypergraphNode`, `Hyperedge`, `HyperedgeType` — 44 enum values), `Ast.Csharp`, `Ast.PowerShell` | Reference types via `Metadata` dict. One additive enum value `MemoryRelation`. |
+| Graph storage | `Ast.GraphDb` / `IGraphStore` / `Neo4jGraphStore` | `Ast.Memory` defines `IMemoryGraphStore` extending `IGraphStore`. `Neo4jMemoryGraphStore` composes `Neo4jGraphStore` via delegation. |
+| Embeddings | `Ast.Embedding` / `IEmbeddingGenerator` / `CodeEmbeddingService` | Reuse directly — calls `GenerateBatchEmbeddingsAsync()`. Default model: `"nomic-embed-text"`. |
+| Vector search | `Ast.VectorDb` / `IVectorStore` / `QdrantVectorStore` | Reuse for team mode. Add in-process HNSW adapter for local mode. |
+| Queries | `Ast.Query` / `ICodeQuery` / `HybridQueryService` | Reference only. `IMemoryRetrievalEngine` composes `ICodeQuery` internally. |
+| Code analysis | `CodeIntelligence` (27 analyzers, 4 detectors) | Consume as call-chain / structural edge source. No modifications. |
+
+**Project layout** (architecture.md §3.0):
+
+```
+src/ast/
+  Ast.Memory/                     ← NEW project
+    Ast.Memory.csproj
+    Interfaces/                   ← IMemoryGraphStore, IMemoryRetrievalEngine, IEvolutionEngine, IExtractionPipeline, IIncrementalSync
+    Models/                       ← MemoryNode, MemoryEdge, ExpertiseEntry, Enums, MemoryMetadataKeys
+    Extraction/                   ← StructureBuilder, CallChainAnalyzer, SemanticIndexer, FactNormalizer
+    Context/                      ← ContextAssembler, BudgetController
+    Evolution/                    ← EvolutionEngine, ConsolidationService, DecayService
+    Retrieval/                    ← MemoryRetrievalEngine, QueryPlanner, Ranker, ScoringWeights
+    Sync/                         ← IncrementalSync, GitDiffDriver
+    Storage/                      ← Neo4jMemoryGraphStore, SqliteGraphStore
+    Schema/                       ← AnnotationKeyRegistry
+    Mcp/                          ← MemoryMcpToolRegistration, MemoryMcpHandler, McpSchemas
+    Cli/                          ← MemoryCommandModule
+    ServiceCollectionExtensions.cs
+  Ast.Memory.UnitTests/           ← NEW
+  Ast.Memory.IntegrationTests/    ← NEW
+```
 
 ---
 
 ## Phase 1: Memory Schema & Storage Foundation
 
-> **Goal:** Define the memory-layer data model, extend the existing graph store
-> with annotation/temporal/audit capabilities, and establish evaluation fixtures.
+> **Goal:** Define the memory-layer data model (composition wrappers, expertise
+> entries, temporal versioning, audit log) and implement `IMemoryGraphStore`
+> backed by Neo4j + Qdrant.
 >
 > **Hard dependency:** None — this is the foundation phase.
 
-### Stage 1.1: Memory Node and Edge Models
+### Stage 1.1: Project Scaffold and Core Models
 
 #### Implementation Steps
-- [ ] Create `src/ast/Ast.Memory/Models/MemoryNode.cs` extending `HypergraphNode` with `VersionRange` (since/until commit SHA), `LastTouched` timestamp, `ContentHash`, and `EmbeddingVector` properties
-- [ ] Create `src/ast/Ast.Memory/Models/MemoryEdge.cs` extending `Hyperedge` with `VersionRange`, `Confidence` (float 0–1), `Stale` flag, and `Layer` enum (Structural, CallChain, Semantic, Expertise)
-- [ ] Create `src/ast/Ast.Memory/Models/ExpertiseNote.cs` with `Summary`, `PatternType` enum (Pattern, Pitfall, Preference, Insight), `Confidence`, `Source` (agent session ID), `EvidenceCitations` list, and `AppliesTo` node ID list
-- [ ] Create `src/ast/Ast.Memory/Models/Annotation.cs` with `NodeId`, `Key`, `ValueJson`, `SessionId`, `ValidFrom`, `ValidUntil` temporal fields
-- [ ] Create `src/ast/Ast.Memory/Models/AuditEntry.cs` with `Operation` enum (Create, Update, Delete, Annotate), `EntityType`, `EntityId`, `SessionId`, `Timestamp`, `DetailJson`
-- [ ] Create `src/ast/Ast.Memory/Models/Enums.cs` with `GraphLayer`, `ExpertisePatternType`, `AuditOperation` enums
-- [ ] Add `Ast.Memory.csproj` to solution with references to `Ast.Core`
+- [ ] Create `src/ast/Ast.Memory/Ast.Memory.csproj` targeting `net8.0` with project references to `Ast.Core`, `Ast.GraphDb`, `Ast.Embedding`, `Ast.VectorDb`, `Ast.Query`; add to `Workflow.sln`
+- [ ] Create `src/ast/Ast.Memory/Models/Enums.cs` with `MemoryLayer` enum (`Structural`, `CallChain`, `Semantic`, `Expertise`), `ExpertiseKind` enum (`Pattern`, `Pitfall`, `Preference`, `Insight`), `AuditOperation` enum (`Create`, `Update`, `Delete`, `Annotate`), and `RetrievalMode` enum (`StructuralDrill`, `CallTrace`, `SemanticSearch`, `ExpertiseRecall`, `Hybrid`)
+- [ ] Create `src/ast/Ast.Memory/Models/VersionRange.cs` as `record VersionRange(string Since, int SinceIndex, string? Until, int? UntilIndex)` per architecture.md §4.3
+- [ ] Create `src/ast/Ast.Memory/Models/MemoryNode.cs` as a **composition wrapper** — contains `HypergraphNode Inner { get; }` property (NOT inheritance) with strongly-typed accessors for `Metadata["MemoryLayer"]`, `Metadata["VersionRange"]`, `Metadata["ContentHash"]`, `Metadata["LastTouched"]`, `Metadata["Embedding"]`, `Metadata["EmbeddingModel"]`, `Metadata["Summary"]`, `Metadata["QualifiedName"]` (architecture.md §4.1)
+- [ ] Create `src/ast/Ast.Memory/Models/MemoryEdge.cs` as a **composition wrapper** — contains `Hyperedge Inner { get; }` property (NOT inheritance) with strongly-typed accessors for `Metadata["MemoryLayer"]`, `Metadata["SemanticRelation"]`, `Metadata["VersionRange"]`, `Metadata["Confidence"]`, `Metadata["Stale"]`, `Metadata["OriginalEdgeType"]` (architecture.md §4.1)
+- [ ] Create `src/ast/Ast.Memory/Models/ExpertiseEntry.cs` with `Kind` (`ExpertiseKind`), `Title`, `Body`, `AppliesTo` (node ID list), `Scope` ("exact"\|"subtree"), `Evidence` (list of `Citation`), `SourceAgent` — matching architecture.md §5.4
+- [ ] Create `src/ast/Ast.Memory/Models/AuditEntry.cs` with `Operation` (`AuditOperation`), `EntityType`, `EntityId`, `SessionId`, `Timestamp`, `DetailJson`
+- [ ] Create `src/ast/Ast.Memory/Models/MemoryMetadataKeys.cs` as static constants for all curated `Metadata` key names (e.g., `MemoryLayer`, `VersionRange`, `ContentHash`, `SemanticRelation`, `Confidence`, `Stale`) to avoid magic strings
+- [ ] Add `HyperedgeType.MemoryRelation` enum value to `src/ast/Ast.Core/HypergraphModels.cs` — the sole modification to any existing project (architecture.md §4.6)
 
 #### Test Scenarios
-- [ ] Scenario: MemoryNode round-trip — Given a MemoryNode with VersionRange {since="abc123", until=null}, When serialized to JSON and deserialized, Then all properties including VersionRange are preserved
-- [ ] Scenario: ExpertiseNote validation — Given an ExpertiseNote with empty Summary, When validated, Then a validation error is returned listing "Summary is required"
-- [ ] Scenario: AuditEntry creation — Given an AuditEntry with Operation=Create and EntityType="Function", When constructed, Then Timestamp defaults to UTC now and all required fields are populated
+- [ ] Scenario: MemoryNode composition — Given a `HypergraphNode` with `Metadata["MemoryLayer"]="structural"` and `Metadata["VersionRange"]=new VersionRange("abc123",42,null,null)`, When wrapped in a `MemoryNode`, Then `memoryNode.Inner` is the original node, `memoryNode.Layer` returns `"structural"`, and `memoryNode.Version.SinceIndex` returns `42`
+- [ ] Scenario: MemoryEdge composition — Given a `Hyperedge` with `EdgeType=HyperedgeType.MemoryRelation` and `Metadata["SemanticRelation"]="APPLIES_TO"`, When wrapped in a `MemoryEdge`, Then `memoryEdge.Inner` is the original edge and `memoryEdge.SemanticRelation` returns `"APPLIES_TO"`
+- [ ] Scenario: ExpertiseEntry validation — Given an `ExpertiseEntry` with empty `Title`, When validated, Then a validation error lists "Title is required"
+- [ ] Scenario: MemoryRelation enum addition — Given the updated `Ast.Core`, When all existing `Ast.Core.UnitTests` are run, Then zero tests regress (additive-only change)
 
-### Stage 1.2: Memory Storage Interface
+### Stage 1.2: IMemoryGraphStore Interface and Supporting Types
 
 #### Implementation Steps
-- [ ] Create `src/ast/Ast.Memory/Storage/IMemoryStore.cs` interface extending `IGraphStore` with `UpsertAnnotationAsync`, `GetAnnotationsAsync`, `WriteAuditEntryAsync`, `GetAuditLogAsync`, `TombstoneNodeAsync` (sets `VersionRange.Until`), and `GetNodeAtVersionAsync` (point-in-time query)
-- [ ] Create `src/ast/Ast.Memory/Storage/IExpertiseStore.cs` interface with `WriteExpertiseAsync`, `GetExpertiseForNodeAsync`, `FindExpertiseByPatternTypeAsync`, `SupersedeExpertiseAsync`
-- [ ] Create `src/ast/Ast.Memory/Storage/MemoryStoreOptions.cs` with configurable retention window (default 90 days), cold-archive threshold, and max annotation count per node
+- [ ] Create `src/ast/Ast.Memory/Interfaces/IMemoryGraphStore.cs` extending `IGraphStore` (from `Ast.GraphDb`) with methods: `ApplyDiffAsync(GraphDiff, string commitSha)`, `TraverseAsync(string startNodeId, TraversalPlan)`, `VectorSearchAsync(float[] queryVector, int topK, NodeFilter?)`, `GetNodeAtCommitAsync(string nodeId, string commitSha)`, `FindByNameAsync(string prefix, IReadOnlyList<string>? kinds, int limit)`, `RebuildVectorIndexAsync()`, `ResolveCommitIndexAsync(string commitSha)`, `RegisterCommitAsync(string commitSha, string? parentSha, DateTime timestamp)` — matching architecture.md §5.2 exactly
+- [ ] Create `src/ast/Ast.Memory/Models/TraversalPlan.cs` with `Direction` ("outbound"\|"inbound"\|"both"), `SemanticRelations` (primary edge filter — canonical relation names from §2.2), deprecated `EdgeTypes`, `LayerFilter`, `MaxDepth` (default 3), `Filter` (`NodeFilter`), `Limit` (default 100)
+- [ ] Create `src/ast/Ast.Memory/Models/TraversalResult.cs` with `Nodes`, `Edges`, `Paths`
+- [ ] Create `src/ast/Ast.Memory/Models/GraphFact.cs` as `abstract record GraphFact(string Id, string ContentHash, VersionRange VersionRange)` with derived `NodeFact` and `EdgeFact` records — matching architecture.md §5.1
+- [ ] Create `src/ast/Ast.Memory/Models/GraphDiff.cs` as `record GraphDiff(IReadOnlyList<GraphFact> Inserts, IReadOnlyList<GraphFact> Updates, IReadOnlyList<string> Tombstones)`
+- [ ] Create `src/ast/Ast.Memory/Models/Snapshot.cs` with `Id`, `CommitSha`, `CommitIndex`, `ParentSha`, `CreatedAt`, nested `SnapshotStats` (Nodes, Edges, ExpertiseNodes) — matching architecture.md §4.8
+- [ ] Create `src/ast/Ast.Memory/Models/Citation.cs` with `NodeId`, `CommitSha`, `Snippet`
+- [ ] Create `src/ast/Ast.Memory/Models/MemoryOptions.cs` with all configurable constants from architecture.md §2.4: `SimilarityThreshold` (0.85), `StaleDecayFactor` (0.5), `MinorDecayFactor` (0.9), `ArchiveConfidenceFloor` (0.1), `DecayHalfLifeDays` (1095), `TokenBudgetDefault` (8000), `TokenBudgetCeiling` (32000), `IncrementalSyncDebounceMs` (1000), and scoring weights `ScoringWeights` record (structural=0.30, semantic=0.25, centrality=0.20, recency=0.15, expertise=0.10)
 
 #### Test Scenarios
-- [ ] Scenario: IMemoryStore contract — Given the IMemoryStore interface, When compiled, Then it extends IGraphStore and exposes all temporal and annotation methods
-- [ ] Scenario: MemoryStoreOptions defaults — Given default MemoryStoreOptions, When constructed, Then RetentionDays=90 and ColdArchiveThreshold=0.1 and MaxAnnotationsPerNode=100
+- [ ] Scenario: IMemoryGraphStore contract — Given the `IMemoryGraphStore` interface, When compiled, Then it extends `IGraphStore` and exposes `ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, `FindByNameAsync`, `RebuildVectorIndexAsync`, `ResolveCommitIndexAsync`, `RegisterCommitAsync`
+- [ ] Scenario: MemoryOptions defaults — Given default `MemoryOptions`, When constructed, Then `SimilarityThreshold`=0.85, `TokenBudgetDefault`=8000, `TokenBudgetCeiling`=32000, `DecayHalfLifeDays`=1095, and scoring weights sum to 1.00
+- [ ] Scenario: TraversalPlan SemanticRelations filter — Given a `TraversalPlan` with `SemanticRelations=["CALLS","EXTENDS"]`, When inspected, Then `EdgeTypes` is null (deprecated) and `SemanticRelations` contains exactly those two entries
 
-### Stage 1.3: Neo4j Memory Store Implementation
+### Stage 1.3: Neo4jMemoryGraphStore Implementation
 
 #### Implementation Steps
 - [ ] Create `src/ast/Ast.Memory/Storage/Neo4jMemoryStore.cs` implementing `IMemoryStore` by composing the existing `Neo4jGraphStore` and adding Cypher queries for annotation CRUD, temporal filtering (`WHERE n.valid_from <= $version AND (n.valid_until IS NULL OR n.valid_until > $version)`), and audit logging
