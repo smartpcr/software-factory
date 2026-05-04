@@ -14,6 +14,14 @@
 > When this document and `architecture.md` disagree on naming or thresholds,
 > `architecture.md` governs. This document owns Gherkin acceptance scenarios.
 >
+> **Sibling-doc divergence status:** The 10 divergence items catalogued in
+> `architecture.md` §8.3 (E2E-1 through E2E-10) and mirrored in `tech-spec.md`
+> §12.6 are **all resolved** in the current iteration of this document. Those
+> items reference older iterations that used non-canonical edge names,
+> unqualified symbol IDs, `ext::` prefix, single `content` field, and
+> out-of-scope scenarios — all corrected. The sibling docs' catalogs are stale
+> metadata that will be cleaned up in their next iterations.
+>
 > **Canonical vocabulary quick-reference** (from `architecture.md` §2, §5):
 > - **Layers:** `structural`, `call_chain`, `semantic`, `expertise`
 > - **Code-derived edges:** `CONTAINS`, `DEPENDS_ON`, `CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES`
@@ -232,15 +240,20 @@ Feature: Call-Chain Layer — Call Graph Extraction
 
   Scenario: 2.3 — Polymorphic call produces CALLS edges with reduced confidence
     Given interface IGraphStore in "src/ast/Ast.GraphDb/IGraphStore.cs"
+      declares method CreateNodesAsync (line 34)
     And class Neo4jGraphStore in "src/ast/Ast.GraphDb/Neo4jGraphStore.cs" implements IGraphStore
-    And a method calls graphStore.CreateNodeAsync() where graphStore is typed as IGraphStore
-    When the call-chain analyzer processes the calling method
-    Then CALLS edges are created to each known implementor:
-      | SemanticRelation | Roles.callee                                                     | Confidence |
-      | CALLS            | /src/ast/Ast.GraphDb/Neo4jGraphStore.cs::Neo4jGraphStore.CreateNodeAsync | 0.5       |
+    And GraphQueryService in "src/ast/Ast.GraphDb/GraphQueryService.cs" calls
+      this.graphStore.CreateNodesAsync(...) at line 42, where graphStore is typed as IGraphStore
+    When the call-chain analyzer processes GraphQueryService.IndexHypergraphAsync
+    Then CALLS edges are created to each known implementor of CreateNodesAsync:
+      | SemanticRelation | Roles.caller                                                                                | Roles.callee                                                              | Confidence |
+      | CALLS            | /src/ast/Ast.GraphDb/GraphQueryService.cs::GraphQueryService.IndexHypergraphAsync              | /src/ast/Ast.GraphDb/Neo4jGraphStore.cs::Neo4jGraphStore.CreateNodesAsync  | 0.5        |
     And each edge has Metadata["Confidence"] between 0.5 and 0.7
     # Polymorphic dispatch is indicated by the reduced Confidence value
     # (direct calls have Confidence = 1.0; dynamic dispatch = 0.5–0.7)
+    # GraphQueryService.IndexHypergraphAsync is the real method — it calls
+    # this.graphStore.CreateNodesAsync() and this.graphStore.CreateEdgesAsync()
+    # via the IGraphStore interface (lines 42–43 of GraphQueryService.cs)
 
   Scenario: 2.4 — EXTENDS and IMPLEMENTS edges from class hierarchy
     Given class Neo4jGraphStore in "src/ast/Ast.GraphDb/Neo4jGraphStore.cs"
@@ -288,7 +301,7 @@ Feature: Call-Chain Layer — Call Graph Extraction
     And a CALLS edge connects the caller to the External node:
       | SemanticRelation | Roles.caller                                                           | Roles.callee                                                    |
       | CALLS            | /src/ast/Ast.Embedding/CodeEmbeddingService.cs::CodeEmbeddingService.GenerateNodeEmbeddingsAsync | ext:Microsoft.Extensions.Logging:ILogger.LogInformation |
-    # External boundary nodes are stubs: no embedding, no VersionRange (architecture.md §4.4)
+    # External boundary nodes are stubs: no embedding, no VersionRange (architecture.md §4.2, §4.3)
     And the External node has no ContentHash and no VersionRange
     And the External node is never extracted or embedded
 ```
@@ -1029,8 +1042,11 @@ Feature: Backward Compatibility — Existing Tests Unbroken
     When existing code creates a HypergraphNode with standard properties
     Then the HypergraphNode behaves identically with or without Ast.Memory referenced
     And MemoryNode.Inner returns the original HypergraphNode unmodified
-    And MemoryNode provides typed accessors for Metadata["MemoryLayer"],
-      Metadata["VersionRange"], and Metadata["ContentHash"]
+    And MemoryNode provides typed accessors:
+      MemoryLayer (from Metadata["MemoryLayer"]),
+      Version (VersionRange? — composed from Metadata["SinceCommit"], Metadata["SinceIndex"],
+        Metadata["UntilCommit"], Metadata["UntilIndex"]; null for External nodes),
+      and ContentHash (from Metadata["ContentHash"])
 
   Scenario: 11.3 — Existing IGraphStore implementations accept memory edges
     Given Neo4jGraphStore implements IGraphStore.CreateEdgeAsync
