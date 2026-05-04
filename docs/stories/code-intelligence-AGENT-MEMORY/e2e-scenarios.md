@@ -19,14 +19,14 @@
 > - **Code-derived edges:** `CONTAINS`, `DEPENDS_ON`, `CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES`
 > - **Memory-only edges:** `SIMILAR_TO`, `BELONGS_TO_CLUSTER`, `APPLIES_TO`, `SUPERSEDES`, `DERIVED_FROM`
 > - **Retired names (do NOT use):** `CALLED_BY` → reverse traversal of `CALLS`; `IMPORTS` → `DEPENDS_ON`; `INHERITS` → `EXTENDS`; `ExpertiseNote` → `ExpertiseEntry`; `IMemoryStore` → `IMemoryGraphStore`; single `Content` field on ExpertiseEntry → separate `Title` + `Body` fields
-> - **Node ID format:** `"{filePath}::{qualifiedName}"` for symbols, `"{relativePath}"` for files, `"/"` for repo root, `"expertise:{kind}:{hash8}"` for expertise nodes (hash8 = first 8 chars of SHA-256(Title + Body + TargetNodeId))
+> - **Node ID format:** `"/{relativePath}::{qualifiedName}"` for symbols (leading `/` always present), `"/{relativePath}"` for file/package/workspace nodes, `"/"` for repo root, `"ext:{package}:{qualifiedName}"` for External boundary stubs (no leading `/`), `"expertise:{kind}:{hash8}"` for expertise nodes (hash8 = first 8 chars of SHA-256(Title + Body + TargetNodeId)). All in-repo node IDs start with `/`; External and expertise IDs do not.
 > - **ExpertiseEntry fields:** `Id`, `Kind` (Pattern|Pitfall|Preference|Insight), `Title` (headline), `Body` (detailed description), `TargetNodeId`, `Scope` ("exact"|"subtree"), `Confidence` (0.0–1.0), `Archived` (bool, default false), `SourceAgent`, `Evidence` (optional citations), `Embedding` (float[]? from Title + " " + Body), `ContentHash` (SHA-256 of Title + Body — for dedup); note: ExpertiseEntry is NOT a HypergraphNode — it has its own table, not a Metadata dict
 > - **RecordExpertiseAsync signature:** `(targetNodeId, kind, title, body, sourceAgent, scope?, evidence?)` — per architecture.md §5.3
 > - **RestoreArchivedExpertiseAsync signature:** `(expertiseId, restoredConfidence = 0.5)` — per architecture.md §5.3
 > - **ArchiveExpertiseAsync:** on `IMemoryGraphStore` — sets `archived = true`, called by DecayService when Confidence < ArchiveConfidenceFloor (0.1)
 > - **Scoring weights:** structural 0.30, semantic 0.25, centrality 0.20, recency 0.15, expertise 0.10
 > - **Token budget:** default 8,000; ceiling 32,000
-> - **Temporal model:** `commit_index` integers (not timestamps); `VersionRange(Since, SinceIndex, Until?, UntilIndex?)`
+> - **Temporal model:** `commit_index` integers (not timestamps); `VersionRange(Since, SinceIndex, Until?, UntilIndex?)`. **External boundary nodes are the exception** — they have no `VersionRange` (NULL `since_index`) and are always included in temporal queries (architecture.md §4.3).
 > - **API types:** `RetrievalRequest` (QueryText, SeedNodeIds, Mode, TokenBudget, AtCommitIndex, Weights); `RetrievalResult` (Nodes, ContextMarkdown, TokensUsed, ModesExecuted, Diagnostics); `ScoredMemoryNode` (Node, CompositeScore, StructuralScore, SemanticScore, CentralityScore, RecencyScore, ExpertiseScore); `SyncResult` (FilesChanged, NodesAdded, NodesRetired, EdgesAdded, EdgesRetired, ExpertiseDecayed, Duration); `MemoryGraphStatistics` (from `GetMemoryStatisticsAsync`)
 > - **MCP tools:** `memory_query`, `memory_status`, `memory_record_expertise`, `memory_sync`, `memory_consolidate`
 >
@@ -78,7 +78,9 @@ Feature: Structural Layer — Repository Structure Graph Construction
       | edge SemanticRelation | Roles.parent | Roles.child             |
       | CONTAINS              | /            | /src/ast/Ast.Core       |
       | CONTAINS              | /            | /src/ast/Ast.Csharp     |
-    And every node carries VersionRange with SinceIndex = 1 and UntilIndex = null
+    And every in-repo node carries VersionRange with SinceIndex = 1 and UntilIndex = null
+    # External boundary nodes (NodeType = "External") have no VersionRange —
+    # they are timeless stubs always included in temporal queries (architecture.md §4.3)
     And every edge carries Metadata["SemanticRelation"] matching its canonical name
 
   Scenario: 1.2 — Symbol-level extraction from real C# source files
@@ -447,8 +449,11 @@ Feature: Expertise Layer — Agent Learning and Write-Back
 ## Feature 5: Temporal Versioning — Point-in-Time Queries
 
 Every node and edge carries a `VersionRange` with commit SHA + monotonic
-`commit_index`. Tombstoned entities have `Until` set but remain queryable
-for history (per `architecture.md` §4.3).
+`commit_index` — **except External boundary nodes**, which are timeless stubs
+with no `VersionRange` (NULL `since_index` / `until_index`) and are always
+included in temporal queries (per `architecture.md` §4.3). Edges to/from
+External nodes ARE versioned normally. Tombstoned entities have `Until` set
+but remain queryable for history.
 
 ```gherkin
 Feature: Temporal Versioning — Point-in-Time Queries
@@ -492,7 +497,26 @@ Feature: Temporal Versioning — Point-in-Time Queries
     Then the CALLS edge also receives UntilIndex = 3
     And future queries at commit_index >= 3 do not see the edge
 
-  Scenario: 5.5 — SyncResult created after each incremental sync
+  Scenario: 5.5 — External boundary nodes are always included in temporal queries
+    Given an External boundary node "ext:Microsoft.CodeAnalysis:SyntaxTree" with:
+      | field        | value    |
+      | NodeType     | External |
+      | since_index  | NULL     |
+      | until_index  | NULL     |
+    # External nodes have no VersionRange — they are timeless stubs (architecture.md §4.3)
+    When querying nodes at commit_index 1
+    Then the External node IS included in the result
+    When querying nodes at commit_index 999
+    Then the External node IS still included in the result
+    # The temporal filter for nodes uses:
+    #   WHERE (since_index IS NULL /* External → always included */
+    #          OR (since_index <= @target AND (until_index IS NULL OR until_index > @target)))
+    # Edges TO External nodes ARE versioned normally — their VersionRange tracks
+    # when the in-repo reference was first/last seen (architecture.md §4.3)
+    And edges pointing to the External node carry their own VersionRange
+    And those edges ARE filtered by commit_index normally
+
+  Scenario: 5.6 — SyncResult created after each incremental sync
     When IIncrementalSync.ApplyDiffAsync processes commit "ccc3333"
     Then the SyncResult contains:
       | field         | assertion |
@@ -1123,5 +1147,12 @@ Feature: Graph Schema Integrity — Edge and Metadata Validation
     And the Class node ID is "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
     And the Function node ID is "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEmbeddingText"
     And the repo root node ID is "/"
-    # Per architecture.md §4.2
+    # All in-repo node IDs start with "/" (the repo root). Format:
+    #   "/{relativePath}::{qualifiedName}" for symbols
+    #   "/{relativePath}" for files, packages, workspaces
+    #   "/" for repo root
+    # External stubs use "ext:{package}:{qualifiedName}" (no leading /)
+    # Expertise IDs use "expertise:{kind}:{hash8}" (no leading /)
+    And an External stub ID like "ext:Microsoft.CodeAnalysis:SyntaxTree" has no leading "/"
+    And an expertise ID like "expertise:pitfall:ab12cd34" has no leading "/"
 ```
