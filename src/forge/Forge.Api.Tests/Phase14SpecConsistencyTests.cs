@@ -76,7 +76,7 @@ public class Phase14SpecConsistencyTests
         Assert.Contains("score < 70", spec);
 
         Assert.Equal(90, ScoringConstants.PassThreshold);
-        Assert.Equal(70, ScoringConstants.IterateThreshold);
+        Assert.Equal(70, ScoringConstants.IterateThreshold(1));
     }
 
     [Fact]
@@ -191,7 +191,7 @@ public class Phase14SpecConsistencyTests
         Assert.Contains($"Risk / safety ({ScoringConstants.RiskWeight})",      preamble);
 
         Assert.Contains($"≥ {ScoringConstants.PassThreshold}",     preamble);
-        Assert.Contains($"{ScoringConstants.IterateThreshold}..",  preamble);
+        Assert.Contains($"pts 1 → {ScoringConstants.IterateThreshold(1)}",  preamble);
         Assert.Contains($"up to {ScoringConstants.MaxIterations} iterations", preamble);
         Assert.Contains($"≥ {ScoringConstants.PromoteAvgMin:0}",   preamble);
         Assert.Contains($"< {ScoringConstants.DemoteAvgMax:0}",    preamble);

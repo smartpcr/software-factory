@@ -112,7 +112,7 @@ Decisions confirmed by the operator. Each one closes an entry in "Open questions
   - **Implications**:
     - Phase 10.6 `Crew` schema stays as specified — no `parentCrewId`, no recursive FK.
     - `/crews` view (Phase 10.7) renders one row per crew, sortable by salary / activity / name. No expand/collapse arrows.
-    - Salary roll-up is one level only: per-crew on `/crews`, per-product on `/products`. No "department total" intermediate level.
+    - Salary roll-up is one level only: per-crew on `/crews`. No "department total" intermediate level.
     - Phase 11 cost ledger queries stay simple — `GROUP BY crewId`, never recursive CTE.
     - `forge_v2.md` candidate: nested crews with parent FK, recursive salary roll-up, tree view on `/crews`. Out of scope for v0.1.
 - **Cross-org sign-in (Q10)** — **Multi-org from day one.** A single Windows user can be signed into multiple ADO organizations and multiple GitHub orgs simultaneously; Forge picks the right token per request based on the target repo's owning org.
@@ -339,7 +339,7 @@ Make Phases 8 + 9 ergonomic by letting the user pin defaults, and give the Produ
 - [ ] **10.3** "Defaults" panel on `/settings`: combo-boxes for default ADO org + project (populated from `/api/providers/ado/orgs` and `_apis/projects` once signed in), default GitHub owner (populated from `/user/orgs` + `/user`), default product, default repo. Each row has an "Apply everywhere" checkbox that copies the value to the relevant create-flow defaults. _(text inputs land today; combo-boxes that auto-populate from the provider APIs are a Phase R polish — operator pastes the URL and project name. ADO defaults flow into AdoConfigResolver so `Sync now` immediately uses the new values. "Apply everywhere" checkbox not yet rendered.)_
 - [~] **10.4** Pre-fill new-card modal, new-workstream modal, "Create PR from workstream", and the `/products` "Add repo" picker from these defaults. The user can override per action; overrides do **not** mutate the saved default unless an "Update default" toggle is ticked. _(server-side defaults resolution lands in 10.5; UI pre-fill is a small follow-up — modals still take the user input directly today)_
 - [~] **10.5** Server-side default resolution: when an API request omits `productId` / `repoId` / `adoProject` / etc., the server falls back to the caller's saved defaults before erroring; the response includes a `defaultsApplied: [...]` array so the UI can surface which fields were auto-filled. _(ADO config-resolver path is wired — AdoProvider transparently picks up user-settings org/project. Per-endpoint `defaultsApplied: [...]` echoing is deferred — would need ProductScope-style plumbing on every write endpoint.)_
-- [ ] **10.6** **Crew model**: a `Crew { id, name, productId, lead, summary, model, modelInputPricePerMTok, modelOutputPricePerMTok }` record (model + pricing per the Q3 resolution); each `Agent` gets a single `crewId` (one crew per agent — many-to-many is overkill at v0.1). Seed crews from the prototype's agent prefixes — `E*` → "Engineering", `R*` → "Review", `A*` → "Architecture", `Q*` → "QA" — so the first run has data without operator setup. Default model assignments: `Engineering` → `claude-opus-4-7`, `Review` → `claude-sonnet-4-6`, `Architecture` → `claude-opus-4-7`, `QA` → `claude-haiku-4-5` (operator overrides via `/settings/crews`).
+- [ ] **10.6** **Crew model**: a `Crew { id, name, lead, summary, model, modelInputPricePerMTok, modelOutputPricePerMTok }` record (model + pricing per the Q3 resolution). **Crews are global — not scoped to any product.** Any product-owner can manage any crew. Each `Agent` gets a single `crewId` (one crew per agent — many-to-many is overkill at v0.1). Seed crews from the prototype's agent prefixes — `E*` → "Engineering", `R*` → "Review", `A*` → "Architecture", `Q*` → "QA" — so the first run has data without operator setup. Default model assignments: `Engineering` → `claude-opus-4-7`, `Review` → `claude-sonnet-4-6`, `Architecture` → `claude-opus-4-7`, `QA` → `claude-haiku-4-5` (operator overrides via `/settings/crews`).
 - [~] **10.7** `/crews` view (sidebar entry, visible only when current user role = `product-owner`): one row per crew with live metrics — members, cards in flight, blockers, **salary today / sprint / month** (live from the cost ledger in Phase 11.4), tokens burned (in / out split), 24h cost, last-active timestamp, open PR count, model name pill. Click a crew → drill into its agents and recent activity (re-uses the workstream detail panel layout); from there, PO can pause / resume agents, edit soul.md, or swap the crew's model. _(view ships with members + in-flight + blocked counts + model pill + pricing; live salary readouts wait for the Phase 11 cost ledger; pause / resume / soul.md editor are Phase 11 surfaces)_
 - [ ] **10.8** Cross-product / cross-crew action audit: every write performed by a Product Owner against a crew or product they don't own is recorded in `forge_actions` (Phase 6.10) with a `supervising = true` flag and surfaced as a separate filter on `/audit`. _(schema lands today — `Supervising` column on `forge_actions`; AuditMiddleware doesn't yet populate it because the "owns this product" check requires Phase 10.5 productId scope to be plumbed. Schema-only readiness so the column is here when 10.5 fills it.)_
 - [ ] **10.9** Role-gating middleware: `[RequireRole("product-owner")]` attribute (or minimal-API filter equivalent) protects `/api/crews/*` writes and `/products/*` admin endpoints. Read endpoints stay open to all signed-in roles. _(landed as `RequireRole.Check(ctx, db, "product-owner")` minimal-API helper used inside each handler. Single-user dev installs pass through; once a UserRow exists with a non-PO role, writes from that user return 403.)_
@@ -499,7 +499,7 @@ Two principles drive the shape:
 ### Resolved decisions
 
 - **Q13.1 Crew topology** — each crew has exactly one **lead** (an agent or human) and zero-or-more **members** (agents or humans). Crews can nest: a parent crew (`parentCrewId`) groups child crews under a team-of-teams. Depth cap = 3 (Org → Team → Squad). Membership is exclusive within a depth: an agent can be a member of multiple **child** crews but only one direct **lead** assignment, so accountability for each task has a single owner.
-- **Q13.2 Lead = router** — only the lead can assign tasks within their crew. The lead may assign to themselves; the runtime treats self-assignment identically to peer-assignment for ledger and quota purposes. Reassignment is a write requiring **product-scoped** `RequireRole.ProductOwner` *or* `crew.lead == caller`. "Product-scoped" matters because Phase 9.12 made roles per-product: the role check resolves against `crew.productId` (the crew's home product), **not** the caller's active-product header. A PO of product B who happens to have product A selected in the TopBar cannot reach into A's crews; conversely a PO of product A keeps PO authority for A's crews regardless of which product is active in the UI. New `RequireRole.ProductOwnerOf(productId)` helper enforces this; existing endpoints that gated on PO must migrate when the action targets a specific crew/product.
+- **Q13.2 Lead = router** — only the lead can assign tasks within their crew. The lead may assign to themselves; the runtime treats self-assignment identically to peer-assignment for ledger and quota purposes. Reassignment is a write requiring **global** `RequireRole.ProductOwner` *or* `crew.lead == caller`. **Crews are global entities** — not scoped to any product. Any user with a `product-owner` role (global or on any product) can manage any crew. The role check resolves against the caller's global role since crews have no `productId`.
 - **Q13.3 Capability via soul.md** — capability is the YAML front-matter `capabilities:` list at the top of the crew's `soul.md` (Phase 11.3). Each entry references a `domain-expert.md` file by **content-addressed id** (sha256 of the file at ingestion time) and optional human label. The system prompt is a deterministic concatenation: `<soul.md body>` + `\n\n<capabilities (sorted by id)>`. Content addressing guarantees that two crews with the same capability list produce identical caches, which the runner reuses as a cache prefix.
 - **Q13.4 Model + backend + mode assignment** — three properties are **crew-level** (every member runs the same way): `model` (registry id), `backend` (Phase 11.5b: `copilot` (default) or `claude`), `invokeMode` (`sdk` (default) or `cli`). Pricing is denormalized per Phase 11.2 so historical salary stays reproducible after a price/model change. Switching any of the three writes `crew_history(crewId, kind in 'model'|'backend'|'mode', fromValue, toValue, switchedBy, switchedAt)` and forces a new prompt cache (the prefix changes). **Tool-using task kinds (`plan` and `coding`) require `invokeMode == sdk`** — CLI mode is text-only and cannot emit `tool_use` events. Validation: server refuses `assign` of a `plan` or `coding` task to a CLI-mode crew with 400 + `crew.tools_unavailable_in_cli`. **`dailyBudgetUsd` semantics with Copilot**: GitHub Copilot is subscription-billed, not per-token. Forge still computes `costUsd` for Copilot invocations using the matching Anthropic-equivalent price from `models.json` (Copilot routes through `claude-*` models internally, so the registry lookup applies); the budget cap therefore reflects an **estimated** spend, not real-dollar charges to the operator's billing account. Budget refusals (Phase 11.10) still fire so a runaway crew can't wedge the runtime, but the salary chip should label Copilot rows with a small "est." pill so PO doesn't confuse it with billed spend.
 - **Q13.5 Quota model** — three tiers, OR-combined (whichever is hit first stops new pickups):
@@ -546,17 +546,17 @@ Two principles drive the shape:
 - [ ] **13.6** Quota enforcement — extends Phase 11.10 budget pre-flight:  <!-- `MaxConcurrent` enforced in `CrewsEndpoints.Assign` (line 540) and `CrewQueueWorker` (line 276) with `agent.crew_concurrency_full`. `WeeklyCap` field persisted/migrated but the per-week refusal pre-flight is not yet wired. -->
   - On `assign`: refuse if `active_tasks_for_crew(crewId) >= MaxConcurrent`. 409 + `agent.crew_concurrency_full` SignalR.
   - On `claim` (any task type): refuse if `tasks_completed_this_iso_week(crewId) >= WeeklyCap`. 429 + `agent.crew_weekly_cap_hit`.
-  - Override `?force=true` on the assign endpoint records `crew_history(kind='quota-override')`. The override is gated on **product-scoped** PO (Q13.2): only a PO of `crew.productId` can force; a PO of a different product gets 403, even if their TopBar happens to be on `crew.productId`. Same rule for `dailyBudgetUsd` overrides from Phase 11.10.
+  - Override `?force=true` on the assign endpoint records `crew_history(kind='quota-override')`. The override is gated on **global PO** (Q13.2): only a user with the `product-owner` role can force. Same rule for `dailyBudgetUsd` overrides from Phase 11.10.
 - [ ] **13.7** Domain-expert generator — runs as a final pass on coding-task close. The dispatcher (`AgentRunnerDispatcher`) is re-entered with a fresh `StartAsync(kind=domain)` against the same agent + crew context, with the merged diff + the original step description as the prompt. System-prompt template: `agents/templates/domain-system.md`. Output is committed to the same PR's branch in a separate commit, then merged. Failure to generate is non-fatal — the task closes either way; a follow-up `gap-domain-expert` audit row points at the missing artifact so the lead can author it manually. Like 13.4 / 13.5, this requires `crew.invokeMode == sdk`; CLI crews skip the auto-generation and always go straight to the gap-audit row.
-- [ ] **13.8** Capability ingestion — `POST /api/crews/{crewId}/capabilities` body `{ contentId }` validates the file exists in `domain_experts`, appends to the crew's `Capabilities` array, writes the front-matter back to soul.md, and bumps the prompt cache (Phase 11.5). Removal: `DELETE` with the same body. UI lives in `/crews/{id}` with a searchable picker over `domain_experts.topic`. **Product scoping**: the picker defaults to `domain_experts` rows whose `repoId` belongs to `crew.productId` (a domain expert authored against `atlas-platform` shouldn't be the first hit when configuring an `update`-product crew). Toggle "Show all products" reveals the full set so cross-product reuse stays possible — picking a cross-product expert flags the capability chip with a small "ext." pill so leads see the dependency.
+- [ ] **13.8** Capability ingestion — `POST /api/crews/{crewId}/capabilities` body `{ contentId }` validates the file exists in `domain_experts`, appends to the crew's `Capabilities` array, writes the front-matter back to soul.md, and bumps the prompt cache (Phase 11.5). Removal: `DELETE` with the same body. UI lives in `/crews/{id}` with a searchable picker over `domain_experts.topic`.
 - [ ] **13.9** UI — extend `CrewsView` (today: read-only dashboard):  <!-- `src/forge/Forge.UI/src/views/CrewsView.tsx` is now ~2,100 lines: hierarchy panel, roster/capabilities/quota/runtime/history tabs, lead-or-PO write gate. -->
   - **Hierarchy panel** (left, 30%) — collapsible tree. Drag-drop a crew under another to reparent (writes `crew_history(kind='parent-change')`). Depth cap enforced client-side and server-side.
-  - **Crew detail** (center, 40%) — header shows crew name, lead avatar, and a **runtime badge group**: `Model · Backend · Mode` (e.g. `claude-opus-4-7 · Copilot · SDK`). Add a `tools: text-only` yellow pill on `(claude, sdk)` crews until 13.4a lands and on any `(_, cli)` crew. Add an `est.` grey pill on the salary readout when `Backend == copilot` (per Q13.4). Capability chip count next to the badge group. Tabs: `Roster` (lead + members table; +/− with role gate), `Capabilities` (chip list with the picker from 13.8), `Quota` (sliders for `MaxConcurrent`, `WeeklyCap`, `dailyBudgetUsd`), `Runtime` (read-only model registry row + Backend / Mode dropdowns; mutation gated by lead-or-product-scoped-PO), `History` (`crew_history` rows).
+  - **Crew detail** (center, 40%) — header shows crew name, lead avatar, and a **runtime badge group**: `Model · Backend · Mode` (e.g. `claude-opus-4-7 · Copilot · SDK`). Add a `tools: text-only` yellow pill on `(claude, sdk)` crews until 13.4a lands and on any `(_, cli)` crew. Add an `est.` grey pill on the salary readout when `Backend == copilot` (per Q13.4). Capability chip count next to the badge group. Tabs: `Roster` (lead + members table; +/− with role gate), `Capabilities` (chip list with the picker from 13.8), `Quota` (sliders for `MaxConcurrent`, `WeeklyCap`, `dailyBudgetUsd`), `Runtime` (read-only model registry row + Backend / Mode dropdowns; mutation gated by lead-or-global-PO), `History` (`crew_history` rows).
   - **Activity rail** (right, 30%) — current invocations, weekly task counter (`X / WeeklyCap`), salary today/sprint/month (Phase 11.9, kept; "est." pill on Copilot crews).
-  - The view is *editable for leads / product-scoped PO* (Q13.2) and *read-only for everyone else*. Field-level `disabled` driven by the role check resolved against `crew.productId`; trying to mutate as non-lead returns 403 from the API anyway.
+  - The view is *editable for leads / global PO* (Q13.2) and *read-only for everyone else*. Field-level `disabled` driven by the role check; trying to mutate as non-lead returns 403 from the API anyway.
 - [ ] **13.10** Sidebar — `/crews` already lives under "Agents" (Phase 10.7). Drop the PO-only gate at the *nav* level (everyone can browse) but keep mutation-level role checks. Sub-label changes from `Supervisory · PO only` to `{n} crews · {m} agents`.
 - [ ] **13.11** Tests:  <!-- `Phase13CrewsTests.cs` (218 lines): depth cap, history readout, capability content-id integrity, CLI-mode refusal, assign roster validation. Cell-coverage / Playwright cases in adjacent suites. -->
-  - xUnit: hierarchy depth cap, **product-scoped** lead-or-PO assign authorization (PO of A cannot mutate B's crew even with TopBar on B), plan task → WIT tree round-trip, coding task → PR round-trip, weekly-cap refusal, capability content-id integrity (sha256 match), domain-expert generator hits the file system but tolerates failure.
+  - xUnit: hierarchy depth cap, **global** lead-or-PO assign authorization, plan task → WIT tree round-trip, coding task → PR round-trip, weekly-cap refusal, capability content-id integrity (sha256 match), domain-expert generator hits the file system but tolerates failure.
   - **Cell coverage** (Phase 11.5b): `local-stub` model exercises plan and coding pipelines without network or CLI — both pipelines emit token + finish events through the dispatcher. CLI-mode refusal: assigning a `plan` or `coding` task to a `(_, cli)` crew returns 400 + `crew.tools_unavailable_in_cli`. Backend / mode change writes the right `crew_history` row.
   - **Cost ledger across cells**: Copilot invocations land an `agent_usage` row with `costUsd` computed from the registry price (estimated $) and the salary readout labels them with `est.`. Claude SDK invocations remain unchanged.
   - Playwright: open `/crews`, reparent via drag, assign a self-step, observe the `agent.crew_concurrency_full` toast when MaxConcurrent is hit. Switch a crew from `(claude, sdk)` to `(copilot, cli)` and confirm the `tools: text-only` pill renders + the `Plan` / `Code` buttons disable.
@@ -685,7 +685,7 @@ Phase 11 made agents real (model registry, cost ledger, soul.md, runner) and Pha
 Two principles drive the shape:
 
 1. **The rubric is the contract.** Generators see the same rubric their evaluator scores against (Phase 14.6 preamble injects it). No hidden criteria, no per-task overrides at v0.1 — every deliverable is scored against the same five dimensions so trailing averages compare apples-to-apples.
-2. **Schedule is soft, score is hard.** Outside 9-9-6 the dispatcher refuses *new* pickups but lets in-flight work finish. A score below 70 is a hard reject (work bounces to the lead); 70–89 always re-iterates (no negotiation). The team lead can override schedule (logged) but never overrides a reject.
+2. **Schedule is soft, score is hard.** Outside 9-9-6 the dispatcher refuses *new* pickups but lets in-flight work finish. A score below the reject threshold (which varies by work-item points — see `ScoringConstants.RejectThreshold`) is a hard reject (work bounces to the lead); [reject..89] always re-iterates (no negotiation). The team lead can override schedule (logged) but never overrides a reject.
 
 ### Resolved decisions
 
@@ -715,8 +715,8 @@ The six open questions from `docs/forge/scoring-and-promotion.md` §9 default-st
 ### Implementation steps
 
 - [ ] **14.1** **Schema migrations.** New columns on `agents`: `level INT NOT NULL DEFAULT 0`, `level_updated_at DATETIME?`, `hourly_usd DECIMAL(8,2) NOT NULL` (computed at write time as `4 + level * 3` so the invariant survives backfills). New columns on `crews`: `timezone TEXT NOT NULL DEFAULT 'America/Los_Angeles'`, `schedule_enabled BIT NOT NULL DEFAULT 1`. New tables — `deliverables(id, work_item_id, crew_id, generator_agent_id, evaluator_agent_id, iter, score, dims_json, verdict, notes, gen_cost_usd, eval_cost_usd, judge_agent_id?, judge_score?, judge_notes?, created_at)` and `agent_level_history(id, agent_id, old_level, new_level, window_avg, reason, created_at)`. Backfill: every existing agent → `level=0`, `hourly_usd=4`; every existing crew → `timezone='America/Los_Angeles'`, `schedule_enabled=1`. Migration is `Forge.Api/Persistence/Phase14Migration.cs` and runs idempotently on boot like the others. Locked numbers live in `Forge.Api/ScoringConstants.cs`.
-- [ ] **14.2** **Schedule gate middleware.** `ScheduleGate` ASP.NET endpoint filter applied to `POST /api/crews/{id}/plan` and `POST /api/crews/{id}/code` (and any future dispatch verb). Reads the crew's `timezone` + `schedule_enabled`, computes "is now within Mon–Sat 09:00–21:00 in that TZ?", refuses with `409 + crew.off_shift` otherwise. `?override=true` requires `crew.lead == caller || RequireRole.ProductOwnerOf(crew.productId)` and writes `crew_history(kind='dispatch-after-hours', ...)`. Telemetry: `forge.crew.schedule.refused` counter tagged with crew id and current hour-of-day. **Status:** `Forge.Api/Services/ScheduleGate.cs` is the pure helper; `CrewsEndpoints.ApplyScheduleGateAsync` wires it into both stubs ahead of the CLI check; override path writes `dispatch-after-hours` to `crew_history`. Telemetry counter is deferred to Phase 14.12.
-- [ ] **14.3** **Evaluator scoring contract.** Locked JSON shape — `{ score: int, dims: { correctness: int<=40, quality: int<=25, tests: int<=15, scope: int<=10, risk: int<=10 }, verdict: "pass"|"iterate"|"reject", notes: string<=800 }`. The runner reads the **last assistant message** of an evaluator run and parses out a fenced ```json``` block; missing block or invalid shape → server-side fallback verdict `iterate` with a `score=0` row and a `forge.eval.parse_failed` telemetry event so we can spot model drift. Verdict is *derived* from score (`>=90 → pass`, `>=70 → iterate`, else `reject`); the model's stated verdict is checked for consistency and a mismatch increments `forge.eval.verdict_mismatch` but does not override the derived value. **Status:** `Forge.Api/Services/EvaluatorScoreParser.cs` exposes pure `Parse(text) → EvaluatorScore`; fallback returns `iterate/score=0/ParseFailed=true`; `VerdictMismatch` flag is set when the model's claim diverges from the math. Counters deferred to Phase 14.12.
+- [ ] **14.2** **Schedule gate middleware.** `ScheduleGate` ASP.NET endpoint filter applied to `POST /api/crews/{id}/plan` and `POST /api/crews/{id}/code` (and any future dispatch verb). Reads the crew's `timezone` + `schedule_enabled`, computes "is now within Mon–Sat 09:00–21:00 in that TZ?", refuses with `409 + crew.off_shift` otherwise. `?override=true` requires `crew.lead == caller || global ProductOwner role` and writes `crew_history(kind='dispatch-after-hours', ...)`. Telemetry: `forge.crew.schedule.refused` counter tagged with crew id and current hour-of-day. **Status:** `Forge.Api/Services/ScheduleGate.cs` is the pure helper; `CrewsEndpoints.ApplyScheduleGateAsync` wires it into both stubs ahead of the CLI check; override path writes `dispatch-after-hours` to `crew_history`. Telemetry counter is deferred to Phase 14.12.
+- [ ] **14.3** **Evaluator scoring contract.** Locked JSON shape — `{ score: int, dims: { correctness: int<=40, quality: int<=25, tests: int<=15, scope: int<=10, risk: int<=10 }, verdict: "pass"|"iterate"|"reject", notes: string<=800 }`. The runner reads the **last assistant message** of an evaluator run and parses out a fenced ```json``` block; missing block or invalid shape → server-side fallback verdict `iterate` with a `score=0` row and a `forge.eval.parse_failed` telemetry event so we can spot model drift. Verdict is *derived* from score and work-item points (`>=90 → pass`, `>=RejectThreshold(points) → iterate`, else `reject`); the reject threshold scales down for higher-point items (pts 1→70, 2→65, 3→60, 4→50, 5→40, 6→30, 7→20, 9+→10) so harder tasks iterate more before giving up. The model's stated verdict is checked for consistency and a mismatch increments `forge.eval.verdict_mismatch` but does not override the derived value. **Status:** `Forge.Api/Services/EvaluatorScoreParser.cs` exposes pure `Parse(text, points) → EvaluatorScore`; fallback returns `iterate/score=0/ParseFailed=true`; `VerdictMismatch` flag is set when the model's claim diverges from the math. Counters deferred to Phase 14.12.
 - [~] **14.4** **Iteration loop in dispatcher.** `DeliverableLoop` orchestrates: (a) generator run, (b) evaluator run, (c) parse + persist `deliverable` row, (d) on `iterate` re-enter (a) up to **5 iterations** total, (e) on `pass` mark the work item green and exit, (f) on `reject` flip the work item back to `proposed` for the lead. Caps from spec §3: hard iteration cap = 5, budget cap = `crew.maxTaskBudgetUsd`, time cap = the schedule window (if 21:00 is hit, deliverable persists with `verdict='paused-eod'` and resumes at 09:00 — the loop is already idempotent because the iteration counter is in the row, not in memory). Each iteration emits `forge.deliverable.iteration.{started,scored,passed,iterated,rejected,stalled}` for the OTel pipeline. **Status (Batch 3):** `Forge.Api/Services/DeliverableLoop.cs` (registered as `IDeliverableLoop` in DI) is the orchestrator — pure, takes generator/evaluator delegates so it's testable without a live runner. Pass/reject/iterate/stalled/stalled-budget verdicts implemented + work-item state flips wired (`pass→closed`, `reject→proposed`, stall leaves state). **Remaining:** time-cap (`paused-eod` resume), telemetry counters (deferred to 14.12), and the production wiring that calls into `AgentRunnerDispatcher` from the plan/code endpoints — that lands when 13.4/13.5 stop returning 501.
 - [~] **14.5** **Dispute path (Q14.2).** `POST /api/deliverables/{id}/dispute` — caller must be the deliverable's `generator_agent_id` (or that agent's `lead`); refuses if `judge_agent_id` is already set on the row (one dispute per deliverable). Spawns a `judge` task on the team lead's crew via the existing `AgentRunnerDispatcher.StartAsync(kind='judge', ...)` path, with `judge-system.md` template. Judge writes `judge_score` + `judge_notes` to the same row; if `judge_score >= 90` the deliverable transitions to `pass` retroactively (work item flips green). Dispute does NOT reset the iteration counter — the spec is explicit on this (§3: dispute is not a free retry). **Status (Batch 3):** `Forge.Api/Endpoints/DeliverablesEndpoints.cs` exposes `GET /api/deliverables/{id}`, `GET /api/work-items/{id}/deliverables`, and `POST /api/deliverables/{id}/dispute` with body `{ judgeAgentId, judgeScore, judgeNotes }`. One-dispute-per-row guard, generator/lead/PO authority gate, and retroactive work-item close on `judgeScore ≥ 90` are implemented. **Remaining:** auto-spawning a judge task on the team lead's crew (depends on the runner being live — caller currently supplies the judge result synchronously, which the eventual autonomous judge will also do via the same endpoint).
 - [~] **14.6** **Soul preamble injector.** New file `agents/_preamble.md` in the repo (NOT under `%LOCALAPPDATA%`, so the rubric is auditable in git). The runner concatenates `<preamble>\n\n---\n\n<soul.md body>` before sending to the model and records `agent.preambleSha = sha256(preamble bytes)` on every deliverable for tamper detection. New templates `agents/templates/judge-system.md` and (rubric reminder) `agents/templates/eval-system.md` extend the existing Phase 13.2 templates rather than replacing them. Bumping the preamble is a deliberate operator action — the change is logged as `forge.preamble.changed` with the before/after sha and the user id. **Status (Batch 1):** preamble file written; runner concatenation + sha recording + judge/eval templates remain.
@@ -734,7 +734,7 @@ The six open questions from `docs/forge/scoring-and-promotion.md` §9 default-st
 - [ ] **14.12** **Audit + telemetry.** New `audit_event` kinds: `deliverable-scored`, `deliverable-iterated`, `deliverable-rejected`, `deliverable-stalled`, `deliverable-disputed`, `agent-promoted`, `agent-demoted`, `lead-vacated` (Q14.5), `dispatch-after-hours` (Q14.1), `preamble-changed` (Q14.6). All flow through the existing `/audit` view (Phase 7.5) and the OTel pipeline. Counter metrics: `forge.deliverable.score{verdict}`, `forge.agent.level.changes{direction}`, `forge.crew.payroll.usd_total{crewId}`. Trace span: `deliverable.run` covering all iterations of one deliverable, with iteration count + final verdict as span attributes.
 - [ ] **14.13** **Tests.** `Forge.Api.Tests/Phase14ScoringTests.cs` covers: (a) score 89 iterates, score 90 passes, score 69 rejects (boundary cases); (b) iteration cap stalls cleanly at 5; (c) off-shift dispatch returns 409 unless overridden; (d) promotion job promotes at 92-avg / no-rejects / cooldown-respected, demotes at 74-avg, no-ops at the floor; (e) lead floor (Q14.5) refuses sub-7 promotion to lead; (f) dispute path replaces an evaluator score with a judge score and flips the work item green when the judge passes 90; (g) `GET /spend` deprecation alias (Q14.7) emits the deprecation log line; (h) `AgentKpiCalculator` (14.16) returns the nine KPIs in Q14.9 against handcrafted deliverable fixtures — pass-rate, P50 / P90 iteration depth, and cost-per-pass arithmetic verified to 2 dp; (i) monthly review job (14.15) writes one `agent_monthly_review` row per agent on the 1st-of-month tick, snapshot is immutable after 30 days, retro-notes PATCH past the window returns 409; (j) `GET /api/agents/{id}/scorecard?window=lastMonth` reads from the snapshot, while `?window=trailing20` recomputes live, and the two MUST agree when the trailing-20 happens to fall entirely inside the same month. `Forge.UI.Tests/` adds screenshot fidelity diffs for the Performance tab + the split TopBar + the `AgentScorecardDrawer` (14.17) in both themes.
 - [ ] **14.14** **Fidelity check.** No prototype HTML to diff against (this phase is post-prototype). Instead the fidelity gate is **the spec itself**: `Forge.Api.Tests/Phase14SpecConsistencyTests.cs` parses `docs/forge/scoring-and-promotion.md` and asserts the rubric weights, level table, hourly curve, iteration cap, and promotion thresholds in code (`ScoringConstants` static class) match the spec verbatim. If the spec changes, this test fails and forces the code constant update — preventing silent drift. **Status:** 10 assertions cover rubric weights, verdict thresholds, iteration cap, schedule window, default timezone, hourly curve, level range, promotion window/thresholds, lead floor, and preamble-rubric parity.
-- [ ] **14.15** **Monthly review snapshot (Q14.8).** Schema migration `Phase14Migration.cs` adds `agent_monthly_review(id, agent_id, year, month, throughput, pass_rate, avg_score, iter_p50, iter_p90, reject_rate, dispute_rate, stalled_rate, utilization, cost_per_pass, ending_level, promotion_eta, demotion_risk, retro_notes, created_at, locked_at?)` with `UNIQUE(agent_id, year, month)`. The 1st-of-month branch in `PromotionJob` (14.7) writes one row per agent covering the prior calendar month and is the **scoreboard of record** — once `created_at + 30d` has passed, `locked_at` is set and the row is immutable; underlying deliverables stay readable but the rolled-up KPIs are pinned. Endpoints in `MonthlyReviewEndpoints.cs`: `GET /api/agents/{id}/monthly-reviews?from=YYYY-MM&to=YYYY-MM` returns the rows; `PATCH /api/agents/{id}/monthly-reviews/{year}-{month}` updates `retro_notes` only — gated by `crew.lead == caller || RequireRole.ProductOwnerOf(agent.crew.productId)`, refuses with 409 if `locked_at` is set. Telemetry: `forge.agent.monthly_review.written` counter and `forge.agent.monthly_review.locked` event when the 30-day window closes.
+- [ ] **14.15** **Monthly review snapshot (Q14.8).** Schema migration `Phase14Migration.cs` adds `agent_monthly_review(id, agent_id, year, month, throughput, pass_rate, avg_score, iter_p50, iter_p90, reject_rate, dispute_rate, stalled_rate, utilization, cost_per_pass, ending_level, promotion_eta, demotion_risk, retro_notes, created_at, locked_at?)` with `UNIQUE(agent_id, year, month)`. The 1st-of-month branch in `PromotionJob` (14.7) writes one row per agent covering the prior calendar month and is the **scoreboard of record** — once `created_at + 30d` has passed, `locked_at` is set and the row is immutable; underlying deliverables stay readable but the rolled-up KPIs are pinned. Endpoints in `MonthlyReviewEndpoints.cs`: `GET /api/agents/{id}/monthly-reviews?from=YYYY-MM&to=YYYY-MM` returns the rows; `PATCH /api/agents/{id}/monthly-reviews/{year}-{month}` updates `retro_notes` only — gated by `crew.lead == caller || global ProductOwner role`, refuses with 409 if `locked_at` is set. Telemetry: `forge.agent.monthly_review.written` counter and `forge.agent.monthly_review.locked` event when the 30-day window closes.
 - [ ] **14.16** **Agent KPI service.** New `IAgentKpiService` in `Forge.Api/Services/`: `GetScorecard(agentId, window)` where `window` is the discriminated union `trailing20 | mtd | lastMonth | monthOf(YYYY-MM)`. Returns an `AgentScorecard` record carrying the nine KPIs from Q14.9 plus the two derived flags. Pure function over `deliverables` for live windows; pure read of `agent_monthly_review` for historical months — same response shape either way so the UI cache is window-agnostic. Endpoints: `GET /api/agents/{id}/scorecard?window=...` and `GET /api/crews/{id}/scorecard?window=...` (the crew variant returns one entry per member). KPI math lives in `AgentKpiCalculator` (testable in isolation); thresholds (`demotionRiskAvg = 78`, `demotionRiskRejectRate = 0.10`, `promotionTargetAvg = 92`) live in `ScoringConstants` so they participate in the 14.14 spec-consistency check.
 - [ ] **14.17** **Costs view enrichment — Agents cost-and-scorecard surface.** The existing `/crews` Roster tab (`CrewsView.tsx` lines ~590–700; the `<SalaryStrip>` block at line 1195) gains a per-agent column group: in addition to the existing `today | sprint | month | sparkline` spend strip, each member row now renders `level pill | trailing-20 avg | MTD avg | reject rate | promotion ETA | payroll today`. A new `<ScorecardStrip>` component sits beneath the existing `<SalaryStrip>` so the operator reads cost-and-performance in one glance — promotion lives next to payroll because levels and dollars move together. Click any member row → opens a right-rail `<AgentScorecardDrawer>` (`src/forge/Forge.UI/src/views/AgentScorecardDrawer.tsx`) showing: the full Q14.9 KPI table, the trailing-20 sparkline of `avg score`, the last 6 months of `agent_monthly_review` as a small bar chart of `avg_score`, and the agent's `agent_level_history` rows as a vertical timeline. The drawer is the canonical agent KPI surface; the Performance tab (14.9) is the per-crew rollup. Cost view itself stays read-only for non-PO; PO sees an inline "Edit retro note" affordance on the latest unlocked monthly snapshot per Q14.8. The TopBar **Payroll** chip popover (14.11) gains a third inline metric `Avg score: NN` computed crew-weighted across all visible crews — gives the PO a one-glance health number without leaving the chrome.
 - [ ] **14.18** **Printable monthly review.** `GET /api/crews/{id}/monthly-review.pdf?month=YYYY-MM` server-generates a one-page PDF (using `QuestPDF`) carrying: the crew's payroll for the month, every member's scorecard row from `agent_monthly_review`, every `agent_level_history` row in the period, and any `crew_history` events from the period (lead changes, model swaps, quota overrides). The PDF is the artefact the team lead carries into a 1:1; PO can also email it via `POST /api/crews/{id}/monthly-review/email` (reuses the existing audit-log mailer / Phase 7 notifications scaffold). HTML preview at `/crews/{id}/monthly-review?month=YYYY-MM` for in-app reading; both routes hit the same renderer so print and screen views stay byte-equivalent. Behind a small "Export" button on the Performance tab (14.9) and on the `AgentScorecardDrawer` header (14.17) — the agent variant scopes the PDF to a single agent.
@@ -818,7 +818,7 @@ Two principles drive the shape:
   - **Edge cases**: if the lead has no available members (everyone working at `MaxConcurrent` or paused), the row is left untouched and re-considered on the next tick — the dispatcher emits `forge.dispatch.lead_no_capacity` per work-item per minute (rate-limited so a saturated crew doesn't spam telemetry).
   - **Interaction with Phase 14.7's `crew.off_shift`**: the dispatcher is a **dispatch verb** so the schedule gate applies. Off-shift work items stay in `assigned-to-lead` state until the next shift window opens, at which point the next tick picks them up. No `?override=true` from the dispatcher — overrides are operator-driven only.
 
-- **Q16.2 Pair crews for arch + eng — generator crew + evaluator crew.** Two crews execute every plan task and every coding task. The **generator crew** runs the work; the **evaluator crew** scores the deliverable. New columns on `crews`: `pair_role TEXT` (`'generator' | 'evaluator' | 'standalone'`, default `'standalone'`) and `paired_with_crew_id TEXT?` (FK → crews, nullable). Pairing is symmetric — when crew A pairs with crew B, both rows reference each other; pairing is set up once via `POST /api/crews/{id}/pair` and persists until explicitly broken. **Only `team IN ('Architect','Engineer')` crews may enter a pair**; review/QA crews stay standalone (Phase 14.3 same-crew evaluator still applies to them). A crew may belong to **at most one pair** at a time. Pairs cross-product are rejected (both crews must share `productId`) so audit + budgets stay clean.
+- **Q16.2 Pair crews for arch + eng — generator crew + evaluator crew.** Two crews execute every plan task and every coding task. The **generator crew** runs the work; the **evaluator crew** scores the deliverable. New columns on `crews`: `pair_role TEXT` (`'generator' | 'evaluator' | 'standalone'`, default `'standalone'`) and `paired_with_crew_id TEXT?` (FK → crews, nullable). Pairing is symmetric — when crew A pairs with crew B, both rows reference each other; pairing is set up once via `POST /api/crews/{id}/pair` and persists until explicitly broken. **Only `team IN ('Architect','Engineer')` crews may enter a pair**; review/QA crews stay standalone (Phase 14.3 same-crew evaluator still applies to them). A crew may belong to **at most one pair** at a time.
   - **Implications**: Phase 14.3's "same evaluator across iterations" invariant is preserved at the *crew* granularity — once a deliverable picks evaluator crew B, every iteration of that deliverable evaluates against B's lead's evaluator agent. The dispute path (Q14.2) is unchanged: judge spawns on the team lead's *generator* crew. Audit rows record both crew ids: `actorCrewId` (generator) and `evaluatorCrewId`. Cost ledger gets a third `costCategory` value (`generator | evaluator | judge`) so per-pair salary is reportable separately.
   - **Token-cap math**: Phase 14.6 uses `gen_cost + eval_cost` for `cost-per-pass`; that arithmetic is unchanged because both costs already land in the deliverable row. The new `Crew.dailyBudgetUsd` cap (Phase 11.10) is enforced **per-crew** — a generator crew is gated by its own cap, evaluator crew by its own. A pair where the evaluator hits its cap surfaces the same `agent.budget_exceeded` event with `crewRole: 'evaluator'` so the PO can top up either side independently.
   - **What this changes vs. Phase 13.4 / 13.5**: today the plan / coding endpoints take a single `crewId`. They now resolve the evaluator from the generator's `paired_with_crew_id`; if the generator is `'standalone'`, the existing Phase 14 in-crew evaluator path is used (back-compat for review/QA + pre-pair installs).
@@ -952,7 +952,7 @@ Two principles drive the shape:
 ### Out of scope (explicitly deferred)
 
 - **Three-or-more-crew rotations** (e.g. gen-A → eval-B → judge-C as a regular pipeline) — pairs are exactly two crews at v0.1; multi-crew topology is `forge_v2.md`.
-- **Cross-product pairs** — both crews must share `productId`. A platform-team evaluator scoring an app-team generator's plan is a real pattern but needs cross-product cost reconciliation we don't have at v0.1.
+- **~~Cross-product pairs~~** — removed. Crews are global entities; the same-product restriction no longer applies.
 - **Live editing in the worktree tab** — the file diff is read-only. The operator opens an editor (their choice; no in-app editor at v0.1) if they need to intervene.
 - **Transcript export to markdown / PDF** — the transcript table is queryable; a formatted export is a Phase R polish.
 - **Runner-emitted prompt-cache-hit ratio** — the Tokens tab plumbs the field but the Anthropic / Copilot SDK paths don't all surface it consistently. Best-effort at v0.1; missing → render `—`.
@@ -1727,7 +1727,7 @@ State transitions that do NOT touch AssignedAgent:
 
 ### Resolved decisions
 
-- **Q23.1 Cadence — 20 minutes.** One tick every 20 minutes, jittered ±60 seconds across repos to avoid thundering-herd against a single ADO org. Configurable via `Forge:Sync:WorkItem:IntervalSeconds` (default 1200). The legacy 60-second polling for cards / PRs / pipelines is unchanged — Phase 23 adds a *separate* job for work items because their churn rate, page sizes, and rate-limit profile are different. The `WorkItemSyncJob` and `ProviderSyncService` run side-by-side; they touch different tables.
+- **Q23.1 Cadence — 2 hours (Phase 29, was 20 minutes).** One tick every 2 hours, jittered ±60 seconds across repos to avoid thundering-herd against a single ADO org. Configurable via `Forge:Sync:WorkItem:IntervalSeconds` (default 7200). Per-repo overrides land via `RepoRow.WorkItemSyncIntervalSeconds` and can only make a repo sync **slower** than the global default — matches the "reduce upstream load" intent. The legacy 60-second polling for cards / PRs / pipelines is unchanged — Phase 23 adds a *separate* job for work items because their churn rate, page sizes, and rate-limit profile are different. The `WorkItemSyncJob` and `ProviderSyncService` run side-by-side; they touch different tables.
 
 - **Q23.2 Per-repo scope, parallel up to 4.** Each `Repo` row drives one sync invocation per tick. Concurrency cap = 4 (tunable via `Forge:Sync:WorkItem:MaxParallel`); rows beyond the cap wait for the next tick. Per-repo serialization: a tick that finds the previous run still in flight (`LastSyncStatus='running'` for > 19 minutes) cancels the in-flight run and starts a fresh one — better to drop a slow run than to stack them. A `LastSyncStatus='running'` marker carries an `IsRunningSince` timestamp so the cancellation rule is a wall-clock check, not a heuristic.
 
@@ -1738,16 +1738,17 @@ State transitions that do NOT touch AssignedAgent:
 
 - **Q23.4 GitHub scope — repo-native.** GitHub issues are scoped to a repo (`/repos/{owner}/{repo}/issues`), so `Repo.GhOwner` + `Repo.GhRepo` is enough; `AreaPathsJson` is ignored on GitHub repos. Pull requests come along for the ride because GitHub treats PRs as issues for the purposes of the issues endpoint — Phase 23 syncs them in the same call and the mapper splits them by `pull_request` field presence.
 
-- **Q23.5 Initial time window — ADO 365 days, GH all-time.** First sync of an ADO repo runs WIQL with `[System.ChangedDate] >= @cutoff` where `@cutoff = UtcNow - 365d`. First sync of a GitHub repo omits the `since` parameter so all issues are returned. Both windows are constants in `Forge.Api/SyncConstants.cs` so the spec-consistency test catches drift; per-repo overrides (`Repo.InitialSyncWindowDays INTEGER NULL`) ship as a follow-up if the operator hits a 50,000-item ADO project that needs trimming further.
+- **Q23.5 Initial time window — 30 days for both providers (Phase 29, was 365d ADO / all-time GH).** First sync of an ADO repo runs WIQL with `[System.ChangedDate] >= @cutoff` where `@cutoff = UtcNow - 30d`. First sync of a GitHub repo passes `since=UtcNow-30d` (was: omitted, returning all-time history). Both windows are constants in `Forge.Api/SyncConstants.cs` (`AdoInitialWindowDays = 30`, `GithubInitialWindowDays = 30`) so the spec-consistency test catches drift; per-repo overrides (`Repo.InitialSyncWindowDays INTEGER NULL`) still narrow further when the operator hits a large ADO project.
 
 - **Q23.6 Pagination strategy — provider-specific, cursor-driven.**
   - **ADO:** WIQL queries return up to 20,000 work-item references in a single response; `_apis/wit/workitems?ids=…&fields=…` is then called in batches of **200 IDs per request** (ADO's hard cap). The sync service splits the WIQL result client-side and walks the batches sequentially, committing each batch in its own transaction so a failure in batch N+1 doesn't roll back batch N. The cursor (`LastSyncCursor` text column) holds the last successfully-committed batch index so a resume picks up exactly where the prior run failed.
   - **GitHub:** `/issues?per_page=100&since={LastSyncAt}` is paginated by the standard `Link: rel="next"` header. The sync service walks the chain until no `next` link is present. Cursor stores the `next` URL as opaque text so resume after failure is a single GET, no math required.
 
-- **Q23.7 Delta sync — `ChangedDate` (ADO) / `updatedAt` (GitHub).** Once `LastSyncAt IS NOT NULL`, the next run uses it as the lower bound:
-  - **ADO:** `WHERE [System.ChangedDate] >= @LastSyncAt AND ([System.AreaPath] UNDER …)`. Window is **half-open on the lower bound** (`>=`, not `>`) so an item changed exactly at the cursor instant isn't dropped; the upsert path is idempotent so the duplicate-with-same-revision is a no-op.
-  - **GitHub:** `since={LastSyncAt-toISO}`. GitHub's `since` filter is on `updated_at` and is documented as inclusive on the boundary.
-  - The cursor advances only on a fully-successful run. A run that fails mid-walk leaves `LastSyncAt` at its prior value so the next run re-fetches the same window — better to over-fetch than to miss an item.
+- **Q23.7 Delta sync — upstream `ChangedDate` (ADO) / `updatedAt` (GitHub) cursor (Phase 29 swap).** Once `LastUpstreamChangedDate IS NOT NULL`, the next run uses it as the lower bound:
+  - **ADO:** `WHERE [System.ChangedDate] >= @LastUpstreamChangedDate AND ([System.AreaPath] UNDER …)`. Window is **half-open on the lower bound** (`>=`, not `>`) so an item changed exactly at the cursor instant isn't dropped; the upsert path is idempotent so the duplicate-with-same-revision is a no-op.
+  - **GitHub:** `since={LastUpstreamChangedDate-toISO}`. GitHub's `since` filter is on `updated_at` and is documented as inclusive on the boundary.
+  - **Cursor source change (Phase 29).** The cursor was previously `LastSyncAt` (local clock at run start). It is now `LastUpstreamChangedDate` — the **MAX upstream-changedate observed** in the previous successful run. Local-clock cursoring missed items written *during* a sync run; an upstream-anchored cursor doesn't. `LastSyncAt` stays on the row as the local-clock telemetry "when did we last tick" used by the stale-running guard, the UI's "last synced" pill, and the per-repo cadence gate (Q23.1) — but it is no longer the delta filter.
+  - The cursor advances only on a fully-successful run that observed at least one item; an empty delta leaves the prior boundary alone so a slow week doesn't snap the cursor forward past un-synced items in a temporarily-empty WIQL response. A run that fails mid-walk leaves `LastUpstreamChangedDate` at its prior value so the next run re-fetches the same window.
 
 - **Q23.8 `agent-ready` flag — upstream-tag → auto-team-assign.** When sync sees an item with the `agent-ready` flag (ADO `System.Tags` contains `agent-ready`; GitHub label name `agent-ready`):
   - If `WorkItemRow.AssignedTo` is currently null OR has the legacy runtime-shape (Q22.7), set `AssignedTo = {kind: 'team', id: repo.AgentReadyDefaultTeam, displayName: repo.AgentReadyDefaultTeam}`. Default team is `Engineering`; `repos.AgentReadyDefaultTeam TEXT NULL DEFAULT NULL` overrides per-repo.
@@ -3241,11 +3242,87 @@ A **story** is the unit of end-to-end delivery. It progresses through ordered ph
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+### Concept — Team structure & execution model
+
+> **Source-of-truth note.** This section captures the swarm-design decisions from `docs/forge/workstream.md`. They refine — and in some places tighten — the lifecycle diagram above. Where the two disagree, this section wins; the diagram is the introductory mental model only.
+
+**Four teams · ~80 agents total.** The swarm is partitioned into four crews, each ~20 agents. Each agent has a stable team affiliation and a model profile (see model rotation below). Team membership is loaded from `agents/allocation.json` via `AgentAllocationLoader.ForTeam(...)`.
+
+| Team         | Headcount | Owns                                                                  | Inputs                                  | Outputs                                                  |
+|--------------|-----------|-----------------------------------------------------------------------|-----------------------------------------|----------------------------------------------------------|
+| Architect    | ~20       | Plan phase artifacts; decomposition of impl plan into workstreams.    | Story description + linked context.     | architecture / tech-spec / implementation-plan / e2e-scenarios. |
+| Engineer     | ~20       | Implementation, review-fix loop, e2e step-definition implementation.  | Merged design docs + workstream scope.  | Code commits, PRs, fix commits, step-definition PRs.     |
+| Review       | ~20       | Per-PR review and approve/merge gate.                                 | Open ws PRs.                            | Inline comments, approvals, merges.                      |
+| QA           | ~20       | E2E `.feature` files (Gherkin) per workstream; coverage tracking.     | Merged plan + workstream list.          | `tests/Features/{storyId}/*.feature`, coverage warnings. |
+
+**Story lifecycle.** A story progresses through `design & plan → (implement ↔ review + e2e) cycle → release`. The middle is a real cycle, not a one-shot: a workstream re-enters implementation any time review surfaces an unresolved issue, and never leaves until its **score reaches 90** within the iteration cap. A story is releasable when **every workstream's score ≥ 90 and all e2e/integration tests are green on `main`**.
+
+**Plan-phase artifact contract (Architect team).** Each artifact has explicit content requirements:
+
+- `architecture.md` — system diagram, component diagram, perf & reliability requirements, primary usage scenarios, deployment strategy, component-interaction descriptions, and a flow chart / sequence diagram per scenario including edge cases.
+- `tech-spec.md` — chosen libraries / technologies, applicable design patterns, engineering practices, maintainability constraints.
+- `implementation-plan.md` — **hierarchical**: `Phase → Stage → Step`. A *Phase* is an independent, cohesive feature whose stages must ship together. **A Phase contains ≤ 20 Stages; a Stage contains ≤ 20 Steps; a Step is PR-sized and changes ≤ 20 files.** Each Phase carries a workstream tag and explicit dependency edges to other phases.
+- `e2e-scenarios.md` *and* `tests/Features/{storyId}/*.feature` — plain-English BDD scenarios in Gherkin (Reqnroll for C#, cucumber for TypeScript) grouped by phase. The Engineer team writes step definitions later; **all unit + integration + e2e tests must pass before a phase is handed to Review.**
+
+**Two task kinds.** Both kinds run through the same paired-agent loop, but they differ in hierarchy and work-item type:
+
+| Kind            | Owning team   | Work item hierarchy                          | Work item types                                                |
+|-----------------|---------------|----------------------------------------------|----------------------------------------------------------------|
+| **Plan task**   | Architect     | flat (no parent/child)                       | `Architecture`, `TechSpec`, `ImplementationPlan`, `E2EScenarios` |
+| **Coding task** | Engineer      | `Epic = Phase → Feature = Stage → Task = Step` | `Epic`, `Feature`, `Task` (existing ADO/GitHub work-item types) |
+
+Work-item rows of both kinds carry a `task:plan` or `task:code` tag plus a `kind:phase` / `kind:stage` / `kind:step` tag for coding tasks.
+
+**Effort sizing.** Every task carries an effort estimate on the **Fibonacci scale `1, 2, 3, 5, 8, 13`**. Two agent budgets are derived deterministically from the points value:
+
+- `maxTurns = points × 30`
+- `maxIterations = points × 5`
+
+These propagate into the underlying `IAgentRunner` invocation; an evaluator-rejected output costs one iteration, an LLM round-trip costs one turn. Tasks larger than 13 points are split during decomposition.
+
+**Paired-agent execution (generator ⇄ evaluator).** Every task — plan or coding — is worked by **a pair of agents**: one *generator* produces the artifact, one *evaluator* performs critical review and emits a 0–100 score. **A score ≥ 90 is passing.** The pair iterates up to `maxIterations` times within the same trial. Pairs are drawn from the owning team and tracked on the work item's `assignedAgent.agents[]` field with `role` ∈ `{generator, evaluator}`.
+
+**Model rotation across trials (coding tasks).** When a coding pair fails to reach score 90 within its iteration budget, the Engineer team lead **reassigns to a fresh pair using a different model mix**. Up to **three trials** are attempted; after the third, the task is marked **stalled** and escalated. Models swap by trial:
+
+| Trial | Generator             | Evaluator             |
+|-------|-----------------------|-----------------------|
+| 1     | `claude-opus-4.7`     | `gpt-5.5`             |
+| 2     | `gpt-5.5`             | `claude-opus-4.7`     |
+| 3     | `claude-opus-4.6-1M`  | `codex-5.3`           |
+
+The intent is that trials 1↔2 swap roles between the two leading models, and trial 3 introduces an entirely different model family. `WorkItemRow.trialCount` records the current trial number; `assignedAgent.role` records who plays generator vs evaluator on the current pair.
+
+**No review / no human gate on plan artifacts.** Plan tasks land on `main` directly once the pair reaches score 90. The plan PR is the audit trail; there is no merge-PR human approval step. (This is an intentional swarm-mode departure from the legacy "operator approves decomposition" gate — see `feedback_no_fakes_no_manual` in user memory.) Coding-task PRs *are* still reviewed by the Review team; review is a swarm step, not a human step.
+
+**Engineer hand-off context.** When the Engineer team picks up a workstream, agents must establish context from **all four** plan artifacts (`architecture`, `tech-spec`, `implementation-plan`, `e2e-scenarios`) — not just `implementation-plan.md`. The orchestrator surfaces the full set as workstream input.
+
+**Workstream lifecycle (coding side).** Each workstream uses an isolated git worktree on its own branch. The workstream lifecycle is:
+
+1. Eng lead picks the next coding task whose dependencies (other phases / stages / steps) are *implemented*.
+2. Pair claims the task; generator produces the change, evaluator scores it; iterate to ≥ 90 or hit `maxIterations`.
+3. On pass: open PR, route to Review team. On fail: reassign per the model-rotation table; on third fail, mark stalled.
+4. PR review-fix loop runs the same paired pattern (engineer-author + reviewer); merge gate is "all comments resolved + score ≥ 90 + build green".
+5. PR merge → work item closes → the Step / Stage row marks complete. **A Phase closes only when all its Stages/Steps are complete *and* all unit/integration/e2e tests for that phase pass.**
+6. Closing a Phase re-evaluates downstream phases; freshly-unblocked phases enter the eligibility pool for the dependency scheduler.
+
+This model is what the implementation in 28.1–28.12 below realises. Where a subsection mentions "engineer pair", "score 90", "trial", "Fibonacci points", or "stalled", the canonical definition lives here.
+
 ### Implementation progress
 
 > **Status legend.** `[x]` = shipped & covered by tests. `[~]` = partial — the primary path works but a corner is intentionally narrowed (noted inline). `[ ]` = explicit non-goal or deferred. CC.7 (story-level cost tracking) is the only remaining open item and the spec already lists it as a non-goal.
 >
 > **Summary.** Phase 28 is end-to-end functional. The orchestration layer is real: a `StorySpawnOrchestrator` hosted service drives the lifecycle automatically when a spawn is created or its phase advances. The architect crew produces planning artifacts on a planning branch and opens the plan PR; the engineer crew claims each ready workstream (deps honored), opens its PR; the review crew posts comments and routes them back; the engineer pushes a fix; the reviewer approves and merges; QA produces feature files in parallel and the engineer auto-implements step definitions per workstream; on completion the linked ADO work item transitions to `closed`. The agent **content production** uses a deterministic strategy (`DeterministicStoryArtifactStrategy`) so tests run without LLMs; production deployments swap a single DI binding to use real crew agents. Two test classes — `Phase28StorySpawnTests` (42 gate-only scenarios) and `Phase28OrchestratorTests` (9 end-to-end scenarios) — together pin every spec scenario; **51 tests, 100% pass**.
+>
+> **Open items from `docs/forge/workstream.md` (Q2 2026 refinement).** The decisions captured in the "Team structure & execution model" section above are now folded into spec sections **28.3 – 28.8** as the canonical phase behaviour (no human gates, paired gen/eval per task, 3-trial model rotation, Fibonacci `maxTurns`/`maxIterations`, Phase → Stage → Step taxonomy with 20/20/20 size ceilings, four typed plan work-items, per-Phase test gate). The behaviour is *spec-confirmed but not yet wired*. Tracking checklist:
+>
+> - [ ] **EX.1** Effort points are validated against `{1,2,3,5,8,13}`; `maxTurns` / `maxIterations` derive automatically from points.
+> - [ ] **EX.2** Plan & coding tasks both run through a paired (generator + evaluator) loop; `assignedAgent.role` records pair assignment.
+> - [ ] **EX.3** Coding-task model rotation across trials 1/2/3 follows the table above; `trialCount = 3 ∧ score < 90` flips the work item to `stalled`.
+> - [ ] **EX.4** `DecompositionApproved` gate is removed for swarm-mode (architect-produced plans land directly via PR merge — no human approval).
+> - [ ] **EX.5** Implementation-plan validator rejects shapes that exceed `Stages ≤ 20`, `Steps ≤ 20`, `files-per-step ≤ 20`.
+> - [ ] **EX.6** Plan work-items are typed `Architecture` / `TechSpec` / `ImplementationPlan` / `E2EScenarios`; coding work-items map to `Epic = Phase / Feature = Stage / Task = Step`.
+> - [ ] **EX.7** Engineer crew pulls **all four** plan artifacts as context (not just `implementation-plan.md`).
+> - [ ] **EX.8** Phase-closed gate runs unit + integration + e2e for that phase before declaring the phase done; downstream phases auto-unblock on phase close.
 
 #### 28.1 — Data model
 
@@ -3344,6 +3421,17 @@ A **story** is the unit of end-to-end delivery. It progresses through ordered ph
 - [x] **28.9.9** "→ next-phase" advance button on the card surfacing the gate's 422 errors inline.
 - [x] **28.9.10** `NewWorkstreamModal.tsx` deleted; the empty-state CTA + page header now route exclusively to `SpawnStoryModal`.
 - [x] **28.9.11** Real-time updates wired via `useForgeHub.story-spawn.changed` → `useSpawnStore.bump(storyId)`; `<StoryCard>` re-fetches on tick change. Toast surfaces on `plan-pr-opened`, `decomposed`, `qa-pr-merged`, `done`, `story-closed`.
+- [~] **28.9.12** Swarm-control surface (mission-control layout from `docs/examples/swarm-control.html`) — multi-story index + per-story drill-down. Index view (`SwarmIndexView`) and story view (`SwarmStoryView`) shells exist with topbar / nav-bar / pipeline strip; story-row / phase-badge / workstream chip strip / score pill render against live spawn data. Pipeline strip drives mode (`design` / `impl` / `release`) from `StorySpawn.Phase`.
+- [ ] **28.9.13** Story-view master panel — phase board (mode `impl`), doc list (mode `design`), gate list (mode `release`). Selection has three kinds (`overview` / `phase` / `stage`); selecting a row drills the right panel.
+- [ ] **28.9.14** Story-view detail panel — six tabs: `overview · conversation · arch doc · PR · QA / E2E · trace`. Tabs auto-disable when the selection has no data; back button pops `state.history`.
+- [ ] **28.9.15** Overview tab — paired-agent cards (gen + evl, iter bars, score), 4-team swarm grid (20-cell agent grid colored by status). Wired to `assignedAgent.role` once EX.2 lands.
+- [ ] **28.9.16** Conversation tab — actor cards, iteration history, live transcript tail. Wired to `/api/work-items/:id/transcript` and the existing `liveTail` toggle pattern.
+- [ ] **28.9.17** Arch doc tab — long-form view of the four merged plan artifacts with sticky TOC.
+- [ ] **28.9.18** PR tab — file tree + side-by-side diff + comment side-rail + check-run rail. Wired to `/api/prs/:id`.
+- [ ] **28.9.19** QA tab — Gherkin scenario list (pass / fail / warn) + coverage rail per file. Wired to QA PR diff + e2e test results from Phase 27.
+- [ ] **28.9.20** Trace tab — flat event log: `time | KIND | actor | description` with kind colors (tool / gen / evl / score / pass / fail).
+- [ ] **28.9.21** Per-story view-state map in `useSwarmUiStore`: `Map<storyId, { mode, selection, tab, history, liveTail }>` so navigating between stories preserves drill-down position.
+- [ ] **28.9.22** Fleet-level attention rail — aggregate stalled / blocked / failed-build items across all spawns into the index topbar's `Stalled` meter; click-through to the offending story+stage.
 
 #### 28.10 — Artifact check-in rule
 
@@ -3451,85 +3539,103 @@ When the operator selects a story and clicks **Spawn**:
 
 1. Create `StorySpawnRow` with `Phase = "plan"`.
 2. Create a planning branch: `story/{storyId}/plan` from `main`.
-3. Assign Architect team agents (filtered from `AGENT_ALLOCATION` where `team = 'Architect'`).
-4. Architect agents produce artifacts in the planning branch:
-   - `docs/stories/{storyId}/tech-spec.md` — technology choices, constraints, risks.
-   - `docs/stories/{storyId}/architecture.md` — component diagram, data flow, API contracts.
-   - `docs/stories/{storyId}/implementation-plan.md` — ordered list of work items with estimates.
-   - `docs/stories/{storyId}/e2e-scenarios.md` — high-level end-to-end scenario descriptions.
-5. Architect agents create a PR from `story/{storyId}/plan` → `main`.
-6. **Gate**: PR must be merged before advancing to Phase 2. `StorySpawn.PlanPrId` tracks the PR.
+3. The Architect team lead allocates a **paired generator + evaluator** from the ~20 architects (`AgentAllocationLoader.ForTeam("Architect")`). Pair size, model mix, and `(maxTurns, maxIterations)` are derived from the task's Fibonacci point estimate (see "Team structure & execution model" — `maxTurns = points × 30`, `maxIterations = points × 5`, `points ∈ {1,2,3,5,8,13}`).
+4. The pair produces the four typed plan artifacts on the planning branch — one **plan work-item** per artifact, no parent/child hierarchy:
+   - `docs/stories/{storyId}/architecture.md` — work-item type `Architecture`. System diagram, component diagram, perf & reliability requirements, primary usage scenarios, deployment strategy, component-interaction descriptions, sequence/flow diagrams per scenario including edge cases.
+   - `docs/stories/{storyId}/tech-spec.md` — work-item type `TechSpec`. Library and technology choices, applicable design patterns, engineering practices, maintainability constraints.
+   - `docs/stories/{storyId}/implementation-plan.md` — work-item type `ImplementationPlan`. **Hierarchical: Phase → Stage → Step.** A *Phase* is an independent, cohesive feature whose stages must ship together. **`Stages ≤ 20` per Phase, `Steps ≤ 20` per Stage, `files-per-step ≤ 20`.** Each Phase carries a workstream tag and explicit dependency edges to other phases.
+   - `docs/stories/{storyId}/e2e-scenarios.md` (and `tests/Features/{storyId}/*.feature`) — work-item type `E2EScenarios`. Plain-English BDD scenarios in Gherkin (Reqnroll for C#, cucumber for TypeScript) grouped by phase.
+5. Each plan work-item iterates inside the pair until the evaluator's score reaches **≥ 90** within `maxIterations`. On pass, the pair commits the artifact and the work-item closes.
+6. Architect team opens a single PR from `story/{storyId}/plan` → `main` once all four work-items are closed. **No human approval gate, no Review-team review on plan artifacts.** The orchestrator merges the plan PR automatically (see `feedback_no_fakes_no_manual` — production runtime is fully agent-driven).
+7. `StorySpawn.PlanPrId` tracks the PR. Phase advances to `decompose` on PR merge.
 
 ### 28.4 — Phase 2: Decompose (Architect team)
 
 After the plan PR merges:
 
 1. Advance `Phase = "decompose"`.
-2. Architect agents read the merged plan and produce a decomposition:
-   - Split into N parallel workstreams, each with a clear scope boundary.
-   - For each workstream: title, description, acceptance criteria, estimated effort.
-   - Dependency graph between workstreams (which must complete before which).
-   - Timeline: relative ordering and estimated duration.
-3. Decomposition is persisted as `StorySpawn.DecompositionJson`.
-4. For each workstream in the decomposition:
+2. The Architect team auto-reads the merged plan (the gate at 28.10.2 verifies all four artifacts exist on `main`) and produces a decomposition. Decomposition is also a paired plan task — generator emits the workstream graph, evaluator scores it ≥ 90.
+3. The decomposition partitions the `implementation-plan.md` Phases into **parallel workstreams**. Each workstream entry carries:
+   - `title`, `description`, `acceptanceCriteria`, `effortPoints` ∈ `{1,2,3,5,8,13}`.
+   - `deps[]` — IDs of other workstreams that must merge first.
+   - `phaseRefs[]` — which Phase IDs from `implementation-plan.md` belong to this workstream.
+   - `deliverables[]` and a relative `timeline` estimate.
+4. Decomposition is persisted as `StorySpawn.DecompositionJson`.
+5. For each workstream in the decomposition:
    - Create `WorkstreamRow` with `StorySpawnId = spawn.Id`, `Status = "planning"`, branch `ws/{storyId}/{wsName}`.
-   - Populate `CardsJson` with linked work items (created or mapped from ADO).
-   - Record dependencies in a new `WorkstreamDepRow(workstreamId, dependsOnId)` table.
-5. **Gate**: operator reviews and approves the decomposition before advancing to Phase 3.
+   - Materialise the **Epic / Feature / Task** work-item hierarchy from the workstream's Phase refs: each `Phase → Epic`, each `Stage → Feature` with `parentId = Epic`, each `Step → Task` with `parentId = Stage`. All three carry `task:code` plus `kind:phase` / `kind:stage` / `kind:step` tags.
+   - Populate `CardsJson` with the resulting Epic IDs.
+   - Record inter-workstream dependencies in `WorkstreamDepRow(workstreamId, dependsOnId)`.
+6. **No human gate.** Phase advances to `implement` automatically once decomposition is persisted; the legacy `DecompositionApproved` flag is retained on the row for backward-compat but is no longer enforced. (See EX.4 in the Implementation progress checklist for the wiring task.)
 
 ### 28.5 — Phase 3: Implement (Engineer team, parallel)
 
-After decomposition is approved:
+Once decomposition is persisted:
 
 1. Advance `Phase = "implement"`.
-2. For each workstream (respecting dependency order):
-   - Assign Engineer team agents.
-   - Create branch + worktree per existing Phase 16 flow.
-   - Per work item within the workstream: run the existing generator → evaluator iteration loop (Phase 16/20).
-   - When all work items in a workstream are complete, create a PR from the workstream branch → `main`.
-3. Workstream status transitions: `planning → active → review` (when PR is created).
-4. Dependency enforcement: a workstream cannot start until all its `dependsOn` workstreams have their PRs merged.
+2. The Engineer team lead picks **ready coding tasks** — tasks whose dependency Phases / Stages / Steps are all `complete` — and assigns each to a fresh **paired agent (generator + evaluator)** from the ~20 engineers. Pair budgets derive from the task's points (`maxTurns = points × 30`, `maxIterations = points × 5`).
+3. Each workstream uses an isolated **git worktree** on its own branch (`ws/{storyId}/{wsName}`); per Phase 16 flow.
+4. Per coding task — Step is the PR-sized unit (≤ 20 files):
+   - Generator produces the change inside the worktree.
+   - Evaluator critically reviews and emits a **0–100 score**. **Score ≥ 90 passes.**
+   - The pair iterates up to `maxIterations`. An evaluator-rejected output costs one iteration; an LLM round-trip costs one turn.
+5. **3-trial model rotation on failure.** If the pair exhausts `maxIterations` below 90, the engineer team lead reassigns the task to a fresh pair with a different model mix:
+
+   | Trial | Generator             | Evaluator             |
+   |-------|-----------------------|-----------------------|
+   | 1     | `claude-opus-4.7`     | `gpt-5.5`             |
+   | 2     | `gpt-5.5`             | `claude-opus-4.7`     |
+   | 3     | `claude-opus-4.6-1M`  | `codex-5.3`           |
+
+   `WorkItemRow.trialCount` records the current trial. After three failed trials, the work-item flips to `stalled` and surfaces in the engineer-lead escalation queue. No further trial is auto-started.
+6. On pass: the worktree commits, opens a PR from `ws/{storyId}/{wsName}` → `main`, and the workstream status transitions `planning → active → review`.
+7. **Dependency enforcement.** A coding task starts only when all `dependsOn` work-items have `status = complete`. A workstream stays `blocked` until every upstream workstream's PR merges. The dependency scheduler (`SpawnDependencyScheduler`) re-evaluates after each merge.
 
 ### 28.6 — Phase 4: Review (Review team)
 
 For each PR created in Phase 3:
 
-1. Assign Review team agents (filtered from `AGENT_ALLOCATION` where `team = 'Review'`).
-2. Review agents inspect the diff, add comments.
-3. **Comment loop**: any unresolved comment is routed back to the Engineer team agent that authored the code.
-   - Engineer agent addresses the comment, pushes a fix, marks the comment as resolved.
-   - Review agent re-inspects; repeat until all threads are resolved.
-4. When all comments are resolved and build is green → Review agent approves the PR.
-5. PR merges via existing Phase 24/27 flow.
+1. The Review team lead assigns a **paired (review-author + review-evaluator)** from the ~20 reviewers (`AgentAllocationLoader.ForTeam("Review")`).
+2. The review-author inspects the diff and posts inline comments; the review-evaluator scores the review for completeness (same paired-agent pattern, same `≥ 90` bar).
+3. **Comment loop.** Open comments route back to the engineer pair recorded on the work-item's `assignedAgent.agents[]`:
+   - Engineer pair produces a fix commit on the worktree branch and marks the comment resolved.
+   - Review pair re-inspects; the cycle repeats until `PrCommentRow.State='active'` count drops to zero.
+4. **Build/test gate.** Before approval, the engineer team lead verifies that **unit + integration + e2e tests for the affected Phase pass**. A failing test reopens the loop.
+5. Review pair approves the PR; orchestrator merges via the standard Phase 24/27 flow.
+6. PR merge → work-item closes → the Step / Stage closes. **A Phase closes only when every Stage / Step under it is `complete` and the full unit + integration + e2e suite for that Phase is green.** Closing a Phase re-evaluates downstream Phases for the eligibility pool.
 
 ### 28.7 — Phase 5: QA (QA team, parallel with Phases 3–4)
 
-QA runs in parallel with implementation, starting after the plan is merged:
+QA runs in parallel with implementation, starting as soon as the plan is merged:
 
-1. Assign QA team agents (filtered from `AGENT_ALLOCATION` where `team = 'QA'`).
-2. QA agents read the plan artifacts (`e2e-scenarios.md`, `tech-spec.md`) and produce:
-   - SpecFlow/Reqnroll `.feature` files covering all acceptance criteria.
-   - Feature files are organized under `tests/Features/{storyId}/`.
-   - Each scenario is tagged with the workstream it validates.
-3. QA agents create a PR from `story/{storyId}/qa` → `main` containing the feature files.
-4. **Gate**: feature file PR must be merged before test implementation begins.
-5. After merge, hand off to Engineer team:
-   - Engineer agents implement step definitions in `tests/Steps/{storyId}/`.
-   - Engineer agents run the e2e tests; iterate until all pass.
-   - Step definition implementation is committed via a separate PR per workstream.
+1. The QA team lead assigns paired QA agents (`AgentAllocationLoader.ForTeam("QA")`) — same generator/evaluator pattern, points-derived budgets, score ≥ 90.
+2. QA pairs read the merged `e2e-scenarios.md` + `tech-spec.md` + `implementation-plan.md` and produce **Gherkin `.feature` files** grouped by Phase:
+   - Reqnroll grammar for C# code paths, Cucumber grammar for TypeScript code paths.
+   - Files land under `tests/Features/{storyId}/` with subfolder per Phase.
+   - Each scenario is tagged `@ws-{slug}` so traceability from scenario → workstream is mechanical.
+3. QA team opens a PR from `story/{storyId}/qa` → `main`. The orchestrator merges it automatically (no human gate).
+4. **Gate**: feature-file PR must be merged before step-definition work begins (the engineer pair reads `.feature` files from `main`, not from the QA branch).
+5. After merge, the Engineer team picks up step-definition work per workstream:
+   - Step definitions land under `tests/Steps/{storyId}/`.
+   - Engineer pair iterates step defs + test infra until **every scenario passes** for the Phase under test.
+   - A separate step-definition PR is opened per workstream (branch `ws/{storyId}/{wsName}-steps`); orchestrator merges automatically.
+6. Coverage warnings: if any acceptance criterion in `e2e-scenarios.md` lacks a mapped scenario, the QA pair surfaces a warning on the work-item; the team lead reassigns.
 
 ### 28.8 — Completion & story closure
 
-A story is complete when:
+A story is **releasable** when **every workstream's score ≥ 90 AND all unit / integration / e2e tests are green on `main`**. Concretely:
 
-- All workstream PRs are merged.
-- All QA feature file PRs are merged.
-- All e2e test step definition PRs are merged.
-- All e2e tests pass on the merged `main` branch.
+- Every workstream's implementation PR is merged.
+- Every workstream's step-definition PR is merged.
+- The QA feature-file PR is merged.
+- For every Phase in the implementation plan: all Stages / Steps `complete` AND the Phase's unit + integration + e2e tests pass on `main`.
+- No coding work-item is in `stalled` state.
 
-At that point: `StorySpawn.Phase = "done"`, linked work items transition to `Resolved`/`Closed` in ADO.
+At that point: `StorySpawn.Phase = "done"`, the linked ADO Feature / PBI transitions to `Resolved` / `Closed` via `IStoryProviderOps.TransitionWorkItemAsync`. Per-Phase completion is recorded so downstream phases unblock automatically as their dependencies close (`28.11.6`).
 
-### 28.9 — UI: Spawn dialog redesign
+### 28.9 — UI: Spawn dialog + swarm-control surface
+
+#### 28.9.A — Spawn dialog
 
 Replace `NewWorkstreamModal` with `SpawnStoryModal`:
 
@@ -3537,12 +3643,60 @@ Replace `NewWorkstreamModal` with `SpawnStoryModal`:
 - **Step 2 — Confirm scope**: display the selected story's details. Confirm the target repo. Click **Spawn** to begin.
 - No manual branch/worktree/epic fields — everything is derived from the story.
 
-The Workstreams view shows the spawned story as a **story card** (new component) with:
+#### 28.9.B — Swarm control surface (mission-control layout)
 
-- Story title and status badge (plan → decompose → implement → review → qa → done).
-- Expandable child workstreams underneath.
-- Phase progress bar showing which phase is active.
-- Artifacts list (linked PRs, docs, feature files).
+The Workstreams page renders as a **swarm-control surface**, adapted from `docs/examples/swarm-control.html`. The mock visualises a single story end-to-end; Forge supports many concurrent stories per product, so the layout is lifted into a two-level navigation:
+
+1. **Index level — `/workstreams`**: a list of every active `StorySpawnRow` for the product, each rendered as a *story row* (id, title, phase badge, progress, workstream pill strip, score). The shared topbar surfaces *fleet-wide* meters: total stories, in-plan / implementing / done counts, pipeline %, QA. The "Spawn story" CTA replaces the old "+ New" button.
+2. **Story level — `/workstreams/{storyId}`**: drills into a single story using the full mock layout — topbar (per-story meters), breadcrumb nav, three-stage **pipeline strip** (DESIGN & PLAN ⇄ IMPL ⇄ REVIEW + E2E ⇄ RELEASE), then a 360 px / 1fr split between a **master panel** (phase board / doc list / gate list, depending on mode) and a **detail panel with six tabs**: `overview · conversation · arch doc · PR · QA / E2E · trace`.
+
+Mode mapping for the pipeline strip is derived from `StorySpawn.Phase`:
+
+| Phase             | Pipeline mode      |
+|-------------------|--------------------|
+| `plan`, `decompose` | `design`           |
+| `implement`, `review`, `qa` | `impl`     |
+| `done`            | `release`          |
+
+Detail-panel tab contents:
+
+- **Overview** — paired-agent cards (generator + evaluator + iter bars + score), 4-team swarm grid (each team = 20-cell agent grid colored by status: idle / gen / evl / rev / e2e / stalled).
+- **Conversation** — per-stage actor cards, iteration history, live transcript tail with score-bump callouts. Wired to `/api/work-items/:id/transcript`.
+- **Arch doc** — long-form view of the four merged plan artifacts with a sticky TOC.
+- **PR** — file tree + side-by-side diff + comment side-rail + check-run rail.
+- **QA / E2E** — Gherkin scenario list with pass/fail/warn + coverage rail per file.
+- **Trace** — flat event log: `time | KIND | actor | description` with kind colors `tool · gen · evl · score · pass · fail`.
+
+Tabs auto-disable (visible but strikethrough) when the current selection has no data for them. Selection has three kinds: `overview` / `phase` / `stage`. A back button pops `state.history`.
+
+Design-token palette is scoped under `.swarm-ctrl` so the warm amber/cyan mission-control look does not leak into the rest of the app:
+
+- **Surfaces / text**: `--sc-bg`, `--sc-surface`, `--sc-text`, `--sc-text-dim`, `--sc-muted`.
+- **Status accents**: `--sc-amber` (gen / story-score / selected), `--sc-cyan` (evl / active / engineer team), `--sc-green` (pass / done / qa team / e2e), `--sc-red` (fail / stalled), `--sc-magenta` (review / score-bump / review team).
+- **Team colors**: `--sc-t-arch` = amber, `--sc-t-eng` = cyan, `--sc-t-rev` = magenta, `--sc-t-qa` = green.
+- **Score thresholds for badge classes**: `pass` ≥ 90, `warn` 75–89, `fail` < 75.
+
+A light theme inherits the host app's `data-theme="light"` attribute and swaps to a pure-white-on-cool-gray palette while keeping the same component shapes.
+
+#### 28.9.C — Multi-story index extensions
+
+Because the mock is single-story, Forge adds:
+
+- **Story-row component** — collapsed view of one spawn used in the index list (id, title, phase badge, fill-bar, workstream chips, score). Click → drill into story view.
+- **Phase-filter chip rail** + search box on the index toolbar.
+- **Per-story view-state map** in the swarm UI store: `Map<storyId, { mode, selection, tab, history, liveTail }>` — navigating between stories preserves drill-down position.
+- **Fleet-level attention rail** (planned, behind the same DI swap that wires real LLM strategy): aggregates stalled / blocked / failed-build items across all spawns into the topbar's `Stalled` meter and offers a click-through to the offending story+stage.
+- **Repo / product scoping** — the index honours the product selector in the top nav; each row's repoId is shown as a sub-label.
+
+#### 28.9.D — Realtime updates
+
+The existing `useForgeHub` SignalR plumbing already emits `story-spawn.changed`, `pr.changed`, and (after Phase 27) `build.changed`. The swarm-control surface subscribes to all three:
+
+- `story-spawn.changed` → `useSpawnStore.bump(storyId)` → both the index row and the story view re-fetch.
+- `pr.changed` (filtered by `WorkstreamRow.PrsJson`) → PR pane re-fetches diff + comments + checks.
+- `build.changed` → trace pane appends a `pass`/`fail` row; the QA-tab summary cells refresh.
+
+The "live tail" toggle on the conversation pane gates whether new transcript messages are appended automatically; a paused tail buffers the last N messages and shows a "↑ N new" pill.
 
 ### 28.10 — Artifact check-in rule
 
@@ -4131,6 +4285,391 @@ Feature: Cross-team hand-offs and phase transitions
     Then the API returns 409 Conflict
     And the error indicates a spawn already exists for this story
 ```
+
+#### EX — Execution model (paired agents, points, model rotation, hierarchy)
+
+> BDD scenarios for the workstream.md decisions captured in the "Team structure & execution model" section above. These cover behaviour that is spec-pinned but not yet implemented (tracked under EX.1–EX.8 in Implementation progress).
+
+```gherkin
+@phase28 @execution-model
+Feature: Paired-agent execution & model rotation
+
+  Scenario: Effort points are restricted to the Fibonacci scale
+    Given a coding task with effort points = 4
+    When the orchestrator validates the task
+    Then the API returns 422
+    And the error indicates "Effort points must be one of {1,2,3,5,8,13}"
+
+  Scenario: Agent budgets derive from points
+    Given a coding task with effort points = 5
+    When a pair is dispatched on the task
+    Then the generator agent runs with maxTurns = 150
+    And the iteration cap is set to 25
+
+  Scenario: Generator and evaluator are recorded per task
+    Given a plan task with points = 3
+    When the architect crew claims the task
+    Then assignedAgent.role is "generator" on one agent
+    And assignedAgent.role is "evaluator" on the other
+    And both agents come from team = "Architect"
+
+  Scenario: Evaluator score below 90 triggers another iteration
+    Given a coding task with iteration count 0 and maxIterations 25
+    When the evaluator scores the generator output 84
+    Then the pair re-iterates and the iteration count becomes 1
+    And the work item state remains "active"
+
+  Scenario: Score >= 90 within iteration cap closes the trial successfully
+    Given a coding task in trial 1
+    When the evaluator scores the latest generator output 92
+    Then the pair stops iterating
+    And a PR is opened from the workstream branch
+
+  Scenario: Trial 1 failure rotates to a different model mix on trial 2
+    Given a coding task in trial 1 has exhausted maxIterations without reaching 90
+    And trial 1 used generator = "claude-opus-4.7" and evaluator = "gpt-5.5"
+    When the engineer team lead reassigns the task
+    Then the work item enters trial 2
+    And the new pair uses generator = "gpt-5.5" and evaluator = "claude-opus-4.7"
+
+  Scenario: Trial 3 introduces a different model family
+    Given a coding task in trial 2 has exhausted maxIterations without reaching 90
+    When the engineer team lead reassigns the task to a third pair
+    Then the work item enters trial 3
+    And the pair uses generator = "claude-opus-4.6-1M" and evaluator = "codex-5.3"
+
+  Scenario: Three failed trials mark the task stalled
+    Given a coding task that has just exhausted trial 3 without reaching 90
+    When the trial completes
+    Then the work item state transitions to "stalled"
+    And the task surfaces in the engineer-lead escalation queue
+    And no further trial is started automatically
+
+  Scenario: Plan tasks land on main without a human approval step
+    Given an architect pair completes a plan task with score 92
+    When the plan PR is opened
+    Then the orchestrator merges the PR automatically
+    And no decomposition-approve gate is required for swarm-mode spawns
+
+@phase28 @plan-hierarchy
+Feature: Implementation-plan hierarchy & sizing limits
+
+  Scenario: Implementation plan respects 20/20/20 ceilings
+    Given an architect-produced implementation-plan.md with:
+      | Phase | Stages |
+      | P1    | 20     |
+      | P2    | 21     |
+    When the plan validator runs
+    Then the validator rejects the plan with "Phase P2 exceeds 20 stages"
+
+  Scenario: Step PR enforces ≤ 20 file change cap
+    Given a step task whose generator commit changes 23 files
+    When the evaluator inspects the diff
+    Then the evaluator rejects the output with reason "Step exceeds 20-file PR cap"
+    And the iteration counter increments
+
+  Scenario: Coding work items map to Epic/Feature/Task hierarchy
+    Given a phase "P1" with 2 stages and 5 steps total
+    When work items are created from the implementation plan
+    Then 1 Epic work item exists for "P1"
+    And 2 Feature work items have parentId = the Epic
+    And 5 Task work items have parentId set to their Stage
+
+  Scenario: Plan work items use the four typed kinds (no hierarchy)
+    Given an architect plan task is decomposed into its four artifacts
+    When work items are created
+    Then exactly 4 work items exist with no parent:
+      | Type             |
+      | Architecture     |
+      | TechSpec         |
+      | ImplementationPlan |
+      | E2EScenarios     |
+
+  Scenario: Engineer crew receives all four plan artifacts as context
+    Given the plan PR for story "WI-77001" is merged on main
+    When an engineer pair claims the first ready workstream
+    Then the agent context includes all of:
+      | docs/stories/WI-77001/architecture.md           |
+      | docs/stories/WI-77001/tech-spec.md              |
+      | docs/stories/WI-77001/implementation-plan.md    |
+      | docs/stories/WI-77001/e2e-scenarios.md          |
+
+  Scenario: Phase closes only when its own e2e + integration tests pass
+    Given a phase "P1" has every stage / step at status "complete"
+    But the integration test suite for "P1" has 1 failure
+    When the engineer lead evaluates phase closure
+    Then phase "P1" remains "active" with reason "1 integration test failing"
+    And no downstream phases are unblocked
+
+  Scenario: Closing a phase unblocks downstream phases
+    Given phase "P2" depends on phase "P1"
+    And "P1" is the only outstanding dependency for "P2"
+    When phase "P1" closes successfully
+    Then phase "P2" is added to the eligibility pool
+    And the next dispatcher tick assigns a coding pair to its first workstream
+```
+
+## Phase 29 — Sync-strategy refactor: 2-hour cadence, upstream-changedate cursor, per-repo overrides, UI knob
+
+> Phases 23 / 24 / 27 ship three independent sync jobs (work items / PRs / builds), each running on a hard-coded 20-minute global cadence with a local-clock delta cursor. In production this puts measurable load on ADO + GitHub, and the cursor model can drop items written *during* a sync run. **Phase 29 retunes the strategy** so a healthy default doesn't hammer upstream, the cursor anchors to upstream timestamps that won't drift, and the operator can dial each repo individually from the UI.
+>
+> Two principles drive the shape:
+>
+> 1. **Default for the long run.** A healthy default is one the operator never has to tune. 2 hr matches typical work-item churn (a sprint board changes a handful of items per hour, not per minute) and keeps the rate-limit budget headroom comfortable for a multi-repo install. Anything more aggressive should be opt-in per repo.
+> 2. **The cursor is whatever upstream says.** Local clock drifts, can be wrong on suspended laptops, and races with items written between query-time and commit-time. The MAX upstream `ChangedDate` / `updated_at` we observed is the only cursor that survives all three. `LastSyncAt` stays as audit telemetry — "when did we last tick" — but is not consulted for delta filtering.
+
+### Resolved decisions
+
+- **Q29.1 Cadence default — 2 hours, jittered ±60 s, applied to all three sync axes.** `WorkItemSyncIntervalSeconds = PrSyncIntervalSeconds = BuildSyncIntervalSeconds = 7200`. Per-repo overrides land on `RepoRow` as three separate columns so the operator can dial each axis independently. Override values **may only slow a repo down** (the global tick is the ceiling); making a repo sync faster than global would require restructuring the dispatcher's tick loop, deferred to Phase R if anyone asks.
+
+- **Q29.2 Cursor — upstream-changedate, not local clock.** New column `RepoRow.LastUpstreamChangedDate TEXT NULL` stores the MAX `System.ChangedDate` (ADO) / `updated_at` (GitHub) observed in the last successful run. `WorkItemSyncJob` writes it after each successful run that observed at least one item; an empty delta leaves the prior boundary alone. `LastSyncAt` keeps its semantics as the local-clock "when did we last tick" used by the stale-running guard, the UI's last-synced timestamp, and the Q29.3 cadence gate.
+
+- **Q29.3 Per-repo eligibility gate — pre-fetch filter, not separate timer.** The hosted services keep ticking at the global cadence; per-repo overrides are evaluated inside the tick by `WorkItemSyncJob.IsDueForSync(repo, now)`, `PrSyncJob.IsPrDueForSync(...)`, `BuildSyncJob.IsBuildDueForSweep(...)`. A repo that overrides to (say) 4 hours simply fails the gate on the alternate ticks; `MaxParallel` is taken **from the filtered set** so a saturated set of slow repos doesn't starve a fast one. Stale `running` rows always pass the gate — recovery beats cadence.
+
+- **Q29.4 Initial window — 30 days for both providers.** `AdoInitialWindowDays = GithubInitialWindowDays = 30`. GitHub previously omitted `since=` on first sync, returning all-time history; that behavior is replaced with `since=UtcNow-30d`. Per-repo override `Repo.InitialSyncWindowDays` (ADO-only today) still wins when set.
+
+- **Q29.5 UI surface — Sync tab in EditRepoModal.** Three numeric inputs (Work items / Pull requests / Builds), each paired with a `min | hr` unit dropdown. Empty value = inherit global default (rendered as the placeholder `(global default)`). Save round-trips through the existing `PATCH /api/repos/{id}` write path; zero / negative clears the override. No separate "Apply now" button — the next tick of each job picks up the new cadence naturally.
+
+### Implementation steps
+
+- [x] **29.1** **`SyncConstants` bumps** — `WorkItemSyncIntervalSeconds`, `PrSyncIntervalSeconds`, `BuildSyncIntervalSeconds` move from 1200 → 7200. Add `GithubInitialWindowDays = 30`.
+- [x] **29.2** **`Phase34Migration`** (code-side migration name retained — see "Spec-vs-migration numbering" note at the end of Phase 28) adds four columns to `repos` (`WorkItemSyncIntervalSeconds`, `PrSyncIntervalSeconds`, `BuildSyncIntervalSeconds`, `LastUpstreamChangedDate`) idempotently. Wired into the migration chain in `Program.cs` after the previous additive migration.
+- [x] **29.3** **`RepoRow` entity** — gains the four properties; existing rows take the global defaults until the operator sets an override.
+- [x] **29.4** **`WorkItemSyncJob` cursor swap** — delta filter sources from `LastUpstreamChangedDate`; runs that observe items write `MAX(item.UpdatedAt)` back as the new cursor. Empty deltas leave the cursor unchanged.
+- [x] **29.5** **Per-repo eligibility gates** — `IsDueForSync` / `IsPrDueForSync` / `IsBuildDueForSweep` filter the candidate set inside each job's tick. Build-sync gates per-PR using `MAX(builds.LastSyncAt)` for that PR's history.
+- [x] **29.6** **GitHub initial window** — `WorkItemSyncJob` defaults `filters.UpdatedFrom = UtcNow - GithubInitialWindowDays` when `LastUpstreamChangedDate` is null on a GitHub repo, mirroring ADO. `BuildSyncQueryString` then writes `since=` as before.
+- [x] **29.7** **Contracts + endpoints** — `Repo`, `UpdateRepoRequest`, `MapRepo`, `PatchRepo` all carry the four new fields. `kind='full'` resync clears both `LastSyncAt` and `LastUpstreamChangedDate` so the next run uses the initial window.
+- [x] **29.8** **EditRepoModal UI** — "Sync frequency" section in the Sync tab with three numeric+unit pairs. Empty / 0 round-trips through the patch as 0 to clear the override. Helper component `IntervalField` lives at the bottom of `EditRepoModal.tsx`.
+- [x] **29.9** **Tests** — `Phase34SyncRefactorTests.cs` (filename retained on disk) covers `IsDueForSync` / `IsPrDueForSync` / `IsBuildDueForSweep` (no-prior-sync / global-default / per-repo override / stale-running bypass), constants assertions (7200 / 30 / 30), and migration idempotency. Phase 23, 24, 27 spec-consistency tests updated to assert the new values.
+- [x] **29.10** **Fidelity** — additive UI; exempt from prototype screenshot diff. New surface (the Sync tab "Sync frequency" group) reuses existing `inputStyle` + `monoStyle` tokens; no new design tokens.
+
+### Out of scope (explicitly deferred)
+
+- **Per-repo override that makes a repo sync faster than the global tick.** Requires a separate dispatcher per repo or a min-of-overrides-driven global timer — Phase R candidate if any operator hits this.
+- **Forward-fill of the new `LastUpstreamChangedDate` cursor on existing rows.** First post-migration tick re-runs the 30-day initial window once, then the cursor catches up; no offline backfill required.
+- **Sync-frequency override surfaced on the `RepoSyncPanel` history view.** The cadence inputs live in EditRepoModal only; the history tab keeps its run-listing role.
+- **Per-axis assignee / state filters in the sync gate.** Phase 33 already persists assignee/date filters; the cadence gate is orthogonal and intentionally simple.
+
+---
+
+## Phase 30 — Agent Communication Protocol (ACP): cross-stream context, silo detection, parallelism guardrails
+
+> Phase 28 splits a story into N parallel workstreams that each run a generator → evaluator → PR loop in their own worktree. That parallelism buys throughput but trades it for **divergence**: workstream-A's agent picks `IFooService` with two methods, workstream-B's agent independently picks the same name with three different methods, and the conflict surfaces only at PR-review or merge time. The architect's plan is the only shared substrate; once decompose hands off to the engineer pods, each workstream is an island.
+>
+> Phase 16's `task.{workItemId}` channel and Phase 17's `task_queue` give the operator a per-task observation surface, but they don't let two concurrently-running agents *talk to each other* or even *read each other's intermediate decisions*. Each agent's transcript is an island too.
+>
+> **Phase 30 adopts the [Agent Communication Protocol (ACP)](https://agentcommunicationprotocol.dev/)** — the BeeAI / Linux Foundation REST-based agent-to-agent spec — as Forge's internal cross-agent transport. Every agent invocation becomes an `acp_run`; every cross-agent emission becomes an `acp_message`; every reusable decision (interface shape, naming convention, invariant, open question) becomes a typed `acp_context` row that downstream agents consume as part of their system prompt. The bus is persisted, queryable, and replayable; subscribers stream live via SignalR; conformance to the ACP wire shape means external agents (a separate Forge install, a CLI debugger, a future review-bot) can join the bus without bespoke glue.
+>
+> On top of the bus, two analyzers earn their keep:
+>
+> 1. **Silo auditor.** For every parallel pair of running workstreams, computes the cross-citation rate (how often workstream B's contexts cite workstream A's, and vice-versa). Below threshold → fire `silo-suspected` on the lead's inbox with the specific contexts that should have been read. Above threshold → quiet.
+> 2. **False-parallel planner.** Runs at the end of decompose (Phase 28.4). Inspects the dep graph for shapes that *look* parallel but have a hidden serial constraint (two workstreams declaring the same contract output, two workstreams writing to the same file glob). Either pushes back to the architect with a recommendation to serialize / extract a shared workstream, or auto-injects a `shared-contract` workstream as a Stage-0 prerequisite. Operator gates the auto-injection.
+>
+> This phase **does not change** the existing dispatcher, queue, or deliverable loop. It rides on top of them as an additive surface — every existing test continues to pass; every existing endpoint stays compatible. ACP is an observer + a gentle nudge, not a new state machine.
+>
+> Three principles drive the shape:
+>
+> 1. **The bus is the memory.** A context that isn't on the bus didn't happen — agents that want their decisions remembered emit them as ACP contexts. The bus is persisted, addressable by topic, and survives a restart.
+> 2. **Subscription is opt-in but discovery is automatic.** Agents declare what topics they care about in soul.md front-matter (`acp_topics:`), and the bus auto-subscribes them on every run. They do not have to remember to fetch — relevant contexts are injected into the prompt preamble before the first token.
+> 3. **Silo detection is a signal, not a gate.** When the auditor fires, the lead sees a banner; nothing blocks. The cost of a false positive (interrupting a legitimately-isolated workstream) is higher than the cost of a missed silo (caught at PR review anyway). Phase 30 errs on the quiet side.
+
+### Resolved decisions
+
+- **Q30.1 Wire-format conformance — BeeAI ACP v0.1.** Forge's bus speaks ACP's `messages`, `runs`, `awaits` shapes verbatim so a non-Forge agent (e.g. a `bee` CLI run, a future Anthropic Claude with native ACP support, a manually-curl-ed test agent) can join. Multipart message parts use ACP's `{ contentType, content }` schema; runs use ACP's `running | awaiting | completed | failed | cancelled` state set. Forge-specific extensions (the `acp_context` typed-artifact table, silo audit fields) live as **additional** properties on the message envelope under an `x-forge-*` namespace so an ACP-pure consumer can ignore them without parse errors. The conformance bar is the ACP project's reference test suite (vendored at `tests/conformance/acp/` — runs in CI as a separate xUnit project against `Forge.Api`'s `/acp/*` endpoints). When ACP itself versions past v0.1 we revisit; until then v0.1 is the contract.
+- **Q30.2 Bus topology — single per-product bus, no federation at v0.1.** One product = one bus. A run started against `product-A` cannot publish to `product-B`'s bus. Cross-product subscription is rejected with `403 + acp.cross_product_forbidden`. Federation across products (or across two Forge installs) is a Phase R / `forge_v2.md` candidate; the wire format already supports it (each ACP server has a base URL), but the auth + rate-limit story for v0.1 is "single tenant per bus". Inside a product, every workstream / story / agent shares the same bus — that's the whole point of cross-stream context.
+- **Q30.3 Persistence — every message + context row is written, the bus is replayable.** SQLite tables `acp_runs`, `acp_messages`, `acp_contexts`, `acp_awaits`, `acp_subscriptions`. No retention cap at v0.1 — bus rows are usually small (text + a handful of citations) and the operator can VACUUM if disk pressure shows up; a cap + eviction policy is a Phase R polish. Indexed by `(productId, topic, createdAt)` for the subscription-fanout query and `(runId, at)` for the per-run timeline. **The bus is the source of truth** for ACP-shaped data; the existing `task_transcript_event` table (Phase 16.7) keeps its role for non-ACP transcript events (raw token deltas, tool calls) and references `acp_message.id` when an event corresponds to an ACP emission.
+- **Q30.4 Subscription model — declarative in soul.md, dynamic via API.** Agents declare durable interests in their soul.md front-matter:
+  ```yaml
+  acp_topics:
+    - "interface:**"          # all interface contracts emitted under any workstream
+    - "decision:auth/*"       # any decision under the auth scope
+    - "story:WI-50001/*"      # everything in this story spawn
+  ```
+  The runner reads these on every `StartAsync` and registers a row in `acp_subscriptions` keyed by `(agentId, topic, runId)` with `until = run.endedAt`. Topic syntax mirrors MQTT-style wildcards (`*` = one segment, `**` = many) so operators don't learn a new syntax. Dynamic subscription via `POST /acp/subscriptions` is supported for ad-hoc tooling but is not the primary path — the architect should not have to think about subscription plumbing per-task. Auto-subscribe rule: any agent running on a `story_spawn` workstream is automatically subscribed to `story:{storyId}/**` for the lifetime of its run regardless of soul.md, so the cross-stream context flows for free in the Phase 28 case.
+- **Q30.5 Context taxonomy — five typed kinds, no ad-hoc strings.** `acp_context.kind` is one of: `decision` (a deliberate choice with rationale, e.g. "use JWT not session cookie"), `interface` (a contract another stream depends on, e.g. "`POST /api/foo` accepts `{ bar: string }`"), `artifact` (a pointer to a committed file or PR), `invariant` (a constraint future work must preserve, e.g. "all responses < 200ms p95"), `open-question` (an unresolved choice the next agent should pick up). Five kinds is small enough that downstream agents can branch on `kind` with a switch; if a sixth seems necessary the right move is usually to stretch one of the existing five (e.g. "research note" → `decision` with `state: 'tentative'`). The taxonomy is enforced server-side: writes with an unknown `kind` return `400 + acp.context_kind_unknown`. **`open-question` carries first-class semantics**: when one is published, the bus emits an `acp.question.opened` event on the relevant lead's user channel; resolution writes a follow-up `decision` context that cites the question's id, and the bus closes the question (auto-closed `open-question` rows render struck-through in the UI).
+- **Q30.6 Prompt preamble injection — top-N by relevance, not all-of-bus.** When the runner starts an invocation, it queries the bus for contexts matching the agent's subscriptions, ranks by `(specificity DESC, recency DESC, citation_count DESC)`, and injects the top **20** as a `## Shared Context` section *between* the soul.md preamble (Phase 14.6) and the user prompt. Specificity = number of topic segments matched (a context tagged `interface:auth/jwt` outranks `interface:auth/*` for an agent subscribed to `interface:auth/**`). Recency cap = 14 days — older contexts only appear if explicitly cited by a younger context (transitive inclusion). The 20-row cap is a deliberate budget; an agent that needs more context should be doing fewer things, not reading more bus. Cap configurable via `Forge:Acp:PreambleTopN` for experiment.
+- **Q30.7 Silo auditor — pairwise cross-citation, fire below 0.2.** A `SiloAuditor` background service runs every 10 minutes per active story spawn. For each pair of running workstreams (A, B) under that spawn, it computes `crossCiteRate(A→B) = |contexts emitted by A that cite at least one context from B| ÷ max(1, |contexts emitted by A|)`. **Silo suspected** when `min(crossCiteRate(A→B), crossCiteRate(B→A)) < 0.2 AND (count of A's contexts ≥ 5) AND (count of B's contexts ≥ 5)`. Both sides must have produced enough contexts to make the ratio meaningful — early-run pairs don't false-fire. On detection emits `acp.silo.suspected { storySpawnId, workstreamA, workstreamB, contextsA[], contextsB[] }` to the lead's user channel + writes one `acp_silo_audit` row per detection. Debounce: do not re-fire for the same `(spawnId, A, B)` pair until the rate moves above 0.2 and back down. The lead can mark a detection as `intentional-isolation` (writes a `acp_silo_audit.acked` row) which suppresses re-fires for that pair for the lifetime of the spawn — sometimes the right answer is "yes, these are independent, leave them alone".
+- **Q30.8 False-parallel planner — runs at decompose, advisory by default.** When the architect submits a decomposition (Phase 28.4 `POST /api/stories/{storyId}/spawn/decompose`), a `FalseParallelPlanner` post-pass inspects the workstream definitions for two patterns:
+  1. **Shared contract output** — two or more workstreams that name the same expected artifact (`expectedFiles` overlap, or the workstream description names the same module / interface / endpoint). Heuristic match via tokenization of `description` + intersection of declared file paths.
+  2. **Implicit serial chain** — workstream B's `description` mentions a noun that's the *output* of workstream A's `description` (e.g. "extends the auth middleware" when A is "build the auth middleware") and there's no declared `dep` from B to A.
+  Detections surface as a yellow banner on the decompose review screen with two CTAs: **Inject shared workstream** (auto-extracts the shared contract into a new Stage-0 workstream and re-wires deps from A and B), and **Mark as intentional** (writes the override to the spawn so the auditor doesn't re-flag). **No auto-modification** — the operator must approve. The planner's logic is intentionally heuristic-not-AI at v0.1 (deterministic, fast, explainable); upgrading to an LLM-driven planner is `forge_v2.md`.
+- **Q30.9 Awaits — `awaiting` runs are first-class, not a hack.** ACP's `awaiting` state is the formal way for an agent to pause and request input. Forge maps awaits to existing surfaces:
+  - `awaiting input from human` → posts to the work item's comment thread + emits to the team lead's inbox.
+  - `awaiting input from agent` → registers a subscription for the named topic; resumes when a matching context lands.
+  - `awaiting external` (e.g. CI pipeline, a 3rd-party webhook) → records the await with a `dueBy` timestamp; the bus's polling loop checks `acp_awaits WHERE state='open' AND dueBy < now()` every minute and fires `acp.await.timeout` for the lead. Resume is an explicit `POST /acp/awaits/{id}/resume` with the resolution payload.
+  All awaits are visible in the Live Execution view (Phase 16.10) as a yellow chip on the affected iteration; the chip body is the await's `prompt`. The await counter feeds the existing `crew.queue.depth` strain math (Phase 17.10) so a crew with many awaiting agents is correctly flagged as strained even though no rows are formally `picked-up`.
+- **Q30.10 Visibility — operator can read every message, agents only see their subscriptions.** The bus is fully readable to PO + team leads via `GET /api/acp/messages?…`. Generator and evaluator agents only see what their subscriptions match — they cannot enumerate the bus or read other agents' messages by id unless that message is in a topic they're subscribed to. This is the same gate the prompt preamble uses (Q30.6); enforced at query time on `GET /api/acp/messages` so the same agent that ran a `tool: list_acp_messages` call against its own bus access only retrieves its scoped slice. Audit rows record the caller for every read so an agent that abuses the read scope is visible in `/audit`.
+
+### Implementation steps
+
+- [ ] **30.1** **Schema migration** — `Forge.Api/Persistence/Phase36Migration.cs` (next free migration slot — `Phase35Migration.cs` is already taken on disk by the unrelated crew-decouple migration; idempotent, runs after the most recent migration in the chain):
+  - New table `acp_runs(id TEXT PK, productId TEXT, agentId TEXT, parentRunId TEXT?, workItemId TEXT?, storySpawnId TEXT?, workstreamId TEXT?, state TEXT NOT NULL, startedAt TEXT, endedAt TEXT?, modelEcho TEXT?)`. State ∈ `running | awaiting | completed | failed | cancelled`. Indexes: `(productId, state, startedAt)`, `(workItemId, startedAt)`, `(storySpawnId, startedAt)`.
+  - New table `acp_messages(id TEXT PK, productId TEXT, runId TEXT FK, fromAgentId TEXT, toRecipient TEXT, kind TEXT, partsJson TEXT, inReplyTo TEXT?, at TEXT NOT NULL, contextRefs TEXT?)`. `toRecipient` is one of: `agent:{id}`, `topic:{topic-string}`, `broadcast`. `kind` mirrors ACP's: `announce | request | reply | observation | tool-result`. `partsJson` is the multipart payload per ACP wire format. Indexes: `(productId, at)`, `(runId, at)`.
+  - New table `acp_contexts(id TEXT PK, productId TEXT, runId TEXT FK, agentId TEXT, kind TEXT NOT NULL, topic TEXT NOT NULL, body TEXT, citesContextIds TEXT?, expectedFiles TEXT?, state TEXT, createdAt TEXT)`. `kind` ∈ `decision | interface | artifact | invariant | open-question` (CHECK constraint). `state` defaults `open` for `open-question`, `final` for the rest; `open-question` rows flip to `resolved` when a `decision` cites them. Indexes: `(productId, topic, createdAt)`, `(productId, kind, state)`, `(citesContextIds)` for the cross-citation join.
+  - New table `acp_awaits(id TEXT PK, runId TEXT FK, kind TEXT, prompt TEXT, schemaJson TEXT?, dueBy TEXT?, state TEXT NOT NULL, resolutionJson TEXT?, openedAt TEXT, resolvedAt TEXT?)`. `kind` ∈ `human | agent | external`. `state` ∈ `open | resolved | timeout | cancelled`. Index `(state, dueBy)` for the timeout sweep.
+  - New table `acp_subscriptions(id INTEGER PK AUTOINCREMENT, agentId TEXT, runId TEXT?, topicPattern TEXT, source TEXT, registeredAt TEXT, until TEXT?)`. `source` ∈ `soul-md | dynamic | auto-spawn`. Index `(agentId, topicPattern)`.
+  - New table `acp_silo_audit(id INTEGER PK, storySpawnId TEXT, workstreamA TEXT, workstreamB TEXT, rateAToB REAL, rateBToA REAL, contextsAJson TEXT, contextsBJson TEXT, firedAt TEXT, ackedBy TEXT?, ackedAt TEXT?, ackKind TEXT?)`. `ackKind` ∈ `intentional-isolation | acted-on | dismissed`.
+  - TS mirrors in `src/forge/Forge.UI/src/types.ts`: `AcpRun`, `AcpMessage`, `AcpContext`, `AcpContextKind`, `AcpAwait`, `AcpSiloAudit`.
+
+- [ ] **30.2** **`IAcpBus` interface** — `Forge.Api/Acp/IAcpBus.cs`. Single abstraction for the bus; the rest of the code routes through it so the SignalR + persistence wiring is testable in isolation.
+  ```csharp
+  Task<AcpRun> StartRunAsync(string agentId, string productId, RunContext ctx, CancellationToken ct);
+  Task EndRunAsync(string runId, AcpRunState terminalState, CancellationToken ct);
+  Task<AcpMessage> EmitMessageAsync(string runId, AcpMessage envelope, CancellationToken ct);
+  Task<AcpContext> EmitContextAsync(string runId, AcpContextDraft draft, CancellationToken ct);
+  Task<AcpAwait> OpenAwaitAsync(string runId, AcpAwaitDraft draft, CancellationToken ct);
+  Task<AcpAwait> ResolveAwaitAsync(string awaitId, JsonElement resolution, string byUserOrAgent, CancellationToken ct);
+  Task<IReadOnlyList<AcpContext>> QueryContextsAsync(string productId, AcpContextQuery query, CancellationToken ct);
+  Task<IReadOnlyList<AcpContext>> ResolvePreambleAsync(string agentId, string runId, int topN, CancellationToken ct);
+  Task<bool> SubscribeAsync(string agentId, string topicPattern, string? runId, AcpSubscriptionSource source, CancellationToken ct);
+  ```
+  All writes fan out to SignalR (groups `acp.{productId}` and `acp.run.{runId}`) inside the same DB transaction so a subscriber that joins late and replays from the persisted table sees the same ordering it would have streamed live. `ResolvePreambleAsync` is the hot path — called once per `IAgentRunner.StartAsync` — and is allowed to read directly without serialization.
+
+- [ ] **30.3** **soul.md `acp_topics:` parser** — extend the existing front-matter loader (`Forge.Api/Agents/SoulMdLoader.cs`) to parse `acp_topics:` as a string array. Validation: each entry is a valid topic pattern (segments of `[a-zA-Z0-9_-]+` separated by `/`, with `*` and `**` wildcards allowed only as a whole segment). Invalid patterns are dropped with a `forge.acp.soul.invalid_topic` warning log so a typo doesn't block the agent. The loader's existing file-watcher (Phase 11.3) re-reads on edit; the runner re-applies subscriptions on the next `StartAsync` (we don't mutate live runs' subscriptions — explicit by design, makes test isolation clean).
+
+- [ ] **30.4** **Auto-subscribe glue in `IAgentRunner` invocation** — when `StartAsync` is called and `RunContext.StorySpawnId` is set, the runner registers an automatic subscription `topic = story:{storyId}/**, source = auto-spawn`. Same for `WorkItemId` → `topic = workitem:{wid}/**`. These auto-subscriptions live for the run's lifetime (`until = run.endedAt`) so an agent on workstream-A always sees workstream-B's contexts during the spawn. Operator override: a soul.md `acp_no_auto_subscribe: true` flag opts an agent out (the planner agent in 30.8 uses this so it doesn't drown in its own product's bus).
+
+- [ ] **30.5** **Prompt preamble injection** — extend `Forge.Api/Agents/SystemPromptBuilder.cs` to call `IAcpBus.ResolvePreambleAsync(agentId, runId, topN: ScoringConstants.AcpPreambleTopN)` and splice the result into the assembled system prompt as:
+  ```
+  <existing soul.md body>
+
+  ---
+
+  ## Shared Context (top {N} from the team bus)
+
+  - [{kind}@{topic}] {body excerpt}  · cites: {ids}  · {age}
+  - …
+
+  ---
+
+  <user prompt>
+  ```
+  Each emitted context contributes ≤ 400 tokens to the preamble (truncate body with a `…` marker; the agent can `tool: get_acp_context(id)` for the full body if it needs to). The preamble is part of the **cached** system block (Phase 11.5 prompt cache) — same TTL, same hit-rate metric. When the preamble changes between iterations of the same deliverable (because new contexts landed), the cache miss is recorded as `forge.acp.preamble.cache_invalidated` so we can see how often the cross-stream noise is actually shifting.
+
+- [ ] **30.6** **HTTP surface — ACP-conformant endpoints** under `/acp/*` (separate from `/api/*` so the wire-format conformance suite can hit them without auth headers Forge-specific paths require). All endpoints accept JSON and emit ACP wire envelopes:
+  - `POST /acp/runs` body `{ agentId, productId, parentRunId?, workItemId?, storySpawnId? }` → `{ id, state: 'running', … }`. 201 on create.
+  - `POST /acp/runs/{id}/end` body `{ state: 'completed' | 'failed' | 'cancelled' }` → 204. Idempotent (re-end of an already-ended run is a no-op).
+  - `POST /acp/runs/{id}/messages` body = ACP message envelope → 201 with the assigned id.
+  - `GET /acp/runs/{id}/messages?from={cursor}&limit=200` → ACP-shaped list, sorted by `at`. 200.
+  - `POST /acp/runs/{id}/contexts` body `{ kind, topic, body, citesContextIds?, expectedFiles? }` → 201 with id + `state` ('open' for `open-question`, 'final' otherwise).
+  - `GET /acp/contexts?productId=&topic=&kind=&since=` → list, gated by Q30.10 visibility. 200.
+  - `POST /acp/awaits` body `{ runId, kind, prompt, schemaJson?, dueBy? }` → 201 + sets `run.state='awaiting'`.
+  - `POST /acp/awaits/{id}/resume` body = resolution payload → 204 + flips run state back to `running`.
+  - `POST /acp/subscriptions` + `DELETE /acp/subscriptions/{id}` for ad-hoc subscription mgmt.
+  - `GET /acp/discovery` returns the ACP agent manifest for this Forge install (lists agent ids + their advertised capabilities + soul.md topics). This is the entry point an external ACP client uses to find what it can talk to.
+
+- [ ] **30.7** **`SiloAuditor` hosted service** — `Forge.Api/Services/SiloAuditor.cs`. Tick every 10 min ±60 s. For each `story_spawns WHERE phase IN ('implement', 'review')`, walks pairs of `workstream_rows WHERE storySpawnId = spawn.id AND status IN ('active', 'review')`. For each pair (A, B), runs the Q30.7 cross-citation query against `acp_contexts`. Below threshold + the count gates pass + not already debounced → write an `acp_silo_audit` row + emit `acp.silo.suspected` to the spawn's lead via `user.{leadUserId}`. Debounce kept in-memory (`ConcurrentDictionary<(spawnId, wsA, wsB), bool>`) with a `Forge.Api/Services/SiloAuditorState.cs` snapshot on shutdown so a restart doesn't refire across a clean boot. **Acks**: `POST /api/acp/silo/{id}/ack body { kind: 'intentional-isolation' | 'acted-on' | 'dismissed' }` writes the ack columns. `intentional-isolation` adds the pair to a per-spawn permanent suppression set (stored on `story_spawns.AcpSuppressedSiloPairsJson` so it survives the auditor restart).
+
+- [ ] **30.8** **`FalseParallelPlanner` post-decompose hook** — `Forge.Api/Stories/FalseParallelPlanner.cs`. Wired into `POST /api/stories/{storyId}/spawn/decompose` after the workstream rows are persisted but **before** the `decomposed` SignalR event fires (so the UI receives the planner's findings in the same payload as the decomposition itself). Two heuristics, both deterministic, both with fixture-pinned tests:
+  1. **Token overlap on workstream descriptions** — Jaccard similarity between the noun phrases of every pair's `description`. ≥ 0.5 → flag as "shared contract candidate". Noun-phrase extraction is a 50-line lookup of common-software-noun list (`api | service | controller | middleware | schema | model | endpoint | hub | provider`); not a real NLP pipeline, deliberate (cheap, debuggable, no LLM dep).
+  2. **Output-of-A in description-of-B without dep** — for each pair where A's `expectedFiles` overlaps with the noun set in B's description and `(A, B) ∉ workstream_deps`, flag as "implicit serial".
+  Findings are returned to the architect in the decompose response under a new `falseParallelHints: [{ kind, workstreams[], suggestion, rationale }]` field. The UI renders them as banners (30.10). **No write side-effects** at v0.1 — the planner is read-only; the operator clicks **Inject shared workstream** to get the auto-rewire (which creates the new workstream + dep edges in a single transaction).
+
+- [ ] **30.9** **Await timeout sweep** — `Forge.Api/Services/AwaitTimeoutSweep.cs`. Tick every 60 s. `SELECT * FROM acp_awaits WHERE state='open' AND dueBy < now()`. For each row, emit `acp.await.timeout` to the run's lead user channel + flip `state='timeout'`. The owning run stays `awaiting` (the run isn't auto-resolved — only the await is); the lead either resumes the await with a default value or cancels the run. Telemetry: `forge.acp.await.timeout` counter tagged with `kind`.
+
+- [ ] **30.10** **UI — Story spawn `Context graph` tab** — extend `src/forge/Forge.UI/src/views/StorySpawnView.tsx` with a new tab **Context** between **Workstreams** and **Artifacts**. Renders:
+  - **Force-directed graph** — nodes = `acp_contexts` for this spawn; edges = `citesContextIds`. Node color by `kind` (decision = blue, interface = green, artifact = grey, invariant = purple, open-question = amber outlined). Hover → context body + emitting agent + workstream pill.
+  - **Silo audit banner** at the top — for each unack'ed `acp_silo_audit` row on this spawn, render a red banner: "Workstreams `ws-A` and `ws-B` aren't reading each other's context (cross-cite rate {N%}). [Open both] [Mark intentional] [Dismiss]". Click `Open both` opens the two Live Execution views side-by-side.
+  - **False-parallel hints** at the top of the decompose phase view — yellow banner per `falseParallelHints` entry with the planner's suggestion + the two CTAs from 30.8.
+  - **Open question pile** — a sidebar list of `kind=open-question, state=open` contexts with the originating workstream + age. Click → drops into the relevant Live Execution view filtered to the question.
+  Frontend-design discipline: reuses Phase 14 score-chip palette + Phase 16 `--graph-line` token; one new token `--acp-edge-cite` documented in `docs/forge/design-tokens.md`.
+
+- [ ] **30.11** **UI — Live Execution view ACP overlay** — extend `src/forge/Forge.UI/src/views/LiveExecutionView.tsx` with:
+  - A new chip in the right-rail tabs: **Context (N)** showing the count of contexts emitted by this run + the count of contexts injected into the preamble. Click → expands the list with kind / topic / body excerpt / cites count.
+  - A yellow `awaiting: {prompt}` banner on the iteration row when an `acp_await` is open against the current run. Inline `Resume` button posts to `POST /acp/awaits/{id}/resume` for human awaits.
+  - Each transcript event tagged with the contextId it produced (when applicable) so clicking it jumps to the Context graph tab with that node selected.
+
+- [ ] **30.12** **UI — Inbox surfacing** — extend `src/forge/Forge.UI/src/views/InboxView.tsx` (Phase 17.7) with two new panel kinds:
+  - **Open questions for me** — `acp_contexts WHERE kind='open-question' AND state='open' AND topic matches subscribed topics for currentUser's leadCrews`. One row per question with the originating workstream + the agent that posted it.
+  - **Silo audits + await timeouts** — fed from `acp.silo.suspected` and `acp.await.timeout` SignalR events on `user.{userId}`. Banners stay until ack'd.
+  Reuses the existing Inbox count badge math; the chip turns yellow when one of the new panels has rows.
+
+- [ ] **30.13** **`forgeApi` client extensions + Zustand store** — `src/forge/Forge.UI/src/api/forgeApi.ts` adds: `listAcpContexts`, `getAcpContext`, `listAcpMessages`, `listAcpAwaits`, `resumeAcpAwait`, `listSiloAudits`, `ackSiloAudit`, `injectSharedWorkstream`. New `useAcpStore` (Zustand) + `useAcpChannel` (SignalR) keyed by `productId` so the Context tab and the Inbox panels both subscribe through one channel. The store invalidates on `acp.context.emitted` / `acp.await.opened` / `acp.silo.suspected` / `acp.question.resolved` events.
+
+- [ ] **30.14** **Telemetry + audit** — extend the existing `Forge.Api.Phase16` meter with:
+  - `forge.acp.message.emitted` — counter, tagged with `kind`, `recipient_kind`.
+  - `forge.acp.context.emitted` — counter, tagged with `kind`.
+  - `forge.acp.preamble.injected` — counter, tagged with `agent_id`. Histogram `forge.acp.preamble.token_count`.
+  - `forge.acp.preamble.cache_invalidated` — counter, tagged with `reason: 'topic_match' | 'recency_eviction'`.
+  - `forge.acp.silo.suspected` — counter, tagged with `spawn_id`.
+  - `forge.acp.silo.acked` — counter, tagged with `ack_kind`.
+  - `forge.acp.false_parallel.flagged` — counter, tagged with `heuristic`.
+  - `forge.acp.false_parallel.injected` — counter for the operator-confirmed shared-workstream injections.
+  - `forge.acp.await.opened` / `forge.acp.await.timeout` — counters, tagged with `kind`.
+  Audit: every silo ack writes one `forge_actions(kind='ACP_SILO_ACK', payload={ auditId, ackKind, byUserId })` row; every shared-workstream injection writes one `forge_actions(kind='ACP_FALSE_PARALLEL_INJECT', payload={ spawnId, newWsId, mergedWsIds })` row. The `/audit` view gains an optional `?acp=true` chip filter.
+
+- [ ] **30.15** **ACP wire-format conformance suite** — vendor the ACP project's `acp-conformance/` test fixtures into `tests/conformance/acp/`. New xUnit project `Forge.Api.Tests.AcpConformance` runs the suite against a `WebApplicationFactory<Program>`-hosted Forge.Api instance and asserts every fixture passes. CI fails on any conformance regression. Track ACP version pins in `tests/conformance/acp/VERSION` so a spec bump is a deliberate operator action, not silent drift.
+
+- [ ] **30.16** **Integration with Phase 17 queue — `awaiting-context` queue state.** Extend `task_queue.state` enum with `awaiting-context`. When the runner emits an `acp_await` with `kind='agent'`, the queue row's state flips from `picked-up` to `awaiting-context`. Sweep added to `CrewQueueWorker` (Phase 17.4): every tick, scan `task_queue WHERE state='awaiting-context'` and check whether the await's matching topic now has a satisfying context; if yes, flip state back to `picked-up` and signal the runner to resume. Keeps the lead's queue depth honest — the row is held against the crew's `MaxConcurrent` while it waits, but it doesn't bake against `picked-up` semantics.
+
+- [ ] **30.17** **Fidelity** — additive UI; exempt from prototype screenshot diff. One new design token `--acp-edge-cite` documented in `docs/forge/design-tokens.md`. The Context tab graph uses `react-force-graph-2d` (BSD license, ~30KB gz) — one new dep, recorded in `docs/forge/dependencies.md`.
+
+### Test scenarios
+
+> BDD-style scenarios live in `Forge.Api.Tests/Phase30AcpTests.cs` (xUnit + WebApplicationFactory). Conformance scenarios are owned by the ACP wire-format suite (30.15) and not duplicated here. UI scenarios are exercised through the existing endpoint test paths; Playwright cases are deferred to Phase R per the established pattern.
+
+**Bus persistence + replay**
+- [ ] `EmitMessageAsync_persists_and_streams` — call `IAcpBus.EmitMessageAsync`; verify the `acp_messages` row exists, the `acp.{productId}` SignalR group received the envelope, and re-fetching via `GET /acp/runs/{id}/messages` returns the same row in order.
+- [ ] `EmitContextAsync_validates_kind` — POST a context with `kind='unknown'` returns `400 + acp.context_kind_unknown`; the five valid kinds each persist with the right defaults (`state='open'` for open-question, `state='final'` for the rest).
+- [ ] `Replay_after_restart_yields_same_message_order` — emit 50 messages on a run, recreate the DbContext, query messages — ordering matches the original `at` sort.
+
+**Subscription + preamble**
+- [ ] `Soul_md_topics_register_on_run_start` — soul.md with `acp_topics: ['interface:auth/**']` → `StartAsync` writes one `acp_subscriptions` row tied to the run id with `source='soul-md'`.
+- [ ] `Auto_subscribe_to_story_when_workstream_run` — `RunContext.StorySpawnId='spawn-A'` → an `acp_subscriptions` row with `topic='story:spawn-A/**'` and `source='auto-spawn'` exists; opt-out via `acp_no_auto_subscribe: true` skips it.
+- [ ] `Preamble_topN_caps_at_20` — 50 contexts match the agent's subscriptions; `ResolvePreambleAsync` returns exactly 20, sorted by `(specificity DESC, recency DESC, citation_count DESC)`.
+- [ ] `Preamble_recency_excludes_15_day_old_uncited` — a 15-day-old context with zero citations is excluded; the same context cited by a fresh row is included transitively.
+- [ ] `Preamble_changes_invalidate_cache` — emit a new high-relevance context between two iterations of the same deliverable; the second iteration's runner records `forge.acp.preamble.cache_invalidated`.
+
+**Silo auditor**
+- [ ] `Auditor_quiet_below_minimum_count` — workstreams A and B with 4 contexts each, zero cross-cites → no detection (count gate `≥5`).
+- [ ] `Auditor_fires_when_cross_cite_below_0_2` — A and B with 10 contexts each, 1 cross-cite from A→B and 0 from B→A → `acp_silo_audit` row + `acp.silo.suspected` event fired once.
+- [ ] `Auditor_debounces_until_rate_recovers` — same fixture; second tick within 10 minutes does NOT re-fire; once rate climbs to 0.3 and back to 0.1, the next tick re-fires.
+- [ ] `Auditor_intentional_isolation_suppresses_for_spawn_lifetime` — ack a detection with `kind='intentional-isolation'`; subsequent ticks for the same `(spawn, A, B)` pair do not fire even after rate dips again. Ack persists on `story_spawns.AcpSuppressedSiloPairsJson`.
+- [ ] `Auditor_clears_state_on_clean_restart` — auditor's in-memory debounce snapshot reloads from `SiloAuditorState`; restart does not duplicate-fire detections that were already streamed.
+
+**False-parallel planner**
+- [ ] `Token_overlap_flags_two_workstreams_naming_the_same_service` — submit decompose with two workstreams whose descriptions both contain "auth middleware"; response `falseParallelHints` includes a `shared-contract` entry naming both.
+- [ ] `Implicit_serial_flagged_when_B_extends_A` — workstream A `expectedFiles=['src/auth/middleware.ts']`, workstream B description "extends the auth middleware", no dep edge → `implicit-serial` hint fires.
+- [ ] `Hints_have_no_side_effects` — the decompose call persists exactly the workstreams the architect submitted; the planner does not auto-add deps or workstreams.
+- [ ] `Inject_shared_workstream_creates_stage_zero_and_rewires_deps` — POST to the inject CTA → new workstream row exists with appropriate name, A and B's `workstream_deps` reference it, audit row written.
+- [ ] `Mark_intentional_records_override_and_does_not_re_flag` — operator confirms intentional; subsequent re-submit of the same decompose does not re-flag the same pair.
+
+**Awaits**
+- [ ] `Open_human_await_routes_to_lead_inbox` — open an await with `kind='human'`; the lead's inbox view's open-questions panel includes it; the run state flips to `awaiting`.
+- [ ] `Resume_await_returns_run_to_running` — POST resume with a resolution payload → run state flips back to `running`; transcript records the resumption with the resolution body.
+- [ ] `Agent_await_resolves_when_matching_context_lands` — open `kind='agent', topic='interface:auth/jwt'`; emit a context with that exact topic on a different run; the await flips to `resolved` and the consumer run resumes.
+- [ ] `Await_timeout_sweep_fires_at_dueBy` — open a `kind='external'` await with `dueBy = now + 30s`; advance test clock 31s; sweep flips state to `timeout` + emits `acp.await.timeout`.
+- [ ] `Await_count_feeds_queue_strain_math` — three runs in `awaiting` state on the same crew → `GetCrewStatsAsync` counts them in depth; combined with one queued row crosses the strain threshold and fires `queue.strained`.
+
+**Visibility + scoping**
+- [ ] `Cross_product_message_post_rejected` — agent on product-A POSTs a message scoped to product-B → 403 + `acp.cross_product_forbidden`.
+- [ ] `Agent_query_hides_unsubscribed_topics` — a generator agent calls `GET /api/acp/messages` with no topic filter; response only contains messages whose topics match its registered subscriptions.
+- [ ] `PO_query_returns_full_bus` — same call from a PO returns all rows regardless of subscriptions; a `forge_actions(kind='ACP_BUS_FULL_READ')` audit row is written.
+
+**Queue integration**
+- [ ] `Awaiting_context_state_holds_capacity` — a row in `awaiting-context` counts against the crew's `MaxConcurrent`; a second item on the same crew sees `capacity-blocked` until the await resolves.
+- [ ] `Resolved_await_flips_back_to_picked_up` — a satisfying context lands; the queue sweep flips the row back to `picked-up` + emits `task.delegated` (resume variant).
+
+**ACP wire-format conformance** (handled by 30.15 suite — listed here for traceability)
+- [ ] `Acp_v01_messages_endpoint_passes_conformance` — `POST /acp/runs/{id}/messages` accepts every fixture envelope shape.
+- [ ] `Acp_v01_runs_state_machine_matches_spec` — the five terminal-state transitions and the `awaiting → running` resume match the ACP reference suite.
+- [ ] `Acp_v01_discovery_manifest_validates` — `GET /acp/discovery` output validates against the ACP discovery JSON schema.
+
+**Spec consistency**
+- [ ] `Phase30SpecConsistencyTests_constants_match_doc` — `ScoringConstants.AcpPreambleTopN`, `AcpSiloThreshold`, `AcpSiloMinContextCount`, `AcpAwaitTimeoutSweepIntervalSeconds` match the values quoted verbatim in this phase. Drift fails the test, mirroring Phase 14.14 / Phase 23 spec-consistency patterns.
+
+### Out of scope for v0.1 — Phase R / `forge_v2.md`
+
+- **Federated bus across multiple Forge installs.** The wire format already supports multi-server discovery; the auth + rate-limit + abuse story for cross-tenant federation is non-trivial. Phase R candidate when a second Forge install is in scope.
+- **LLM-driven false-parallel planner.** The deterministic Jaccard / noun-overlap heuristic in 30.8 is intentionally simple. An LLM-driven planner that reads the architect's plan + the workstream descriptions + the existing codebase to detect implicit serialization is `forge_v2.md`.
+- **Bus retention + eviction.** Bus rows accumulate forever at v0.1. A retention policy (e.g. drop `acp_messages` older than 90 days when their run is `completed`) is a Phase R polish; ergonomically the operator can VACUUM if disk shows up.
+- **Per-context ACL.** All contexts within a topic the agent subscribes to are visible. Per-context "this is private to crew-A" gating is `forge_v2.md` — the bus is intentionally information-rich to maximize cross-stream learning.
+- **Two-way ACP with non-Forge agents that *write* contexts.** External ACP agents can read the bus today via the conformance endpoints; they can also write, but the silo auditor + false-parallel planner only reason about contexts emitted by Forge-known agents (matched against `agents.id`). External-author silo math is Phase R.
+- **Auto-merge of duplicated `interface` contexts.** When two workstreams emit the same interface contract (one of the silo auditor's most common findings), v0.1 surfaces it and lets the operator decide; auto-deduping is `forge_v2.md` because the merged shape is rarely a clean intersection.
+- **Bus-level prompt budgeting across iterations.** `Forge:Acp:PreambleTopN=20` is a per-iteration cap; a per-deliverable token-spent-on-preamble cap that gates further bus reads when crossed is Phase R.
+- **Manual context emission from the UI.** Operators cannot hand-author an ACP context at v0.1 — only agents emit. A "post note to bus" CTA on the work item is a Phase R polish.
+
+---
 
 ## Phase R — Post-implementation refactor (deferred)
 

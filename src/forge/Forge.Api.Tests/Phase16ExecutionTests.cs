@@ -57,8 +57,8 @@ public class Phase16ExecutionTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow { Id = "arch-gen", Name = "Architecture Alpha", ProductId = product.Id, Lead = "L1", Model = "claude-opus-4-7", ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m });
-            db.Crews.Add(new CrewRow { Id = "arch-eval", Name = "Architecture Beta",  ProductId = product.Id, Lead = "L2", Model = "claude-sonnet-4-6", ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m });
+            db.Crews.Add(new CrewRow { Id = "arch-gen", Name = "Architecture Alpha", Lead = "L1", Model = "claude-opus-4-7", ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m });
+            db.Crews.Add(new CrewRow { Id = "arch-eval", Name = "Architecture Beta",  Lead = "L2", Model = "claude-sonnet-4-6", ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m });
             await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
@@ -83,8 +83,8 @@ public class Phase16ExecutionTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(new CrewRow { Id = "qa-1",   Name = "QA Sentinels",        ProductId = product.Id, Lead = "L1", Model = "x", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m });
-            db.Crews.Add(new CrewRow { Id = "arch-1", Name = "Architecture Alpha",  ProductId = product.Id, Lead = "L2", Model = "y", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m });
+            db.Crews.Add(new CrewRow { Id = "qa-1",   Name = "QA Sentinels",        Lead = "L1", Model = "x", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m });
+            db.Crews.Add(new CrewRow { Id = "arch-1", Name = "Architecture Alpha",  Lead = "L2", Model = "y", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m });
             await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
@@ -103,9 +103,9 @@ public class Phase16ExecutionTests
         {
             // Seed a second product so the two crews come from different ones.
             db.Products.Add(new ProductRow { Id = "p2", Name = "Other", Slug = "other", CreatedAt = DateTimeOffset.UtcNow });
-            db.Crews.Add(new CrewRow { Id = "arch-a", Name = "Architecture A", ProductId = "p2", Lead = "L1", Model = "x", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m });
+            db.Crews.Add(new CrewRow { Id = "arch-a", Name = "Architecture A", Lead = "L1", Model = "x", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m });
             // The seeded "Architecture" crew already exists from ForgeSeed; pick another arch crew on a different product.
-            var seededArch = await db.Crews.FirstAsync(c => c.Name.StartsWith("Architecture") && c.ProductId != "p2");
+            var seededArch = await db.Crews.FirstAsync(c => c.Name.StartsWith("Architecture") && c.Id != "arch-a");
             await db.SaveChangesAsync();
 
             using var client = f.CreateClient();
@@ -347,7 +347,6 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "ad-crew", Name = "Engineering Squad",
-                ProductId = product.Id,
                 Lead = "lead-a", Model = "claude-sonnet-4-6",
                 ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
                 MaxConcurrent = 5, ScheduleEnabled = false, // bypass schedule gate for the test
@@ -394,7 +393,6 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "ad-crew-full", Name = "Engineering Full",
-                ProductId = product.Id,
                 Lead = "L", Model = "x", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 1, ScheduleEnabled = false,
             });
@@ -480,7 +478,6 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "dq-crew", Name = "DQ Squad",
-                ProductId = product.Id,
                 Lead = "dq-lead", Model = "claude-sonnet-4-6",
                 ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
@@ -524,7 +521,6 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "dup-crew", Name = "Dup Squad",
-                ProductId = product.Id,
                 Lead = "dup-lead", Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
@@ -569,7 +565,6 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "gen-crew", Name = "Generator",
-                ProductId = product.Id,
                 Lead = "gen-lead", Model = "claude-sonnet-4-6",
                 ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
@@ -578,7 +573,6 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "eval-crew", Name = "Evaluator",
-                ProductId = product.Id,
                 Lead = "eval-lead", Model = "claude-sonnet-4-6",
                 ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
@@ -680,7 +674,6 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "e2e-crew", Name = "E2E",
-                ProductId = product.Id,
                 Lead = "e2e-lead", Model = "claude-sonnet-4-6",
                 ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
@@ -732,7 +725,6 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "qr-crew", Name = "QR",
-                ProductId = product.Id,
                 Lead = "qr-lead", Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
@@ -773,7 +765,6 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "qw-crew", Name = "QW Crew",
-                ProductId = product.Id,
                 Lead = "qw-lead", Model = "local-stub",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
@@ -824,7 +815,6 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "stub-crew", Name = "Stub Crew",
-                ProductId = product.Id,
                 Lead = "stub-lead", Model = "local-stub",
                 ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
@@ -901,7 +891,6 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "wt-real-crew", Name = "Worktree Real",
-                ProductId = product.Id,
                 Lead = "wt-lead", Model = "local-stub",
                 ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
@@ -1038,7 +1027,7 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "e2e-ai-gen", Name = "E2E AI Gen",
-                ProductId = product.Id, Lead = "e2e-gen-lead",
+                Lead = "e2e-gen-lead",
                 Model = "claude-opus-4.6-1m",
                 ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,
                 MaxConcurrent = 2, ScheduleEnabled = false,
@@ -1048,7 +1037,7 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "e2e-ai-eval", Name = "E2E AI Eval",
-                ProductId = product.Id, Lead = "e2e-eval-lead",
+                Lead = "e2e-eval-lead",
                 Model = "claude-opus-4.6-1m",
                 ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,
                 MaxConcurrent = 2, ScheduleEnabled = false,
@@ -1237,7 +1226,7 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "gh-e2e-gen", Name = "GH E2E Gen",
-                ProductId = product.Id, Lead = "gh-gen-lead",
+                Lead = "gh-gen-lead",
                 Model = "claude-sonnet-4-6",
                 ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
                 MaxConcurrent = 2, ScheduleEnabled = false,
@@ -1247,7 +1236,7 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "gh-e2e-eval", Name = "GH E2E Eval",
-                ProductId = product.Id, Lead = "gh-eval-lead",
+                Lead = "gh-eval-lead",
                 Model = "claude-sonnet-4-6",
                 ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
                 MaxConcurrent = 2, ScheduleEnabled = false,
@@ -1519,7 +1508,6 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "e2e-gen", Name = "E2E Generator",
-                ProductId = product.Id,
                 Lead = "gen-lead", Model = "local-stub",
                 ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
@@ -1528,7 +1516,6 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "e2e-eval", Name = "E2E Evaluator",
-                ProductId = product.Id,
                 Lead = "eval-lead", Model = "local-stub",
                 ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
                 MaxConcurrent = 5, ScheduleEnabled = false,
@@ -1710,14 +1697,14 @@ public class Phase16ExecutionTests
             var product = await db.Products.FirstAsync();
             db.Crews.Add(new CrewRow
             {
-                Id = "del-gen", Name = "Engineering Gen", ProductId = product.Id,
+                Id = "del-gen", Name = "Engineering Gen",
                 Lead = "L1", Model = "claude-opus-4-7",
                 ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,
                 PairRole = "generator", PairedWithCrewId = "del-eval",
             });
             db.Crews.Add(new CrewRow
             {
-                Id = "del-eval", Name = "Engineering Eval", ProductId = product.Id,
+                Id = "del-eval", Name = "Engineering Eval",
                 Lead = "L2", Model = "claude-sonnet-4-6",
                 ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
                 PairRole = "evaluator", PairedWithCrewId = "del-gen",
@@ -1748,14 +1735,14 @@ public class Phase16ExecutionTests
             var product = await db.Products.FirstAsync();
             db.Crews.Add(new CrewRow
             {
-                Id = "up-gen", Name = "Architecture Gen", ProductId = product.Id,
+                Id = "up-gen", Name = "Architecture Gen",
                 Lead = "L1", Model = "claude-opus-4-7",
                 ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,
                 PairRole = "generator", PairedWithCrewId = "up-eval",
             });
             db.Crews.Add(new CrewRow
             {
-                Id = "up-eval", Name = "Architecture Eval", ProductId = product.Id,
+                Id = "up-eval", Name = "Architecture Eval",
                 Lead = "L2", Model = "claude-sonnet-4-6",
                 ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
                 PairRole = "evaluator", PairedWithCrewId = "up-gen",
@@ -1787,14 +1774,14 @@ public class Phase16ExecutionTests
             var product = await db.Products.FirstAsync();
             db.Crews.Add(new CrewRow
             {
-                Id = "asg-gen", Name = "Engineering Gen", ProductId = product.Id,
+                Id = "asg-gen", Name = "Engineering Gen",
                 Lead = "lead-g", Model = "claude-opus-4-7",
                 ModelInputPricePerMTok = 15m, ModelOutputPricePerMTok = 75m,
                 PairRole = "generator", PairedWithCrewId = "asg-eval",
             });
             db.Crews.Add(new CrewRow
             {
-                Id = "asg-eval", Name = "Engineering Eval", ProductId = product.Id,
+                Id = "asg-eval", Name = "Engineering Eval",
                 Lead = "lead-e", Model = "claude-sonnet-4-6",
                 ModelInputPricePerMTok = 3m, ModelOutputPricePerMTok = 15m,
                 PairRole = "evaluator", PairedWithCrewId = "asg-gen",
@@ -1871,7 +1858,6 @@ public class Phase16ExecutionTests
             db.Crews.Add(new CrewRow
             {
                 Id = "push-crew", Name = "Push Crew",
-                ProductId = product.Id,
                 Lead = "push-lead", Model = "local-stub",
                 ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
                 MaxConcurrent = 5, ScheduleEnabled = false,

@@ -25,7 +25,7 @@ public class Phase18ScheduleGateNightBandTests
         bool enabled = true,
         string shift = "night") => new()
     {
-        Id = "crew-test", Name = "T", ProductId = null, Summary = string.Empty,
+        Id = "crew-test", Name = "T", Summary = string.Empty,
         Model = "local-stub", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
         Timezone = tz, ScheduleEnabled = enabled, Shift = shift,
     };

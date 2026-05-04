@@ -11,6 +11,7 @@ using System.Text.Json;
 using Forge.Api.Contracts;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
+using Microsoft.AspNetCore.SignalR;
 using Forge.Api.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -40,6 +41,8 @@ public static class TaskExecutionEndpoints
         grp.MapGet("/{id}/transcript", GetTranscript).WithName("GetWorkItemTranscript");
         grp.MapDelete("/{id}/transcript", ClearTranscript).WithName("ClearWorkItemTranscript");
         grp.MapPatch("/{id}/execution", PatchExecution).WithName("PatchWorkItemExecution");
+        grp.MapPost("/{id}/resume", Resume).WithName("ResumeWorkItem");
+        grp.MapGet("/{id}/commits", GetCommits).WithName("GetWorkItemCommits");
         return app;
     }
 
@@ -190,14 +193,14 @@ public static class TaskExecutionEndpoints
             .Where(e => e.WorkItemId == id)
             .CountAsync(ct);
 
-        // Recent transcript (last 200 events, oldest→newest for natural rendering).
+        // Recent transcript (last 500 events, oldest→newest for natural rendering).
         // Always include prompt + iteration boundary events so the UI can
         // show the prompt section and iteration pager even when the window
         // has scrolled past them.
         var transcriptRows = await db.TaskTranscriptEvents.AsNoTracking()
             .Where(e => e.WorkItemId == id)
             .OrderByDescending(e => e.Id)
-            .Take(200)
+            .Take(500)
             .ToListAsync(ct);
         var pinnedKinds = new HashSet<string>
         {
@@ -267,7 +270,8 @@ public static class TaskExecutionEndpoints
                             diskSnap.Added, diskSnap.Modified, diskSnap.Deleted,
                             diskSnap.Ahead, diskSnap.Behind, diskSnap.Dirty,
                             diskSnap.HeadSha, diskSnap.HeadMessage, diskSnap.HeadAuthor, diskSnap.HeadAt,
-                            diskSnap.Truncated, DateTimeOffset.UtcNow);
+                            diskSnap.Truncated, DateTimeOffset.UtcNow,
+                            wtPath);
 
                         // Re-subscribe the feed so future ticks are emitted.
                         worktreeFeed.Subscribe(id, string.Empty, wtPath);
@@ -282,9 +286,13 @@ public static class TaskExecutionEndpoints
         int? currentScore = current?.Score;
         string? currentVerdict = current?.Verdict;
 
-        // Resolve agent full names.
+        // Resolve agent full names + the model each role is invoking with.
+        // Mirrors CrewQueueWorker's resolution order (agent override → crew
+        // default) so the UI shows the same model the runtime will dispatch.
         string? generatorAgentName = null;
         string? evaluatorAgentName = null;
+        string? generatorModel = null;
+        string? evaluatorModel = null;
         var agentIds = new HashSet<string>();
         if (!string.IsNullOrEmpty(generatorAgentId)) agentIds.Add(generatorAgentId);
         if (!string.IsNullOrEmpty(evaluatorAgentId)) agentIds.Add(evaluatorAgentId);
@@ -293,8 +301,24 @@ public static class TaskExecutionEndpoints
             var agentRows = await db.Agents.AsNoTracking()
                 .Where(a => agentIds.Contains(a.Id))
                 .ToListAsync(ct);
-            generatorAgentName = agentRows.FirstOrDefault(a => a.Id == generatorAgentId)?.Name;
-            evaluatorAgentName = agentRows.FirstOrDefault(a => a.Id == evaluatorAgentId)?.Name;
+            var genAgent = agentRows.FirstOrDefault(a => a.Id == generatorAgentId);
+            var evalAgent = agentRows.FirstOrDefault(a => a.Id == evaluatorAgentId);
+            generatorAgentName = genAgent?.Name;
+            evaluatorAgentName = evalAgent?.Name;
+
+            CrewRow? genCrew = null;
+            CrewRow? evalCrew = null;
+            if (!string.IsNullOrEmpty(generatorCrewId))
+                genCrew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == generatorCrewId, ct);
+            if (!string.IsNullOrEmpty(evaluatorCrewId))
+                evalCrew = evaluatorCrewId == generatorCrewId
+                    ? genCrew
+                    : await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == evaluatorCrewId, ct);
+
+            generatorModel = NonEmpty(genAgent?.GeneratorModel) ?? NonEmpty(genCrew?.Model);
+            evaluatorModel = NonEmpty(evalAgent?.EvaluatorModel)
+                ?? NonEmpty(evalCrew?.EvaluatorModel)
+                ?? NonEmpty(evalCrew?.Model);
         }
 
         var snap = new TaskExecutionSnapshot(
@@ -307,6 +331,8 @@ public static class TaskExecutionEndpoints
             GeneratorAgentName: generatorAgentName,
             EvaluatorAgentId: evaluatorAgentId,
             EvaluatorAgentName: evaluatorAgentName,
+            GeneratorModel: generatorModel,
+            EvaluatorModel: evaluatorModel,
             CurrentIteration: currentIter,
             CurrentScore: currentScore,
             CurrentVerdict: currentVerdict,
@@ -327,7 +353,10 @@ public static class TaskExecutionEndpoints
             Worktree: worktree,
             ExecutionStatus: wi?.ExecutionStatus ?? ExecutionStatuses.Idle,
             TrialCount: wi?.TrialCount ?? 0,
-            MaxIterations: latestQueue?.MaxIterOverride ?? ScoringConstants.MaxIterations,
+            // Default to the points-derived cap (5 per pt) so the live-exec
+            // header reads "iter N of {pts*5}" instead of always "of 5".
+            // The runtime PATCH override on the queue row still wins.
+            MaxIterations: latestQueue?.MaxIterOverride ?? ScoringConstants.MaxIterationsForPoints(wi?.Points ?? 0),
             TranscriptTotalCount: transcriptTotalCount);
 
         return Results.Ok(snap);
@@ -423,7 +452,8 @@ public static class TaskExecutionEndpoints
         return new Deliverable(
             r.Id, r.WorkItemId, r.CrewId, r.GeneratorAgentId, r.EvaluatorAgentId,
             r.Iter, r.Score, dims, r.Verdict, r.Notes, r.GenCostUsd, r.EvalCostUsd,
-            r.JudgeAgentId, r.JudgeScore, r.JudgeNotes, r.CreatedAt);
+            r.JudgeAgentId, r.JudgeScore, r.JudgeNotes, r.CreatedAt,
+            r.GeneratorSummary ?? string.Empty);
     }
 
     /// <summary>
@@ -503,6 +533,7 @@ public static class TaskExecutionEndpoints
     {
         if (el.ValueKind != JsonValueKind.Object) return null;
         string? wsId = el.TryGetProperty("workstreamId", out var w) ? w.GetString() : null;
+        string? wtPath = el.TryGetProperty("worktreePath", out var wp) ? wp.GetString() : null;
         int added    = TryGetInt(el, "added", 0);
         int modified = TryGetInt(el, "modified", 0);
         int deleted  = TryGetInt(el, "deleted", 0);
@@ -527,7 +558,8 @@ public static class TaskExecutionEndpoints
             added, modified, deleted,
             ahead, behind, dirty,
             sha, msg, author, headAt,
-            truncated, at);
+            truncated, at,
+            wtPath);
     }
 
     private static int TryGetInt(JsonElement el, string name, int fallback)
@@ -568,5 +600,388 @@ public static class TaskExecutionEndpoints
         await db.SaveChangesAsync(ct);
 
         return Results.Ok(new { workItemId = id, maxIterations = body.MaxIterations });
+    }
+
+    private static string? NonEmpty(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;
+
+    // ── Commits — git log against the work item's worktree branch ──────
+    //
+    // GET /api/work-items/{id}/commits
+    //
+    // Authoritative source for "what did the agent change on this branch":
+    // runs `git log --name-status origin/{base}..HEAD` against the worktree
+    // and returns commits with their actual per-file deltas, plus any
+    // currently uncommitted (`git status --porcelain`) paths.
+    //
+    // Replaces the transcript-tick reconstruction the Worktree tab used
+    // to do — that approach attributed dirty paths observed *during the
+    // prior SHA* to the next commit, which silently dropped commits
+    // landed faster than the tick interval.
+    //
+    // 404 — work item not found, or repo / clone root unresolvable.
+    // 200 with empty `commits` — branch has no commits ahead of base, or
+    //                            the worktree directory doesn't exist.
+
+    private sealed record CommitFileChange(string Status, string Path, string? OldPath = null);
+
+    private sealed record CommitEntry(
+        string Sha,
+        string Message,
+        string Author,
+        string At,
+        IReadOnlyList<string> Added,
+        IReadOnlyList<string> Modified,
+        IReadOnlyList<string> Deleted,
+        IReadOnlyList<CommitFileChange> Other);
+
+    private sealed record UncommittedChanges(
+        IReadOnlyList<string> Added,
+        IReadOnlyList<string> Modified,
+        IReadOnlyList<string> Deleted);
+
+    private sealed record CommitsResponse(
+        string? WorktreePath,
+        string Branch,
+        string BaseBranch,
+        int Ahead,
+        int Behind,
+        string? HeadSha,
+        IReadOnlyList<CommitEntry> Commits,
+        UncommittedChanges Uncommitted);
+
+    private static async Task<IResult> GetCommits(
+        string id,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var wi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == id, ct);
+        if (wi is null)
+            return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
+
+        // Resolve worktree path with the same convention CrewQueueWorker uses:
+        // {repo.CloneRoot}/.worktree/ws-{sanitizedId}.
+        string? cloneRoot = null;
+        var baseBranch = "main";
+        if (!string.IsNullOrEmpty(wi.RepoId))
+        {
+            var repo = await db.Set<Forge.Api.Persistence.RepoRow>().AsNoTracking()
+                .FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
+            if (!string.IsNullOrEmpty(repo?.CloneRoot)) cloneRoot = repo.CloneRoot;
+            if (!string.IsNullOrEmpty(repo?.DefaultBranch)) baseBranch = repo.DefaultBranch;
+        }
+
+        var sanitizedId = id.Replace("/", "-").Replace("\\", "-").Replace(" ", "-");
+        var branch = $"ws/{id}";
+        var worktreePath = !string.IsNullOrEmpty(cloneRoot)
+            ? Path.Combine(cloneRoot, ".worktree", $"ws-{sanitizedId}")
+            : null;
+
+        // Empty response when the worktree directory isn't on disk yet.
+        if (string.IsNullOrEmpty(worktreePath) || !Directory.Exists(worktreePath))
+        {
+            return Results.Ok(new CommitsResponse(
+                WorktreePath: worktreePath,
+                Branch: branch,
+                BaseBranch: baseBranch,
+                Ahead: 0, Behind: 0,
+                HeadSha: null,
+                Commits: Array.Empty<CommitEntry>(),
+                Uncommitted: new UncommittedChanges(
+                    Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>())));
+        }
+
+        // Refresh tracking refs so ahead/behind reflects what the remote knows.
+        // Best-effort — a network failure here just means staler counts; the
+        // commit listing is still local-only.
+        await RunGitAsync(worktreePath, ct, "fetch", "origin", "--quiet");
+
+        // Ahead / behind vs the remote base branch.
+        var (acCode, acOut, _) = await RunGitAsync(worktreePath, ct,
+            "rev-list", "--left-right", "--count", $"origin/{baseBranch}...HEAD");
+        int ahead = 0, behind = 0;
+        if (acCode == 0)
+        {
+            var parts = acOut.Trim().Split('\t');
+            if (parts.Length == 2)
+            {
+                int.TryParse(parts[0], out behind);
+                int.TryParse(parts[1], out ahead);
+            }
+        }
+
+        // HEAD sha for the convenience field.
+        var (headCode, headSha, _) = await RunGitAsync(worktreePath, ct, "rev-parse", "HEAD");
+        var headShaStr = headCode == 0 ? headSha.Trim() : null;
+
+        // Commit list with per-file changes. The __COMMIT__ prefix lets us
+        // distinguish header lines from --name-status rows in one pass.
+        var (logCode, logOut, _) = await RunGitAsync(worktreePath, ct,
+            "log",
+            $"origin/{baseBranch}..HEAD",
+            "--pretty=format:__COMMIT__%H%x09%aI%x09%aN%x09%s",
+            "--name-status");
+
+        var commits = new List<CommitEntry>();
+        if (logCode == 0 && !string.IsNullOrWhiteSpace(logOut))
+        {
+            CommitEntry? cur = null;
+            var added = new List<string>();
+            var modified = new List<string>();
+            var deleted = new List<string>();
+            var other = new List<CommitFileChange>();
+            void Flush()
+            {
+                if (cur is null) return;
+                commits.Add(cur with
+                {
+                    Added = added.ToArray(),
+                    Modified = modified.ToArray(),
+                    Deleted = deleted.ToArray(),
+                    Other = other.ToArray(),
+                });
+                added.Clear(); modified.Clear(); deleted.Clear(); other.Clear();
+            }
+            foreach (var rawLine in logOut.Split('\n'))
+            {
+                var line = rawLine.TrimEnd('\r');
+                if (string.IsNullOrEmpty(line)) continue;
+                if (line.StartsWith("__COMMIT__", StringComparison.Ordinal))
+                {
+                    Flush();
+                    var fields = line.Substring("__COMMIT__".Length).Split('\t');
+                    if (fields.Length >= 4)
+                    {
+                        cur = new CommitEntry(
+                            Sha: fields[0],
+                            Message: fields[3],
+                            Author: fields[2],
+                            At: fields[1],
+                            Added: Array.Empty<string>(),
+                            Modified: Array.Empty<string>(),
+                            Deleted: Array.Empty<string>(),
+                            Other: Array.Empty<CommitFileChange>());
+                    }
+                }
+                else if (cur is not null)
+                {
+                    var parts = line.Split('\t');
+                    if (parts.Length < 2) continue;
+                    var status = parts[0];
+                    // Renames/copies show 3 cols: R100 oldpath newpath. Track
+                    // the rename in `other` and the new path under modified
+                    // so the summary still surfaces it.
+                    if (status.StartsWith("R", StringComparison.Ordinal) || status.StartsWith("C", StringComparison.Ordinal))
+                    {
+                        if (parts.Length >= 3)
+                        {
+                            other.Add(new CommitFileChange(status, parts[2], parts[1]));
+                            modified.Add(parts[2]);
+                        }
+                        continue;
+                    }
+                    var path = parts[1];
+                    switch (status)
+                    {
+                        case "A": added.Add(path); break;
+                        case "M": modified.Add(path); break;
+                        case "D": deleted.Add(path); break;
+                        default: other.Add(new CommitFileChange(status, path)); break;
+                    }
+                }
+            }
+            Flush();
+        }
+
+        // Currently uncommitted (working-tree + staged, excluding untracked
+        // dirs that the worktree-feed already skips).
+        var (stCode, stOut, _) = await RunGitAsync(worktreePath, ct, "status", "--porcelain");
+        var uAdded = new List<string>();
+        var uMod = new List<string>();
+        var uDel = new List<string>();
+        if (stCode == 0)
+        {
+            foreach (var rawLine in stOut.Split('\n'))
+            {
+                var line = rawLine.TrimEnd('\r');
+                if (line.Length < 4) continue;
+                var status = line.Substring(0, 2);
+                var path = line.Substring(3);
+                // The two columns are <staged><unstaged>. We classify by the
+                // first non-space column, treating ?? (untracked) as added.
+                if (status[0] == 'A' || status[0] == '?' || status == "??") uAdded.Add(path);
+                else if (status[0] == 'D' || status[1] == 'D') uDel.Add(path);
+                else uMod.Add(path);
+            }
+        }
+
+        return Results.Ok(new CommitsResponse(
+            WorktreePath: worktreePath,
+            Branch: branch,
+            BaseBranch: baseBranch,
+            Ahead: ahead, Behind: behind,
+            HeadSha: headShaStr,
+            Commits: commits,
+            Uncommitted: new UncommittedChanges(uAdded, uMod, uDel)));
+    }
+
+    private static async Task<(int code, string stdout, string stderr)> RunGitAsync(
+        string cwd, CancellationToken ct, params string[] args)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("git")
+        {
+            WorkingDirectory = cwd,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        try
+        {
+            using var proc = System.Diagnostics.Process.Start(psi)!;
+            var stdout = await proc.StandardOutput.ReadToEndAsync(ct);
+            var stderr = await proc.StandardError.ReadToEndAsync(ct);
+            await proc.WaitForExitAsync(ct);
+            return (proc.ExitCode, stdout, stderr);
+        }
+        catch (Exception ex)
+        {
+            return (-1, string.Empty, ex.Message);
+        }
+    }
+
+    // ── Resume — single entry point that branches on last verdict ──────
+    //
+    // POST /api/work-items/{id}/resume   body: { note?: string }
+    //
+    // - last verdict = "pass"
+    //     The iter loop already finished cleanly; only the post-loop
+    //     delivery (build gate, push, PR) flopped. Enqueue
+    //     kind=resume-delivery so CrewQueueWorker.RunAgentAsync skips the
+    //     gen+eval loop and replays only the delivery phase. The optional
+    //     `note` is ignored (no agent invocation to read it).
+    //
+    // - last verdict in { "iterate", "stalled", "stalled-budget" }
+    //     The iter loop ended without a pass — the agent needs another
+    //     turn. Enqueue kind=work without restart=true so the existing
+    //     DeliverableLoop seeding (DeliverableLoop.cs:175) picks up at
+    //     iter+1 with the full prior chain. If `note` is non-empty, emit
+    //     a `task.operator-note` transcript event; CrewQueueWorker reads
+    //     the latest one before building the user prompt and prepends it
+    //     so the agent's next iteration is steered.
+    //
+    // - last verdict = "reject" or no deliverables → 400.
+    // - already-open queue row → 409.
+
+    private sealed record ResumeBody(string? Note);
+
+    private static async Task<IResult> Resume(
+        string id,
+        [FromBody] ResumeBody? body,
+        ForgeDbContext db,
+        Forge.Api.Services.ITaskQueueService taskQueue,
+        Microsoft.AspNetCore.SignalR.IHubContext<ForgeHub> hub,
+        Forge.Api.Realtime.TaskChannel taskChannel,
+        CancellationToken ct)
+    {
+        var wi = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == id, ct);
+        if (wi is null)
+            return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
+
+        var allDeliv = await db.Deliverables.AsNoTracking()
+            .Where(d => d.WorkItemId == id)
+            .ToListAsync(ct);
+        var lastDeliv = allDeliv
+            .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
+            .FirstOrDefault();
+
+        if (lastDeliv is null)
+        {
+            return Results.Problem(
+                type: "resume.no-deliverables",
+                title: "Nothing to resume — work item has no prior deliverables.",
+                detail: "Dispatch the work item first, then resume after a partial run.",
+                statusCode: 400);
+        }
+        if (lastDeliv.Verdict == "reject")
+        {
+            return Results.Problem(
+                type: "resume.rejected",
+                title: "Cannot resume a rejected work item.",
+                detail: "The last evaluator verdict was 'reject'. Use Restart to re-plan from scratch.",
+                statusCode: 400);
+        }
+
+        // Resolve target crew — prefer the last deliverable's crew so the
+        // same agent picks it up; fall back to the most recent queue row's
+        // routedToCrewId for cases where the deliverable row predates the
+        // crew column being populated.
+        var crewId = lastDeliv.CrewId;
+        if (string.IsNullOrEmpty(crewId))
+        {
+            var lastQueue = (await db.TaskQueue.AsNoTracking()
+                .Where(r => r.WorkItemId == id)
+                .ToListAsync(ct))
+                .OrderByDescending(r => r.LastUpdatedAt)
+                .FirstOrDefault();
+            crewId = lastQueue?.RoutedToCrewId;
+        }
+        if (string.IsNullOrEmpty(crewId))
+            return Results.Problem(title: "Cannot determine crew to resume into.", statusCode: 400);
+
+        var openStates = Forge.Api.Persistence.TaskQueueStates.OpenStates.ToList();
+        var hasOpen = await db.TaskQueue.AsNoTracking()
+            .AnyAsync(r => r.WorkItemId == id && openStates.Contains(r.State), ct);
+        if (hasOpen)
+            return Results.Problem(
+                type: "resume.queue-busy",
+                title: "Work item already has an open queue row.",
+                detail: "Cancel the in-flight run before resuming.",
+                statusCode: 409);
+
+        var note = body?.Note;
+        var isPassResume = lastDeliv.Verdict == "pass";
+        var queueKind = isPassResume
+            ? Forge.Api.Persistence.TaskQueueKinds.ResumeDelivery
+            : Forge.Api.Persistence.TaskQueueKinds.Work;
+
+        // Stash the operator note as a transcript event so CrewQueueWorker
+        // can pick it up when it builds the next user prompt. Skipped for
+        // the pass-resume path (agent doesn't run, the note has nowhere to
+        // land). Empty / whitespace notes are also skipped.
+        if (!isPassResume && !string.IsNullOrWhiteSpace(note))
+        {
+            await taskChannel.EmitAsync(id, "task.operator-note", new
+            {
+                note = note!.Trim(),
+                priorIter = lastDeliv.Iter,
+                priorVerdict = lastDeliv.Verdict,
+            }, crewId: crewId, ct: ct);
+        }
+
+        var row = await taskQueue.EnqueueAsync(
+            id, "crew", crewId, ct,
+            kind: queueKind);
+
+        var liveWi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id, ct);
+        if (liveWi is not null)
+        {
+            liveWi.ExecutionStatus = Forge.Api.Persistence.ExecutionStatuses.Queued;
+            liveWi.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+        }
+
+        await hub.Clients.All.SendAsync("queue.changed", new { kind = "enqueued", item = row }, ct);
+        return Results.Ok(new
+        {
+            workItemId = id,
+            queueId = row.Id,
+            crewId,
+            mode = isPassResume ? "delivery-replay" : "continue-iter",
+            priorIter = lastDeliv.Iter,
+            priorScore = lastDeliv.Score,
+            priorVerdict = lastDeliv.Verdict,
+            noteApplied = !isPassResume && !string.IsNullOrWhiteSpace(note),
+        });
     }
 }

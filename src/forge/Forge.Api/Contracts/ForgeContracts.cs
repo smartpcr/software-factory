@@ -24,7 +24,9 @@ public sealed record ProductStory(
     string Name,
     string Status,
     int Sort,
-    string CreatedAt);
+    string CreatedAt,
+    string Description,
+    int Points);
 
 /// <summary>
 /// Agent reference attached to a card (architect / engineer / reviewer / human).
@@ -281,7 +283,12 @@ public sealed record Repo(
     string? WiSyncToDate = null,
     string? PrSyncCreatedBy = null,
     string? PrSyncStatus = null,
-    IReadOnlyList<string>? BuildPipelineIds = null);
+    IReadOnlyList<string>? BuildPipelineIds = null,
+    // Phase 34 — per-repo sync cadence + upstream-changedate cursor.
+    int? WorkItemSyncIntervalSeconds = null,
+    int? PrSyncIntervalSeconds = null,
+    int? BuildSyncIntervalSeconds = null,
+    string? LastUpstreamChangedDate = null);
 
 /// <summary>
 /// POST /api/products body.
@@ -388,7 +395,6 @@ public sealed record UpdateUserSettingsRequest(
 public sealed record Crew(
     string Id,
     string Name,
-    string? ProductId,
     string Summary,
     string? Lead,
     string Model,
@@ -492,7 +498,11 @@ public sealed record UpdateRepoRequest(
     string? WiSyncToDate = null,
     string? PrSyncCreatedBy = null,
     string? PrSyncStatus = null,
-    IReadOnlyList<string>? BuildPipelineIds = null);
+    IReadOnlyList<string>? BuildPipelineIds = null,
+    // Phase 34 — per-repo sync cadence override.
+    int? WorkItemSyncIntervalSeconds = null,
+    int? PrSyncIntervalSeconds = null,
+    int? BuildSyncIntervalSeconds = null);
 
 /// <summary>
 /// Phase 11.3 — agent listing payload.
@@ -590,6 +600,53 @@ public sealed record SalaryTodaySummary(decimal TotalUsd, int ActiveAgents);
 /// fan-out (one /payroll request per crew) with a single server-side SUM.
 /// </summary>
 public sealed record PayrollTodaySummary(decimal TotalUsd, int CrewCount);
+
+// -- Phase 11 — Cost dashboard payload (CostView) ------------------------
+
+/// <summary>
+/// Aggregated cost rollup for the <c>/cost</c> page. One round-trip serves
+/// all four panels: header stats, daily spend-by-epic stack, per-agent
+/// burn table, and the today-vs-cap gauge. Sourced from
+/// <see cref="AgentUsageRow"/> joined to cards (for epic) and agents
+/// (for name / role); cap is summed from <see cref="CrewRow.DailyBudgetUsd"/>.
+/// </summary>
+public sealed record CostSummary(
+    decimal TodayUsd,
+    decimal Week7dUsd,
+    decimal DailyCapUsd,
+    int TodayIndex,
+    IReadOnlyList<CostDailyPoint> Days,
+    IReadOnlyList<CostByEpic> Epics,
+    IReadOnlyList<AgentBurn> Agents);
+
+/// <summary>
+/// One daily bucket inside <see cref="CostSummary.Days"/>. <see cref="ByEpic"/>
+/// keys are <see cref="EpicRow.Id"/> values plus the literal
+/// <c>"unassigned"</c> bucket for usage rows whose <c>TaskId</c> doesn't
+/// resolve to a known card.
+/// </summary>
+public sealed record CostDailyPoint(
+    string Date,
+    string Label,
+    decimal TotalUsd,
+    IReadOnlyDictionary<string, decimal> ByEpic);
+
+/// <summary>7d total spend grouped by epic, sorted descending.</summary>
+public sealed record CostByEpic(string EpicId, decimal Total7dUsd);
+
+/// <summary>
+/// Per-agent burn entry for the cost table. <see cref="Spark"/> is 7 daily
+/// totals (oldest first → today) so the inline sparkline can render with
+/// no extra round-trip.
+/// </summary>
+public sealed record AgentBurn(
+    string Id,
+    string Name,
+    string Role,
+    decimal Cost24hUsd,
+    decimal Cost7dUsd,
+    long Tokens,
+    IReadOnlyList<decimal> Spark);
 
 // -- Phase 12 — Work Item Tracking ---------------------------------------
 
@@ -764,7 +821,9 @@ public sealed record Deliverable(
     string? JudgeAgentId,
     int? JudgeScore,
     string? JudgeNotes,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    /// <summary>Generator's per-iteration summary — extracted from the `## Iteration Summary` / `## Change Summary` / `## Plan Summary` heading in the generator response. Empty when the agent didn't write one.</summary>
+    string GeneratorSummary = "");
 
 /// <summary>
 /// Phase 14.5 — dispute body. <c>JudgeScore</c> is the judge agent's
@@ -996,7 +1055,9 @@ public sealed record WorktreeSnapshot(
     string? HeadAuthor,
     DateTimeOffset? HeadAt,
     bool Truncated,
-    DateTimeOffset At);
+    DateTimeOffset At,
+    /// <summary>Absolute filesystem path to the worktree (e.g. <c>E:\work\hci\update\.worktree\ws-WI-1035</c>). Null when the worktree is not yet attached or the tick predates the field being added.</summary>
+    string? WorktreePath = null);
 
 /// <summary>
 /// Phase 16.9 — snapshot of a work item's execution state. Returned by
@@ -1014,6 +1075,20 @@ public sealed record TaskExecutionSnapshot(
     string? GeneratorAgentName,
     string? EvaluatorAgentId,
     string? EvaluatorAgentName,
+    /// <summary>
+    /// Resolved model the generator agent is invoking with — agent override
+    /// (<c>AgentRow.GeneratorModel</c>) → crew default (<c>CrewRow.Model</c>).
+    /// Null when no agent/crew is yet known (queued before claim).
+    /// </summary>
+    string? GeneratorModel,
+    /// <summary>
+    /// Resolved model the evaluator agent is invoking with — agent override
+    /// (<c>AgentRow.EvaluatorModel</c>) → crew override (<c>CrewRow.EvaluatorModel</c>)
+    /// → crew default (<c>CrewRow.Model</c>). Required to differ from
+    /// <see cref="GeneratorModel"/> per the pair-diversity rule (enforced on
+    /// crew/agent edit endpoints).
+    /// </summary>
+    string? EvaluatorModel,
     int CurrentIteration,
     int? CurrentScore,
     string? CurrentVerdict,

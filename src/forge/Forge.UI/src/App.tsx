@@ -4,7 +4,8 @@ import { AppShell } from '@/shell/AppShell';
 import { OverviewView } from '@/views/OverviewView';
 import { PlanView } from '@/views/PlanView';
 import { TimelineView } from '@/views/TimelineView';
-import { WorkstreamsView } from '@/views/WorkstreamsView';
+import { SwarmIndexView } from '@/swarm/SwarmIndexView';
+import { SwarmStoryView } from '@/swarm/SwarmStoryView';
 import { PrsView } from '@/views/PrsView';
 import { SettingsView } from '@/views/SettingsView';
 import { AuditView } from '@/views/AuditView';
@@ -37,7 +38,8 @@ export function App() {
           <Route path="/work-items/:id/live" element={<LiveExecutionView />} />
           <Route path="/inbox" element={<InboxView />} />
           <Route path="/timeline" element={<TimelineView />} />
-          <Route path="/workstreams" element={<WorkstreamsView />} />
+          <Route path="/workstreams" element={<SwarmIndexView />} />
+          <Route path="/workstreams/:storyId" element={<SwarmStoryView />} />
           <Route path="/prs" element={<PrsView />} />
           <Route path="/swarm" element={<SwarmView />} />
           <Route path="/policies" element={<PoliciesView />} />

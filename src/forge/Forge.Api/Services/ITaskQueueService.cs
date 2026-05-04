@@ -35,7 +35,7 @@ public interface ITaskQueueService
     /// that authored the original PR.
     /// </para>
     /// </summary>
-    Task<TaskQueueRow> EnqueueAsync(string workItemId, string targetKind, string targetId, CancellationToken ct, bool skipSoulPrompt = false, string kind = TaskQueueKinds.Work, string? preferredAgentId = null);
+    Task<TaskQueueRow> EnqueueAsync(string workItemId, string targetKind, string targetId, CancellationToken ct, string kind = TaskQueueKinds.Work, string? preferredAgentId = null);
 
     /// <summary>
     /// Manual ack from the lead, or the auto-ack path on timeout

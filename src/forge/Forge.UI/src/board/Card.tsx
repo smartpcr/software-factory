@@ -14,14 +14,15 @@ import {
   TypeIcon,
 } from './icons';
 
-function AgentChip({ id, name, role }: { id: string; name?: string | null; role?: string | null }) {
+function AgentChip({ id, name, role }: { id: string | null; name?: string | null; role?: string | null }) {
   const avatar = avatarFor(id, name);
   const tooltip = agentTooltip(id, name, role);
+  const fallbackLabel = id ?? (name ? name.slice(0, 2).toUpperCase() : '?');
   if (avatar) {
     return (
       <img
         src={avatar}
-        alt={name || id}
+        alt={name || fallbackLabel}
         className={`agent-chip-avatar ${role ?? ''}`}
         title={tooltip}
       />
@@ -29,7 +30,7 @@ function AgentChip({ id, name, role }: { id: string; name?: string | null; role?
   }
   // No portrait — fall back to the text chip but keep the rich tooltip so
   // the operator still gets id · role · model · capabilities on hover.
-  return <span className={`agent-chip ${role ?? ''}`} title={tooltip}>{id}</span>;
+  return <span className={`agent-chip ${role ?? ''}`} title={tooltip}>{fallbackLabel}</span>;
 }
 
 interface CardProps {
@@ -65,12 +66,13 @@ export function Card({ card }: CardProps) {
       data-id={card.id}
       data-epic={card.epic}
       data-col={card.col}
-      onClick={(e) => {
+      {...listeners}
+      {...attributes}
+      onPointerUp={(e) => {
+        if (isDragging) return;
         if ((e.target as HTMLElement).closest('.card-action')) return;
         setSelected(card.id);
       }}
-      {...listeners}
-      {...attributes}
     >
       <div className="card-row1">
         <div className="card-id-group">

@@ -151,22 +151,31 @@ export function DetailPanel() {
                 {safe.agent && (() => {
                   const agent = safe.agent;
                   const av = avatarFor(agent.id, agent.name);
-                  const tip = agentTooltip(agent.id, agent.name, agent.role) + ' · click to open agent';
+                  const tip = agentTooltip(agent.id, agent.name, agent.role)
+                    + (agent.id ? ' · click to open agent' : '');
                   // Phase 13f — agent chip on the work-item panel opens the
                   // global agent-edit popup so the operator can edit the
-                  // assignee without leaving the board.
-                  const open = () => useAgentEditorStore.getState().openAgent(agent.id);
-                  const sharedClick: React.HTMLAttributes<HTMLElement> = {
-                    role: 'button',
-                    tabIndex: 0,
-                    onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } },
-                  };
+                  // assignee without leaving the board. When the provider
+                  // didn't surface a stable id, the chip renders as a static
+                  // badge (no click handler — there's no agent record to open).
+                  const agentId = agent.id;
+                  const open = agentId
+                    ? () => useAgentEditorStore.getState().openAgent(agentId)
+                    : undefined;
+                  const fallbackLabel = agent.id ?? (agent.name ? agent.name.slice(0, 2).toUpperCase() : '?');
+                  const sharedClick: React.HTMLAttributes<HTMLElement> = open
+                    ? {
+                        role: 'button',
+                        tabIndex: 0,
+                        onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } },
+                      }
+                    : {};
                   return av ? (
                     <img
                       src={av}
-                      alt={agent.name || agent.id}
+                      alt={agent.name || fallbackLabel}
                       className={`agent-chip-avatar ${agent.role}`}
-                      style={{ marginRight: 2, cursor: 'pointer' }}
+                      style={{ marginRight: 2, cursor: open ? 'pointer' : 'default' }}
                       title={tip}
                       onClick={open}
                       {...sharedClick}
@@ -174,20 +183,23 @@ export function DetailPanel() {
                   ) : (
                     <span
                       className={`agent-chip ${agent.role}`}
-                      style={{ marginRight: 2, cursor: 'pointer' }}
+                      style={{ marginRight: 2, cursor: open ? 'pointer' : 'default' }}
                       title={tip}
                       onClick={open}
                       {...sharedClick}
                     >
-                      {agent.id}
+                      {fallbackLabel}
                     </span>
                   );
                 })()}
                 <span
                   id="detail-agent"
-                  style={safe.agent ? { cursor: 'pointer', textDecoration: 'underline dotted', textUnderlineOffset: 2 } : undefined}
-                  title={safe.agent ? 'Click to open agent' : (wiAssignee ? `${wiAssignee.kind} — change in /work-items` : undefined)}
-                  onClick={() => safe.agent && useAgentEditorStore.getState().openAgent(safe.agent.id)}
+                  style={safe.agent?.id ? { cursor: 'pointer', textDecoration: 'underline dotted', textUnderlineOffset: 2 } : undefined}
+                  title={safe.agent?.id ? 'Click to open agent' : (wiAssignee ? `${wiAssignee.kind} — change in /work-items` : undefined)}
+                  onClick={() => {
+                    const aid = safe.agent?.id;
+                    if (aid) useAgentEditorStore.getState().openAgent(aid);
+                  }}
                 >
                   {safe.agent
                     ? safe.agent.name

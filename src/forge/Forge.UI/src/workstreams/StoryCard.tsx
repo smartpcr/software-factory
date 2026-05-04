@@ -14,7 +14,6 @@ interface Props {
   storyId: string;
   /** Force expanded state (collapsed by default). */
   defaultExpanded?: boolean;
-  onAdvance?: (storyId: string, target: StorySpawnPhase) => void;
 }
 
 const PHASES: StorySpawnPhase[] = ['plan', 'decompose', 'implement', 'review', 'qa', 'done'];
@@ -27,11 +26,10 @@ const PHASE_LABELS: Record<StorySpawnPhase, string> = {
   done: 'DONE',
 };
 
-export function StoryCard({ storyId, defaultExpanded = false, onAdvance }: Props) {
+export function StoryCard({ storyId, defaultExpanded = false }: Props) {
   const [detail, setDetail] = useState<StorySpawnDetail | null>(null);
   const [artifacts, setArtifacts] = useState<StorySpawnArtifacts | null>(null);
   const [expanded, setExpanded] = useState(defaultExpanded);
-  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   // Re-fetch when the SignalR realtime tick bumps for this story.
@@ -76,38 +74,15 @@ export function StoryCard({ storyId, defaultExpanded = false, onAdvance }: Props
   const { spawn, workstreams } = detail;
   const phaseIdx = PHASES.indexOf(spawn.phase);
   const progressPct = Math.round(((phaseIdx + 1) / PHASES.length) * 100);
-  const nextPhase = phaseIdx >= 0 && phaseIdx < PHASES.length - 1 ? PHASES[phaseIdx + 1] : null;
 
-  async function tryAdvance() {
-    if (!nextPhase) return;
-    setBusy(true);
-    setErr(null);
-    try {
-      await forgeApi.advanceStoryPhase(storyId, nextPhase);
-      onAdvance?.(storyId, nextPhase);
-      const updated = await forgeApi.getStorySpawn(storyId);
-      setDetail(updated);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Advance failed';
-      setErr(msg);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function approveDecomposition() {
-    setBusy(true);
-    setErr(null);
-    try {
-      await forgeApi.approveStoryDecomposition(storyId);
-      const updated = await forgeApi.getStorySpawn(storyId);
-      setDetail(updated);
-    } catch (e: unknown) {
-      setErr(e instanceof Error ? e.message : 'Approve failed');
-    } finally {
-      setBusy(false);
-    }
-  }
+  // The lifecycle is fully agent-driven (architect → engineer → reviewer →
+  // QA). The UI shows status only — never offers manual "merge / approve /
+  // advance" actions. The reviewer crew handles approvals + merges; the
+  // orchestrator advances phase when gates pass. See
+  // memory/feedback_no_fakes_no_manual.md.
+  const planPrMerged = !!artifacts?.plan.pr && (workstreams.length > 0 || !!spawn.decompositionJson);
+  const decomposeStarted = !!spawn.decompositionJson;
+  const qaPrMerged = !!artifacts?.qa.pr && workstreams.some((w) => w.status === 'complete');
 
   return (
     <div className="story-card" style={cardStyle}>
@@ -125,18 +100,6 @@ export function StoryCard({ storyId, defaultExpanded = false, onAdvance }: Props
           {spawn.storyId}
         </span>
         <span style={{ fontSize: 13, color: 'var(--text-primary)', flex: 1 }}>{spawn.storyTitle}</span>
-        {nextPhase && (
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={() => void tryAdvance()}
-            disabled={busy}
-            style={{ fontSize: 11, padding: '4px 10px' }}
-            title={`Advance to ${nextPhase}`}
-          >
-            → {nextPhase}
-          </button>
-        )}
       </div>
 
       <div style={progressOuterStyle} aria-label="Phase progress">
@@ -176,13 +139,19 @@ export function StoryCard({ storyId, defaultExpanded = false, onAdvance }: Props
               <div style={{ display: 'grid', gap: 6, fontSize: 11.5 }}>
                 <ArtifactRow
                   label="Plan PR"
-                  value={artifacts.plan.pr ?? '(not yet opened)'}
+                  value={artifacts.plan.pr
+                    ? `${artifacts.plan.pr} ${planPrMerged ? '(merged ✓)' : '(open — needs merge)'}`
+                    : '(not yet opened)'}
                   branch={artifacts.plan.branch}
                   files={artifacts.plan.files}
                 />
                 <ArtifactRow
                   label="Decomposition"
-                  value={artifacts.decompose.approved ? 'approved ✓' : 'submitted'}
+                  value={
+                    !decomposeStarted ? '(not yet started)'
+                      : spawn.decompositionApproved ? 'approved ✓'
+                        : 'submitted (awaiting approval)'
+                  }
                   branch={null}
                   files={null}
                 />
@@ -194,7 +163,9 @@ export function StoryCard({ storyId, defaultExpanded = false, onAdvance }: Props
                 />
                 <ArtifactRow
                   label="QA PR"
-                  value={artifacts.qa.pr ?? '(not yet opened)'}
+                  value={artifacts.qa.pr
+                    ? `${artifacts.qa.pr} ${qaPrMerged ? '(merged ✓)' : '(open — needs merge)'}`
+                    : '(not yet opened)'}
                   branch={artifacts.qa.branch}
                   files={artifacts.qa.files}
                 />
@@ -204,17 +175,6 @@ export function StoryCard({ storyId, defaultExpanded = false, onAdvance }: Props
             )}
           </Section>
 
-          {spawn.phase === 'decompose' && !spawn.decompositionApproved && spawn.decompositionJson && (
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => void approveDecomposition()}
-              disabled={busy}
-              style={{ fontSize: 12 }}
-            >
-              {busy ? 'Approving…' : 'Approve decomposition'}
-            </button>
-          )}
         </div>
       )}
     </div>

@@ -510,7 +510,6 @@ public class Phase26BuildTestGateTests
         db.Crews.Add(new CrewRow
         {
             Id = "p26-crew", Name = "P26 Crew",
-            ProductId = product.Id,
             Lead = "p26-lead", Model = "local-stub",
             ModelInputPricePerMTok = 0m, ModelOutputPricePerMTok = 0m,
             MaxConcurrent = 5, ScheduleEnabled = false,

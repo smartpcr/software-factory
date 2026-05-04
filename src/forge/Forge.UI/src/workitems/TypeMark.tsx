@@ -14,7 +14,7 @@ interface Props {
 // from the existing forge palette: epic = accent (ochre), feature = info,
 // story = success, task = text-secondary, bug = danger.
 export function TypeMark({ type, size = 22, muted = false }: Props) {
-  const palette = TYPE_PALETTE[type];
+  const palette = TYPE_PALETTE[type] ?? FALLBACK_PALETTE;
   return (
     <span
       title={typeLabel(type)}
@@ -41,6 +41,8 @@ export function TypeMark({ type, size = 22, muted = false }: Props) {
     </span>
   );
 }
+
+const FALLBACK_PALETTE = { fg: 'var(--text-secondary)', bg: 'var(--bg-surface-2)', border: 'var(--border-strong)' };
 
 const TYPE_PALETTE: Record<WorkItemType, { fg: string; bg: string; border: string }> = {
   // Dev ladder.

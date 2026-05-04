@@ -77,6 +77,11 @@ public static class Phase32Migration
         await ExecAsync(conn, @"
             CREATE INDEX IF NOT EXISTS IX_workstreams_StorySpawnId
             ON workstreams (StorySpawnId);", ct);
+
+        // Story description (architect-agent prompt) and points carried over from
+        // the originating ProductStory or upstream work item.
+        await AddColumnIfMissingAsync(conn, "story_spawns", "StoryDescription", "TEXT NOT NULL DEFAULT ''", ct);
+        await AddColumnIfMissingAsync(conn, "story_spawns", "StoryPoints", "INTEGER NOT NULL DEFAULT 0", ct);
     }
 
     private static async Task AddColumnIfMissingAsync(

@@ -29,7 +29,7 @@ public class Phase14ScheduleGateTests
 
     private static CrewRow MakeCrew(string tz = "America/Los_Angeles", bool enabled = true) => new()
     {
-        Id = "crew-test", Name = "T", ProductId = null, Summary = string.Empty,
+        Id = "crew-test", Name = "T", Summary = string.Empty,
         Model = "local-stub", ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
         Timezone = tz, ScheduleEnabled = enabled,
     };
@@ -131,7 +131,7 @@ public class Phase14ScheduleGateTests
     {
         var body = new
         {
-            id, name = id, productId = (string?)null, summary = string.Empty,
+            id, name = id, summary = string.Empty,
             lead = (string?)null, model = "local-stub",
             modelInputPricePerMTok = 1m, modelOutputPricePerMTok = 1m,
         };

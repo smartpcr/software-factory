@@ -12,10 +12,21 @@
 .live-exec {
   display: grid;
   grid-template-columns: 1fr 360px;
+  /* Pin header to row 1 (auto) and let row 2 fill the remaining viewport.
+     Without an explicit row template, both main + aside auto-size to their
+     content and the rail's overflow:auto can't kick in (its parent never
+     gets a bounded height). */
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 16px;
   padding: 16px 24px;
   height: 100%;
   overflow: hidden;
+}
+.live-exec > main,
+.live-exec > aside {
+  /* min-height:0 lets nested overflow:auto children actually clip + scroll
+     instead of stretching the grid track to their content height. */
+  min-height: 0;
 }
 
 .live-exec__header {
@@ -304,6 +315,24 @@
 }
 
 /* iteration boundary band */
+.live-exec__iter-block {
+  margin: 8px 0;
+}
+.live-exec__iter-block .live-exec__iter-rule {
+  margin: 0;
+}
+.live-exec__iter-notes {
+  margin-top: 6px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--warning, var(--accent));
+  background: var(--bg-surface-2);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .live-exec__iter-rule {
   display: flex;
   align-items: center;
@@ -420,6 +449,27 @@
 }
 
 /* worktree tab */
+.live-exec__wt-name {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  background: var(--bg-surface-2);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.live-exec__wt-name__leaf {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+}
+.live-exec__wt-name__path {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  margin-top: 2px;
+  word-break: break-all;
+  user-select: text;
+}
 .live-exec__wt-summary {
   display: flex;
   gap: 8px;
@@ -527,12 +577,133 @@
 }
 .live-exec__iter-item {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
   padding: 8px;
   background: var(--bg-surface-2);
   border-radius: 8px;
   font-size: 12px;
+}
+.live-exec__iter-item__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.live-exec__iter-item__notes {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+}
+.live-exec__iter-item__notes[data-role="judge"] {
+  border-left-color: var(--info, var(--accent));
+}
+
+/* Summary view — single deliverable rendered as markdown.
+   Driven by the iteration pager when filter === 'summary'. */
+.live-exec__summary-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 14px 16px;
+}
+.live-exec__summary-iter__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.live-exec__summary-section {
+  border-left: 3px solid var(--border);
+  padding: 4px 0 4px 12px;
+}
+.live-exec__summary-section[data-role="generator"] { border-left-color: var(--accent, var(--info)); }
+.live-exec__summary-section[data-role="evaluator"] { border-left-color: var(--warning, var(--accent)); }
+.live-exec__summary-section[data-role="judge"]     { border-left-color: var(--info, var(--accent)); }
+.live-exec__summary-section__label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
+}
+.live-exec__summary-section__body em {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+/* Markdown render — applied to .markdown-body wrappers around <ReactMarkdown>. */
+.markdown-body {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  user-select: text;
+  word-wrap: break-word;
+}
+.markdown-body p { margin: 0 0 10px 0; }
+.markdown-body p:last-child { margin-bottom: 0; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 {
+  margin: 14px 0 6px 0;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+.markdown-body h1 { font-size: 18px; }
+.markdown-body h2 { font-size: 15px; }
+.markdown-body h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); }
+.markdown-body h4 { font-size: 12px; }
+.markdown-body strong { font-weight: 700; color: var(--text-primary); }
+.markdown-body em { font-style: italic; }
+.markdown-body ul, .markdown-body ol {
+  margin: 0 0 10px 0;
+  padding-left: 22px;
+}
+.markdown-body li { margin: 2px 0; }
+.markdown-body li > ul, .markdown-body li > ol { margin: 4px 0; }
+.markdown-body code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 12px;
+  background: var(--bg-inset, var(--bg-surface-2));
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+}
+.markdown-body pre {
+  margin: 8px 0 12px 0;
+  padding: 10px 12px;
+  background: var(--bg-inset, var(--bg-surface-2));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+.markdown-body pre code {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.markdown-body blockquote {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid var(--border);
+  color: var(--text-secondary);
+}
+.markdown-body a {
+  color: var(--accent, var(--info));
+  text-decoration: underline;
+}
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 14px 0;
 }
 .live-exec__file-budget {
   margin-top: 12px;
@@ -609,6 +780,12 @@
 .live-exec__iter-pager-score.pass { color: var(--success); }
 .live-exec__iter-pager-score.iterate { color: var(--warning); }
 .live-exec__iter-pager-score.reject { color: var(--danger); }
+.live-exec__iter-pager-ellipsis {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  padding: 0 2px;
+  user-select: none;
+}
 .live-exec__iter-pager-label {
   margin-left: auto;
   color: var(--text-tertiary);

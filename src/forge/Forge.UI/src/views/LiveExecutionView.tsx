@@ -6,12 +6,13 @@
 // for live updates via useTaskLive (Phase 16.13).
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
-import { useTaskLive, useTaskLiveStore, type TaskTranscriptEvent, type WorktreeSnapshot } from '@/realtime/useTaskLiveStore';
+import ReactMarkdown from 'react-markdown';
+import { useTaskLive, useTaskLiveStore, type TaskTranscriptEvent, type WorktreeSnapshot, type DeliverableShape } from '@/realtime/useTaskLiveStore';
 import { forgeApi } from '@/api/forgeApi';
 import { useToastStore } from '@/state/useToastStore';
 import { avatarFor, agentTooltip } from '@/agentAvatar';
 
-type FilterKey = 'all' | 'generator' | 'evaluator' | 'tools' | 'commits';
+type FilterKey = 'all' | 'generator' | 'evaluator' | 'tools' | 'commits' | 'summary';
 
 const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: 'all',       label: 'All' },
@@ -19,6 +20,7 @@ const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: 'evaluator', label: 'Evaluator' },
   { key: 'tools',     label: 'Tools' },
   { key: 'commits',   label: 'Commits' },
+  { key: 'summary',   label: 'Summary' },
 ];
 
 type RailTab = 'worktree' | 'tokens' | 'progress' | 'comments' | 'builds';
@@ -52,17 +54,93 @@ export function LiveExecutionView(): JSX.Element {
 
   // Phase 19 — group filtered events by iteration for paged display.
   const iterations = useMemo(() => groupByIteration(filtered), [filtered]);
-  const totalIters = iterations.length;
+
+  // Summary-mode iteration list — derived from deliverables (one per iter,
+  // dedup latest-wins for restarts). The pager works the same; just the
+  // source switches.
+  const summaryIters = useMemo<DeliverableShape[]>(() => {
+    const ds = snapshot?.deliverables ?? [];
+    const byIter = new Map<number, DeliverableShape>();
+    for (const d of ds) byIter.set(d.iter, d);
+    return Array.from(byIter.values()).sort((a, b) => a.iter - b.iter);
+  }, [snapshot?.deliverables]);
+
+  // Resume eligibility + mode — single button that branches on the last
+  // deliverable's verdict (pass → delivery replay; iterate/stalled → continue
+  // iterating; reject/none → not eligible). The button stays *visible* but
+  // is disabled when a run is in flight, so the operator always sees the
+  // affordance and understands why it can't fire right now.
+  const lastDeliverable = useMemo<DeliverableShape | null>(() => {
+    const ds = snapshot?.deliverables ?? [];
+    return ds.length > 0 ? ds[ds.length - 1] : null;
+  }, [snapshot?.deliverables]);
+  const isRunActive = snapshot?.executionStatus === 'live'
+    || snapshot?.executionStatus === 'queued';
+  // Once execution is completed, all retry-style actions are off — the work
+  // is done. The work item lifecycle owns re-opening; from this view, the
+  // only forward action is closing the panel.
+  const isCompleted = snapshot?.executionStatus === 'completed';
+  const resumeMode: 'delivery' | 'iter' | null = (() => {
+    if (!lastDeliverable) return null;
+    if (lastDeliverable.verdict === 'pass') return 'delivery';
+    if (lastDeliverable.verdict === 'iterate'
+        || lastDeliverable.verdict === 'stalled'
+        || lastDeliverable.verdict === 'stalled-budget') return 'iter';
+    return null;
+  })();
+  const canResume = resumeMode !== null;
+  const resumeDisabled = isRunActive || busy || isCompleted;
+  const [resumeNote, setResumeNote] = useState('');
+  const [resumeComposerOpen, setResumeComposerOpen] = useState(false);
+
+  // Auto-close the composer when a run kicks off — the action it was
+  // staging just became inapplicable, no need to keep the panel open.
+  useEffect(() => {
+    if (isRunActive && resumeComposerOpen) {
+      setResumeComposerOpen(false);
+      setResumeNote('');
+    }
+  }, [isRunActive, resumeComposerOpen]);
+
+  const isSummaryMode = filter === 'summary';
+  const pagerLength = isSummaryMode ? summaryIters.length : iterations.length;
+  const totalIters = pagerLength;
   const [selectedIter, setSelectedIter] = useState<number | null>(null);
+  // Reset selection when filter changes so we never index out of bounds and
+  // the user lands on the latest entry of the new view.
+  useEffect(() => { setSelectedIter(null); }, [filter]);
   // Default to the latest iteration; selectedIter===null means "follow latest".
   const activeIter = selectedIter ?? (totalIters > 0 ? totalIters - 1 : 0);
-  const visibleEvents = totalIters > 0 ? iterations[activeIter]?.events ?? [] : filtered;
+  const visibleEvents = !isSummaryMode && totalIters > 0
+    ? iterations[activeIter]?.events ?? []
+    : (!isSummaryMode ? filtered : []);
+  const activeSummary = isSummaryMode && totalIters > 0 ? summaryIters[activeIter] ?? null : null;
 
   // Reverse-chronological: newest events on top.
   const reversedEvents = useMemo(() => [...visibleEvents].reverse(), [visibleEvents]);
   const transcriptTotalCount = entry?.transcriptTotalCount ?? 0;
   const loadingOlder = entry?.loadingOlder ?? false;
   const hasOlderEvents = transcript.length < transcriptTotalCount;
+
+  // Derive the per-role model from the latest task.prompt event when the
+  // snapshot doesn't carry it yet (older API build, or task hasn't been
+  // re-fetched after the field was added). Snapshot value wins when present
+  // — it's resolved server-side with full agent/crew override precedence.
+  const promptModels = useMemo(() => {
+    let gen: string | null = null;
+    let ev: string | null = null;
+    for (let i = transcript.length - 1; i >= 0 && (gen === null || ev === null); i--) {
+      if (transcript[i].kind !== 'task.prompt') continue;
+      const p = transcript[i].payload as Record<string, unknown> | null;
+      if (!p || typeof p.model !== 'string' || !p.model) continue;
+      const isEvaluator = p.role === 'evaluator';
+      if (isEvaluator && ev === null) ev = p.model;
+      if (!isEvaluator && gen === null) gen = p.model;
+    }
+    return { gen, ev };
+  }, [transcript]);
+  const genModel = snapshot?.generatorModel ?? promptModels.gen ?? null;
+  const evalModel = snapshot?.evaluatorModel ?? promptModels.ev ?? null;
 
   // Extract latest system + user prompt from the most recent task.prompt event, per role.
   const latestPrompt = useMemo(() => {
@@ -187,6 +265,35 @@ export function LiveExecutionView(): JSX.Element {
     }
   }
 
+  async function resume(noteOverride?: string) {
+    if (!workItemId) return;
+    setBusy(true);
+    try {
+      const r = await forgeApi.resume(workItemId, noteOverride);
+      const msg = r.mode === 'delivery-replay'
+        ? `Resumed — replaying delivery from prior pass (iter ${r.priorIter}, score ${r.priorScore}).`
+        : `Resumed — continuing iteration from iter ${r.priorIter} (verdict ${r.priorVerdict}, score ${r.priorScore})${r.noteApplied ? ' with steering note' : ''}.`;
+      useToastStore.getState().show(msg, 'success');
+      setResumeComposerOpen(false);
+      setResumeNote('');
+    } catch (e) {
+      useToastStore.getState().show(
+        e instanceof Error ? e.message : 'Resume failed',
+        'danger',
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function onResumeClick() {
+    // Always open the composer so the operator gets a clear hint about
+    // what's about to run before the API call fires. For the pass path
+    // the composer is preview-only (no note input). For the iter path
+    // it includes the steering-note textarea.
+    setResumeComposerOpen(true);
+  }
+
   async function forceRestart() {
     if (!workItemId) return;
     setBusy(true);
@@ -239,6 +346,7 @@ export function LiveExecutionView(): JSX.Element {
             role="generator"
             crewName={snapshot?.generatorCrewName}
             agentName={snapshot?.generatorAgentName ?? snapshot?.generatorAgentId}
+            model={genModel}
             selected={promptRole === 'generator'}
             onClick={() => setPromptRole('generator')}
           />
@@ -247,6 +355,8 @@ export function LiveExecutionView(): JSX.Element {
             role="evaluator"
             crewName={snapshot?.evaluatorCrewName}
             agentName={snapshot?.evaluatorAgentName ?? snapshot?.evaluatorAgentId}
+            model={evalModel}
+            sameAsOther={!!genModel && !!evalModel && genModel === evalModel}
             selected={promptRole === 'evaluator'}
             onClick={() => setPromptRole('evaluator')}
           />
@@ -271,35 +381,164 @@ export function LiveExecutionView(): JSX.Element {
           )}
         </div>
         <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
+          {canResume && (
+            <button
+              className="btn btn-primary"
+              style={{
+                fontSize: 11,
+                padding: '4px 10px',
+                background: resumeDisabled ? 'var(--bg-surface-2)' : 'var(--success, #10b981)',
+                borderColor: resumeDisabled ? 'var(--border)' : 'var(--success, #10b981)',
+                color: resumeDisabled ? 'var(--text-tertiary)' : undefined,
+                cursor: resumeDisabled ? 'not-allowed' : undefined,
+              }}
+              disabled={resumeDisabled}
+              onClick={onResumeClick}
+              title={
+                isCompleted
+                  ? 'Resume disabled — execution is completed. Re-open the work item to retry.'
+                  : isRunActive
+                    ? `Resume disabled — a run is in flight (status: ${snapshot?.executionStatus}). Wait for it to finish or cancel it first.`
+                    : resumeMode === 'delivery'
+                      ? `Replay build + push + PR. Iter ${lastDeliverable?.iter} already passed (score ${lastDeliverable?.score}); no agent re-run.`
+                      : `Continue iterating from iter ${lastDeliverable?.iter} (verdict ${lastDeliverable?.verdict}, score ${lastDeliverable?.score}). Opens a note composer first.`
+              }
+            >
+              ▶ Resume
+            </button>
+          )}
           <button
             className="btn btn-primary"
             style={{ fontSize: 11, padding: '4px 10px' }}
-            disabled={busy}
+            disabled={busy || isCompleted}
             onClick={() => void forceRestart()}
-            title="Cancel active run and restart the conversation from scratch"
+            title={
+              isCompleted
+                ? 'Restart disabled — execution is completed.'
+                : 'Cancel active run and restart the conversation from scratch'
+            }
           >
             ⟳ Restart
           </button>
           <button
             className="btn btn-secondary"
             style={{ fontSize: 11, padding: '4px 10px' }}
-            disabled={busy}
+            disabled={busy || isCompleted}
             onClick={() => void requeue()}
-            title="Cancel current queue entry and re-enqueue to the same crew"
+            title={
+              isCompleted
+                ? 'Re-queue disabled — execution is completed.'
+                : 'Cancel current queue entry and re-enqueue to the same crew'
+            }
           >
             ↻ Re-queue
           </button>
           <button
             className="btn btn-secondary"
             style={{ fontSize: 11, padding: '4px 10px', color: 'var(--danger, #ef4444)' }}
-            disabled={busy}
+            disabled={busy || isCompleted}
             onClick={() => void cancelAndRequeue()}
-            title="Cancel queue entry and clear agent assignment — returns to unassigned state"
+            title={
+              isCompleted
+                ? 'Unassign disabled — execution is completed.'
+                : 'Cancel queue entry and clear agent assignment — returns to unassigned state'
+            }
           >
             ✕ Unassign
           </button>
         </div>
       </header>
+
+      {resumeComposerOpen && canResume && (
+        <section
+          aria-label="Resume preview"
+          style={{
+            border: '1px solid var(--success, #10b981)',
+            background: 'color-mix(in srgb, var(--success, #10b981) 6%, transparent)',
+            borderRadius: 8,
+            padding: '10px 14px',
+            margin: '8px 0',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+          }}
+        >
+          {resumeMode === 'delivery' ? (
+            <>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                <strong style={{ color: 'var(--text-primary)' }}>Resume — replay delivery</strong>
+                {' — '}
+                iter {lastDeliverable?.iter} already passed (score {lastDeliverable?.score}).
+                {' '}Skips the gen+eval loop; no agent runs, no payroll.
+              </div>
+              <ul style={{ fontSize: 11, color: 'var(--text-tertiary)', margin: 0, paddingLeft: 18 }}>
+                <li>Run the build gate (<code>dotnet build Workflow.sln</code>)</li>
+                <li>Run the test gate if configured</li>
+                <li>Push <code>ws/{workItemId}</code> with <code>--force-with-lease</code></li>
+                <li>Open the PR (or update the existing one)</li>
+              </ul>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                <strong style={{ color: 'var(--text-primary)' }}>Resume — continue iterating</strong>
+                {' — '}
+                from iter {lastDeliverable?.iter}
+                {' '}(verdict <code>{lastDeliverable?.verdict}</code>, score {lastDeliverable?.score}).
+                {' '}Optional note steers the next iteration; leave blank to just iterate again.
+              </div>
+              <textarea
+                value={resumeNote}
+                onChange={(e) => setResumeNote(e.target.value)}
+                placeholder="e.g. The build was failing because of an upstream issue that has now been fixed. Verify your changes still apply cleanly and update the change summary."
+                rows={4}
+                style={{
+                  fontFamily: 'var(--font-mono, ui-monospace)',
+                  fontSize: 12,
+                  padding: 8,
+                  background: 'var(--bg-surface)',
+                  color: 'var(--text-primary)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 4,
+                  resize: 'vertical',
+                }}
+                disabled={busy}
+              />
+            </>
+          )}
+          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
+            {busy && (
+              <span style={{ fontSize: 11, color: 'var(--text-tertiary)', marginRight: 'auto' }}>
+                Enqueuing…
+              </span>
+            )}
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ fontSize: 11, padding: '4px 10px' }}
+              disabled={busy}
+              onClick={() => { setResumeComposerOpen(false); setResumeNote(''); }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ fontSize: 11, padding: '4px 10px', background: 'var(--success, #10b981)', borderColor: 'var(--success, #10b981)' }}
+              disabled={busy}
+              onClick={() => void resume(
+                resumeMode === 'iter' ? (resumeNote.trim() || undefined) : undefined,
+              )}
+            >
+              {busy
+                ? '▶ Resuming…'
+                : resumeMode === 'delivery'
+                  ? '▶ Replay delivery'
+                  : `▶ Resume ${resumeNote.trim() ? 'with note' : 'without note'}`}
+            </button>
+          </div>
+        </section>
+      )}
 
       {latestPrompt && (latestPrompt.systemPrompt || latestPrompt.userPrompt) && (
         <section className="live-exec__prompts" aria-label="Prompts">
@@ -364,22 +603,28 @@ export function LiveExecutionView(): JSX.Element {
             >
               ◂
             </button>
-            {iterations.map((it, idx) => (
-              <button
-                key={idx}
-                type="button"
-                className={idx === activeIter ? 'active' : ''}
-                onClick={() => setSelectedIter(idx === totalIters - 1 ? null : idx)}
-                title={it.label}
-              >
-                {idx + 1}
-                {it.score != null && (
-                  <span className={`live-exec__iter-pager-score ${it.verdict ?? ''}`}>
-                    {it.score}
-                  </span>
-                )}
-              </button>
-            ))}
+            {buildPageWindow(totalIters, activeIter).map((slot, i) => {
+              if (slot === 'ellipsis') return <span key={`e${i}`} className="live-exec__iter-pager-ellipsis">…</span>;
+              const slotLabel  = isSummaryMode ? `Iteration ${summaryIters[slot].iter}` : iterations[slot].label;
+              const slotScore  = isSummaryMode ? summaryIters[slot].score   : iterations[slot].score;
+              const slotVerdict = isSummaryMode ? summaryIters[slot].verdict : iterations[slot].verdict;
+              return (
+                <button
+                  key={slot}
+                  type="button"
+                  className={slot === activeIter ? 'active' : ''}
+                  onClick={() => setSelectedIter(slot === totalIters - 1 ? null : slot)}
+                  title={slotLabel}
+                >
+                  {slot + 1}
+                  {slotScore != null && (
+                    <span className={`live-exec__iter-pager-score ${slotVerdict ?? ''}`}>
+                      {slotScore}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
             <button
               type="button"
               disabled={activeIter >= totalIters - 1}
@@ -398,33 +643,39 @@ export function LiveExecutionView(): JSX.Element {
           </nav>
         )}
         <div className="live-exec__transcript" style={{ userSelect: 'text' }}>
-          {transcriptTotalCount > 0 && (
-            <div className="live-exec__transcript-count" style={{ fontSize: 11, color: 'var(--text-tertiary, #888)', padding: '4px 8px', borderBottom: '1px solid var(--border, #e5e7eb)' }}>
-              Showing 1–{transcript.length.toLocaleString()} most recent of {transcriptTotalCount.toLocaleString()} total events
-            </div>
-          )}
-          {reversedEvents.length === 0 ? (
-            <div className="live-exec__empty">
-              {entry?.loading ? 'Loading…' : 'No events yet.'}
-              {snapshot?.autoDispatchedAt == null && !entry?.loading && (
-                <div className="live-exec__empty-cta">Waiting for the lead to delegate…</div>
-              )}
-            </div>
+          {isSummaryMode ? (
+            <SummaryView deliverable={activeSummary} loading={!!entry?.loading} dispatched={snapshot?.autoDispatchedAt != null} />
           ) : (
-            reversedEvents.map((evt) => <TranscriptLine key={`${evt.id}:${evt.at}`} evt={evt} generatorCrewId={genCrewId} evaluatorCrewId={evalCrewId} />)
-          )}
-          {hasOlderEvents && (
-            <div style={{ textAlign: 'center', padding: '8px 0' }}>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                style={{ fontSize: 11, padding: '4px 12px' }}
-                disabled={loadingOlder}
-                onClick={() => workItemId && void useTaskLiveStore.getState().loadOlderEvents(workItemId)}
-              >
-                {loadingOlder ? 'Loading…' : '↑ Load older events'}
-              </button>
-            </div>
+            <>
+              {transcriptTotalCount > 0 && (
+                <div className="live-exec__transcript-count" style={{ fontSize: 11, color: 'var(--text-tertiary, #888)', padding: '4px 8px', borderBottom: '1px solid var(--border, #e5e7eb)' }}>
+                  Showing 1–{transcript.length.toLocaleString()} most recent of {transcriptTotalCount.toLocaleString()} total events
+                </div>
+              )}
+              {reversedEvents.length === 0 ? (
+                <div className="live-exec__empty">
+                  {entry?.loading ? 'Loading…' : 'No events yet.'}
+                  {snapshot?.autoDispatchedAt == null && !entry?.loading && (
+                    <div className="live-exec__empty-cta">Waiting for the lead to delegate…</div>
+                  )}
+                </div>
+              ) : (
+                reversedEvents.map((evt) => <TranscriptLine key={`${evt.id}:${evt.at}`} evt={evt} generatorCrewId={genCrewId} evaluatorCrewId={evalCrewId} />)
+              )}
+              {hasOlderEvents && (
+                <div style={{ textAlign: 'center', padding: '8px 0' }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ fontSize: 11, padding: '4px 12px' }}
+                    disabled={loadingOlder}
+                    onClick={() => workItemId && void useTaskLiveStore.getState().loadOlderEvents(workItemId)}
+                  >
+                    {loadingOlder ? 'Loading…' : '↑ Load older events'}
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       </main>
@@ -438,7 +689,7 @@ export function LiveExecutionView(): JSX.Element {
           <button type="button" className={`live-exec__tab${tab === 'builds'   ? ' active' : ''}`} onClick={() => setTab('builds')}>Builds</button>
         </div>
         <div className="live-exec__tab-body">
-          {tab === 'worktree' && <WorktreeTab snap={worktree} transcript={transcript} />}
+          {tab === 'worktree' && <WorktreeTab snap={worktree} transcript={transcript} workItemId={workItemId} />}
           {tab === 'tokens'   && <TokensTab snap={snapshot} />}
           {tab === 'progress' && <ProgressTab snap={snapshot} />}
           {tab === 'comments' && <CommentsTab workItemId={workItemId} />}
@@ -455,12 +706,15 @@ function PairSide(props: {
   role: 'generator' | 'evaluator';
   crewName?: string | null;
   agentName?: string | null;
+  model?: string | null;
+  sameAsOther?: boolean;
   selected?: boolean;
   onClick?: () => void;
 }): JSX.Element {
-  const { role, crewName, agentName, selected, onClick } = props;
+  const { role, crewName, agentName, model, sameAsOther, selected, onClick } = props;
   const portrait = agentName ? avatarFor(agentName, agentName) : null;
   const tip = agentName ? agentTooltip(agentName, agentName, role) : '';
+  const modelLabel = model ? formatModelLabel(model) : null;
   return (
     <div
       className="live-exec__pair-side"
@@ -496,9 +750,38 @@ function PairSide(props: {
             {crewName}
           </span>
         )}
+        {modelLabel && (
+          <span
+            className="live-exec__pair-model"
+            data-warn={sameAsOther ? 'true' : undefined}
+            title={
+              (sameAsOther ? 'Generator and evaluator share the same model — pair-diversity rule violated.\n' : '')
+              + `Model: ${model}`
+            }
+            style={{
+              fontSize: 10,
+              fontFamily: 'var(--font-mono)',
+              color: sameAsOther ? 'rgb(220, 38, 38)' : 'var(--text-tertiary)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              maxWidth: 180,
+            }}
+          >
+            {sameAsOther ? '⚠ ' : ''}{modelLabel}
+          </span>
+        )}
       </div>
     </div>
   );
+}
+
+// Trim a long backend/model id like "copilot/claude-opus-4-6-1m" or
+// "anthropic/claude-opus-4-6" down to just the model part for the header
+// chip — the full id stays in the tooltip.
+function formatModelLabel(model: string): string {
+  const slash = model.lastIndexOf('/');
+  return slash >= 0 ? model.slice(slash + 1) : model;
 }
 
 // @ts-expect-error — unused but kept for future budget display
@@ -525,14 +808,19 @@ function BudgetBar(props: { label: string; spend: number; cap: number | null }):
 function TranscriptLine(props: { evt: TaskTranscriptEvent; generatorCrewId?: string | null; evaluatorCrewId?: string | null }): JSX.Element {
   const { evt, generatorCrewId, evaluatorCrewId } = props;
   if (evt.kind === 'task.iteration.scored' || evt.kind === 'task.iteration.passed' || evt.kind === 'task.iteration.rejected' || evt.kind === 'task.iteration.iterated' || evt.kind === 'task.iteration.stalled') {
-    const payload = evt.payload as { iter?: number; score?: number; verdict?: string };
+    const payload = evt.payload as { iter?: number; score?: number; verdict?: string; notes?: string };
     const verdict = payload.verdict ?? evt.kind.replace('task.iteration.', '');
     return (
-      <div className="live-exec__iter-rule">
-        <span>iter {payload.iter ?? '?'}</span>
-        <span className={`live-exec__score-chip ${verdict}`}>
-          {payload.score ?? 0} · {verdict}
-        </span>
+      <div className="live-exec__iter-block">
+        <div className="live-exec__iter-rule">
+          <span>iter {payload.iter ?? '?'}</span>
+          <span className={`live-exec__score-chip ${verdict}`}>
+            {payload.score ?? 0} · {verdict}
+          </span>
+        </div>
+        {payload.notes && (
+          <div className="live-exec__iter-notes">{payload.notes}</div>
+        )}
       </div>
     );
   }
@@ -679,45 +967,73 @@ function filterEvents(
   if (f === 'commits') return events.filter((e) => e.kind === 'task.commit' || e.kind === 'task.pr-opened');
   if (f === 'tools')   return events.filter((e) => e.kind === 'task.tool-call' || e.kind === 'task.tool-result');
 
-  // When generator and evaluator share the same crewId, fall back to
-  // event kind heuristics to split the transcript.
-  const sameCrews = genCrewId && evalCrewId && genCrewId === evalCrewId;
-
   const EVAL_KINDS = new Set([
     'task.iteration.scored', 'task.iteration.passed', 'task.iteration.rejected',
     'task.iteration.iterated', 'task.iteration.stalled',
   ]);
 
+  // Resolve effective agentId/crewId: top-level fields are often null,
+  // the real values live inside payload.
+  const effectiveAgent = (e: TaskTranscriptEvent): string | null | undefined => {
+    const p = e.payload as Record<string, unknown> | null;
+    return e.agentId || (p?.agentId as string) || null;
+  };
+  const effectiveCrew = (e: TaskTranscriptEvent): string | null | undefined => {
+    const p = e.payload as Record<string, unknown> | null;
+    return e.crewId || (p?.crewId as string) || null;
+  };
+
   if (f === 'generator') {
     return events.filter((e) => {
-      if (e.kind.startsWith('task.iteration')) return true; // boundaries shown in both
-      if (sameCrews) {
-        // Exclude evaluator-specific events; include everything else.
-        if (e.agentId === evalAgentId && e.agentId !== genAgentId) return false;
-        if (e.crewId && e.crewId !== genCrewId) return false;
-        return !EVAL_KINDS.has(e.kind);
-      }
-      return (genCrewId && e.crewId === genCrewId) || (!e.crewId && !evalCrewId);
+      if (e.kind.startsWith('task.iteration')) return true;
+      const agent = effectiveAgent(e);
+      const crew = effectiveCrew(e);
+      if (agent === evalAgentId && agent !== genAgentId) return false;
+      if (EVAL_KINDS.has(e.kind)) return false;
+      if (genCrewId && crew === genCrewId) return true;
+      if (genAgentId && agent === genAgentId) return true;
+      if (!crew && !agent) return true; // untagged events go to generator
+      return false;
     });
   }
   if (f === 'evaluator') {
     return events.filter((e) => {
-      if (e.kind.startsWith('task.iteration')) return true; // boundaries shown in both
-      if (sameCrews) {
-        // Only evaluator-specific events: scoring verdicts + events
-        // tagged with the evaluator agent.
-        if (EVAL_KINDS.has(e.kind)) return true;
-        if (e.agentId === evalAgentId && e.agentId !== genAgentId) return true;
-        // Also include events from the paired (different) crew.
-        return false;
-      }
-      return evalCrewId && e.crewId === evalCrewId;
+      if (e.kind.startsWith('task.iteration')) return true;
+      if (EVAL_KINDS.has(e.kind)) return true;
+      const agent = effectiveAgent(e);
+      const crew = effectiveCrew(e);
+      if (evalAgentId && agent === evalAgentId) return true;
+      if (evalCrewId && crew === evalCrewId) return true;
+      return false;
     });
   }
   return events;
 }
 
 // ── Phase 19 — group events by iteration for paged display ────────────
+
+/// Build a windowed page list: first, last, and a window around the
+/// active page, with 'ellipsis' markers for gaps.  E.g. for 33 pages
+/// and active=16: [0, 'ellipsis', 14, 15, 16, 17, 18, 'ellipsis', 32]
+function buildPageWindow(total: number, active: number, wing = 2): (number | 'ellipsis')[] {
+  if (total <= wing * 2 + 5) {
+    // Few enough pages — show them all.
+    return Array.from({ length: total }, (_, i) => i);
+  }
+  const pages = new Set<number>();
+  pages.add(0);
+  pages.add(total - 1);
+  for (let i = Math.max(0, active - wing); i <= Math.min(total - 1, active + wing); i++) {
+    pages.add(i);
+  }
+  const sorted = [...pages].sort((a, b) => a - b);
+  const result: (number | 'ellipsis')[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    if (i > 0 && sorted[i] - sorted[i - 1] > 1) result.push('ellipsis');
+    result.push(sorted[i]);
+  }
+  return result;
+}
 
 interface IterationGroup {
   label: string;
@@ -769,86 +1085,112 @@ function groupByIteration(events: TaskTranscriptEvent[]): IterationGroup[] {
     groups.push(current);
   }
 
+  // Filter out iterations that only have boundary-marker events (no real
+  // content loaded). This happens when the server pins iteration boundary
+  // events but the actual content events weren't in the initial load window.
+  const hasContent = (g: IterationGroup) =>
+    g.events.some((e) => !ITER_BOUNDARY_KINDS.has(e.kind));
+  const filtered = groups.filter((g, i) => i === groups.length - 1 || hasContent(g));
+
   // If we only have 1 group and no iteration markers, it's pre-iteration
   // or a single iteration — still return it so paging degrades gracefully.
-  return groups;
+  return filtered;
 }
 
-function WorktreeTab(props: { snap: WorktreeSnapshot | null; transcript: TaskTranscriptEvent[] }): JSX.Element {
-  const { snap, transcript } = props;
-  if (!snap) {
+type CommitsResponse = Awaited<ReturnType<typeof forgeApi.getWorkItemCommits>>;
+
+function WorktreeTab(props: {
+  snap: WorktreeSnapshot | null;
+  transcript: TaskTranscriptEvent[];
+  workItemId: string | null;
+}): JSX.Element {
+  const { snap, transcript, workItemId } = props;
+
+  // Fetch commits from the authoritative `git log` endpoint when the tab
+  // opens, and re-fetch whenever the latest worktree-tick reports a new
+  // HEAD sha (agent committed). The transcript-replay reconstruction was
+  // lossy — commits faster than the tick interval lost their file list.
+  const [data, setData] = useState<CommitsResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Derive a "stable signal" from transcript so we refetch only when a new
+  // commit actually lands, not on every tick.
+  const latestTickSha = useMemo(() => {
+    for (let i = transcript.length - 1; i >= 0; i--) {
+      const e = transcript[i];
+      if (e.kind !== 'task.worktree-tick') continue;
+      const head = (e.payload as { head?: { sha?: string } } | null)?.head;
+      if (head?.sha) return head.sha;
+    }
+    return null;
+  }, [transcript]);
+
+  useEffect(() => {
+    if (!workItemId) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    forgeApi.getWorkItemCommits(workItemId)
+      .then((r) => { if (!cancelled) setData(r); })
+      .catch((e: unknown) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [workItemId, latestTickSha]);
+
+  if (!snap && !data) {
     return <div className="live-exec__empty">No worktree activity yet.</div>;
   }
 
-  // Collect commits and file changes from worktree-tick events.
-  // Dirty files accumulate before a commit; when SHA changes, those files
-  // belong to the new commit.
-  const commits = useMemo(() => {
-    const result: Array<{
-      sha: string;
-      message: string;
-      author: string;
-      at: string;
-      added: string[];
-      modified: string[];
-      deleted: string[];
-    }> = [];
-    let prevSha = '';
-    const seenShas = new Set<string>();
-    // Accumulate dirty files between commits
-    let pendingAdded = new Set<string>();
-    let pendingModified = new Set<string>();
-    let pendingDeleted = new Set<string>();
+  const commits = data?.commits ?? [];
+  const uncommitted = data?.uncommitted ?? { added: [], modified: [], deleted: [] };
+  const hasDirty = uncommitted.added.length + uncommitted.modified.length + uncommitted.deleted.length > 0;
 
-    for (const evt of transcript) {
-      if (evt.kind !== 'task.worktree-tick') continue;
-      const p = evt.payload as Record<string, unknown> | null;
-      if (!p) continue;
-      const head = p.head as { sha?: string; message?: string; author?: string; at?: string } | null;
-      const paths = p.paths as { added?: string[]; modified?: string[]; deleted?: string[] } | null;
-      const sha = head?.sha ?? '';
-      if (!sha) continue;
+  // Leaf directory name — the project convention is `ws-{workItemId}` under
+  // a fixed `.worktree/` parent, so the leaf is the most useful "name" the
+  // operator recognises (it matches the agent's branch suffix). Prefer the
+  // path the API resolved; fall back to the snap or the workstream id.
+  const wtPath = data?.worktreePath ?? snap?.worktreePath ?? null;
+  const wtLeaf = wtPath
+    ? (wtPath.split(/[\\/]/).filter(Boolean).pop() ?? wtPath)
+    : (snap?.workstreamId || null);
 
-      if (sha !== prevSha && prevSha && !seenShas.has(sha)) {
-        seenShas.add(sha);
-        // The pending files are what was dirty before this commit
-        result.push({
-          sha,
-          message: head?.message ?? '',
-          author: head?.author ?? '',
-          at: head?.at ?? evt.at,
-          added: [...pendingAdded],
-          modified: [...pendingModified],
-          deleted: [...pendingDeleted],
-        });
-        pendingAdded.clear();
-        pendingModified.clear();
-        pendingDeleted.clear();
-      } else {
-        // Accumulate dirty files
-        for (const f of paths?.added ?? []) pendingAdded.add(f);
-        for (const f of paths?.modified ?? []) pendingModified.add(f);
-        for (const f of paths?.deleted ?? []) pendingDeleted.add(f);
-      }
-      prevSha = sha;
-    }
-    return result;
-  }, [transcript]);
-
-  // Also get latest dirty (uncommitted) files from the last tick
-  const lastTick = [...transcript].reverse().find((e) => e.kind === 'task.worktree-tick');
-  const dirtyPaths = (lastTick?.payload as { paths?: { added?: string[]; modified?: string[]; deleted?: string[] }; dirty?: number } | null);
-  const hasDirty = (dirtyPaths?.dirty ?? 0) > 0;
+  // Pills: prefer the API's authoritative ahead/behind + commit-derived
+  // file counts; fall back to the live snap when the API hasn't loaded.
+  const aheadCount = data?.ahead ?? snap?.ahead ?? 0;
+  const behindCount = data?.behind ?? snap?.behind ?? 0;
+  const addedCount = data ? uncommitted.added.length : (snap?.added ?? 0);
+  const modifiedCount = data ? uncommitted.modified.length : (snap?.modified ?? 0);
+  const deletedCount = data ? uncommitted.deleted.length : (snap?.deleted ?? 0);
 
   return (
     <div>
+      {(wtLeaf || wtPath) && (
+        <div className="live-exec__wt-name" title={wtPath ?? undefined}>
+          {wtLeaf && <div className="live-exec__wt-name__leaf">{wtLeaf}</div>}
+          {wtPath && <div className="live-exec__wt-name__path">{wtPath}</div>}
+        </div>
+      )}
       <div className="live-exec__wt-summary">
-        <span className="live-exec__wt-pill added">+{snap.added}</span>
-        <span className="live-exec__wt-pill modified">~{snap.modified}</span>
-        <span className="live-exec__wt-pill deleted">−{snap.deleted}</span>
-        {snap.ahead > 0  && <span className="live-exec__wt-pill ahead">↑{snap.ahead}</span>}
-        {snap.behind > 0 && <span className="live-exec__wt-pill ahead">↓{snap.behind}</span>}
+        <span className="live-exec__wt-pill added">+{addedCount}</span>
+        <span className="live-exec__wt-pill modified">~{modifiedCount}</span>
+        <span className="live-exec__wt-pill deleted">−{deletedCount}</span>
+        {aheadCount > 0  && <span className="live-exec__wt-pill ahead">↑{aheadCount}</span>}
+        {behindCount > 0 && <span className="live-exec__wt-pill ahead">↓{behindCount}</span>}
+        {loading && <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>loading commits…</span>}
       </div>
+
+      {error && (
+        <div style={{
+          fontSize: 11,
+          color: 'rgb(220, 38, 38)',
+          background: 'color-mix(in srgb, rgb(220, 38, 38) 10%, transparent)',
+          border: '1px solid rgb(220, 38, 38)',
+          padding: '6px 10px', borderRadius: 4, margin: '6px 0',
+        }}>
+          ⚠ commits load failed: {error}
+        </div>
+      )}
 
       {commits.length > 0 && (
         <div className="live-exec__commits">
@@ -863,13 +1205,24 @@ function WorktreeTab(props: { snap: WorktreeSnapshot | null; transcript: TaskTra
                 {c.added.map((p) => <div key={`a${p}`} className="live-exec__file-row added">{p}</div>)}
                 {c.modified.map((p) => <div key={`m${p}`} className="live-exec__file-row modified">{p}</div>)}
                 {c.deleted.map((p) => <div key={`d${p}`} className="live-exec__file-row deleted">{p}</div>)}
+                {c.other.map((o) => (
+                  <div key={`o${o.path}`} className="live-exec__file-row modified" title={o.oldPath ? `${o.status} from ${o.oldPath}` : o.status}>
+                    {o.status} {o.path}
+                  </div>
+                ))}
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {commits.length === 0 && snap.headSha && (
+      {commits.length === 0 && !loading && data && (
+        <div style={{ fontSize: 11, color: 'var(--text-tertiary)', padding: '8px 0' }}>
+          No commits yet on <code>{data.branch}</code>.
+        </div>
+      )}
+
+      {commits.length === 0 && !data && snap?.headSha && (
         <div className="live-exec__wt-head">
           <div className="live-exec__wt-sha">{snap.headSha.slice(0, 8)}</div>
           <div className="live-exec__wt-msg">{snap.headMessage ?? ''}</div>
@@ -877,31 +1230,18 @@ function WorktreeTab(props: { snap: WorktreeSnapshot | null; transcript: TaskTra
         </div>
       )}
 
-      {hasDirty && dirtyPaths?.paths && (
+      {hasDirty && (
         <div className="live-exec__commit-group" style={{ opacity: 0.7 }}>
           <div className="live-exec__wt-msg" style={{ fontStyle: 'italic', fontSize: 11 }}>Uncommitted changes</div>
           <div className="live-exec__file-list">
-            {dirtyPaths.paths.added?.map((p) => <div key={`ua${p}`} className="live-exec__file-row added">{p}</div>)}
-            {dirtyPaths.paths.modified?.map((p) => <div key={`um${p}`} className="live-exec__file-row modified">{p}</div>)}
-            {dirtyPaths.paths.deleted?.map((p) => <div key={`ud${p}`} className="live-exec__file-row deleted">{p}</div>)}
+            {uncommitted.added.map((p) => <div key={`ua${p}`} className="live-exec__file-row added">{p}</div>)}
+            {uncommitted.modified.map((p) => <div key={`um${p}`} className="live-exec__file-row modified">{p}</div>)}
+            {uncommitted.deleted.map((p) => <div key={`ud${p}`} className="live-exec__file-row deleted">{p}</div>)}
           </div>
         </div>
       )}
 
-      {snap.branchDiff && (snap.branchDiff.added.length > 0 || snap.branchDiff.modified.length > 0 || snap.branchDiff.deleted.length > 0) && (
-        <div className="live-exec__commit-group">
-          <div className="live-exec__wt-msg" style={{ fontSize: 11, fontWeight: 600 }}>
-            Branch diff vs main ({snap.branchDiff.added.length + snap.branchDiff.modified.length + snap.branchDiff.deleted.length} files)
-          </div>
-          <div className="live-exec__file-list">
-            {snap.branchDiff.added.map((p) => <div key={`ba${p}`} className="live-exec__file-row added">{p}</div>)}
-            {snap.branchDiff.modified.map((p) => <div key={`bm${p}`} className="live-exec__file-row modified">{p}</div>)}
-            {snap.branchDiff.deleted.map((p) => <div key={`bd${p}`} className="live-exec__file-row deleted">{p}</div>)}
-          </div>
-        </div>
-      )}
-
-      {snap.truncated && <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>list truncated at 200 paths.</div>}
+      {snap?.truncated && <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>list truncated at 200 paths.</div>}
     </div>
   );
 }
@@ -979,9 +1319,19 @@ function ProgressTab(props: { snap: import('@/realtime/useTaskLiveStore').TaskEx
       <div className="live-exec__iter-list">
         {deduped.map((d) => (
           <div key={d.id} className="live-exec__iter-item">
-            <span className={`live-exec__score-chip ${d.verdict}`}>iter {d.iter}: {d.score}</span>
-            <span style={{ color: 'var(--text-secondary)', flex: 1, textAlign: 'right' }}>{d.verdict}</span>
-            {d.judgeScore != null && <span className="live-exec__score-chip pass" style={{ outline: '1px dashed currentColor' }}>judge {d.judgeScore}</span>}
+            <div className="live-exec__iter-item__header">
+              <span className={`live-exec__score-chip ${d.verdict}`}>iter {d.iter}: {d.score}</span>
+              <span style={{ color: 'var(--text-secondary)', flex: 1, textAlign: 'right' }}>{d.verdict}</span>
+              {d.judgeScore != null && <span className="live-exec__score-chip pass" style={{ outline: '1px dashed currentColor' }}>judge {d.judgeScore}</span>}
+            </div>
+            {d.notes && (
+              <div className="live-exec__iter-item__notes">{d.notes}</div>
+            )}
+            {d.judgeNotes && (
+              <div className="live-exec__iter-item__notes" data-role="judge">
+                <strong>Judge:</strong> {d.judgeNotes}
+              </div>
+            )}
           </div>
         ))}
         {deduped.length === 0 && (
@@ -994,6 +1344,68 @@ function ProgressTab(props: { snap: import('@/realtime/useTaskLiveStore').TaskEx
           <div className="live-exec__file-budget__label">file budget</div>
           <div className="live-exec__file-budget__value">≤ {snap.expectedFileChanges} files</div>
         </div>
+      )}
+    </div>
+  );
+}
+
+// Per-iteration generator + evaluator summary, rendered as markdown.
+// Driven by the iteration pager when filter === 'summary'; one deliverable
+// at a time. Sources:
+//   - `generatorSummary` — server-extracted from `## Iteration Summary` /
+//     `## Change Summary` / `## Plan Summary` in the generator response.
+//   - `notes` — the evaluator's structured 3-part review (improvements /
+//     still-needs / why-this-score), capped at 4000 chars.
+function SummaryView(props: { deliverable: DeliverableShape | null; loading: boolean; dispatched: boolean }): JSX.Element {
+  const { deliverable, loading, dispatched } = props;
+  if (!deliverable) {
+    return (
+      <div className="live-exec__empty">
+        {loading ? 'Loading…' : 'No iteration summaries yet.'}
+        {!loading && !dispatched && (
+          <div className="live-exec__empty-cta">Waiting for the lead to delegate…</div>
+        )}
+        {!loading && dispatched && (
+          <div className="live-exec__empty-cta">The first iteration's summary appears once it completes.</div>
+        )}
+      </div>
+    );
+  }
+
+  const d = deliverable;
+  const hasGen  = !!(d.generatorSummary && d.generatorSummary.trim());
+  const hasEval = !!(d.notes && d.notes.trim());
+
+  return (
+    <div className="live-exec__summary-view">
+      <div className="live-exec__summary-iter__header">
+        <span className={`live-exec__score-chip ${d.verdict}`}>iter {d.iter}: {d.score}</span>
+        <span style={{ color: 'var(--text-secondary)', flex: 1, textAlign: 'right' }}>{d.verdict}</span>
+        <span style={{ color: 'var(--text-tertiary)', fontSize: 11 }}>{new Date(d.createdAt).toLocaleString()}</span>
+      </div>
+      <section className="live-exec__summary-section" data-role="generator">
+        <div className="live-exec__summary-section__label">Generator summary</div>
+        <div className="live-exec__summary-section__body markdown-body">
+          {hasGen
+            ? <ReactMarkdown>{d.generatorSummary ?? ''}</ReactMarkdown>
+            : <em>(not provided this iteration)</em>}
+        </div>
+      </section>
+      <section className="live-exec__summary-section" data-role="evaluator">
+        <div className="live-exec__summary-section__label">Evaluator summary</div>
+        <div className="live-exec__summary-section__body markdown-body">
+          {hasEval
+            ? <ReactMarkdown>{d.notes ?? ''}</ReactMarkdown>
+            : <em>(no evaluator notes)</em>}
+        </div>
+      </section>
+      {d.judgeNotes && (
+        <section className="live-exec__summary-section" data-role="judge">
+          <div className="live-exec__summary-section__label">Judge override</div>
+          <div className="live-exec__summary-section__body markdown-body">
+            <ReactMarkdown>{d.judgeNotes}</ReactMarkdown>
+          </div>
+        </section>
       )}
     </div>
   );

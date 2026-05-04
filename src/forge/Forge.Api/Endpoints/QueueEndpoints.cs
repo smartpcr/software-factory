@@ -231,9 +231,9 @@ public static class QueueEndpoints
     {
         if (string.IsNullOrEmpty(crewId)) return null; // multi-team paths can skip the crew-specific gate
         var crew = await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id == crewId, ct);
-        // PO of the product covers all crews on it; otherwise the crew's own
+        // PO covers all crews; otherwise the crew's own
         // lead can mutate. Single-user dev passes through.
-        var gate = RequireRole.CheckForProduct(ctx, db, crew?.ProductId, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
         return gate; // null means caller passes (PO or single-user dev); concrete result short-circuits.
     }
 

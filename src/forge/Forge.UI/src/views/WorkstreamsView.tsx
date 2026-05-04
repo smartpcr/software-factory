@@ -61,6 +61,25 @@ export function WorkstreamsView() {
 
   useEffect(() => { void load(); }, [load]);
 
+  // Seed the Spawned-stories panel from the server so it survives a page
+  // reload (the array used to be local-only and emptied on refresh).
+  useEffect(() => {
+    let cancelled = false;
+    async function loadSpawns() {
+      try {
+        const rows = await forgeApi.listStorySpawns();
+        if (!cancelled) {
+          setSpawnedStories(rows.map((r) => r.storyId));
+        }
+      } catch {
+        // best-effort — keep prior local additions if the call fails
+      }
+    }
+    void loadSpawns();
+    const interval = setInterval(() => { void loadSpawns(); }, 15_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
   // Re-fetch workstreams + work items every 15s so the live badge picks up
   // newly auto-linked cards from the queue worker.
   useEffect(() => {

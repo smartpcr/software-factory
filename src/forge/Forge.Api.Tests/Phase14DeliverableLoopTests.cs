@@ -213,10 +213,14 @@ public class Phase14DeliverableLoopTests
 
             await loop.RunAsync(req, CancellationToken.None);
 
-            // iter 1 gets empty notes; iter 2 gets the previous evaluator's notes.
+            // iter 1 gets empty notes; iter 2 gets a chained block containing
+            // the previous evaluator's notes plus the iteration header so the
+            // generator sees the trajectory, not just the last line.
             Assert.Equal(2, capturedGenNotes.Count);
             Assert.Equal(string.Empty, capturedGenNotes[0]);
-            Assert.Equal("fix 1", capturedGenNotes[1]);
+            Assert.Contains("Iteration 1", capturedGenNotes[1]);
+            Assert.Contains("score 80", capturedGenNotes[1]);
+            Assert.Contains("fix 1", capturedGenNotes[1]);
         }
         finally { f.Dispose(); }
     }

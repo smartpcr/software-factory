@@ -13,6 +13,8 @@ export type BoardGroupBy = 'epic' | 'story' | 'phase' | 'agent' | 'priority';
 interface BoardState {
   cards: Card[];
   selectedId: string | null;
+  /** When set, the right-rail renders the story detail instead of card / WI detail. Mutually exclusive with selectedId. */
+  selectedStoryId: string | null;
   draggingId: string | null;
   activeFilter: BoardFilter;
   /** Phase-1 select dropdowns (epic / agent / priority). null = "all". */
@@ -30,6 +32,7 @@ interface BoardState {
 
   hydrate: (cards: Card[]) => void;
   setSelected: (id: string | null) => void;
+  setSelectedStory: (id: string | null) => void;
   setDragging: (id: string | null) => void;
   setFilter: (f: BoardFilter) => void;
   setEpicFilter: (e: string | null) => void;
@@ -62,6 +65,7 @@ export type MoveOutcome =
 export const useBoardStore = create<BoardState>((set, get) => ({
   cards: sampleState.cards,
   selectedId: null,
+  selectedStoryId: null,
   draggingId: null,
   activeFilter: 'all',
   epicFilter: null,
@@ -73,7 +77,8 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   pendingMove: null,
 
   hydrate: (cards) => set({ cards }),
-  setSelected: (id) => set({ selectedId: id }),
+  setSelected: (id) => set({ selectedId: id, selectedStoryId: id ? null : get().selectedStoryId }),
+  setSelectedStory: (id) => set({ selectedStoryId: id, selectedId: id ? null : get().selectedId }),
   setDragging: (id) => set({ draggingId: id }),
   setFilter: (f) => set({ activeFilter: f }),
   setEpicFilter: (e) => set({ epicFilter: e }),

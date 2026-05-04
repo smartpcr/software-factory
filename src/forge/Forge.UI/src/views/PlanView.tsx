@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { DndContext, DragOverlay, PointerSensor, useSensor, useSensors, type DragEndEvent, type DragStartEvent } from '@dnd-kit/core';
 import { useHotkeys } from 'react-hotkeys-hook';
 import type { ColumnId } from '@/types';
@@ -9,6 +9,7 @@ import { Board } from '@/board/Board';
 import { FilterBar } from '@/board/FilterBar';
 import { WorkItemDetailPanel } from '@/workitems/WorkItemDetailPanel';
 import { DetailPanel } from '@/board/DetailPanel';
+import { StoryDetailPanel } from '@/board/StoryDetailPanel';
 import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
 import { useWitStore } from '@/workitems/useWitStore';
 import { ExecBoard } from '@/workitems/ExecBoard';
@@ -33,6 +34,8 @@ export function PlanView() {
   const move = useBoardStore((s) => s.move);
   const setSelected = useBoardStore((s) => s.setSelected);
   const selectedId = useBoardStore((s) => s.selectedId);
+  const selectedStoryId = useBoardStore((s) => s.selectedStoryId);
+  const setSelectedStory = useBoardStore((s) => s.setSelectedStory);
   const cards = useBoardStore((s) => s.cards);
   const burndown = useMemo(() => computeBurndown(cards), [cards]);
 
@@ -58,30 +61,19 @@ export function PlanView() {
     }
   }, [selectedId, witFocusedId]);
   useEffect(() => {
-    if (witFocusedId === null && selectedId) {
+    // Mirror panel close (× button) to the board. selectedId is read via
+    // getState — keeping it out of the deps prevents this effect from
+    // firing on every card click, which would race with the effect above
+    // (witFocusedId is still the stale pre-click null in this closure)
+    // and undo the freshly-set selectedId, requiring a second click.
+    if (witFocusedId === null && useBoardStore.getState().selectedId) {
       setSelected(null);
     }
-  }, [witFocusedId, selectedId, setSelected]);
+  }, [witFocusedId, setSelected]);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [storyModalOpen, setStoryModalOpen] = useState(false);
 
-  // Close detail panel when clicking outside it.
-  const detailRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!selectedId) return;
-    function onMouseDown(e: MouseEvent) {
-      const t = e.target as Node;
-      if (detailRef.current?.contains(t)) return;
-      // Don't dismiss if clicking a card (card click sets new selection).
-      if ((t as HTMLElement).closest?.('[data-id]')) return;
-      // Don't dismiss if a modal/popover is open above.
-      if ((t as HTMLElement).closest?.('[role="dialog"], .modal-backdrop, .wit-multi-pop')) return;
-      setSelected(null);
-    }
-    window.addEventListener('mousedown', onMouseDown);
-    return () => window.removeEventListener('mousedown', onMouseDown);
-  }, [selectedId, setSelected]);
   const [focusedCol, setFocusedCol] = useState<ColumnId | null>(null);
   const [viewMode, setViewMode] = useState<'board' | 'stories' | 'exec'>('board');
 
@@ -167,7 +159,7 @@ export function PlanView() {
   }
 
   useHotkeys('n', (e) => { e.preventDefault(); setModalOpen(true); });
-  useHotkeys('escape', () => { setSelected(null); setModalOpen(false); });
+  useHotkeys('escape', () => { setSelected(null); setSelectedStory(null); setModalOpen(false); });
   useHotkeys('/', (e) => {
     e.preventDefault();
     const search = document.querySelector<HTMLInputElement>('.filter-bar .filter-search input');
@@ -283,12 +275,16 @@ export function PlanView() {
           )}
         </div>
 
-        {selectedWorkItem ? (
-          <div ref={detailRef} style={{ width: 420, flexShrink: 0, borderLeft: '1px solid var(--border)', overflow: 'auto' }}>
+        {selectedStoryId ? (
+          <div>
+            <StoryDetailPanel storyId={selectedStoryId} />
+          </div>
+        ) : selectedWorkItem ? (
+          <div style={{ width: 420, flexShrink: 0, borderLeft: '1px solid var(--border)', overflow: 'auto' }}>
             <WorkItemDetailPanel item={selectedWorkItem} />
           </div>
         ) : (selectedId && selectedCard) ? (
-          <div ref={detailRef}>
+          <div>
             <DetailPanel />
           </div>
         ) : null}

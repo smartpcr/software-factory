@@ -8,6 +8,7 @@ namespace Forge.Api.Services;
 
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
+using System.Text.Json;
 using Forge.Api.Agents;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
@@ -75,6 +76,20 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         "run_command",
     };
 
+    /// <summary>
+    /// Plan tasks — architecture agents produce design docs and WIT trees.
+    /// <c>write_file</c> is allowed (server-side path enforcement limits
+    /// writes to <c>docs/specs/</c>); <c>run_command</c> is intentionally
+    /// excluded so plan agents cannot modify source code indirectly.
+    /// </summary>
+    internal static readonly string[] PlanAllowedTools =
+    {
+        "read_file",
+        "write_file",
+        "git_commit",
+        "git_push",
+    };
+
     private readonly IServiceScopeFactory scopeFactory;
     private readonly TaskChannel taskChannel;
     private readonly IHubContext<ForgeHub> hub;
@@ -92,6 +107,22 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
     private CancellationTokenSource? cts;
     private Task? loop;
+
+    /// <summary>
+    /// Set to <c>true</c> in <see cref="StopAsync"/> before the CTS is
+    /// cancelled. Fire-and-forget agent tasks check this flag so they can
+    /// distinguish a host shutdown (leave the row in <c>picked-up</c> for
+    /// boot recovery) from a genuine runtime failure (mark as failed).
+    /// </summary>
+    private volatile bool shuttingDown;
+
+    // Interlocked latch: 0 = not run, 1 = ran. Forge.Api.Tests' WebApplicationFactory
+    // hosting the DI graph alongside the prod server (or any future code path that
+    // accidentally re-invokes this sweep) caused 4036 spurious boot-recovery rows
+    // in task_queue_history — every claim was racing with a recovery reset every
+    // few hundred ms, ratio ~1:1 against `claimed`. After-the-fact: prevent any
+    // post-boot call from doing work; log so the second-caller is identifiable.
+    private int bootRecoveryLatch;
 
     private readonly WorktreeChangeFeed worktreeFeed;
 
@@ -118,6 +149,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // previous server process (agent died with the old host).
             try { await this.SweepBootRecoveryAsync(this.cts.Token); }
             catch (Exception ex) { this.logger.LogDebug(ex, "CrewQueueWorker boot recovery errored"); }
+            // Boot crash recovery: re-queue items that the previous process
+            // marked failed during its death throes (connection-lost race).
+            try { await this.SweepBootCrashRecoveryAsync(this.cts.Token); }
+            catch (Exception ex) { this.logger.LogDebug(ex, "CrewQueueWorker boot crash recovery errored"); }
             // Boot scan once before the timer.
             try { await this.RunOnceAsync(this.cts.Token); }
             catch (Exception ex) { this.logger.LogDebug(ex, "CrewQueueWorker boot scan errored"); }
@@ -128,6 +163,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        this.shuttingDown = true;
         this.cts?.Cancel();
         if (this.loop is not null)
         {
@@ -199,6 +235,20 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     // ── Boot recovery — requeue picked-up items from previous run ─────────
     private async Task<int> SweepBootRecoveryAsync(CancellationToken ct)
     {
+        // Single-shot per process. The intended caller is StartAsync exactly
+        // once. A second invocation (test factory hosting this DI graph in the
+        // same process as the prod server, future refactor wiring this into
+        // the timer loop, etc.) would race with normal claims and produce a
+        // boot-recovery → claimed → boot-recovery loop on every queue row.
+        if (Interlocked.CompareExchange(ref this.bootRecoveryLatch, 1, 0) != 0)
+        {
+            this.logger.LogWarning(
+                "SweepBootRecoveryAsync called more than once per process — second call ignored. "
+                + "Stack: {Stack}",
+                Environment.StackTrace);
+            return 0;
+        }
+
         using var scope = this.scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
 
@@ -251,6 +301,95 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             if (wi is not null) await this.BroadcastWorkItemChangedAsync(wi, "exec-requeued", ct, db);
         }
         return stale.Count;
+    }
+
+    // ── Boot crash recovery — re-queue WIs marked failed by a prior crash ─
+    /// <summary>
+    /// Handles work items that were marked <c>failed</c> during the previous
+    /// process's death throes (e.g. ChildProcessTracker killed the copilot
+    /// CLI, the JSON-RPC error was caught, and the generic handler marked
+    /// the queue row completed + WI failed before the process exited).
+    /// <para>
+    /// <see cref="SweepBootRecoveryAsync"/> only finds <c>picked-up</c> rows,
+    /// but the crash path completes them. This sweep finds those orphaned
+    /// items and re-queues them so execution resumes with no human action.
+    /// </para>
+    /// </summary>
+    private async Task<int> SweepBootCrashRecoveryAsync(CancellationToken ct)
+    {
+        using var scope = this.scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
+
+        // Find work items stuck in "failed" execution status whose ADO/GH
+        // state is still open (active/proposed) — these are crash victims,
+        // not items that the lead triaged or that reached a terminal verdict.
+        var failedWis = await db.WorkItems
+            .Where(w => w.ExecutionStatus == ExecutionStatuses.Failed
+                        && (w.State == "active" || w.State == "proposed"))
+            .ToListAsync(ct);
+        if (failedWis.Count == 0) return 0;
+
+        var recovered = 0;
+        foreach (var wi in failedWis)
+        {
+            // Check deliverables — only resume if no terminal verdict exists.
+            var delivCandidates = await db.Deliverables.AsNoTracking()
+                .Where(d => d.WorkItemId == wi.Id)
+                .ToListAsync(ct);
+            var lastDeliv = delivCandidates
+                .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
+                .FirstOrDefault();
+
+            // Terminal verdicts (pass/reject) mean the loop finished
+            // naturally — don't re-run.
+            if (lastDeliv is not null && lastDeliv.Verdict is "pass" or "reject")
+                continue;
+
+            // Determine the crew to re-queue into: last deliverable's crew,
+            // or the most recent completed queue row's crew.
+            var crewId = lastDeliv?.CrewId;
+            if (string.IsNullOrEmpty(crewId))
+            {
+                var lastRow = (await db.TaskQueue.AsNoTracking()
+                    .Where(r => r.WorkItemId == wi.Id)
+                    .ToListAsync(ct))
+                    .OrderByDescending(r => r.CompletedAt ?? r.LastUpdatedAt)
+                    .FirstOrDefault();
+                crewId = lastRow?.RoutedToCrewId;
+            }
+            if (string.IsNullOrEmpty(crewId)) continue;
+
+            // Guard: skip if there's already an open queue row (EnqueueAsync
+            // would return the existing one, but we'd still emit confusing events).
+            var openStates = TaskQueueStates.OpenStates.ToList();
+            var hasOpen = await db.TaskQueue.AsNoTracking()
+                .AnyAsync(r => r.WorkItemId == wi.Id && openStates.Contains(r.State), ct);
+            if (hasOpen) continue;
+
+            try
+            {
+                var newRow = await queue.EnqueueAsync(wi.Id, "crew", crewId, ct);
+                this.logger.LogInformation(
+                    "Boot crash recovery: re-queued wi={Wi} into crew={Crew} (lastIter={Iter} verdict={Verdict})",
+                    wi.Id, crewId, lastDeliv?.Iter ?? -1, lastDeliv?.Verdict ?? "(none)");
+                await this.taskChannel.EmitAsync(wi.Id, "task.boot-crash-recovery", new
+                {
+                    queueId = newRow.Id,
+                    crewId,
+                    resumeFromIter = lastDeliv?.Iter,
+                    priorVerdict = lastDeliv?.Verdict,
+                }, crewId: crewId, ct: ct);
+                var refreshed = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == wi.Id, ct);
+                if (refreshed is not null) await this.BroadcastWorkItemChangedAsync(refreshed, "exec-crash-recovered", ct, db);
+                recovered++;
+            }
+            catch (Exception ex)
+            {
+                this.logger.LogWarning(ex, "Boot crash recovery: EnqueueAsync failed for wi={Wi}", wi.Id);
+            }
+        }
+        return recovered;
     }
 
     // ── Sweep 1 — auto-ack timeouts ───────────────────────────────────────
@@ -549,7 +688,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // runs asynchronously — the claim sweep doesn't wait for it.
             // Use CancellationToken.None so the agent isn't cancelled when the
             // sweep loop's token is disposed — the agent manages its own lifetime.
-            _ = Task.Run(() => RunAgentAsync(row.WorkItemId, crewId, picked!, crew, wi, row.SkipSoulPrompt, row.Kind, CancellationToken.None));
+            _ = Task.Run(() => RunAgentAsync(row.WorkItemId, crewId, picked!, crew, wi, row.Kind, CancellationToken.None));
         }
         return (claimed, skips);
     }
@@ -557,7 +696,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     // ── Agent runner kickoff ───────────────────────────────────────────────
     private async Task RunAgentAsync(
         string workItemId, string crewId, string agentId,
-        CrewRow crew, WorkItemRow? wi, bool skipSoulPrompt, string kind, CancellationToken ct)
+        CrewRow crew, WorkItemRow? wi, string kind, CancellationToken ct)
     {
         try
         {
@@ -576,6 +715,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     "Skipping agent run: wi={Wi} already in state={State}, marking completed",
                     workItemId, freshWi.State);
                 await this.CompleteQueueRowAsync(workItemId, ct);
+                await this.SetExecutionStatusAsync(workItemId, ExecutionStatuses.Completed, ct);
                 return;
             }
 
@@ -596,9 +736,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             var invokeMode = string.Equals(invokeModeStr, "cli", StringComparison.OrdinalIgnoreCase)
                 ? AgentInvokeMode.Cli : AgentInvokeMode.Sdk;
 
-            // Soul.md — skip when the queue row has SkipSoulPrompt set (force-restart).
+            // Soul.md — always loaded when the agent has a SoulPath; the
+            // skip-soul-prompt flag was removed (no caller ever set it).
             var soulMd = "";
-            if (!skipSoulPrompt && !string.IsNullOrEmpty(agent?.SoulPath))
+            if (!string.IsNullOrEmpty(agent?.SoulPath))
             {
                 try { soulMd = await File.ReadAllTextAsync(agent.SoulPath, ct); }
                 catch { /* best effort */ }
@@ -609,7 +750,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // surfaced regardless of the agent's persona. Missing template
             // is a soft fallback (empty string) so the rest of the loop
             // still runs; tests cover the loaded path.
-            if (string.Equals(kind, TaskQueueKinds.CommentResponse, StringComparison.OrdinalIgnoreCase) && !skipSoulPrompt)
+            if (string.Equals(kind, TaskQueueKinds.CommentResponse, StringComparison.OrdinalIgnoreCase))
             {
                 var template = await AgentTemplateLoader.LoadAsync(AgentTemplateLoader.CommentResponseFile, ct);
                 if (!string.IsNullOrEmpty(template))
@@ -623,9 +764,26 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // Phase 27 Q27.10 — build-fix runs prepend the build-fix template
             // ahead of soul.md so the must-act rubric is surfaced regardless
             // of the agent's persona.
-            if (string.Equals(kind, TaskQueueKinds.BuildFix, StringComparison.OrdinalIgnoreCase) && !skipSoulPrompt)
+            if (string.Equals(kind, TaskQueueKinds.BuildFix, StringComparison.OrdinalIgnoreCase))
             {
                 var template = await AgentTemplateLoader.LoadAsync(AgentTemplateLoader.BuildFixFile, ct);
+                if (!string.IsNullOrEmpty(template))
+                {
+                    soulMd = string.IsNullOrEmpty(soulMd)
+                        ? template
+                        : template + "\n\n---\n\n" + soulMd;
+                }
+            }
+
+            // Plan tasks — architecture agents doing regular work get the
+            // plan preamble so they produce design docs, not application code.
+            // Detected via explicit kind=plan or agent role=arch on work tasks.
+            var isPlanTask = string.Equals(kind, TaskQueueKinds.Plan, StringComparison.OrdinalIgnoreCase)
+                || (string.Equals(kind, TaskQueueKinds.Work, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(agent?.Role, "arch", StringComparison.OrdinalIgnoreCase));
+            if (isPlanTask)
+            {
+                var template = await AgentTemplateLoader.LoadAsync(AgentTemplateLoader.PlanFile, ct);
                 if (!string.IsNullOrEmpty(template))
                 {
                     soulMd = string.IsNullOrEmpty(soulMd)
@@ -679,18 +837,17 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 }
             }
 
-            // If the resolved path doesn't exist on disk, fall back to a temp
-            // directory so the agent can at least start (e.g. repo not cloned).
+            // If the resolved path doesn't exist on disk, run with no working
+            // directory rather than dumping the agent into %TEMP% (which makes
+            // the SDK auto-index the user's entire temp folder and blow past
+            // the model's prompt-token limit). The agent can still read files
+            // by absolute path; tools that try to write/commit will fail loud.
             if (!string.IsNullOrEmpty(worktreePath) && !Directory.Exists(worktreePath))
             {
                 this.logger.LogWarning(
-                    "Worktree path {Path} does not exist for wi={Wi}; falling back to temp",
+                    "Worktree path {Path} does not exist for wi={Wi}; running with no working directory",
                     worktreePath, workItemId);
-                worktreePath = Path.GetTempPath();
-            }
-            if (string.IsNullOrEmpty(worktreePath))
-            {
-                worktreePath = Path.GetTempPath();
+                worktreePath = string.Empty;
             }
 
             // Worktree feed subscription and prompt emission happen AFTER the
@@ -833,6 +990,26 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // `read_file` to descend into specific artifact files.
                 prompt = await BuildBuildFixPromptAsync(db, workItemId, title, desc, ct);
             }
+            else if (isPlanTask)
+            {
+                var basePrompt = string.IsNullOrWhiteSpace(desc)
+                    ? $"Work item: {title}"
+                    : $"Work item: {title}\n\n{desc}";
+
+                prompt = basePrompt + "\n\n"
+                    + "IMPORTANT: This is a PLAN task. You are producing design artifacts, NOT application code.\n"
+                    + "1. Write the design narrative to `docs/specs/{slug}/plan.md` (derive slug from the work item title).\n"
+                    + "2. Create the WIT tree of phase → stage → step rows as described in the plan-system preamble.\n"
+                    + "3. Commit your design documents with a descriptive commit message.\n"
+                    + "4. Push the branch to the remote with `git push --force-with-lease origin HEAD`.\n"
+                    + "   The remote branch may already exist from a prior run — force-push is expected.\n"
+                    + "5. End your response with a section titled '## Plan Summary' that explains:\n"
+                    + "   - The architectural approach and key design decisions\n"
+                    + "   - The phase → stage → step decomposition rationale\n"
+                    + "   - Out-of-scope items and open questions\n"
+                    + "Do NOT write application code, tests, or modify source files outside `docs/specs/`.\n"
+                    + "You MUST push before finishing — the server creates the PR automatically after you push.";
+            }
             else
             {
                 var basePrompt = string.IsNullOrWhiteSpace(desc)
@@ -854,6 +1031,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     + "You MUST push before finishing — the server creates the PR automatically after you push.";
             }
 
+            // (Operator-note injection moved into the !isResumeDelivery block
+            // below so it runs after isResumeDelivery is computed and only on
+            // the path that actually invokes the agent.)
+
             // Phase 21 — per-task budgets scaled by story points.
             // Wall-clock: 30 min per point. Max turns: 30 turns per point.
             // Falls back to the global defaults when points = 0.
@@ -868,6 +1049,113 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             this.logger.LogInformation(
                 "Starting agent invocation: wi={Wi} agent={Agent} crew={Crew} model={Model} backend={Backend} mode={Mode} worktree={Worktree} budget={Budget}m maxTurns={MaxTurns}",
                 workItemId, agentId, crewId, model, backend, invokeMode, worktreePath, taskBudget?.TotalMinutes ?? 10, taskMaxTurns ?? 0);
+
+            // Resume-delivery short-circuit — when the prior run's iter loop
+            // already produced a verdict=pass deliverable but the post-loop
+            // delivery failed (build gate, push, PR), the operator can re-
+            // dispatch with kind=resume-delivery to skip the gen+eval loop and
+            // re-run only the delivery phase. We synthesize a DeliverableLoopResult
+            // from the last persisted deliverable and fall through to the
+            // existing `if (result.FinalVerdict == "pass")` delivery branch.
+            // Only validation runs here; the actual task.prompt emit + loop
+            // invocation is gated by `isResumeDelivery` below so the agent
+            // SDK is never started.
+            var isResumeDelivery = string.Equals(kind, TaskQueueKinds.ResumeDelivery, StringComparison.OrdinalIgnoreCase);
+            DeliverableLoopResult? resumeResult = null;
+            DeliverableLoopResult? loopResult = null;
+            // Hoisted for the post-loop delivery section (used in both the
+            // normal pass-then-deliver flow and the resume-delivery path).
+            string? evaluatorAgentId = null;
+            string? evaluatorCrewId = null;
+            string loopKind = string.Equals(kind, TaskQueueKinds.CommentResponse, StringComparison.OrdinalIgnoreCase)
+                ? DeliverableKinds.CommentResponse
+                : string.Equals(kind, TaskQueueKinds.BuildFix, StringComparison.OrdinalIgnoreCase)
+                    ? DeliverableKinds.BuildFix
+                    : isPlanTask
+                        ? DeliverableKinds.Plan
+                        : DeliverableKinds.Coding;
+            if (isResumeDelivery)
+            {
+                var allDeliv = await db.Deliverables.AsNoTracking()
+                    .Where(d => d.WorkItemId == workItemId)
+                    .ToListAsync(ct);
+                var lastDeliv = allDeliv
+                    .OrderByDescending(d => d.CreatedAt).ThenByDescending(d => d.Iter)
+                    .FirstOrDefault();
+                if (lastDeliv?.Verdict != "pass")
+                {
+                    this.logger.LogWarning(
+                        "Resume-delivery refused: wi={Wi} last verdict={Verdict} (need 'pass')",
+                        workItemId, lastDeliv?.Verdict ?? "(none)");
+                    await this.taskChannel.EmitAsync(workItemId, "task.failed", new
+                    {
+                        agentId, crewId,
+                        error = $"Resume-delivery refused: last deliverable verdict='{lastDeliv?.Verdict ?? "(none)"}', expected 'pass'.",
+                    }, crewId: crewId, ct: ct);
+                    await this.SetExecutionStatusAsync(workItemId, ExecutionStatuses.Failed, ct);
+                    await this.CompleteQueueRowAsync(workItemId, ct);
+                    return;
+                }
+                this.logger.LogInformation(
+                    "Resume-delivery: wi={Wi} priorIter={Iter} priorScore={Score} — skipping gen+eval loop",
+                    workItemId, lastDeliv.Iter, lastDeliv.Score);
+                await this.taskChannel.EmitAsync(workItemId, "task.delivery-resumed", new
+                {
+                    agentId, crewId,
+                    priorIter = lastDeliv.Iter,
+                    priorScore = lastDeliv.Score,
+                    priorAgent = lastDeliv.GeneratorAgentId,
+                }, crewId: crewId, ct: ct);
+                resumeResult = new DeliverableLoopResult("pass", lastDeliv.Iter, lastDeliv.Score, Array.Empty<long>(), 0m);
+
+                // Pin evaluator from the prior deliverable so the PR body
+                // byline reads "evaluated by {agent}" with the same scorer
+                // that signed off on the iteration loop.
+                evaluatorAgentId = lastDeliv.EvaluatorAgentId;
+                if (!string.IsNullOrEmpty(evaluatorAgentId))
+                {
+                    var evalAgent = await db.Agents.AsNoTracking()
+                        .FirstOrDefaultAsync(a => a.Id == evaluatorAgentId, ct);
+                    evaluatorCrewId = evalAgent?.CrewId;
+                }
+            }
+
+            if (!isResumeDelivery)
+            {
+
+            // Operator-note injection — the /api/work-items/{id}/resume endpoint
+            // emits a `task.operator-note` transcript event when the operator
+            // hits Resume on a non-pass deliverable with a steering note. We
+            // pick up the latest one *since the last deliverable* so stale
+            // notes from earlier pauses don't leak into the current run, and
+            // prepend it to the user prompt so the generator sees it first.
+            var lastDelivAt = await db.Deliverables.AsNoTracking()
+                .Where(d => d.WorkItemId == workItemId)
+                .OrderByDescending(d => d.CreatedAt)
+                .Select(d => (DateTimeOffset?)d.CreatedAt)
+                .FirstOrDefaultAsync(ct);
+            var noteEvt = await db.TaskTranscriptEvents.AsNoTracking()
+                .Where(e => e.WorkItemId == workItemId && e.Kind == "task.operator-note"
+                    && (lastDelivAt == null || e.At > lastDelivAt))
+                .OrderByDescending(e => e.Id)
+                .FirstOrDefaultAsync(ct);
+            if (noteEvt is not null)
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(noteEvt.PayloadJson);
+                    if (doc.RootElement.TryGetProperty("note", out var n)
+                        && n.ValueKind == JsonValueKind.String
+                        && !string.IsNullOrWhiteSpace(n.GetString()))
+                    {
+                        prompt = "OPERATOR NOTE (steering for this iteration — read first):\n"
+                            + n.GetString()!.Trim()
+                            + "\n\n---\n\n"
+                            + prompt;
+                    }
+                }
+                catch { /* best-effort */ }
+            }
 
             // Emit the system + user prompts so the live execution view shows
             // what the agent is being asked to do.
@@ -893,7 +1181,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 ? CommentResponseAllowedTools
                 : string.Equals(kind, TaskQueueKinds.BuildFix, StringComparison.OrdinalIgnoreCase)
                     ? BuildFixAllowedTools
-                    : Array.Empty<string>();
+                    : isPlanTask
+                        ? PlanAllowedTools
+                        : Array.Empty<string>();
 
             var context = new AgentContext(
                 CrewId: crewId,
@@ -908,9 +1198,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 MaxTurns: taskMaxTurns);
 
             // (2) Resolve evaluator crew + agent for the gen-eval loop.
+            // (`evaluatorAgentId`/`evaluatorCrewId` are declared at the top of
+            // the function; the resume-delivery branch fills them from the
+            // last deliverable. Here we resolve them for the normal path.)
             CrewRow? evalCrew = null;
-            string? evaluatorAgentId = null;
-            string? evaluatorCrewId = null;
             if (!string.IsNullOrEmpty(crew.PairedWithCrewId))
             {
                 evalCrew = await db.Crews.AsNoTracking()
@@ -925,9 +1216,37 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // Generator delegate: invokes the agent runner and collects output.
             async Task<GeneratorRunOutput> GeneratorDelegate(int iter, string evalNotes, CancellationToken iterCt)
             {
+                // On a retry, the generator has to know (a) the running chain
+                // of evaluator feedback and (b) what was actually committed
+                // in the prior round. Without (b) we've watched the model
+                // re-discover the codebase from scratch and re-introduce the
+                // exact diff that just got rejected (WI-1035 score collapse
+                // 72→68→35→35→10). The instruction below pins the model to
+                // diff-first inspection before any new edits.
+                // Per-iteration summary requirement — appended on every
+                // round so the deliverable row's GeneratorSummary captures
+                // *this* iteration's work (not cumulative). The Summary tab
+                // in the live-exec UI lists these per iter so the operator
+                // can see what each round actually did.
+                var iterSummaryAddendum =
+                    "\n\n---\n\n"
+                  + $"END-OF-RESPONSE REQUIREMENT (iteration {iter}):\n"
+                  + "End your response with a section titled `## Iteration Summary` covering:\n"
+                  + $"- **What changed this iteration ({iter})** — files touched, functions added/modified, tests added.\n"
+                  + "- **Why** these changes address the work item (and, on retry, the prior evaluator's feedback).\n"
+                  + "- **Notable decisions or trade-offs** — anything the evaluator should know to grade fairly.\n"
+                  + "Keep it 4-8 sentences. This section is parsed and shown verbatim in the Summary tab.";
+
                 var iterPrompt = iter == 1
-                    ? prompt
-                    : $"{prompt}\n\n---\n\nEvaluator feedback from iteration {iter - 1}:\n{evalNotes}";
+                    ? prompt + iterSummaryAddendum
+                    : $"{prompt}\n\n---\n\n{evalNotes}\n"
+                      + "---\n\n"
+                      + "BEFORE editing anything this round:\n"
+                      + "1. Run `git log --oneline -5` and `git diff HEAD~1 --stat -p` to see what the prior iteration actually committed.\n"
+                      + "2. Cross-check the prior diff against the evaluator chain above. If the chain says a specific symbol/file/contract is wrong and the prior diff did not change it, that is the gap to close — not the rest of the change.\n"
+                      + "3. If you find yourself about to write the same code that was just rejected, stop and choose a different approach (different file, different abstraction, different test).\n"
+                      + "Only after you've read the prior diff should you start editing."
+                      + iterSummaryAddendum;
 
                 var invocation = await runner.StartAsync(workItemId, agentId, iterPrompt, context, iterCt);
                 var output = new System.Text.StringBuilder();
@@ -982,9 +1301,11 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     .FirstOrDefaultAsync(a => a.Id == evaluatorAgentId, iterCt);
                 var evalModel = !string.IsNullOrEmpty(evalAgent?.EvaluatorModel)
                     ? evalAgent!.EvaluatorModel
-                    : evalCrew.Model;
+                    : !string.IsNullOrEmpty(evalCrew.EvaluatorModel)
+                        ? evalCrew.EvaluatorModel
+                        : evalCrew.Model;
                 var evalSoul = "";
-                if (!skipSoulPrompt && !string.IsNullOrEmpty(evalAgent?.SoulPath))
+                if (!string.IsNullOrEmpty(evalAgent?.SoulPath))
                 {
                     try { evalSoul = await File.ReadAllTextAsync(evalAgent.SoulPath, iterCt); }
                     catch { /* best effort */ }
@@ -998,6 +1319,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // tools (view, grep, git diff). No generator output is stuffed into
                 // the prompt — the evaluator sees the actual deliverable, not
                 // a parroted narration of how the generator produced it.
+                var wiPointsForScoring = wi?.Points ?? 1;
+                var rejectBelowForScoring = ScoringConstants.RejectThreshold(wiPointsForScoring);
                 var evalSoulForScoring = (string.IsNullOrEmpty(evalSoul) ? "" : evalSoul + "\n\n---\n\n")
                     + "CRITICAL RULES FOR THIS SESSION:\n"
                     + "1. Use tools (view, grep, powershell) to inspect the worktree and understand what changed.\n"
@@ -1006,11 +1329,18 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     + "2. Do NOT modify any files. Do NOT commit, push, or run builds. Read-only inspection only.\n"
                     + "3. End your response with a fenced JSON block:\n"
                     + "```json\n{ \"score\": <0-100>, \"notes\": \"<feedback>\" }\n```\n"
-                    + "4. Score >= 90 = pass, 70-89 = iterate, < 70 = reject.\n"
-                    + "5. Your 'notes' MUST describe WHAT was changed, WHY it fixes the problem, and HOW the fix works.\n"
-                    + "   Do NOT just say 'build clean, tests pass' — that is self-evident.\n"
-                    + "   Focus on the technical substance: which code paths were modified, what error handling was added,\n"
-                    + "   what edge cases are now covered, and whether the approach is correct.\n";
+                    + $"4. Score >= 90 = pass, {rejectBelowForScoring}-89 = iterate, < {rejectBelowForScoring} = reject (adjusted for {wiPointsForScoring}-point work item).\n"
+                    + "5. Your 'notes' MUST be a per-iteration review covering, in order, three labeled parts:\n"
+                    + "   **Improvements this iteration**: what the generator actually changed and what's better\n"
+                    + "      compared to the prior iteration (or vs. the work item if this is iteration 1). Cite\n"
+                    + "      specific files, functions, and tests.\n"
+                    + "   **Still needs improvement**: concrete gaps the next iteration must close — naming files,\n"
+                    + "      symbols, contracts, or behaviors. If unaddressed prior-iteration feedback persists,\n"
+                    + "      call that out explicitly so the operator can see the regression.\n"
+                    + "   **Why this score**: dimension-by-dimension rationale — correctness, quality, tests,\n"
+                    + "      scope, risk — explaining how you arrived at the number.\n"
+                    + "   Do NOT say 'build clean, tests pass' alone — that is self-evident. Use up to ~3500 chars\n"
+                    + "   total across the three parts.\n";
 
                 // Phase 24 Q24.12 / Q24.13 — comment-response runs append the
                 // must-reply rubric note so the evaluator scores against the
@@ -1076,21 +1406,25 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 // The evaluator prompt is lean — just the task context + work item
                 // title. The evaluator uses tools to inspect the worktree itself.
                 var wiTitle = wi?.Title ?? workItemId;
+                var wiPoints = wi?.Points ?? 1;
+                var rejectBelow = ScoringConstants.RejectThreshold(wiPoints);
                 var evalPrompt = "You are a critical code reviewer scoring agent work.\n\n"
                     + "IMPORTANT: You MUST end your response with a fenced JSON block in exactly this format:\n"
                     + "```json\n"
                     + "{ \"score\": <0-100>, \"notes\": \"<your review comment>\" }\n"
                     + "```\n\n"
-                    + "Scoring rubric:\n"
-                    + "- score >= 90: pass (code is correct, tested, ready to merge)\n"
-                    + "- score 70-89: iterate (has issues that need fixing — describe them in notes)\n"
-                    + "- score < 70: reject (fundamentally wrong approach)\n\n"
-                    + "Your 'notes' field will be displayed as the **Evaluator Review** in the PR description.\n"
-                    + "Write it as a review comment that covers:\n"
-                    + "- What the change does and whether the approach is correct\n"
-                    + "- Why this fix addresses the root cause (or doesn't)\n"
-                    + "- Any remaining risks, edge cases, or suggestions\n"
-                    + "Do NOT mention build/test pass — that is assumed. Focus on technical substance.\n\n"
+                    + $"Scoring rubric (adjusted for {wiPoints}-point work item):\n"
+                    + $"- score >= 90: pass (code is correct, tested, ready to merge)\n"
+                    + $"- score {rejectBelow}-89: iterate (has issues that need fixing — describe them in notes)\n"
+                    + $"- score < {rejectBelow}: reject (fundamentally wrong approach)\n\n"
+                    + "Your 'notes' field is the per-iteration evaluator summary shown in the live-exec\n"
+                    + "Summary tab and the PR description. Structure it in three labeled parts:\n"
+                    + "  1. **Improvements this iteration** — what changed and what's better than the prior round.\n"
+                    + "  2. **Still needs improvement** — concrete gaps the next iteration must close (cite files\n"
+                    + "     and symbols). Call out unaddressed prior-iteration feedback explicitly.\n"
+                    + "  3. **Why this score** — dimension-by-dimension rationale (correctness, quality, tests,\n"
+                    + "     scope, risk) so the operator can see how the number was derived.\n"
+                    + "Do NOT say 'build clean, tests pass' alone. Focus on technical substance. ~3500 chars max.\n\n"
                     + $"Review iteration {iter} for work item: **{wiTitle}**\n\n"
                     + "Start by running `git diff HEAD~1 --stat -p` to see what was changed, "
                     + "then read the modified files to verify the approach is correct.";
@@ -1148,14 +1482,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 return new EvaluatorRunOutput(evalOutput.ToString(), evalCost, evalInTok, evalOutTok);
             }
 
-            // Phase 24 Q24.12 — propagate the queue row's kind into the loop so
-            // downstream consumers (cost ledger tagging, transcript events,
-            // evaluator preamble selection) can branch on it.
-            var loopKind = string.Equals(kind, TaskQueueKinds.CommentResponse, StringComparison.OrdinalIgnoreCase)
-                ? DeliverableKinds.CommentResponse
-                : string.Equals(kind, TaskQueueKinds.BuildFix, StringComparison.OrdinalIgnoreCase)
-                    ? DeliverableKinds.BuildFix
-                    : DeliverableKinds.Coding;
+            // Phase 24 Q24.12 — `loopKind` is computed at the top of the
+            // function so downstream consumers (cost ledger tagging, transcript
+            // events, evaluator preamble selection, post-loop delivery) can
+            // branch on it from both the normal and resume-delivery paths.
 
             var loopRequest = new DeliverableLoopRequest(
                 WorkItemId: workItemId,
@@ -1166,9 +1496,23 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 Evaluator: EvaluatorDelegate,
                 MaxTaskBudgetUsd: crew.MaxTaskBudgetUsd,
                 EvaluatorCrewId: evaluatorCrewId,
-                Kind: loopKind);
+                // Scale the iteration cap by points (5 per pt). The runtime
+                // PATCH override on the queue row still wins inside the loop
+                // (DeliverableLoop re-reads MaxIterOverride each round) — this
+                // is just the points-derived default.
+                MaxIterations: ScoringConstants.MaxIterationsForPoints(wi?.Points ?? 0),
+                Kind: loopKind,
+                WorkItemPoints: wi?.Points ?? 1);
 
-            var result = await loop.RunAsync(loopRequest, ct);
+            loopResult = await loop.RunAsync(loopRequest, ct);
+
+            } // end if (!isResumeDelivery)
+
+            // For resume-delivery, the synthesized result was set above before
+            // the prompt emit was skipped. Otherwise `loopResult` was just
+            // assigned by loop.RunAsync. Either way, the rest of the function
+            // reads from `result`.
+            var result = resumeResult ?? loopResult!;
 
             this.logger.LogInformation(
                 "Deliverable loop completed: wi={Wi} verdict={Verdict} score={Score} iters={Iters} cost={Cost}",
@@ -1457,14 +1801,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     var providers = scope.ServiceProvider
                         .GetRequiredService<IEnumerable<Forge.Api.Providers.IForgeProvider>>();
                     var repoKind = !string.IsNullOrEmpty(wiRepo?.Kind) ? wiRepo.Kind : "ado";
-                    string? prRepoName = null;
-                    string? prProjectName = null;
-                    if (wiRepo is not null && repoKind == "ado")
-                    {
-                        prRepoName = ExtractAdoRepoName(wiRepo.RemoteUrl);
-                        if (!string.IsNullOrEmpty(wiRepo.AdoProject))
-                            prProjectName = wiRepo.AdoProject;
-                    }
+                    var (prRepoName, prProjectName) = Forge.Api.Providers.PrCoordsResolver.Resolve(wiRepo, repoKind);
 
                     var provider = providers.FirstOrDefault(p => p.Kind == repoKind && p.IsConfigured)
                         ?? providers.FirstOrDefault(p => p.IsConfigured);
@@ -1772,7 +2109,14 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                 return;
             }
 
-            // Transition queue row: picked-up → completed.
+            // Success — delivery verified above (branch pushed + PR opened).
+            // Transition queue row to completed and explicitly set
+            // ExecutionStatus = Completed. Status must be set explicitly:
+            // CompleteQueueRowAsync no longer touches ExecutionStatus, so a
+            // failure path that completes the queue row but fails to set
+            // Failed (e.g. exception between calls) cannot leak through as
+            // a stale Completed.
+            await this.SetExecutionStatusAsync(workItemId, ExecutionStatuses.Completed, ct);
             await this.CompleteQueueRowAsync(workItemId, ct);
             await this.taskChannel.EmitAsync(workItemId, "task.completed", new
             {
@@ -1788,6 +2132,38 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         catch (ObjectDisposedException) { /* host shutting down — scope already disposed */ }
         catch (Exception ex)
         {
+            // When the host is shutting down, ChildProcessTracker kills the
+            // copilot CLI child process before the CancellationToken (which
+            // is CancellationToken.None for fire-and-forget agent tasks) is
+            // cancelled. The resulting JSON-RPC / transport error surfaces
+            // here as a generic Exception, not OperationCanceledException.
+            // If we mark the queue row completed + WI failed, boot recovery
+            // on the next startup finds nothing to recover and the work item
+            // stays stuck in "failed" forever.
+            //
+            // Fix: when shuttingDown is set (StopAsync ran), leave the queue
+            // row in picked-up. SweepBootRecoveryAsync on the next startup
+            // resets it to queued, and DeliverableLoop seeds iter from the
+            // last persisted deliverable — true resume-from-disk.
+            if (this.shuttingDown)
+            {
+                this.logger.LogInformation(
+                    "Agent interrupted by shutdown: wi={Wi} agent={Agent} crew={Crew} — leaving picked-up for boot recovery",
+                    workItemId, agentId, crewId);
+                try
+                {
+                    await this.taskChannel.EmitAsync(workItemId, "task.interrupted", new
+                    {
+                        agentId,
+                        crewId,
+                        reason = "shutdown",
+                        error = ex.Message,
+                    }, crewId: crewId, ct: CancellationToken.None);
+                }
+                catch { /* best-effort — host may be tearing down */ }
+                return;
+            }
+
             this.logger.LogWarning(ex,
                 "Agent invocation failed: wi={Wi} agent={Agent} crew={Crew}",
                 workItemId, agentId, crewId);
@@ -1818,6 +2194,17 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
     private async Task CompleteQueueRowAsync(string workItemId, CancellationToken ct)
     {
+        // Queue-row completion only. ExecutionStatus is owned by the caller
+        // and must be set explicitly via SetExecutionStatusAsync — the
+        // success path sets Completed AFTER delivery has been verified
+        // (branch pushed + PR opened); failure paths set Failed before
+        // calling this method. Coupling "queue row completed" to
+        // "execution status = completed" let failure paths leak through:
+        // CompleteQueueRowAsync set Completed implicitly, then a follow-up
+        // SetExecutionStatusAsync(Failed) had to overwrite it, and any
+        // exception (scope dispose, ct cancellation) between the two left
+        // the work item showing Completed even though delivery failed and
+        // no PR was created.
         try
         {
             using var scope = this.scopeFactory.CreateScope();
@@ -1833,17 +2220,6 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             {
                 await queue.CompleteAsync(row.Id, ct);
                 await this.BroadcastQueueChangedAsync(row, "completed", ct);
-            }
-
-            // Phase 19 — mark execution as completed (success path;
-            // failure path sets "failed" separately in the catch block).
-            var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == workItemId, ct);
-            if (wi is not null && wi.ExecutionStatus == ExecutionStatuses.Live)
-            {
-                wi.ExecutionStatus = ExecutionStatuses.Completed;
-                wi.UpdatedAt = DateTimeOffset.UtcNow;
-                await db.SaveChangesAsync(ct);
-                await this.BroadcastWorkItemChangedAsync(wi, "exec-completed", ct, db);
             }
         }
         catch (Exception ex)
@@ -2749,20 +3125,4 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         return null;
     }
 
-    /// <summary>
-    /// Extracts the ADO repository name from a remote URL.
-    /// E.g. <c>https://dev.azure.com/org/project/_git/reponame</c> → <c>reponame</c>.
-    /// </summary>
-    private static string? ExtractAdoRepoName(string? remoteUrl)
-    {
-        if (string.IsNullOrEmpty(remoteUrl)) return null;
-        if (!Uri.TryCreate(remoteUrl, UriKind.Absolute, out var uri)) return null;
-        var segs = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        var gitIdx = Array.IndexOf(segs, "_git");
-        if (gitIdx >= 0 && gitIdx + 1 < segs.Length)
-        {
-            return segs[gitIdx + 1].TrimEnd('/');
-        }
-        return null;
-    }
 }

@@ -13,6 +13,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using Forge.Api.Auth;
 using GitHub.Copilot.SDK;
 using Microsoft.Extensions.Options;
 
@@ -42,12 +43,25 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
 {
     public const string ClientName = "AnthropicMessages";
 
+    /// <summary>
+    /// Inactivity threshold for the Copilot SDK session — if no SDK callback
+    /// fires within this window, the session is treated as dead and a Failed
+    /// event is yielded so the worker can surface task.failed and re-queue.
+    /// Real reasoning steps are seconds; multi-minute silence always means
+    /// the JSON-RPC transport died (process crash, socket close, restart).
+    /// </summary>
+    private static readonly TimeSpan InactivitySdkTimeout = TimeSpan.FromMinutes(5);
+
+    /// <summary>How often the watchdog checks the gap. Cheap, so 30 s is fine.</summary>
+    private static readonly TimeSpan InactivitySdkPollInterval = TimeSpan.FromSeconds(30);
+
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
     private readonly IHttpClientFactory http;
     private readonly IModelRegistry models;
     private readonly IOptions<AgentRunnerOptions> options;
     private readonly CopilotServerManager copilotServer;
+    private readonly IAuthService? ghAuth;
     private readonly ILogger<AgentRunnerDispatcher> log;
 
     private readonly ConcurrentDictionary<string, AgentState> agentStates = new();
@@ -58,12 +72,14 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         IModelRegistry models,
         IOptions<AgentRunnerOptions> options,
         CopilotServerManager copilotServer,
+        IEnumerable<IAuthService> authServices,
         ILogger<AgentRunnerDispatcher> log)
     {
         this.http = http;
         this.models = models;
         this.options = options;
         this.copilotServer = copilotServer;
+        this.ghAuth = authServices.FirstOrDefault(a => a.Kind == "github");
         this.log = log;
     }
 
@@ -563,15 +579,37 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         var queue = Channel.CreateUnbounded<AgentEvent>();
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        // Inactivity watchdog state. When the underlying JSON-RPC transport
+        // dies mid-session (server restart, copilot.exe crash, network drop),
+        // the SDK's event subscription stops being invoked but never raises
+        // SessionErrorEvent — done.Task never completes, the consumer foreach
+        // blocks until the wall-clock budget (hours for a multi-point story).
+        // We track the last-event timestamp on every callback invocation and
+        // a watchdog Task surfaces transport death as a Failed event after
+        // InactivitySdkTimeout of silence.
+        long lastEventTicks = DateTimeOffset.UtcNow.Ticks;
+        var wasInactive = false;
+
         CopilotSession? session = null;
         IDisposable? subscription = null;
         CopilotClient? client = null;
         try
         {
+            // Resolve a GitHub token for per-session auth. When connecting to
+            // the shared server via CliUrl the SDK cannot discover auth on its
+            // own — we must supply it explicitly.
+            string? ghToken = null;
+            if (this.ghAuth is not null)
+            {
+                try { ghToken = await this.ghAuth.GetAccessTokenAsync(effectiveCt); }
+                catch (Exception ex) { this.log.LogWarning(ex, "Failed to obtain GitHub token for Copilot session"); }
+            }
+
             var sessionConfig = new SessionConfig
             {
                 Model = context.Model,
                 OnPermissionRequest = PermissionHandler.ApproveAll,
+                GitHubToken = ghToken,
             };
             if (!string.IsNullOrEmpty(context.WorktreePath))
             {
@@ -609,6 +647,10 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
 
             subscription = session!.On(evt =>
             {
+                // Reset the inactivity watchdog before any per-event work.
+                // Any callback invocation — even an event we don't surface —
+                // is proof the transport is alive.
+                Interlocked.Exchange(ref lastEventTicks, DateTimeOffset.UtcNow.Ticks);
                 try
                 {
                     switch (evt)
@@ -694,6 +736,42 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
                 queue.Writer.TryComplete();
             }, CancellationToken.None);
 
+            // Inactivity watchdog. Polls every InactivitySdkPollInterval and,
+            // if no SDK callback has fired for InactivitySdkTimeout, treats
+            // the session as dead — sets failReason and completes `done` so
+            // the consumer loop above unblocks. Real Copilot reasoning steps
+            // are seconds-to-tens-of-seconds; multi-minute silence is always
+            // a dead transport (process crash, JSON-RPC socket close, etc.).
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!effectiveCt.IsCancellationRequested && !done.Task.IsCompleted)
+                    {
+                        try { await Task.Delay(InactivitySdkPollInterval, effectiveCt); }
+                        catch (OperationCanceledException) { return; }
+
+                        var lastUtc = new DateTimeOffset(Interlocked.Read(ref lastEventTicks), TimeSpan.Zero);
+                        var gap = DateTimeOffset.UtcNow - lastUtc;
+                        if (gap > InactivitySdkTimeout)
+                        {
+                            this.log.LogWarning(
+                                "Copilot SDK silent for {Gap} (> {Threshold}) — assuming transport died, completing session",
+                                gap, InactivitySdkTimeout);
+                            wasInactive = true;
+                            failReason = $"Copilot transport silent for {gap.TotalMinutes:0.0}min (>{InactivitySdkTimeout.TotalMinutes:0}min) — assumed dead";
+                            done.TrySetResult();
+                            return;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Watchdog is best-effort; never let it crash the session.
+                    this.log.LogDebug(ex, "Inactivity watchdog errored");
+                }
+            }, CancellationToken.None);
+
             while (true)
             {
                 try
@@ -723,6 +801,15 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             {
                 try { await client.DisposeAsync(); } catch { /* best-effort */ }
             }
+        }
+
+        if (wasInactive)
+        {
+            yield return new AgentEvent(
+                AgentEventKind.Failed,
+                DateTimeOffset.UtcNow,
+                Error: failReason ?? $"Copilot transport silent for >{InactivitySdkTimeout.TotalMinutes:0}min");
+            yield break;
         }
 
         if (timedOut)

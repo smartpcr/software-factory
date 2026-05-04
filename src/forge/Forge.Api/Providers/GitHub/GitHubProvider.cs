@@ -180,16 +180,17 @@ public class GitHubProvider : IForgeProvider
     public async Task<Pr?> GetPullRequestAsync(string id, CancellationToken ct = default)
     {
         if (!this.IsConfigured) return null;
-        var num = id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('#');
+        var (repo, num) = this.ResolvePrCoords(id);
+        if (string.IsNullOrEmpty(repo)) return null;
         try
         {
             var client = this.NewClient();
-            var resp = await client.GetAsync($"repos/{this.options.Repo}/pulls/{num}", ct);
+            var resp = await client.GetAsync($"repos/{repo}/pulls/{num}", ct);
             this.health.RecordResponse(resp);
             if (resp.StatusCode == HttpStatusCode.NotFound) return null;
             resp.EnsureSuccessStatusCode();
             using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-            return GitHubMapper.PrToPr(doc.RootElement, this.options.Repo);
+            return WithScopedId(GitHubMapper.PrToPr(doc.RootElement, repo), repo);
         }
         catch (Exception ex)
         {
@@ -337,7 +338,8 @@ public class GitHubProvider : IForgeProvider
         // service); if neither's around there's nothing to send.
         if (string.IsNullOrWhiteSpace(this.options.Pat) && this.ghAuth is null) yield break;
 
-        var client = this.NewClient();
+        var client = await this.NewClientAsync(ct);
+        if (client is null) yield break;
 
         // Resume from a stored next-page URL when the prior run left a
         // cursor; otherwise build the first request from filters.
@@ -592,7 +594,13 @@ public class GitHubProvider : IForgeProvider
     public async Task<Pr> CreatePullRequestAsync(NewPullRequestRequest req, ProviderCallContext ctx, CancellationToken ct = default)
     {
         this.RequireConfigured();
-        var client = this.NewClient(ctx);
+        var client = await this.NewClientAsync(ctx, ct);
+        var scopedRepo = this.ScopedRepo(req.ProjectName, req.RepositoryName);
+        if (string.IsNullOrEmpty(scopedRepo))
+        {
+            throw new InvalidOperationException(
+                "GitHub PR create needs a repo. Pass GhOwner/GhRepo via NewPullRequestRequest.ProjectName/RepositoryName or set Forge:GitHub:Repo.");
+        }
         var payload = JsonSerializer.Serialize(new
         {
             title = req.Title,
@@ -601,7 +609,7 @@ public class GitHubProvider : IForgeProvider
             @base = req.BaseBranch,
             draft = req.Draft,
         });
-        using var msg = new HttpRequestMessage(HttpMethod.Post, $"repos/{this.options.Repo}/pulls")
+        using var msg = new HttpRequestMessage(HttpMethod.Post, $"repos/{scopedRepo}/pulls")
         {
             Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json"),
         };
@@ -609,7 +617,7 @@ public class GitHubProvider : IForgeProvider
         this.health.RecordResponse(resp);
         resp.EnsureSuccessStatusCode();
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-        return GitHubMapper.PrToPr(doc.RootElement, this.options.Repo);
+        return WithScopedId(GitHubMapper.PrToPr(doc.RootElement, scopedRepo), scopedRepo);
     }
 
     public Task ApprovePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default) =>
@@ -621,11 +629,11 @@ public class GitHubProvider : IForgeProvider
     public async Task CommentOnPullRequestAsync(string id, string body, ProviderCallContext ctx, CancellationToken ct = default)
     {
         this.RequireConfigured();
-        var client = this.NewClient(ctx);
-        var num = id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('#');
+        var client = await this.NewClientAsync(ctx, ct);
+        var (repo, num) = this.ResolvePrCoords(id);
         var payload = JsonSerializer.Serialize(new { body });
         // GitHub treats comments on issue threads of PRs the same as issue comments.
-        using var msg = new HttpRequestMessage(HttpMethod.Post, $"repos/{this.options.Repo}/issues/{num}/comments")
+        using var msg = new HttpRequestMessage(HttpMethod.Post, $"repos/{repo}/issues/{num}/comments")
         {
             Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json"),
         };
@@ -637,18 +645,28 @@ public class GitHubProvider : IForgeProvider
     public async Task<Pr> MergePullRequestAsync(string id, ProviderCallContext ctx, CancellationToken ct = default)
     {
         this.RequireConfigured();
-        var client = this.NewClient(ctx);
-        var num = id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('#');
+        var client = await this.NewClientAsync(ctx, ct);
+        var (repo, num) = this.ResolvePrCoords(id);
         var payload = JsonSerializer.Serialize(new { merge_method = "squash" });
-        using var msg = new HttpRequestMessage(HttpMethod.Put, $"repos/{this.options.Repo}/pulls/{num}/merge")
+        using var msg = new HttpRequestMessage(HttpMethod.Put, $"repos/{repo}/pulls/{num}/merge")
         {
             Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json"),
         };
         var resp = await client.SendAsync(msg, ct);
         this.health.RecordResponse(resp);
         resp.EnsureSuccessStatusCode();
+        // Merge POST succeeded — the PR is merged on GitHub. The post-merge
+        // GET is a nice-to-have for hydrating the full Pr; if it fails
+        // (rate limit, transient 5xx) return a stub with Col=merged so
+        // callers that already treat the merge as successful (e.g. the
+        // story orchestrator) aren't tricked into rolling back.
         var fresh = await this.GetPullRequestAsync(id, ct);
-        return fresh ?? throw new InvalidOperationException($"PR {id} not found after merge");
+        return fresh ?? new Pr(
+            Id: id, Col: "merged", Epic: repo, EpicColor: repo,
+            Workstream: string.Empty, Base: string.Empty, Branch: string.Empty,
+            Title: string.Empty, Author: new Agent("XX", "human", "unknown"),
+            Additions: 0, Deletions: 0, Files: 0, Commits: 0, Age: "—",
+            Build: null, Review: null, Conflicts: false, HumanGate: false);
     }
 
     public async Task<BuildStatus?> TriggerBuildAsync(string branch, ProviderCallContext ctx, CancellationToken ct = default)
@@ -695,10 +713,10 @@ public class GitHubProvider : IForgeProvider
     private async Task PostReviewAsync(string id, string @event, string? body, ProviderCallContext ctx, CancellationToken ct)
     {
         this.RequireConfigured();
-        var client = this.NewClient(ctx);
-        var num = id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('#');
+        var client = await this.NewClientAsync(ctx, ct);
+        var (repo, num) = this.ResolvePrCoords(id);
         var payload = JsonSerializer.Serialize(new { body, @event });
-        using var msg = new HttpRequestMessage(HttpMethod.Post, $"repos/{this.options.Repo}/pulls/{num}/reviews")
+        using var msg = new HttpRequestMessage(HttpMethod.Post, $"repos/{repo}/pulls/{num}/reviews")
         {
             Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json"),
         };
@@ -715,6 +733,62 @@ public class GitHubProvider : IForgeProvider
         }
     }
 
+    /// <summary>
+    /// Resolves the `{owner}/{repo}` URL segment for a per-call PR. Prefers
+    /// the per-request override (story-spawn flow passes RepoRow.GhOwner /
+    /// GhRepo) and falls back to the global Forge:GitHub:Repo singleton.
+    /// </summary>
+    private string ScopedRepo(string? owner, string? name)
+    {
+        if (!string.IsNullOrWhiteSpace(owner) && !string.IsNullOrWhiteSpace(name))
+        {
+            return $"{owner}/{name}";
+        }
+        return this.options.Repo ?? string.Empty;
+    }
+
+    /// <summary>
+    /// Parses a Forge PR id into the GitHub `{owner}/{repo}` + numeric id
+    /// pair we need to build the API URL. Two id formats are accepted:
+    /// <list type="bullet">
+    ///   <item><c>PR owner/repo#42</c> — story-spawn flow encodes the repo
+    ///     into the id at creation so subsequent merge/approve/comment
+    ///     calls (which only receive the id) can route to the correct repo
+    ///     instead of the global singleton.</item>
+    ///   <item><c>PR #42</c> or <c>#42</c> — legacy single-repo flow; falls
+    ///     back to <c>options.Repo</c>.</item>
+    /// </list>
+    /// </summary>
+    private (string Repo, string Num) ResolvePrCoords(string id)
+    {
+        var trimmed = id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase);
+        var hashIdx = trimmed.IndexOf('#');
+        if (hashIdx > 0)
+        {
+            var maybeRepo = trimmed[..hashIdx];
+            // Owner/repo pattern: must have exactly one '/' and no whitespace.
+            if (maybeRepo.Contains('/') && !maybeRepo.Any(char.IsWhiteSpace))
+            {
+                return (maybeRepo, trimmed[(hashIdx + 1)..]);
+            }
+        }
+        var num = trimmed.TrimStart('#');
+        return (this.options.Repo ?? string.Empty, num);
+    }
+
+    /// <summary>
+    /// Rewrites a freshly-mapped <see cref="Pr"/> so its id encodes the
+    /// scoped repo. Story-spawn flow stores this id as the DB row key and
+    /// the orchestrator hands it back to merge/approve/comment — without
+    /// the encoded repo we'd lose the routing target on the next call.
+    /// </summary>
+    private static Pr WithScopedId(Pr pr, string scopedRepo)
+    {
+        if (string.IsNullOrEmpty(scopedRepo) || pr.Id.Contains('/')) return pr;
+        var num = pr.Id.Replace("PR ", string.Empty, StringComparison.OrdinalIgnoreCase).TrimStart('#');
+        return pr with { Id = $"PR {scopedRepo}#{num}" };
+    }
+
     private HttpClient NewClient(ProviderCallContext ctx)
     {
         // Per-call user PAT wins (e.g. write actions where the calling user's
@@ -726,6 +800,25 @@ public class GitHubProvider : IForgeProvider
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("token", ctx.UserPat);
         }
         return client;
+    }
+
+    /// <summary>
+    /// Async variant — falls back to the gh-CLI auth service when neither
+    /// <see cref="ProviderCallContext.UserPat"/> nor <see cref="GitHubOptions.Pat"/>
+    /// is set. The synchronous <see cref="NewClient(ProviderCallContext)"/>
+    /// can't await the gh CLI, so write-side calls (PR create/merge/approve/
+    /// comment) now go through this overload — without it the story-spawn
+    /// orchestrator hits 401 against private repos when the operator authed
+    /// via gh instead of dropping a PAT in config.
+    /// </summary>
+    private async Task<HttpClient> NewClientAsync(ProviderCallContext ctx, CancellationToken ct)
+    {
+        if (!string.IsNullOrEmpty(ctx.UserPat))
+        {
+            return this.NewClient(ctx.UserPat);
+        }
+        var token = await this.ResolveTokenAsync(ct);
+        return this.NewClient(token);
     }
 
     private HttpClient NewClient(string? token = null)

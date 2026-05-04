@@ -40,16 +40,39 @@ public static class StoriesEndpoints
         return bool.TryParse(raw, out var v) ? v : true;
     }
 
+    /// <summary>
+    /// When <c>true</c> (default), POST /spawn awaits the orchestrator drive
+    /// before returning so callers can read <c>PlanPrId</c> in the response.
+    /// Tests rely on this. When <c>false</c> (production via
+    /// <c>Forge:Stories:SpawnDriveInline=false</c> in appsettings.json), the
+    /// drive is fire-and-forget — the response returns 201 immediately and
+    /// the architect crew runs in the background. Required because real-LLM
+    /// architect runs take many minutes, which would otherwise freeze the
+    /// spawn-button on the UI. <see cref="SpawnDependencyScheduler"/> ticks
+    /// every 15 s and will re-drive the spawn if the background task falls
+    /// over.
+    /// </summary>
+    private static bool SpawnDriveInline(HttpContext ctx)
+    {
+        var cfg = ctx.RequestServices.GetService<IConfiguration>();
+        var raw = cfg?["Forge:Stories:SpawnDriveInline"];
+        if (string.IsNullOrEmpty(raw)) return true;
+        return bool.TryParse(raw, out var v) ? v : true;
+    }
+
     public static WebApplication MapStoriesEndpoints(this WebApplication app)
     {
         var grp = app.MapGroup("/api/stories").WithTags("Stories");
 
         grp.MapPost("/{storyId}/spawn", Spawn).WithName("SpawnStory");
+        grp.MapGet("/spawns", ListSpawns).WithName("ListStorySpawns");
         grp.MapGet("/{storyId}/spawn", GetSpawn).WithName("GetStorySpawn");
         grp.MapPatch("/{storyId}/spawn/phase", AdvancePhase).WithName("AdvanceStoryPhase");
         grp.MapPost("/{storyId}/spawn/decompose", SubmitDecomposition).WithName("SubmitStoryDecomposition");
         grp.MapPost("/{storyId}/spawn/decompose/approve", ApproveDecomposition).WithName("ApproveStoryDecomposition");
         grp.MapGet("/{storyId}/spawn/artifacts", GetArtifacts).WithName("GetStoryArtifacts");
+        grp.MapGet("/{storyId}/spawn/artifacts/{key}", GetArtifactContent).WithName("GetStoryArtifactContent");
+        grp.MapGet("/{storyId}/spawn/artifacts/{key}/iterations", GetArtifactIterations).WithName("GetStoryArtifactIterations");
 
         return app;
     }
@@ -95,35 +118,62 @@ public static class StoriesEndpoints
                 statusCode: 409);
         }
 
-        // 28.2 — story must exist (work_items table is the local mirror; for
-        // tests we accept any non-empty storyId, but if a row exists we read
-        // its title).
-        var wi = await db.WorkItems.AsNoTracking()
-            .FirstOrDefaultAsync(w => w.Id == storyId);
-        if (wi is null)
+        // 28.2 — story must exist. Three sources accepted:
+        //   1) ProductStoryRow (locally-authored story; description carries the
+        //      architect-agent user prompt and points size the work).
+        //   2) WorkItemRow by id (e.g. "WI-12345" mirroring an ADO Feature/Epic).
+        //   3) WorkItemRow by numeric ADO provider ref (bare "12345" / "WI-12345").
+        string title;
+        string description = string.Empty;
+        int points = 0;
+        string? defaultRepoId = null;
+
+        var ps = await db.ProductStories.AsNoTracking().FirstOrDefaultAsync(s => s.Id == storyId);
+        if (ps is not null)
         {
-            // Try a numeric provider-ref lookup so callers can pass the bare ADO id.
-            if (int.TryParse(storyId.Replace("WI-", string.Empty, StringComparison.OrdinalIgnoreCase), out var providerRef))
-            {
-                wi = await db.WorkItems.AsNoTracking()
-                    .FirstOrDefaultAsync(w => w.ProviderRef == providerRef);
-            }
+            title = ps.Name;
+            description = ps.Description ?? string.Empty;
+            points = ps.Points;
+            // ProductStoryRow is product-scoped, not repo-scoped; caller must
+            // pick a repo via SpawnRequest.RepoId. defaultRepoId stays null.
+        }
+        else
+        {
+            var wi = await db.WorkItems.AsNoTracking()
+                .FirstOrDefaultAsync(w => w.Id == storyId);
             if (wi is null)
             {
-                return Results.Problem(title: $"Story {storyId} not found", statusCode: 404);
+                if (int.TryParse(storyId.Replace("WI-", string.Empty, StringComparison.OrdinalIgnoreCase), out var providerRef))
+                {
+                    wi = await db.WorkItems.AsNoTracking()
+                        .FirstOrDefaultAsync(w => w.ProviderRef == providerRef);
+                }
+                if (wi is null)
+                {
+                    return Results.Problem(title: $"Story {storyId} not found", statusCode: 404);
+                }
             }
+            title = wi.Title;
+            description = wi.DescriptionMd ?? string.Empty;
+            points = wi.Points;
+            defaultRepoId = wi.RepoId;
         }
 
-        var repoId = req?.RepoId ?? wi.RepoId;
+        var repoId = req?.RepoId ?? defaultRepoId;
         var now = DateTimeOffset.UtcNow;
+        var safeStoryId = StoryPaths.Safe(storyId);
         var spawn = new StorySpawnRow
         {
-            Id = $"spawn-{storyId}",
+            Id = $"spawn-{safeStoryId}",
             StoryId = storyId,
-            StoryTitle = wi.Title,
+            StoryTitle = title,
+            StoryDescription = description,
+            StoryPoints = points,
             RepoId = repoId,
             Phase = StorySpawnPhases.Plan,
-            PlanBranch = $"story/{storyId}/plan",
+            // Branch must use the sanitized id — `:` is illegal in Windows
+            // worktree paths and crashes the orchestrator on commit.
+            PlanBranch = $"story/{safeStoryId}/plan",
             CreatedAt = now,
             UpdatedAt = now,
         };
@@ -131,14 +181,47 @@ public static class StoriesEndpoints
         await db.SaveChangesAsync();
 
         await hub.Clients.All.SendAsync("story-spawn.changed", new { kind = "created", spawn = ToContract(spawn) });
+
         // forge_implementation.md Phase 28 — kick the orchestrator so the
-        // architect crew can produce the plan artifacts + open the plan PR
-        // before this request returns.
-        if (OrchestratorEnabled(ctx)) await orchestrator.DriveAsync(storyId, ctx.RequestAborted);
-        // Re-read so the response carries the orchestrator-mutated state
-        // (PlanPrId, QaBranch).
-        var refreshed = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == storyId);
-        return Results.Created($"/api/stories/{storyId}/spawn", ToContract(refreshed));
+        // architect crew can produce the plan artifacts + open the plan PR.
+        // Production runs fire-and-forget (Forge:Stories:SpawnDriveInline=false
+        // in appsettings.json) because real-LLM architect runs take many
+        // minutes; tests keep the inline await so PlanPrId is populated by
+        // the time the response is read.
+        if (OrchestratorEnabled(ctx))
+        {
+            if (SpawnDriveInline(ctx))
+            {
+                await orchestrator.DriveAsync(storyId, ctx.RequestAborted);
+                var refreshed = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == storyId);
+                return Results.Created($"/api/stories/{storyId}/spawn", ToContract(refreshed));
+            }
+
+            // Background drive — must NOT use ctx.RequestAborted (the HTTP
+            // request ends as soon as we return). StorySpawnOrchestrator is
+            // a singleton, so capturing it here is safe across the request
+            // boundary. Failures are logged inside DriveAsync; the
+            // SpawnDependencyScheduler will re-drive on the next 15 s tick.
+            _ = Task.Run(async () =>
+            {
+                try { await orchestrator.DriveAsync(storyId, CancellationToken.None); }
+                catch { /* swallowed — orchestrator already logs */ }
+            });
+        }
+        return Results.Created($"/api/stories/{storyId}/spawn", ToContract(spawn));
+    }
+
+    private static async Task<IResult> ListSpawns(ForgeDbContext db, [FromQuery] string? phase)
+    {
+        var q = db.StorySpawns.AsNoTracking().AsQueryable();
+        if (!string.IsNullOrEmpty(phase) && !string.Equals(phase, "all", StringComparison.OrdinalIgnoreCase))
+        {
+            q = q.Where(s => s.Phase == phase);
+        }
+        // SQLite can't ORDER BY DateTimeOffset — materialize then sort client-side.
+        var rows = await q.ToListAsync();
+        rows.Sort((a, b) => b.UpdatedAt.CompareTo(a.UpdatedAt));
+        return Results.Ok(rows.Select(ToContract).ToList());
     }
 
     private static async Task<IResult> GetSpawn(string storyId, ForgeDbContext db)
@@ -155,19 +238,63 @@ public static class StoriesEndpoints
             .OrderBy(w => w.Sort)
             .ToListAsync();
 
+        var wsIds = workstreams.Select(w => w.Id).ToList();
+
         var deps = await db.WorkstreamDeps.AsNoTracking()
-            .Where(d => workstreams.Select(w => w.Id).Contains(d.WorkstreamId))
+            .Where(d => wsIds.Contains(d.WorkstreamId))
             .ToListAsync();
 
-        var wsByStatus = workstreams.Select(w => new
+        // Per-workstream live runtime data: every deliverable in the
+        // CrewStoryArtifactStrategy gen/eval loop is keyed on workstream.Id
+        // (see CrewStoryArtifactStrategy.ProduceWorkstreamChangesAsync — the
+        // workItemId argument is the workstream id). So the deliverables
+        // table is the source of truth for "what's the engineer pair doing
+        // right now" per workstream — no per-workstream work_items row
+        // required.
+        var deliverables = await db.Deliverables.AsNoTracking()
+            .Where(d => wsIds.Contains(d.WorkItemId))
+            .ToListAsync();
+        var deliverablesByWs = deliverables
+            .GroupBy(d => d.WorkItemId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(d => d.CreatedAt).ToList(), StringComparer.OrdinalIgnoreCase);
+
+        // Cost ledger is keyed on TaskId — the loop writes the workstream id
+        // there too. Sum once per ws to avoid per-card queries.
+        var costByWs = await db.AgentUsage.AsNoTracking()
+            .Where(u => u.TaskId != null && wsIds.Contains(u.TaskId))
+            .GroupBy(u => u.TaskId!)
+            .Select(g => new { TaskId = g.Key, Cost = g.Sum(x => x.CostUsd) })
+            .ToListAsync();
+        var costByWsMap = costByWs.ToDictionary(x => x.TaskId, x => x.Cost, StringComparer.OrdinalIgnoreCase);
+
+        var wsByStatus = workstreams.Select(w =>
         {
-            id = w.Id,
-            name = w.Name,
-            branch = w.Branch,
-            status = ResolveWorkstreamStatus(w.Id, w.Status, deps, workstreams, db),
-            cards = StoriesJsonHelpers.Deserialize(w.CardsJson),
-            prs = StoriesJsonHelpers.Deserialize(w.PrsJson),
-            deps = deps.Where(d => d.WorkstreamId == w.Id).Select(d => d.DependsOnId).ToArray(),
+            var wsAgents = StoriesJsonHelpers.Deserialize(w.AgentsJson);
+            var wsDeliverables = deliverablesByWs.TryGetValue(w.Id, out var ds) ? ds : new List<DeliverableRow>();
+            var latest = wsDeliverables.FirstOrDefault();
+            var wsCost = costByWsMap.TryGetValue(w.Id, out var c) ? c : 0m;
+            return new
+            {
+                id = w.Id,
+                name = w.Name,
+                branch = w.Branch,
+                status = ResolveWorkstreamStatus(w.Id, w.Status, deps, workstreams, db),
+                cards = StoriesJsonHelpers.Deserialize(w.CardsJson),
+                prs = StoriesJsonHelpers.Deserialize(w.PrsJson),
+                deps = deps.Where(d => d.WorkstreamId == w.Id).Select(d => d.DependsOnId).ToArray(),
+                // ── live runtime fields ──────────────────────────────────
+                agents = wsAgents,
+                iter = wsDeliverables.Count,
+                latestScore = (int?)(latest?.Score),
+                latestVerdict = latest?.Verdict,
+                latestGenAgentId = latest?.GeneratorAgentId,
+                latestEvalAgentId = latest?.EvaluatorAgentId,
+                lastActiveAt = latest?.CreatedAt.ToString("O"),
+                costUsd = (double)wsCost,
+                commits = w.Commits,
+                ahead = w.Ahead,
+                behind = w.Behind,
+            };
         }).ToArray();
 
         return Results.Ok(new
@@ -483,7 +610,8 @@ public static class StoriesEndpoints
         foreach (var w in req.Workstreams)
         {
             var slug = titleToSlug[w.Title];
-            var wsId = $"ws-{spawn.StoryId}-{slug}".ToLowerInvariant();
+            var safeStory = StoryPaths.Safe(spawn.StoryId);
+            var wsId = $"ws-{safeStory}-{slug}".ToLowerInvariant();
             createdMap[slug] = wsId;
             var row = new WorkstreamRow
             {
@@ -491,7 +619,7 @@ public static class StoriesEndpoints
                 Sort = ++maxSort,
                 RepoId = spawn.RepoId,
                 Name = w.Title,
-                Branch = $"ws/{spawn.StoryId}/{slug}",
+                Branch = $"ws/{safeStory}/{slug}",
                 Base = "main",
                 Epic = spawn.StoryId,
                 Status = "planning",
@@ -587,16 +715,17 @@ public static class StoriesEndpoints
             .SelectMany(w => StoriesJsonHelpers.Deserialize(w.PrsJson) ?? new List<string>())
             .ToArray();
 
+        var safeStoryId = StoryPaths.Safe(storyId);
         var planArtifacts = new[]
         {
-            $"docs/stories/{storyId}/tech-spec.md",
-            $"docs/stories/{storyId}/architecture.md",
-            $"docs/stories/{storyId}/implementation-plan.md",
-            $"docs/stories/{storyId}/e2e-scenarios.md",
+            $"docs/stories/{safeStoryId}/tech-spec.md",
+            $"docs/stories/{safeStoryId}/architecture.md",
+            $"docs/stories/{safeStoryId}/implementation-plan.md",
+            $"docs/stories/{safeStoryId}/e2e-scenarios.md",
         };
         var qaArtifacts = string.IsNullOrEmpty(spawn.QaPrId)
             ? Array.Empty<string>()
-            : new[] { $"tests/Features/{storyId}/" };
+            : new[] { $"tests/Features/{safeStoryId}/" };
 
         return Results.Ok(new
         {
@@ -629,11 +758,215 @@ public static class StoriesEndpoints
         });
     }
 
+    /// <summary>
+    /// Serve the actual markdown body for a single plan artifact. The plan
+    /// PR has merged the four documents to <c>docs/stories/{safeStoryId}/</c>
+    /// on main; this endpoint reads them straight off the operator's local
+    /// working tree (same files git would show on `git checkout main`).
+    ///
+    /// <para>Valid keys: architecture | tech-spec | implementation-plan |
+    /// e2e-scenarios | decomposition. The first four read MD files from disk;
+    /// <c>decomposition</c> returns the spawn's stored decomposition JSON
+    /// formatted as a markdown-friendly preview.</para>
+    /// </summary>
+    private static async Task<IResult> GetArtifactContent(string storyId, string key, ForgeDbContext db)
+    {
+        var spawn = await db.StorySpawns.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "architecture", "tech-spec", "implementation-plan", "e2e-scenarios", "decomposition",
+        };
+        if (!allowed.Contains(key))
+        {
+            return Results.Problem(title: $"Unknown artifact key '{key}'", statusCode: 400);
+        }
+
+        // Decomposition has no on-disk MD — surface the stored JSON so the
+        // UI can render the workstream breakdown the same way as a doc.
+        if (string.Equals(key, "decomposition", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Ok(new
+            {
+                key,
+                path = (string?)null,
+                content = spawn.DecompositionJson ?? string.Empty,
+                lastModifiedAt = (string?)null,
+                exists = !string.IsNullOrEmpty(spawn.DecompositionJson),
+            });
+        }
+
+        var safeStoryId = StoryPaths.Safe(storyId);
+        var relPath = $"docs/stories/{safeStoryId}/{key.ToLowerInvariant()}.md";
+        var repoRoot = ForgeSeed.FindRepoRoot();
+        var fullPath = Path.Combine(repoRoot, relPath.Replace('/', Path.DirectorySeparatorChar));
+
+        if (File.Exists(fullPath))
+        {
+            var content = await File.ReadAllTextAsync(fullPath);
+            var lastModified = File.GetLastWriteTimeUtc(fullPath).ToString("O");
+            return Results.Ok(new
+            {
+                key,
+                path = relPath,
+                content,
+                lastModifiedAt = lastModified,
+                exists = true,
+                source = "main",
+            });
+        }
+
+        // File isn't on main yet — check the plan branch (architect crew has
+        // committed but PR not merged). git show returns the file as it
+        // exists on the branch tip without mutating the working tree.
+        if (!string.IsNullOrEmpty(spawn.PlanBranch))
+        {
+            var fromBranch = await TryGitShowAsync(repoRoot, spawn.PlanBranch!, relPath);
+            if (fromBranch is not null)
+            {
+                return Results.Ok(new
+                {
+                    key,
+                    path = relPath,
+                    content = fromBranch,
+                    lastModifiedAt = (string?)null,
+                    exists = true,
+                    source = $"branch:{spawn.PlanBranch}",
+                });
+            }
+        }
+
+        // Not on main, not on plan branch — plan hasn't produced this file
+        // yet. Return exists=false so the UI can render an empty state.
+        return Results.Ok(new
+        {
+            key,
+            path = relPath,
+            content = string.Empty,
+            lastModifiedAt = (string?)null,
+            exists = false,
+            source = (string?)null,
+        });
+    }
+
+    /// <summary>
+    /// `git show {branch}:{path}` against the operator's local clone. Tries
+    /// the local branch first, then <c>origin/{branch}</c> — the orchestrator
+    /// commits + pushes to origin without checking the branch out locally,
+    /// so the local-only ref usually doesn't exist. Returns null when neither
+    /// ref resolves the path (treated as "not produced yet" by callers).
+    /// </summary>
+    private static async Task<string?> TryGitShowAsync(string repoRoot, string branch, string relPath)
+    {
+        return await TryGitShowOneAsync(repoRoot, branch, relPath)
+            ?? await TryGitShowOneAsync(repoRoot, $"origin/{branch}", relPath);
+    }
+
+    private static async Task<string?> TryGitShowOneAsync(string repoRoot, string refSpec, string relPath)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "git",
+                WorkingDirectory = repoRoot,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            psi.ArgumentList.Add("show");
+            psi.ArgumentList.Add($"{refSpec}:{relPath}");
+            using var p = System.Diagnostics.Process.Start(psi);
+            if (p is null) return null;
+            var stdout = await p.StandardOutput.ReadToEndAsync();
+            await p.WaitForExitAsync();
+            return p.ExitCode == 0 ? stdout : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Per-doc iteration history. Each plan file's gen↔eval loop writes one
+    /// <see cref="DeliverableRow"/> per iteration keyed on the synthetic
+    /// workItemId <c>plan-doc:{spawn.Id}:{filename}</c> (matches the convention
+    /// in <see cref="Forge.Api.Services.Stories.CrewStoryArtifactStrategy.ProducePlanFileAsync"/>).
+    /// Decomposition has no per-doc iterations — returns empty.
+    /// </summary>
+    private static async Task<IResult> GetArtifactIterations(string storyId, string key, ForgeDbContext db)
+    {
+        var spawn = await db.StorySpawns.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        if (string.Equals(key, "decomposition", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Ok(new
+            {
+                key,
+                workItemId = (string?)null,
+                iterations = Array.Empty<object>(),
+                totalCostUsd = 0.0,
+            });
+        }
+
+        var fileName = $"{key.ToLowerInvariant()}.md";
+        var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
+
+        // SQLite can't ORDER BY DateTimeOffset directly. Order by Iter on the
+        // server (cheap index hit) and then re-sort by CreatedAt on the client
+        // for the rare same-iter tiebreak case.
+        var rows = (await db.Deliverables.AsNoTracking()
+            .Where(d => d.WorkItemId == workItemId)
+            .OrderBy(d => d.Iter)
+            .ToListAsync())
+            .OrderBy(d => d.Iter)
+            .ThenBy(d => d.CreatedAt)
+            .ToList();
+
+        var totalCost = await db.AgentUsage.AsNoTracking()
+            .Where(u => u.TaskId == workItemId)
+            .SumAsync(u => (double?)u.CostUsd) ?? 0.0;
+
+        var iterations = rows.Select(d => new
+        {
+            id = d.Id,
+            iter = d.Iter,
+            score = d.Score,
+            verdict = d.Verdict,
+            generatorAgentId = d.GeneratorAgentId,
+            evaluatorAgentId = d.EvaluatorAgentId,
+            generatorSummary = d.GeneratorSummary,
+            notes = d.Notes,
+            genCostUsd = d.GenCostUsd,
+            evalCostUsd = d.EvalCostUsd,
+            judgeAgentId = d.JudgeAgentId,
+            judgeScore = d.JudgeScore,
+            judgeNotes = d.JudgeNotes,
+            createdAt = d.CreatedAt.ToString("O"),
+        });
+
+        return Results.Ok(new
+        {
+            key,
+            workItemId,
+            iterations,
+            totalCostUsd = totalCost,
+        });
+    }
+
     private static object ToContract(StorySpawnRow row) => new
     {
         id = row.Id,
         storyId = row.StoryId,
         storyTitle = row.StoryTitle,
+        storyDescription = row.StoryDescription,
+        storyPoints = row.StoryPoints,
         repoId = row.RepoId,
         phase = row.Phase,
         planBranch = row.PlanBranch,

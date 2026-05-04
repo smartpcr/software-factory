@@ -50,7 +50,8 @@ public class ProviderSyncService : BackgroundService
         }
 
         // Stagger the initial run so multiple providers don't fire at the same instant.
-        await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken).ConfigureAwait(false);
+        try { await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) { return; }
 
         while (!stoppingToken.IsCancellationRequested)
         {

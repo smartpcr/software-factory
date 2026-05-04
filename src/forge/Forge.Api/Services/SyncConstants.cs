@@ -16,6 +16,9 @@ public static class SyncConstants
     /// <summary>ADO first sync pulls items changed in the last 30 days.</summary>
     public const int AdoInitialWindowDays = 30;
 
+    /// <summary>GitHub first sync pulls items updated in the last 30 days; mirrors ADO so providers behave consistently.</summary>
+    public const int GithubInitialWindowDays = 30;
+
     /// <summary>ADO hard cap: 200 IDs per <c>_apis/wit/workitems?ids=…</c> request (Q23.6).</summary>
     public const int AdoMaxIdsPerWorkItemBatch = 200;
 
@@ -25,8 +28,8 @@ public static class SyncConstants
     /// <summary>GitHub issues endpoint page size (Q23.6).</summary>
     public const int GithubPerPage = 100;
 
-    /// <summary>Default sync interval in seconds — 20 minutes (Q23.1).</summary>
-    public const int WorkItemSyncIntervalSeconds = 1200;
+    /// <summary>Default sync interval in seconds — 2 hours. Per-repo overrides land via <c>RepoRow.WorkItemSyncIntervalSeconds</c>.</summary>
+    public const int WorkItemSyncIntervalSeconds = 7200;
 
     /// <summary>Maximum repos syncing in parallel per tick (Q23.2).</summary>
     public const int WorkItemSyncMaxParallel = 4;
@@ -46,8 +49,8 @@ public static class SyncConstants
     /// <summary>Phase 23.5 — sleep until <c>X-RateLimit-Reset</c> when remaining drops below this number (Q23.6).</summary>
     public const int GithubRateLimitFloor = 100;
 
-    /// <summary>Phase 24 — base tick interval for the PR sync loop (20 min).</summary>
-    public const int PrSyncIntervalSeconds = 1200;
+    /// <summary>Phase 24 — base tick interval for the PR sync loop (2 hr). Per-repo overrides land via <c>RepoRow.PrSyncIntervalSeconds</c>.</summary>
+    public const int PrSyncIntervalSeconds = 7200;
 
     /// <summary>Phase 24 — max parallel PR sync operations per tick.</summary>
     public const int PrSyncMaxParallel = 8;
@@ -57,8 +60,8 @@ public static class SyncConstants
 
     // ─── forge_implementation.md Phase 27 — build sync ────────────────────
 
-    /// <summary>Phase 27 Q27.1 — build sync tick interval, default 20 min.</summary>
-    public const int BuildSyncIntervalSeconds = 1200;
+    /// <summary>Phase 27 Q27.1 — build sync tick interval, default 2 hr. Per-repo overrides land via <c>RepoRow.BuildSyncIntervalSeconds</c>.</summary>
+    public const int BuildSyncIntervalSeconds = 7200;
 
     /// <summary>Phase 27 Q27.1 — max parallel build syncs per tick.</summary>
     public const int BuildSyncMaxParallel = 8;

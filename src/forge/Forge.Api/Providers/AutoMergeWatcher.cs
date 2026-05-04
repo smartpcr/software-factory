@@ -52,7 +52,8 @@ public class AutoMergeWatcher : BackgroundService
             return;
         }
         // Stagger first run so we don't race the seed/sync round.
-        await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken).ConfigureAwait(false);
+        try { await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) { return; }
         while (!stoppingToken.IsCancellationRequested)
         {
             await this.RunOnceAsync(stoppingToken);

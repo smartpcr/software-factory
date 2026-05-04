@@ -3,6 +3,7 @@ import type {
   AgentLevelHistoryEntry,
   Card,
   ColumnId,
+  CostSummary,
   Crew,
   CrewHistoryEntry,
   CrewPayroll,
@@ -75,6 +76,20 @@ export interface StorySpawnWorkstreamSummary {
   cards: string[];
   prs: string[];
   deps: string[];
+  /** Phase 28+ — live runtime fields surfaced from the deliverables /
+   *  agent_usage tables. All optional so older clients keep working and
+   *  workstreams that haven't claimed yet (planning) report zeroes. */
+  agents?: string[];
+  iter?: number;
+  latestScore?: number | null;
+  latestVerdict?: string | null;
+  latestGenAgentId?: string | null;
+  latestEvalAgentId?: string | null;
+  lastActiveAt?: string | null;
+  costUsd?: number;
+  commits?: number;
+  ahead?: number;
+  behind?: number;
 }
 
 export interface StorySpawnDetail {
@@ -101,6 +116,7 @@ export interface StorySpawnArtifacts {
 }
 
 export interface WorkItemListFilters {
+  productId?: string;
   repoId?: string;
   iterationRef?: string;
   track?: WorkItemTrack;
@@ -425,12 +441,42 @@ export const forgeApi = {
   },
 
   /** POST /api/products/{productId}/stories — create a story under a product. */
-  async createProductStory(productId: string, req: { name: string; id?: string; status?: string }): Promise<ProductStory> {
+  async createProductStory(
+    productId: string,
+    req: { name: string; id?: string; status?: string; description?: string; points?: number },
+  ): Promise<ProductStory> {
     return fetchJson<ProductStory>(`/api/products/${encodeURIComponent(productId)}/stories`, {
       method: 'POST',
       body: JSON.stringify(req),
       headers: { 'X-Forge-User': writerHeader() },
     });
+  },
+
+  /** PATCH /api/products/{productId}/stories/{storyId} — edit a story's name / desc / points / status. */
+  async updateProductStory(
+    productId: string,
+    storyId: string,
+    body: { name?: string; status?: string; description?: string; points?: number },
+  ): Promise<ProductStory> {
+    return fetchJson<ProductStory>(
+      `/api/products/${encodeURIComponent(productId)}/stories/${encodeURIComponent(storyId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+        headers: { 'X-Forge-User': writerHeader() },
+      },
+    );
+  },
+
+  /** DELETE /api/products/{productId}/stories/{storyId} — delete a story. */
+  async deleteProductStory(productId: string, storyId: string): Promise<void> {
+    await fetchJson<unknown>(
+      `/api/products/${encodeURIComponent(productId)}/stories/${encodeURIComponent(storyId)}`,
+      {
+        method: 'DELETE',
+        headers: { 'X-Forge-User': writerHeader() },
+      },
+    );
   },
 
   /** POST /api/cards/{id}/comment. */
@@ -716,6 +762,12 @@ export const forgeApi = {
     });
   },
 
+  /** GET /api/stories/spawns — list all story spawns (optionally filtered by phase). */
+  async listStorySpawns(phase?: string): Promise<StorySpawn[]> {
+    const qs = phase ? `?phase=${encodeURIComponent(phase)}` : '';
+    return fetchJson<StorySpawn[]>(`/api/stories/spawns${qs}`);
+  },
+
   /** GET /api/stories/{storyId}/spawn — full spawn state + child workstreams. */
   async getStorySpawn(storyId: string): Promise<StorySpawnDetail> {
     return fetchJson<StorySpawnDetail>(`/api/stories/${encodeURIComponent(storyId)}/spawn`);
@@ -756,6 +808,50 @@ export const forgeApi = {
   async getStoryArtifacts(storyId: string): Promise<StorySpawnArtifacts> {
     return fetchJson<StorySpawnArtifacts>(
       `/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts`);
+  },
+
+  /** GET /api/stories/{storyId}/spawn/artifacts/{key} — markdown body for one
+   *  plan artifact (architecture | tech-spec | implementation-plan | e2e-scenarios)
+   *  or the raw decomposition JSON. Falls back to the plan branch via git when
+   *  the file isn't on main yet. */
+  async getStoryArtifactContent(storyId: string, key: string): Promise<{
+    key: string;
+    path: string | null;
+    content: string;
+    lastModifiedAt: string | null;
+    exists: boolean;
+    source?: string | null;
+  }> {
+    return fetchJson(
+      `/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}`);
+  },
+
+  /** GET /api/stories/{storyId}/spawn/artifacts/{key}/iterations — per-iteration
+   *  generator + evaluator history for one plan artifact. Empty for
+   *  `decomposition`. */
+  async getStoryArtifactIterations(storyId: string, key: string): Promise<{
+    key: string;
+    workItemId: string | null;
+    iterations: Array<{
+      id: number;
+      iter: number;
+      score: number;
+      verdict: string;
+      generatorAgentId: string;
+      evaluatorAgentId: string;
+      generatorSummary: string;
+      notes: string;
+      genCostUsd: number;
+      evalCostUsd: number;
+      judgeAgentId: string | null;
+      judgeScore: number | null;
+      judgeNotes: string | null;
+      createdAt: string;
+    }>;
+    totalCostUsd: number;
+  }> {
+    return fetchJson(
+      `/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/iterations`);
   },
 
   /** GET /api/prs. */
@@ -929,6 +1025,10 @@ export const forgeApi = {
     prSyncCreatedBy?: string;
     prSyncStatus?: string;
     buildPipelineIds?: string[];
+    // Phase 34 — per-repo sync cadence overrides (seconds; 0 clears the override).
+    workItemSyncIntervalSeconds?: number;
+    prSyncIntervalSeconds?: number;
+    buildSyncIntervalSeconds?: number;
   }): Promise<Repo> {
     return fetchJson<Repo>(`/api/repos/${encodeURIComponent(id)}`, {
       method: 'PATCH',
@@ -1005,9 +1105,8 @@ export const forgeApi = {
   },
 
   /** GET /api/crews. */
-  async listCrews(productId?: string): Promise<Crew[]> {
-    const qs = productId ? `?productId=${encodeURIComponent(productId)}` : '';
-    return fetchJson<Crew[]>(`/api/crews${qs}`);
+  async listCrews(): Promise<Crew[]> {
+    return fetchJson<Crew[]>('/api/crews');
   },
 
   /** GET /api/crews/{id}/salary — Phase 11.9 salary roll-up (Q14.7: legacy alias). */
@@ -1208,6 +1307,12 @@ export const forgeApi = {
     return fetchJson<SalaryTodaySummary>('/api/crews/salary/today');
   },
 
+  /** GET /api/cost/summary — Phase 11 `/cost` dashboard rollup. */
+  async getCostSummary(days?: number): Promise<CostSummary> {
+    const qs = days ? `?days=${days}` : '';
+    return fetchJson<CostSummary>(`/api/cost/summary${qs}`);
+  },
+
   // ----- Phase 8 — products & repos --------------------------------------
 
   /** GET /api/products. */
@@ -1321,6 +1426,7 @@ export const forgeApi = {
   /** GET /api/work-items with optional filters. */
   async listWorkItems(filters: WorkItemListFilters = {}): Promise<WorkItem[]> {
     const qs = new URLSearchParams();
+    if (filters.productId)    qs.set('productId', filters.productId);
     if (filters.repoId)       qs.set('repoId', filters.repoId);
     if (filters.iterationRef) qs.set('iterationRef', filters.iterationRef);
     if (filters.track)        qs.set('track', filters.track);
@@ -1597,10 +1703,10 @@ export const forgeApi = {
     });
   },
 
-  async requeueWorkItem(crewId: string, workItemId: string, opts?: { restart?: boolean; skipSoulPrompt?: boolean }): Promise<unknown> {
+  async requeueWorkItem(crewId: string, workItemId: string, opts?: { restart?: boolean }): Promise<unknown> {
     return fetchJson(`/api/crews/${encodeURIComponent(crewId)}/plan`, {
       method: 'POST',
-      body: JSON.stringify({ workItemId, restart: opts?.restart ?? false, skipSoulPrompt: opts?.skipSoulPrompt ?? false }),
+      body: JSON.stringify({ workItemId, restart: opts?.restart ?? false }),
       headers: { 'X-Forge-User': writerHeader() },
     });
   },
@@ -1609,6 +1715,58 @@ export const forgeApi = {
     await fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/execution`, {
       method: 'PATCH',
       body: JSON.stringify(body),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  // Authoritative commit list for a work item's worktree branch — runs
+  // `git log --name-status origin/{base}..HEAD` server-side. Replaces the
+  // worktree-tick reconstruction the live-exec view used to do, which
+  // silently dropped commits faster than the tick interval.
+  async getWorkItemCommits(workItemId: string): Promise<{
+    worktreePath: string | null;
+    branch: string;
+    baseBranch: string;
+    ahead: number;
+    behind: number;
+    headSha: string | null;
+    commits: Array<{
+      sha: string;
+      message: string;
+      author: string;
+      at: string;
+      added: string[];
+      modified: string[];
+      deleted: string[];
+      other: Array<{ status: string; path: string; oldPath?: string | null }>;
+    }>;
+    uncommitted: { added: string[]; modified: string[]; deleted: string[] };
+  }> {
+    return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/commits`, {
+      method: 'GET',
+    });
+  },
+
+  // Single Resume — branches on the last deliverable verdict:
+  //   pass     → re-run delivery only (build gate + push + PR), skip the loop
+  //   iterate  → continue iterating (DeliverableLoop seeds the prior chain)
+  //   stalled  → ditto
+  //   reject / no deliverables → 400
+  // The optional `note` is injected into the next iter's user prompt; on
+  // the pass path it's silently ignored (no agent runs to read it).
+  async resume(workItemId: string, note?: string): Promise<{
+    workItemId: string;
+    queueId: number;
+    crewId: string;
+    mode: 'delivery-replay' | 'continue-iter';
+    priorIter: number;
+    priorScore: number;
+    priorVerdict: string;
+    noteApplied: boolean;
+  }> {
+    return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/resume`, {
+      method: 'POST',
+      body: JSON.stringify({ note: note ?? null }),
       headers: { 'X-Forge-User': writerHeader() },
     });
   },

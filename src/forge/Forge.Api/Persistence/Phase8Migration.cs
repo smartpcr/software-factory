@@ -121,6 +121,10 @@ public static class Phase8Migration
             """, ct);
         await ExecAsync(conn, "CREATE INDEX IF NOT EXISTS IX_product_stories_ProductId ON product_stories(ProductId);", ct);
 
+        // Story description (architect-agent prompt) and Points columns.
+        await EnsureColumnAsync(conn, "product_stories", "Description", "TEXT NOT NULL DEFAULT ''", ct);
+        await EnsureColumnAsync(conn, "product_stories", "Points", "INTEGER NOT NULL DEFAULT 0", ct);
+
         // Add ProductId to legacy epics table (may already exist).
         await EnsureColumnAsync(conn, "epics", "ProductId", "TEXT NULL", ct);
     }

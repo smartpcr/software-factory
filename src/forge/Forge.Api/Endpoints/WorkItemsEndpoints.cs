@@ -125,6 +125,18 @@ public static class WorkItemsEndpoints
         CancellationToken ct)
     {
         var query = db.WorkItems.AsNoTracking().AsQueryable();
+
+        // Scope to repos belonging to the active product. Honors `?productId=`,
+        // the `X-Forge-Product-Id` header, and the default-product fallback —
+        // matches CardsEndpoints / PrsEndpoints / WorkstreamsEndpoints. Pass
+        // `productId=all` to bypass scoping.
+        var scope = await ProductScope.ResolveAsync(ctx, db, ct);
+        if (!scope.IsAll)
+        {
+            var repoIds = scope.RepoIds!;
+            query = query.Where(w => w.RepoId != null && repoIds.Contains(w.RepoId));
+        }
+
         if (!string.IsNullOrWhiteSpace(repoId))       query = query.Where(w => w.RepoId == repoId);
         if (!string.IsNullOrWhiteSpace(iterationRef)) query = query.Where(w => w.IterationRef == iterationRef);
         if (!string.IsNullOrWhiteSpace(parentId))     query = query.Where(w => w.ParentId == parentId);
@@ -720,12 +732,7 @@ public static class WorkItemsEndpoints
         {
             var repo = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == wi.RepoId, ct);
             if (!string.IsNullOrEmpty(repo?.Kind)) repoKind = repo.Kind;
-            if (repo is not null && repoKind == "ado")
-            {
-                prRepoName = ExtractAdoRepoName(repo.RemoteUrl);
-                if (!string.IsNullOrEmpty(repo.AdoProject))
-                    prProjectName = repo.AdoProject;
-            }
+            (prRepoName, prProjectName) = PrCoordsResolver.Resolve(repo, repoKind);
         }
 
         var provider = providers.FirstOrDefault(p => p.Kind == repoKind && p.IsConfigured)
@@ -764,15 +771,6 @@ public static class WorkItemsEndpoints
         return Results.Ok(new { prId = pr.Id, prTitle = pr.Title });
     }
 
-    /// <summary>Extract the ADO repository name from a remote URL.</summary>
-    private static string? ExtractAdoRepoName(string? remoteUrl)
-    {
-        if (string.IsNullOrEmpty(remoteUrl)) return null;
-        // https://dev.azure.com/org/project/_git/reponame
-        var idx = remoteUrl.LastIndexOf("/_git/", StringComparison.OrdinalIgnoreCase);
-        return idx >= 0 ? remoteUrl[(idx + 6)..] : null;
-    }
-
     // ----- helpers --------------------------------------------------------
 
     private static string NewRevision() => Guid.NewGuid().ToString("N");
@@ -802,11 +800,14 @@ public static class WorkItemsEndpoints
 
         // Fallback: check transcript for task.pr-opened events (agent created
         // a PR on the remote but it hasn't been synced into the local prs table).
-        var evt = await db.TaskTranscriptEvents.AsNoTracking()
+        // NOTE: Order in-memory because SQLite cannot ORDER BY DateTimeOffset.
+        var evtRows = await db.TaskTranscriptEvents.AsNoTracking()
             .Where(e => e.WorkItemId == workItemId && e.Kind == "task.pr-opened")
+            .ToListAsync(ct);
+        var evt = evtRows
             .OrderByDescending(e => e.At)
             .Select(e => e.PayloadJson)
-            .FirstOrDefaultAsync(ct);
+            .FirstOrDefault();
         if (evt is not null)
         {
             try

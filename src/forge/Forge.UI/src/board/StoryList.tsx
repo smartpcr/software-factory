@@ -3,6 +3,8 @@ import type { Card, ProductStory } from '@/types';
 import { useBoardStore, filterCards } from '@/state/useBoardStore';
 import { useProductsStore } from '@/state/useProductsStore';
 import { forgeApi } from '@/api/forgeApi';
+import { useToastStore } from '@/state/useToastStore';
+import { EditStoryModal } from './EditStoryModal';
 
 // Story list view for Plan & Design. Shows each product-scoped story
 // as an expandable row with its associated cards underneath.
@@ -22,6 +24,7 @@ export function StoryList() {
 
   const cards = useBoardStore((s) => s.cards);
   const setSelected = useBoardStore((s) => s.setSelected);
+  const setSelectedStory = useBoardStore((s) => s.setSelectedStory);
   const activeFilter = useBoardStore((s) => s.activeFilter);
   const epicFilter = useBoardStore((s) => s.epicFilter);
   const agentFilter = useBoardStore((s) => s.agentFilter);
@@ -62,6 +65,26 @@ export function StoryList() {
     });
   }
 
+  const [editing, setEditing] = useState<ProductStory | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<ProductStory | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  async function handleDelete() {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    try {
+      await forgeApi.deleteProductStory(confirmDelete.productId, confirmDelete.id);
+      useToastStore.getState().show(`Story "${confirmDelete.name}" deleted`, 'success');
+      setStories((prev) => prev.filter((s) => s.id !== confirmDelete.id));
+      setConfirmDelete(null);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Delete failed';
+      useToastStore.getState().show(msg, 'danger');
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <div className="story-list">
       <div style={headerStyle}>
@@ -70,39 +93,97 @@ export function StoryList() {
         <span style={{ width: 50, textAlign: 'center' }}>Pts</span>
         <span style={{ width: 70, textAlign: 'center' }}>Priority</span>
         <span style={{ width: 80, textAlign: 'center' }}>Column</span>
+        <span style={{ width: 60 }} />
       </div>
 
       {groups.map(({ story, cards: groupCards }) => {
         const id = story?.id ?? '__none__';
         const isCollapsed = collapsed.has(id);
         const totalPts = groupCards.reduce((s, c) => s + c.pts, 0);
+        const storyPts = story?.points ?? 0;
 
         return (
           <div key={id} style={{ marginBottom: 2 }}>
             {/* Story header row */}
-            <button
-              type="button"
-              onClick={() => toggle(id)}
-              style={storyRowStyle}
-            >
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 2, minWidth: 0 }}>
-                <svg width="10" height="10" viewBox="0 0 10 10" style={{ flexShrink: 0, transition: 'transform 150ms', transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}>
-                  <path d="M2 3 L5 6 L8 3" stroke="currentColor" fill="none" strokeWidth="1.4" strokeLinecap="round" />
-                </svg>
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 }}>
-                  {story?.name ?? 'No story'}
-                </span>
-                <span style={countBadge}>{groupCards.length}</span>
-              </span>
+            <div style={storyRowStyle}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  flex: 2,
+                  minWidth: 0,
+                  gap: 8,
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); toggle(id); }}
+                  style={chevronBtnStyle}
+                  title={isCollapsed ? 'Expand' : 'Collapse'}
+                  aria-label={isCollapsed ? 'Expand story' : 'Collapse story'}
+                >
+                  <svg width="10" height="10" viewBox="0 0 10 10" style={{ flexShrink: 0, transition: 'transform 150ms', transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}>
+                    <path d="M2 3 L5 6 L8 3" stroke="currentColor" fill="none" strokeWidth="1.4" strokeLinecap="round" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { if (story) setSelectedStory(story.id); }}
+                  disabled={!story}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    flex: 1,
+                    minWidth: 0,
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'inherit',
+                    font: 'inherit',
+                    fontWeight: 600,
+                    padding: 0,
+                    cursor: story ? 'pointer' : 'default',
+                    textAlign: 'left',
+                    gap: 8,
+                  }}
+                  title={story ? (story.description || 'Open story detail') : undefined}
+                >
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 }}>
+                    {story?.name ?? 'No story'}
+                  </span>
+                  <span style={countBadge}>{groupCards.length}</span>
+                </button>
+              </div>
               <span style={{ width: 80, textAlign: 'center', fontSize: 11 }}>
                 {story?.status ?? '—'}
               </span>
               <span style={{ width: 50, textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
-                {totalPts}
+                {storyPts > 0 ? `${totalPts}/${storyPts}` : totalPts}
               </span>
               <span style={{ width: 70 }} />
               <span style={{ width: 80 }} />
-            </button>
+              <span style={{ width: 140, textAlign: 'right', display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                {story && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setEditing(story); }}
+                      style={editBtnStyle}
+                      title="Edit story"
+                    >
+                      ✎ Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setConfirmDelete(story); }}
+                      style={deleteBtnStyle}
+                      title="Delete story"
+                    >
+                      🗑 Delete
+                    </button>
+                  </>
+                )}
+              </span>
+            </div>
 
             {/* Card rows */}
             {!isCollapsed && groupCards.map((c) => (
@@ -122,6 +203,47 @@ export function StoryList() {
           No stories yet. Click "New story" to create one.
         </div>
       )}
+
+      <EditStoryModal
+        open={editing !== null}
+        story={editing}
+        onClose={() => setEditing(null)}
+        onSaved={(updated) => {
+          setStories((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+        }}
+      />
+
+      {/* Delete confirmation modal — matches app modal style */}
+      <>
+        <div
+          className={`modal-backdrop${confirmDelete ? ' show' : ''}`}
+          onClick={() => !deleting && setConfirmDelete(null)}
+        />
+        <div className={`modal${confirmDelete ? ' show' : ''}`} role="dialog" aria-modal="true">
+          <div className="modal-icon" style={{ color: 'var(--danger, #ef4444)' }}>
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+              <path d="M9 2 L 16 14 H 2 Z" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinejoin="round" />
+              <line x1="9" y1="7" x2="9" y2="10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <circle cx="9" cy="12.5" r="0.8" fill="currentColor" />
+            </svg>
+          </div>
+          <h3 className="modal-title">Delete story</h3>
+          <p className="modal-text">
+            Delete <strong>{confirmDelete?.name}</strong>? Cards will remain but become ungrouped.
+          </p>
+          <div className="modal-actions">
+            <button className="btn btn-secondary" onClick={() => setConfirmDelete(null)} disabled={deleting}>Cancel</button>
+            <button
+              className="btn"
+              onClick={() => void handleDelete()}
+              disabled={deleting}
+              style={{ background: 'var(--danger, #ef4444)', color: '#fff', border: 'none' }}
+            >
+              {deleting ? 'Deleting…' : 'Delete'}
+            </button>
+          </div>
+        </div>
+      </>
     </div>
   );
 }
@@ -199,6 +321,44 @@ const storyRowStyle: React.CSSProperties = {
   fontSize: 13,
   fontWeight: 600,
   textAlign: 'left',
+};
+
+const chevronBtnStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 18,
+  height: 18,
+  flexShrink: 0,
+  background: 'transparent',
+  border: 'none',
+  color: 'inherit',
+  padding: 0,
+  cursor: 'pointer',
+  borderRadius: 'var(--radius-sm)',
+};
+
+const editBtnStyle: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 600,
+  letterSpacing: 0.3,
+  textTransform: 'uppercase',
+  color: 'var(--text-secondary)',
+  background: 'transparent',
+  border: '1px solid var(--border-strong)',
+  borderRadius: 'var(--radius-sm)',
+  padding: '3px 8px',
+  cursor: 'pointer',
+};
+
+const deleteBtnStyle: React.CSSProperties = {
+  fontSize: 12,
+  lineHeight: 1,
+  color: 'var(--text-tertiary)',
+  background: 'transparent',
+  border: '1px solid transparent',
+  borderRadius: 'var(--radius-sm)',
+  padding: '3px 5px',
   cursor: 'pointer',
 };
 

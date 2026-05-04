@@ -28,6 +28,7 @@ export function Board() {
   const legacyEpics = apiState?.epics ?? sampleState.epics;
   const columns = apiState?.columns ?? sampleState.columns;
   const groupBy = useBoardStore((s) => s.groupBy);
+  const setSelectedStory = useBoardStore((s) => s.setSelectedStory);
   const activeProductId = useProductsStore((s) => s.activeProductId);
 
   // Product-scoped stories — primary grouping source for 'story' mode.
@@ -154,17 +155,32 @@ export function Board() {
               style={{
                 ...(isNoGroup ? { position: 'relative' } : {}),
                 ...(isCollapsed ? { gridColumn: '1 / -1', minHeight: 'auto' } : {}),
+                ...(groupBy === 'story' && !isNoGroup && !isCollapsed ? { cursor: 'pointer' } : {}),
               }}
               onDoubleClick={isNoGroup && !isCollapsed ? () => setStoryPickerOpen(true) : undefined}
-              onClick={isCollapsed ? () => toggleCollapse(lane.id) : undefined}
-              title={isCollapsed ? 'Click to expand' : isNoGroup ? 'Double-click to assign cards to a story' : undefined}
+              onClick={
+                isCollapsed
+                  ? () => toggleCollapse(lane.id)
+                  : (groupBy === 'story' && !isNoGroup
+                      ? () => setSelectedStory(lane.id)
+                      : undefined)
+              }
+              title={
+                isCollapsed
+                  ? 'Click to expand'
+                  : isNoGroup
+                    ? 'Double-click to assign cards to a story'
+                    : groupBy === 'story'
+                      ? 'Click to open story detail'
+                      : undefined
+              }
             >
               <div className="swimlane-epic">
                 <span className="swimlane-epic-id">{lane.id}</span>
                 <button
                   className={`swimlane-collapse${isCollapsed ? ' collapsed' : ''}`}
                   title={isCollapsed ? 'Expand' : 'Collapse'}
-                  onClick={() => toggleCollapse(lane.id)}
+                  onClick={(e) => { e.stopPropagation(); toggleCollapse(lane.id); }}
                 >
                   <svg width="8" height="8" viewBox="0 0 8 8">
                     <path
@@ -353,7 +369,10 @@ function computeAgentSwimlanes(cards: Card[]): Swimlane[] {
   const agentIds = new Set<string>();
   let hasUnassigned = false;
   for (const c of cards) {
-    if (c.agent) agentIds.add(c.agent.id);
+    // Cards whose agent has no resolvable id (provider-side data gap)
+    // collapse into the unassigned lane rather than producing an empty
+    // swimlane keyed on the empty string.
+    if (c.agent && c.agent.id) agentIds.add(c.agent.id);
     else hasUnassigned = true;
   }
   const lanes: Swimlane[] = [...agentIds].sort().map((aid) => {

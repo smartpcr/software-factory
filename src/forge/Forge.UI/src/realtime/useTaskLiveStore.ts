@@ -17,6 +17,7 @@ export interface TaskTranscriptEvent {
 
 export interface WorktreeSnapshot {
   workstreamId: string;
+  worktreePath?: string | null;
   added: number;
   modified: number;
   deleted: number;
@@ -38,6 +39,7 @@ export interface DeliverableShape {
   score: number;
   verdict: string;
   notes?: string;
+  generatorSummary?: string;
   dims: Record<string, number>;
   genCostUsd: number;
   evalCostUsd: number;
@@ -57,6 +59,11 @@ export interface TaskExecutionSnapshot {
   generatorAgentName?: string | null;
   evaluatorAgentId?: string | null;
   evaluatorAgentName?: string | null;
+  // Resolved at snapshot-load time (agent override → crew default). The
+  // generator and evaluator are required to use different models per the
+  // pair-diversity rule enforced on crew/agent edit.
+  generatorModel?: string | null;
+  evaluatorModel?: string | null;
   currentIteration: number;
   currentScore?: number | null;
   currentVerdict?: string | null;
@@ -145,6 +152,7 @@ async function ensureTaskConnection(): Promise<HubConnection> {
         const head = (p.head ?? null) as { sha?: string; message?: string; author?: string; at?: string } | null;
         const snap: WorktreeSnapshot = {
           workstreamId: typeof p.workstreamId === 'string' ? p.workstreamId : '',
+          worktreePath: typeof p.worktreePath === 'string' ? p.worktreePath : null,
           added:    typeof p.added    === 'number' ? p.added    : 0,
           modified: typeof p.modified === 'number' ? p.modified : 0,
           deleted:  typeof p.deleted  === 'number' ? p.deleted  : 0,
@@ -253,6 +261,17 @@ export const useTaskLiveStore = create<TaskLiveStore>((set, get) => ({
         if (typeof p.score === 'number') patched.currentScore = p.score;
         if (typeof p.verdict === 'string') patched.currentVerdict = p.verdict;
         snap = patched;
+      }
+      // task.prompt carries the actual model the runner just dispatched
+      // with — patch the snapshot so the header reflects runtime overrides
+      // (agent.GeneratorModel / agent.EvaluatorModel) without a full refetch.
+      if (evt.kind === 'task.prompt' && typeof p.model === 'string' && p.model) {
+        const patched = { ...snap };
+        if (p.role === 'evaluator') {
+          if (patched.evaluatorModel !== p.model) { patched.evaluatorModel = p.model; snap = patched; }
+        } else {
+          if (patched.generatorModel !== p.model) { patched.generatorModel = p.model; snap = patched; }
+        }
       }
     }
     set({ entries: { ...get().entries, [workItemId]: { ...cur, snapshot: snap, transcript: next, lastEventId: Math.max(cur.lastEventId, evt.id), transcriptTotalCount: cur.transcriptTotalCount + 1 } } });

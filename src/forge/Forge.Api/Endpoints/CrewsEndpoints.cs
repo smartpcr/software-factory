@@ -162,10 +162,9 @@ public static class CrewsEndpoints
         return rows.Where(r => r.StartedAt >= startOfDay).Sum(r => r.CostUsd);
     }
 
-    private static async Task<IResult> List(ForgeDbContext db, string? productId, CancellationToken ct)
+    private static async Task<IResult> List(ForgeDbContext db, CancellationToken ct)
     {
         var q = db.Crews.AsNoTracking().AsQueryable();
-        if (!string.IsNullOrWhiteSpace(productId)) q = q.Where(c => c.ProductId == productId);
         var rows = await q.OrderBy(c => c.Sort).ThenBy(c => c.Name).ToListAsync(ct);
 
         // Inflate the roster in a single round-trip rather than N+1. Sort
@@ -200,7 +199,6 @@ public static class CrewsEndpoints
     public sealed record CreateCrewRequest(
         string Id,
         string Name,
-        string? ProductId,
         string? Summary,
         string? Lead,
         string? Model,
@@ -222,9 +220,8 @@ public static class CrewsEndpoints
         ForgeDbContext db,
         CancellationToken ct)
     {
-        // Phase 13.2 — creation is a product-scoped PO action. Falls back to
-        // global PO when the body has no productId.
-        var gate = RequireRole.CheckForProduct(ctx, db, req?.ProductId, RequireRole.ProductOwner);
+        // Crew mutations require global PO (crews are not product-scoped).
+        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         if (req is null || string.IsNullOrWhiteSpace(req.Id) || string.IsNullOrWhiteSpace(req.Name))
@@ -267,7 +264,6 @@ public static class CrewsEndpoints
             Id = req.Id,
             Sort = maxSort + 1,
             Name = req.Name,
-            ProductId = req.ProductId,
             Summary = req.Summary ?? string.Empty,
             Lead = req.Lead,
             Model = string.IsNullOrWhiteSpace(req.Model) ? "claude-opus-4-7" : req.Model,
@@ -320,10 +316,8 @@ public static class CrewsEndpoints
         var row = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
 
-        // Phase 13.2 — product-scoped PO. The crew's home product is the gate;
-        // a PO of a different product cannot mutate even if their TopBar is on
-        // this crew's product.
-        var gate = RequireRole.CheckForProduct(ctx, db, row.ProductId, RequireRole.ProductOwner);
+        // Crew mutations require global PO (crews are not product-scoped).
+        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
@@ -471,12 +465,11 @@ public static class CrewsEndpoints
     {
         var row = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
-        var gate = RequireRole.CheckForProduct(ctx, db, row.ProductId, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
-        // Clear the paired crew's reference before removing so the peer
-        // doesn't end up with a stale PairedWithCrewId pointing to a
-        // deleted row.
+        // Break the pair link before removing so the peer doesn't end up
+        // with a stale PairedWithCrewId pointing to a deleted row.
         if (!string.IsNullOrEmpty(row.PairedWithCrewId))
         {
             var peer = await db.Crews.FirstOrDefaultAsync(c => c.Id == row.PairedWithCrewId, ct);
@@ -508,13 +501,13 @@ public static class CrewsEndpoints
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
 
-        // Lead OR product-scoped PO (Q13.2). Self-assignment is fine.
+        // Lead OR global PO. Self-assignment is fine.
         // Single-user-dev pass-through: when no users are signed in (fresh DB),
         // RequireRole returns null and we allow both the gate and the
         // ?force=true path — matches the convention in Check / CheckForProduct
         // so dev / contract tests can drive writes.
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
-        var role = RequireRole.ResolveRoleForProduct(ctx, db, crew.ProductId);
+        var role = RequireRole.ResolveRoleForProduct(ctx, db, null);
         var isPo = role is null || string.Equals(role, RequireRole.ProductOwner, StringComparison.OrdinalIgnoreCase);
         if (role is not null)
         {
@@ -528,7 +521,7 @@ public static class CrewsEndpoints
             var isLead = !string.IsNullOrEmpty(crew.Lead) && crew.Lead == callerAgentId;
             if (!isLead && !isPo)
             {
-                return Results.Problem(title: $"Forbidden — only the crew lead or product-owner of {crew.ProductId ?? "(no product)"} can assign", statusCode: 403);
+                return Results.Problem(title: "Forbidden — only the crew lead or a product-owner can assign", statusCode: 403);
             }
         }
 
@@ -639,7 +632,7 @@ public static class CrewsEndpoints
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
-        var gate = RequireRole.CheckForProduct(ctx, db, crew.ProductId, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         if (string.IsNullOrWhiteSpace(req.AgentId)) return Results.Problem(title: "agentId required", statusCode: 400);
@@ -726,7 +719,7 @@ public static class CrewsEndpoints
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
-        var gate = RequireRole.CheckForProduct(ctx, db, crew.ProductId, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         var member = await db.CrewMembers.FirstOrDefaultAsync(m => m.CrewId == id && m.AgentId == agentId, ct);
@@ -751,7 +744,7 @@ public static class CrewsEndpoints
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
-        var gate = RequireRole.CheckForProduct(ctx, db, crew.ProductId, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         var member = await db.CrewMembers.FirstOrDefaultAsync(m => m.CrewId == id && m.AgentId == agentId, ct);
@@ -1146,7 +1139,7 @@ public static class CrewsEndpoints
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
-        var gate = RequireRole.CheckForProduct(ctx, db, crew.ProductId, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         if (string.IsNullOrWhiteSpace(req.ContentId)) return Results.Problem(title: "contentId required", statusCode: 400);
@@ -1172,7 +1165,7 @@ public static class CrewsEndpoints
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
-        var gate = RequireRole.CheckForProduct(ctx, db, crew.ProductId, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         var caps = ParseCapsJson(crew.CapabilitiesJson);
@@ -1202,7 +1195,7 @@ public static class CrewsEndpoints
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
-        var gate = RequireRole.CheckForProduct(ctx, db, crew.ProductId, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         if (req is null || string.IsNullOrWhiteSpace(req.OtherCrewId))
@@ -1227,15 +1220,6 @@ public static class CrewsEndpoints
                 type: "crew.pair.team_unsupported",
                 title: "Pairing is only supported for Architecture / Engineering crews at v0.1.",
                 statusCode: 400);
-        }
-
-        // Cross-product pairs are rejected per Q16.2.
-        if (crew.ProductId != other.ProductId)
-        {
-            return Results.Problem(
-                type: "crew.pair.cross_product",
-                title: "Both crews must share the same product to enter a pair.",
-                statusCode: 409);
         }
 
         // Already paired? Reject — the caller must DELETE first.
@@ -1285,7 +1269,7 @@ public static class CrewsEndpoints
     {
         var crew = await db.Crews.FirstOrDefaultAsync(c => c.Id == id, ct);
         if (crew is null) return Results.Problem(title: $"Crew {id} not found", statusCode: 404);
-        var gate = RequireRole.CheckForProduct(ctx, db, crew.ProductId, RequireRole.ProductOwner);
+        var gate = RequireRole.CheckForProduct(ctx, db, null, RequireRole.ProductOwner);
         if (gate is not null) return gate;
 
         if (string.IsNullOrEmpty(crew.PairedWithCrewId))
@@ -1327,7 +1311,7 @@ public static class CrewsEndpoints
 
     // ── Phase 13.4 / 13.5 — pipelines ──────────────────────────────────────
 
-    public sealed record PlanRequest(string? WorkItemId = null, bool Restart = false, bool SkipSoulPrompt = false);
+    public sealed record PlanRequest(string? WorkItemId = null, bool Restart = false);
     public sealed record CodeRequest(string? StepWorkItemId = null);
 
     private static async Task<IResult> PlanStub(
@@ -1388,7 +1372,7 @@ public static class CrewsEndpoints
 
         // Enqueue the work item into the task queue so the worker can
         // route it to the agent runner when capacity is available.
-        var queueRow = await taskQueue.EnqueueAsync(wiId, "crew", id, ct, skipSoulPrompt: req.SkipSoulPrompt);
+        var queueRow = await taskQueue.EnqueueAsync(wiId, "crew", id, ct);
         await hub.Clients.All.SendAsync("queue.changed", new { kind = "enqueued", item = queueRow }, ct);
 
         // Phase 19 — fan out workitem.changed so the ExecBadge transitions
@@ -1478,7 +1462,7 @@ public static class CrewsEndpoints
 
         // Override requested — require lead OR product-scoped PO.
         var caller = ctx.Request.Headers[ForgeUser.HeaderName].FirstOrDefault();
-        var role = RequireRole.ResolveRoleForProduct(ctx, db, crew.ProductId);
+        var role = RequireRole.ResolveRoleForProduct(ctx, db, null);
         var isPo = role is null || string.Equals(role, RequireRole.ProductOwner, StringComparison.OrdinalIgnoreCase);
         if (role is not null)
         {
@@ -1528,7 +1512,7 @@ public static class CrewsEndpoints
             .ToList();
         var caps = ParseCapsJson(r.CapabilitiesJson);
         return new Crew(
-            r.Id, r.Name, r.ProductId, r.Summary, r.Lead, r.Model,
+            r.Id, r.Name, r.Summary, r.Lead, r.Model,
             r.ModelInputPricePerMTok, r.ModelOutputPricePerMTok,
             r.DailyBudgetUsd, r.MaxTaskBudgetUsd,
             r.ParentCrewId, r.Depth, r.Backend, r.InvokeMode,
@@ -1539,7 +1523,7 @@ public static class CrewsEndpoints
 
     /// <summary>Synchronous mapper used by callers that already have the row in hand and don't need the roster inflated.</summary>
     private static Crew MapCrew(CrewRow r) => new(
-        r.Id, r.Name, r.ProductId, r.Summary, r.Lead, r.Model,
+        r.Id, r.Name, r.Summary, r.Lead, r.Model,
         r.ModelInputPricePerMTok, r.ModelOutputPricePerMTok,
         r.DailyBudgetUsd, r.MaxTaskBudgetUsd,
         r.ParentCrewId, r.Depth, r.Backend, r.InvokeMode,

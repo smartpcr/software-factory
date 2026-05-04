@@ -53,6 +53,12 @@ public class ProductStoryRow
     public int Sort { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
+
+    // Used as the user prompt the architect agent receives when this story
+    // is picked up to start design.
+    public string Description { get; set; } = string.Empty;
+
+    public int Points { get; set; }
 }
 
 public class CardRow
@@ -512,8 +518,6 @@ public class CrewRow
 
     public string Name { get; set; } = string.Empty;
 
-    public string? ProductId { get; set; }
-
     public string Summary { get; set; } = string.Empty;
 
     /// <summary>Agent id of the crew lead.</summary>
@@ -787,7 +791,7 @@ public class DeliverableRow
     /// <summary>1-based iteration counter, capped at <see cref="ScoringConstants.MaxIterations"/>.</summary>
     public int Iter { get; set; } = 1;
 
-    /// <summary>0..100. Derived verdict: ≥90 pass, 70..89 iterate, &lt;70 reject.</summary>
+    /// <summary>0..100. Derived verdict: ≥90 pass, [reject..89] iterate, &lt;reject reject. Reject threshold varies by work-item points.</summary>
     public int Score { get; set; }
 
     /// <summary>JSON object mapping each rubric dimension to its 0..weight points.</summary>
@@ -796,10 +800,10 @@ public class DeliverableRow
     /// <summary>One of: <c>pass | iterate | reject | stalled | stalled-budget | paused-eod</c>.</summary>
     public string Verdict { get; set; } = "iterate";
 
-    /// <summary>Evaluator's free-form notes (≤ 800 chars by spec, not enforced at the row level).</summary>
+    /// <summary>Evaluator's free-form notes (≤ 4000 chars by spec, not enforced at the row level).</summary>
     public string Notes { get; set; } = string.Empty;
 
-    /// <summary>Generator's change summary from the last token output (truncated to 800 chars).</summary>
+    /// <summary>Generator's iteration summary — extracted from the explicit `## Iteration Summary` / `## Change Summary` / `## Plan Summary` heading the agent emits per prompt instructions; falls back to the response tail when the heading is missing. Capped at 4000 chars.</summary>
     public string GeneratorSummary { get; set; } = string.Empty;
 
     public decimal GenCostUsd { get; set; }
@@ -981,9 +985,10 @@ public class TaskQueueRow
     /// PATCH /api/work-items/{id}/execution, the deliverable loop reads this each iteration.</summary>
     public int? MaxIterOverride { get; set; }
 
-    /// <summary>Phase 21 — when true, the agent runner skips loading soul.md (system prompt)
-    /// for both generator and evaluator. Used by force-restart to run lean.</summary>
-    public bool SkipSoulPrompt { get; set; }
+    // Phase 21's SkipSoulPrompt flag is removed — the agent always loads
+    // soul.md + per-kind preamble. The DB column lingers (default 0) for
+    // schema-stability; the migration in Phase21Migration.cs is idempotent
+    // and a future cleanup can drop it.
 
     /// <summary>
     /// Phase 24 — discriminator for the runner to pick the prompt template.
@@ -1040,6 +1045,24 @@ public static class TaskQueueKinds
     /// from a single static table for switch / display.
     /// </summary>
     public const string Coding = "coding";
+
+    /// <summary>
+    /// Plan task kind — architecture agents produce design documents and
+    /// work-item trees, not application code. The runner loads
+    /// <c>plan-system.md</c> and restricts the tool surface to read/write
+    /// under <c>docs/specs/</c> plus WIT operations.
+    /// </summary>
+    public const string Plan = "plan";
+
+    /// <summary>
+    /// Resume-delivery — re-runs only the post-loop delivery phase
+    /// (server-side push + build/test gate + PR creation) when the iter
+    /// loop already finished with verdict=pass but the previous delivery
+    /// failed (e.g. transient build break, push reject). The agent runner
+    /// skips the prompt + DeliverableLoop call and synthesizes the result
+    /// from the last persisted deliverable. Refused if no prior pass exists.
+    /// </summary>
+    public const string ResumeDelivery = "resume-delivery";
 }
 
 /// <summary>
@@ -1245,6 +1268,25 @@ public class RepoRow
 
     /// <summary>JSON array of pipeline definition IDs to sync builds from.</summary>
     public string? BuildPipelineIdsJson { get; set; }
+
+    // -- Phase 34 — per-repo sync cadence + upstream-changedate cursor ------
+
+    /// <summary>Per-repo work-item sync interval in seconds. Null = inherit <see cref="SyncConstants.WorkItemSyncIntervalSeconds"/>.</summary>
+    public int? WorkItemSyncIntervalSeconds { get; set; }
+
+    /// <summary>Per-repo PR sync interval in seconds. Null = inherit <see cref="SyncConstants.PrSyncIntervalSeconds"/>.</summary>
+    public int? PrSyncIntervalSeconds { get; set; }
+
+    /// <summary>Per-repo build sync interval in seconds. Null = inherit <see cref="SyncConstants.BuildSyncIntervalSeconds"/>.</summary>
+    public int? BuildSyncIntervalSeconds { get; set; }
+
+    /// <summary>
+    /// ISO-8601 upstream-changedate cursor for delta sync (max <c>System.ChangedDate</c> /
+    /// <c>updated_at</c> observed in the last successful run). Distinct from
+    /// <see cref="LastSyncAt"/> which is the local clock at run start; this cursor is the
+    /// real "everything changed before this point is already in our cache" boundary.
+    /// </summary>
+    public string? LastUpstreamChangedDate { get; set; }
 }
 
 /// <summary>
@@ -1952,6 +1994,16 @@ public class StorySpawnRow
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// Architect agent's user prompt (sourced from the originating
+    /// <see cref="ProductStoryRow"/>'s description, or the upstream work item's
+    /// description). Empty until set at spawn time.
+    /// </summary>
+    public string StoryDescription { get; set; } = string.Empty;
+
+    /// <summary>Story points carried over from the originating story for sprint planning.</summary>
+    public int StoryPoints { get; set; }
 }
 
 /// <summary>Well-known phase constants for <see cref="StorySpawnRow.Phase"/>.</summary>

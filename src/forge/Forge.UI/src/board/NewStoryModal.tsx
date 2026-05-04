@@ -9,8 +9,12 @@ interface Props {
 }
 
 // Product-scoped story creation modal. Creates under the active product.
+// Description doubles as the prompt the architect agent receives when the
+// story is picked up; points size the work for sprint planning.
 export function NewStoryModal({ open, onClose }: Props) {
   const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [points, setPoints] = useState<string>('0');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement | null>(null);
@@ -19,6 +23,8 @@ export function NewStoryModal({ open, onClose }: Props) {
   useEffect(() => {
     if (!open) return;
     setName('');
+    setDescription('');
+    setPoints('0');
     setBusy(false);
     setErr(null);
     const t = window.requestAnimationFrame(() => nameRef.current?.focus());
@@ -36,10 +42,16 @@ export function NewStoryModal({ open, onClose }: Props) {
     const cleanName = name.trim();
     if (!cleanName) { setErr('Name is required'); return; }
     if (!activeProductId) { setErr('No active product selected'); return; }
+    const ptsNum = Number.parseInt(points, 10);
+    if (Number.isNaN(ptsNum) || ptsNum < 0) { setErr('Points must be a non-negative integer'); return; }
     setBusy(true);
     setErr(null);
     try {
-      const story = await forgeApi.createProductStory(activeProductId, { name: cleanName });
+      const story = await forgeApi.createProductStory(activeProductId, {
+        name: cleanName,
+        description: description.trim(),
+        points: ptsNum,
+      });
       useToastStore.getState().show(`Story "${story.name}" created`, 'success');
       onClose();
     } catch (e) {
@@ -51,7 +63,8 @@ export function NewStoryModal({ open, onClose }: Props) {
   }
 
   function onKeyDownForm(e: React.KeyboardEvent) {
-    if (e.key === 'Enter' && !e.shiftKey && !busy) {
+    // Cmd/Ctrl+Enter to submit (plain Enter is consumed by the textarea).
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !busy) {
       e.preventDefault();
       void submit();
     }
@@ -70,27 +83,54 @@ export function NewStoryModal({ open, onClose }: Props) {
         aria-modal="true"
         aria-labelledby="new-story-title"
         onKeyDown={onKeyDownForm}
-        style={{ width: 420 }}
+        style={{ width: 520 }}
       >
         <h3 className="modal-title" id="new-story-title" style={{ margin: '0 0 12px' }}>
           New story
         </h3>
         <p className="modal-text" style={{ margin: '0 0 14px', fontSize: 12, color: 'var(--text-tertiary)' }}>
-          A story groups related cards on the board. Both plan tasks and coding tasks can be associated with a story.
+          The description is used as the user prompt when the architect agent picks this
+          story up to start design. Points size the work for sprint planning.
         </p>
 
         <div style={{ display: 'grid', gap: 12, marginBottom: 18 }}>
           <label style={{ display: 'grid', gap: 5 }}>
-            <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.2, textTransform: 'uppercase', color: 'var(--text-secondary)' }}>
-              Name
-            </span>
+            <span style={labelStyle}>Name</span>
             <input
               ref={nameRef}
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Multi-tenant authentication"
-              maxLength={80}
+              maxLength={120}
               spellCheck={false}
+              disabled={busy}
+              style={inputStyle}
+            />
+          </label>
+
+          <label style={{ display: 'grid', gap: 5 }}>
+            <span style={labelStyle}>Description</span>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Describe the goal, constraints, and any context the architect should know."
+              rows={6}
+              disabled={busy}
+              style={textareaStyle}
+            />
+            <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+              Used as the architect agent's user prompt.
+            </span>
+          </label>
+
+          <label style={{ display: 'grid', gap: 5, maxWidth: 140 }}>
+            <span style={labelStyle}>Points</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={points}
+              onChange={(e) => setPoints(e.target.value)}
               disabled={busy}
               style={inputStyle}
             />
@@ -119,6 +159,14 @@ export function NewStoryModal({ open, onClose }: Props) {
   );
 }
 
+const labelStyle: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 600,
+  letterSpacing: 0.2,
+  textTransform: 'uppercase',
+  color: 'var(--text-secondary)',
+};
+
 const inputStyle: React.CSSProperties = {
   width: '100%',
   padding: '8px 11px',
@@ -130,6 +178,13 @@ const inputStyle: React.CSSProperties = {
   borderRadius: 'var(--radius-sm)',
   outline: 'none',
   transition: 'border-color 120ms ease, box-shadow 120ms ease',
+};
+
+const textareaStyle: React.CSSProperties = {
+  ...inputStyle,
+  resize: 'vertical',
+  fontFamily: 'inherit',
+  lineHeight: 1.45,
 };
 
 const errStyle: React.CSSProperties = {

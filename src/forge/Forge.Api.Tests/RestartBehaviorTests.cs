@@ -20,8 +20,12 @@ using Xunit;
 /// <summary>
 /// Phase 21 — comprehensive restart behavior tests.
 /// Organized by spec section: 21.1 migration, 21.2 clear transcript,
-/// 21.3 restart endpoint, 21.4 SkipSoulPrompt, 21.5 points-based budgets,
+/// 21.3 restart endpoint, 21.5 points-based budgets,
 /// 21.R re-execution guard, 21.I independence invariants.
+///
+/// (21.4 SkipSoulPrompt was removed — the flag was vestigial and is no
+/// longer settable from the API; soul.md always loads. The DB column
+/// remains for schema stability but is unread.)
 /// </summary>
 public class RestartBehaviorTests
 {
@@ -51,11 +55,10 @@ public class RestartBehaviorTests
         UpdatedAt = DateTimeOffset.UtcNow,
     };
 
-    private static CrewRow NewCrew(string id, string productId, bool scheduleEnabled = false) => new()
+    private static CrewRow NewCrew(string id, bool scheduleEnabled = false) => new()
     {
         Id = id,
         Name = id,
-        ProductId = productId,
         Lead = "lead-1",
         Model = "claude-opus-4-7",
         ModelInputPricePerMTok = 15m,
@@ -207,7 +210,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-test", product.Id));
+            db.Crews.Add(NewCrew("crew-test"));
             db.WorkItems.Add(NewWorkItem("wi-restart-1", state: "active", execStatus: "failed"));
             db.Deliverables.Add(NewDeliverable("wi-restart-1", "crew-test", 1, 85));
             db.Deliverables.Add(NewDeliverable("wi-restart-1", "crew-test", 2, 72));
@@ -219,7 +222,7 @@ public class RestartBehaviorTests
             client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
             var resp = await client.PostAsJsonAsync(
                 "/api/crews/crew-test/plan",
-                new { workItemId = "wi-restart-1", restart = true, skipSoulPrompt = true });
+                new { workItemId = "wi-restart-1", restart = true });
             Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
 
             Assert.Equal(0, await db.Deliverables.CountAsync(d => d.WorkItemId == "wi-restart-1"));
@@ -234,7 +237,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-rst-ir", product.Id));
+            db.Crews.Add(NewCrew("crew-rst-ir"));
             db.WorkItems.Add(NewWorkItem("wi-rst-ir", state: "in-review", execStatus: "failed"));
             await db.SaveChangesAsync();
 
@@ -259,7 +262,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-rst-res", product.Id));
+            db.Crews.Add(NewCrew("crew-rst-res"));
             db.WorkItems.Add(NewWorkItem("wi-rst-res", state: "resolved", execStatus: "completed"));
             await db.SaveChangesAsync();
 
@@ -283,7 +286,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-rst-cl", product.Id));
+            db.Crews.Add(NewCrew("crew-rst-cl"));
             db.WorkItems.Add(NewWorkItem("wi-rst-cl", state: "closed", execStatus: "completed"));
             await db.SaveChangesAsync();
 
@@ -307,7 +310,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-rst-act", product.Id));
+            db.Crews.Add(NewCrew("crew-rst-act"));
             db.WorkItems.Add(NewWorkItem("wi-rst-act", state: "active", execStatus: "failed"));
             await db.SaveChangesAsync();
 
@@ -331,7 +334,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-rst-prop", product.Id));
+            db.Crews.Add(NewCrew("crew-rst-prop"));
             db.WorkItems.Add(NewWorkItem("wi-rst-prop", state: "proposed", execStatus: "failed"));
             await db.SaveChangesAsync();
 
@@ -389,7 +392,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-norest", product.Id));
+            db.Crews.Add(NewCrew("crew-norest"));
             db.WorkItems.Add(NewWorkItem("wi-norest-1", state: "active", execStatus: "failed"));
             db.Deliverables.Add(NewDeliverable("wi-norest-1", "crew-norest"));
             await db.SaveChangesAsync();
@@ -418,7 +421,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-sched", product.Id, scheduleEnabled: true));
+            db.Crews.Add(NewCrew("crew-sched", scheduleEnabled: true));
             db.WorkItems.Add(NewWorkItem("wi-sched-1", state: "active", execStatus: "failed"));
             await db.SaveChangesAsync();
 
@@ -460,7 +463,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-dupe", product.Id));
+            db.Crews.Add(NewCrew("crew-dupe"));
             db.WorkItems.Add(NewWorkItem("wi-dupe", state: "active", execStatus: "queued"));
             await db.SaveChangesAsync();
 
@@ -474,78 +477,6 @@ public class RestartBehaviorTests
             await queue.EnqueueAsync("wi-dupe", "crew", "crew-dupe", default);
             var after = await db.TaskQueue.CountAsync(r => r.WorkItemId == "wi-dupe" && openStates.Contains(r.State));
             Assert.Equal(1, after);
-        }
-        finally { scope.Dispose(); f.Dispose(); }
-    }
-
-    // ════════════════════════════════════════════════════════════════════
-    //  21.4 — SkipSoulPrompt flag
-    // ════════════════════════════════════════════════════════════════════
-
-    [Fact]
-    public async Task SkipSoulPrompt_Persisted_On_Queue_Row()
-    {
-        var (f, scope, db, _) = await BootAsync();
-        try
-        {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-soul", product.Id));
-            db.WorkItems.Add(NewWorkItem("wi-soul-1", state: "active", execStatus: "failed"));
-            await db.SaveChangesAsync();
-
-            using var client = f.CreateClient();
-            client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
-            var resp = await client.PostAsJsonAsync(
-                "/api/crews/crew-soul/plan",
-                new { workItemId = "wi-soul-1", restart = true, skipSoulPrompt = true });
-            Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
-
-            var queueRow = await db.TaskQueue
-                .FirstOrDefaultAsync(r => r.WorkItemId == "wi-soul-1" && r.State != "cancelled");
-            Assert.NotNull(queueRow);
-            Assert.True(queueRow!.SkipSoulPrompt);
-        }
-        finally { scope.Dispose(); f.Dispose(); }
-    }
-
-    [Fact]
-    public async Task Normal_Enqueue_Does_Not_Set_SkipSoulPrompt()
-    {
-        var (f, scope, db, queue) = await BootAsync();
-        try
-        {
-            db.WorkItems.Add(NewWorkItem("wi-soul-2"));
-            await db.SaveChangesAsync();
-
-            var row = await queue.EnqueueAsync("wi-soul-2", "crew", "some-crew", default);
-            Assert.False(row.SkipSoulPrompt);
-        }
-        finally { scope.Dispose(); f.Dispose(); }
-    }
-
-    [Fact]
-    public async Task SkipSoulPrompt_Without_Restart_Still_Persists()
-    {
-        var (f, scope, db, _) = await BootAsync();
-        try
-        {
-            var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-soul-nr", product.Id));
-            db.WorkItems.Add(NewWorkItem("wi-soul-nr", state: "active", execStatus: "idle"));
-            await db.SaveChangesAsync();
-
-            using var client = f.CreateClient();
-            client.DefaultRequestHeaders.Add("X-Forge-User", "tester");
-            // restart=false but skipSoulPrompt=true — independent controls.
-            var resp = await client.PostAsJsonAsync(
-                "/api/crews/crew-soul-nr/plan",
-                new { workItemId = "wi-soul-nr", restart = false, skipSoulPrompt = true });
-            Assert.True(resp.IsSuccessStatusCode, await resp.Content.ReadAsStringAsync());
-
-            var queueRow = await db.TaskQueue
-                .FirstOrDefaultAsync(r => r.WorkItemId == "wi-soul-nr" && r.State != "cancelled");
-            Assert.NotNull(queueRow);
-            Assert.True(queueRow!.SkipSoulPrompt);
         }
         finally { scope.Dispose(); f.Dispose(); }
     }
@@ -686,7 +617,7 @@ public class RestartBehaviorTests
         {
             var product = await db.Products.FirstAsync();
             var crewId = $"crew-guard-{terminalState}";
-            db.Crews.Add(NewCrew(crewId, product.Id));
+            db.Crews.Add(NewCrew(crewId));
             var wiId = $"wi-guard-{terminalState}";
             db.WorkItems.Add(NewWorkItem(wiId, state: terminalState, execStatus: "completed"));
             await db.SaveChangesAsync();
@@ -758,7 +689,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-asgn", product.Id));
+            db.Crews.Add(NewCrew("crew-asgn"));
             var wi = NewWorkItem("wi-asgn", state: "active", execStatus: "failed");
             wi.AssignedToJson = "{\"kind\":\"human\",\"id\":\"XD\",\"displayName\":\"Xiaodong\"}";
             db.WorkItems.Add(wi);
@@ -784,7 +715,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-links", product.Id));
+            db.Crews.Add(NewCrew("crew-links"));
             db.WorkItems.Add(NewWorkItem("wi-parent", state: "active"));
             var child = NewWorkItem("wi-child", state: "active", execStatus: "failed");
             child.ParentId = "wi-parent";
@@ -812,91 +743,6 @@ public class RestartBehaviorTests
             Assert.Equal(1, await db.WorkItemLinks.CountAsync(l => l.FromId == "wi-parent" && l.ToId == "wi-child"));
         }
         finally { scope.Dispose(); f.Dispose(); }
-    }
-
-    // ════════════════════════════════════════════════════════════════════
-    //  21.4b — Soul.md loading logic (mirrors CrewQueueWorker:453-458)
-    // ════════════════════════════════════════════════════════════════════
-
-    [Fact]
-    public void SoulLoading_SkipTrue_Returns_Empty()
-    {
-        bool skipSoulPrompt = true;
-        string? agentSoulPath = @"C:\some\path\soul.md";
-        var soulMd = "";
-        if (!skipSoulPrompt && !string.IsNullOrEmpty(agentSoulPath))
-            soulMd = "should not reach here";
-        Assert.Equal("", soulMd);
-    }
-
-    [Fact]
-    public void SoulLoading_SkipFalse_NullPath_Returns_Empty()
-    {
-        bool skipSoulPrompt = false;
-        string? agentSoulPath = null;
-        var soulMd = "";
-        if (!skipSoulPrompt && !string.IsNullOrEmpty(agentSoulPath))
-            soulMd = "should not reach here";
-        Assert.Equal("", soulMd);
-    }
-
-    [Fact]
-    public void SoulLoading_SkipFalse_EmptyPath_Returns_Empty()
-    {
-        bool skipSoulPrompt = false;
-        string? agentSoulPath = "";
-        var soulMd = "";
-        if (!skipSoulPrompt && !string.IsNullOrEmpty(agentSoulPath))
-            soulMd = "should not reach here";
-        Assert.Equal("", soulMd);
-    }
-
-    [Fact]
-    public async Task SoulLoading_SkipFalse_ValidPath_Reads_File()
-    {
-        var tempFile = Path.GetTempFileName();
-        try
-        {
-            await File.WriteAllTextAsync(tempFile, "I am a soul prompt.");
-            bool skipSoulPrompt = false;
-            var soulMd = "";
-            if (!skipSoulPrompt && !string.IsNullOrEmpty(tempFile))
-            {
-                try { soulMd = await File.ReadAllTextAsync(tempFile); }
-                catch { }
-            }
-            Assert.Equal("I am a soul prompt.", soulMd);
-        }
-        finally { File.Delete(tempFile); }
-    }
-
-    [Fact]
-    public async Task SoulLoading_SkipFalse_MissingFile_Returns_Empty()
-    {
-        bool skipSoulPrompt = false;
-        var missingPath = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid()}.md");
-        var soulMd = "";
-        if (!skipSoulPrompt && !string.IsNullOrEmpty(missingPath))
-        {
-            try { soulMd = await File.ReadAllTextAsync(missingPath); }
-            catch { }
-        }
-        Assert.Equal("", soulMd);
-    }
-
-    [Fact]
-    public void EvalSoulLoading_SkipTrue_Gets_Rubric_Only()
-    {
-        // Mirrors CrewQueueWorker:779-783 — evaluator with skipSoulPrompt
-        // gets scoring rubric only, no persona prefix.
-        bool skipSoulPrompt = true;
-        var scoringRubric = "Score the work 0-100.";
-        var evalSoul = "";
-        if (!skipSoulPrompt && !string.IsNullOrEmpty("eval/soul.md"))
-            evalSoul = "eval persona";
-        var evalSoulForScoring = (string.IsNullOrEmpty(evalSoul) ? "" : evalSoul + "\n\n---\n\n")
-            + scoringRubric;
-        Assert.Equal(scoringRubric, evalSoulForScoring);
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -928,7 +774,7 @@ public class RestartBehaviorTests
     [Fact]
     public void ScheduleGate_Sunday_DayCrew_OffShift()
     {
-        var crew = NewCrew("sg", "p");
+        var crew = NewCrew("sg");
         crew.ScheduleEnabled = true;
         crew.Timezone = "America/Los_Angeles";
         crew.Shift = "day";
@@ -940,7 +786,7 @@ public class RestartBehaviorTests
     [Fact]
     public void ScheduleGate_Tuesday_DayCrew_OnShift()
     {
-        var crew = NewCrew("sg2", "p");
+        var crew = NewCrew("sg2");
         crew.ScheduleEnabled = true;
         crew.Timezone = "America/Los_Angeles";
         crew.Shift = "day";
@@ -960,7 +806,7 @@ public class RestartBehaviorTests
         try
         {
             var product = await db.Products.FirstAsync();
-            db.Crews.Add(NewCrew("crew-noitem", product.Id));
+            db.Crews.Add(NewCrew("crew-noitem"));
             await db.SaveChangesAsync();
 
             using var client = f.CreateClient();

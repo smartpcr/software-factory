@@ -21,7 +21,8 @@ public class Phase27SyncConstantsTests
     [Fact]
     public void BuildSync_constants_match_spec_Q27_1()
     {
-        SyncConstants.BuildSyncIntervalSeconds.Should().Be(1200);
+        // Phase 34 bumped Q27.1's 20-min cadence to 2 hr to reduce ADO/GitHub load.
+        SyncConstants.BuildSyncIntervalSeconds.Should().Be(7200);
         SyncConstants.BuildSyncMaxParallel.Should().Be(8);
     }
 

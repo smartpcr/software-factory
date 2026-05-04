@@ -26,11 +26,53 @@ public static class ScoringConstants
     public const int RubricTotal = CorrectnessWeight + QualityWeight + TestsWeight + ScopeWeight + RiskWeight;
 
     // ── Verdict thresholds ──────────────────────────────────────────────
-    public const int PassThreshold    = 90; // score >= 90 → pass
-    public const int IterateThreshold = 70; // 70..89 → iterate; <70 → reject
+    public const int PassThreshold = 90; // score >= 90 → pass
+
+    /// <summary>
+    /// Points-based reject threshold. Higher-point (harder) work items get a
+    /// lower bar so the loop iterates more before giving up.
+    /// </summary>
+    public static int RejectThreshold(int points) => points switch
+    {
+        <= 1 => 70,
+        2    => 65,
+        3    => 60,
+        4    => 50,
+        5    => 40,
+        6    => 30,
+        7    => 20,
+        8    => 15,
+        _    => 10, // 9+
+    };
+
+    /// <summary>Iterate range: [RejectThreshold .. PassThreshold-1].</summary>
+    public static int IterateThreshold(int points) => RejectThreshold(points);
 
     // ── Iteration loop ──────────────────────────────────────────────────
+    /// <summary>
+    /// Floor for the iteration cap — used when a work item has no point
+    /// estimate (defensive default) and as the multiplier for
+    /// <see cref="MaxIterationsForPoints"/>. Kept named <c>MaxIterations</c>
+    /// for source-compatibility with older call sites; new code should
+    /// prefer <see cref="MaxIterationsForPoints"/>.
+    /// </summary>
     public const int MaxIterations = 5;
+
+    /// <summary>Hard ceiling so a runaway 100-point story can't spawn a 500-iteration loop.</summary>
+    public const int MaxIterationsHardCap = 50;
+
+    /// <summary>
+    /// Iteration cap derived from work-item points. The contract is "5 iterations
+    /// per point": a 1-point item gets 5 rounds, a 3-point item 15, etc. Items
+    /// with 0 / unknown points fall back to <see cref="MaxIterations"/> so the
+    /// loop still runs. Capped at <see cref="MaxIterationsHardCap"/>.
+    /// </summary>
+    public static int MaxIterationsForPoints(int points)
+    {
+        var floor = points <= 0 ? 1 : points;
+        var raw = floor * MaxIterations;
+        return raw > MaxIterationsHardCap ? MaxIterationsHardCap : raw;
+    }
 
     // ── Schedule (9-9-6) ────────────────────────────────────────────────
     public const int ShiftStartHour = 9;   // 09:00 local

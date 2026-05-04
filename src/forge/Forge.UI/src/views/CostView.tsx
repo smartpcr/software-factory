@@ -1,47 +1,67 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStateStore } from '@/state/useStateStore';
 import { sampleState } from '@/sampleData';
-import type { Card, Epic } from '@/types';
+import { forgeApi } from '@/api/forgeApi';
+import type { AgentBurn, Card, CostSummary, Epic } from '@/types';
 
-// ── Mocked daily cost series (USD) ──────────────────────────────
-// One row per day for the last 7 days, broken down by epic.
-// Index 0 = 6 days ago; index 6 = today.
-const DAILY_COST: Array<Record<string, number>> = [
+// Per Phase 11 of forge_implementation.md the agent_usage ledger is the
+// source of truth for cost; these constants are kept as offline-only
+// fallback fixtures matching the prototype so the page still renders if
+// the API is unreachable. Replaced at runtime by /api/cost/summary.
+const FALLBACK_DAY_LABELS = ['Wed', 'Thu', 'Fri', 'Sat', 'Sun', 'Mon', 'Tue'];
+const FALLBACK_DAILY_BY_EPIC: Array<Record<string, number>> = [
   { 'EPIC-024': 1.10, 'EPIC-021': 0.62, 'EPIC-022': 0.31, 'EPIC-026': 0.18, 'EPIC-018': 0.42 },
   { 'EPIC-024': 1.42, 'EPIC-021': 0.71, 'EPIC-022': 0.28, 'EPIC-026': 0.14, 'EPIC-018': 0.31 },
   { 'EPIC-024': 1.88, 'EPIC-021': 0.84, 'EPIC-022': 0.36, 'EPIC-026': 0.21, 'EPIC-018': 0.18 },
   { 'EPIC-024': 1.65, 'EPIC-021': 0.92, 'EPIC-022': 0.42, 'EPIC-026': 0.26, 'EPIC-018': 0.12 },
   { 'EPIC-024': 2.04, 'EPIC-021': 1.18, 'EPIC-022': 0.51, 'EPIC-026': 0.32, 'EPIC-018': 0.09 },
   { 'EPIC-024': 1.78, 'EPIC-021': 1.06, 'EPIC-022': 0.44, 'EPIC-026': 0.36, 'EPIC-018': 0.05 },
-  { 'EPIC-024': 2.18, 'EPIC-021': 1.84, 'EPIC-022': 0.41, 'EPIC-026': 0.41, 'EPIC-018': 0.02 }, // today
+  { 'EPIC-024': 2.18, 'EPIC-021': 1.84, 'EPIC-022': 0.41, 'EPIC-026': 0.41, 'EPIC-018': 0.02 },
 ];
-const DAY_LABELS = ['Wed', 'Thu', 'Fri', 'Sat', 'Sun', 'Mon', 'Tue'];
-const TODAY_INDEX = DAILY_COST.length - 1;
-const DAILY_CAP = 7.5;
+const FALLBACK_DAILY_CAP = 7.5;
 
-// Rolling 7-day cost per agent + a tiny weekly sparkline.
-interface AgentBurn {
-  id: string;
-  name: string;
-  role: string;
-  cost24h: number;
-  cost7d: number;
-  tokens: number;
-  spark: number[];
-}
-const AGENT_BURN: AgentBurn[] = [
-  { id: 'NZ', name: 'Ne Zha',          role: 'eng',  cost24h: 0.42, cost7d: 2.18, tokens: 184_000, spark: [0.18, 0.22, 0.31, 0.28, 0.34, 0.43, 0.42] },
-  { id: 'AB', name: 'Ao Bing',         role: 'eng',  cost24h: 0.38, cost7d: 1.92, tokens: 162_000, spark: [0.21, 0.18, 0.24, 0.32, 0.30, 0.29, 0.38] },
-  { id: 'ZR', name: 'Zhu Rong',        role: 'eng',  cost24h: 0.31, cost7d: 1.74, tokens: 148_000, spark: [0.18, 0.22, 0.26, 0.30, 0.28, 0.19, 0.31] },
-  { id: 'SG', name: 'Shen Gongbao',    role: 'rev',  cost24h: 0.21, cost7d: 1.38, tokens: 102_000, spark: [0.22, 0.19, 0.18, 0.20, 0.18, 0.20, 0.21] },
-  { id: 'TY', name: 'Taiji Zhenren',   role: 'arch', cost24h: 0.42, cost7d: 1.32, tokens:  88_000, spark: [0.10, 0.14, 0.18, 0.22, 0.18, 0.08, 0.42] },
-  { id: 'GG', name: 'Gong Gong',       role: 'eng',  cost24h: 0.14, cost7d: 1.08, tokens:  92_000, spark: [0.18, 0.20, 0.16, 0.14, 0.12, 0.14, 0.14] },
-  { id: 'WZ', name: 'Wen Zhong',       role: 'arch', cost24h: 0.27, cost7d: 0.94, tokens:  74_000, spark: [0.08, 0.12, 0.14, 0.18, 0.16, 0.10, 0.27] },
-  { id: 'SF', name: "Shun Feng'er",    role: 'qa',   cost24h: 0.09, cost7d: 0.72, tokens:  68_000, spark: [0.10, 0.12, 0.10, 0.11, 0.10, 0.10, 0.09] },
-  { id: 'YX', name: 'Yun Xiao',        role: 'rev',  cost24h: 0.12, cost7d: 0.68, tokens:  54_000, spark: [0.06, 0.08, 0.10, 0.12, 0.14, 0.12, 0.12] },
-  { id: 'MB', name: 'Mu Bao',          role: 'eng',  cost24h: 0.18, cost7d: 0.61, tokens:  48_000, spark: [0.04, 0.06, 0.08, 0.10, 0.12, 0.18, 0.18] },
-  { id: 'ZZ', name: 'Zhi Zhi',         role: 'qa',   cost24h: 0.06, cost7d: 0.42, tokens:  41_000, spark: [0.06, 0.06, 0.06, 0.06, 0.06, 0.06, 0.06] },
+const FALLBACK_AGENT_BURN: AgentBurn[] = [
+  { id: 'NZ', name: 'Ne Zha',          role: 'eng',  cost24hUsd: 0.42, cost7dUsd: 2.18, tokens: 184_000, spark: [0.18, 0.22, 0.31, 0.28, 0.34, 0.43, 0.42] },
+  { id: 'AB', name: 'Ao Bing',         role: 'eng',  cost24hUsd: 0.38, cost7dUsd: 1.92, tokens: 162_000, spark: [0.21, 0.18, 0.24, 0.32, 0.30, 0.29, 0.38] },
+  { id: 'ZR', name: 'Zhu Rong',        role: 'eng',  cost24hUsd: 0.31, cost7dUsd: 1.74, tokens: 148_000, spark: [0.18, 0.22, 0.26, 0.30, 0.28, 0.19, 0.31] },
+  { id: 'SG', name: 'Shen Gongbao',    role: 'rev',  cost24hUsd: 0.21, cost7dUsd: 1.38, tokens: 102_000, spark: [0.22, 0.19, 0.18, 0.20, 0.18, 0.20, 0.21] },
+  { id: 'TY', name: 'Taiji Zhenren',   role: 'arch', cost24hUsd: 0.42, cost7dUsd: 1.32, tokens:  88_000, spark: [0.10, 0.14, 0.18, 0.22, 0.18, 0.08, 0.42] },
+  { id: 'GG', name: 'Gong Gong',       role: 'eng',  cost24hUsd: 0.14, cost7dUsd: 1.08, tokens:  92_000, spark: [0.18, 0.20, 0.16, 0.14, 0.12, 0.14, 0.14] },
+  { id: 'WZ', name: 'Wen Zhong',       role: 'arch', cost24hUsd: 0.27, cost7dUsd: 0.94, tokens:  74_000, spark: [0.08, 0.12, 0.14, 0.18, 0.16, 0.10, 0.27] },
+  { id: 'SF', name: "Shun Feng'er",    role: 'qa',   cost24hUsd: 0.09, cost7dUsd: 0.72, tokens:  68_000, spark: [0.10, 0.12, 0.10, 0.11, 0.10, 0.10, 0.09] },
+  { id: 'YX', name: 'Yun Xiao',        role: 'rev',  cost24hUsd: 0.12, cost7dUsd: 0.68, tokens:  54_000, spark: [0.06, 0.08, 0.10, 0.12, 0.14, 0.12, 0.12] },
+  { id: 'MB', name: 'Mu Bao',          role: 'eng',  cost24hUsd: 0.18, cost7dUsd: 0.61, tokens:  48_000, spark: [0.04, 0.06, 0.08, 0.10, 0.12, 0.18, 0.18] },
+  { id: 'ZZ', name: 'Zhi Zhi',         role: 'qa',   cost24hUsd: 0.06, cost7dUsd: 0.42, tokens:  41_000, spark: [0.06, 0.06, 0.06, 0.06, 0.06, 0.06, 0.06] },
 ];
+
+function buildFallback(): CostSummary {
+  const days = FALLBACK_DAILY_BY_EPIC.map((byEpic, i) => {
+    const total = Object.values(byEpic).reduce((a, b) => a + b, 0);
+    return {
+      date: `fixture-${i}`,
+      label: FALLBACK_DAY_LABELS[i],
+      totalUsd: total,
+      byEpic,
+    };
+  });
+  const epicTotals = new Map<string, number>();
+  for (const d of days) {
+    for (const [k, v] of Object.entries(d.byEpic)) {
+      epicTotals.set(k, (epicTotals.get(k) ?? 0) + v);
+    }
+  }
+  return {
+    todayUsd: days[days.length - 1].totalUsd,
+    week7dUsd: days.reduce((s, d) => s + d.totalUsd, 0),
+    dailyCapUsd: FALLBACK_DAILY_CAP,
+    todayIndex: days.length - 1,
+    days,
+    epics: [...epicTotals.entries()]
+      .map(([epicId, total7dUsd]) => ({ epicId, total7dUsd }))
+      .sort((a, b) => b.total7dUsd - a.total7dUsd),
+    agents: FALLBACK_AGENT_BURN,
+  };
+}
 
 function epicVar(color: string): string {
   return `var(--${color.replace('epic', 'epic-')})`;
@@ -56,26 +76,53 @@ export function CostView() {
   const epics: Epic[] = apiState?.epics ?? sampleState.epics;
   const cards: Card[] = apiState?.cards ?? sampleState.cards;
 
-  const today = DAILY_COST[TODAY_INDEX];
-  const todayTotal = useMemo(() => Object.values(today).reduce((s, v) => s + v, 0), [today]);
-  const week7d = useMemo(
-    () => DAILY_COST.reduce((s, day) => s + Object.values(day).reduce((a, b) => a + b, 0), 0),
-    [],
-  );
-  const burnRate = week7d / DAILY_COST.length;
+  // Live cost rollup from /api/cost/summary; keep the prototype fixtures as
+  // the offline fallback (Phase 11: "hard-coded values stay as fallback
+  // fixtures only when the runner is offline").
+  const [summary, setSummary] = useState<CostSummary>(() => buildFallback());
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const live = await forgeApi.getCostSummary(7);
+        if (cancelled) return;
+        // Treat an entirely-empty ledger (no rows yet on a fresh install)
+        // as "real but zero" — show the live shape rather than fallback
+        // fixtures so operators see the truthful state.
+        setSummary(live);
+      } catch (err) {
+        // Network / 5xx — keep the fallback already in state.
+        console.warn('[forge] /api/cost/summary failed, using fallback fixtures', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const todayTotal = summary.todayUsd;
+  const week7d = summary.week7dUsd;
+  const dailyCap = summary.dailyCapUsd;
+  const burnRate = summary.days.length > 0 ? week7d / summary.days.length : 0;
   const forecast7d = burnRate * 7;
 
   const dayMax = useMemo(() => Math.max(
-    ...DAILY_COST.map((d) => Object.values(d).reduce((a, b) => a + b, 0)),
-    DAILY_CAP,
-  ), []);
+    dailyCap,
+    ...summary.days.map((d) => d.totalUsd),
+  ) || 1, [summary, dailyCap]);
+
+  const epicById = useMemo(() => new Map(epics.map((e) => [e.id, e])), [epics]);
 
   const epicLegend = useMemo(() => {
-    return epics.map((e) => {
-      const total = DAILY_COST.reduce((s, day) => s + (day[e.id] ?? 0), 0);
-      return { id: e.id, name: e.name, color: epicVar(e.color), total };
-    }).sort((a, b) => b.total - a.total);
-  }, [epics]);
+    return summary.epics.map((row) => {
+      const meta = epicById.get(row.epicId);
+      return {
+        id: row.epicId,
+        name: meta?.name ?? row.epicId,
+        color: meta ? epicVar(meta.color) : 'var(--text-tertiary)',
+        total: row.total7dUsd,
+      };
+    });
+  }, [summary, epicById]);
 
   const ranked = useMemo(() => {
     return cards
@@ -84,8 +131,10 @@ export function CostView() {
       .slice(0, 8);
   }, [cards]);
 
-  const totalAgentBurn = AGENT_BURN.reduce((s, a) => s + a.cost7d, 0);
-  const budgetPct = Math.min(100, Math.round((todayTotal / DAILY_CAP) * 100));
+  const totalAgentBurn = summary.agents.reduce((s, a) => s + a.cost7dUsd, 0);
+  const budgetPct = dailyCap > 0
+    ? Math.min(100, Math.round((todayTotal / dailyCap) * 100))
+    : 0;
 
   return (
     <section className="view active" id="view-cost">
@@ -112,7 +161,7 @@ export function CostView() {
       <div className="workstreams-stats" style={{ margin: '0 28px 16px' }}>
         <div className="stat-cell">
           <div className="stat-cell-label">Today</div>
-          <div className="stat-cell-val">${todayTotal.toFixed(2)}<span className="unit">/ ${DAILY_CAP.toFixed(2)} cap</span></div>
+          <div className="stat-cell-val">${todayTotal.toFixed(2)}<span className="unit">/ ${dailyCap.toFixed(2)} cap</span></div>
           <div className="stat-cell-trend">{budgetPct}% used · {Math.round(((1 - budgetPct / 100) * 24))}h headroom</div>
         </div>
         <div className="stat-cell">
@@ -150,16 +199,16 @@ export function CostView() {
                 <div className="cost-chart-grid">
                   <div /><div /><div /><div />
                 </div>
-                {DAILY_COST.map((day, i) => {
-                  const dayTotal = Object.values(day).reduce((a, b) => a + b, 0);
-                  const heightPct = (dayTotal / dayMax) * 100;
+                {summary.days.map((day, i) => {
+                  const dayTotal = day.totalUsd;
+                  const heightPct = dayMax > 0 ? (dayTotal / dayMax) * 100 : 0;
                   return (
-                    <div className="cost-chart-col" key={i} data-today={i === TODAY_INDEX || undefined}>
+                    <div className="cost-chart-col" key={day.date} data-today={i === summary.todayIndex || undefined}>
                       <div className="cost-chart-stack" style={{ height: `${heightPct}%` }}>
                         {epics.map((e) => {
-                          const v = day[e.id] ?? 0;
+                          const v = day.byEpic[e.id] ?? 0;
                           if (v === 0) return null;
-                          const segPct = (v / dayTotal) * 100;
+                          const segPct = dayTotal > 0 ? (v / dayTotal) * 100 : 0;
                           return (
                             <div
                               key={e.id}
@@ -171,7 +220,7 @@ export function CostView() {
                         })}
                       </div>
                       <span className="cost-total">{fmt(dayTotal)}</span>
-                      <span className="label">{DAY_LABELS[i]}</span>
+                      <span className="label">{day.label}</span>
                     </div>
                   );
                 })}
@@ -191,7 +240,7 @@ export function CostView() {
           <div className="cost-card">
             <div className="cost-card-head">
               <span className="cost-card-title">Per-agent burn</span>
-              <span className="cost-card-eyebrow">7d · ${totalAgentBurn.toFixed(2)} across {AGENT_BURN.length} agents</span>
+              <span className="cost-card-eyebrow">7d · ${totalAgentBurn.toFixed(2)} across {summary.agents.length} agents</span>
             </div>
             <table className="burn-table">
               <thead>
@@ -206,8 +255,8 @@ export function CostView() {
                 </tr>
               </thead>
               <tbody>
-                {AGENT_BURN.map((a) => {
-                  const share = (a.cost7d / totalAgentBurn) * 100;
+                {summary.agents.map((a) => {
+                  const share = totalAgentBurn > 0 ? (a.cost7dUsd / totalAgentBurn) * 100 : 0;
                   return (
                     <tr key={a.id}>
                       <td className="name">
@@ -217,8 +266,8 @@ export function CostView() {
                         {a.name}
                       </td>
                       <td><span className="role-tag">{a.role}</span></td>
-                      <td className="num cost">${a.cost24h.toFixed(2)}</td>
-                      <td className="num">${a.cost7d.toFixed(2)}</td>
+                      <td className="num cost">${a.cost24hUsd.toFixed(2)}</td>
+                      <td className="num">${a.cost7dUsd.toFixed(2)}</td>
                       <td className="num" style={{ color: 'var(--text-tertiary)' }}>{(a.tokens / 1000).toFixed(0)}k</td>
                       <td className="spark"><Sparkline values={a.spark} /></td>
                       <td className="share">
@@ -242,7 +291,7 @@ export function CostView() {
             <div className="budget-gauge">
               <BudgetArc pct={budgetPct} />
               <div className="val">{budgetPct}%</div>
-              <div className="sub">${todayTotal.toFixed(2)} of ${DAILY_CAP.toFixed(2)}</div>
+              <div className="sub">${todayTotal.toFixed(2)} of ${dailyCap.toFixed(2)}</div>
             </div>
           </div>
 

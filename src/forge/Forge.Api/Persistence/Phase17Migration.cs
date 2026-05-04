@@ -51,6 +51,25 @@ public static class Phase17Migration
 
         // Q17.6 — at most one open queue row per work item, anywhere.
         // SQLite supports partial unique indexes via the WHERE clause.
+        // Deduplicate existing data first — keep the row with the highest Id
+        // (most recent enqueue) and delete older duplicates.
+        await ExecAsync(conn, """
+            DELETE FROM task_queue
+            WHERE Id NOT IN (
+                SELECT MAX(Id)
+                FROM task_queue
+                WHERE State IN ('awaiting-ack','awaiting-route','queued','picked-up')
+                GROUP BY WorkItemId
+            )
+            AND State IN ('awaiting-ack','awaiting-route','queued','picked-up')
+            AND WorkItemId IN (
+                SELECT WorkItemId
+                FROM task_queue
+                WHERE State IN ('awaiting-ack','awaiting-route','queued','picked-up')
+                GROUP BY WorkItemId
+                HAVING COUNT(*) > 1
+            );
+            """, ct);
         await ExecAsync(conn, """
             CREATE UNIQUE INDEX IF NOT EXISTS UX_task_queue_open_per_work_item
             ON task_queue(WorkItemId)

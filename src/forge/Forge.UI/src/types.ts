@@ -9,7 +9,14 @@ export type EpicStatus = 'active' | 'merging' | 'planning';
 export type WorkstreamStatus = 'active' | 'merging' | 'review' | 'planning' | 'idle';
 
 export interface Agent {
-  id: string;
+  /**
+   * Stable identifier (e.g. crew member id like 'E1', GitHub login,
+   * ADO descriptor). Provider mappers can surface a null when the
+   * upstream payload lacks an identity (anonymous reviewers, deactivated
+   * accounts, bots without descriptors); consumers must guard before
+   * calling string operations like `startsWith` / `slice`.
+   */
+  id: string | null;
   role: Role;
   name: string;
   imageUrl?: string | null;
@@ -32,6 +39,9 @@ export interface ProductStory {
   status: string;
   sort: number;
   createdAt: string;
+  /** User prompt the architect agent receives when this story is picked up. */
+  description: string;
+  points: number;
 }
 
 export interface Card {
@@ -361,6 +371,14 @@ export interface Repo {
   prSyncStatus?: string | null;
   /** Phase 33 — pipeline definition IDs to sync builds from. */
   buildPipelineIds?: string[] | null;
+  /** Phase 34 — per-repo work-item sync interval in seconds. Null = inherit global (7200s). */
+  workItemSyncIntervalSeconds?: number | null;
+  /** Phase 34 — per-repo PR sync interval in seconds. Null = inherit global (7200s). */
+  prSyncIntervalSeconds?: number | null;
+  /** Phase 34 — per-repo build sync interval in seconds. Null = inherit global (7200s). */
+  buildSyncIntervalSeconds?: number | null;
+  /** Phase 34 — ISO upstream-changedate cursor (max System.ChangedDate / updated_at observed). */
+  lastUpstreamChangedDate?: string | null;
 }
 
 /** Phase 23.3 — one row in the per-repo sync history. */
@@ -384,6 +402,50 @@ export interface SyncRunItem {
   title: string;
   action: 'added' | 'updated' | 'removed';
   providerRef?: number | null;
+}
+
+/** Phase 25 follow-up — rich detail returned by /items/{kind}/{id}/detail. */
+export interface SyncRunItemDetail {
+  entityKind: 'workitem' | 'pr';
+  entityId: string;
+  providerRef?: number | null;
+  title: string;
+  action: 'added' | 'updated' | 'removed';
+  /** ISO upstream last-update timestamp (System.ChangedDate / updated_at). */
+  lastUpdateDate?: string | null;
+  /** Human-readable summary line: 'New', 'Removed', or "<state> · N comment(s) · build: <state>". */
+  summary: string;
+  workItem?: {
+    state: string;
+    type: string;
+    points: number;
+    priority: string;
+    areaPath: string;
+    iterationRef: string;
+    assignedTo?: string | null;
+    parentId?: string | null;
+    tags?: string | null;
+  } | null;
+  pr?: {
+    col: string;
+    branch: string;
+    base: string;
+    additions: number;
+    deletions: number;
+    files: number;
+    workItemId?: string | null;
+    isActive: boolean;
+    openComments: number;
+    totalComments: number;
+  } | null;
+  latestBuild?: {
+    state: string;
+    result?: string | null;
+    pipelineName?: string | null;
+    webUrl?: string | null;
+    startedAt?: string | null;
+    finishedAt?: string | null;
+  } | null;
 }
 
 export interface DiscoverableRepo {
@@ -461,7 +523,6 @@ export interface CrewMember {
 export interface Crew {
   id: string;
   name: string;
-  productId: string | null;
   summary: string;
   lead: string | null;
   model: string;
@@ -670,6 +731,44 @@ export interface SalaryTodaySummary {
 export interface PayrollTodaySummary {
   totalUsd: number;
   crewCount: number;
+}
+
+/**
+ * Phase 11 — `/cost` dashboard rollup. Aggregates the last `days` (default 7)
+ * of `agent_usage` rows by day × epic × agent so the cost view can render
+ * the header stats, daily-stack chart, per-agent burn table, and today-vs-cap
+ * gauge from a single request.
+ */
+export interface CostSummary {
+  todayUsd: number;
+  week7dUsd: number;
+  dailyCapUsd: number;
+  todayIndex: number;
+  days: CostDailyPoint[];
+  epics: CostByEpic[];
+  agents: AgentBurn[];
+}
+
+export interface CostDailyPoint {
+  date: string;
+  label: string;
+  totalUsd: number;
+  byEpic: Record<string, number>;
+}
+
+export interface CostByEpic {
+  epicId: string;
+  total7dUsd: number;
+}
+
+export interface AgentBurn {
+  id: string;
+  name: string;
+  role: string;
+  cost24hUsd: number;
+  cost7dUsd: number;
+  tokens: number;
+  spark: number[];
 }
 
 // ─── Phase 15 — sprint & area path management ──────────────────────────────

@@ -39,7 +39,7 @@ public class Phase13CrewsTests
 
         var resp = await c.PostAsJsonAsync("/api/crews/", new
         {
-            id = "crew-a", name = "A", productId = (string?)null, summary = "", lead = (string?)null,
+            id = "crew-a", name = "A", summary = "", lead = (string?)null,
             model = "local-stub", modelInputPricePerMTok = 1m, modelOutputPricePerMTok = 1m,
         }, JsonOpts);
         Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
@@ -200,7 +200,6 @@ public class Phase13CrewsTests
         {
             id,
             name = id,
-            productId = (string?)null,
             summary = "",
             lead = (string?)null,
             model = "local-stub",

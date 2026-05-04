@@ -1,18 +1,16 @@
 // forge_implementation.md Phase 28 — story-driven spawn dialog.
 //
-// Replaces the ad-hoc "New workstream" flow when the operator wants to start
-// a multi-team orchestrated delivery from an upstream Feature / PBI:
-//   Step 1 — search ADO features / PBIs (filtered by area path / state)
+// The operator authors a Story on Plan & Design (name + description + points)
+// and then spawns it from here:
+//   Step 1 — pick a story from the active product's authored stories
 //   Step 2 — confirm scope and target repo, then click Spawn
-// No manual branch / worktree / epic fields — every value is derived from
-// the selected story (28.9).
+// The story's description becomes the architect agent's user prompt; points
+// size the work for sprint planning.
 
 import { useEffect, useMemo, useState } from 'react';
 import { forgeApi } from '@/api/forgeApi';
 import { useProductsStore } from '@/state/useProductsStore';
-import { useWorkItemsStore } from '@/workitems/useWorkItemsStore';
-import type { WorkItem } from '@/workitems/workItemTypes';
-import type { Repo } from '@/types';
+import type { Repo, ProductStory } from '@/types';
 
 interface Props {
   open: boolean;
@@ -23,69 +21,83 @@ interface Props {
 type Step = 'select' | 'confirm';
 
 export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
+  const activeProductId = useProductsStore((s) => s.activeProductId);
+  const products = useProductsStore((s) => s.products);
   const reposByProduct = useProductsStore((s) => s.reposByProduct);
-  const repos = useMemo<Repo[]>(() => {
-    const all: Repo[] = [];
-    for (const list of Object.values(reposByProduct)) all.push(...list);
-    return all;
-  }, [reposByProduct]);
+  const loadReposFor = useProductsStore((s) => s.loadReposFor);
 
-  const allWorkItems = useWorkItemsStore((s) => s.items);
-  const refreshWorkItems = useWorkItemsStore((s) => s.refresh);
+  const activeProduct = useMemo(
+    () => products.find((p) => p.id === activeProductId) ?? null,
+    [products, activeProductId],
+  );
+
+  const repos = useMemo<Repo[]>(
+    () => (activeProductId ? reposByProduct[activeProductId] ?? [] : []),
+    [activeProductId, reposByProduct],
+  );
+
+  const [stories, setStories] = useState<ProductStory[]>([]);
+  const [loading, setLoading] = useState(false);
 
   const [step, setStep] = useState<Step>('select');
   const [search, setSearch] = useState('');
-  const [areaPathFilter, setAreaPathFilter] = useState('');
-  const [stateFilter, setStateFilter] = useState('');
-  const [selected, setSelected] = useState<WorkItem | null>(null);
+  const [statusFilter, setStatusFilter] = useState('');
+  const [selected, setSelected] = useState<ProductStory | null>(null);
   const [repoId, setRepoId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Load stories + repos when the modal opens.
   useEffect(() => {
-    if (!open) return;
+    if (!open || !activeProductId) return;
     setStep('select');
     setSearch('');
-    setAreaPathFilter('');
-    setStateFilter('');
+    setStatusFilter('');
     setSelected(null);
     setRepoId(null);
     setErr(null);
-    void refreshWorkItems();
-  }, [open, refreshWorkItems]);
 
-  // Stories = features / epics / pbis. We surface the dev-track containers
-  // that match the spec's "Feature / Epic / PBI" notion.
-  const stories = useMemo(() => {
-    return allWorkItems.filter((w) => w.type === 'feature' || w.type === 'epic');
-  }, [allWorkItems]);
+    let cancelled = false;
+    setLoading(true);
+    forgeApi.listProductStories(activeProductId)
+      .then((s) => { if (!cancelled) setStories(s); })
+      .catch((e) => {
+        if (cancelled) return;
+        setErr(e instanceof Error ? e.message : 'failed to load stories');
+        setStories([]);
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
 
-  const areaPathOptions = useMemo(() => {
+    if (!reposByProduct[activeProductId]) {
+      void loadReposFor(activeProductId);
+    }
+
+    return () => { cancelled = true; };
+  }, [open, activeProductId, reposByProduct, loadReposFor]);
+
+  const statusOptions = useMemo(() => {
     const set = new Set<string>();
-    for (const s of stories) if (s.areaPath) set.add(s.areaPath);
-    return [...set].sort();
-  }, [stories]);
-
-  const stateOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const s of stories) if (s.state) set.add(s.state);
+    for (const s of stories) if (s.status) set.add(s.status);
     return [...set].sort();
   }, [stories]);
 
   const filteredStories = useMemo(() => {
     const q = search.trim().toLowerCase();
     return stories.filter((s) => {
-      if (q && !s.title.toLowerCase().includes(q) && !s.id.toLowerCase().includes(q)) return false;
-      if (areaPathFilter && s.areaPath !== areaPathFilter) return false;
-      if (stateFilter && s.state !== stateFilter) return false;
-      return true;
+      if (statusFilter && s.status !== statusFilter) return false;
+      if (!q) return true;
+      return (
+        s.name.toLowerCase().includes(q) ||
+        s.id.toLowerCase().includes(q) ||
+        (s.description ?? '').toLowerCase().includes(q)
+      );
     });
-  }, [stories, search, areaPathFilter, stateFilter]);
+  }, [stories, search, statusFilter]);
 
-  function pickStory(s: WorkItem) {
+  function pickStory(s: ProductStory) {
     setSelected(s);
-    // Auto-select the story's repo when there is exactly one.
-    setRepoId(s.repoId ?? (repos.length === 1 ? repos[0].id : null));
+    // Auto-select repo when there's exactly one in this product.
+    setRepoId(repos.length === 1 ? repos[0].id : null);
     setStep('confirm');
   }
 
@@ -115,42 +127,55 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
         className={`modal${open ? ' show' : ''}`}
         role="dialog"
         aria-modal="true"
-        style={{ maxWidth: 720, width: '90%' }}
+        style={{ maxWidth: 760, width: '90%' }}
       >
         <h3 className="modal-title">
-          {step === 'select' ? 'Spawn story — pick a Feature / PBI' : 'Spawn story — confirm scope'}
+          {step === 'select'
+            ? `Spawn story — pick a story${activeProduct ? ` from ${activeProduct.name}` : ''}`
+            : 'Spawn story — confirm scope'}
         </h3>
 
         {step === 'select' && (
           <div style={{ display: 'grid', gap: 10, marginBottom: 18 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 160px 140px', gap: 8 }}>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: -4 }}>
+              Step 1 of 2 — pick a story below to continue. The next step lets you confirm scope + repo and click <b>Spawn</b>.
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 200px', gap: 8 }}>
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search title or id…"
+                placeholder="Search title, id, or description…"
                 autoFocus
               />
-              <select value={areaPathFilter} onChange={(e) => setAreaPathFilter(e.target.value)}>
-                <option value="">Area path: All</option>
-                {areaPathOptions.map((a) => <option key={a} value={a}>{a}</option>)}
-              </select>
-              <select value={stateFilter} onChange={(e) => setStateFilter(e.target.value)}>
-                <option value="">State: All</option>
-                {stateOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                title="Filter by the story's authored-status (planning / approved / done) — separate from the spawn lifecycle."
+              >
+                <option value="">Authored status: All</option>
+                {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
             <div
               style={{
-                maxHeight: 320,
+                maxHeight: 360,
                 overflowY: 'auto',
                 border: '1px solid var(--border-strong)',
                 borderRadius: 'var(--radius-sm)',
                 background: 'var(--bg-surface)',
               }}
             >
-              {filteredStories.length === 0 && (
-                <div style={{ padding: 16, color: 'var(--text-tertiary)', fontSize: 12 }}>
-                  No stories match your filters.
+              {!activeProductId && (
+                <div style={emptyMsg}>No active product selected.</div>
+              )}
+              {activeProductId && loading && (
+                <div style={emptyMsg}>Loading stories…</div>
+              )}
+              {activeProductId && !loading && filteredStories.length === 0 && (
+                <div style={emptyMsg}>
+                  {stories.length === 0
+                    ? 'No stories yet. Create one on Plan & Design via "+ New story".'
+                    : 'No stories match your filters.'}
                 </div>
               )}
               {filteredStories.map((s) => (
@@ -158,39 +183,40 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
                   key={s.id}
                   type="button"
                   onClick={() => pickStory(s)}
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: '90px 1fr 100px 90px',
-                    width: '100%',
-                    gap: 8,
-                    padding: '8px 12px',
-                    border: 0,
-                    borderBottom: '1px solid var(--border-subtle)',
-                    background: 'transparent',
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    fontSize: 12,
-                  }}
+                  style={rowStyle}
+                  title="Click to pick this story and continue to confirm + spawn"
                 >
-                  <span style={{ fontFamily: 'monospace', color: 'var(--text-tertiary)' }}>{s.id}</span>
-                  <span style={{ color: 'var(--text-primary)' }}>{s.title}</span>
-                  <span style={{ color: 'var(--text-tertiary)' }}>{s.state}</span>
-                  <span style={{ color: 'var(--text-tertiary)' }}>{s.areaPath}</span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline' }}>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: 600, fontSize: 13 }}>{s.name}</span>
+                    <span style={{ display: 'inline-flex', gap: 8, alignItems: 'baseline', color: 'var(--text-tertiary)', fontSize: 11 }}>
+                      <span style={{ fontFamily: 'var(--font-mono)' }}>{s.id}</span>
+                      <span>·</span>
+                      <span>{s.status}</span>
+                      <span>·</span>
+                      <span>{s.points} pt</span>
+                      <span style={{ marginLeft: 6, color: 'var(--accent)', fontWeight: 600 }}>Pick →</span>
+                    </span>
+                  </div>
+                  {s.description && (
+                    <div style={descStyle}>
+                      {s.description.length > 220 ? `${s.description.slice(0, 220)}…` : s.description}
+                    </div>
+                  )}
                 </button>
               ))}
             </div>
+            {err && <div style={{ color: 'var(--danger)', fontSize: 11.5 }}>{err}</div>}
           </div>
         )}
 
         {step === 'confirm' && selected && (
           <div style={{ display: 'grid', gap: 10, marginBottom: 18 }}>
-            <Field label="Story id">
-              <span style={{ fontFamily: 'monospace' }}>{selected.id}</span>
-            </Field>
-            <Field label="Title">{selected.title}</Field>
-            <Field label="Description">
-              <span style={{ whiteSpace: 'pre-wrap', maxHeight: 120, overflow: 'auto', display: 'block' }}>
-                {selected.descriptionMd || <em style={{ color: 'var(--text-tertiary)' }}>(none)</em>}
+            <Field label="Story id"><span style={{ fontFamily: 'var(--font-mono)' }}>{selected.id}</span></Field>
+            <Field label="Title">{selected.name}</Field>
+            <Field label="Points">{selected.points}</Field>
+            <Field label="Architect prompt (description)">
+              <span style={{ whiteSpace: 'pre-wrap', maxHeight: 160, overflow: 'auto', display: 'block' }}>
+                {selected.description || <em style={{ color: 'var(--text-tertiary)' }}>(no description — the architect will get an empty prompt)</em>}
               </span>
             </Field>
             <Field label="Repo">
@@ -202,8 +228,8 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
               </select>
             </Field>
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-              Branches, worktrees, and the planning epic are derived automatically from the
-              selected story. The architect team starts on <code>story/{selected.id}/plan</code>.
+              Branches and worktrees are derived automatically. The architect crew starts on
+              {' '}<code>story/{selected.id}/plan</code> using the description above as its user prompt.
             </div>
             {err && <div style={{ color: 'var(--danger)', fontSize: 11.5 }}>{err}</div>}
           </div>
@@ -211,9 +237,7 @@ export function SpawnStoryModal({ open, onClose, onSpawned }: Props) {
 
         <div className="modal-actions">
           {step === 'select' && (
-            <>
-              <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-            </>
+            <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
           )}
           {step === 'confirm' && (
             <>
@@ -253,3 +277,29 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     </label>
   );
 }
+
+const rowStyle: React.CSSProperties = {
+  display: 'grid',
+  gap: 4,
+  width: '100%',
+  padding: '10px 12px',
+  border: 0,
+  borderBottom: '1px solid var(--border-subtle)',
+  background: 'transparent',
+  cursor: 'pointer',
+  textAlign: 'left',
+};
+
+const descStyle: React.CSSProperties = {
+  fontSize: 11.5,
+  color: 'var(--text-secondary)',
+  lineHeight: 1.45,
+  whiteSpace: 'pre-wrap',
+  overflow: 'hidden',
+};
+
+const emptyMsg: React.CSSProperties = {
+  padding: 16,
+  color: 'var(--text-tertiary)',
+  fontSize: 12,
+};

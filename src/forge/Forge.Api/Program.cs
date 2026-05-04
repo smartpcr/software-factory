@@ -23,6 +23,19 @@ using Microsoft.EntityFrameworkCore;
 // they can't pile up as orphans across restarts.
 ChildProcessTracker.Initialize();
 
+// ── Global crash diagnostics ──────────────────────────────────────────────
+// Log unhandled exceptions that would otherwise kill the process silently.
+AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+{
+    var ex = e.ExceptionObject as Exception;
+    Console.Error.WriteLine($"[Forge] FATAL UnhandledException (isTerminating={e.IsTerminating}): {ex}");
+    Console.Error.Flush();
+};
+AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+{
+    Console.WriteLine($"[Forge] ProcessExit at {DateTime.UtcNow:O}");
+};
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.UseUrls("http://localhost:5180");
@@ -44,31 +57,90 @@ builder.Services.AddCors(options =>
         .AllowCredentials());
 });
 
-// EF Core: SQLite, path overridable via Forge:Db:Path. Resolve in the factory
-// delegate so test-factory configuration overrides flow through.
-// SQLite DB — use DELETE journal mode for durability across forced kills.
+// EF Core: SQLite, path overridable via Forge:Db:Path. The path MUST be
+// resolved inside the factory delegate so the test factory's
+// `WebApplicationFactory.ConfigureWebHost` overrides have a chance to land
+// (those callbacks run during `builder.Build()` — config reads ABOVE that
+// see only `appsettings.json` + env vars, which is how earlier integration
+// tests polluted the production DB at `E:\forge\forge.db`).
 {
-    var dbPath = builder.Configuration["Forge:Db:Path"] ?? @"E:\forge\forge.db";
-    if (!Path.IsPathFullyQualified(dbPath))
-        dbPath = Path.GetFullPath(dbPath);
-    Console.WriteLine($"[Forge] SQLite DB path: {dbPath}");
+    // Run the journal_mode bootstrap once per process, on first DbContext
+    // resolution. `bootstrapped` is keyed on the resolved path so a different
+    // path (e.g. tests) bootstraps separately.
+    var bootstrapped = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var bootstrapLock = new object();
 
-    // Set journal_mode=DELETE on a throwaway connection before EF opens its own.
-    // journal_mode is per-database (persisted in the file header), so this
-    // only needs to happen once and all subsequent connections inherit it.
-    using (var bootstrap = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}"))
+    const string ProdDbDefault = @"E:\forge\forge.db";
+
+    // Defense-in-depth against tests writing to the production DB. The
+    // factory tripwire in `ForgeWebApplicationFactory.ConfigureServices`
+    // catches the case where `Forge:Db:Path` resolves to the prod default,
+    // but it's been bypassed twice now (most recently 2026-05-03 — 18 stale
+    // crews + 12 stale agents had to be scrubbed). This second layer trips
+    // when Program.cs is hosting inside a test process and somehow ends up
+    // pointed at the prod path anyway. Two independent signals:
+    //   1. An xUnit (or Microsoft.AspNetCore.TestHost) assembly is loaded
+    //      in the AppDomain — a test runner is hosting us.
+    //   2. The `FORGE_TEST_GUARDRAIL=1` env var is set — `ForgeWebApplicationFactory`
+    //      sets this in its ctor as a one-way flag (set to "1" only, never
+    //      unset, so parallel xUnit tests don't race on it the way they
+    //      raced on the old per-test `FORGE_DB_PATH` value).
+    static bool IsHostedInTestProcess()
     {
-        bootstrap.Open();
-        using var cmd = bootstrap.CreateCommand();
-        cmd.CommandText = "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;";
-        cmd.ExecuteNonQuery();
+        if (string.Equals(Environment.GetEnvironmentVariable("FORGE_TEST_GUARDRAIL"), "1", StringComparison.Ordinal))
+            return true;
+        foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            var name = a.GetName().Name;
+            if (name is null) continue;
+            if (name.StartsWith("xunit", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(name, "Microsoft.AspNetCore.TestHost", StringComparison.Ordinal)) return true;
+            if (string.Equals(name, "Microsoft.AspNetCore.Mvc.Testing", StringComparison.Ordinal)) return true;
+        }
+        return false;
     }
 
     builder.Services.AddDbContext<ForgeDbContext>((sp, opt) =>
     {
+        var cfg = sp.GetRequiredService<IConfiguration>();
+        var dbPath = cfg["Forge:Db:Path"] ?? ProdDbDefault;
+        if (!Path.IsPathFullyQualified(dbPath))
+            dbPath = Path.GetFullPath(dbPath);
+
+        if (string.Equals(dbPath, ProdDbDefault, StringComparison.OrdinalIgnoreCase) && IsHostedInTestProcess())
+        {
+            throw new InvalidOperationException(
+                $"Refusing to open the production Forge DB ('{ProdDbDefault}') from a test process. " +
+                $"This indicates the test factory's Forge:Db:Path override did not reach Program.cs's " +
+                $"AddDbContext delegate (the factory adds an in-memory IConfiguration source via " +
+                $"ConfigureWebHost.ConfigureAppConfiguration; if that source is being shadowed by " +
+                $"appsettings.json, the override silently fails). Inspect ForgeWebApplicationFactory " +
+                $"and the IConfiguration source order before re-running tests.");
+        }
+
+        bool needBootstrap;
+        lock (bootstrapLock)
+        {
+            needBootstrap = bootstrapped.Add(dbPath);
+        }
+        if (needBootstrap)
+        {
+            Console.WriteLine($"[Forge] SQLite DB path: {dbPath}");
+            using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}");
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;";
+            cmd.ExecuteNonQuery();
+        }
         opt.UseSqlite($"Data Source={dbPath}");
     });
 }
+
+// Prevent a single BackgroundService failure from tearing down the host.
+builder.Services.Configure<HostOptions>(opts =>
+{
+    opts.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore;
+});
 
 // OpenAPI / Swagger.
 builder.Services.AddEndpointsApiExplorer();
@@ -171,9 +243,15 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoMergeWatcher>(
 
 // forge_implementation.md Phase 28 — story-driven spawn orchestrator + deps scheduler.
 builder.Services.AddSingleton<Forge.Api.Services.Stories.AgentAllocationLoader>();
-builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryArtifactStrategy, Forge.Api.Services.Stories.DeterministicStoryArtifactStrategy>();
-builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryGitOps, Forge.Api.Services.Stories.InMemoryStoryGitOps>();
-builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryProviderOps, Forge.Api.Services.Stories.LocalStoryProviderOps>();
+// Real-implementation bindings for the story-spawn lifecycle. No fakes /
+// in-memory / Local stubs in production — see memory/feedback_no_fakes_no_manual.md.
+//
+//   IStoryArtifactStrategy → CrewStoryArtifactStrategy (real LLM via IAgentRunner)
+//   IStoryGitOps           → RealStoryGitOps (real git CLI against repo.CloneRoot)
+//   IStoryProviderOps      → ProviderStoryProviderOps (real provider.CreatePullRequest / Merge)
+builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryArtifactStrategy, Forge.Api.Services.Stories.CrewStoryArtifactStrategy>();
+builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryGitOps, Forge.Api.Services.Stories.RealStoryGitOps>();
+builder.Services.AddSingleton<Forge.Api.Services.Stories.IStoryProviderOps, Forge.Api.Services.Stories.ProviderStoryProviderOps>();
 builder.Services.AddSingleton<Forge.Api.Services.Stories.StorySpawnOrchestrator>();
 builder.Services.AddSingleton<Forge.Api.Services.Stories.SpawnDependencyScheduler>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.Stories.SpawnDependencyScheduler>());
@@ -276,6 +354,10 @@ using (var scope = app.Services.CreateScope())
     await Phase32Migration.ApplyAsync(db);
     // Phase 33 — persisted sync settings on repos.
     await Phase33Migration.ApplyAsync(db);
+    // Phase 34 — per-repo sync cadence overrides + upstream-changedate cursor.
+    await Phase34Migration.ApplyAsync(db);
+    // Phase 35 — decouple crews from products (null out ProductId).
+    await Phase35Migration.ApplyAsync(db);
     // Phase 29 — cancel orphaned validation runs left from a previous crash/restart.
     {
         var now = DateTime.UtcNow.ToString("O");
@@ -290,8 +372,15 @@ using (var scope = app.Services.CreateScope())
         }
         if (orphaned.Count > 0) await db.SaveChangesAsync();
     }
-    // Seed is skipped — real data is committed in forge.db.
+    // Prototype data seed (cards/PRs/workstreams) is intentionally skipped —
+    // real data is committed in forge.db.
     // await ForgeSeed.EnsureSeededAsync(db);
+    //
+    // Crew + prototype-agent catalog IS reconciled on every boot so the
+    // canonical 8 crews + A1/A2/E4/E7/E9/R3/R5/Q2/XD agents stay static
+    // even after past test pollution flipped fields like crew-eng.Shift.
+    // The pass is idempotent: a clean DB sees zero writes.
+    await ForgeSeed.EnsureCrewCatalogAsync(db);
     // Phase 13c — every agent should belong to a team. The reconcile pass
     // is idempotent: subsequent restarts no-op once the roster is filled.
     await Forge.Api.Endpoints.CrewsEndpoints.ApplyAutoAssignAsync(db, caller: "boot", ct: default);
@@ -299,6 +388,96 @@ using (var scope = app.Services.CreateScope())
     // all 8 crews and guarantee each day/night shift has ≥ 2 members.
     var startupLogger = scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("ForgeSeed");
     await ForgeSeed.EnsureStartupConfigAsync(db, startupLogger);
+}
+
+// One-time CLI scrub of test fixture rows that leaked into the prod DB
+// before the test factory's tripwire landed. Default is dry-run; pass
+// --apply to actually delete. Exits without starting the web host so it
+// can run while Forge.Api is otherwise idle.
+//   dotnet run --project src/forge/Forge.Api -- --scrub-test-artifacts
+//   dotnet run --project src/forge/Forge.Api -- --scrub-test-artifacts --apply
+if (args.Contains("--scrub-test-artifacts"))
+{
+    var apply = args.Contains("--apply");
+    using var scrubScope = app.Services.CreateScope();
+    var scrubDb = scrubScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+    var scrubLogger = scrubScope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("ForgeSeed.Scrub");
+    var report = await ForgeSeed.ScrubTestArtifactsAsync(scrubDb, dryRun: !apply, scrubLogger);
+
+    Console.WriteLine($"[Scrub] mode={(apply ? "APPLIED" : "DRY-RUN")}");
+    Console.WriteLine($"  crews deleted:                    {report.CrewsDeleted}");
+    if (report.CrewIdsDeleted.Count > 0)
+    {
+        Console.WriteLine($"    {string.Join(", ", report.CrewIdsDeleted)}");
+    }
+    Console.WriteLine($"  agents deleted:                   {report.AgentsDeleted}");
+    if (report.AgentIdsDeleted.Count > 0)
+    {
+        Console.WriteLine($"    {string.Join(", ", report.AgentIdsDeleted)}");
+    }
+    Console.WriteLine($"  crew_members deleted:             {report.CrewMembersDeleted}");
+    Console.WriteLine($"  crew_history deleted:             {report.CrewHistoryDeleted}");
+    Console.WriteLine($"  agent_history deleted:            {report.AgentHistoryDeleted}");
+    Console.WriteLine($"  agent_usage deleted:              {report.AgentUsageDeleted}");
+    Console.WriteLine($"  agent_level_history deleted:      {report.AgentLevelHistoryDeleted}");
+    Console.WriteLine($"  deliverables deleted:             {report.DeliverablesDeleted}");
+    Console.WriteLine($"  task_queue.routed_to_crew nulled: {report.TaskQueueRoutedNulled}");
+    Console.WriteLine($"  task_queue.preferred_agent nulled:{report.TaskQueuePreferredNulled}");
+    Console.WriteLine($"  agent_assignments.crew_id nulled: {report.AgentAssignmentCrewNulled}");
+    if (!apply)
+    {
+        Console.WriteLine();
+        Console.WriteLine("DRY-RUN — no changes written. Re-run with --apply to commit.");
+    }
+    return;
+}
+
+// One-time CLI scrub of mocked story spawns + workstreams left over from
+// integration tests / fixture runs that wrote into the prod DB. Keeps the
+// real `code-intelligence:AGENT-MEMORY` story and its 5 workstreams.
+//   dotnet run --project src/forge/Forge.Api -- --scrub-mocked-spawns
+//   dotnet run --project src/forge/Forge.Api -- --scrub-mocked-spawns --apply
+if (args.Contains("--scrub-mocked-spawns"))
+{
+    var apply = args.Contains("--apply");
+    using var spawnScope = app.Services.CreateScope();
+    var spawnDb = spawnScope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+    var spawnLogger = spawnScope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("ForgeSeed.SpawnScrub");
+
+    // The single real story spawn currently in the DB. If you need to keep
+    // additional spawns, extend this list before re-running.
+    var keepSpawns = new[] { "spawn-code-intelligence-AGENT-MEMORY" };
+    // Empty here = all kept workstreams come from the kept spawns. Add ad-hoc
+    // workstream ids (no spawn) to this list to preserve them.
+    var keepWorkstreams = Array.Empty<string>();
+
+    var report = await ForgeSeedSpawnScrub.ScrubMockedSpawnsAsync(
+        spawnDb, keepSpawns, keepWorkstreams, dryRun: !apply, spawnLogger);
+
+    Console.WriteLine($"[SpawnScrub] mode={(apply ? "APPLIED" : "DRY-RUN")}");
+    Console.WriteLine($"  story_spawns deleted:    {report.StorySpawnsDeleted}");
+    Console.WriteLine($"  workstreams deleted:     {report.WorkstreamsDeleted}");
+    Console.WriteLine($"  workstream_deps deleted: {report.WorkstreamDepsDeleted}");
+    Console.WriteLine();
+    Console.WriteLine($"  kept spawns: {string.Join(", ", keepSpawns)}");
+    Console.WriteLine();
+    if (report.StorySpawnIdsDeleted.Count > 0)
+    {
+        Console.WriteLine("  spawns to delete:");
+        foreach (var id in report.StorySpawnIdsDeleted) Console.WriteLine($"    {id}");
+    }
+    if (report.WorkstreamIdsDeleted.Count > 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine("  workstreams to delete:");
+        foreach (var id in report.WorkstreamIdsDeleted) Console.WriteLine($"    {id}");
+    }
+    if (!apply)
+    {
+        Console.WriteLine();
+        Console.WriteLine("DRY-RUN — no changes written. Re-run with --apply to commit.");
+    }
+    return;
 }
 
 app.UseExceptionHandler();
@@ -362,6 +541,8 @@ app.MapAgentAssignmentsEndpoints();
 app.MapPrCommentsEndpoints();
 // forge_implementation.md Phase 27 — builds REST surface.
 app.MapBuildsEndpoints();
+// Phase 11 — /cost dashboard rollup.
+app.MapCostEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 
@@ -380,9 +561,10 @@ app.MapGet("/api/avatars/{filename}", (string filename) =>
 
 // Prevent unobserved Task exceptions from crashing the process.
 // Background agent tasks (Task.Run in CrewQueueWorker) can throw
-// ObjectDisposedException on shutdown — swallow instead of crashing.
+// ObjectDisposedException on shutdown — log and swallow instead of crashing.
 TaskScheduler.UnobservedTaskException += (_, e) =>
 {
+    Console.Error.WriteLine($"[Forge] UnobservedTaskException: {e.Exception}");
     e.SetObserved();
 };
 

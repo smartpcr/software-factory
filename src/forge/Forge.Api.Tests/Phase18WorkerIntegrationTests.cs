@@ -93,7 +93,6 @@ public class Phase18WorkerIntegrationTests
             db.Crews.Add(new CrewRow
             {
                 Id = "ad-off-shift", Name = "OffShift",
-                ProductId = product.Id,
                 Lead = "lead-os", Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 5, ScheduleEnabled = true, // schedule ENABLED so the gate would refuse pre-18.6
@@ -139,7 +138,6 @@ public class Phase18WorkerIntegrationTests
             db.Crews.Add(new CrewRow
             {
                 Id = "ad-on-shift", Name = "OnShift",
-                ProductId = product.Id,
                 Lead = "lead-on", Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 5, ScheduleEnabled = true,
@@ -179,7 +177,6 @@ public class Phase18WorkerIntegrationTests
             db.Crews.Add(new CrewRow
             {
                 Id = "wq-off", Name = "WQ Off",
-                ProductId = product.Id,
                 Lead = "lead-wq", Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 5, ScheduleEnabled = true,
@@ -226,7 +223,6 @@ public class Phase18WorkerIntegrationTests
             db.Crews.Add(new CrewRow
             {
                 Id = "wq-on", Name = "WQ On",
-                ProductId = product.Id,
                 Lead = "lead-wqon", Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 5, ScheduleEnabled = true,
@@ -271,7 +267,6 @@ public class Phase18WorkerIntegrationTests
             db.Crews.Add(new CrewRow
             {
                 Id = "wq-resume", Name = "Resume",
-                ProductId = product.Id,
                 Lead = "lead-resume", Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 5, ScheduleEnabled = true,
@@ -334,7 +329,6 @@ public class Phase18WorkerIntegrationTests
             db.Crews.Add(new CrewRow
             {
                 Id = "wq-orphan", Name = "Orphan",
-                ProductId = product.Id,
                 Lead = null, // no lead — only on-shift members can pick up
                 Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
@@ -391,7 +385,6 @@ public class Phase18WorkerIntegrationTests
             db.Crews.Add(new CrewRow
             {
                 Id = "ad-no-lead", Name = "NoLead",
-                ProductId = product.Id,
                 Lead = null,
                 Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
@@ -438,7 +431,6 @@ public class Phase18WorkerIntegrationTests
             db.Crews.Add(new CrewRow
             {
                 Id = "wq-leadonly", Name = "Lead Only",
-                ProductId = product.Id,
                 Lead = "lone-lead", Model = "x",
                 ModelInputPricePerMTok = 1m, ModelOutputPricePerMTok = 1m,
                 MaxConcurrent = 5, ScheduleEnabled = false,

@@ -1,0 +1,1621 @@
+/* Swarm-control — adaptation of docs/examples/swarm-control.html for the
+ * Forge workstreams page. Scoped under `.swarm-ctrl` so the warm amber/cyan
+ * mission-control palette doesn't leak into the rest of the app. The mock
+ * targets a single story; this stylesheet supports both the multi-story
+ * index (`.swarm-ctrl .index`) and the per-story detail surface.
+ */
+
+/* ─── TOKENS (scoped) ───────────────────────────────────────────────── */
+.swarm-ctrl {
+  --sc-bg:        #0a0c11;
+  --sc-bg-2:      #0f131a;
+  --sc-surface:   #141a23;
+  --sc-surface-2: #1a2230;
+  --sc-surface-3: #20293a;
+  --sc-border:    #1c2330;
+  --sc-border-2:  #2a354a;
+  --sc-grid:      rgba(255,255,255,0.025);
+
+  --sc-text:      #e9e6dc;
+  --sc-text-dim:  #8d94a3;
+  --sc-muted:     #545b6b;
+
+  --sc-amber:     #ffb347;
+  --sc-amber-d:   #b67e2c;
+  --sc-cyan:      #5eead4;
+  --sc-cyan-d:    #2f8f80;
+  --sc-green:     #79e08a;
+  --sc-green-d:   #3f7c4b;
+  --sc-red:       #ff6b80;
+  --sc-red-d:     #9f3d4d;
+  --sc-magenta:   #c89bff;
+  --sc-magenta-d: #6b4d99;
+  --sc-blue:      #7cc1ff;
+  --sc-blue-d:    #3a6ea0;
+  --sc-orange:    #ff8a4d;
+
+  --sc-tint-amber: rgba(255,179,71,0.05);
+  --sc-tint-cyan:  rgba(94,234,212,0.04);
+  --sc-scan-line:  rgba(255,255,255,0.012);
+  --sc-vignette:   radial-gradient(circle at 50% 50%, transparent 0%, rgba(0,0,0,0.5) 100%);
+
+  --sc-t-arch: var(--sc-amber);
+  --sc-t-eng:  var(--sc-cyan);
+  --sc-t-rev:  var(--sc-magenta);
+  --sc-t-qa:   var(--sc-green);
+
+  --sc-font-display: 'Departure Mono', 'JetBrains Mono', monospace;
+  --sc-font-mono:    'JetBrains Mono', monospace;
+  --sc-font-sans:    'Manrope', system-ui, sans-serif;
+
+  background: var(--sc-bg);
+  color: var(--sc-text);
+  font-family: var(--sc-font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  position: relative;
+  isolation: isolate;
+  background-image:
+    radial-gradient(ellipse 1200px 600px at 15% -10%, var(--sc-tint-amber), transparent 60%),
+    radial-gradient(ellipse 900px 600px at 100% 110%, var(--sc-tint-cyan), transparent 60%),
+    linear-gradient(0deg, var(--sc-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--sc-grid) 1px, transparent 1px);
+  background-size: auto, auto, 24px 24px, 24px 24px;
+  background-attachment: local;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+/* Light theme — pure-white panels on cool gray. Inherits from the host
+ * app's theme switch via the `data-theme="light"` attribute on <html>. */
+:root[data-theme="light"] .swarm-ctrl {
+  --sc-bg:        #f6f7f9;
+  --sc-bg-2:      #eef0f3;
+  --sc-surface:   #ffffff;
+  --sc-surface-2: #f3f4f7;
+  --sc-surface-3: #e5e7ec;
+  --sc-border:    rgba(15,23,42,0.08);
+  --sc-border-2:  rgba(15,23,42,0.16);
+  --sc-grid:      rgba(15,23,42,0.025);
+
+  --sc-text:      #0d1117;
+  --sc-text-dim:  #4a5564;
+  --sc-muted:     #8995a3;
+
+  --sc-amber:     #a64b00;
+  --sc-amber-d:   #c8651b;
+  --sc-cyan:      #0a6e64;
+  --sc-cyan-d:    #129488;
+  --sc-green:     #1a6e2c;
+  --sc-green-d:   #2d9343;
+  --sc-red:       #b21d3f;
+  --sc-red-d:     #d44660;
+  --sc-magenta:   #5e2f9e;
+  --sc-magenta-d: #8053c4;
+  --sc-blue:      #1c4f8c;
+  --sc-blue-d:    #2e72ba;
+  --sc-orange:    #c14210;
+
+  --sc-tint-amber: rgba(166,75,0,0.05);
+  --sc-tint-cyan:  rgba(10,110,100,0.04);
+  --sc-scan-line:  transparent;
+  --sc-vignette:   radial-gradient(circle at 50% 50%, transparent 0%, rgba(15,23,42,0.04) 100%);
+}
+
+.swarm-ctrl::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: repeating-linear-gradient(
+    0deg, transparent 0, transparent 2px,
+    var(--sc-scan-line) 2px, var(--sc-scan-line) 3px
+  );
+  pointer-events: none; z-index: 1;
+  mix-blend-mode: overlay;
+}
+.swarm-ctrl::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: var(--sc-vignette);
+  pointer-events: none; z-index: 1;
+}
+
+/* ─── LAYOUT ────────────────────────────────────────────────────────── */
+.swarm-ctrl .shell {
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto;
+  flex: 1;
+  padding: 12px;
+  gap: 8px;
+  position: relative;
+  z-index: 2;
+  min-height: 0;
+}
+
+.swarm-ctrl .grid-main {
+  display: grid;
+  /* Single column — child `.mode-pane.active` does its own master/detail
+     split. Keeping this 2-col would double-nest the grid and squeeze the
+     mode-pane into the 360px first cell. */
+  grid-template-columns: 1fr;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* ─── PANEL ─────────────────────────────────────────────────────────── */
+.swarm-ctrl .panel {
+  background: linear-gradient(180deg, var(--sc-surface) 0%, var(--sc-bg-2) 100%);
+  border: 1px solid var(--sc-border);
+  border-radius: 2px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.02),
+    0 1px 0 rgba(0,0,0,0.5);
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* CSS-Grid items default to `min-width: auto` (= content width). With
+     long doc-card titles using `white-space: nowrap`, the master panel
+     would blow past its `360px` track and push the detail panel to the
+     right. Forcing `min-width: 0` lets the explicit tracks win. */
+  min-width: 0;
+}
+
+.swarm-ctrl .panel-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--sc-border);
+  background: linear-gradient(180deg, var(--sc-surface-2), transparent);
+  font-family: var(--sc-font-display);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--sc-text-dim);
+  flex-shrink: 0;
+}
+.swarm-ctrl .panel-hd .ix {
+  color: var(--sc-muted);
+  font-size: 9px;
+}
+.swarm-ctrl .panel-bd {
+  padding: 12px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.swarm-ctrl .panel-bd.flush { padding: 0; }
+
+/* ─── TOPBAR (scoped class to avoid collision with shell.css `.topbar`) ── */
+.swarm-ctrl .sc-topbar {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: stretch;
+  gap: 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--sc-border);
+  background: linear-gradient(180deg, var(--sc-surface-2) 0%, var(--sc-surface) 100%);
+  position: relative;
+  /* explicit reset of properties leaked from global `.topbar` (shell.css) */
+  grid-area: auto;
+  z-index: auto;
+  border-bottom: 1px solid var(--sc-border);
+}
+.swarm-ctrl .sc-topbar::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: linear-gradient(180deg, var(--sc-amber), var(--sc-cyan));
+}
+.swarm-ctrl .sc-topbar::after {
+  /* shell.css `.topbar::after` adds an absolute-positioned accent line at
+     bottom: -1px. Suppress it inside the scoped surface so it doesn't leak
+     under the swarm topbar. */
+  content: none;
+}
+
+.swarm-ctrl .sc-brand {
+  display: flex; align-items: center; gap: 12px;
+  /* explicit reset of properties leaked from global `.brand` (shell.css) */
+  height: auto; padding-right: 0; border-right: 0;
+}
+.swarm-ctrl .brand-mark {
+  width: 36px; height: 36px;
+  border: 1px solid var(--sc-border-2);
+  background: var(--sc-bg);
+  display: grid; place-items: center;
+  position: relative;
+}
+.swarm-ctrl .brand-mark::before, .swarm-ctrl .brand-mark::after {
+  content: ''; position: absolute; background: var(--sc-amber);
+}
+.swarm-ctrl .brand-mark::before { width: 18px; height: 1px; animation: sc-scan-h 3s infinite linear; }
+.swarm-ctrl .brand-mark::after  { width: 1px; height: 18px; animation: sc-scan-v 3s infinite linear; }
+@keyframes sc-scan-h { 0%,100% { transform: translateY(-9px); opacity: 0.3 } 50% { transform: translateY(9px); opacity: 1 } }
+@keyframes sc-scan-v { 0%,100% { transform: translateX(9px); opacity: 0.3 } 50% { transform: translateX(-9px); opacity: 1 } }
+
+.swarm-ctrl .brand-text { line-height: 1.15; }
+.swarm-ctrl .brand-text .lbl { font-family: var(--sc-font-display); font-size: 9px; letter-spacing: 0.3em; color: var(--sc-text-dim); }
+.swarm-ctrl .brand-text h1 { font-family: var(--sc-font-display); font-size: 15px; letter-spacing: 0.06em; color: var(--sc-text); margin-top: 1px; }
+.swarm-ctrl .brand-text .sub { font-family: var(--sc-font-mono); font-size: 10px; color: var(--sc-text-dim); margin-top: 2px; max-width: 60ch; }
+
+.swarm-ctrl .meters {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 1px;
+  background: var(--sc-border);
+  border: 1px solid var(--sc-border);
+}
+.swarm-ctrl .meter {
+  background: var(--sc-bg-2);
+  padding: 6px 10px;
+  display: flex; flex-direction: column;
+  justify-content: center; gap: 2px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.swarm-ctrl .meter:hover { background: var(--sc-surface-2); }
+.swarm-ctrl .meter .k { font-family: var(--sc-font-display); font-size: 8px; letter-spacing: 0.22em; color: var(--sc-muted); text-transform: uppercase; }
+.swarm-ctrl .meter .v { font-family: var(--sc-font-mono); font-size: 16px; font-weight: 600; color: var(--sc-text); line-height: 1.2; }
+.swarm-ctrl .meter .v.amber { color: var(--sc-amber); }
+.swarm-ctrl .meter .v.cyan  { color: var(--sc-cyan); }
+.swarm-ctrl .meter .v.green { color: var(--sc-green); }
+.swarm-ctrl .meter .v.red   { color: var(--sc-red); }
+.swarm-ctrl .meter .delta { font-size: 9px; color: var(--sc-text-dim); }
+.swarm-ctrl .meter .delta.up { color: var(--sc-green); }
+.swarm-ctrl .meter .delta.dn { color: var(--sc-red); }
+
+.swarm-ctrl .clock {
+  display: flex; flex-direction: column; align-items: flex-end; justify-content: center;
+  border-left: 1px solid var(--sc-border);
+  padding-left: 14px; min-width: 170px;
+}
+.swarm-ctrl .clock .now { font-family: var(--sc-font-display); font-size: 20px; color: var(--sc-amber); letter-spacing: 0.04em; text-shadow: 0 0 12px rgba(255,179,71,0.35); }
+.swarm-ctrl .clock .cap { font-size: 9px; color: var(--sc-muted); letter-spacing: 0.18em; text-transform: uppercase; font-family: var(--sc-font-display); }
+.swarm-ctrl .clock .uptime { font-size: 10px; color: var(--sc-text-dim); margin-top: 4px; }
+
+/* ─── BREADCRUMB / NAV ──────────────────────────────────────────────── */
+.swarm-ctrl .nav-bar {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--sc-border);
+  background: var(--sc-surface);
+  padding: 6px 12px 6px 14px;
+  position: relative;
+}
+.swarm-ctrl .crumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--sc-font-mono);
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+.swarm-ctrl .crumb {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px;
+  background: var(--sc-bg-2);
+  border: 1px solid var(--sc-border);
+  color: var(--sc-text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+  text-decoration: none;
+}
+.swarm-ctrl .crumb:hover { color: var(--sc-text); border-color: var(--sc-border-2); background: var(--sc-surface-2); }
+.swarm-ctrl .crumb.active { color: var(--sc-amber); border-color: var(--sc-amber-d); background: rgba(255,179,71,0.07); }
+.swarm-ctrl .crumb .pre {
+  font-family: var(--sc-font-display);
+  font-size: 8px; letter-spacing: 0.2em; color: var(--sc-muted); text-transform: uppercase;
+}
+.swarm-ctrl .crumb.active .pre { color: var(--sc-amber-d); }
+.swarm-ctrl .crumb-sep {
+  font-family: var(--sc-font-display); font-size: 11px; color: var(--sc-muted); padding: 0 2px;
+}
+.swarm-ctrl .nav-ops { display: flex; gap: 4px; }
+.swarm-ctrl .nav-btn {
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  padding: 5px 12px;
+  background: var(--sc-bg-2);
+  border: 1px solid var(--sc-border);
+  color: var(--sc-text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.swarm-ctrl .nav-btn:hover { color: var(--sc-text); border-color: var(--sc-border-2); }
+.swarm-ctrl .nav-btn.go { color: var(--sc-amber); border-color: var(--sc-amber-d); }
+.swarm-ctrl .nav-btn.go:hover { background: rgba(255,179,71,0.1); }
+
+/* ─── PIPELINE ──────────────────────────────────────────────────────── */
+.swarm-ctrl .pipeline {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0;
+  border: 1px solid var(--sc-border);
+  background: var(--sc-surface);
+}
+.swarm-ctrl .pipeline .stage {
+  position: relative;
+  padding: 12px 16px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 14px;
+  align-items: center;
+  cursor: pointer;
+  border-right: 1px solid var(--sc-border);
+  transition: background 0.18s;
+}
+.swarm-ctrl .pipeline .stage:last-child { border-right: 0; }
+.swarm-ctrl .pipeline .stage:hover { background: var(--sc-surface-2); }
+.swarm-ctrl .pipeline .stage.active {
+  background: linear-gradient(180deg, rgba(255,179,71,0.05), transparent);
+}
+/* Selected stage (the mode the user has drilled into) gets a full amber
+ * border so it reads as "you are here" regardless of which lifecycle state
+ * the stage is in (done / active / queued). The 2px box-shadow inset paints
+ * inside the cell so it never collides with the strip's outer 1px border. */
+.swarm-ctrl .pipeline .stage.selected {
+  box-shadow: inset 0 0 0 2px var(--sc-amber);
+  background: rgba(255, 179, 71, 0.06);
+}
+.swarm-ctrl .pipeline .stage.done .num,
+.swarm-ctrl .pipeline .stage.done .lbl  { color: var(--sc-green); }
+.swarm-ctrl .pipeline .stage.done .dot { background: var(--sc-green); box-shadow: 0 0 8px var(--sc-green-d); }
+.swarm-ctrl .pipeline .stage.active .num,
+.swarm-ctrl .pipeline .stage.active .lbl { color: var(--sc-amber); }
+.swarm-ctrl .pipeline .stage.active .dot { background: var(--sc-amber); box-shadow: 0 0 12px var(--sc-amber); animation: sc-pulse 1.6s infinite; }
+.swarm-ctrl .pipeline .stage.queued .num,
+.swarm-ctrl .pipeline .stage.queued .lbl { color: var(--sc-muted); }
+.swarm-ctrl .pipeline .stage.queued .dot { background: var(--sc-border-2); }
+
+.swarm-ctrl .pipeline .num {
+  font-family: var(--sc-font-display);
+  font-size: 22px;
+  letter-spacing: 0.04em;
+  color: var(--sc-text-dim);
+  width: 36px;
+  text-align: center;
+}
+.swarm-ctrl .pipeline .meta { line-height: 1.25; min-width: 0; }
+.swarm-ctrl .pipeline .lbl { font-family: var(--sc-font-display); font-size: 11px; letter-spacing: 0.18em; color: var(--sc-text); text-transform: uppercase; }
+.swarm-ctrl .pipeline .val { font-size: 10px; color: var(--sc-text-dim); margin-top: 2px; font-family: var(--sc-font-mono); }
+.swarm-ctrl .pipeline .stage-badges {
+  margin-top: 4px;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.swarm-ctrl .pipeline .sb-pill {
+  font-family: var(--sc-font-display);
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  padding: 2px 6px;
+  border: 1px solid var(--sc-border);
+  background: var(--sc-bg-2);
+  color: var(--sc-text-dim);
+  text-transform: uppercase;
+}
+.swarm-ctrl .pipeline .sb-pill.warn { color: var(--sc-amber); border-color: var(--sc-amber-d); }
+.swarm-ctrl .pipeline .sb-pill.stl  { color: var(--sc-red);   border-color: var(--sc-red-d); }
+.swarm-ctrl .pipeline .dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--sc-border-2);
+}
+@keyframes sc-pulse {
+  0%, 100% { opacity: 1 }
+  50%      { opacity: 0.4 }
+}
+
+/* ─── INDEX (multi-story landing) ───────────────────────────────────── */
+.swarm-ctrl .index {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+}
+.swarm-ctrl .index-toolbar {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--sc-border);
+  background: var(--sc-surface);
+}
+.swarm-ctrl .index-toolbar .filters { display: flex; gap: 8px; flex-wrap: wrap; }
+.swarm-ctrl .index-toolbar .pill {
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  padding: 4px 10px;
+  border: 1px solid var(--sc-border);
+  background: var(--sc-bg-2);
+  color: var(--sc-text-dim);
+  cursor: pointer;
+  text-transform: uppercase;
+}
+.swarm-ctrl .index-toolbar .pill.active {
+  color: var(--sc-amber);
+  border-color: var(--sc-amber-d);
+  background: rgba(255,179,71,0.07);
+}
+.swarm-ctrl .index-toolbar .pill .ct {
+  margin-left: 6px;
+  color: var(--sc-muted);
+}
+.swarm-ctrl .index-toolbar .pill.active .ct { color: var(--sc-amber-d); }
+.swarm-ctrl .index-toolbar .actions { display: flex; gap: 6px; }
+.swarm-ctrl .index-toolbar .btn {
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  padding: 6px 14px;
+  background: var(--sc-bg-2);
+  border: 1px solid var(--sc-border);
+  color: var(--sc-text-dim);
+  cursor: pointer;
+}
+.swarm-ctrl .index-toolbar .btn.primary {
+  color: var(--sc-amber);
+  border-color: var(--sc-amber-d);
+  background: rgba(255,179,71,0.07);
+}
+.swarm-ctrl .index-toolbar .btn:hover { color: var(--sc-text); border-color: var(--sc-border-2); }
+
+.swarm-ctrl .story-list {
+  display: grid;
+  gap: 8px;
+}
+.swarm-ctrl .story-row {
+  display: grid;
+  grid-template-columns: 56px 1fr auto auto auto;
+  align-items: stretch;
+  gap: 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--sc-border);
+  background: linear-gradient(180deg, var(--sc-surface) 0%, var(--sc-bg-2) 100%);
+  cursor: pointer;
+  position: relative;
+  transition: all 0.18s;
+}
+.swarm-ctrl .story-row::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--sc-amber);
+  opacity: 0.6;
+}
+.swarm-ctrl .story-row.phase-plan::before      { background: var(--sc-blue); }
+.swarm-ctrl .story-row.phase-decompose::before { background: var(--sc-magenta); }
+.swarm-ctrl .story-row.phase-implement::before { background: var(--sc-amber); }
+.swarm-ctrl .story-row.phase-review::before    { background: var(--sc-magenta); }
+.swarm-ctrl .story-row.phase-qa::before        { background: var(--sc-green); }
+.swarm-ctrl .story-row.phase-done::before      { background: var(--sc-green); opacity: 0.4; }
+.swarm-ctrl .story-row.stalled::before         { background: var(--sc-red); animation: sc-pulse 1.6s infinite; }
+
+.swarm-ctrl .story-row:hover {
+  border-color: var(--sc-border-2);
+  background: linear-gradient(180deg, var(--sc-surface-2) 0%, var(--sc-bg-2) 100%);
+}
+
+.swarm-ctrl .story-row .sr-num {
+  font-family: var(--sc-font-display);
+  font-size: 22px;
+  letter-spacing: 0.04em;
+  color: var(--sc-text-dim);
+  align-self: center;
+  text-align: center;
+}
+.swarm-ctrl .story-row .sr-meta { min-width: 0; }
+.swarm-ctrl .story-row .sr-id {
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: var(--sc-muted);
+  text-transform: uppercase;
+}
+.swarm-ctrl .story-row .sr-title {
+  font-family: var(--sc-font-display);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--sc-text);
+  margin-top: 2px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.swarm-ctrl .story-row .sr-sub {
+  font-family: var(--sc-font-mono);
+  font-size: 10px;
+  color: var(--sc-text-dim);
+  margin-top: 3px;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.swarm-ctrl .story-row .sr-sub .seg { display: inline-flex; gap: 4px; align-items: center; }
+.swarm-ctrl .story-row .sr-sub b { color: var(--sc-text); font-weight: 600; }
+
+.swarm-ctrl .phase-badge {
+  align-self: center;
+  font-family: var(--sc-font-display);
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  padding: 6px 12px;
+  border: 1px solid var(--sc-border);
+  background: var(--sc-bg-2);
+  color: var(--sc-text-dim);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.swarm-ctrl .phase-badge.plan      { color: var(--sc-blue);    border-color: var(--sc-blue-d); }
+.swarm-ctrl .phase-badge.decompose { color: var(--sc-magenta); border-color: var(--sc-magenta-d); }
+.swarm-ctrl .phase-badge.implement { color: var(--sc-amber);   border-color: var(--sc-amber-d); }
+.swarm-ctrl .phase-badge.review    { color: var(--sc-magenta); border-color: var(--sc-magenta-d); }
+.swarm-ctrl .phase-badge.qa        { color: var(--sc-green);   border-color: var(--sc-green-d); }
+.swarm-ctrl .phase-badge.done      { color: var(--sc-green);   border-color: var(--sc-green-d); opacity: 0.7; }
+
+.swarm-ctrl .sr-progress {
+  align-self: center;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
+  min-width: 110px;
+}
+.swarm-ctrl .sr-progress .label {
+  font-family: var(--sc-font-display);
+  font-size: 8px;
+  letter-spacing: 0.2em;
+  color: var(--sc-muted);
+  text-transform: uppercase;
+}
+.swarm-ctrl .sr-progress .bar {
+  width: 110px;
+  height: 4px;
+  background: var(--sc-surface-3);
+  position: relative;
+  overflow: hidden;
+}
+.swarm-ctrl .sr-progress .bar .fill {
+  position: absolute; inset: 0;
+  background: linear-gradient(90deg, var(--sc-amber), var(--sc-cyan));
+  transform-origin: left;
+}
+.swarm-ctrl .sr-progress .pct {
+  font-family: var(--sc-font-mono);
+  font-size: 11px;
+  color: var(--sc-text);
+}
+
+.swarm-ctrl .sr-score {
+  align-self: center;
+  display: flex; flex-direction: column; align-items: center;
+  border-left: 1px solid var(--sc-border);
+  padding-left: 14px;
+  min-width: 76px;
+}
+.swarm-ctrl .sr-score .v {
+  font-family: var(--sc-font-display);
+  font-size: 20px;
+  color: var(--sc-text);
+  line-height: 1.1;
+}
+.swarm-ctrl .sr-score.pass .v { color: var(--sc-green); }
+.swarm-ctrl .sr-score.warn .v { color: var(--sc-amber); }
+.swarm-ctrl .sr-score.fail .v { color: var(--sc-red); }
+.swarm-ctrl .sr-score .k {
+  font-family: var(--sc-font-display);
+  font-size: 8px;
+  letter-spacing: 0.22em;
+  color: var(--sc-muted);
+  margin-top: 2px;
+  text-transform: uppercase;
+}
+
+/* Workstream chip strip on each story row — tiny squares per workstream */
+.swarm-ctrl .ws-strip {
+  display: flex; flex-wrap: wrap; gap: 3px;
+  margin-top: 6px;
+  align-items: center;
+}
+.swarm-ctrl .ws-chip {
+  width: 10px; height: 10px;
+  border: 1px solid var(--sc-border);
+  background: var(--sc-bg-2);
+}
+.swarm-ctrl .ws-chip.planning { background: var(--sc-surface-3); }
+.swarm-ctrl .ws-chip.active   { background: var(--sc-amber); border-color: var(--sc-amber-d); }
+.swarm-ctrl .ws-chip.review   { background: var(--sc-magenta); border-color: var(--sc-magenta-d); }
+.swarm-ctrl .ws-chip.merging  { background: var(--sc-cyan); border-color: var(--sc-cyan-d); }
+.swarm-ctrl .ws-chip.complete { background: var(--sc-green); border-color: var(--sc-green-d); }
+.swarm-ctrl .ws-chip.blocked  { background: var(--sc-red); border-color: var(--sc-red-d); opacity: 0.7; }
+
+/* Empty state */
+.swarm-ctrl .empty {
+  border: 1px solid var(--sc-border);
+  background: var(--sc-surface);
+  padding: 48px 32px;
+  text-align: center;
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+}
+.swarm-ctrl .empty .lbl {
+  font-family: var(--sc-font-display);
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  color: var(--sc-text-dim);
+  text-transform: uppercase;
+}
+.swarm-ctrl .empty .sub {
+  font-size: 11px;
+  color: var(--sc-text-dim);
+  max-width: 60ch;
+}
+
+/* ─── MODE PANE ─────────────────────────────────────────────────────── */
+.swarm-ctrl .mode-pane {
+  display: none;
+  flex: 1;
+  min-height: 0;
+}
+.swarm-ctrl .mode-pane.active {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  gap: 8px;
+  transition: grid-template-columns 220ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+/* Collapsed master — narrow rail (just the chevron + panel-hd label
+   rotated). Detail panel expands to fill the remaining space. */
+.swarm-ctrl .mode-pane.active.master-collapsed {
+  grid-template-columns: 36px 1fr;
+}
+.swarm-ctrl .mode-pane.active.master-collapsed .panel-bd,
+.swarm-ctrl .mode-pane.active.master-collapsed .panel-hd > span:not(.panel-collapse-btn) {
+  display: none;
+}
+.swarm-ctrl .mode-pane.active.master-collapsed .panel-hd {
+  flex-direction: column;
+  padding: 8px 0;
+  height: 100%;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 12px;
+}
+.swarm-ctrl .panel-collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: rgba(255,179,71,0.10);
+  border: 1px solid var(--sc-amber-d);
+  color: var(--sc-amber);
+  cursor: pointer;
+  font-family: var(--sc-font-display);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+  padding: 0;
+  flex-shrink: 0;
+  transition: color 0.15s, border-color 0.15s, background 0.15s, transform 0.15s;
+}
+.swarm-ctrl .panel-collapse-btn:hover {
+  color: var(--sc-text);
+  border-color: var(--sc-amber);
+  background: rgba(255,179,71,0.18);
+  transform: scale(1.06);
+}
+/* Collapsed rail — show the chevron + a vertical-text hint so the user
+   knows what's hidden behind the rail. */
+.swarm-ctrl .mode-pane.active.master-collapsed .panel-hd::after {
+  content: 'NAV';
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.3em;
+  color: var(--sc-text-dim);
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  margin-top: 8px;
+}
+.swarm-ctrl .mode-stub {
+  display: grid;
+  place-items: center;
+  padding: 64px 32px;
+  text-align: center;
+  gap: 8px;
+}
+.swarm-ctrl .mode-stub .lbl {
+  font-family: var(--sc-font-display);
+  font-size: 12px;
+  letter-spacing: 0.24em;
+  color: var(--sc-amber);
+  text-transform: uppercase;
+}
+.swarm-ctrl .mode-stub .sub {
+  font-size: 11px;
+  color: var(--sc-text-dim);
+  max-width: 60ch;
+}
+
+/* ─── PHASE BOARD (master, IMPL mode) ───────────────────────────────── */
+.swarm-ctrl .phase-board { display: flex; flex-direction: column; gap: 8px; }
+.swarm-ctrl .phase {
+  border: 1px solid var(--sc-border);
+  background: var(--sc-surface);
+  position: relative;
+  cursor: pointer;
+  transition: border-color 0.18s, transform 0.18s;
+}
+.swarm-ctrl .phase:hover { border-color: var(--sc-border-2); }
+.swarm-ctrl .phase::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+  background: var(--sc-muted);
+}
+.swarm-ctrl .phase.done::before    { background: var(--sc-green);   box-shadow: 0 0 8px var(--sc-green); }
+.swarm-ctrl .phase.active::before  { background: var(--sc-cyan);    box-shadow: 0 0 8px var(--sc-cyan); animation: sc-pulse 1.6s infinite; }
+.swarm-ctrl .phase.review::before  { background: var(--sc-magenta); box-shadow: 0 0 8px var(--sc-magenta); }
+.swarm-ctrl .phase.blocked::before {
+  background: repeating-linear-gradient(0deg, var(--sc-muted) 0 4px, transparent 4px 8px);
+}
+.swarm-ctrl .phase.stalled::before { background: var(--sc-red); box-shadow: 0 0 8px var(--sc-red); animation: sc-pulse 1s infinite; }
+.swarm-ctrl .phase.selected {
+  border-color: var(--sc-amber);
+  box-shadow: 0 0 0 1px var(--sc-amber-d), 0 0 18px rgba(255,179,71,0.18);
+}
+
+.swarm-ctrl .phase-hd {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 14px;
+  border-bottom: 1px solid var(--sc-border);
+}
+.swarm-ctrl .phase-no { font-family: var(--sc-font-display); font-size: 9px; letter-spacing: 0.22em; color: var(--sc-muted); }
+.swarm-ctrl .phase-no b { color: var(--sc-text); font-weight: 400; }
+.swarm-ctrl .phase-title {
+  font-family: var(--sc-font-mono);
+  font-size: 11px; font-weight: 500;
+  color: var(--sc-text); letter-spacing: 0.01em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.swarm-ctrl .badge {
+  font-family: var(--sc-font-display);
+  font-size: 8px; letter-spacing: 0.18em;
+  padding: 2px 7px;
+  border: 1px solid currentColor;
+  text-transform: uppercase;
+}
+.swarm-ctrl .badge.done    { color: var(--sc-green);   background: rgba(121,224,138,0.06); }
+.swarm-ctrl .badge.active  { color: var(--sc-cyan);    background: rgba(94,234,212,0.06); }
+.swarm-ctrl .badge.review  { color: var(--sc-magenta); background: rgba(200,155,255,0.06); }
+.swarm-ctrl .badge.blocked { color: var(--sc-muted);   background: rgba(255,255,255,0.02); }
+.swarm-ctrl .badge.stalled { color: var(--sc-red);     background: rgba(255,107,128,0.06); animation: sc-blink 1.2s infinite; }
+
+.swarm-ctrl .score-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--sc-font-mono);
+  font-size: 10px; font-weight: 600;
+  padding: 2px 6px;
+  border: 1px solid var(--sc-border-2);
+  background: var(--sc-bg-2);
+}
+.swarm-ctrl .score-pill::before {
+  content: 'SCR';
+  font-family: var(--sc-font-display);
+  font-size: 7px; letter-spacing: 0.15em;
+  color: var(--sc-muted); margin-right: 1px;
+}
+.swarm-ctrl .score-pill.pass { color: var(--sc-green); border-color: var(--sc-green-d); }
+.swarm-ctrl .score-pill.warn { color: var(--sc-amber); border-color: var(--sc-amber-d); }
+.swarm-ctrl .score-pill.fail { color: var(--sc-red);   border-color: var(--sc-red-d); }
+
+.swarm-ctrl .phase-bd { padding: 8px 10px 10px 14px; }
+
+.swarm-ctrl .progress {
+  height: 4px; background: var(--sc-bg);
+  border: 1px solid var(--sc-border);
+  position: relative; overflow: hidden;
+  margin-bottom: 8px;
+}
+.swarm-ctrl .progress .bar {
+  position: absolute; top: 0; bottom: 0; left: 0;
+  background: linear-gradient(90deg, var(--sc-cyan-d), var(--sc-cyan));
+  transition: width 1s ease;
+}
+.swarm-ctrl .progress.done .bar   { background: linear-gradient(90deg, var(--sc-green-d),   var(--sc-green)); }
+.swarm-ctrl .progress.review .bar { background: linear-gradient(90deg, var(--sc-magenta-d), var(--sc-magenta)); }
+
+.swarm-ctrl .stages { display: grid; gap: 3px; }
+.swarm-ctrl .stage-row {
+  display: grid;
+  grid-template-columns: 60px 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  background: var(--sc-bg-2);
+  border-left: 2px solid var(--sc-border-2);
+  font-size: 10px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.swarm-ctrl .stage-row:hover { background: var(--sc-surface-2); transform: translateX(2px); }
+.swarm-ctrl .stage-row.done    { border-left-color: var(--sc-green);   opacity: 0.78; }
+.swarm-ctrl .stage-row.active  { border-left-color: var(--sc-cyan);    background: linear-gradient(90deg, rgba(94,234,212,0.06), transparent 60%); }
+.swarm-ctrl .stage-row.review  { border-left-color: var(--sc-magenta); background: linear-gradient(90deg, rgba(200,155,255,0.06), transparent 60%); }
+.swarm-ctrl .stage-row.queued  { border-left-color: var(--sc-muted); }
+.swarm-ctrl .stage-row.blocked { border-left-color: var(--sc-muted); opacity: 0.7; }
+.swarm-ctrl .stage-row.stalled { border-left-color: var(--sc-red);     background: linear-gradient(90deg, rgba(255,107,128,0.06), transparent 60%); }
+.swarm-ctrl .stage-row.selected { box-shadow: inset 0 0 0 1px var(--sc-amber); background: rgba(255,179,71,0.06); }
+.swarm-ctrl .stage-row .id   { font-family: var(--sc-font-display); font-size: 9px; letter-spacing: 0.1em; color: var(--sc-text-dim); }
+.swarm-ctrl .stage-row .name { font-family: var(--sc-font-mono); font-size: 10px; color: var(--sc-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.swarm-ctrl .panel-bd { min-width: 0; }
+.swarm-ctrl .stage-row .pts  { font-family: var(--sc-font-display); font-size: 8px; letter-spacing: 0.1em; padding: 1px 5px; border: 1px solid var(--sc-border-2); color: var(--sc-text-dim); }
+.swarm-ctrl .stage-row .stat { font-family: var(--sc-font-display); font-size: 8px; letter-spacing: 0.18em; color: var(--sc-muted); text-transform: uppercase; min-width: 56px; text-align: right; }
+.swarm-ctrl .stage-row.done    .stat { color: var(--sc-green); }
+.swarm-ctrl .stage-row.active  .stat { color: var(--sc-cyan); }
+.swarm-ctrl .stage-row.review  .stat { color: var(--sc-magenta); }
+.swarm-ctrl .stage-row.stalled .stat { color: var(--sc-red); }
+
+.swarm-ctrl .attention {
+  border: 1px solid var(--sc-border);
+  background: var(--sc-surface);
+  margin-bottom: 6px;
+  position: relative;
+}
+.swarm-ctrl .attention-hd {
+  padding: 6px 12px;
+  font-family: var(--sc-font-display);
+  font-size: 9px; letter-spacing: 0.22em;
+  color: var(--sc-red);
+  border-bottom: 1px solid var(--sc-border);
+  background: linear-gradient(90deg, rgba(255,107,128,0.06), transparent 70%);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.swarm-ctrl .attention-hd::before { content: '⚠ '; color: var(--sc-red); }
+.swarm-ctrl .attention-bd { padding: 6px 8px; display: grid; gap: 4px; }
+.swarm-ctrl .att-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  background: var(--sc-bg-2);
+  border-left: 2px solid var(--sc-red);
+  font-size: 10px;
+  cursor: pointer;
+}
+.swarm-ctrl .att-item:hover { background: var(--sc-surface-2); transform: translateX(2px); }
+.swarm-ctrl .att-item .id { font-family: var(--sc-font-display); font-size: 9px; letter-spacing: 0.1em; color: var(--sc-red); }
+.swarm-ctrl .att-item .reason { color: var(--sc-text-dim); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@keyframes sc-blink { 50% { opacity: 0.45; } }
+
+/* ─── DOC LIST (master, DESIGN mode) ────────────────────────────────── */
+.swarm-ctrl .doc-list { display: grid; gap: 8px; }
+.swarm-ctrl .doc-card {
+  border: 1px solid var(--sc-border);
+  background: var(--sc-surface);
+  padding: 10px 12px 10px 16px;
+  position: relative;
+  cursor: pointer;
+  transition: border-color 0.18s;
+}
+.swarm-ctrl .doc-card:hover { border-color: var(--sc-border-2); }
+.swarm-ctrl .doc-card::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+  background: var(--sc-muted);
+}
+.swarm-ctrl .doc-card.merged::before { background: var(--sc-green); box-shadow: 0 0 8px var(--sc-green); }
+.swarm-ctrl .doc-card.review::before { background: var(--sc-magenta); }
+.swarm-ctrl .doc-card.draft::before  { background: var(--sc-amber); }
+.swarm-ctrl .doc-card.selected      { border-color: var(--sc-amber); box-shadow: 0 0 0 1px var(--sc-amber-d), 0 0 14px rgba(255,179,71,0.16); }
+.swarm-ctrl .doc-card .doc-no { font-family: var(--sc-font-display); font-size: 9px; letter-spacing: 0.22em; color: var(--sc-muted); }
+.swarm-ctrl .doc-card .doc-title {
+  font-family: var(--sc-font-mono); font-size: 11px; color: var(--sc-text);
+  margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.swarm-ctrl .doc-card .doc-meta {
+  font-family: var(--sc-font-mono); font-size: 9px; color: var(--sc-text-dim); margin-top: 4px;
+  display: flex; gap: 10px; flex-wrap: wrap;
+  /* `b` inside is a long unbreakable id (e.g. story/code-intelligence-AGENT-MEMORY/plan)
+     which would otherwise expand the parent past the 360px master track. */
+  min-width: 0;
+}
+.swarm-ctrl .doc-card .doc-meta > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.swarm-ctrl .doc-card .doc-meta b { font-weight: 600; }
+.swarm-ctrl .doc-card .doc-status {
+  position: absolute; top: 8px; right: 10px;
+  font-family: var(--sc-font-display); font-size: 8px; letter-spacing: 0.18em;
+  padding: 2px 7px; border: 1px solid currentColor; text-transform: uppercase;
+}
+.swarm-ctrl .doc-card.merged .doc-status { color: var(--sc-green); }
+.swarm-ctrl .doc-card.review .doc-status { color: var(--sc-magenta); }
+.swarm-ctrl .doc-card.draft  .doc-status { color: var(--sc-amber); }
+
+/* ─── GATE LIST (master, RELEASE mode) ──────────────────────────────── */
+.swarm-ctrl .gate-list { display: grid; gap: 8px; }
+.swarm-ctrl .gate-card {
+  border: 1px solid var(--sc-border);
+  background: var(--sc-surface);
+  padding: 10px 12px 10px 16px;
+  position: relative;
+  cursor: pointer;
+}
+.swarm-ctrl .gate-card::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--sc-muted);
+}
+.swarm-ctrl .gate-card.pass::before    { background: var(--sc-green);   box-shadow: 0 0 8px var(--sc-green); }
+.swarm-ctrl .gate-card.warn::before    { background: var(--sc-amber); }
+.swarm-ctrl .gate-card.fail::before    { background: var(--sc-red);     box-shadow: 0 0 8px var(--sc-red); animation: sc-pulse 1s infinite; }
+.swarm-ctrl .gate-card.pending::before { background: var(--sc-muted); }
+.swarm-ctrl .gate-card .gate-hd { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.swarm-ctrl .gate-card .gate-name { font-family: var(--sc-font-display); font-size: 11px; letter-spacing: 0.16em; color: var(--sc-text); text-transform: uppercase; }
+.swarm-ctrl .gate-card .gate-pct  { font-family: var(--sc-font-mono); font-size: 13px; font-weight: 600; color: var(--sc-text); }
+.swarm-ctrl .gate-card.pass .gate-pct { color: var(--sc-green); }
+.swarm-ctrl .gate-card.warn .gate-pct { color: var(--sc-amber); }
+.swarm-ctrl .gate-card.fail .gate-pct { color: var(--sc-red); }
+.swarm-ctrl .gate-card .gate-summary { font-family: var(--sc-font-mono); font-size: 10px; color: var(--sc-text-dim); margin-top: 4px; }
+.swarm-ctrl .gate-card .gate-bar {
+  height: 4px; background: var(--sc-bg); border: 1px solid var(--sc-border);
+  position: relative; overflow: hidden; margin-top: 8px;
+}
+.swarm-ctrl .gate-card .gate-bar .fill { position: absolute; left: 0; top: 0; bottom: 0; }
+.swarm-ctrl .gate-card.pass .gate-bar .fill { background: linear-gradient(90deg, var(--sc-green-d),   var(--sc-green)); }
+.swarm-ctrl .gate-card.warn .gate-bar .fill { background: linear-gradient(90deg, var(--sc-amber-d),   var(--sc-amber)); }
+.swarm-ctrl .gate-card.fail .gate-bar .fill { background: linear-gradient(90deg, var(--sc-red-d),     var(--sc-red)); }
+.swarm-ctrl .gate-card.pending .gate-bar .fill { background: var(--sc-muted); }
+
+/* ─── DETAIL PANEL — TABS ───────────────────────────────────────────── */
+/* `.sc-detail-panel` (not `.detail-panel`) — the unscoped name collides
+ * with the slide-in drawer pattern in detail-panel.css which sets
+ * `position: fixed; width: 420px; transform: translateX(100%)` and
+ * hijacks the grid layout. */
+.swarm-ctrl .sc-detail-panel {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+  min-width: 0;
+}
+.swarm-ctrl .tabs {
+  display: flex;
+  background: var(--sc-surface-2);
+  border-bottom: 1px solid var(--sc-border);
+  padding: 0 6px;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.swarm-ctrl .tab {
+  padding: 9px 14px 8px;
+  font-family: var(--sc-font-display);
+  font-size: 10px; letter-spacing: 0.18em;
+  color: var(--sc-text-dim);
+  border: 0;
+  background: transparent;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  text-transform: uppercase;
+  display: inline-flex; align-items: center; gap: 8px;
+  white-space: nowrap;
+  position: relative;
+}
+.swarm-ctrl .tab:hover { color: var(--sc-text); }
+.swarm-ctrl .tab.active { color: var(--sc-amber); border-bottom-color: var(--sc-amber); }
+.swarm-ctrl .tab .ct {
+  font-size: 8px; letter-spacing: 0.15em;
+  padding: 1px 5px;
+  background: var(--sc-bg);
+  border: 1px solid var(--sc-border-2);
+  color: var(--sc-text-dim);
+}
+.swarm-ctrl .tab.active .ct { color: var(--sc-amber); border-color: var(--sc-amber-d); }
+.swarm-ctrl .tab.disabled { color: var(--sc-muted); cursor: not-allowed; }
+.swarm-ctrl .tab.disabled .ct { color: var(--sc-muted); border-color: var(--sc-border); background: transparent; }
+.swarm-ctrl .tab.disabled::after {
+  content: ''; position: absolute; left: 14px; right: 14px; top: 50%;
+  height: 1px; background: var(--sc-muted); opacity: 0.45;
+}
+.swarm-ctrl .tab.disabled:hover { color: var(--sc-muted); border-bottom-color: transparent; }
+
+.swarm-ctrl .tab-body { overflow: hidden; min-height: 0; position: relative; display: flex; flex-direction: column; }
+.swarm-ctrl .tab-pane { display: none; height: 100%; overflow: hidden; flex-direction: column; }
+.swarm-ctrl .tab-pane.active { display: flex; }
+
+/* ─── OVERVIEW PANE ─────────────────────────────────────────────────── */
+.swarm-ctrl .ov-grid { display: grid; grid-template-rows: auto 1fr; height: 100%; min-height: 0; }
+.swarm-ctrl .ov-meta {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--sc-border);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: center;
+  background: linear-gradient(180deg, var(--sc-surface-2), transparent);
+}
+.swarm-ctrl .ov-headline { font-family: var(--sc-font-display); font-size: 12px; letter-spacing: 0.06em; color: var(--sc-text); }
+.swarm-ctrl .ov-headline .pre { color: var(--sc-muted); margin-right: 8px; }
+.swarm-ctrl .ov-sub { font-size: 10px; color: var(--sc-text-dim); margin-top: 3px; }
+
+.swarm-ctrl .ov-split { display: grid; grid-template-columns: 1fr 280px; min-height: 0; height: 100%; }
+.swarm-ctrl .ov-split-l { overflow-y: auto; padding: 10px 12px; border-right: 1px solid var(--sc-border); min-width: 0; }
+.swarm-ctrl .ov-split-r { overflow: hidden auto; padding: 10px 12px; background: var(--sc-bg-2); min-width: 0; }
+
+.swarm-ctrl .pairs { display: grid; gap: 8px; }
+.swarm-ctrl .pair {
+  border: 1px solid var(--sc-border);
+  background: var(--sc-bg-2);
+  padding: 8px 10px;
+  position: relative;
+  cursor: pointer;
+}
+.swarm-ctrl .pair:hover { border-color: var(--sc-border-2); transform: translateX(2px); }
+.swarm-ctrl .pair::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+  background: var(--sc-cyan);
+}
+.swarm-ctrl .pair.review::before  { background: var(--sc-magenta); }
+.swarm-ctrl .pair.e2e::before     { background: var(--sc-green); }
+.swarm-ctrl .pair.stalled::before { background: var(--sc-red); animation: sc-pulse 0.8s infinite; }
+
+.swarm-ctrl .pair-hd { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; gap: 6px; }
+.swarm-ctrl .pair-id { font-family: var(--sc-font-display); font-size: 10px; letter-spacing: 0.16em; color: var(--sc-text); }
+.swarm-ctrl .pair-id .team { color: var(--sc-cyan); margin-right: 6px; }
+.swarm-ctrl .pair.review  .pair-id .team { color: var(--sc-magenta); }
+.swarm-ctrl .pair.e2e     .pair-id .team { color: var(--sc-green); }
+.swarm-ctrl .pair-task { font-family: var(--sc-font-mono); font-size: 10px; color: var(--sc-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.swarm-ctrl .pair-agents {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+.swarm-ctrl .agent-tag {
+  border: 1px solid var(--sc-border-2);
+  background: var(--sc-surface);
+  padding: 4px 7px;
+  font-family: var(--sc-font-mono);
+  font-size: 10px;
+  display: flex; flex-direction: column; gap: 1px;
+  line-height: 1.15;
+}
+.swarm-ctrl .agent-tag .role  { font-family: var(--sc-font-display); font-size: 8px; letter-spacing: 0.18em; color: var(--sc-muted); }
+.swarm-ctrl .agent-tag .name  { color: var(--sc-text); }
+.swarm-ctrl .agent-tag .model { color: var(--sc-text-dim); font-size: 9px; }
+.swarm-ctrl .agent-tag.gen .role { color: var(--sc-amber); }
+.swarm-ctrl .agent-tag.evl .role { color: var(--sc-cyan); }
+.swarm-ctrl .pair-link { color: var(--sc-muted); font-family: var(--sc-font-mono); font-size: 14px; text-align: center; }
+
+.swarm-ctrl .pair-meters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 7px; }
+.swarm-ctrl .pair-m { background: var(--sc-surface); border: 1px solid var(--sc-border); padding: 4px 6px; line-height: 1.15; }
+.swarm-ctrl .pair-m .k { font-family: var(--sc-font-display); font-size: 8px; letter-spacing: 0.16em; color: var(--sc-muted); }
+.swarm-ctrl .pair-m .v { font-family: var(--sc-font-mono); font-size: 11px; color: var(--sc-text); font-weight: 600; }
+
+.swarm-ctrl .iter-bars { display: flex; gap: 3px; align-items: flex-end; height: 24px; }
+.swarm-ctrl .iter-bar {
+  flex: 1; background: var(--sc-surface); border: 1px solid var(--sc-border);
+  position: relative; display: flex; flex-direction: column; justify-content: flex-end;
+}
+.swarm-ctrl .iter-bar .fill { background: var(--sc-cyan-d); transition: height 0.5s ease; }
+.swarm-ctrl .iter-bar.pass .fill { background: linear-gradient(180deg, var(--sc-green), var(--sc-green-d)); }
+.swarm-ctrl .iter-bar.fail .fill { background: linear-gradient(180deg, var(--sc-red),   var(--sc-red-d)); }
+.swarm-ctrl .iter-bar.curr .fill { background: linear-gradient(180deg, var(--sc-amber), var(--sc-amber-d)); }
+.swarm-ctrl .iter-bar .lbl {
+  position: absolute; top: -1px; left: 50%; transform: translateX(-50%);
+  font-family: var(--sc-font-display); font-size: 8px; color: var(--sc-text);
+}
+
+/* swarm grid */
+.swarm-ctrl .swarm { display: grid; gap: 8px; }
+.swarm-ctrl .team {
+  background: var(--sc-bg-2);
+  border: 1px solid var(--sc-border);
+  padding: 7px 9px;
+}
+.swarm-ctrl .team-hd {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.swarm-ctrl .team-name { font-family: var(--sc-font-display); font-size: 10px; letter-spacing: 0.2em; color: var(--sc-text); text-transform: uppercase; }
+.swarm-ctrl .team.arch .team-name { color: var(--sc-t-arch); }
+.swarm-ctrl .team.eng  .team-name { color: var(--sc-t-eng); }
+.swarm-ctrl .team.rev  .team-name { color: var(--sc-t-rev); }
+.swarm-ctrl .team.qa   .team-name { color: var(--sc-t-qa); }
+
+.swarm-ctrl .team-load { height: 4px; background: var(--sc-bg); border: 1px solid var(--sc-border); overflow: hidden; position: relative; }
+.swarm-ctrl .team-load .bar { position: absolute; left: 0; top: 0; bottom: 0; background: var(--sc-text-dim); transition: width 0.6s ease; }
+.swarm-ctrl .team.arch .team-load .bar { background: linear-gradient(90deg, var(--sc-t-arch), transparent 130%); }
+.swarm-ctrl .team.eng  .team-load .bar { background: linear-gradient(90deg, var(--sc-t-eng),  transparent 130%); }
+.swarm-ctrl .team.rev  .team-load .bar { background: linear-gradient(90deg, var(--sc-t-rev),  transparent 130%); }
+.swarm-ctrl .team.qa   .team-load .bar { background: linear-gradient(90deg, var(--sc-t-qa),   transparent 130%); }
+
+.swarm-ctrl .team-count { font-family: var(--sc-font-mono); font-size: 10px; color: var(--sc-text); letter-spacing: 0.05em; }
+.swarm-ctrl .team-count .tot { color: var(--sc-muted); }
+
+.swarm-ctrl .team-grid { display: grid; grid-template-columns: repeat(20, 1fr); gap: 2px; }
+.swarm-ctrl .a {
+  aspect-ratio: 1;
+  background: var(--sc-surface);
+  border: 1px solid var(--sc-border);
+  position: relative;
+  display: grid; place-items: center;
+  transition: transform 0.2s, border-color 0.2s;
+}
+.swarm-ctrl .a:hover { transform: scale(1.5); z-index: 5; border-color: var(--sc-text-dim); }
+.swarm-ctrl .a::before {
+  content: ''; position: absolute; top: 1px; right: 1px;
+  width: 4px; height: 4px; border-radius: 50%;
+  background: var(--sc-muted);
+}
+.swarm-ctrl .a.idle::before    { background: var(--sc-muted); }
+.swarm-ctrl .a.gen::before     { background: var(--sc-amber);   box-shadow: 0 0 5px var(--sc-amber);   animation: sc-blink 1.4s infinite; }
+.swarm-ctrl .a.evl::before     { background: var(--sc-cyan);    box-shadow: 0 0 5px var(--sc-cyan);    animation: sc-blink 1.4s infinite; }
+.swarm-ctrl .a.rev::before     { background: var(--sc-magenta); box-shadow: 0 0 5px var(--sc-magenta); animation: sc-blink 1.4s infinite; }
+.swarm-ctrl .a.e2e::before     { background: var(--sc-green);   box-shadow: 0 0 5px var(--sc-green);   animation: sc-blink 1.4s infinite; }
+.swarm-ctrl .a.stalled::before { background: var(--sc-red);     box-shadow: 0 0 5px var(--sc-red); }
+.swarm-ctrl .a.gen, .swarm-ctrl .a.evl, .swarm-ctrl .a.rev, .swarm-ctrl .a.e2e { background: var(--sc-surface-2); }
+
+.swarm-ctrl .legend {
+  display: flex; gap: 12px; flex-wrap: wrap;
+  font-family: var(--sc-font-display);
+  font-size: 9px; letter-spacing: 0.16em;
+  color: var(--sc-text-dim);
+  padding: 7px 12px;
+  border-top: 1px solid var(--sc-border);
+  background: var(--sc-bg-2);
+}
+.swarm-ctrl .lg { display: flex; align-items: center; gap: 5px; }
+.swarm-ctrl .lg .d { width: 6px; height: 6px; border-radius: 50%; }
+.swarm-ctrl .lg .d.idle { background: var(--sc-muted); }
+.swarm-ctrl .lg .d.gen  { background: var(--sc-amber); }
+.swarm-ctrl .lg .d.evl  { background: var(--sc-cyan); }
+.swarm-ctrl .lg .d.rev  { background: var(--sc-magenta); }
+.swarm-ctrl .lg .d.e2e  { background: var(--sc-green); }
+.swarm-ctrl .lg .d.stl  { background: var(--sc-red); }
+
+/* Generic tab placeholder */
+.swarm-ctrl .tab-placeholder {
+  display: grid;
+  place-items: center;
+  padding: 64px 32px;
+  text-align: center;
+  gap: 8px;
+  flex: 1;
+}
+.swarm-ctrl .tab-placeholder .lbl {
+  font-family: var(--sc-font-display);
+  font-size: 12px; letter-spacing: 0.24em;
+  color: var(--sc-text-dim);
+  text-transform: uppercase;
+}
+.swarm-ctrl .tab-placeholder .sub { font-size: 11px; color: var(--sc-text-dim); max-width: 60ch; }
+
+/* ─── EVENT LOG FOOTER ──────────────────────────────────────────────── */
+.swarm-ctrl .log-panel {
+  border: 1px solid var(--sc-border);
+  background: var(--sc-surface);
+  max-height: 200px;
+  overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.swarm-ctrl .log-panel-hd {
+  padding: 6px 12px;
+  font-family: var(--sc-font-display);
+  font-size: 9px; letter-spacing: 0.22em;
+  color: var(--sc-text-dim);
+  border-bottom: 1px solid var(--sc-border);
+  background: var(--sc-surface-2);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.swarm-ctrl .log { overflow-y: auto; flex: 1; }
+.swarm-ctrl .log-row {
+  display: grid;
+  grid-template-columns: 90px 110px 90px 1fr auto;
+  gap: 10px;
+  padding: 4px 12px;
+  font-size: 10px;
+  border-bottom: 1px solid var(--sc-border);
+  align-items: center;
+}
+.swarm-ctrl .log-row:last-child { border-bottom: 0; }
+.swarm-ctrl .log-time { font-family: var(--sc-font-mono); color: var(--sc-text-dim); }
+.swarm-ctrl .log-actor { font-family: var(--sc-font-mono); color: var(--sc-text); }
+.swarm-ctrl .log-actor.arch { color: var(--sc-t-arch); }
+.swarm-ctrl .log-actor.eng  { color: var(--sc-t-eng); }
+.swarm-ctrl .log-actor.rev  { color: var(--sc-t-rev); }
+.swarm-ctrl .log-actor.qa   { color: var(--sc-t-qa); }
+.swarm-ctrl .log-tag { font-family: var(--sc-font-display); font-size: 9px; letter-spacing: 0.18em; color: var(--sc-text-dim); text-transform: uppercase; }
+.swarm-ctrl .log-msg { font-family: var(--sc-font-mono); color: var(--sc-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swarm-ctrl .log-marker { width: 6px; height: 6px; border-radius: 50%; background: var(--sc-muted); }
+.swarm-ctrl .log-marker.pass { background: var(--sc-green); }
+.swarm-ctrl .log-marker.fail { background: var(--sc-red); }
+.swarm-ctrl .log-marker.run  { background: var(--sc-amber); animation: sc-blink 1.2s infinite; }
+.swarm-ctrl .log-empty {
+  padding: 16px 12px;
+  font-family: var(--sc-font-mono); font-size: 10px;
+  color: var(--sc-muted); text-align: center;
+}
+
+@media (max-width: 1200px) {
+  .swarm-ctrl .grid-main { grid-template-columns: 1fr; }
+  .swarm-ctrl .mode-pane.active { grid-template-columns: 1fr; }
+  .swarm-ctrl .meters { grid-template-columns: repeat(3, 1fr); }
+  .swarm-ctrl .clock { display: none; }
+  .swarm-ctrl .story-row { grid-template-columns: 56px 1fr auto auto; }
+  .swarm-ctrl .sr-score { display: none; }
+  .swarm-ctrl .ov-split { grid-template-columns: 1fr; }
+  .swarm-ctrl .ov-split-r { display: none; }
+}
+
+/* ── Document tab (design mode → doc selection) ───────────────────────── */
+
+.swarm-ctrl .doc-pane {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  height: 100%;
+  min-height: 0;
+}
+
+.swarm-ctrl .doc-toc {
+  border-right: 1px solid var(--sc-border);
+  background: var(--sc-surface-2);
+  padding: 14px 0 8px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.swarm-ctrl .doc-toc-hd {
+  padding: 0 14px 10px;
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: var(--sc-text-dim);
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--sc-border);
+  margin-bottom: 8px;
+}
+.swarm-ctrl .doc-toc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.swarm-ctrl .doc-toc-item {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 8px;
+  padding: 7px 14px;
+  font-family: var(--sc-font-mono);
+  font-size: 11px;
+  color: var(--sc-text-dim);
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  align-items: center;
+}
+.swarm-ctrl .doc-toc-item:hover { color: var(--sc-text); background: var(--sc-surface-3); }
+.swarm-ctrl .doc-toc-item.active {
+  color: var(--sc-amber);
+  background: var(--sc-surface-3);
+  border-left-color: var(--sc-amber);
+}
+.swarm-ctrl .doc-toc-item .no {
+  color: var(--sc-muted);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+.swarm-ctrl .doc-toc-item.active .no { color: var(--sc-amber-d); }
+.swarm-ctrl .doc-toc-item .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.swarm-ctrl .doc-body {
+  padding: 18px 28px 32px;
+  overflow-y: auto;
+  min-height: 0;
+  font-family: var(--sc-font-mono);
+  color: var(--sc-text);
+  line-height: 1.55;
+}
+
+.swarm-ctrl .doc-body-hd {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: var(--sc-text-dim);
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed var(--sc-border-2);
+}
+.swarm-ctrl .doc-body-hd-l { display: flex; gap: 6px; flex-wrap: wrap; }
+.swarm-ctrl .doc-body-hd-r { white-space: nowrap; }
+.swarm-ctrl .doc-badge {
+  padding: 2px 7px;
+  border: 1px solid var(--sc-amber-d);
+  color: var(--sc-amber);
+  background: transparent;
+  font-size: 8px;
+  letter-spacing: 0.16em;
+}
+
+.swarm-ctrl .doc-title {
+  font-family: var(--sc-font-display);
+  font-weight: 600;
+  font-size: 22px;
+  letter-spacing: 0.04em;
+  color: var(--sc-text);
+  margin: 6px 0 8px;
+  line-height: 1.2;
+}
+.swarm-ctrl .doc-subtitle {
+  font-family: var(--sc-font-mono);
+  font-size: 12px;
+  color: var(--sc-text-dim);
+  margin: 0 0 18px;
+}
+.swarm-ctrl .doc-subtitle .dot { color: var(--sc-muted); }
+
+.swarm-ctrl .doc-pr-strip {
+  display: flex;
+  gap: 22px;
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: var(--sc-text-dim);
+  text-transform: uppercase;
+  padding: 8px 0 18px;
+  border-bottom: 1px solid var(--sc-border);
+  margin-bottom: 18px;
+}
+.swarm-ctrl .doc-pr-strip b {
+  color: var(--sc-amber);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.swarm-ctrl .doc-section { margin: 22px 0 10px; }
+.swarm-ctrl .doc-section-h {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin: 0 0 10px;
+  font-family: var(--sc-font-display);
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--sc-text);
+}
+.swarm-ctrl .doc-section-no {
+  color: var(--sc-muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+.swarm-ctrl .doc-section-t {
+  letter-spacing: 0.18em;
+  color: var(--sc-amber);
+}
+.swarm-ctrl .doc-p {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--sc-text);
+  white-space: pre-wrap;
+}
+.swarm-ctrl .doc-p code {
+  font-family: var(--sc-font-mono);
+  font-size: 11px;
+  color: var(--sc-amber);
+  background: var(--sc-surface-2);
+  padding: 1px 5px;
+  border: 1px solid var(--sc-border-2);
+}
+.swarm-ctrl .doc-p strong { color: var(--sc-text); font-weight: 600; }
+.swarm-ctrl .doc-code {
+  font-family: var(--sc-font-mono);
+  font-size: 11px;
+  color: var(--sc-text);
+  background: var(--sc-surface-2);
+  border: 1px solid var(--sc-border);
+  border-left: 2px solid var(--sc-amber-d);
+  padding: 10px 14px;
+  margin: 0 0 14px;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+@media (max-width: 1180px) {
+  .swarm-ctrl .doc-pane { grid-template-columns: 200px 1fr; }
+}
+@media (max-width: 880px) {
+  .swarm-ctrl .doc-pane { grid-template-columns: 1fr; }
+  .swarm-ctrl .doc-toc { display: none; }
+}
+
+/* ── Doc-card iter / score / cost badges (DesignMaster left rail) ────── */
+
+.swarm-ctrl .doc-iter-badges {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.swarm-ctrl .doc-iter-badge {
+  font-family: var(--sc-font-display);
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  padding: 2px 6px;
+  border: 1px solid var(--sc-border-2);
+  background: var(--sc-bg-2);
+  color: var(--sc-text-dim);
+  text-transform: uppercase;
+}
+.swarm-ctrl .doc-iter-badge.score.pass    { color: var(--sc-green);   border-color: var(--sc-green-d); }
+.swarm-ctrl .doc-iter-badge.score.iterate { color: var(--sc-amber);   border-color: var(--sc-amber-d); }
+.swarm-ctrl .doc-iter-badge.score.reject  { color: var(--sc-red);     border-color: var(--sc-red-d); }
+.swarm-ctrl .doc-iter-badge.score.neutral { color: var(--sc-text-dim); }
+.swarm-ctrl .doc-iter-badge.cost          { color: var(--sc-cyan); border-color: var(--sc-cyan-d); }
+
+/* Variant for badges INSIDE the document body header (DocumentPane) */
+.swarm-ctrl .doc-badge.doc-badge--pass    { color: var(--sc-green); border-color: var(--sc-green-d); }
+.swarm-ctrl .doc-badge.doc-badge--iterate { color: var(--sc-amber); border-color: var(--sc-amber-d); }
+.swarm-ctrl .doc-badge.doc-badge--reject  { color: var(--sc-red);   border-color: var(--sc-red-d); }
+
+/* Lists inside doc body */
+.swarm-ctrl .doc-list { padding-left: 22px; margin: 0 0 12px; }
+.swarm-ctrl .doc-list li {
+  font-family: var(--sc-font-mono);
+  font-size: 12px;
+  color: var(--sc-text);
+  margin-bottom: 4px;
+  line-height: 1.55;
+}
+.swarm-ctrl .doc-list code {
+  font-family: var(--sc-font-mono);
+  font-size: 11px;
+  color: var(--sc-amber);
+  background: var(--sc-surface-2);
+  padding: 1px 4px;
+  border: 1px solid var(--sc-border-2);
+}
+
+/* ── Doc Conversation pane (per-iter generator + evaluator history) ───── */
+
+.swarm-ctrl .doc-conv {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+  min-height: 0;
+}
+.swarm-ctrl .doc-conv-hd {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--sc-border);
+  background: var(--sc-surface-2);
+  font-family: var(--sc-font-display);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--sc-text-dim);
+  text-transform: uppercase;
+}
+.swarm-ctrl .doc-conv-hd b { color: var(--sc-amber); }
+.swarm-ctrl .doc-conv-body {
+  overflow-y: auto;
+  min-height: 0;
+  padding: 14px 18px 24px;
+  display: grid;
+  gap: 14px;
+}
+.swarm-ctrl .doc-conv-iter {
+  border: 1px solid var(--sc-border);
+  background: var(--sc-bg-2);
+  position: relative;
+  padding: 10px 12px 12px;
+}
+.swarm-ctrl .doc-conv-iter::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 2px;
+  background: var(--sc-cyan);
+}
+.swarm-ctrl .doc-conv-iter.pass::before    { background: var(--sc-green); }
+.swarm-ctrl .doc-conv-iter.iterate::before { background: var(--sc-amber); }
+.swarm-ctrl .doc-conv-iter.reject::before  { background: var(--sc-red); }
+
+.swarm-ctrl .doc-conv-iter-hd {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-family: var(--sc-font-display);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--sc-text-dim);
+  text-transform: uppercase;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--sc-border-2);
+}
+.swarm-ctrl .doc-conv-iter-score {
+  padding: 2px 8px;
+  border: 1px solid var(--sc-border-2);
+  background: var(--sc-surface);
+  color: var(--sc-text);
+}
+.swarm-ctrl .doc-conv-iter-score.pass    { color: var(--sc-green); border-color: var(--sc-green-d); }
+.swarm-ctrl .doc-conv-iter-score.iterate { color: var(--sc-amber); border-color: var(--sc-amber-d); }
+.swarm-ctrl .doc-conv-iter-score.reject  { color: var(--sc-red);   border-color: var(--sc-red-d); }
+.swarm-ctrl .doc-conv-iter-verdict.pass    { color: var(--sc-green); }
+.swarm-ctrl .doc-conv-iter-verdict.iterate { color: var(--sc-amber); }
+.swarm-ctrl .doc-conv-iter-verdict.reject  { color: var(--sc-red); }
+.swarm-ctrl .doc-conv-iter-agents {
+  flex: 1;
+  font-family: var(--sc-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--sc-text);
+  text-transform: none;
+}
+.swarm-ctrl .doc-conv-iter-agents b { color: var(--sc-amber); font-weight: 600; }
+.swarm-ctrl .doc-conv-iter-cost {
+  color: var(--sc-cyan);
+  font-family: var(--sc-font-mono);
+  font-size: 10px;
+}
+.swarm-ctrl .doc-conv-iter-when {
+  color: var(--sc-muted);
+  font-family: var(--sc-font-mono);
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.swarm-ctrl .doc-conv-iter-section {
+  margin: 8px 0 0;
+}
+.swarm-ctrl .doc-conv-iter-section-lbl {
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: var(--sc-text-dim);
+  margin-bottom: 4px;
+}
+.swarm-ctrl .doc-conv-iter-section[data-role="generator"] .doc-conv-iter-section-lbl { color: var(--sc-amber); }
+.swarm-ctrl .doc-conv-iter-section[data-role="evaluator"] .doc-conv-iter-section-lbl { color: var(--sc-cyan); }
+.swarm-ctrl .doc-conv-iter-section[data-role="judge"] .doc-conv-iter-section-lbl     { color: var(--sc-magenta); }
+.swarm-ctrl .doc-conv-iter-section-body {
+  padding: 8px 10px;
+  background: var(--sc-surface);
+  border: 1px solid var(--sc-border);
+  font-family: var(--sc-font-mono);
+  font-size: 11px;
+  color: var(--sc-text);
+  line-height: 1.5;
+}
+.swarm-ctrl .doc-conv-md {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
