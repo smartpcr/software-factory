@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 45
+> **Status:** Iteration 46
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -14,7 +14,7 @@
 >
 > | Document | Owns | Alignment status |
 > |---|---|---|
-> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Last updated iteration 23. Contains 9 stale-wording locations enumerated in §8.1. Architecture governs on all naming/data-model conflicts. |
+> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Last updated iteration 23. Contains 10 stale-wording locations enumerated in §8.1. Architecture governs on all naming/data-model conflicts. |
 > | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Defers to this doc on conflicts. **Active divergences (3):** (1) Stage 1.2 lists 12 `IMemoryGraphStore` methods, omitting `UpsertEdgeAsync` (canonical: 13 methods, §5.1). (2) Stage 2.1 persists edges via "inherited `IGraphStore` edge-creation methods" instead of `UpsertEdgeAsync`. (3) Stage 5.3 decay formula places `centrality_boost` as output multiplier instead of exponent-denominator modifier (§3.5). See §8.2. |
 > | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Fully aligned. Uses canonical vocabulary throughout. |
 
@@ -495,6 +495,98 @@ tools registered in `Ast.Memory/Mcp/`. The handler logic lives entirely in
 | `memory_record_expertise` | `IEvolutionEngine.RecordExpertiseAsync()` | Write an expertise entry (title, body, kind, target) |
 | `memory_sync` | `IIncrementalSync.ApplyDiffAsync()` | Trigger incremental sync |
 | `memory_consolidate` | `IEvolutionEngine.ConsolidateAsync()` | Run consolidation (admin) |
+
+### 3.9 Error Handling and Resilience
+
+The memory layer follows a **degrade-but-proceed** pattern. No single
+component failure should block agent work — the agent can always fall back
+to reading raw files. Each component has a defined degradation path:
+
+| Component | Failure mode | Degradation behavior |
+|---|---|---|
+| **Extraction Pipeline** | Parser throws on malformed file | Log error + skip file. Return `ExtractionResult` with partial counts and the file path in `Errors`. The graph contains whatever was extracted before the failure. |
+| **Extraction Pipeline** | `IEmbeddingGenerator` unavailable during `SemanticIndexer` phase | Skip embedding generation and `SIMILAR_TO` edge creation. Structural and Call-Chain layers are still fully populated. `ExtractionResult.EmbeddingsGenerated = 0`. |
+| **Retrieval Engine** | `IEmbeddingGenerator` unavailable at query time | Skip `SemanticSearch` mode. Re-normalize remaining 4 signal weights to sum to 1.0 (§3.3). Return results from Structural, Call-Chain, and Expertise modes only. `RetrievalDiagnostics` records the skip. |
+| **Retrieval Engine** | `IVectorStore` unavailable | Same as embedding unavailable — `SemanticSearch` disabled. Other modes proceed. |
+| **Retrieval Engine** | `IMemoryGraphStore` unavailable (graph DB down) | Return empty `RetrievalResult` with zero nodes and a diagnostic error. Agent falls back to raw file reading. |
+| **Incremental Sync** | `git diff` fails (not a git repo, or commit SHA not found) | Return `SyncResult` with zero changes and log the error. No graph mutations. |
+| **Incremental Sync** | Re-extraction of a changed file fails | Log error, skip that file. Other files in the batch proceed. Failed files are logged in `SyncResult` (future: add `Errors` field). |
+| **Incremental Sync** | Expertise decay fails (target node not found) | Log warning, skip that expertise entry. Other entries decay normally. |
+| **Evolution Engine** | LLM unavailable during `ConsolidateAsync` | Return `ConsolidationResult` with `MergedCount = 0`. Expertise entries remain unconsolidated — they are still individually queryable. |
+| **Evolution Engine** | LLM unavailable during `DetectCommunitiesAsync` | Skip LLM-generated `Topic` summaries. `BELONGS_TO_CLUSTER` edges are still created (Louvain runs locally). `Topic` nodes get empty `Summary` metadata. |
+| **Storage Layer** | SQLite write fails (disk full, WAL corruption) | Throw — writes are critical. Caller handles and logs. The `SemaphoreSlim(1,1)` serialization prevents partial-write corruption in SQLite journal mode. |
+| **Storage Layer** | Neo4j connection lost mid-transaction | Transaction rolls back (ACID). Caller retries or reports failure. |
+| **MCP Handler** | Invalid parameters from agent | Return structured error JSON with field-level validation messages. Do not throw unhandled exceptions through the MCP transport. |
+
+**Retry policy:** Write operations do **not** auto-retry — the
+serialized-write model (§3.7) means retries could re-order mutations.
+Callers (MCP handler, CLI, IncrementalSync) are responsible for retry
+decisions. Read operations (retrieval) are idempotent and safe to retry.
+
+**Circuit breaker for embedding service:** If the local Ollama endpoint
+fails 3 consecutive calls within a 60-second window, the Retrieval Engine
+enters a "structural-only" mode for 5 minutes before re-probing. This
+prevents repeated latency spikes from a downed embedding service.
+
+### 3.10 Observability Model
+
+Every alert has an owner, a runbook, and a kill switch. The memory layer
+emits telemetry at three levels:
+
+#### Structured Logging (`ILogger<T>`)
+
+All components log via the standard `Microsoft.Extensions.Logging` pattern
+at these levels:
+
+| Level | Examples |
+|---|---|
+| `Information` | Extraction started/completed, sync completed, retrieval completed (with timing and counts) |
+| `Warning` | Embedding service unavailable (fallback activated), expertise decay skipped (target not found), unregistered `Metadata` key used (`ext:` prefix), consolidation skipped (LLM unavailable) |
+| `Error` | Parser failure on specific file, storage write failure, MCP handler unhandled exception |
+| `Debug` | Per-file extraction counts, per-mode retrieval candidate counts, individual decay computations |
+
+Log messages use structured parameters (`{NodeCount}`, `{Duration}`,
+`{FilePath}`) for machine-parseable aggregation.
+
+#### Metrics (Counter / Histogram)
+
+Key metrics exposed for dashboard integration:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `ast_memory_extraction_duration_seconds` | Histogram | `mode` (full/incremental) | Time for extraction pipeline |
+| `ast_memory_extraction_nodes_total` | Counter | `layer`, `node_type` | Nodes created per extraction |
+| `ast_memory_retrieval_duration_seconds` | Histogram | `mode` (Hybrid/StructuralDrill/...) | End-to-end retrieval latency (SLO: p95 < 500 ms) |
+| `ast_memory_retrieval_tokens_used` | Histogram | `mode` | Token budget utilization per query |
+| `ast_memory_sync_files_processed` | Counter | `status` (added/modified/deleted) | Files processed per sync |
+| `ast_memory_expertise_total` | Gauge | `kind`, `state` (active/archived) | Live expertise entries |
+| `ast_memory_expertise_confidence` | Histogram | `kind` | Confidence distribution |
+| `ast_memory_decay_entries_processed` | Counter | `outcome` (decayed/archived/skipped) | Decay pass throughput |
+| `ast_memory_consolidation_merges` | Counter | — | Entries merged per consolidation |
+| `ast_memory_embedding_failures_total` | Counter | `phase` (extraction/retrieval) | Embedding service unavailability |
+| `ast_memory_graph_size_bytes` | Gauge | `backend` (sqlite/neo4j) | On-disk graph size |
+
+#### Health Checks
+
+`ServiceCollectionExtensions.AddMemoryGraph()` registers an
+`IHealthCheck` implementation (`MemoryGraphHealthCheck`) that verifies:
+
+1. Graph store is reachable (`IMemoryGraphStore.GetMemoryStatisticsAsync()`
+   completes within 5 s).
+2. Vector store is reachable (`IVectorStore.IsAvailableAsync()`).
+3. Embedding service is reachable (probe `IEmbeddingGenerator` with a
+   dummy text — optional, reported as `Degraded` not `Unhealthy` if down).
+
+This integrates with ASP.NET `HealthCheckService` for `/health` endpoint
+exposure in `Ast.Cli` or hosting scenarios.
+
+#### Audit Log (HC7)
+
+The `audit_log` table (§4.4) is the operational post-mortem trail. Every
+graph mutation is recorded with `session_id`, `timestamp`, `operation`,
+and `detail` JSON. The audit log is append-only and never truncated by
+the memory layer. Retention management (archival, rotation) is left to
+operational tooling outside this system.
 
 ---
 
@@ -1497,24 +1589,53 @@ without requiring the sibling document to be updated first.
 ### 8.1 `tech-spec.md`
 
 Tech-spec.md was last updated at iteration 23. It contains ten locations
-where wording diverges from the canonical definitions in this document
-(e.g., `SemanticCluster` vs `Topic`, `valid_from_idx` vs `since_index`,
-centrality as output multiplier vs exponent-denominator modifier). None
-of these represent open disagreements — implementors follow this
+where wording diverges from the canonical definitions in this document.
+None of these represent open disagreements — implementors follow this
 document's definitions (§2–§7) for all naming, schema, and formula
-details. Key canonical corrections:
+details. The 10 stale-wording locations:
 
-- **Node type:** Only `Topic` nodes exist for community clusters (§4.2);
-  tech-spec's `SemanticCluster` is retired (§2.3).
-- **ExpertiseEntry hash:** `SHA-256(Title + Body + TargetNodeId)` (§4.2),
-  not `SHA-256(Content + TargetNodeId)`; field is `SourceAgent`, not
-  `source_session`.
-- **Temporal columns:** `since_index` / `until_index` (§4.4), not
-  `valid_from_idx` / `valid_until_idx`.
-- **Decay formula:** Centrality modifies the half-life in the exponent
-  denominator (§3.5): `final = event_adjusted_confidence × 2^(−age_days /
-  (DecayHalfLifeDays × centrality_boost))`. Centrality is **not** an
-  output multiplier.
+1. **§7.1 Node Types table — `SemanticCluster` row.** Tech-spec lists
+   `SemanticCluster` as a separate node type alongside `Topic`.
+   Canonical: only `Topic` nodes exist for community clusters (§4.2);
+   `SemanticCluster` is retired (§2.3).
+2. **§7.1 Node Types table — `ExpertiseEntry` row.** Uses `source_session`
+   field name. Canonical: field is `SourceAgent` (§4.2).
+3. **§7.1 Node Types table — `ExpertiseEntry` row.** Hash formula says
+   `SHA-256(Content + TargetNodeId)` with single `Content` field.
+   Canonical: `SHA-256(Title + Body + TargetNodeId)` with separate
+   `Title` and `Body` fields (§4.2).
+4. **§7.1 ID format note.** IDs shown without leading `/` (e.g.,
+   `src/ast/...`). Canonical: all in-repo node IDs start with `/`
+   (e.g., `/src/ast/...`) per §4.2.
+5. **§7.4 Temporal Model.** References `valid_from_idx` / `valid_until_idx`
+   in the correction note. Canonical column names: `since_index` /
+   `until_index` (§4.4).
+6. **§8.4 Evolution — Decay row formula.** Uses
+   `confidence × 2^(−age_days / 1095) × centrality_boost` with
+   `centrality_boost` as an output multiplier. Canonical: centrality
+   modifies the half-life in the exponent denominator:
+   `final = event_adjusted_confidence × 2^(−age_days / (DecayHalfLifeDays
+   × centrality_boost))` (§3.5). Centrality as output multiplier would
+   incorrectly increase confidence above the event-adjusted value.
+7. **§7.3 Annotation Metadata table — `VersionRange` key.** Shows
+   `VersionRange` as a single Metadata key with a JSON object value.
+   Canonical: VersionRange is decomposed into four separate Metadata
+   keys (`SinceCommit`, `SinceIndex`, `UntilCommit`, `UntilIndex`) and
+   four separate SQLite columns (§4.4, §4.5).
+8. **§8.2 Storage — `commits` table schema.** Uses column name
+   `parent_sha`. Canonical: the `commits` table has columns `sha`,
+   `commit_index`, `timestamp`, `author` — no `parent_sha` column (§4.4).
+9. **§8.2 Storage — `nodes` table schema.** Uses column names
+   `embedding_blob`, `hash`, `valid_from_idx`, `valid_until_idx`.
+   Canonical: `content_hash` (not `hash`), `since_index` (not
+   `valid_from_idx`), `until_index` (not `valid_until_idx`), and
+   embeddings are stored in the `vss_memory_embeddings` virtual table
+   via `IVectorStore`, not as a blob column in `nodes` (§4.4).
+10. **§8.2 Storage — `edges` table schema.** Uses `confidence` as a
+    dedicated column and `valid_from_idx` / `valid_until_idx`. Canonical:
+    `Confidence` lives in `metadata` JSON; temporal columns are
+    `since_index` / `until_index`; the table also has denormalized
+    `semantic_rel` and `memory_layer` columns (§4.4).
 
 ### 8.2 `implementation-plan.md`
 
