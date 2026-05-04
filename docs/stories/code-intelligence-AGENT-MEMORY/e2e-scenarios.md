@@ -18,8 +18,10 @@
 > - **Layers:** `structural`, `call_chain`, `semantic`, `expertise`
 > - **Code-derived edges:** `CONTAINS`, `DEPENDS_ON`, `CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES`
 > - **Memory-only edges:** `SIMILAR_TO`, `BELONGS_TO_CLUSTER`, `APPLIES_TO`, `SUPERSEDES`, `DERIVED_FROM`
-> - **Retired names (do NOT use):** `CALLED_BY` → reverse traversal of `CALLS`; `IMPORTS` → `DEPENDS_ON`; `INHERITS` → `EXTENDS`; `ExpertiseNote` → `ExpertiseEntry`; `IMemoryStore` → `IMemoryGraphStore`
-> - **Node ID format:** `"{filePath}::{qualifiedName}"` for symbols, `"{relativePath}"` for files, `"/"` for repo root, `"expertise:{kind}:{hash8}"` for expertise nodes
+> - **Retired names (do NOT use):** `CALLED_BY` → reverse traversal of `CALLS`; `IMPORTS` → `DEPENDS_ON`; `INHERITS` → `EXTENDS`; `ExpertiseNote` → `ExpertiseEntry`; `IMemoryStore` → `IMemoryGraphStore`; single `Content` field on ExpertiseEntry → separate `Title` + `Body` fields
+> - **Node ID format:** `"{filePath}::{qualifiedName}"` for symbols, `"{relativePath}"` for files, `"/"` for repo root, `"expertise:{kind}:{hash8}"` for expertise nodes (hash8 = first 8 chars of SHA-256(Title + Body + TargetNodeId))
+> - **ExpertiseEntry fields:** `Id`, `Kind` (Pattern|Pitfall|Preference|Insight), `Title` (headline), `Body` (detailed description), `TargetNodeId`, `Scope` ("exact"|"subtree"), `Confidence` (0.0–1.0), `SourceAgent`, `Evidence` (optional citations); embedding computed from `Title + " " + Body`
+> - **RecordExpertiseAsync signature:** `(targetNodeId, kind, title, body, sourceAgent, scope?, evidence?)` — per architecture.md §5.3
 > - **Scoring weights:** structural 0.30, semantic 0.25, centrality 0.20, recency 0.15, expertise 0.10
 > - **Token budget:** default 8,000; ceiling 32,000
 > - **Temporal model:** `commit_index` integers (not timestamps); `VersionRange(Since, SinceIndex, Until?, UntilIndex?)`
@@ -350,25 +352,27 @@ Feature: Expertise Layer — Agent Learning and Write-Back
 
   Scenario: 4.1 — Record a Pitfall expertise entry
     # RecordExpertiseAsync signature per architecture.md §5.3:
-    #   (targetNodeId, kind, content, sourceAgent)
+    #   (targetNodeId, kind, title, body, sourceAgent, scope?, evidence?)
     When the agent calls IEvolutionEngine.RecordExpertiseAsync with:
       | field        | value                                                                                          |
       | TargetNodeId | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode                                          |
       | Kind         | Pitfall                                                                                        |
-      | Content      | Null-deref in HypergraphNode.Metadata access — accessing keys without null-check causes NRE    |
+      | Title        | Fragile null-handling in Metadata access                                                       |
+      | Body         | Accessing Metadata dictionary keys without null-check causes NullReferenceException — always use TryGetValue or null-conditional |
       | SourceAgent  | copilot-session-42                                                                             |
     Then a new ExpertiseEntry is persisted in the expertise table with:
       | field        | value                                                          |
       | Id           | expertise:pitfall:<hash8>                                      |
       | Kind         | Pitfall                                                        |
+      | Title        | Fragile null-handling in Metadata access                       |
       | Confidence   | 1.0                                                            |
       | SourceAgent  | copilot-session-42                                             |
       | TargetNodeId | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode          |
-      | ContentHash  | non-null (SHA-256 of Content)                                  |
+    # hash8 = first 8 chars of SHA-256(Title + Body + TargetNodeId) per architecture.md §4.2
     And an APPLIES_TO edge is created:
       | EdgeType       | SemanticRelation | Roles.expertise              | Roles.target                                           |
       | MemoryRelation | APPLIES_TO       | expertise:pitfall:<hash8>    | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode  |
-    And the ExpertiseEntry's embedding is computed from the Content field
+    And the ExpertiseEntry's embedding is computed from Title + " " + Body
     And an audit_log entry is written with operation "record_expertise"
 
   Scenario: 4.2 — Record a Pattern expertise entry
@@ -376,7 +380,8 @@ Feature: Expertise Layer — Agent Learning and Write-Back
       | field        | value                                                                           |
       | TargetNodeId | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode                           |
       | Kind         | Pattern                                                                         |
-      | Content      | Composition-over-inheritance wrapper pattern — MemoryNode wraps HypergraphNode via Inner property, not inheritance |
+      | Title        | Composition-over-inheritance wrapper pattern                                    |
+      | Body         | MemoryNode wraps HypergraphNode via Inner property, not inheritance — preserves backward compatibility while adding memory-layer metadata |
       | SourceAgent  | copilot-session-42                                                              |
     Then a Pattern ExpertiseEntry is created with Kind = Pattern and Confidence = 1.0
 
@@ -385,7 +390,8 @@ Feature: Expertise Layer — Agent Learning and Write-Back
       | field        | value                                                              |
       | TargetNodeId | /                                                                  |
       | Kind         | Preference                                                         |
-      | Content      | Always use this. qualifier for instance members — per .editorconfig, all C# instance members use this. |
+      | Title        | Always use this. qualifier for instance members                    |
+      | Body         | Per .editorconfig, all C# instance members must use this. qualifier — fields, properties, methods, and events |
       | SourceAgent  | copilot-session-42                                                 |
     Then a Preference ExpertiseEntry is created with Confidence = 1.0
     And the APPLIES_TO edge targets the repo root "/"
@@ -395,16 +401,19 @@ Feature: Expertise Layer — Agent Learning and Write-Back
       | field        | value                                                                                        |
       | TargetNodeId | /src/ast/CodeIntelligence                                                                    |
       | Kind         | Insight                                                                                      |
-      | Content      | CodeIntelligence analyzers are independent and composable — each of the 27 analyzers in CodeIntelligence/Analyzers/ can run independently |
+      | Title        | CodeIntelligence analyzers are independent and composable                                    |
+      | Body         | Each of the 27 analyzers in CodeIntelligence/Analyzers/ can run independently — no shared state between analyzer instances |
       | SourceAgent  | copilot-session-42                                                                           |
     Then an Insight ExpertiseEntry is created with TargetNodeId = "/src/ast/CodeIntelligence"
 
   Scenario: 4.5 — Similar expertise detected at write-time schedules consolidation
-    Given an existing ExpertiseEntry "expertise:pitfall:a1a11111" with Content
-      "Metadata access may throw KeyNotFoundException"
+    Given an existing ExpertiseEntry "expertise:pitfall:a1a11111" with
+      Title "Metadata access may throw KeyNotFoundException"
+      and Body "Accessing HypergraphNode.Metadata keys directly without checking existence risks KeyNotFoundException at runtime"
     And it targets "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
-    When the agent records a new Pitfall with Content
-      "Null-deref in HypergraphNode.Metadata access — similar underlying issue"
+    When the agent records a new Pitfall with
+      Title "Fragile null-handling in Metadata access"
+      and Body "Null-deref in HypergraphNode.Metadata access — similar underlying issue to missing-key exceptions"
     And the cosine similarity between old and new expertise > SimilarityThreshold (0.85)
     Then the new ExpertiseEntry is created with its own APPLIES_TO edge
     And a consolidation is scheduled for the next ConsolidateAsync run
@@ -739,15 +748,19 @@ Feature: Cross-Session Learning — Memory Compounds Over Time
 
     # Session 2: Agent learns a pattern
     When agent "copilot-session-A" completes a task in Ast.Core
-    And calls RecordExpertiseAsync for a Pattern: "Composition wrappers for backward compatibility"
-      with targetNodeId "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
+    And calls RecordExpertiseAsync with kind = Pattern,
+      title = "Composition wrappers for backward compatibility",
+      body = "MemoryNode wraps HypergraphNode via Inner property to add memory-layer metadata without breaking existing consumers",
+      and targetNodeId = "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
     Then 1 ExpertiseEntry exists with Confidence = 1.0
 
     # Session 3: Another agent retrieves and learns more
     When agent "copilot-session-B" queries for context about HypergraphNode
     Then the Hybrid retrieval includes the Pattern in "## Known Expertise"
-    When "copilot-session-B" calls RecordExpertiseAsync for an Insight: "GetEnhancedEmbeddingText includes source code up to 2000 chars"
-      with targetNodeId "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEnhancedEmbeddingText"
+    When "copilot-session-B" calls RecordExpertiseAsync with kind = Insight,
+      title = "GetEnhancedEmbeddingText includes source code up to 2000 chars",
+      body = "When LSP enrichment is available, GetEnhancedEmbeddingText appends up to 2000 chars from Metadata[SourceCode] — see line 175 of EnrichedEmbeddingPipeline.cs",
+      and targetNodeId = "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEnhancedEmbeddingText"
     Then 2 ExpertiseEntry records exist
 
     # Code change triggers decay
@@ -860,7 +873,8 @@ Feature: MCP Tool Interface — External Agent Integration
         "arguments": {
           "targetNodeId": "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEnhancedEmbeddingText",
           "kind": "pitfall",
-          "content": "When LSP enrichment is enabled, up to 2000 chars of source code appear in embedding input via Metadata[SourceCode] (line 175). This may leak secrets if not filtered.",
+          "title": "LSP enrichment may leak secrets via embedding input",
+          "body": "When LSP enrichment is enabled, up to 2000 chars of source code appear in embedding input via Metadata[SourceCode] (line 175). This may leak secrets if not filtered.",
           "sourceAgent": "copilot-session-99"
         }
       }
@@ -926,9 +940,10 @@ Feature: MCP Tool Interface — External Agent Integration
     And metadata.tokensUsed <= 32000
 
   Scenario: 10.9 — memory_record_expertise with missing required field
-    When an MCP client sends memory_record_expertise without "kind" field
+    When an MCP client sends memory_record_expertise without "title" field
     Then the MCP response is an error with a validation message
     And no expertise node is created
+    # Required fields per architecture.md §5.3: targetNodeId, kind, title, body, sourceAgent
 
   Scenario: 10.10 — memory_record_expertise with nonexistent target node
     When an MCP client sends memory_record_expertise with
