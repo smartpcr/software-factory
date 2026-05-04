@@ -363,8 +363,34 @@ memory fragments.
 | **Query Planner** | Classifies the query intent (structural lookup, call-path trace, semantic search, expertise recall) and selects which graph layers to traverse. Inspired by MAGMA's policy-guided traversal. |
 | **Graph Traverser** | Executes Cypher / Gremlin-style traversal on the selected layers. Supports depth-limited BFS, shortest-path, and community-walk strategies. |
 | **Vector Searcher** | Runs ANN search over the Semantic layer embeddings. Returns top-k similar nodes. |
-| **Ranker** | Merges results from Graph Traverser and Vector Searcher. Applies scoring signals: structural proximity, call-chain distance, recency (temporal decay), expertise confidence, and embedding cosine similarity. |
-| **Budget Controller** | Enforces a token budget. Prunes or summarizes fragments to fit the agent's context window. Uses the structural hierarchy to substitute a parent summary when child details exceed budget. |
+| **Ranker** | Merges results from Graph Traverser and Vector Searcher. Applies a 5-signal scoring model (see table below). |
+| **Budget Controller** | Enforces a token budget (ceiling: 32 K tokens, per-query default: 8 K — see §5.3). Prunes or summarizes fragments to fit the agent's context window. Uses the structural hierarchy to substitute a parent summary when child details exceed budget. |
+
+**Canonical scoring signals and default weights (used by the Ranker):**
+
+These five signals and their default weights are the **single source of truth**
+for scoring throughout this document and all sibling documents. The
+`ScoringWeights` class (in `Ast.Memory/Retrieval/`) exposes these as
+configurable properties.
+
+| Signal key | Signal name | Default weight | Description |
+|---|---|---|---|
+| `structural` | Structural proximity | 0.30 | Inverse graph distance from seed node in Structural layer (BFS hops⁻¹) |
+| `semantic` | Semantic similarity | 0.25 | Cosine similarity of query embedding to node embedding |
+| `centrality` | Centrality | 0.20 | Normalized fan-in count from `CALLS` edges (PageRank-light) |
+| `recency` | Recency | 0.15 | Recency of last modification: `1.0 − (HEAD_idx − node_sinceIdx) / max_distance`, clamped to `[0, 1]` |
+| `expertise` | Expertise confidence | 0.10 | Max `Confidence` of any `APPLIES_TO` expertise edge targeting the node; `0.0` when none |
+
+**Sum = 1.00.** Weights are floats in `[0, 1]` and must sum to 1.0.
+
+**Configurable thresholds (shared across components):**
+
+| Constant | Default | Used by | Description |
+|---|---|---|---|
+| `SimilarityThreshold` | 0.85 | Semantic Indexer (§3.1), Evolution Engine (§3.5) | Cosine-similarity floor for creating `SIMILAR_TO` and `DERIVED_FROM` edges |
+| `StaleDecayFactor` | 0.5 | Evolution Engine (§3.5) | Multiplicative confidence decay when an expertise node's target content-hash changes |
+| `MinorDecayFactor` | 0.9 | Evolution Engine (§3.5) | Multiplicative confidence decay for minor changes (whitespace, comment-only) |
+| `ArchiveConfidenceFloor` | 0.1 | Evolution Engine (§3.5) | Expertise nodes below this confidence are soft-deleted |
 
 **Retrieval modes** (selected by the Query Planner):
 
@@ -740,11 +766,11 @@ memory-only edges if we piggybacked on an existing value. A dedicated
 
 | Edge | Created by | Trigger | Inputs |
 |---|---|---|---|
-| `SIMILAR_TO` | Semantic Indexer (in Extraction Pipeline) | After embedding a batch of nodes, pairwise cosine similarity exceeds a configurable threshold (default: 0.85) | Two node IDs + cosine similarity score |
+| `SIMILAR_TO` | Semantic Indexer (in Extraction Pipeline) | After embedding a batch of nodes, pairwise cosine similarity exceeds `SimilarityThreshold` (default: 0.85 — see §3.3 thresholds) | Two node IDs + cosine similarity score |
 | `BELONGS_TO_CLUSTER` | Evolution Engine → `ConsolidateAsync` | Community detection (Louvain) on the Structural + Call-Chain subgraph identifies clusters | Cluster ID + member node IDs |
 | `APPLIES_TO` | Evolution Engine → `RecordExpertiseAsync` | Agent writes back an expertise entry with `AppliesTo` node ID list | Expertise node ID + target node IDs + scope (`"exact"` or `"subtree"`) |
 | `SUPERSEDES` | Evolution Engine → `ConsolidateAsync` | Consolidation merges overlapping expertise nodes | New merged node ID + old node IDs + reason |
-| `DERIVED_FROM` | Evolution Engine → `RecordExpertiseAsync` | New expertise overlaps (cosine > 0.85) with an existing expertise node | New node ID + existing node ID |
+| `DERIVED_FROM` | Evolution Engine → `RecordExpertiseAsync` | New expertise overlaps (cosine > `SimilarityThreshold` = 0.85) with an existing expertise node | New node ID + existing node ID |
 
 #### 4.6.3 Storage representation
 
@@ -847,7 +873,7 @@ public class ExtractionOptions
 {
     public required IReadOnlyList<string> Languages { get; init; }
     public bool EnableLsp { get; init; }
-    public string EmbeddingModel { get; init; } = "default";
+    public string EmbeddingModel { get; init; } = "code-embedding-v2"; // dimension 768 — see §4.4
     public long MaxFileSize { get; init; } = 1_048_576; // 1 MB
 }
 
@@ -1009,7 +1035,7 @@ public class RetrievalQuery
     public required string Text { get; init; }
     public string? Scope { get; init; }               // qualified-name prefix
     public RetrievalMode? Mode { get; init; }          // override auto-detected mode
-    public int TokenBudget { get; init; } = 8000;
+    public int TokenBudget { get; init; } = 8_000;  // per-query default; ceiling is 32 K (see BudgetController)
     public bool IncludeExpertise { get; init; } = true;
     public string? AtCommit { get; init; }             // optional snapshot pin
 }
@@ -1214,11 +1240,12 @@ Actor: Coding agent needs context to implement a change in module "payments.chec
           filtered to payments.* namespace.
 
 5. Ranker merges results:
-   ├─ 5a. Score = 0.35 × structural_proximity
-   │     + 0.25 × call_chain_distance⁻¹
-   │     + 0.20 × cosine_similarity
-   │     + 0.10 × recency_score
+   ├─ 5a. Score = 0.30 × structural_proximity
+   │     + 0.25 × semantic_similarity
+   │     + 0.20 × centrality
+   │     + 0.15 × recency
    │     + 0.10 × expertise_confidence
+   │     (canonical defaults from §3.3 scoring table)
    └─ 5b. Deduplicate by node ID; keep highest-scored path.
 
 6. Budget Controller:
@@ -1276,8 +1303,9 @@ Actor: Agent completes a task and records a learning.
    │       SemanticRelation="APPLIES_TO") to CheckoutService.process
    │       and InventoryClient.reserve.
    ├─ 2e. Checks for existing pitfall nodes on the same targets:
-   │       ├─ If semantically overlapping (cosine > 0.85): create
-   │       │   DERIVED_FROM edge and schedule consolidation.
+   │       ├─ If semantically overlapping (cosine > SimilarityThreshold
+   │       │   = 0.85, see §3.3): create DERIVED_FROM edge and
+   │       │   schedule consolidation.
    │       └─ If no overlap: standalone node.
    └─ 2d. Returns new NodeID.
 
@@ -1394,7 +1422,10 @@ every known contradiction in sibling documents with the resolution.
 | Memory-only edge enum | Single additive value `HyperedgeType.MemoryRelation`; specific relation in `Metadata["SemanticRelation"]` | §4.6 |
 | Edge filtering | `TraversalPlan.SemanticRelations` (string list) is the **sole** filter; `TraversalPlan.EdgeTypes` is deprecated | §5.2 |
 | Expertise model class | `ExpertiseEntry` (for write-back input); expertise nodes are `HypergraphNode` with `NodeType` ∈ {`"Pattern"`, `"Pitfall"`, `"Preference"`, `"Insight"`} | §4.3, §5.4 |
-| Retrieval scoring | 5-term weighted model: structural proximity, semantic similarity, centrality, recency, expertise confidence | §3.3, §6.3 |
+| Retrieval scoring | 5-signal weighted model with canonical defaults: structural=0.30, semantic=0.25, centrality=0.20, recency=0.15, expertise=0.10 (sum=1.0). Full table in §3.3. | §3.3, §6.3 |
+| Embedding model | `code-embedding-v2`, dimension 768. Configured in `ExtractionOptions.EmbeddingModel`. | §4.4, §5.1 |
+| Similarity threshold | Cosine ≥ 0.85 for `SIMILAR_TO` and `DERIVED_FROM` edges | §3.3, §4.6.2 |
+| Token budget | Per-query default = 8 K tokens; system ceiling = 32 K tokens (configurable) | §3.3, §5.3 |
 | Embedding lifecycle | Three triggers: extraction time, write-back time, consolidation time | §4.4 |
 
 ### 9.2 Known Contradictions in Sibling Documents
@@ -1418,6 +1449,11 @@ sibling document should be updated to match in its next iteration.**
 | C11 | `e2e-scenarios.md` | Scenario 2.1 | Edge type column uses `direct_call`, `polymorphic`, `recursive`, `service_call` | §1.5: Canonical edge names are `CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES` — subtypes go in `Metadata` | **The `edge_type` column in e2e Gherkin tables represents the `Metadata` subtype, not the canonical `SemanticRelation`.** The stored `SemanticRelation` is `CALLS` for all of these; the subtype (`direct_call`, `polymorphic`, etc.) belongs in `Metadata["CallKind"]`. |
 | C12 | `implementation-plan.md` | Stage 1.2 | Interface named `IMemoryStore` extending `IGraphStore` with methods `UpsertAnnotationAsync`, `TombstoneNodeAsync`, `GetNodeAtVersionAsync` | §5.2: Interface named `IMemoryGraphStore` extending `IGraphStore` with methods `ApplyDiffAsync`, `TraverseAsync`, `GetNodeAtCommitAsync` | **Use `IMemoryGraphStore`** with the method signatures from §5.2. The name `IMemoryStore` is retired. |
 | C13 | `implementation-plan.md` | Stage 1.2 | Separate `IExpertiseStore` interface | §5.2, §5.4: Expertise operations are on `IEvolutionEngine`, not a separate store interface | **No separate `IExpertiseStore`.** Expertise write/read goes through `IEvolutionEngine` which delegates to `IMemoryGraphStore` internally. |
+| C14 | `implementation-plan.md` | Stage 3.2 | Scoring weights: `structural=0.3, semantic=0.3, centrality=0.15, recency=0.15, expertise=0.1` (sum=1.0) | §3.3 canonical scoring table: `structural=0.30, semantic=0.25, centrality=0.20, recency=0.15, expertise=0.10` (sum=1.0) | **Use architecture.md §3.3 canonical weights.** The implementation plan's `semantic=0.3` and `centrality=0.15` are superseded by `semantic=0.25` and `centrality=0.20` to give more weight to structural fan-in signals (high-centrality code hubs matter more than slightly higher semantic similarity). |
+| C15 | `implementation-plan.md` | Stage 3.2 | `RelevanceScorer.cs` uses formula `score = w1*structural_distance + w2*semantic_similarity + w3*centrality + w4*recency + w5*expertise_signal` — term `w1*structural_distance` is unbounded (distance, not proximity) | §3.3: The signal is `structural_proximity` = inverse graph distance (BFS hops⁻¹), bounded in `[0, 1]` | **Use `structural_proximity` (inverse distance).** Raw BFS distance grows unboundedly; inverse distance normalizes to `[0, 1]` for weighted sum. |
+| C16 | `tech-spec.md` | §5 S5 | Lists retrieval modes including `EXPERTISE_RECALL` and `HYBRID` without specifying scoring weights | §3.3 canonical scoring table defines all 5 signals and weights | **Compatible.** Tech-spec delegates scoring details to architecture.md. No contradiction, but tech-spec should reference §3.3 for the scoring formula. |
+| C17 | `tech-spec.md` | §5 HC1 | Token budget "default: 32 K tokens" — implies per-query default is 32 K | §3.3, §5.3: System ceiling = 32 K; per-query default = 8 K tokens | **The 32 K value in HC1 is the system ceiling** (max allowed value for `TokenBudget`). The per-query default is 8 K. Agents may request up to 32 K; the Budget Controller never exceeds it. |
+| C18 | `e2e-scenarios.md` | Scenario 2.3 | Polymorphic call confidence = `0.5` for all candidates | §3.3 configurable thresholds: dynamic dispatch confidence = `0.5`–`0.7` (range, not single value) | **Compatible.** The scenario uses `0.5` as a concrete example within the allowed range. The implementation should compute per-candidate confidence based on resolution heuristics. |
 
 ---
 
