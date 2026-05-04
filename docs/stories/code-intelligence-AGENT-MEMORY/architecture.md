@@ -972,8 +972,9 @@ public static class MemoryMetadataKeys
 
 A single new enum value `MemoryRelation` is appended to the existing
 `HyperedgeType` enum in `src/ast/Ast.Core/HypergraphModels.cs` (currently
-44 values at lines 12–69, bringing the total to 45). This is the **sole
-modification** to any existing project.
+44 values at lines 12–69, bringing the total to 45). Together with the
+additive CLI registration in `Ast.Cli` (§1.3), these are the **only two
+modifications** to existing projects.
 
 All memory-only edges (`SIMILAR_TO`, `BELONGS_TO_CLUSTER`, `APPLIES_TO`,
 `SUPERSEDES`, `DERIVED_FROM`) use `HyperedgeType.MemoryRelation` as their
@@ -1660,8 +1661,8 @@ items that defer to this document. Key divergences:
 - **S-4:** Scoring weights — implementation-plan references §2.4 values.
 - **S-5:** `ScoringWeights` record — defined in §5.2 via `RetrievalRequest`.
 - **S-6:** `UpdateEdgeMetadataAsync` — added to `IMemoryGraphStore` (§5.1).
-- **S-7:** `VersionRange` field naming — implementation-plan uses `Since`/`Until`; canonical names are `SinceCommit`/`UntilCommit` per §4.3. **Unresolved** — implementation-plan should adopt `SinceCommit`/`UntilCommit`.
-- **S-8:** `ContentHash` formula — implementation-plan says `SHA-256(Title+Body)` (missing `TargetNodeId`); canonical formula is `SHA-256(Title + Body + TargetNodeId)` per §4.2. **Unresolved** — implementation-plan should include `TargetNodeId`.
+- **S-7:** `VersionRange` field naming — implementation-plan uses `Since`/`Until`; canonical names are `SinceCommit`/`UntilCommit` per §4.3. **Resolved here** (canonical: `SinceCommit`/`UntilCommit`); sibling update pending.
+- **S-8:** `ContentHash` formula — implementation-plan says `SHA-256(Title+Body)` (missing `TargetNodeId`); canonical formula is `SHA-256(Title + Body + TargetNodeId)` per §4.2. **Resolved here** (canonical includes `TargetNodeId`); sibling update pending.
 
 ### 8.3 E2E-Scenarios Divergences
 
@@ -1677,20 +1678,27 @@ items (E2E-1 through E2E-10):
 
 Remaining divergences:
 
-- **E2E-11:** `ContentHash` formula — e2e-scenarios quick-reference (header block) says `SHA-256 of Title + Body` but the canonical formula is `SHA-256(Title + Body + TargetNodeId)` per §4.2. **Unresolved** — e2e-scenarios should include `TargetNodeId` in the formula.
-- **E2E-12:** Project count — e2e-scenarios Feature 11 Scenario 11.4 says "13 test projects"; actual count is 15 test/benchmark projects (§1.3). **Unresolved** — e2e-scenarios should adopt 15.
+- **E2E-11:** `ContentHash` formula — e2e-scenarios quick-reference (header block) says `SHA-256 of Title + Body` but the canonical formula is `SHA-256(Title + Body + TargetNodeId)` per §4.2. **Resolved here** (canonical includes `TargetNodeId`); sibling update pending.
+- **E2E-12:** Project count — e2e-scenarios Feature 11 Scenario 11.4 says "13 test projects"; actual count is 15 test/benchmark projects (§1.3). **Resolved here** (canonical: 15 test/benchmark); sibling update pending.
 
 ### 8.4 Resolution Status
 
-Alignment items A-1 through A-17 are resolved within this document.
-Implementation-plan items S-1 through S-6 are resolved; S-7
-(`VersionRange` field naming) and S-8 (`ContentHash` formula) are
-**unresolved** — implementation-plan should adopt canonical values from
-§4.3 and §4.2 respectively. E2E-scenarios items E2E-1 through E2E-10
-are resolved; E2E-11 (`ContentHash` formula) and E2E-12 (project count)
-are **unresolved** — e2e-scenarios should adopt values from §4.2 and §1.3.
+All alignment items (A-1 through A-17) are resolved within this document.
+All implementation-plan items (S-1 through S-8) are resolved within this
+document — canonical values are defined in the referenced sections.
+S-7 (`VersionRange` field naming: canonical `SinceCommit`/`UntilCommit`
+per §4.3) and S-8 (`ContentHash` formula: canonical
+`SHA-256(Title + Body + TargetNodeId)` per §4.2) have settled canonical
+answers here; the implementation-plan's next iteration should adopt them.
 
-Tech-spec §1.1 still says "24 .csproj projects, 13 test projects" and
-should adopt the verified count from §1.3: 26 projects total — 11
-production, 15 test/benchmark. HyperedgeType has 44 existing values;
-`MemoryRelation` brings the total to 45.
+All e2e-scenarios items (E2E-1 through E2E-12) are resolved within this
+document. E2E-11 (`ContentHash` formula: canonical includes `TargetNodeId`
+per §4.2) and E2E-12 (project count: canonical 15 test/benchmark per §1.3)
+have settled canonical answers here; the e2e-scenarios' next iteration
+should adopt them.
+
+Tech-spec §1.1 says "24 .csproj projects, 13 test projects" — the
+canonical count from §1.3 is 26 projects total (11 production, 15
+test/benchmark). The tech-spec's next iteration should adopt these values.
+`HyperedgeType` has 44 existing enum values; `MemoryRelation` brings the
+total to 45.
