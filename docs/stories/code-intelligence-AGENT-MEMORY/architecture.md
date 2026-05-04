@@ -2,21 +2,16 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 15
+> **Status:** Iteration 16
 >
 > This document is the **canonical authority** for component boundaries,
-> data model, edge/layer naming, ID format, and interface signatures.
-> When sibling documents ([tech-spec.md](tech-spec.md),
-> [implementation-plan.md](implementation-plan.md),
-> [e2e-scenarios.md](e2e-scenarios.md)) differ, this document governs.
->
-> **Ownership boundaries:**
-> - **This document** — component diagram, data model, interfaces, sequence flows, naming vocabulary.
-> - **tech-spec.md** — problem statement, constraints, risks, success criteria, operator decisions.
-> - **implementation-plan.md** — phased work items, deliverables, evaluation fixtures.
-> - **e2e-scenarios.md** — Gherkin acceptance scenarios.
->
-> §10 lists every known cross-document conflict and states the canonical resolution.
+> data model, edge/layer naming, ID format, interface signatures, and
+> concurrency semantics. When sibling documents
+> ([tech-spec.md](tech-spec.md), [implementation-plan.md](implementation-plan.md),
+> [e2e-scenarios.md](e2e-scenarios.md)) use different names, formats, or
+> thresholds, **this document governs**. Sibling documents own their
+> respective scopes (problem statement, work-item phasing, Gherkin
+> scenarios) and are not duplicated here.
 
 ---
 
@@ -42,35 +37,61 @@ and VCS history.
 | Multi-layer graph construction & persistent storage | Multi-repo federation |
 | Token-budgeted context retrieval for agent prompts | IDE UI / dashboards |
 | Expertise write-back, consolidation, decay | LLM inference hosting |
-| Incremental sync on commit / file-save | Multi-agent shared memory |
+| Incremental sync on commit / file-save | Inter-agent message passing |
+| Concurrent read access from multiple agent sessions | Multi-agent negotiation / consensus |
 
-### 1.2 Existing Infrastructure (`src/ast/`)
+### 1.2 Multi-Agent Interaction Model
+
+The memory graph is scoped **per-repository**, not per-agent. Multiple agent
+sessions (e.g., Copilot in VS Code, Cursor, a CI bot) may access the same
+graph concurrently. The interaction model is:
+
+- **Shared-nothing reads.** Each retrieval call is stateless and independent.
+  Multiple concurrent `RetrieveAsync` calls are safe (§3.7).
+- **Serialized writes.** All mutations (`ApplyDiffAsync`,
+  `RecordExpertiseAsync`, `DecayStaleExpertiseAsync`) are serialized via
+  in-process mutex (SQLite) or ACID transactions (Neo4j). No
+  optimistic-concurrency errors — writes queue and execute in order.
+- **Indirect knowledge sharing.** Agents do not communicate with each other.
+  Knowledge is shared indirectly: Agent A writes an expertise node; Agent B
+  discovers it on a subsequent `RetrieveAsync` call. The `SourceAgent` field
+  on `ExpertiseEntry` provides provenance.
+- **No distributed lock for reads.** Only `ConsolidateAsync` (an admin
+  operation) acquires a write-level lock to prevent concurrent merges.
+
+This design is intentionally minimal. G-Memory-style hierarchical sharing
+across agent swarms is architecturally interesting but deferred.
+
+### 1.3 Existing Infrastructure (`src/ast/`)
 
 The system builds on the Code Intelligence stack in `src/ast/` (24 `.csproj`
-projects, 13 of which are test projects). **Two existing projects receive
-additive-only changes:**
+projects, 13 test projects — verified via directory listing). **Two existing
+projects receive additive-only changes:**
 
-1. **`Ast.Core`** — one new enum value `HyperedgeType.MemoryRelation`.
-2. **`Ast.Cli`** — additive `config.AddBranch("memory", ...)` lines in
-   `Program.cs` to register memory sub-commands (Spectre.Console.Cli manual
-   registration — consistent with how the existing 7 commands are registered).
+1. **`Ast.Core`** (`src/ast/Ast.Core/HypergraphModels.cs`) — one new enum
+   value `HyperedgeType.MemoryRelation` appended to the existing 44-value
+   `HyperedgeType` enum (lines 12–69).
+2. **`Ast.Cli`** (`src/ast/Ast.Cli/Program.cs`) — additive
+   `config.AddBranch("memory", ...)` block appended after the existing 7
+   `config.AddCommand<T>()` registrations (lines 17–44). A project reference
+   to `Ast.Memory` is added to `Ast.Cli.csproj`.
 
-All new code ships as `Ast.Memory` (+ test projects). Existing
-projects are **referenced** (as NuGet/project dependencies), never mutated
-beyond the two additive changes above.
+All new code ships as **`Ast.Memory`** (+ `Ast.Memory.UnitTests` +
+`Ast.Memory.IntegrationTests`). Existing projects are referenced as project
+dependencies, never mutated beyond the two additive changes above.
 
 | Existing project | Key types (verified source paths) | How memory layer uses it |
 |---|---|---|
-| **Ast.Core** | `HypergraphNode`, `Hyperedge`, `HyperedgeType` (44 enum values) — `src/ast/Ast.Core/HypergraphModels.cs`; `RepositoryProcessor` — `src/ast/Ast.Core/RepositoryProcessor.cs` | Reference types via `Metadata` dict for extension. One additive enum value `MemoryRelation` (one of two additive changes to existing projects — see also `Ast.Cli` below). |
-| **Ast.GraphDb** | `IGraphStore` — `src/ast/Ast.GraphDb/IGraphStore.cs`; `Neo4jGraphStore` — `src/ast/Ast.GraphDb/Neo4jGraphStore.cs`; `NodeFilter`, `GraphPath`, `NodeWithDepth` — `src/ast/Ast.GraphDb/GraphModels.cs` | `Ast.Memory` defines `IMemoryGraphStore` (in its own project) which extends `IGraphStore`. No files in `Ast.GraphDb/` are modified. |
-| **Ast.Embedding** | `IEmbeddingGenerator` — `src/ast/Ast.Embedding/IEmbeddingGenerator.cs`; `CodeEmbeddingService` — `src/ast/Ast.Embedding/CodeEmbeddingService.cs`; `EmbeddingGeneratorOptions` (default model: `"nomic-embed-text"`) — `src/ast/Ast.Embedding/EmbeddingModels.cs:119` | Reuse directly — no modifications. `Ast.Memory` calls `IEmbeddingGenerator.GenerateBatchEmbeddingsAsync()`. |
-| **Ast.Query** | `ICodeQuery` — `src/ast/Ast.Query/ICodeQuery.cs`; `HybridQueryService` — `src/ast/Ast.Query/HybridQueryService.cs`; `ScoredNode` — `src/ast/Ast.Query/QueryModels.cs` | Reference only — no modifications. `Ast.Memory` defines its own `IMemoryRetrievalEngine` that internally composes `ICodeQuery` when needed. |
-| **Ast.VectorDb** | `IVectorStore` — `src/ast/Ast.VectorDb/IVectorStore.cs`; `QdrantVectorStore` — `src/ast/Ast.VectorDb/QdrantVectorStore.cs` | Reference only — no modifications. Reuse for team mode; `Ast.Memory` adds in-process HNSW adapter for local mode. |
+| **Ast.Core** | `HypergraphNode`, `Hyperedge`, `HyperedgeType` (44 values) — `HypergraphModels.cs`; `RepositoryProcessor` — `RepositoryProcessor.cs` | Reference types via `Metadata` dict. One additive enum value `MemoryRelation`. |
+| **Ast.GraphDb** | `IGraphStore : IAsyncDisposable, IDisposable` — `IGraphStore.cs`; `Neo4jGraphStore` — `Neo4jGraphStore.cs`; `NodeFilter`, `GraphPath`, `NodeWithDepth` — `GraphModels.cs` | `Ast.Memory` defines `IMemoryGraphStore` extending `IGraphStore` in its own project. Zero files in `Ast.GraphDb/` modified. |
+| **Ast.Embedding** | `IEmbeddingGenerator : IDisposable` — `IEmbeddingGenerator.cs`; `CodeEmbeddingService` — `CodeEmbeddingService.cs`; `EmbeddingGeneratorOptions.ModelName` defaults to `"nomic-embed-text"` — `EmbeddingModels.cs` | Reuse directly. `Ast.Memory` calls `GenerateBatchEmbeddingsAsync()`. |
+| **Ast.Query** | `ICodeQuery` — `ICodeQuery.cs`; `HybridQueryService` — `HybridQueryService.cs`; `ScoredNode` — `QueryModels.cs` | Reference only. `Ast.Memory` defines `IMemoryRetrievalEngine` that internally composes `ICodeQuery`. |
+| **Ast.VectorDb** | `IVectorStore : IDisposable` — `IVectorStore.cs`; `QdrantVectorStore` — `QdrantVectorStore.cs` | Reference only. Reuse for team mode; `Ast.Memory` adds in-process HNSW adapter for local. |
 | **Ast.Lsp** | LSP integration — `src/ast/Ast.Lsp/` | Optional enrichment — pipeline never blocks on LSP. No modifications. |
-| **CodeIntelligence** | 27 analyzers in `src/ast/CodeIntelligence/Analyzers/`, 4 detectors in `src/ast/CodeIntelligence/Detectors/`, `RelationshipGraphBuilder` — `src/ast/CodeIntelligence/Graph/RelationshipGraphBuilder.cs` | Consume as call-chain / structural edge source. No modifications. |
-| **Ast.Cli** | CLI host — `src/ast/Ast.Cli/Program.cs` uses **Spectre.Console.Cli** with manual `config.AddCommand<T>()` registration (7 commands: parse, enrich, embed, index, query, pipeline, stats). | Additive change: new `config.AddBranch("memory", ...)` block added to `Program.cs` to register memory sub-commands. MCP tool registration and handler logic live in `Ast.Memory/Mcp/`. |
+| **CodeIntelligence** | 27 analyzers in `Analyzers/`, 4 detectors in `Detectors/`, `RelationshipGraphBuilder` in `Graph/` | Consume as call-chain / structural edge source. No modifications. |
+| **Ast.Cli** | CLI host — `Program.cs` uses Spectre.Console.Cli with manual `AddCommand<T>()` registration (7 commands: parse, enrich, embed, index, query, pipeline, stats). | Additive: `config.AddBranch("memory", ...)` + project ref to `Ast.Memory`. |
 
-### 1.3 Research Foundations
+### 1.4 Research Foundations
 
 | ID | Source | Adopted technique | Where applied |
 |---|---|---|---|
@@ -1393,160 +1414,65 @@ in their ## Known Expertise section.
 
 ## 10. Cross-Document Alignment
 
-This section lists **every known conflict** between this architecture document
-and the three sibling documents. Each row states what the sibling says, what
-the canonical resolution is (per this document), and the governing section.
+This document governs all naming, data model, edge taxonomy, ID format,
+interface signatures, constants, and concurrency semantics. When sibling
+documents differ, implementers follow this document. The canonical
+resolutions below summarize every known divergence. Each sibling document
+has been notified of these resolutions in its respective iteration notes.
 
-When any sibling document and this architecture disagree, **this document
-governs** (see document header).
+### 10.1 tech-spec.md — Fully Aligned
 
-### 10.0 Alignment with tech-spec.md
+All conflicts resolved as of tech-spec.md iteration 10. Key alignment:
 
-All previously-pending conflicts between this document and `tech-spec.md` are
-**resolved** as of tech-spec.md iteration 7. Confirmed aligned on:
-
-| Topic | tech-spec ref | This doc ref | Status |
-|---|---|---|---|
-| Embedding model = general-purpose | D1 (§11) | §4.7 | ✅ Aligned |
-| Cross-branch expertise visibility | D3 (§11) | §3.3 | ✅ Aligned |
-| Decay formula (base-2, 3-year half-life) | D5 (§11) | §3.5, §2.4 | ✅ Aligned |
-| Composition wrappers (not inheritance) | HC8 (§5) | §4.1 | ✅ Aligned |
-| `HyperedgeType` enum count = 44 | §1.1 | §1.2 | ✅ Aligned |
-| `GetEnhancedEmbeddingText()` includes `SourceCode` | R7 (§9) | §4.7 | ✅ Aligned |
-| Token budget: default 8K, ceiling 32K | HC1 (§5) | §2.4 | ✅ Aligned |
-| Purely programmatic agent API (no DSL) | D2 (§11) | §5.6 | ✅ Aligned |
-| Default embedding model = `"nomic-embed-text"` | §12.2, TS-4 | §4.7, §5.1 | ✅ Aligned (iteration 12 fix) |
-| Test count: tech-spec says "437" in some sections; this doc says "24 projects, 13 test projects" | tech-spec §1.1 | §1.2 | ✅ **Note:** tech-spec's "437" count dates from iteration 1 and may be stale. This doc references project structure (24 projects, 13 test projects) rather than a specific test count to avoid staleness. Both docs agree on the principle: zero regression on existing tests. |
-
-**No remaining conflicts** between this document and `tech-spec.md`.
-
-`tech-spec.md` §11 D2 specifies "purely programmatic" agent interaction via
-typed function calls — this architecture fulfills that requirement via the MCP
-tool surface defined in §5.6, which maps 1:1 to internal C# interfaces.
-
-### 10.1 Alignment with implementation-plan.md
-
-Implementers following `implementation-plan.md` **MUST** apply the corrections
-below. All conflicts are **resolved** — this architecture document governs.
-Future iterations of `implementation-plan.md` should incorporate these
-canonical resolutions. No open questions remain between these two documents.
-
-#### 10.1.1 Naming & Type Conflicts
-
-| # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
-|---|---|---|---|
-| N-1 | Stage 1.1 creates `ExpertiseNote.cs` | Class is named **`ExpertiseEntry`**. `ExpertiseNote` is retired (§2.3). | §2.3, §5.4 |
-| N-2 | Stage 1.2 creates `IMemoryStore.cs` | Interface is named **`IMemoryGraphStore`**, extending `IGraphStore`. `IMemoryStore` is retired (§2.3). | §2.3, §5.2 |
-| N-3 | Stage 1.2 creates separate `IExpertiseStore.cs` | No separate interface. Expertise write/read methods are part of **`IEvolutionEngine`** (§5.4). `IExpertiseStore` is retired (§2.3). | §2.3, §5.4 |
-| N-4 | Stage 5.2 mentions `AgentMemoryService` composing `IExpertiseStore` | Compose `IEvolutionEngine` instead — it subsumes the expertise store role. | §5.4 |
-
-#### 10.1.2 Data Model Conflicts
-
-| # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
-|---|---|---|---|
-| D-1 | Stage 1.1: `MemoryNode.cs` "extending `HypergraphNode`" (C# inheritance) | `MemoryNode` is a **composition wrapper** with an `Inner: HypergraphNode` property. It does NOT inherit from `HypergraphNode`. | §4.1 |
-| D-2 | Stage 1.1: `MemoryEdge.cs` "extending `Hyperedge`" (C# inheritance) | `MemoryEdge` is a **composition wrapper** with an `Inner: Hyperedge` property. It does NOT inherit from `Hyperedge`. | §4.1 |
-| D-3 | Stage 1.1: `ExpertiseNote` has `PatternType` enum (Pattern, Pitfall, Preference, Insight) | Enum is named **`ExpertiseKind`** and lives in `Enums.cs`. Values are the same. The class name is `ExpertiseEntry`, field name is `Kind`. | §2.3, §5.4 |
-| D-4 | Stage 1.1: `Annotation.cs` with `NodeId`, `Key`, `ValueJson`, `SessionId`, `ValidFrom`, `ValidUntil` | Annotations are not separate entity classes. They are stored as key/value pairs in `HypergraphNode.Metadata`, governed by `AnnotationKeyRegistry`. Agent extension keys use `ext:` prefix. | §4.5 |
-
-#### 10.1.3 ID Format Conflicts
-
-| # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
-|---|---|---|---|
-| I-1 | Stage 2.1: canonical IDs use `{repo}:{language}:{fqn}:{hash_short}` format | Canonical IDs use **path-based format**: `"{filePath}::{qualifiedName}"` for symbols, `"{relativePath}"` for files/dirs, `"expertise:{kind}:{hash8}"` for expertise nodes. No `{repo}:` or `{language}:` prefix. No `{hash_short}` suffix. | §4.4 |
-| I-2 | Stage 2.1: `IdReconciliationTable.cs` backed by `ID_MAPS_TO` edges in Neo4j | ID reconciliation uses the same storage mechanism but edge names and backing can be implementation-plan's choice (file-scope detail). ID *format* must follow §4.4. | §4.4 |
-
-#### 10.1.4 Edge Name Conflicts
-
-| # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
-|---|---|---|---|
-| E-1 | Stage 2.2: emits `CALLED_BY` as a stored memory edge | **`CALLED_BY` is NOT a stored edge.** It is achieved via reverse traversal of `CALLS`. See retired-names table. | §2.3 |
-| E-2 | Stage 2.2: emits `INHERITS` edges | Canonical name is **`EXTENDS`**. `INHERITS` is retired (§2.3). | §2.2, §2.3 |
-| E-3 | Stage 2.2: emits `IMPORTS` edges | Canonical name is **`DEPENDS_ON`**. `IMPORTS` is retired (§2.3). | §2.2, §2.3 |
-| E-4 | Stage 4.2: `DependencyInvalidator` walks `IMPORTS` and `CALLS` edges | Walk **`DEPENDS_ON`** and `CALLS` edges (same logic, correct name). | §2.2, §2.3 |
-
-#### 10.1.5 Numeric / Threshold Conflicts
-
-| # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
-|---|---|---|---|
-| T-1 | Stage 3.2 scoring weights: `semantic=0.3` | Canonical weight: **`semantic=0.25`**. Full set: structural=0.30, semantic=0.25, centrality=0.20, recency=0.15, expertise=0.10. | §2.4 |
-| T-2 | Stage 3.2 scoring weights: `centrality=0.15` | Canonical weight: **`centrality=0.20`**. | §2.4 |
-| T-3 | Stage 3.1: `MemoryQueryOptions.MaxTokens` default = 32K (32768) | The default token budget is **`8,000`** (`TokenBudgetDefault`). The 32K value is the **ceiling** (`TokenBudgetCeiling`), not the default. `MemoryQueryOptions.MaxTokens` should default to 8,000. | §2.4 |
-| T-4 | Stage 6.3: decay half-life = 60 days | Canonical half-life: **`DecayHalfLifeDays = 1095`** (3 years). 60 days is far too aggressive — would decay valid insights before they compound. | §2.4 |
-| T-5 | Stage 6.3: decay formula `e^(-λ × days)` (exponential) | Canonical formula: **`2^(−age_days / DecayHalfLifeDays) × centrality_boost`** (base-2 exponential with centrality modifier). See §3.5. | §3.5 |
-
-#### 10.1.6 Embedding Model Conflict
-
-| # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
-|---|---|---|---|
-| M-1 | No explicit embedding model specified; defers to tech-spec | Canonical default model is **`"nomic-embed-text"`** — matching the existing `EmbeddingGeneratorOptions.ModelName` default in `src/ast/Ast.Embedding/EmbeddingModels.cs` line 119. Prior iterations of this document incorrectly specified `text-embedding-3-small`; this is now corrected. | §4.7 |
-
-#### 10.1.7 Storage Interface Conflicts
-
-| # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
-|---|---|---|---|
-| S-1 | Stage 1.2: `IMemoryStore` has `UpsertAnnotationAsync`, `GetAnnotationsAsync`, `WriteAuditEntryAsync`, `GetAuditLogAsync`, `TombstoneNodeAsync`, `GetNodeAtVersionAsync` | The canonical interface is **`IMemoryGraphStore`** (§5.2). It exposes `ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, `FindByNameAsync`, `RebuildVectorIndexAsync`, `ResolveCommitIndexAsync`, `RegisterCommitAsync`. Annotations are Metadata-based, not separate CRUD. Audit is an internal implementation detail, not on the public interface. | §5.2 |
-| S-2 | Stage 1.3: `Neo4jMemoryStore` with annotation CRUD and temporal Cypher | Implement **`IMemoryGraphStore`** interface from §5.2. Temporal filtering uses `VersionRange` with `SinceIndex`/`UntilIndex` fields, queried via `GetNodeAtCommitAsync`. | §4.3, §5.2 |
-
-#### 10.1.8 Project Mutation Policy (NEW in Iteration 13)
-
-| # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
-|---|---|---|---|
-| P-1 | Stage 1.2 creates `IMemoryStore.cs` as `IMemoryGraphStore` — prior architecture iterations implied placement in `Ast.GraphDb` | `IMemoryGraphStore` is defined **in `Ast.Memory/Interfaces/`**, not in `Ast.GraphDb`. No files in `Ast.GraphDb` are created or modified. | §3.0, §3.2, §5.2 |
-| P-2 | Stage 1.3 creates `Neo4jMemoryStore.cs` | Implementation is `Neo4jMemoryGraphStore` in `Ast.Memory/Storage/`. It **composes** the existing `Neo4jGraphStore` from `Ast.GraphDb` — it does not modify it. | §3.2 |
-| P-3 | Stage 5.2 creates MCP files in `Ast.Cli` | MCP tools and handler logic are in `Ast.Memory/Mcp/`. CLI command classes are in `Ast.Memory/Cli/`. `Ast.Cli/Program.cs` receives additive `config.AddBranch("memory", ...)` lines to register memory sub-commands via Spectre.Console.Cli's manual registration API (consistent with how existing commands are registered). `Ast.Cli.csproj` gains a project reference to `Ast.Memory`. No existing command registrations are modified. | §5.6, §5.6.4 |
-
-#### 10.1.9 Summary of Required Changes to implementation-plan.md
-
-When `implementation-plan.md` is next updated, these changes should be applied:
-
-1. **Rename** `ExpertiseNote` → `ExpertiseEntry`, `IMemoryStore` → `IMemoryGraphStore` throughout.
-2. **Remove** `IExpertiseStore.cs` — merge its methods into `IEvolutionEngine`.
-3. **Remove** `Annotation.cs` as a separate model — use `Metadata` dict with `AnnotationKeyRegistry`.
-4. **Change** `MemoryNode`/`MemoryEdge` from inheritance to composition wrappers.
-5. **Change** canonical ID format from `{repo}:{language}:{fqn}:{hash_short}` to `{filePath}::{qualifiedName}`.
-6. **Replace** retired edge names: `CALLED_BY` → reverse traversal, `INHERITS` → `EXTENDS`, `IMPORTS` → `DEPENDS_ON`.
-7. **Fix** scoring weights to match §2.4 table.
-8. **Fix** `MaxTokens` default from 32K to 8,000.
-9. **Fix** decay half-life from 60 days to 1,095 days and formula to base-2.
-10. **Align** `IMemoryGraphStore` method signatures to §5.2.
-11. **Add** MCP tool definitions matching §5.6 — implementation-plan Stage 5.2
-    mentions `MemoryMcpTool.cs` and `MemoryMcpHandler.cs` but does not specify
-    tool names or schemas. Canonical tool definitions are in §5.6.1–5.6.2.
-12. **Use** `"nomic-embed-text"` as the default embedding model, consistent
-    with the existing `EmbeddingGeneratorOptions.ModelName` default in
-    `src/ast/Ast.Embedding/EmbeddingModels.cs`.
-13. **Acknowledge** that `Ast.Cli/Program.cs` requires additive
-    `config.AddBranch("memory", ...)` lines for memory sub-command registration.
-    `Ast.Cli` uses Spectre.Console.Cli with manual `AddCommand` registration —
-    there is no DI-based command discovery.
-
-### 10.2 Alignment with e2e-scenarios.md
-
-The e2e-scenarios document uses presentation-friendly names that diverge from
-canonical vocabulary. All divergences below are **resolved** — implementers
-map scenario labels to canonical names as specified.
-
-| # | e2e-scenarios.md says | Canonical equivalent (this doc) | Notes |
-|---|---|---|---|
-| E2E-1 | Scenario 4.1 uses `called_by` as an edge label in result tables | `called_by` is a **reverse traversal** of `CALLS`, not a stored edge (§2.3). Scenario is behaviorally correct — the retrieval engine returns 1-hop callers via reverse `CALLS` traversal. No stored `CALLED_BY` edge needed. | Scenario OK; implementation uses reverse traversal. |
-| E2E-2 | Scenario 2.1 uses `direct_call` as `edge_type` | Canonical edge name is **`CALLS`** with `Confidence = 1.0` (§2.2). `direct_call` is a presentation alias. | Implementers emit `CALLS` edges. |
-| E2E-3 | Scenario 2.3 uses `polymorphic` as `edge_type` | Canonical edge is **`CALLS`** with `Confidence = 0.5` (§2.2, §3.1 Call-Chain Analyzer). The `polymorphic` label maps to a `CALLS` edge with reduced confidence and `Metadata["IsPolymorphic"] = true`. | Implementers emit `CALLS` edges. |
-| E2E-4 | Scenario 2.5 uses `recursive` as `edge_type` | Canonical: a self-referencing **`CALLS`** edge (same node in both `caller` and `callee` roles). | Implementers emit `CALLS` edge. |
-| E2E-5 | Scenario 2.7 uses `service_call` as `edge_type` | Cross-service RPC is **out of scope** for MVP (tech-spec §3 O1 — runtime/dynamic tracing excluded). If implemented later, it would be a `CALLS` edge with `Metadata["CrossService"] = true` and `Protocol` metadata. | Deferred per O1. |
-| E2E-6 | Scenario 1.2/2.4/4.1 uses unqualified symbol IDs like `AuthService.login` | Canonical node IDs use **path-based format** `"{filePath}::{qualifiedName}"` (§4.4), e.g., `/src/auth/login::AuthService.login`. Scenario table entries are abbreviations for readability. | Implementers use full path-based IDs. |
-| E2E-7 | Scenario 2.4 uses `ext::` prefix for boundary nodes | Canonical format for external/boundary nodes: **`"ext:{package}:{qualifiedName}"`** (e.g., `"ext:Microsoft.CodeAnalysis:SyntaxNode"`). Defined in §4.4 with full semantics: stub nodes, `NodeType = "External"`, no embedding, no `VersionRange`. | ✅ Resolved — §4.4 defines format and semantics. |
-| E2E-8 | Scenario 6.4 describes cross-repo memory transfer | **Out of scope** per tech-spec §3 O2 (multi-repository federation excluded). This scenario is aspirational and should be tagged `@deferred`. | No conflict — future work. |
-| E2E-9 | Scenario 3.4 describes conflict errors on concurrent writes | Architecture specifies a **serialized write model** (§3.7): SQLite WAL + in-process mutex for local; Neo4j ACID transactions for team. No optimistic-concurrency "conflict error" is raised — writes are queued and execute in order. Scenario should test **write serialization** (second write completes after first), not conflict detection. | ✅ Resolved — §3.7 defines concurrency model. |
-
-### 10.3 Alignment with tech-spec.md (Detail)
-
-All conflicts resolved. See §10.0 for the complete alignment table.
-
-| # | Item | Status |
+| Topic | Canonical value (this doc) | Governing section |
 |---|---|---|
-| TS-1 | tech-spec.md §12.3 lists implementation-plan conflicts | ✅ Consistent — same conflicts listed here in §10.1. Both documents agree on canonical resolutions. |
-| TS-2 | tech-spec.md §11 D2 specifies "purely programmatic" agent API | ✅ Fulfilled by §5.6 MCP tool definitions (5 typed tools, no query DSL). |
-| TS-3 | tech-spec.md §11 D1 specifies general-purpose embedding model | ✅ Fulfilled by §4.7 (all nodes use same general-purpose model). |
-| TS-4 | `ExtractionOptions.EmbeddingModel` default | ✅ Both now specify `"nomic-embed-text"` — matching the actual codebase default in `EmbeddingGeneratorOptions.ModelName` (`src/ast/Ast.Embedding/EmbeddingModels.cs:119`). |
-| TS-5 | Project mutation policy | ✅ This doc explicitly states: `IMemoryGraphStore` is defined in `Ast.Memory`, not `Ast.GraphDb`. Two additive changes to existing projects: (1) one enum value `HyperedgeType.MemoryRelation` in `Ast.Core`, (2) `config.AddBranch("memory", ...)` lines in `Ast.Cli/Program.cs` + project reference to `Ast.Memory` in `Ast.Cli.csproj`. No existing code is modified — only additive lines. tech-spec HC8 is satisfied. |
+| Embedding model | `"nomic-embed-text"` (general-purpose) | §4.7 |
+| Composition wrappers | `MemoryNode.Inner`, not `: HypergraphNode` | §4.1 |
+| `HyperedgeType` enum count | 44 existing + 1 `MemoryRelation` | §1.3, §4.6 |
+| Token budget | default 8K, ceiling 32K | §2.4 |
+| Decay formula | `2^(−age_days / 1095) × centrality_boost` | §3.5 |
+| Agent API style | Typed MCP tools (no DSL) — 5 tools in §5.6 | §5.6 |
+| Cross-branch expertise | Globally visible; staleness via `ContentHash` | §3.3 |
+
+### 10.2 implementation-plan.md — Divergences Resolved
+
+`implementation-plan.md` was drafted before this architecture stabilized
+and contains stale names, formats, and thresholds. **All divergences below
+are resolved — this architecture governs.** Implementers apply the
+canonical values from this document regardless of what the plan says.
+
+| Category | implementation-plan.md says | Canonical (this doc) |
+|---|---|---|
+| Class name | `ExpertiseNote` | **`ExpertiseEntry`** (§2.3, §5.4) |
+| Interface name | `IMemoryStore`, `IExpertiseStore` | **`IMemoryGraphStore`** extends `IGraphStore`; expertise methods on **`IEvolutionEngine`** (§5.2, §5.4) |
+| Extension model | `MemoryNode : HypergraphNode` (inheritance) | **Composition wrapper** with `Inner` property (§4.1) |
+| ID format | `{repo}:{language}:{fqn}:{hash_short}` | `"{filePath}::{qualifiedName}"` (§4.4) |
+| Edge: callers | `CALLED_BY` (stored) | **Reverse traversal** of `CALLS` — not a stored edge (§2.3) |
+| Edge: inheritance | `INHERITS` | **`EXTENDS`** (§2.2) |
+| Edge: imports | `IMPORTS` | **`DEPENDS_ON`** (§2.2) |
+| Scoring: semantic | 0.30 | **0.25** (§2.4) |
+| Scoring: centrality | 0.15 | **0.20** (§2.4) |
+| Default token budget | 32K | **8,000** (ceiling is 32K) (§2.4) |
+| Decay half-life | 60 days | **1,095 days** (3 years) (§2.4) |
+| Decay formula | `e^(−λ × days)` | `2^(−age_days / 1095) × centrality_boost` (§3.5) |
+| Enum name | `PatternType` | **`ExpertiseKind`** (§5.4) |
+| Interface methods | `UpsertAnnotationAsync`, `GetAnnotationsAsync`, etc. | `ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`, etc. (§5.2) |
+| `IMemoryGraphStore` location | implied `Ast.GraphDb` | **`Ast.Memory/Interfaces/`** — zero `Ast.GraphDb` files modified (§3.0) |
+| MCP file location | `Ast.Cli` | **`Ast.Memory/Mcp/`** — `Ast.Cli` only gets additive registration (§5.6) |
+| Embedding model | unspecified | **`"nomic-embed-text"`** (§4.7) |
+
+### 10.3 e2e-scenarios.md — Presentation Aliases Mapped
+
+The scenarios use readable shorthand. Canonical mappings:
+
+| Scenario label | Canonical equivalent |
+|---|---|
+| `called_by` edge | Reverse traversal of `CALLS` (not a stored edge) |
+| `direct_call` edge | `CALLS` with `Confidence = 1.0` |
+| `polymorphic` edge | `CALLS` with `Confidence = 0.5`, `Metadata["IsPolymorphic"] = true` |
+| `recursive` edge | Self-referencing `CALLS` edge |
+| `service_call` edge | Out of scope for MVP (runtime/dynamic tracing excluded) |
+| Unqualified symbol IDs (e.g., `AuthService.login`) | Full path-based IDs: `"{filePath}::{qualifiedName}"` (§4.4) |
+| `ext::` prefix | `"ext:{package}:{qualifiedName}"` (§4.4) |
+| Concurrent-write "conflict errors" | Serialized writes — no conflict errors raised (§3.7) |
+| Cross-repo memory transfer | Out of scope per tech-spec §3 O2 |
