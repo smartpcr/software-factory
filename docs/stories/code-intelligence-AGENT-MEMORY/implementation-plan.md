@@ -1,546 +1,412 @@
-# Implementation Plan: Agent Memory via Graph-Based Code Intelligence
+# Implementation Plan — Agent Memory
 
-## Problem Statement
+> **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
+>
+> Build graph-based agent memory on top-down repo structure and call-chain
+> context so that agents can learn and get smarter across sessions.
+>
+> Companion docs (written in parallel — referenced by name, not duplicated):
+> - `architecture.md` — component diagram, graph layers, data model
+> - `tech-spec.md` — schema, lifecycle, constraints, risks
+> - `e2e-scenarios.md` — Gherkin acceptance scenarios
 
-Agents operating on codebases lack persistent, structured memory. Each session
-starts cold — the agent re-discovers the same call chains, module boundaries,
-and architectural patterns every time. This plan delivers a **graph-based
-agent memory** system that captures **top-down repo structure** and
-**call-chain context** as a queryable knowledge graph, enabling agents to
-accumulate expertise and retrieve relevant context efficiently.
+## Approach
 
-The design draws on the taxonomy from the [Graph-based Agent Memory
-survey](https://arxiv.org/abs/2602.05665) (Yang et al., 2026) and its
-companion resource list at
-[DEEP-PolyU/Awesome-GraphMemory](https://github.com/DEEP-PolyU/Awesome-GraphMemory),
-adapting the memory lifecycle (extraction → storage → retrieval → evolution) to
-the code-intelligence domain.
+This plan extends the **existing `src/ast/` C# infrastructure** (Ast.Core,
+Ast.GraphDb, Ast.Embedding, Ast.VectorDb, Ast.Query, CodeIntelligence — 437+
+tests today) with four new capabilities:
 
----
+1. **Memory-layer models** — `ExpertiseNote`, annotation schema, temporal
+   `version_range` on nodes/edges, audit log.
+2. **Context assembly** — token-budgeted context construction from graph
+   traversal + vector similarity (hybrid retrieval).
+3. **Incremental sync** — diff-aware re-extraction with dependency
+   invalidation and rename tracking.
+4. **Agent API** — MCP tool surface for query, annotate, call-chain, and
+   expertise write-back.
 
-## Architecture Overview
+The graph schema and lifecycle follow the taxonomy from the Graph-based Agent
+Memory survey (Yang et al., arXiv:2602.05665) — Extraction → Storage →
+Retrieval → Evolution — adapted to code intelligence.
 
-The graph is organized into four trust-separated layers:
+**Technology stack (anchored to existing repo):**
 
-| Layer | Contents | Source | Trust Level |
-|-------|----------|--------|-------------|
-| **Fact** | Structural hierarchy (repo → dir → file → class → function), call edges, import edges, inheritance/implements edges | AST parsing, language analysis | High — deterministic |
-| **Derived** | Embeddings, LLM-generated summaries, computed centrality scores | Embedding models, LLM | Medium — regenerable |
-| **Interaction** | Agent query logs, retrieval hits, usefulness signals, annotations | Agent runtime | Medium — empirical |
-| **Temporal** | Commit provenance, modification timestamps, version snapshots | Git history | High — deterministic |
-
-Separating facts from derived knowledge ensures agents can trust structural
-data while treating summaries and patterns as advisory.
-
-### Graph Schema (Core Node and Edge Types)
-
-**Node types:**
-
-| Node Type | Key Properties |
-|-----------|----------------|
-| `Repository` | name, root_path, default_branch |
-| `Directory` | path, depth |
-| `File` | path, language, hash, loc |
-| `Module` | qualified_name, file_ref |
-| `Class` | name, qualified_name, docstring_hash |
-| `Function` | name, qualified_name, signature, is_exported, complexity |
-| `Type` | name, qualified_name, kind (interface/enum/alias) |
-| `Symbol` | name, kind, scope |
-| `ExpertiseNote` | summary, pattern_type, confidence, source |
-
-**Edge types:**
-
-| Edge Type | From → To | Layer |
-|-----------|-----------|-------|
-| `CONTAINS` | Directory → File, File → Class, Class → Function, etc. | Fact |
-| `CALLS` | Function → Function | Fact |
-| `IMPORTS` | File → File (or Module → Module) | Fact |
-| `INHERITS` | Class → Class | Fact |
-| `IMPLEMENTS` | Class → Type | Fact |
-| `REFERENCES` | Function → Symbol | Fact |
-| `DEPENDS_ON` | Module → Module (transitive) | Derived |
-| `SIMILAR_TO` | any → any (embedding cosine > threshold) | Derived |
-| `MODIFIED_IN` | any → Commit | Temporal |
-| `ANNOTATED_BY` | any → ExpertiseNote | Interaction |
-
-**Identity model:** Every code node carries a **canonical ID** formed as
-`{repo}:{language}:{qualified_name}:{content_hash_short}`. The qualified name
-provides stability across commits; the content hash disambiguates when
-signatures diverge. A reconciliation table maps old IDs to current IDs after
-renames/moves (detected via git rename tracking + AST signature matching).
+| Concern | Existing | New/Extended |
+|---------|----------|--------------|
+| AST parsing | `Ast.Core` (C# via Roslyn), `Ast.Csharp`, `Ast.PowerShell` | No new parsers in MVP; leverage existing extractors |
+| Graph storage | `Ast.GraphDb` / `IGraphStore` / `Neo4jGraphStore` | Add `MemoryGraphStore` wrapper with annotation + temporal tables |
+| Embeddings | `Ast.Embedding` / `IEmbeddingGenerator` | Reuse; add batch embedding for memory nodes |
+| Vector search | `Ast.VectorDb` / `IVectorStore` / `QdrantVectorStore` | Reuse; add memory-scoped collection |
+| Queries | `Ast.Query` / `ICodeQuery` / `HybridQueryService` | Extend with `IMemoryQuery` and context assembly |
+| Detection rules | `CodeIntelligence` analyzers (28 analyzers) | Wire detected relationships into memory graph |
 
 ---
 
-## Phase 0 — Evaluation Contract & Schema Foundation
+## Phase 1: Memory Schema & Storage Foundation
 
-**Goal:** Establish success criteria before writing extraction code. Define the
-queries the memory system must answer, build a gold-standard test set, and lock
-the storage schema.
+> **Goal:** Define the memory-layer data model, extend the existing graph store
+> with annotation/temporal/audit capabilities, and establish evaluation fixtures.
+>
+> **Hard dependency:** None — this is the foundation phase.
 
-### Work Items
+### Stage 1.1: Memory Node and Edge Models
 
-| ID | Item | Parallel-safe? |
-|----|------|----------------|
-| 0.1 | Define **top-10 agent queries** the memory must support (see below) | Yes |
-| 0.2 | Build **2–3 fixture repos** with known structure for validation | Yes |
-| 0.3 | Create **gold-standard context sets**: for each query on each fixture, the expected nodes/edges returned | Depends on 0.1, 0.2 |
-| 0.4 | Lock **graph schema** (node types, edge types, property contracts) | Yes |
-| 0.5 | Implement **storage layer** — graph persistence with CRUD | Depends on 0.4 |
-| 0.6 | Define **canonical identity** scheme and reconciliation table | Yes |
-| 0.7 | Set up **evaluation harness** — precision/recall/MRR over gold sets | Depends on 0.3, 0.5 |
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Models/MemoryNode.cs` extending `HypergraphNode` with `VersionRange` (since/until commit SHA), `LastTouched` timestamp, `ContentHash`, and `EmbeddingVector` properties
+- [ ] Create `src/ast/Ast.Memory/Models/MemoryEdge.cs` extending `Hyperedge` with `VersionRange`, `Confidence` (float 0–1), `Stale` flag, and `Layer` enum (Structural, CallChain, Semantic, Expertise)
+- [ ] Create `src/ast/Ast.Memory/Models/ExpertiseNote.cs` with `Summary`, `PatternType` enum (Pattern, Pitfall, Preference, Insight), `Confidence`, `Source` (agent session ID), `EvidenceCitations` list, and `AppliesTo` node ID list
+- [ ] Create `src/ast/Ast.Memory/Models/Annotation.cs` with `NodeId`, `Key`, `ValueJson`, `SessionId`, `ValidFrom`, `ValidUntil` temporal fields
+- [ ] Create `src/ast/Ast.Memory/Models/AuditEntry.cs` with `Operation` enum (Create, Update, Delete, Annotate), `EntityType`, `EntityId`, `SessionId`, `Timestamp`, `DetailJson`
+- [ ] Create `src/ast/Ast.Memory/Models/Enums.cs` with `GraphLayer`, `ExpertisePatternType`, `AuditOperation` enums
+- [ ] Add `Ast.Memory.csproj` to solution with references to `Ast.Core`
 
-### Target Agent Queries (initial set)
+#### Test Scenarios
+- [ ] Scenario: MemoryNode round-trip — Given a MemoryNode with VersionRange {since="abc123", until=null}, When serialized to JSON and deserialized, Then all properties including VersionRange are preserved
+- [ ] Scenario: ExpertiseNote validation — Given an ExpertiseNote with empty Summary, When validated, Then a validation error is returned listing "Summary is required"
+- [ ] Scenario: AuditEntry creation — Given an AuditEntry with Operation=Create and EntityType="Function", When constructed, Then Timestamp defaults to UTC now and all required fields are populated
 
-1. "What does function `X` do and who calls it?"
-2. "Show me the call chain from endpoint `A` down to data access layer."
-3. "What modules does file `F` depend on (transitively)?"
-4. "Find all implementations of interface `I`."
-5. "What changed in module `M` since commit `C`?"
-6. "Find functions similar to `X` (by signature/embedding)."
-7. "What is the architectural pattern used in directory `D`?"
-8. "Which functions are most central (highest fan-in) in this repo?"
-9. "Show me the error-handling pattern in this codebase."
-10. "What did the agent learn about module `M` from previous sessions?"
+### Stage 1.2: Memory Storage Interface
 
-### Hard Dependencies
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Storage/IMemoryStore.cs` interface extending `IGraphStore` with `UpsertAnnotationAsync`, `GetAnnotationsAsync`, `WriteAuditEntryAsync`, `GetAuditLogAsync`, `TombstoneNodeAsync` (sets `VersionRange.Until`), and `GetNodeAtVersionAsync` (point-in-time query)
+- [ ] Create `src/ast/Ast.Memory/Storage/IExpertiseStore.cs` interface with `WriteExpertiseAsync`, `GetExpertiseForNodeAsync`, `FindExpertiseByPatternTypeAsync`, `SupersedeExpertiseAsync`
+- [ ] Create `src/ast/Ast.Memory/Storage/MemoryStoreOptions.cs` with configurable retention window (default 90 days), cold-archive threshold, and max annotation count per node
 
-- Phase 1 cannot start until 0.4 (schema) and 0.5 (storage) are complete.
-- Evaluation harness (0.7) should be ready before Phase 1 ends, so extraction
-  output can be validated immediately.
+#### Test Scenarios
+- [ ] Scenario: IMemoryStore contract — Given the IMemoryStore interface, When compiled, Then it extends IGraphStore and exposes all temporal and annotation methods
+- [ ] Scenario: MemoryStoreOptions defaults — Given default MemoryStoreOptions, When constructed, Then RetentionDays=90 and ColdArchiveThreshold=0.1 and MaxAnnotationsPerNode=100
 
-### Deliverables
+### Stage 1.3: Neo4j Memory Store Implementation
 
-- `schema.ts` (or equivalent): typed graph schema with node/edge definitions
-- `storage/` module: graph CRUD abstraction (single backend — no premature
-  abstraction)
-- `eval/` module: harness + fixture repos + gold sets
-- `IDENTITY.md`: canonical ID specification
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Storage/Neo4jMemoryStore.cs` implementing `IMemoryStore` by composing the existing `Neo4jGraphStore` and adding Cypher queries for annotation CRUD, temporal filtering (`WHERE n.valid_from <= $version AND (n.valid_until IS NULL OR n.valid_until > $version)`), and audit logging
+- [ ] Add Neo4j indexes for `valid_from`, `valid_until`, `content_hash`, and `session_id` properties in `CreateIndexesAsync` override
+- [ ] Implement `TombstoneNodeAsync` — sets `valid_until` on node and all connected edges rather than deleting
+- [ ] Implement `GetNodeAtVersionAsync` — parameterized Cypher query for point-in-time node retrieval
+- [ ] Register `Neo4jMemoryStore` in `src/ast/Ast.Memory/ServiceCollectionExtensions.cs` via DI
 
----
+#### Test Scenarios
+- [ ] Scenario: Annotation persistence — Given a MemoryStore connected to Neo4j, When `UpsertAnnotationAsync` is called with key="known_issues" value="null-deref on empty list", Then `GetAnnotationsAsync` for that node returns the annotation with correct SessionId and ValidFrom
+- [ ] Scenario: Tombstone preserves history — Given a node with two annotations, When `TombstoneNodeAsync` is called, Then the node's ValidUntil is set to the given commit SHA and both annotations get ValidUntil set, but `GetNodeAtVersionAsync` with the original commit SHA still returns the node
+- [ ] Scenario: Audit trail completeness — Given a sequence of Create, Annotate, Tombstone operations, When `GetAuditLogAsync` is queried, Then all three entries appear in chronological order with correct operation types
 
-## Phase 1 — Structural Extraction (Top-Down Repo Graph)
+### Stage 1.4: Evaluation Fixtures and Gold Sets
 
-**Goal:** Parse a repository top-down and populate the Fact layer with
-structural nodes and `CONTAINS` edges. **Single language first** (TypeScript),
-with a parser-plugin interface for adding languages later.
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory.UnitTests/Fixtures/` directory with 2 small C# fixture projects: (a) `SimpleApi` — 3 controllers, 2 services, 1 repository with known call chains; (b) `LibraryWithCycles` — circular dependency between 2 modules
+- [ ] Create `src/ast/Ast.Memory.UnitTests/GoldSets/` with JSON files defining expected nodes, edges, and call-chain results for each fixture
+- [ ] Create `src/ast/Ast.Memory.UnitTests/EvalHarness.cs` — loads gold sets, runs queries against an in-memory graph, computes precision/recall per query
+- [ ] Add `Ast.Memory.UnitTests.csproj` to solution with references to `Ast.Memory`, `Ast.Core.UnitTests` (shared helpers), FluentAssertions, MSTest
 
-### Work Items
-
-| ID | Item | Parallel-safe? |
-|----|------|----------------|
-| 1.1 | Implement **repo walker**: enumerate directories and files, create `Repository`, `Directory`, `File` nodes with `CONTAINS` edges | Yes |
-| 1.2 | Implement **TypeScript AST parser plugin**: extract `Module`, `Class`, `Function`, `Type` nodes from each file | Yes |
-| 1.3 | Wire parser output into **graph storage**: create nodes with canonical IDs, attach to file via `CONTAINS` | Depends on 0.5 |
-| 1.4 | Extract **exported symbol** metadata (is_exported, visibility) | Part of 1.2 |
-| 1.5 | Generate **provenance metadata** for each node (source=AST, extraction_version, file_hash) | Part of 1.3 |
-| 1.6 | Run **evaluation harness** against fixture repos — validate structural queries (#1, #8 from query list) | Depends on 1.3 |
-| 1.7 | Implement **Python AST parser plugin** (second language) | Parallel with 1.3–1.6 |
-
-### Parser Plugin Interface
-
-```
-interface LanguageParser {
-  language: string;
-  supportedExtensions: string[];
-  parse(filePath: string, content: string): ParseResult;
-}
-
-interface ParseResult {
-  modules: ModuleNode[];
-  classes: ClassNode[];
-  functions: FunctionNode[];
-  types: TypeNode[];
-  symbols: SymbolNode[];
-}
-```
-
-Each parser plugin returns a flat list of typed nodes; the orchestrator wires
-them into the graph with `CONTAINS` edges and canonical IDs.
-
-### Hard Dependencies
-
-- Requires Phase 0 schema and storage.
-- Parser plugin interface must be defined before 1.2 and 1.7 can start.
-
-### Deliverables
-
-- `parsers/typescript.ts`: TS parser plugin
-- `parsers/python.ts`: Python parser plugin
-- `extraction/structural.ts`: repo walker + orchestrator
-- Fixture repos fully indexed and passing eval queries
+#### Test Scenarios
+- [ ] Scenario: Gold set loading — Given the SimpleApi gold set JSON, When loaded by EvalHarness, Then it contains at least 15 expected nodes and 20 expected edges
+- [ ] Scenario: Fixture project parsing — Given the SimpleApi fixture project, When parsed by the existing `RepositoryProcessor`, Then all classes and methods from the 3 controllers appear as HypergraphNodes
 
 ---
 
-## Phase 2 — Semantic Extraction (Call Chains & Relationships)
+## Phase 2: Graph Population from Existing Extractors
 
-**Goal:** Add `CALLS`, `IMPORTS`, `INHERITS`, `IMPLEMENTS`, and `REFERENCES`
-edges to the Fact layer. This is the call-chain context the story specifically
-targets.
+> **Goal:** Wire the existing Ast.Core/Ast.Csharp extraction pipeline into the
+> memory store, populating structural + call-chain layers with canonical IDs and
+> temporal metadata.
+>
+> **Hard dependency:** Phase 1 (memory store must exist).
+> **Parallel-safe:** Stages 2.1 and 2.2 are independent after Phase 1.
 
-### Work Items
+### Stage 2.1: Structural Layer Population
 
-| ID | Item | Parallel-safe? |
-|----|------|----------------|
-| 2.1 | Extract **intra-file call edges** from AST (function → function within same file) | Yes |
-| 2.2 | Extract **import declarations** and resolve to target files/modules → create `IMPORTS` edges | Yes |
-| 2.3 | Resolve **cross-file call edges** using import graph + symbol table | Depends on 2.2 |
-| 2.4 | Extract **inheritance** (`extends`) and **implements** edges from class declarations | Yes |
-| 2.5 | Build **transitive dependency edges** (`DEPENDS_ON`) via depth-limited BFS over imports+calls (max depth configurable, default 5) | Depends on 2.3 |
-| 2.6 | Implement **call-chain query**: given a function, return the full call tree up/down to configurable depth | Depends on 2.5 |
-| 2.7 | Run **evaluation harness** — validate call-chain queries (#2, #3, #4 from query list) | Depends on 2.6 |
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Extraction/MemoryGraphPopulator.cs` — takes `RepositoryProcessor` output (list of `HypergraphNode` and `Hyperedge`) and maps them to `MemoryNode`/`MemoryEdge` with canonical IDs (`{repo}:{language}:{fqn}:{hash_short}`) and `VersionRange.Since` set to current HEAD commit
+- [ ] Implement canonical ID generation in `src/ast/Ast.Memory/Identity/CanonicalIdGenerator.cs` — stable qualified-name-based IDs with content-hash disambiguation
+- [ ] Create `src/ast/Ast.Memory/Identity/IdReconciliationTable.cs` — maps old canonical IDs to new IDs after renames; backed by a dictionary persisted in Neo4j as `ID_MAPS_TO` edges
+- [ ] Wire `MemoryGraphPopulator` to write structural nodes (Repository, Directory/Package, File/Module, Class, Function) and CONTAINS edges into `IMemoryStore`
+- [ ] Add provenance metadata (extraction_version, source="Ast.Csharp", file_hash) to each node's metadata JSON property
 
-### Cross-File Resolution Strategy
+#### Test Scenarios
+- [ ] Scenario: Canonical ID stability — Given a C# class `PaymentService` in `src/Services/PaymentService.cs`, When extracted twice without changes, Then the canonical ID is identical both times
+- [ ] Scenario: Structural population completeness — Given the SimpleApi fixture, When `MemoryGraphPopulator` runs, Then the memory store contains Repository→Directory→File→Class→Method containment chain with CONTAINS edges at every level
+- [ ] Scenario: Provenance metadata — Given a populated memory node, When its metadata JSON is inspected, Then it contains `extraction_version`, `source`, and `file_hash` fields
 
-1. Parse all import statements to build a file-level import graph.
-2. Build a global symbol table: `{ qualified_name → node_id }`.
-3. For each unresolved call in a function body, look up the symbol in the
-   import chain, then in the global table.
-4. Unresolved calls are stored as `CALLS` edges with `resolved: false` and
-   a `target_name` property for later resolution.
+### Stage 2.2: Call-Chain Layer Population
 
-**Scope exclusion (deferred):** Data-flow analysis (parameter passing, return
-value tracking) requires compiler/type-checker integration beyond AST walking.
-Deferred to a later iteration to avoid drag on the MVP.
+#### Implementation Steps
+- [ ] Extend `MemoryGraphPopulator` to process `MethodInvocation` and `ConstructorInvocation` hyperedges from existing extractors and emit `CALLS`/`CALLED_BY` memory edges with `Layer=CallChain` and confidence based on resolution status
+- [ ] Map existing `Implements`, `Extends` hyperedge types to `IMPLEMENTS`, `INHERITS` memory edges
+- [ ] Map existing `UsingDirective` and import-related edges to `IMPORTS`/`DEPENDS_ON` memory edges
+- [ ] Wire the existing `CodeIntelligence` analyzers (e.g., `InheritanceAnalyzer`, `DependencyInjectionAnalyzer`) so their `DetectedRelationship` outputs are also stored as memory edges with appropriate confidence scores
 
-### Hard Dependencies
+#### Test Scenarios
+- [ ] Scenario: Call-chain edge creation — Given `ServiceA.Process()` calls `RepositoryB.Save()` in the SimpleApi fixture, When call-chain extraction runs, Then a CALLS edge exists from `ServiceA.Process` to `RepositoryB.Save` with confidence ≥ 0.9
+- [ ] Scenario: Inheritance edge mapping — Given `PaymentController` extends `ControllerBase`, When extraction runs, Then an INHERITS edge exists between the two class nodes
+- [ ] Scenario: Unresolved call handling — Given a method call to an external library not in the repo, When extraction runs, Then a CALLS edge is created with `resolved=false` and `confidence=0.5`
 
-- Phase 1 structural nodes must exist to attach edges.
-- Items 2.1–2.4 are parallel-safe once Phase 1 is complete.
-- Item 2.5 depends on 2.3 (needs cross-file edges).
+### Stage 2.3: Batch Population Pipeline
 
-### Deliverables
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Extraction/FullRepositoryIndexer.cs` — orchestrates full-repo indexing: enumerate files → parse via `RepositoryProcessor` → populate via `MemoryGraphPopulator` → write audit log entry
+- [ ] Implement progress reporting via `IProgress<MemoryIndexProgress>` with file count, node count, edge count, and elapsed time
+- [ ] Add configurable parallelism (default: `Environment.ProcessorCount`) for file parsing phase with `Parallel.ForEachAsync`
+- [ ] Create CLI command `ast memory index <repo-path>` in `Ast.Cli` that invokes `FullRepositoryIndexer`
 
-- `extraction/semantic.ts`: call/import/type edge extractor
-- `extraction/symbol-table.ts`: global symbol resolution
-- `queries/call-chain.ts`: call-chain traversal query
-- Eval queries #2, #3, #4 passing on fixture repos
-
----
-
-## Phase 3 — Retrieval & Context Assembly
-
-**Goal:** Build the retrieval system that agents actually call. Combines graph
-traversal with optional vector similarity for hybrid search.
-
-### Work Items
-
-| ID | Item | Parallel-safe? |
-|----|------|----------------|
-| 3.1 | Implement **graph traversal queries**: neighbors, ancestors, descendants, shortest path between nodes | Yes |
-| 3.2 | Implement **node embedding pipeline**: generate embeddings for function signatures + docstrings, store as node properties | Yes |
-| 3.3 | Implement **hybrid retrieval**: given a natural-language query, (a) embed the query, (b) find top-K similar nodes, (c) expand each via graph neighbors | Depends on 3.1, 3.2 |
-| 3.4 | Implement **context assembly**: rank retrieved nodes, serialize into a token-budgeted context window (respecting LLM context limits) | Depends on 3.3 |
-| 3.5 | Implement **relevance scoring** function: `score = w1 * structural_distance + w2 * semantic_similarity + w3 * centrality + w4 * recency` | Depends on 3.1 |
-| 3.6 | Implement **multi-round retrieval**: initial broad search → agent feedback → refine via graph neighbors (inspired by the "multi-round retrieval" strategies in the survey) | Depends on 3.3 |
-| 3.7 | Run **full evaluation** against gold sets — measure precision@K, recall@K, MRR | Depends on 3.4 |
-
-### Context Assembly Algorithm
-
-```
-1. Parse agent query → extract intent + mentioned symbols
-2. If symbols found → anchor search on matching graph nodes
-3. If no symbols → fall back to embedding similarity search
-4. For each anchor node:
-   a. Walk CALLS edges up/down (configurable depth)
-   b. Walk CONTAINS edges up to file/module level
-   c. Walk IMPORTS edges to direct dependencies
-5. Score all collected nodes via relevance function
-6. Sort by score, pack into context window until token budget exhausted
-7. Return context + provenance metadata (which nodes, why selected)
-```
-
-### Hard Dependencies
-
-- Requires populated graph from Phase 1 + 2.
-- Embedding pipeline (3.2) can start as soon as Phase 1 nodes exist.
-- Hybrid retrieval (3.3) needs both graph traversal and embeddings.
-
-### Deliverables
-
-- `retrieval/traversal.ts`: graph query primitives
-- `retrieval/embedding.ts`: embedding generation + similarity search
-- `retrieval/hybrid.ts`: hybrid retrieval orchestrator
-- `retrieval/context.ts`: context assembly + token budgeting
-- `retrieval/scoring.ts`: relevance scoring function
-- Eval report with precision/recall/MRR numbers
+#### Test Scenarios
+- [ ] Scenario: Full indexing pipeline — Given the SimpleApi fixture (6 C# files), When `FullRepositoryIndexer.IndexAsync` is called, Then the memory store contains nodes for all classes and methods, and the audit log records one "Create" entry per node
+- [ ] Scenario: Progress reporting — Given a fixture with 6 files, When indexing runs with an `IProgress` callback, Then the callback is invoked at least 6 times with incrementing file counts
+- [ ] Scenario: Idempotent re-indexing — Given a fully indexed repo, When `FullRepositoryIndexer.IndexAsync` is called again without changes, Then node count remains the same and no duplicate nodes are created (canonical IDs prevent duplication)
 
 ---
 
-## Phase 4 — Incremental Updates & Temporal Tracking
+## Phase 3: Retrieval & Context Assembly
 
-**Goal:** The graph must stay current as code changes. Implement diff-aware
-incremental updates with proper dependency invalidation, and attach temporal
-metadata for recency-aware retrieval.
+> **Goal:** Build the hybrid retrieval engine that agents call to get
+> token-budgeted, structurally-aware context from the memory graph.
+>
+> **Hard dependency:** Phase 2 (graph must be populated).
+> **Parallel-safe:** Stages 3.1 and 3.2 can run in parallel; Stage 3.3 depends
+> on both.
 
-### Work Items
+### Stage 3.1: Memory Query Interface
 
-| ID | Item | Parallel-safe? |
-|----|------|----------------|
-| 4.1 | Implement **change detection**: given two commits, compute changed files via `git diff --name-status` | Yes |
-| 4.2 | Implement **dependency invalidation**: when file F changes, identify all nodes that import/call into F and mark them `dirty` | Depends on 4.1 |
-| 4.3 | Implement **incremental re-extraction**: re-parse dirty files, reconcile nodes (update existing, create new, tombstone deleted) using canonical IDs | Depends on 4.2 |
-| 4.4 | Implement **rename/move detection**: use git rename tracking + AST signature matching to update canonical ID mappings | Depends on 4.3 |
-| 4.5 | Attach **`MODIFIED_IN`** temporal edges linking nodes to commits | Depends on 4.3 |
-| 4.6 | Implement **staleness scoring**: combine recency, centrality (high fan-in code is important even if old), and retrieval frequency — avoid naive "not touched = stale" | Depends on 4.5 |
-| 4.7 | Implement **full-rebuild fallback**: periodic reconciliation pass that re-indexes from scratch and diffs against existing graph to catch drift | Depends on 4.3 |
-| 4.8 | Implement **branch awareness**: memory queries scoped to a branch; graph overlays for feature branches that merge back to main | Depends on 4.5 |
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Retrieval/IMemoryQuery.cs` interface with methods: `QueryContextAsync(string taskDescription, MemoryQueryOptions options)`, `GetCallChainAsync(string functionId, CallChainDirection direction, int depth)`, `FindSimilarAsync(string queryOrNodeId, int topK)`, `GetModuleSummaryAsync(string modulePath)`
+- [ ] Create `src/ast/Ast.Memory/Retrieval/MemoryQueryOptions.cs` with `MaxTokens` (default 32K), `Depth` (default 3), `IncludeCallChain` (default true), `IncludeImports` (default true), `IncludeExpertise` (default true), `Branch` (optional), `ScopePrefix` (optional qualified-name prefix to limit traversal)
+- [ ] Create `src/ast/Ast.Memory/Retrieval/ContextResult.cs` with `Nodes` (list of ranked nodes), `Edges` (connecting edges), `Provenance` (why each node was selected), `TokenCount`, `TruncatedNodeCount`
+- [ ] Implement `MemoryQueryService` composing existing `HybridQueryService` with memory-specific temporal and annotation filtering
 
-### Invalidation Model
+#### Test Scenarios
+- [ ] Scenario: Query options defaulting — Given default MemoryQueryOptions, When constructed, Then MaxTokens=32768 and Depth=3 and IncludeCallChain=true
+- [ ] Scenario: Scope-limited query — Given a populated graph and ScopePrefix="src/Services", When QueryContextAsync is called, Then only nodes under that path prefix are returned
 
-```
-On file change (F):
-  1. Re-parse F → extract new nodes/edges
-  2. Diff against existing nodes for F → apply creates/updates/deletes
-  3. For each deleted/changed exported symbol in F:
-     a. Find all IMPORTS edges pointing to F
-     b. Find all CALLS edges targeting symbols in F
-     c. Mark source nodes of those edges as "needs-reverify"
-  4. Re-resolve edges for "needs-reverify" nodes
-  5. Update MODIFIED_IN temporal edges
-```
+### Stage 3.2: Relevance Scoring and Ranking
 
-### Hard Dependencies
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Retrieval/RelevanceScorer.cs` implementing multi-signal scoring: `score = w1*structural_distance + w2*semantic_similarity + w3*centrality + w4*recency + w5*expertise_signal`
+- [ ] Implement centrality computation (fan-in count from CALLS edges) as a cached property on memory nodes, recomputed during indexing
+- [ ] Implement recency signal from `VersionRange.Since` and `LastTouched` relative to HEAD commit
+- [ ] Create `src/ast/Ast.Memory/Retrieval/ScoringWeights.cs` with configurable weights (defaults: structural=0.3, semantic=0.3, centrality=0.15, recency=0.15, expertise=0.1)
 
-- Requires Phase 1 + 2 extraction pipeline.
-- Can run in parallel with Phase 3 retrieval work.
-- Branch awareness (4.8) depends on temporal edges (4.5).
+#### Test Scenarios
+- [ ] Scenario: High-centrality boost — Given function A with 10 callers and function B with 1 caller at equal semantic similarity, When scored, Then A ranks higher than B
+- [ ] Scenario: Recency boost — Given two nodes with equal centrality but node X modified today and node Y modified 90 days ago, When scored, Then X ranks higher
+- [ ] Scenario: Weight configuration — Given custom weights {structural=0.5, semantic=0.5, centrality=0, recency=0, expertise=0}, When scoring, Then only structural distance and semantic similarity affect the score
 
-### Deliverables
+### Stage 3.3: Context Assembly with Token Budgeting
 
-- `update/change-detector.ts`: git-diff-based change detection
-- `update/invalidator.ts`: dependency invalidation engine
-- `update/reconciler.ts`: incremental node reconciliation
-- `update/temporal.ts`: commit provenance + staleness scoring
-- Validation: modify fixture repos, verify graph stays consistent
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Retrieval/ContextAssembler.cs` — takes ranked nodes + edges, serializes into a structured markdown context block with sections: `## Structure`, `## Call Graph`, `## Related Code`, `## Known Expertise`
+- [ ] Implement token counting using tiktoken-compatible tokenizer (e.g., `Microsoft.ML.Tokenizers` NuGet) to enforce `MaxTokens` budget
+- [ ] Implement hierarchy compression: when a parent and all children are selected, collapse to parent summary + child signature list to save tokens
+- [ ] Implement provenance footnotes: each included node gets a brief `[via: call-chain from X]` or `[via: semantic similarity 0.87]` annotation
 
----
-
-## Phase 5 — Agent API & Integration
-
-**Goal:** Expose the memory system as a callable service that agents use to
-retrieve context and write back learnings.
-
-### Work Items
-
-| ID | Item | Parallel-safe? |
-|----|------|----------------|
-| 5.1 | Define **Agent Memory API** contract (OpenAPI or MCP tool schema) | Yes |
-| 5.2 | Implement **read endpoints**: query context, get call chain, find similar, get module summary | Depends on Phase 3 |
-| 5.3 | Implement **write endpoints**: annotate node, record useful/not-useful signal, add expertise note | Depends on 5.1 |
-| 5.4 | Implement **agent interaction logging**: record every query + retrieved context + agent feedback into Interaction layer | Depends on 5.2, 5.3 |
-| 5.5 | Build **MCP tool wrapper** so the memory is usable from MCP-compatible agents | Depends on 5.2 |
-| 5.6 | Implement **observability**: structured logs tracing query → retrieval path → context assembly → agent decision | Depends on 5.4 |
-| 5.7 | End-to-end **integration test**: agent performs a multi-turn coding task using memory, verify context quality | Depends on all above |
-
-### API Surface (Draft)
-
-```
-memory.query(
-  query: string,
-  options: {
-    repo: string,
-    branch?: string,
-    maxTokens?: number,
-    depth?: number,
-    includeCallChain?: boolean,
-    includeImports?: boolean,
-  }
-) → ContextResult {
-  nodes: RankedNode[],
-  edges: Edge[],
-  provenance: ProvenanceTrace[],
-  tokenCount: number,
-}
-
-memory.annotate(
-  nodeId: string,
-  annotation: {
-    type: "useful" | "not_useful" | "expertise_note",
-    content?: string,
-    agentSessionId: string,
-  }
-) → void
-
-memory.getCallChain(
-  functionId: string,
-  direction: "callers" | "callees" | "both",
-  depth: number,
-) → CallChainResult
-
-memory.findSimilar(
-  query: string | nodeId: string,
-  topK: number,
-) → SimilarNode[]
-```
-
-### Hard Dependencies
-
-- Read endpoints depend on Phase 3 retrieval system.
-- Write endpoints depend on graph storage (Phase 0).
-- MCP wrapper depends on read/write endpoints.
-
-### Deliverables
-
-- `api/memory-api.ts`: API implementation
-- `api/mcp-tool.ts`: MCP tool definition
-- `api/logging.ts`: interaction logging
-- Integration test suite
+#### Test Scenarios
+- [ ] Scenario: Token budget enforcement — Given a graph with 100 nodes producing 50K tokens of context, When assembled with MaxTokens=32768, Then output token count ≤ 32768 and the highest-scored nodes are included
+- [ ] Scenario: Hierarchy compression — Given a class with 5 methods all selected, When assembled, Then output contains the class summary + 5 one-line method signatures rather than full details of each
+- [ ] Scenario: Provenance inclusion — Given 3 nodes retrieved via different strategies, When assembled, Then each node's context block includes a provenance annotation explaining why it was selected
 
 ---
 
-## Phase 6 — Expertise & Learning (Post-MVP)
+## Phase 4: Incremental Sync & Temporal Tracking
 
-**Goal:** Enable the memory to accumulate cross-cutting expertise over time —
-the "agent gets smarter" requirement. This phase is explicitly **post-MVP**;
-it depends on having working retrieval (Phase 3), interaction logging
-(Phase 5), and enough usage data to extract meaningful patterns.
+> **Goal:** Keep the memory graph current as code changes without full re-indexing.
+>
+> **Hard dependency:** Phase 2 (population pipeline must exist).
+> **Parallel-safe with Phase 3:** Stages 4.1–4.3 can be built alongside Phase 3
+> retrieval work. Stage 4.4 depends on Stage 4.3.
 
-### Work Items
+### Stage 4.1: Change Detection
 
-| ID | Item | Parallel-safe? |
-|----|------|----------------|
-| 6.1 | Implement **usage analytics**: aggregate which nodes are queried most, which lead to successful agent outcomes | Depends on Phase 5 interaction logs |
-| 6.2 | Implement **pattern extraction**: identify recurring code patterns (error handling, middleware chains, etc.) via clustering over frequently co-retrieved subgraphs | Depends on 6.1 |
-| 6.3 | Create **ExpertiseNote nodes**: attach summarized patterns to relevant modules/directories as `ANNOTATED_BY` edges | Depends on 6.2 |
-| 6.4 | Implement **memory consolidation**: merge redundant expertise notes, prune low-confidence notes, update summaries as patterns evolve | Depends on 6.3 |
-| 6.5 | Implement **LLM-generated summaries** for modules/directories (background, async, cached, regenerable) | Parallel with 6.1–6.4 |
-| 6.6 | Implement **cross-session learning**: load expertise from previous sessions, let agents build on prior knowledge | Depends on 6.3 |
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Sync/ChangeDetector.cs` — given two commit SHAs, shells out to `git diff --name-status` to compute added/modified/deleted/renamed files
+- [ ] Create `src/ast/Ast.Memory/Sync/ChangeSet.cs` model with `Added`, `Modified`, `Deleted`, `Renamed` (old→new path) file lists and `BaseCommit`/`HeadCommit` SHAs
+- [ ] Handle the "initial index" case where BaseCommit is null — treat all files as Added
 
-### Key Design Decisions
+#### Test Scenarios
+- [ ] Scenario: Detect file changes — Given a git repo with 1 added and 1 modified file between commits A and B, When `ChangeDetector.DetectAsync(A, B)` runs, Then ChangeSet.Added contains the new file and ChangeSet.Modified contains the changed file
+- [ ] Scenario: Rename detection — Given a file renamed from `OldService.cs` to `NewService.cs`, When detected, Then ChangeSet.Renamed contains the mapping and ChangeSet.Deleted/Added are empty for that file
 
-- **Expertise is derived, not asserted.** Expertise nodes are generated from
-  observed retrieval patterns and agent feedback, not from one-shot LLM
-  generation. This ensures the memory learns from actual usage.
-- **Confidence model.** Each ExpertiseNote carries a confidence score based on
-  the number of supporting observations, recency, and agent feedback
-  (useful/not-useful signals).
-- **LLM summaries are optional.** They are generated in the background, cached,
-  and tagged with provenance. They do not block core graph operations and can
-  be regenerated at any time.
+### Stage 4.2: Dependency Invalidation
 
-### Hard Dependencies
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Sync/DependencyInvalidator.cs` — given a ChangeSet, queries the memory graph for all nodes in changed files, then walks IMPORTS and CALLS edges to find downstream nodes that need re-verification
+- [ ] Implement `MarkStaleAsync` — sets `Stale=true` on edges whose source or target is in a changed file
+- [ ] Add configurable invalidation depth (default 2 hops) to limit cascading invalidation in large graphs
 
-- Requires substantial interaction data from Phase 5 to be meaningful.
-- Memory consolidation (6.4) requires expertise notes (6.3).
+#### Test Scenarios
+- [ ] Scenario: Direct dependency invalidation — Given file A imports file B, and file B is modified, When invalidation runs, Then IMPORTS edge from A→B is marked stale
+- [ ] Scenario: Depth-limited invalidation — Given a chain A→B→C→D with invalidation depth=2, When file D changes, Then edges touching C and B are marked stale but edges touching A are not
 
-### Deliverables
+### Stage 4.3: Incremental Re-extraction
 
-- `expertise/analytics.ts`: usage aggregation
-- `expertise/patterns.ts`: pattern extraction
-- `expertise/consolidation.ts`: merge/prune engine
-- `expertise/summaries.ts`: LLM summary pipeline
-- Evaluation: measure whether expertise improves retrieval quality over time
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Sync/IncrementalSyncService.cs` — orchestrates: detect changes → invalidate → re-parse changed files → reconcile nodes (create new, update changed, tombstone deleted) → clear stale flags on re-confirmed edges → write audit entries
+- [ ] Implement node reconciliation using canonical IDs: match existing nodes by `{repo}:{language}:{fqn}`, compare `content_hash` to decide update vs. skip
+- [ ] Implement rename reconciliation: for renamed files, update `IdReconciliationTable` and re-map all edges pointing to old canonical IDs
+- [ ] Create CLI command `ast memory sync [--base-commit <sha>]` in `Ast.Cli`
+
+#### Test Scenarios
+- [ ] Scenario: Incremental update — Given a fully indexed repo, When one file is modified (method signature changed), Then only that file's nodes are re-extracted, the changed method node gets a new content_hash, and the audit log records Update operations
+- [ ] Scenario: File deletion handling — Given a file with 3 classes is deleted, When sync runs, Then all 3 class nodes and their child nodes are tombstoned (ValidUntil set) rather than hard-deleted
+- [ ] Scenario: Rename tracking — Given `PaymentService.cs` renamed to `PaymentGateway.cs`, When sync runs, Then the IdReconciliationTable maps old→new IDs and all CALLS edges are updated to reference the new canonical ID
+
+### Stage 4.4: Staleness Scoring
+
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Sync/StalenessScorer.cs` — computes a staleness score for each node combining: days since `LastTouched`, inverse of centrality (high fan-in = less stale), and `Stale` edge count ratio
+- [ ] Integrate staleness score into `RelevanceScorer` as a penalty term: nodes with staleness > threshold get down-ranked in retrieval
+- [ ] Add staleness warning injection into `ContextAssembler`: when retrieved annotations are older than the latest commit touching that file, inject `⚠️ stale annotation` marker
+
+#### Test Scenarios
+- [ ] Scenario: Staleness penalty — Given a node not touched in 180 days with low centrality, When staleness is computed, Then its score is above the configurable warning threshold (default 0.7)
+- [ ] Scenario: High-centrality protection — Given a core utility function with 50 callers not touched in 180 days, When staleness is computed, Then its score is below the warning threshold because centrality counteracts recency decay
+
+---
+
+## Phase 5: Agent API & MCP Integration
+
+> **Goal:** Expose memory as a callable API that MCP-compatible agents use to
+> query context and write back learnings.
+>
+> **Hard dependency:** Phase 3 (retrieval) and Phase 4 (sync) for full
+> functionality. Read API can ship after Phase 3 alone.
+
+### Stage 5.1: Memory API Contract
+
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Api/IAgentMemoryApi.cs` interface with methods: `QueryAsync(AgentQuery)→ContextResult`, `AnnotateAsync(AnnotationRequest)→void`, `GetCallChainAsync(CallChainRequest)→CallChainResult`, `FindSimilarAsync(SimilarityRequest)→SimilarNode[]`, `RecordFeedbackAsync(FeedbackRequest)→void`
+- [ ] Create request/response DTOs in `src/ast/Ast.Memory/Api/Models/` — `AgentQuery`, `AnnotationRequest` (with type: useful|not_useful|expertise_note), `CallChainRequest`, `FeedbackRequest`, `CallChainResult`, `SimilarNode`
+- [ ] Create `src/ast/Ast.Memory/Api/AgentMemoryService.cs` implementing `IAgentMemoryApi` by composing `MemoryQueryService`, `IMemoryStore`, and `IExpertiseStore`
+
+#### Test Scenarios
+- [ ] Scenario: Query round-trip — Given a populated memory graph, When `QueryAsync` is called with "What calls PaymentService.Process?", Then the result contains the call-chain subgraph with TokenCount ≤ MaxTokens
+- [ ] Scenario: Annotation write-back — Given a node ID, When `AnnotateAsync` is called with type="expertise_note" and content="fragile null handling", Then `GetAnnotationsAsync` returns the note and an audit entry is written
+
+### Stage 5.2: MCP Tool Definition
+
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Mcp/MemoryMcpTool.cs` defining MCP tool schema for `memory_query`, `memory_annotate`, `memory_call_chain`, `memory_find_similar` operations following MCP tool protocol JSON schema
+- [ ] Create `src/ast/Ast.Memory/Mcp/MemoryMcpHandler.cs` — MCP request handler that deserializes tool calls and delegates to `IAgentMemoryApi`
+- [ ] Add MCP tool registration in `ServiceCollectionExtensions` so the memory tools appear in MCP tool discovery
+
+#### Test Scenarios
+- [ ] Scenario: MCP schema validity — Given the `memory_query` tool definition, When serialized to JSON, Then the schema validates against MCP tool protocol specification (required fields: name, description, inputSchema)
+- [ ] Scenario: MCP request dispatch — Given an MCP `memory_query` request with `{"query": "auth flow", "maxTokens": 16000}`, When handled by `MemoryMcpHandler`, Then `AgentMemoryService.QueryAsync` is invoked with the deserialized parameters and the response is valid MCP tool result JSON
+
+### Stage 5.3: Interaction Logging & Observability
+
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Logging/InteractionLogger.cs` — records every agent query (task text, retrieved node IDs, token count, latency) and feedback signal into the Interaction layer of the graph
+- [ ] Implement structured OpenTelemetry traces: span per query with attributes for retrieval mode, node count, token count, latency_ms
+- [ ] Create `src/ast/Ast.Memory/Logging/MemoryMetrics.cs` — counters for queries_total, annotations_total, cache_hit_ratio, and histograms for query_latency_ms and token_count
+
+#### Test Scenarios
+- [ ] Scenario: Interaction log persistence — Given an agent query that returns 5 nodes, When the query completes, Then InteractionLogger has written a log entry with query text, 5 node IDs, and latency > 0ms
+- [ ] Scenario: Feedback correlation — Given an agent marks 2 nodes as "useful" and 1 as "not_useful", When feedback is recorded, Then the interaction log entry references the original query ID and contains per-node feedback signals
+
+---
+
+## Phase 6: Expertise & Cross-Session Learning
+
+> **Goal:** Enable the memory to accumulate cross-cutting expertise so agents
+> get smarter over time — the core "agent learns" requirement.
+>
+> **Hard dependency:** Phase 5 (needs interaction logs and annotation API).
+> **Note:** This phase is post-MVP but essential for the story's learning goal.
+
+### Stage 6.1: Usage Analytics
+
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Expertise/UsageAnalytics.cs` — aggregates interaction logs to compute per-node access counts, frequently co-retrieved node pairs, and useful/not-useful signal ratios
+- [ ] Implement hot-node detection: nodes with access_count above the 90th percentile are flagged as hot-tier candidates
+- [ ] Store computed analytics as derived annotations on nodes (key: `_analytics`, value: JSON with access_count, co_retrieval_partners, usefulness_ratio)
+
+#### Test Scenarios
+- [ ] Scenario: Access count aggregation — Given 10 queries where node X appears in 8 results, When analytics runs, Then node X's access_count annotation equals 8
+- [ ] Scenario: Hot-node detection — Given 100 nodes where 5 have access_count > 90th percentile, When analytics runs, Then exactly those 5 are flagged as hot-tier
+- [ ] Scenario: Usefulness ratio — Given node Y received 6 "useful" and 2 "not_useful" signals, When analytics runs, Then usefulness_ratio for Y is 0.75
+
+### Stage 6.2: Pattern Extraction & Expertise Notes
+
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Expertise/PatternExtractor.cs` — identifies recurring code patterns by clustering frequently co-retrieved subgraphs using community detection (Louvain algorithm on co-retrieval adjacency)
+- [ ] For each detected community/cluster, generate an `ExpertiseNote` with PatternType, a prose Summary (template-based, not LLM-dependent for MVP), and APPLIES_TO edges to member nodes
+- [ ] Implement expertise deduplication: before creating a new ExpertiseNote, check for existing notes with overlapping APPLIES_TO sets; merge if overlap > 80%
+
+#### Test Scenarios
+- [ ] Scenario: Pattern detection — Given nodes {A, B, C} are co-retrieved in 5 out of 6 queries, When pattern extraction runs, Then an ExpertiseNote is created with APPLIES_TO edges to A, B, and C
+- [ ] Scenario: Deduplication — Given an existing ExpertiseNote covering {A, B, C} and a new pattern covering {A, B, C, D}, When extraction runs, Then the existing note is updated (not duplicated) and D is added to APPLIES_TO
+
+### Stage 6.3: Memory Consolidation & Decay
+
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Expertise/ConsolidationEngine.cs` — periodic job that: (a) merges overlapping ExpertiseNotes, (b) decays confidence on notes whose APPLIES_TO targets have been substantially rewritten (content_hash changed), (c) archives notes with confidence below threshold
+- [ ] Implement Ebbinghaus-inspired decay function: `new_confidence = confidence * e^(-λ * days_since_last_access)` where λ is calibrated so half-life = 60 days by default, but modified by centrality (high-centrality targets decay slower)
+- [ ] Create `src/ast/Ast.Memory/Expertise/ExpertiseEvolutionService.cs` tying analytics → extraction → consolidation into a single `EvolveAsync()` pipeline callable from CLI (`ast memory evolve`)
+
+#### Test Scenarios
+- [ ] Scenario: Confidence decay — Given an ExpertiseNote with confidence=0.9 not accessed for 60 days, When consolidation runs, Then confidence is approximately 0.45 (half-life)
+- [ ] Scenario: Centrality-adjusted decay — Given two notes both 60 days old, one targeting a function with 50 callers and one targeting a function with 1 caller, When consolidation runs, Then the high-centrality note retains higher confidence
+- [ ] Scenario: Archive threshold — Given a note with confidence decayed to 0.05 (below default threshold 0.1), When consolidation runs, Then the note is archived (ValidUntil set) and excluded from default retrieval
+
+### Stage 6.4: Cross-Session Learning Flow
+
+#### Implementation Steps
+- [ ] Create `src/ast/Ast.Memory/Expertise/SessionLearningService.cs` — at session start, loads relevant ExpertiseNotes for the task scope and injects them into the context window as a `## Prior Learnings` section
+- [ ] At session end, extracts new annotations written during the session and pipes them through the consolidation engine to merge with existing knowledge
+- [ ] Implement conflict resolution for contradictory annotations: most recent from the most frequently validated session wins; contradictions are logged as audit entries for human review
+
+#### Test Scenarios
+- [ ] Scenario: Prior learning injection — Given 3 ExpertiseNotes applicable to module "auth", When a new session targets "auth/login.cs", Then the context window includes a "Prior Learnings" section with all 3 notes
+- [ ] Scenario: Post-session write-back — Given an agent wrote 2 new annotations during a session, When the session ends and learning service runs, Then both annotations are persisted as ExpertiseNotes with the session's ID as source
+- [ ] Scenario: Contradiction handling — Given note A says "function X is safe" and new note B says "function X has null-deref", When consolidation runs, Then note A is superseded by note B (SUPERSEDES edge created) and an audit entry records the contradiction
 
 ---
 
 ## Dependency Graph
 
 ```
-Phase 0: Schema & Eval Foundation
+Phase 1: Schema & Storage Foundation
   │
-  ├──→ Phase 1: Structural Extraction ──→ Phase 2: Semantic Extraction
-  │         │                                    │
-  │         │              ┌─────────────────────┤
-  │         │              │                     │
-  │         ▼              ▼                     ▼
-  │    Phase 4: Incremental Updates    Phase 3: Retrieval & Context
-  │         │                                    │
-  │         └──────────┬─────────────────────────┘
-  │                    │
-  │                    ▼
-  │              Phase 5: Agent API & Integration
-  │                    │
-  │                    ▼
-  └──────────── Phase 6: Expertise & Learning (post-MVP)
+  └──→ Phase 2: Graph Population ──┬──→ Phase 3: Retrieval & Context Assembly
+                                   │
+                                   └──→ Phase 4: Incremental Sync (parallel with Phase 3)
+                                          │
+                                          └──┬──→ Phase 5: Agent API & MCP
+                                             │
+                                             └──→ Phase 6: Expertise & Learning (post-MVP)
 ```
 
-**Critical path:** 0 → 1 → 2 → 3 → 5
+**Critical path:** 1 → 2 → 3 → 5
 
 **Parallel tracks:**
-- Phase 4 (incremental updates) can proceed alongside Phase 3 once Phase 2 is
-  complete.
-- Embedding pipeline (3.2) can start as soon as Phase 1 nodes exist.
-- Python parser (1.7) is parallel with TS parser integration testing.
-- Evaluation harness improvements run continuously.
-- Fixture repo construction is parallel with Phase 0 schema work.
+- Phase 4 runs alongside Phase 3 after Phase 2 completes.
+- Stage 3.1 and 3.2 are parallel within Phase 3.
+- Stage 2.1 and 2.2 are parallel within Phase 2.
+- Phase 6 starts after Phase 5 and requires interaction data.
 
 ---
 
 ## MVP Boundary
 
-The **MVP** (Phases 0–5) delivers:
-
-| Capability | Status |
-|------------|--------|
-| Top-down repo structure graph | ✅ MVP |
-| Call-chain context (calls, imports, inherits) | ✅ MVP |
-| Hybrid retrieval (graph + vector) | ✅ MVP |
-| Token-budgeted context assembly | ✅ MVP |
-| Incremental graph updates | ✅ MVP |
-| Agent-callable API (MCP tool) | ✅ MVP |
-| Branch-aware queries | ✅ MVP |
-| TypeScript support | ✅ MVP |
-| Python support | ✅ MVP |
-| Data-flow analysis | ❌ Deferred |
-| Expertise/pattern learning | ❌ Post-MVP (Phase 6) |
-| Multi-language parity beyond TS/Python | ❌ Deferred |
-| Agent write-back & self-evolution | ⚠️ Basic in MVP, full in Phase 6 |
-
----
-
-## Risk Register
-
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| Cross-file symbol resolution accuracy | High — incorrect call edges poison the graph | Start with direct imports only; track resolution confidence; keep unresolved edges explicit |
-| Graph size for large repos (100K+ files) | Medium — slow queries, high storage | Implement lazy loading; index only changed subtrees; use graph partitioning by module |
-| LLM summary quality/cost | Medium — hallucinated summaries degrade trust | Make summaries optional, background, regenerable; tag provenance; keep them out of core retrieval ranking |
-| Incremental update consistency | High — stale graph worse than no graph | Dependency invalidation; periodic full reconciliation; dirty-state tracking |
-| Symbol identity across renames | Medium — broken IDs fragment history | Git rename tracking + AST signature matching; reconciliation table; fallback to full rebuild |
-| Branch isolation complexity | Medium — wrong-branch data in retrieval | Scope all queries to a branch; use graph overlays for feature branches |
-| Embedding model drift | Low — similarity rankings shift | Version embeddings; re-embed on model change; A/B test retrieval quality |
-
----
-
-## Technology Recommendations
-
-| Concern | Recommendation | Rationale |
-|---------|---------------|-----------|
-| Graph storage | **Neo4j Community** (dev/staging) with bolt protocol; evaluate lighter alternatives (SQLite + adjacency tables) for embedded use | Mature Cypher query language, good traversal performance, large ecosystem |
-| AST parsing | **TypeScript Compiler API** (ts-morph) for TS; **tree-sitter** for Python and future languages | ts-morph gives type-checked AST; tree-sitter is fast, multi-language, incremental |
-| Embeddings | **OpenAI text-embedding-3-small** or **Nomic Embed** for code | Good code understanding, reasonable cost, small vector size |
-| Vector index | **In-graph property** (small repos) or **pgvector/Qdrant sidecar** (large repos) | Avoid a separate vector DB until scale demands it |
-| API surface | **MCP tool protocol** with TypeScript SDK | Native integration with MCP-compatible agents |
-| Observability | **OpenTelemetry spans** on every retrieval path | Structured tracing without vendor lock-in |
-
----
-
-## Open Questions
-
-1. **Language priority beyond TS/Python.** Should we target Go, Java, C# next?
-   Driven by which codebases agents operate on most.
-2. **Graph storage at scale.** At what repo size does Neo4j become a bottleneck?
-   Need benchmarking data from Phase 0 fixture repos.
-3. **Embedding model choice.** Code-specialized models (CodeBERT, StarCoder
-   embeddings) vs. general-purpose (OpenAI). Need A/B comparison on retrieval
-   quality.
-4. **Expertise extraction triggers.** How many interaction samples are needed
-   before pattern extraction is meaningful? Needs empirical calibration in
-   Phase 6.
-5. **Multi-repo memory.** Should the graph span multiple repositories (monorepo
-   scenario)? Architectural decision needed before Phase 1 if cross-repo edges
-   are required.
+| Capability | Phase | Status |
+|------------|-------|--------|
+| Memory data model (nodes, edges, annotations, audit) | 1 | ✅ MVP |
+| Structural + call-chain graph population from existing extractors | 2 | ✅ MVP |
+| Hybrid retrieval with token-budgeted context assembly | 3 | ✅ MVP |
+| Incremental sync with dependency invalidation | 4 | ✅ MVP |
+| Agent API + MCP tool surface | 5 | ✅ MVP |
+| Cross-session expertise accumulation | 6 | ⚠️ Post-MVP |
+| Multi-language support beyond C#/PowerShell | — | ❌ Deferred |
+| LLM-generated summaries | — | ❌ Deferred |
 
 ---
 
 ## References
 
-- Yang et al., "Graph-based Agent Memory: Taxonomy, Techniques, and
-  Applications," arXiv:2602.05665, 2026.
-- [Awesome-GraphMemory](https://github.com/DEEP-PolyU/Awesome-GraphMemory) —
-  curated resource list.
+- Yang et al., "Graph-based Agent Memory: Taxonomy, Techniques, and Applications," arXiv:2602.05665, 2026.
+- [Awesome-GraphMemory](https://github.com/DEEP-PolyU/Awesome-GraphMemory) — curated resource list.
 - Zep/Graphiti — temporal knowledge graph for agent memory (arXiv:2501.13956).
 - Mem0 — production-ready agent memory with graph storage (arXiv:2504.19413).
 - MAGMA — multi-graph agentic memory architecture (arXiv:2601.03236).
 - HiAgent — hierarchical working memory for long-horizon tasks (ACL'25).
-- Microsoft GraphRAG — graph-based RAG for summarization (arXiv:2404.16130).
+- GraphRAG — graph-based RAG for summarization (arXiv:2404.16130).
+
+
