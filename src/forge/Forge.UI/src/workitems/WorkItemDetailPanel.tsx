@@ -14,7 +14,7 @@ import { forgeApi, ForgeApiError } from '@/api/forgeApi';
 import { avatarFor, agentTooltip } from '@/agentAvatar';
 import { CardModal } from '@/board/CardModal';
 import { StoryPicker } from '@/board/StoryPicker';
-import type { AgentDetail, Crew, ProductAreaPath, Repo } from '@/types';
+import type { AgentDetail, Crew, ProductAreaPath, ProductIteration, Repo } from '@/types';
 
 interface Props {
   item: WorkItem | null;
@@ -38,6 +38,12 @@ export function WorkItemDetailPanel({ item }: Props) {
   const [titleDraft, setTitleDraft] = useState(item?.title ?? '');
   const [editingTitle, setEditingTitle] = useState(false);
   useEffect(() => { setTitleDraft(item?.title ?? ''); setEditingTitle(false); }, [item?.id, item?.title]);
+
+  const [descDraft, setDescDraft] = useState(item?.descriptionMd ?? '');
+  const [editingDesc, setEditingDesc] = useState(false);
+  useEffect(() => { setDescDraft(item?.descriptionMd ?? ''); setEditingDesc(false); }, [item?.id, item?.descriptionMd]);
+
+  const [tagInput, setTagInput] = useState('');
 
   // Phase 14 — "Create card & dispatch" reuses the existing CardModal
   // pre-seeded from this WI (skipping the createWorkItem step).
@@ -89,14 +95,20 @@ export function WorkItemDetailPanel({ item }: Props) {
     [activeProductId, reposByProduct],
   );
 
-  // Area paths for the active product. Loaded once per product change.
+  // Area paths + iterations for the active product. Loaded once per product
+  // change. Iterations replace the SAMPLE_ITERATIONS fallback so the dropdown
+  // reflects what the operator imported (Phase 15).
   const [areaPaths, setAreaPaths] = useState<ProductAreaPath[]>([]);
+  const [iterations, setIterations] = useState<ProductIteration[]>([]);
   useEffect(() => {
-    if (!activeProductId) { setAreaPaths([]); return; }
+    if (!activeProductId) { setAreaPaths([]); setIterations([]); return; }
     let cancelled = false;
     forgeApi.listAreaPaths(activeProductId)
       .then((rs) => { if (!cancelled) setAreaPaths(rs); })
       .catch(() => { if (!cancelled) setAreaPaths([]); });
+    forgeApi.listIterations(activeProductId)
+      .then((rs) => { if (!cancelled) setIterations(rs); })
+      .catch(() => { if (!cancelled) setIterations([]); });
     return () => { cancelled = true; };
   }, [activeProductId]);
 
@@ -142,6 +154,28 @@ export function WorkItemDetailPanel({ item }: Props) {
     } else {
       setTitleDraft(item!.title);
     }
+  }
+
+  function commitDescription() {
+    setEditingDesc(false);
+    if (descDraft !== item!.descriptionMd) {
+      void patch(item!.id, { descriptionMd: descDraft });
+    }
+  }
+
+  function addTag(raw: string) {
+    const t = raw.trim();
+    if (!t) return;
+    if (item!.tags.some((x) => x.toLowerCase() === t.toLowerCase())) {
+      setTagInput('');
+      return;
+    }
+    void patch(item!.id, { tags: [...item!.tags, t] });
+    setTagInput('');
+  }
+
+  function removeTag(t: string) {
+    void patch(item!.id, { tags: item!.tags.filter((x) => x !== t) });
   }
 
   function setState(s: WorkItemState) {
@@ -289,7 +323,7 @@ export function WorkItemDetailPanel({ item }: Props) {
             <span className="lbl">Execution</span>
             <ExecBadge status={item.executionStatus} trialCount={item.trialCount} />
           </div>
-          <IterationSelect value={item.iterationRef} repoId={item.repoId} onChange={setIteration} />
+          <IterationSelect value={item.iterationRef} repoId={item.repoId} options={iterations} onChange={setIteration} />
           <PointsStepper value={item.points} onChange={setPoints} />
           <PrioritySelect value={item.priority} onChange={setPriority} />
         </div>
@@ -422,8 +456,63 @@ export function WorkItemDetailPanel({ item }: Props) {
       </section>
 
       <section className="wit-detail-section">
-        <div className="wit-detail-section-title">Description</div>
-        <MarkdownPreview md={item.descriptionMd} />
+        <div className="wit-detail-section-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span>Description</span>
+          {!editingDesc && (
+            <button
+              type="button"
+              onClick={() => { setDescDraft(item.descriptionMd); setEditingDesc(true); }}
+              title="Edit description (Ctrl+Enter to save · Esc to cancel)"
+              style={{
+                background: 'transparent', border: '1px solid var(--border)',
+                color: 'var(--text-tertiary)', borderRadius: 3,
+                padding: '0 6px', fontSize: 10, cursor: 'pointer',
+                fontFamily: 'var(--font-mono, monospace)',
+              }}
+            >
+              edit
+            </button>
+          )}
+        </div>
+        {editingDesc ? (
+          <div>
+            <textarea
+              value={descDraft}
+              onChange={(e) => setDescDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); commitDescription(); }
+                if (e.key === 'Escape') { setEditingDesc(false); setDescDraft(item.descriptionMd); }
+              }}
+              autoFocus
+              style={{
+                width: '100%', minHeight: 180, resize: 'vertical',
+                background: 'var(--bg-surface)', color: 'var(--text-primary)',
+                border: '1px solid var(--accent)', borderRadius: 4,
+                padding: 8, fontSize: 12.5, fontFamily: 'var(--font-mono, monospace)',
+                lineHeight: 1.5,
+              }}
+            />
+            <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+              <button
+                type="button"
+                onClick={commitDescription}
+                className="btn btn-primary"
+                style={{ fontSize: 11, padding: '3px 10px' }}
+              >Save</button>
+              <button
+                type="button"
+                onClick={() => { setEditingDesc(false); setDescDraft(item.descriptionMd); }}
+                className="btn btn-secondary"
+                style={{ fontSize: 11, padding: '3px 10px' }}
+              >Cancel</button>
+              <span style={{ fontSize: 10, color: 'var(--text-tertiary)', alignSelf: 'center', marginLeft: 'auto' }}>
+                Ctrl+Enter to save · Esc to cancel
+              </span>
+            </div>
+          </div>
+        ) : (
+          <MarkdownPreview md={item.descriptionMd} />
+        )}
       </section>
 
       <section className="wit-detail-section">
@@ -431,36 +520,72 @@ export function WorkItemDetailPanel({ item }: Props) {
           Tags
           <span className="wit-detail-section-count">{item.tags.length}</span>
         </div>
-        <div className="wit-detail-tags">
+        <div className="wit-detail-tags" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
           {item.tags.length === 0 && <span className="muted">— none</span>}
           {item.tags.map((t) => {
             // Phase 23.8 — agent-ready upstream tag gets an orange pill so
             // operators can see at a glance which items the auto-team-assign
             // touched. Match case-insensitively to align with the resolver.
             const isAgentReady = t.toLowerCase() === 'agent-ready';
-            if (isAgentReady) {
-              return (
-                <span
-                  key={t}
-                  className="wit-tag"
-                  data-testid="agent-ready-pill"
-                  title="agent-ready — auto-team-assigned by sync (Phase 23.8 / Q23.8)"
+            const pillStyle: React.CSSProperties = isAgentReady
+              ? {
+                  background: 'color-mix(in srgb, rgb(234, 88, 12) 14%, transparent)',
+                  color: 'rgb(234, 88, 12)',
+                  border: '1px solid rgb(234, 88, 12)',
+                  fontWeight: 600,
+                  letterSpacing: 0.4,
+                  textTransform: 'uppercase',
+                  fontSize: 10,
+                }
+              : {};
+            return (
+              <span
+                key={t}
+                className="wit-tag"
+                data-testid={isAgentReady ? 'agent-ready-pill' : undefined}
+                title={isAgentReady ? 'agent-ready — auto-team-assigned by sync (Phase 23.8 / Q23.8)' : t}
+                style={{ ...pillStyle, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+              >
+                {t}
+                <button
+                  type="button"
+                  onClick={() => removeTag(t)}
+                  aria-label={`Remove tag ${t}`}
+                  title={`Remove ${t}`}
                   style={{
-                    background: 'color-mix(in srgb, rgb(234, 88, 12) 14%, transparent)',
-                    color: 'rgb(234, 88, 12)',
-                    border: '1px solid rgb(234, 88, 12)',
-                    fontWeight: 600,
-                    letterSpacing: 0.4,
-                    textTransform: 'uppercase',
-                    fontSize: 10,
+                    background: 'transparent', border: 'none',
+                    color: 'inherit', cursor: 'pointer',
+                    padding: 0, marginLeft: 2, fontSize: 13, lineHeight: 1,
+                    opacity: 0.6,
                   }}
-                >
-                  agent-ready
-                </span>
-              );
-            }
-            return <span key={t} className="wit-tag">{t}</span>;
+                  onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.6'; }}
+                >×</button>
+              </span>
+            );
           })}
+          <input
+            type="text"
+            value={tagInput}
+            onChange={(e) => setTagInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); addTag(tagInput); }
+              if (e.key === ',') { e.preventDefault(); addTag(tagInput); }
+              if (e.key === 'Escape') { setTagInput(''); }
+              if (e.key === 'Backspace' && tagInput === '' && item.tags.length > 0) {
+                removeTag(item.tags[item.tags.length - 1]);
+              }
+            }}
+            onBlur={() => { if (tagInput.trim()) addTag(tagInput); }}
+            placeholder="+ add tag"
+            aria-label="Add tag"
+            style={{
+              background: 'transparent', border: '1px dashed var(--border)',
+              borderRadius: 3, padding: '2px 6px', fontSize: 11,
+              color: 'var(--text-primary)', minWidth: 80, outline: 'none',
+              fontFamily: 'inherit',
+            }}
+          />
         </div>
       </section>
 
@@ -649,18 +774,26 @@ function PointsStepper({ value, onChange }: { value: number; onChange: (n: numbe
   );
 }
 
-function IterationSelect({ value, repoId, onChange }: {
+function IterationSelect({ value, repoId, options, onChange }: {
   value: string;
   repoId: string | null;
+  options: ProductIteration[];
   onChange: (next: string) => void;
 }) {
-  // Scope to iterations whose repo matches the work item, else show all.
+  // Real iterations from the active product (loaded via forgeApi.listIterations).
+  // Each row's `path` is the canonical reference string we persist back through
+  // PATCH /api/work-items/{id} (req.IterationRef). Falls through to the static
+  // sample list only if the product has no iterations imported yet.
   const opts = useMemo(() => {
-    const all = SAMPLE_ITERATIONS;
-    if (!repoId) return all;
-    const scoped = all.filter((it) => it.ref.startsWith(`${repoId}:`));
-    return scoped.length > 0 ? scoped : all;
-  }, [repoId]);
+    if (options.length > 0) {
+      return options.map((it) => ({ ref: it.path, label: it.name || it.path }));
+    }
+    const sample = SAMPLE_ITERATIONS;
+    if (!repoId) return sample;
+    const scoped = sample.filter((it) => it.ref.startsWith(`${repoId}:`));
+    return scoped.length > 0 ? scoped : sample;
+  }, [options, repoId]);
+  const known = opts.some((o) => o.ref === value);
   return (
     <label className="wit-detail-eyebrow-meta wit-detail-edit-shell">
       <span className="lbl">Iteration</span>
@@ -674,8 +807,8 @@ function IterationSelect({ value, repoId, onChange }: {
         {opts.map((it) => (
           <option key={it.ref} value={it.ref}>{it.label}</option>
         ))}
-        {value && !opts.some((o) => o.ref === value) && (
-          <option value={value}>{value} (out of scope)</option>
+        {value && !known && (
+          <option value={value}>{value} (custom)</option>
         )}
       </select>
     </label>

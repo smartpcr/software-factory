@@ -71,6 +71,7 @@ public static class StoriesEndpoints
         grp.MapGet("/{storyId}/spawn", GetSpawn).WithName("GetStorySpawn");
         grp.MapPatch("/{storyId}/spawn/phase", AdvancePhase).WithName("AdvanceStoryPhase");
         grp.MapPost("/{storyId}/spawn/retry", RetrySpawn).WithName("RetryStorySpawn");
+        grp.MapPost("/{storyId}/spawn/dismiss-error", DismissError).WithName("DismissStorySpawnError");
         grp.MapPost("/{storyId}/spawn/decompose", SubmitDecomposition).WithName("SubmitStoryDecomposition");
         grp.MapPost("/{storyId}/spawn/decompose/approve", ApproveDecomposition).WithName("ApproveStoryDecomposition");
         grp.MapGet("/{storyId}/spawn/artifacts", GetArtifacts).WithName("GetStoryArtifacts");
@@ -470,11 +471,45 @@ public static class StoriesEndpoints
     }
 
     /// <summary>
+    /// Dismiss the spawn's persisted error without re-driving. Clears
+    /// <c>LastError</c> / <c>LastErrorAt</c> so the error banner disappears.
+    /// Use when the operator has handled the issue manually (e.g. force-pushed,
+    /// resolved a merge conflict) and doesn't want an automatic retry.
+    /// </summary>
+    private static async Task<IResult> DismissError(
+        HttpContext ctx,
+        string storyId,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        spawn.LastError = null;
+        spawn.LastErrorAt = null;
+        await db.SaveChangesAsync();
+
+        await hub.Clients.All.SendAsync("storySpawn", storyId, "dismissed",
+            new { kind = "spawn-error-dismissed", spawn = ToContract(spawn) });
+
+        return Results.Ok(ToContract(spawn));
+    }
+
+    /// <summary>
     /// Resume a single plan-doc artifact's gen↔eval loop. Unlike RetrySpawn
     /// (which re-drives the full phase pipeline), this re-runs ONLY the
     /// specified doc. Works even when the spawn has advanced past the plan
     /// phase (e.g. phase=implement) — the doc loop is independent of the
     /// spawn phase state machine.
+    ///
+    /// Phase 41 — restart-safe. The artifact key is appended to
+    /// <see cref="StorySpawnRow.ResumePendingJson"/> BEFORE the fire-and-forget
+    /// task starts, and removed in the task's finally block. On boot,
+    /// <c>StoryResumeRecoveryService</c> sweeps non-empty entries and re-fires
+    /// the loop so a process kill mid-Resume self-heals.
     /// </summary>
     private static async Task<IResult> ResumeArtifact(
         HttpContext ctx,
@@ -493,34 +528,120 @@ public static class StoriesEndpoints
         var story = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == storyId);
         if (story is null) return Results.Problem(title: $"Story {storyId} not found", statusCode: 404);
 
-        // Fire-and-forget: re-run just this doc's gen↔eval loop with
-        // forceResume=true so the workspace cache is bypassed.
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await strategy.ResumeSingleArtifactAsync(spawn, story, key, CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                // Persist error on the spawn so the UI surfaces it.
-                using var scope = ctx.RequestServices.CreateScope();
-                var scopedDb = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
-                var row = await scopedDb.StorySpawns.FirstOrDefaultAsync(s => s.Id == spawn.Id);
-                if (row is not null)
-                {
-                    row.LastError = $"resume {key} failed: {ex.Message}";
-                    row.LastErrorAt = DateTimeOffset.UtcNow;
-                    row.UpdatedAt = DateTimeOffset.UtcNow;
-                    await scopedDb.SaveChangesAsync();
-                }
-            }
-        });
+        // Phase 41 — persist the pending intent before the task starts so a
+        // crash between here and ResumeSingleArtifactAsync's first persisted
+        // event still leaves a recovery marker.
+        AddResumePending(spawn, key);
+        spawn.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+
+        var scopeFactory = ctx.RequestServices.GetRequiredService<IServiceScopeFactory>();
+        _ = Task.Run(() => RunResumeWithCleanupAsync(scopeFactory, strategy, spawn.Id, storyId, key, CancellationToken.None));
 
         await hub.Clients.All.SendAsync("story-spawn.changed",
             new { kind = "artifact-resumed", storyId, key });
 
         return Results.Ok(new { storyId, key, status = "resuming" });
+    }
+
+    /// <summary>
+    /// Phase 41 — drive a plan-doc Resume in the background with a finally
+    /// block that always clears the pending marker. Shared by the
+    /// <c>ResumeArtifact</c> endpoint AND the boot-time recovery sweep so the
+    /// cleanup contract is identical.
+    /// </summary>
+    internal static async Task RunResumeWithCleanupAsync(
+        IServiceScopeFactory scopeFactory,
+        IStoryArtifactStrategy strategy,
+        string spawnId,
+        string storyId,
+        string key,
+        CancellationToken ct)
+    {
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var spawn = await db.StorySpawns.AsNoTracking().FirstOrDefaultAsync(s => s.Id == spawnId, ct);
+            var story = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == storyId, ct);
+            if (spawn is null || story is null) return;
+
+            await strategy.ResumeSingleArtifactAsync(spawn, story, key, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var row = await db.StorySpawns.FirstOrDefaultAsync(s => s.Id == spawnId, ct);
+            if (row is not null)
+            {
+                row.LastError = $"resume {key} failed: {ex.Message}";
+                row.LastErrorAt = DateTimeOffset.UtcNow;
+                row.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(ct);
+            }
+        }
+        finally
+        {
+            try
+            {
+                using var scope = scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var row = await db.StorySpawns.FirstOrDefaultAsync(s => s.Id == spawnId, CancellationToken.None);
+                if (row is not null && RemoveResumePending(row, key))
+                {
+                    row.UpdatedAt = DateTimeOffset.UtcNow;
+                    await db.SaveChangesAsync(CancellationToken.None);
+                }
+            }
+            catch
+            {
+                // best-effort cleanup; the next boot sweep will skip an
+                // already-completed key when the loop's last verdict is
+                // terminal anyway.
+            }
+        }
+    }
+
+    /// <summary>
+    /// Phase 41 — append <paramref name="key"/> to the spawn's pending list,
+    /// deduping. Returns the new list so callers can persist after.
+    /// </summary>
+    internal static void AddResumePending(StorySpawnRow spawn, string key)
+    {
+        var list = ParseResumePending(spawn.ResumePendingJson);
+        if (!list.Contains(key, StringComparer.Ordinal)) list.Add(key);
+        spawn.ResumePendingJson = list.Count == 0
+            ? null
+            : JsonSerializer.Serialize(list, JsonOpts);
+    }
+
+    /// <summary>
+    /// Phase 41 — drop <paramref name="key"/> from the spawn's pending list.
+    /// Returns true when a change was made (caller persists), false otherwise.
+    /// </summary>
+    internal static bool RemoveResumePending(StorySpawnRow spawn, string key)
+    {
+        var list = ParseResumePending(spawn.ResumePendingJson);
+        var removed = list.RemoveAll(k => string.Equals(k, key, StringComparison.Ordinal));
+        if (removed == 0) return false;
+        spawn.ResumePendingJson = list.Count == 0
+            ? null
+            : JsonSerializer.Serialize(list, JsonOpts);
+        return true;
+    }
+
+    internal static List<string> ParseResumePending(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return new List<string>();
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(json, JsonOpts) ?? new List<string>();
+        }
+        catch
+        {
+            return new List<string>();
+        }
     }
 
     /// <summary>
@@ -1045,6 +1166,7 @@ public static class StoriesEndpoints
                 key,
                 workItemId = (string?)null,
                 status = "pending",
+                maxIterations = 0,
                 generator = (object?)null,
                 evaluator = (object?)null,
                 iterations = Array.Empty<object>(),
@@ -1054,6 +1176,11 @@ public static class StoriesEndpoints
 
         var fileName = $"{key.ToLowerInvariant()}.md";
         var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
+        var workItemPoints = await db.WorkItems.AsNoTracking()
+            .Where(w => w.Id == workItemId)
+            .Select(w => (int?)w.Points)
+            .FirstOrDefaultAsync();
+        var maxIterations = ScoringConstants.MaxIterationsForPoints(workItemPoints ?? 0);
 
         // SQLite can't ORDER BY DateTimeOffset directly. Order by Iter on the
         // server (cheap index hit) and then re-sort by CreatedAt on the client
@@ -1088,12 +1215,13 @@ public static class StoriesEndpoints
             createdAt = d.CreatedAt.ToString("O"),
         }).ToList();
 
-        // Status — derived. Plan docs don't go through TaskQueue, so "live" is
-        // inferred from a recent transcript event on this workItemId. The 60s
-        // window matches the gen→eval cadence; quieter than that means the
-        // loop has paused or finished.
-        // SQLite can't ORDER BY DateTimeOffset server-side, so order by Id
-        // descending (monotonic by insertion time) and re-read At client-side.
+        // Status — derived from multiple signals:
+        //   1. ExecutionStatus on the work-item row (authoritative: live/queued)
+        //   2. Recent transcript event (fallback for plan-docs without TaskQueue)
+        //   3. Deliverable verdict history
+        // The old 60s-transcript-gap heuristic caused false "stalled" when the
+        // LLM was in a long tool call. ExecutionStatus is set by the queue
+        // worker and is the ground-truth for "is the runner running".
         var lastEvent = await db.TaskTranscriptEvents.AsNoTracking()
             .Where(t => t.WorkItemId == workItemId)
             .OrderByDescending(t => t.Id)
@@ -1101,8 +1229,20 @@ public static class StoriesEndpoints
             .FirstOrDefaultAsync();
         DateTimeOffset? lastEventAt = lastEvent?.At;
         var lastDeliverable = rows.LastOrDefault();
-        var isRecent = lastEventAt.HasValue
-            && DateTimeOffset.UtcNow - lastEventAt.Value < TimeSpan.FromSeconds(60);
+
+        // Check the authoritative execution status from the work-item row.
+        var executionStatus = await db.WorkItems.AsNoTracking()
+            .Where(w => w.Id == workItemId)
+            .Select(w => w.ExecutionStatus)
+            .FirstOrDefaultAsync();
+        var isRunnerLive = executionStatus is "live" or "queued";
+
+        // Transcript recency is a secondary signal — only used when the
+        // runner hasn't set execution status (e.g. plan-doc loops that
+        // run inline in the orchestrator, not via TaskQueue).
+        var isRecentEvent = !isRunnerLive
+            && lastEventAt.HasValue
+            && DateTimeOffset.UtcNow - lastEventAt.Value < TimeSpan.FromSeconds(90);
 
         // Lifecycle (Layer A.1): a doc is only "completed" once its plan PR
         // is merged. A passing evaluator verdict means the iteration loop
@@ -1134,7 +1274,7 @@ public static class StoriesEndpoints
             unansweredQuestions = byExtId.Count(q => q.Answer == null);
         }
 
-        if (isRecent) status = "live";
+        if (isRunnerLive || isRecentEvent) status = "live";
         else if (lastDeliverable is null) status = "pending";
         else if (lastWasPass && planPrMerged) status = "completed";
         else if (lastWasPass) status = "awaiting-pr-review";
@@ -1210,6 +1350,7 @@ public static class StoriesEndpoints
             key,
             workItemId,
             status,
+            maxIterations,
             unansweredQuestions,
             generator = genInfo,
             evaluator = evalInfo,

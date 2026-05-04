@@ -2063,6 +2063,15 @@ public class StorySpawnRow
 
     /// <summary>Timestamp paired with <see cref="LastError"/>; null when error is null.</summary>
     public DateTimeOffset? LastErrorAt { get; set; }
+
+    /// <summary>
+    /// Phase 41 — JSON array of plan-doc artifact keys whose gen↔eval Resume
+    /// loop is currently in flight. Set by <c>ResumeArtifact</c> before the
+    /// fire-and-forget Task.Run starts, cleared in the task's finally block.
+    /// On boot, <c>StoryResumeRecoveryService</c> sweeps non-empty entries and
+    /// re-fires the loop so a process kill mid-Resume self-heals.
+    /// </summary>
+    public string? ResumePendingJson { get; set; }
 }
 
 /// <summary>Well-known phase constants for <see cref="StorySpawnRow.Phase"/>.</summary>

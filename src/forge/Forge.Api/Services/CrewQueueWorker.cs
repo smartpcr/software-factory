@@ -798,10 +798,12 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
 
             // Soul.md — always loaded when the agent has a SoulPath; the
             // skip-soul-prompt flag was removed (no caller ever set it).
+            // ResolveSoulPath handles cross-machine deploy fallback.
             var soulMd = "";
-            if (!string.IsNullOrEmpty(agent?.SoulPath))
+            var resolvedSoulPath = ForgeSeed.ResolveSoulPath(agent?.SoulPath);
+            if (!string.IsNullOrEmpty(resolvedSoulPath))
             {
-                try { soulMd = await File.ReadAllTextAsync(agent.SoulPath, ct); }
+                try { soulMd = await File.ReadAllTextAsync(resolvedSoulPath, ct); }
                 catch { /* best effort */ }
             }
 

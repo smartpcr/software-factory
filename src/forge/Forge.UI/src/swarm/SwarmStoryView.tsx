@@ -3,14 +3,11 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { forgeApi, type StorySpawnArtifacts, type StorySpawnDetail, type StorySpawnPhase } from '@/api/forgeApi';
 import { useSpawnStore } from '@/state/useSpawnStore';
 import { useToastStore } from '@/state/useToastStore';
-import { SwarmTopbar } from './SwarmTopbar';
 import { SwarmNavBar } from './SwarmNavBar';
-import { SwarmPipelineStrip, type PipelineStageSpec, type SwarmMode } from './SwarmPipelineStrip';
+import { type SwarmMode } from './SwarmPipelineStrip';
 import { SwarmMasterPanel, type Selection } from './SwarmMasterPanel';
 import { SwarmDetailPanel, type DetailTab } from './SwarmDetailPanel';
 import { Toaster } from '@/board/Toaster';
-
-const PHASES: StorySpawnPhase[] = ['plan', 'decompose', 'implement', 'review', 'qa', 'done'];
 
 /** Map the StorySpawn lifecycle phase to one of the three swarm-control modes. */
 function modeForPhase(p: StorySpawnPhase): SwarmMode {
@@ -105,79 +102,6 @@ export function SwarmStoryView() {
     setSelection({ kind: 'overview', id: null });
   }, [mode]);
 
-  const stages: PipelineStageSpec[] = useMemo(() => {
-    if (!detail) return [];
-    const phaseIdx = PHASES.indexOf(detail.spawn.phase);
-    const ws = detail.workstreams;
-    const planning = ws.filter((w) => w.status === 'planning').length;
-    const active = ws.filter((w) => w.status === 'active').length;
-    const review = ws.filter((w) => w.status === 'review').length;
-    const merging = ws.filter((w) => w.status === 'merging').length;
-    const complete = ws.filter((w) => w.status === 'complete').length;
-
-    return [
-      {
-        mode: 'design',
-        num: '01',
-        label: 'DESIGN & PLAN',
-        detail: phaseIdx <= 1 ? 'arch team · in progress' : 'arch team · 100% complete',
-        state: phaseIdx <= 1 ? 'active' : 'done',
-        badges: [
-          { text: '▣ 4 DOCS' },
-          { text: '◉ ARCH CREW' },
-          { text: artifacts?.plan.pr ? `▦ ${artifacts.plan.pr}` : '▦ NO PR YET' },
-          ...(detail.spawn.decompositionJson ? [{ text: '⬡ DECOMPOSED' }] : []),
-        ],
-      },
-      {
-        mode: 'impl',
-        num: '02',
-        label: 'IMPL ⇄ REVIEW + E2E',
-        detail: phaseIdx >= 2 && phaseIdx <= 4
-          ? `eng + rev + qa · ${ws.length} workstreams`
-          : phaseIdx > 4 ? 'cycle complete' : 'awaiting plan',
-        state: phaseIdx >= 2 && phaseIdx <= 4 ? 'active' : phaseIdx > 4 ? 'done' : 'queued',
-        badges: [
-          { text: `▣ ${ws.length} WORKSTREAMS` },
-          { text: `◉ ${planning + active} PLANNING/ACTIVE` },
-          { text: `⇄ ${review} IN REVIEW` },
-          ...(merging > 0 ? [{ text: `⏵ ${merging} MERGING` }] : []),
-          ...(complete > 0 ? [{ text: `✓ ${complete} DONE` }] : []),
-        ],
-      },
-      {
-        mode: 'release',
-        num: '03',
-        label: 'RELEASE',
-        detail: detail.spawn.phase === 'done' ? 'closed' : 'awaiting impl ≥ 90',
-        state: detail.spawn.phase === 'done' ? 'done' : 'queued',
-        badges: [
-          { text: '⏚ CI/CD' },
-          { text: '⏚ ARCH DOCS' },
-          { text: '⏚ E2E + LIVEDOC' },
-        ],
-      },
-    ];
-  }, [detail, artifacts]);
-
-  const meters = useMemo(() => {
-    if (!detail) return [];
-    const ws = detail.workstreams;
-    const phaseIdx = PHASES.indexOf(detail.spawn.phase);
-    const pct = Math.round(((phaseIdx + 1) / PHASES.length) * 100);
-    const stalled = ws.filter((w) => w.status === 'stalled').length;
-    const activePairs = ws.filter((w) => w.status === 'active' || w.status === 'review').length;
-    const merged = ws.filter((w) => w.status === 'complete' || w.status === 'merging').length;
-    return [
-      { k: 'Story Score',   v: '—',                                delta: 'pending model rotation', tone: 'amber' as const },
-      { k: 'Phases',        v: `${phaseIdx + 1} / ${PHASES.length}`, delta: `${pct}% complete` },
-      { k: 'Active Pairs',  v: String(activePairs),                delta: `${ws.length} workstreams`, tone: 'cyan' as const },
-      { k: 'Iterations',    v: '—',                                delta: 'Σ this run' },
-      { k: 'PR Throughput', v: `${merged} / ${ws.length}`,         delta: ws.length ? `${Math.round((merged / ws.length) * 100)}% merge` : '0%', tone: 'green' as const },
-      { k: 'Stalled',       v: String(stalled),                    delta: stalled ? 'esc. to lead' : '—', tone: stalled ? ('red' as const) : undefined },
-    ];
-  }, [detail]);
-
   if (err) {
     return (
       <div className="swarm-ctrl">
@@ -211,25 +135,64 @@ export function SwarmStoryView() {
     );
   }
 
-  const eyebrow = `SWARM CONTROL // ${detail.spawn.storyId}`;
-
   return (
     <div className="swarm-ctrl">
       <div className="shell">
-        <SwarmTopbar
-          eyebrow={eyebrow}
-          title={detail.spawn.storyTitle.toUpperCase()}
-          subtitle={`phase · ${detail.spawn.phase.toUpperCase()} · ${detail.workstreams.length} workstreams · repo ${detail.spawn.repoId ?? '—'}`}
-          meters={meters}
-        />
+        {/* Simplified header — title + phase, no metrics */}
+        <div className="swarm-header-slim">
+          <div className="swarm-header-slim-left">
+            <div className="swarm-header-slim-eyebrow">SWARM CONTROL // {detail.spawn.storyId}</div>
+            <h1 className="swarm-header-slim-title">{detail.spawn.storyTitle.toUpperCase()}</h1>
+            <div className="swarm-header-slim-sub">
+              phase · {detail.spawn.phase.toUpperCase()} · {detail.workstreams.length} workstreams · repo {detail.spawn.repoId ?? '—'}
+            </div>
+          </div>
+          {selection.kind === 'phase' && selection.id && (() => {
+            const ws = detail.workstreams.find((w) => w.id === selection.id);
+            if (!ws?.lastActiveAt) return null;
+            const ms = Date.now() - Date.parse(ws.lastActiveAt);
+            const sec = Math.floor(ms / 1000);
+            const min = Math.floor(sec / 60);
+            const hr  = Math.floor(min / 60);
+            const uptime = hr > 0 ? `${hr}h ${min % 60}m` : min > 0 ? `${min}m ${sec % 60}s` : `${sec}s`;
+            return (
+              <div style={{ fontFamily: 'var(--sc-font-display)', fontSize: 10, letterSpacing: '0.14em', color: 'var(--sc-text-dim)', textAlign: 'right' }}>
+                <span style={{ color: 'var(--sc-muted)' }}>UPTIME</span><br />
+                <span style={{ color: 'var(--sc-text)', fontSize: 14 }}>{uptime}</span>
+              </div>
+            );
+          })()}
+        </div>
         <SwarmNavBar
           crumbs={[
             { pre: 'ROOT', label: 'Workstreams', href: '/workstreams' },
             { pre: 'STORY', label: detail.spawn.storyId, active: true },
-            ...(mode ? [{ pre: 'MODE', label: mode === 'design' ? 'Design & Plan' : mode === 'impl' ? 'Impl ⇄ Review' : 'Release', active: true }] : []),
-            ...(selection.kind !== 'overview' && selection.id
-              ? [{ pre: selection.kind.toUpperCase(), label: selection.id, active: true }]
-              : []),
+            ...(mode ? [{
+              pre: 'MODE',
+              label: mode === 'design' ? 'Design & Plan' : mode === 'impl' ? 'Impl ⇄ Review' : 'Release',
+              active: true,
+              dropdown: (['design', 'impl', 'release'] as SwarmMode[]).map((m) => ({
+                label: m === 'design' ? 'Design & Plan' : m === 'impl' ? 'Impl ⇄ Review' : 'Release',
+                value: m,
+                active: m === mode,
+              })),
+              onDropdownSelect: (v: string) => setMode(v as SwarmMode),
+            }] : []),
+            ...(selection.kind === 'doc' && selection.id ? [{
+              pre: 'DOC',
+              label: selection.id.replace('doc:', ''),
+              active: true,
+              dropdown: [
+                { label: 'architecture', value: 'doc:architecture', active: selection.id === 'doc:architecture' },
+                { label: 'tech-spec', value: 'doc:tech-spec', active: selection.id === 'doc:tech-spec' },
+                { label: 'implementation-plan', value: 'doc:implementation-plan', active: selection.id === 'doc:implementation-plan' },
+                { label: 'e2e-scenarios', value: 'doc:e2e-scenarios', active: selection.id === 'doc:e2e-scenarios' },
+                { label: 'decomposition', value: 'doc:decomposition', active: selection.id === 'doc:decomposition' },
+              ],
+              onDropdownSelect: (v: string) => setSelection({ kind: 'doc', id: v }),
+            }] : selection.kind !== 'overview' && selection.id ? [
+              { pre: selection.kind.toUpperCase(), label: selection.id, active: true },
+            ] : []),
           ]}
           onBack={() => navigate('/workstreams')}
         />
@@ -241,11 +204,6 @@ export function SwarmStoryView() {
             onRetried={() => useSpawnStore.getState().bump(storyId)}
           />
         )}
-        <SwarmPipelineStrip
-          stages={stages}
-          active={mode}
-          onSelect={(m) => setMode(m)}
-        />
 
         <div className="grid-main">
           <div className={`mode-pane${mode ? ' active' : ''}${masterCollapsed ? ' master-collapsed' : ''}`}>
@@ -301,6 +259,7 @@ function SpawnErrorBanner(props: {
 }) {
   const { storyId, error, errorAt, onRetried } = props;
   const [busy, setBusy] = useState(false);
+  const [dismissing, setDismissing] = useState(false);
   const showToast = useToastStore((s) => s.show);
   const when = errorAt
     ? new Date(errorAt).toLocaleString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', month: 'short', day: 'numeric' })
@@ -320,6 +279,19 @@ function SpawnErrorBanner(props: {
     }
   }
 
+  async function handleDismiss() {
+    setDismissing(true);
+    try {
+      await forgeApi.dismissStorySpawnError(storyId);
+      showToast('Error dismissed.', 'info');
+      onRetried();
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Dismiss failed', 'danger');
+    } finally {
+      setDismissing(false);
+    }
+  }
+
   return (
     <div className="spawn-error-banner" role="alert">
       <div className="spawn-error-banner__icon" aria-hidden>!</div>
@@ -330,14 +302,26 @@ function SpawnErrorBanner(props: {
         </div>
         <div className="spawn-error-banner__msg">{error}</div>
       </div>
-      <button
-        type="button"
-        className="spawn-error-banner__retry"
-        disabled={busy}
-        onClick={() => void handleRetry()}
-      >
-        {busy ? '⏳ retrying…' : '↻ retry'}
-      </button>
+      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+        <button
+          type="button"
+          className="spawn-error-banner__retry"
+          disabled={busy || dismissing}
+          onClick={() => void handleDismiss()}
+          title="Dismiss this error without retrying"
+          style={{ borderColor: 'var(--sc-text-dim, #8d94a3)', color: 'var(--sc-text-dim, #8d94a3)' }}
+        >
+          {dismissing ? '⏳…' : '✕ dismiss'}
+        </button>
+        <button
+          type="button"
+          className="spawn-error-banner__retry"
+          disabled={busy || dismissing}
+          onClick={() => void handleRetry()}
+        >
+          {busy ? '⏳ retrying…' : '↻ retry'}
+        </button>
+      </div>
     </div>
   );
 }

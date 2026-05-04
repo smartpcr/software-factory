@@ -94,7 +94,7 @@ public sealed class RealStoryGitOps : IStoryGitOps
             await this.GitAsync(wtPath, ct, "-c", "user.email=forge-architect@local", "-c", "user.name=Forge Architect", "commit", "-m", message);
         }
 
-        await this.GitAsync(wtPath, ct, "push", "origin", branch);
+        await this.PushWithAutoRecoverAsync(wtPath, branch, ct);
 
         // Return the head sha of the branch.
         var (shaCode, shaOut, _) = await this.RunGitCaptureAsync(wtPath, ct, "rev-parse", "HEAD");
@@ -224,6 +224,61 @@ public sealed class RealStoryGitOps : IStoryGitOps
             await this.GitAsync(cloneRoot, ct, "fetch", "origin", baseBranch);
             await this.GitAsync(cloneRoot, ct, "worktree", "add", "-b", branch, wtPath, $"origin/{baseBranch}");
         }
+    }
+
+    /// <summary>
+    /// Push <paramref name="branch"/> to <c>origin</c>; on a non-fast-forward
+    /// rejection, fetch + rebase the local commits onto <c>origin/{branch}</c>
+    /// and retry the push once. Recovers the common case where a prior
+    /// orchestrator run advanced the remote branch but the dedicated
+    /// worktree's local ref didn't catch up — without this, the spawn halts
+    /// and the operator has to click Retry, which fails with the same error.
+    /// </summary>
+    private async Task PushWithAutoRecoverAsync(string wtPath, string branch, CancellationToken ct)
+    {
+        var (code, stdout, stderr) = await this.RunGitCaptureAsync(wtPath, ct, "push", "origin", branch);
+        if (code == 0) return;
+
+        var combined = (stdout + "\n" + stderr).ToLowerInvariant();
+        var isNonFastForward = combined.Contains("non-fast-forward")
+            || combined.Contains("[rejected]")
+            || combined.Contains("fetch first");
+        if (!isNonFastForward)
+        {
+            throw new InvalidOperationException(
+                $"git push origin {branch} failed (exit {code}) in '{wtPath}'.\nstdout: {stdout}\nstderr: {stderr}");
+        }
+
+        this.logger?.LogWarning(
+            "Push to origin/{Branch} rejected as non-fast-forward; fetching + rebasing onto remote and retrying once.", branch);
+
+        await this.GitAsync(wtPath, ct, "fetch", "origin", branch);
+        var (rebaseCode, rebaseOut, rebaseErr) = await this.RunGitCaptureAsync(
+            wtPath, ct,
+            "-c", "user.email=forge-architect@local",
+            "-c", "user.name=Forge Architect",
+            "rebase", $"origin/{branch}");
+        if (rebaseCode != 0)
+        {
+            // Real conflict — abort so the worktree is left clean, then surface
+            // the original push error with the rebase context so the operator
+            // can resolve manually.
+            await this.RunGitCaptureAsync(wtPath, ct, "rebase", "--abort");
+            throw new InvalidOperationException(
+                $"git push origin {branch} failed (exit {code}) in '{wtPath}' and auto-rebase onto origin/{branch} also failed.\n"
+                + $"push stderr: {stderr}\nrebase stdout: {rebaseOut}\nrebase stderr: {rebaseErr}");
+        }
+
+        var (retryCode, retryOut, retryErr) = await this.RunGitCaptureAsync(wtPath, ct, "push", "origin", branch);
+        if (retryCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git push origin {branch} failed (exit {retryCode}) in '{wtPath}' after auto-rebase recover.\n"
+                + $"stdout: {retryOut}\nstderr: {retryErr}");
+        }
+
+        this.logger?.LogInformation(
+            "Push to origin/{Branch} succeeded after auto-rebase recover.", branch);
     }
 
     /// <summary>Run git, throwing on non-zero exit. Use <see cref="RunGitCaptureAsync"/> when you want to inspect the result.</summary>

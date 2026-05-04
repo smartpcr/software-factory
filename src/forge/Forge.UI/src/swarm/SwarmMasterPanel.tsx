@@ -220,35 +220,45 @@ function DesignMaster({ detail, artifacts, selection, onSelect, collapsed, onTog
             const id = `doc:${doc.key}`;
             const stats = docStats[doc.key];
             const loopStatus = stats?.status ?? 'pending';
+            const fileName = `${doc.key}.md`;
+            const subtitle = doc.title.split('—').slice(1).join('—').trim();
+            const tone = verdictTone(stats?.verdict ?? '');
             return (
               <div
                 key={doc.key}
                 className={`doc-card ${prState}${selection.kind === 'doc' && selection.id === id ? ' selected' : ''}`}
                 onClick={() => onSelect({ kind: 'doc', id })}
+                title={`plan PR ${artifacts?.plan.pr ?? '—'} · branch ${artifacts?.plan.branch ?? '—'}`}
               >
-                <div className="doc-no">DOC {doc.no}</div>
-                <div className="doc-title">{doc.title}</div>
-                <div className="doc-meta">
-                  <span>plan PR · <b>{artifacts?.plan.pr ?? '—'}</b></span>
-                  <span>branch · <b>{artifacts?.plan.branch ?? '—'}</b></span>
+                <div className="doc-card__top">
+                  <span className="doc-no">DOC {doc.no}</span>
+                  <span className={`doc-status doc-status--${loopStatus}`}>{loopStatus}</span>
                 </div>
-                <div className={`doc-status doc-status--${loopStatus}`}>{loopStatus}</div>
-                {(stats?.generator || stats?.evaluator) && (
-                  <DocAgentStrip generator={stats.generator} evaluator={stats.evaluator} />
-                )}
-                {stats && (stats.iter > 0 || stats.score != null) && (
-                  <div className="doc-iter-badges">
-                    <span className="doc-iter-badge">ITER {stats.iter}</span>
-                    {stats.score != null && (
-                      <span className={`doc-iter-badge score ${verdictTone(stats.verdict)}`}>
-                        {stats.score}
-                      </span>
-                    )}
-                    {stats.cost > 0 && (
-                      <span className="doc-iter-badge cost">${stats.cost.toFixed(2)}</span>
-                    )}
-                  </div>
-                )}
+                <div className="doc-card__name">{fileName}</div>
+                {subtitle && <div className="doc-card__sub">{subtitle}</div>}
+                <div className="doc-card__metrics">
+                  {(stats?.generator || stats?.evaluator) && (
+                    <DocAgentStrip generator={stats.generator} evaluator={stats.evaluator} />
+                  )}
+                  {stats && stats.iter > 0 && (
+                    <span className="m-cell">
+                      <span className="k">ITER</span>
+                      <span className="v">{stats.iter}</span>
+                    </span>
+                  )}
+                  {stats && stats.score != null && (
+                    <span className={`m-cell score ${tone}`}>
+                      <span className="k">SCORE</span>
+                      <span className="v">{stats.score}</span>
+                    </span>
+                  )}
+                  {stats && stats.cost > 0 && (
+                    <span className="m-cell cost">
+                      <span className="k">COST</span>
+                      <span className="v">${stats.cost.toFixed(2)}</span>
+                    </span>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -257,13 +267,22 @@ function DesignMaster({ detail, artifacts, selection, onSelect, collapsed, onTog
             className={`doc-card ${decomposed ? 'merged' : 'draft'}${selection.kind === 'doc' && selection.id === 'doc:decomposition' ? ' selected' : ''}`}
             onClick={() => onSelect({ kind: 'doc', id: 'doc:decomposition' })}
           >
-            <div className="doc-no">DECOMP</div>
-            <div className="doc-title">decomposition — N parallel workstreams + dep graph</div>
-            <div className="doc-meta">
-              <span>workstreams · <b>{detail.workstreams.length}</b></span>
-              <span>approved · <b>{detail.spawn.decompositionApproved ? 'yes' : 'no'}</b></span>
+            <div className="doc-card__top">
+              <span className="doc-no">DECOMP</span>
+              <span className="doc-status">{decomposed ? 'merged' : 'draft'}</span>
             </div>
-            <div className="doc-status">{decomposed ? 'merged' : 'draft'}</div>
+            <div className="doc-card__name">workstreams.json</div>
+            <div className="doc-card__sub">N parallel workstreams + dependency graph</div>
+            <div className="doc-card__metrics">
+              <span className="m-cell">
+                <span className="k">STREAMS</span>
+                <span className="v">{detail.workstreams.length}</span>
+              </span>
+              <span className={`m-cell ${detail.spawn.decompositionApproved ? 'score pass' : ''}`}>
+                <span className="k">APPROVED</span>
+                <span className="v">{detail.spawn.decompositionApproved ? 'yes' : 'no'}</span>
+              </span>
+            </div>
           </div>
         </div>
       </div>

@@ -10,9 +10,7 @@ import {
   groupByIteration,
   TranscriptLine,
   SummaryView,
-  PairSide,
 } from '@/views/conversation';
-import { OpenQuestionsWizard } from './OpenQuestionsWizard';
 
 interface Props {
   /** Workstream id (also the workItemId emitted on the task.{wid} channel by
@@ -40,80 +38,58 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
 
   const [filter, setFilter] = useState<FilterKey>('summary');
   const [selectedIter, setSelectedIter] = useState<number | null>(null);
-  const [promptsCollapsed, setPromptsCollapsed] = useState(true);
-  const [promptRole, setPromptRole] = useState<'generator' | 'evaluator'>('generator');
   const [resuming, setResuming] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const showToast = useToastStore((s) => s.show);
 
   useEffect(() => { setSelectedIter(null); }, [filter, workstreamId]);
 
   const executionStatus = snapshot?.executionStatus ?? null;
   const lastDeliverable = snapshot?.deliverables?.[snapshot.deliverables.length - 1] ?? null;
-  const lastVerdict = lastDeliverable?.verdict ?? null;
-  // Engineer-side completion gate: workstream PR must be merged. We don't
-  // get PR-merge state from the snapshot alone, so use executionStatus
-  // ('completed' is set when the runner ships) as a strong proxy.
   const isComplete = executionStatus === 'completed';
   const isLive = executionStatus === 'live' || executionStatus === 'queued';
   const canResume = !isComplete && !isLive && lastDeliverable !== null;
-  const resumeTitle = isComplete
-    ? 'Workstream completed — resume disabled.'
-    : isLive
-      ? 'Engineer crew is currently running — resume disabled.'
-      : !lastDeliverable
-        ? 'Workstream has no prior deliverables yet — nothing to resume.'
-        : `Resume the gen↔eval loop. Last verdict: ${lastVerdict ?? '—'}.`;
 
   async function handleResume() {
     setResuming(true);
     try {
       const r = await forgeApi.resume(workstreamId);
-      showToast(`Resumed ${r.mode === 'delivery-replay' ? 'delivery' : 'iteration'} (prior iter ${r.priorIter}, score ${r.priorScore}).`, 'success');
+      showToast(`Resumed (prior iter ${r.priorIter}, score ${r.priorScore}).`, 'success');
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Resume failed', 'danger');
-    } finally {
-      setResuming(false);
-    }
+    } finally { setResuming(false); }
+  }
+  async function handleRestart() {
+    if (!window.confirm('Restart this workstream? Clears deliverables, resets branch.')) return;
+    setRestarting(true);
+    try {
+      const r = await forgeApi.restartWorkstream(workstreamId);
+      showToast(`Restarted — ${r.deliverablesCleaned} deliverables cleared.`, 'success');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Restart failed', 'danger');
+    } finally { setRestarting(false); }
+  }
+  async function handleCancel() {
+    setCancelling(true);
+    try {
+      const r = await forgeApi.cancelWorkstream(workstreamId);
+      showToast(`Cancelled — ${r.queueRowsCancelled} task(s) stopped.`, 'info');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Cancel failed', 'danger');
+    } finally { setCancelling(false); }
   }
 
   const generatorAgentId = snapshot?.generatorAgentId ?? null;
   const evaluatorAgentId = snapshot?.evaluatorAgentId ?? null;
   const generatorCrewId = snapshot?.generatorCrewId ?? null;
   const evaluatorCrewId = snapshot?.evaluatorCrewId ?? null;
-  const generatorName = snapshot?.generatorAgentName ?? generatorAgentId;
-  const evaluatorName = snapshot?.evaluatorAgentName ?? evaluatorAgentId;
-  const generatorModel = snapshot?.generatorModel ?? null;
-  const evaluatorModel = snapshot?.evaluatorModel ?? null;
-  const totalCostUsd = snapshot?.totalCostUsd ?? 0;
 
   const filtered = useMemo(
     () => filterEvents(transcript, filter, generatorCrewId, evaluatorCrewId, generatorAgentId, evaluatorAgentId),
     [transcript, filter, generatorCrewId, evaluatorCrewId, generatorAgentId, evaluatorAgentId],
   );
   const iterations = useMemo(() => groupByIteration(filtered), [filtered]);
-
-  const latestPrompts = useMemo(() => {
-    type PromptShape = { systemPrompt: string; userPrompt: string; model: string; backend: string; mode: string };
-    let gen: PromptShape | null = null;
-    let ev: PromptShape | null = null;
-    for (let i = transcript.length - 1; i >= 0 && (!gen || !ev); i--) {
-      if (transcript[i].kind !== 'task.prompt') continue;
-      const p = transcript[i].payload as Record<string, unknown> | null;
-      if (!p) continue;
-      const role = (p.role as string) ?? '';
-      const candidate: PromptShape = {
-        systemPrompt: (p.systemPrompt as string) ?? '',
-        userPrompt: (p.userPrompt as string) ?? '',
-        model: (p.model as string) ?? '',
-        backend: (p.backend as string) ?? '',
-        mode: (p.invokeMode as string) ?? '',
-      };
-      if (role === 'evaluator' && !ev) ev = candidate;
-      else if (role !== 'evaluator' && !gen) gen = candidate;
-    }
-    return { gen, ev };
-  }, [transcript]);
-  const activePrompt = promptRole === 'evaluator' ? latestPrompts.ev : latestPrompts.gen;
 
   // Summary mode iteration source — straight from the snapshot's deliverables.
   const summaryIters = snapshot?.deliverables ?? [];
@@ -126,6 +102,9 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
     : (!isSummaryMode ? filtered : []);
   const activeSummary = isSummaryMode && totalIters > 0 ? summaryIters[activeIter] ?? null : null;
   const reversedEvents = useMemo(() => [...visibleEvents].reverse(), [visibleEvents]);
+
+  const currentIteration = snapshot?.currentIteration ?? (summaryIters.length > 0 ? summaryIters[summaryIters.length - 1].iter : 0);
+  const maxIterations = snapshot?.maxIterations ?? 0;
 
   // Empty state — workstream hasn't started, or live store is still loading.
   if ((!snapshot && live?.loading !== false) && transcript.length === 0) {
@@ -146,87 +125,7 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
 
   return (
     <div className="doc-conv">
-      {/* Pair header — identical to DocConversationPane */}
-      <header className="doc-conv-pair-bar">
-        <PairSide
-          role="generator"
-          agentId={generatorAgentId}
-          agentName={generatorName}
-          model={generatorModel}
-          selected={promptRole === 'generator'}
-          onClick={() => setPromptRole('generator')}
-          sameAsOther={!!generatorModel && generatorModel === evaluatorModel}
-        />
-        <span className="doc-conv-pair-link">⇄</span>
-        <PairSide
-          role="evaluator"
-          agentId={evaluatorAgentId}
-          agentName={evaluatorName}
-          model={evaluatorModel}
-          selected={promptRole === 'evaluator'}
-          onClick={() => setPromptRole('evaluator')}
-          sameAsOther={!!generatorModel && generatorModel === evaluatorModel}
-        />
-        <span className="doc-conv-pair-cost">
-          TOTAL COST · <b>${totalCostUsd.toFixed(2)}</b>
-        </span>
-        <button
-          type="button"
-          className="doc-conv-resume-btn"
-          disabled={!canResume || resuming}
-          title={resumeTitle}
-          onClick={() => void handleResume()}
-        >
-          {resuming ? '⏳ resuming…' : '↻ resume'}
-        </button>
-      </header>
-
-      {/* Collapsible prompts — click an avatar above to switch role */}
-      <section className="live-exec__prompts">
-        <div
-          className="live-exec__prompts-header"
-          onClick={() => setPromptsCollapsed(!promptsCollapsed)}
-          role="button"
-          tabIndex={0}
-        >
-          <strong>
-            {promptsCollapsed ? '▸' : '▾'} {promptRole === 'generator' ? 'Generator' : 'Evaluator'} Prompts
-          </strong>
-        </div>
-        {!promptsCollapsed && (
-          <div className="live-exec__prompts-body">
-            {!activePrompt ? (
-              <em style={{ color: 'var(--text-tertiary)' }}>
-                No {promptRole} prompt captured yet. (Click the {promptRole} avatar above to switch role.)
-              </em>
-            ) : (
-              <>
-                <div className="live-exec__prompt-standalone">
-                  <div className="live-exec__prompt-label">System prompt</div>
-                  {activePrompt.systemPrompt
-                    ? <pre className="live-exec__prompt-pre">{activePrompt.systemPrompt}</pre>
-                    : <em style={{ color: 'var(--text-tertiary)' }}>
-                        (no system prompt — agent has no <code>soul.md</code> configured)
-                      </em>}
-                </div>
-                <div className="live-exec__prompt-standalone">
-                  <div className="live-exec__prompt-label">User prompt</div>
-                  {activePrompt.userPrompt
-                    ? <pre className="live-exec__prompt-pre">{activePrompt.userPrompt}</pre>
-                    : <em style={{ color: 'var(--text-tertiary)' }}>(empty user prompt)</em>}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-      </section>
-
-      <OpenQuestionsWizard
-        workItemId={workstreamId}
-        onAnswered={(left) => { if (left === 0) void handleResume(); }}
-      />
-
-      <nav className="live-exec__filters" role="tablist">
+      <nav className="live-exec__filters" role="tablist" style={{ display: 'flex', alignItems: 'center' }}>
         {FILTERS.map((f) => (
           <button
             key={f.key}
@@ -239,6 +138,24 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
             {f.label}
           </button>
         ))}
+        <span style={{ flex: 1 }} />
+        <button type="button" className="doc-conv-resume-btn" disabled={!canResume || resuming || cancelling || restarting}
+          title={isComplete ? 'Completed.' : isLive ? 'Running.' : !canResume ? 'No iterations yet.' : 'Resume loop.'}
+          onClick={() => void handleResume()} style={{ margin: '0 2px', padding: '4px 10px' }}>
+          {resuming ? '⏳…' : isLive ? (
+            <span style={{ color: 'var(--sc-cyan, #5eead4)', fontWeight: 700 }}>● LIVE</span>
+          ) : '↻ RESUME'}
+        </button>
+        <button type="button" className="doc-conv-resume-btn" disabled={isComplete || cancelling || restarting || resuming}
+          title="Cancel queued tasks." onClick={() => void handleCancel()}
+          style={{ margin: '0 2px', padding: '4px 10px', borderColor: 'var(--sc-red, #ff6b80)' }}>
+          {cancelling ? '⏳…' : '✕ CANCEL'}
+        </button>
+        <button type="button" className="doc-conv-resume-btn" disabled={cancelling || restarting || resuming}
+          title="Restart from iter 1." onClick={() => void handleRestart()}
+          style={{ margin: '0 2px', padding: '4px 10px', borderColor: 'var(--sc-amber, #ffb347)' }}>
+          {restarting ? '⏳…' : '⟲ RESTART'}
+        </button>
       </nav>
 
       {totalIters > 1 && (
@@ -278,10 +195,11 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
             }}
             title="Next iteration"
           >▸</button>
-          <span className="live-exec__iter-pager-label">
-            Iteration {activeIter + 1} of {totalIters}
-            {selectedIter === null && ' (latest)'}
-          </span>
+          {maxIterations > 0 && (
+            <span style={{ marginLeft: 'auto', fontFamily: 'var(--sc-font-display, monospace)', fontSize: 9, letterSpacing: '0.14em', color: 'var(--sc-text-dim, #8d94a3)' }}>
+              iter <strong style={{ color: 'var(--sc-text, #e9e6dc)' }}>{currentIteration}</strong> of <strong style={{ color: 'var(--sc-text, #e9e6dc)' }}>{maxIterations}</strong>
+            </span>
+          )}
         </nav>
       )}
 

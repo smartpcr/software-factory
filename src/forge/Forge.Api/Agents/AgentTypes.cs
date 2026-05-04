@@ -124,4 +124,14 @@ public sealed record AgentContext(
     AgentBackend Backend = AgentBackend.Copilot,
     AgentInvokeMode InvokeMode = AgentInvokeMode.Sdk,
     TimeSpan? WallClockBudget = null,
-    int? MaxTurns = null);
+    int? MaxTurns = null,
+    /// <summary>
+    /// Phase 41 — Claude-Code-SDK tool names the agent must NOT have access to
+    /// for this invocation (passed as <c>--disallowedTools</c>). Distinct from
+    /// <see cref="AllowedTools"/>, which gates Forge's own in-process
+    /// <see cref="IAgentToolHost"/> methods. This list is enforced by the
+    /// Claude CLI itself before it'll dispatch a matching tool call. Common
+    /// values: <c>"Bash"</c> (revoke shell access entirely),
+    /// <c>"WebFetch"</c>, <c>"Task"</c>.
+    /// </summary>
+    IReadOnlyList<string>? DisallowedTools = null);

@@ -615,6 +615,31 @@ public class GitHubProvider : IForgeProvider
         };
         var resp = await client.SendAsync(msg, ct);
         this.health.RecordResponse(resp);
+
+        // 422 from GitHub typically means "A pull request already exists for
+        // this head branch." Search for the existing open PR and return it.
+        if (resp.StatusCode == System.Net.HttpStatusCode.UnprocessableEntity)
+        {
+            var errBody = await resp.Content.ReadAsStringAsync(ct);
+            // GitHub `head` filter requires `owner:branch` format
+            var owner = scopedRepo.Split('/')[0];
+            var headFilter = $"{owner}:{req.Branch}";
+            var searchResp = await client.GetAsync(
+                $"repos/{scopedRepo}/pulls?state=open&head={Uri.EscapeDataString(headFilter)}&per_page=5", ct);
+            if (searchResp.IsSuccessStatusCode)
+            {
+                using var searchDoc = JsonDocument.Parse(await searchResp.Content.ReadAsStringAsync(ct));
+                var prs = searchDoc.RootElement;
+                if (prs.ValueKind == JsonValueKind.Array && prs.GetArrayLength() > 0)
+                {
+                    return WithScopedId(GitHubMapper.PrToPr(prs[0], scopedRepo), scopedRepo);
+                }
+            }
+            throw new HttpRequestException(
+                $"GitHub POST pulls → 422. Body: {errBody}", null,
+                System.Net.HttpStatusCode.UnprocessableEntity);
+        }
+
         resp.EnsureSuccessStatusCode();
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
         return WithScopedId(GitHubMapper.PrToPr(doc.RootElement, scopedRepo), scopedRepo);
