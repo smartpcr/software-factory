@@ -95,15 +95,35 @@ combine layers.
 **Cross-document temporal model alignment:** The tech-spec (§7.4) defines
 temporality as `valid_from` / `valid_until` ISO-8601 timestamps with
 provenance. This architecture uses `VersionRange { Since, Until }` with commit
-SHAs. These are **complementary, not contradictory**: commit SHAs provide the
-code-change axis (which commit introduced/removed this fact), while ISO-8601
-timestamps provide the wall-clock axis (when did extraction run). The canonical
-model stores **both**: `VersionRange` for commit-based versioning and
-`LastTouched` ISO-8601 timestamp for recency. The SQLite storage schema
-(tech-spec §8.2) maps `VersionRange.Since` → `valid_from` column and
-`VersionRange.Until` → `valid_until` column, treating commit SHAs as the
-temporal key. Point-in-time queries follow the tech-spec pattern:
-`WHERE valid_from <= $commit AND (valid_until IS NULL OR valid_until > $commit)`.
+SHAs **plus** a monotonic `CommitIndex` integer for ordering. These are
+**complementary, not contradictory**: commit SHAs identify the exact commit,
+while `CommitIndex` provides a total ordering for range queries (git's DAG
+structure means SHA strings are not lexicographically orderable). ISO-8601
+`LastTouched` timestamps provide the wall-clock axis (when extraction ran).
+
+**Temporal ordering via CommitIndex (CRITICAL):** Commit SHAs are opaque
+identifiers — they cannot be compared with `<=` or `>` operators. To enable
+point-in-time queries, the system maintains a `commits` table that maps each
+processed commit SHA to a monotonically increasing integer `commit_index`.
+During extraction, `IncrementalSync` resolves `git rev-list --topo-order` to
+assign indices. The `VersionRange` on every node and edge stores both the
+commit SHA (for human-readable provenance) and the corresponding
+`commit_index` (for efficient range queries). The SQLite storage schema
+(tech-spec §8.2) maps `VersionRange.SinceIndex` → `valid_from` column and
+`VersionRange.UntilIndex` → `valid_until` column, both as `INTEGER`.
+Point-in-time queries use the integer index:
+`WHERE valid_from_idx <= $target_idx AND (valid_until_idx IS NULL OR valid_until_idx > $target_idx)`.
+
+The `commits` table schema:
+```sql
+CREATE TABLE commits (
+    commit_sha  TEXT PRIMARY KEY,
+    commit_index INTEGER NOT NULL UNIQUE,
+    timestamp   TEXT NOT NULL,  -- ISO-8601 wall-clock time
+    parent_sha  TEXT            -- for lineage
+);
+CREATE INDEX idx_commits_index ON commits(commit_index);
+```
 
 **Cross-document model extension alignment:** The implementation-plan (§1.1)
 proposes `MemoryNode` extending `HypergraphNode` via C# inheritance and
@@ -232,6 +252,7 @@ the four graph layers.
 | **Structure Builder** | AST facts | Structural-layer nodes + `CONTAINS` / `DEPENDS_ON` edges | Builds the repo → workspace → package → module → symbol hierarchy. `Workspace` nodes appear in monorepos; single-package repos skip directly to Package. |
 | **Call-Chain Analyzer** | AST facts + resolved types | Call-chain-layer `CALLS` / `EXTENDS` / `IMPLEMENTS` / `REFERENCES` edges | Static call graph and type relationships. `CALLS` edges carry arity, argument types, and whether the call is conditional/async. `REFERENCES` edges capture non-call symbol usage. |
 | **Semantic Indexer** | Docstrings, comments, symbol names | Semantic-layer embedding vectors attached to nodes | Produces dense vector embeddings (e.g., code-embedding model) for similarity retrieval. |
+| **Expertise Embedder** | Expertise node Title + Body text | Embedding vectors on Expertise-layer nodes | Re-uses `IEmbeddingGenerator` to embed agent-authored expertise. Enables semantic search over learnings ("find known pitfalls related to concurrency"). Runs at write-back time (inside `EvolutionEngine.RecordExpertiseAsync`). |
 | **Fact Normalizer** | Raw nodes/edges from above | Canonical graph facts with `version_range` and `content_hash` | De-duplicates, assigns stable IDs, attaches commit metadata. |
 
 **Key design choice — existing parsers first:** The existing `Ast.Core`
@@ -260,8 +281,8 @@ same node ID namespace so cross-layer joins are natural.
 |---|---|---|---|---|
 | **Structural** | `structural` | `Repo`, `Workspace`, `Package`, `Module`, `Class`, `Function`, `Variable` | `CONTAINS`, `DEPENDS_ON` | Top-down containment and dependency hierarchy. `Workspace` is present in monorepos (maps to project root / csproj / package.json); absent in single-package repos. |
 | **Call-Chain** | `call_chain` | (shares symbol nodes from Structural) | `CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES` | Directed invocation and type-relationship graph. `CALLS` = who-calls-whom. `EXTENDS` = inheritance. `IMPLEMENTS` = interface conformance. `REFERENCES` = non-call symbol usage (type annotations, data flow). |
-| **Semantic** | `semantic` | `SemanticCluster`, `Topic` | `SIMILAR_TO`, `BELONGS_TO_CLUSTER` | Grouping by embedding similarity. Enables "find all code related to X" queries. |
-| **Expertise** | `expertise` | `Pattern`, `Pitfall`, `Preference`, `Insight` | `APPLIES_TO`, `SUPERSEDES`, `DERIVED_FROM` | Agent-authored knowledge. Grows over time through the Evolution Engine. |
+| **Semantic** | `semantic` | `SemanticCluster`, `Topic` | `SIMILAR_TO`, `BELONGS_TO_CLUSTER` | Grouping by embedding similarity. Enables "find all code related to X" queries. Embeddings are computed at extraction time for code nodes and at write-back time for expertise nodes; the vector index is updated synchronously in both paths. |
+| **Expertise** | `expertise` | `Pattern`, `Pitfall`, `Preference`, `Insight` | `APPLIES_TO`, `SUPERSEDES`, `DERIVED_FROM` | Agent-authored knowledge. Grows over time through the Evolution Engine. Expertise nodes carry their own embeddings (computed from Title + Body via `IEmbeddingGenerator`) so they participate in vector search alongside code nodes. |
 
 **Storage backend:** The existing `Neo4jGraphStore` (in `Ast.GraphDb`) handles
 the team/CI deployment. For local/CI use, a new `SqliteGraphStore` in
@@ -293,6 +314,24 @@ memory fragments.
 | `SEMANTIC_SEARCH` | Vector ANN + cluster expansion | "Find code related to rate limiting" |
 | `EXPERTISE_RECALL` | Pattern/pitfall lookup filtered by `APPLIES_TO` scope | "Known pitfalls for the payments module?" |
 | `HYBRID` | Fan-out across ≥2 modes, merge via Ranker | "Explain the authentication flow and flag any known issues" |
+
+**Memory-only edge traversal (CRITICAL):** The `EXPERTISE_RECALL` and
+`SEMANTIC_SEARCH` modes traverse edges that exist only in the memory layer
+(APPLIES_TO, SUPERSEDES, DERIVED_FROM, SIMILAR_TO, BELONGS_TO_CLUSTER). These
+edges have no `HyperedgeType` enum value — they are identified solely by their
+`Metadata["SemanticRelation"]` string. The `TraversalPlan.SemanticRelations`
+field is the **primary** edge filter for all retrieval modes. The legacy
+`TraversalPlan.EdgeTypes` field is optional and only matches code-derived edges.
+When traversing the Expertise layer, the Graph Traverser uses:
+```
+SemanticRelations = ["APPLIES_TO", "SUPERSEDES", "DERIVED_FROM"]
+LayerFilter = "expertise"
+```
+When traversing the Semantic layer for similarity:
+```
+SemanticRelations = ["SIMILAR_TO", "BELONGS_TO_CLUSTER"]
+LayerFilter = "semantic"
+```
 
 ### 3.4 Context Assembler
 
@@ -378,7 +417,7 @@ types rather than adding new properties to the base classes.
 | Key | Type | Description |
 |---|---|---|
 | `MemoryLayer` | `string` | Canonical layer tag: `"structural"`, `"call_chain"`, `"semantic"`, `"expertise"` |
-| `VersionRange` | `{ Since: string, Until: string? }` | Commit SHA range. `Since` = commit that introduced this fact. `Until = null` means current; non-null = commit that removed it. Maps to tech-spec's `valid_from`/`valid_until` columns. |
+| `VersionRange` | `{ Since: string, SinceIndex: int, Until: string?, UntilIndex: int? }` | Commit SHA + monotonic index range. `Since`/`SinceIndex` = commit that introduced this fact. `Until = null` means current; non-null = commit that removed it. Integer indices enable range queries (SHAs are not orderable). Maps to tech-spec's `valid_from`/`valid_until` columns via the index. |
 | `ContentHash` | `string` | SHA-256 of the source span. Used for change detection. |
 | `LastTouched` | `string` (ISO-8601) | Wall-clock timestamp of last extraction or modification. |
 | `Embedding` | `float[]` | Dense vector (dimension = model-dependent). Only present on Semantic-layer nodes. |
@@ -391,7 +430,7 @@ types rather than adding new properties to the base classes.
 |---|---|---|
 | `MemoryLayer` | `string` | Canonical layer tag. |
 | `SemanticRelation` | `string` | Canonical relation name: `"CALLS"`, `"DEPENDS_ON"`, `"CONTAINS"`, `"EXTENDS"`, `"IMPLEMENTS"`, `"REFERENCES"`, `"SIMILAR_TO"`, `"BELONGS_TO_CLUSTER"`, `"APPLIES_TO"`, `"SUPERSEDES"`, `"DERIVED_FROM"`. Present on ALL edges (code-derived and memory-only). |
-| `VersionRange` | `{ Since: string, Until: string? }` | Commit SHA range. Maps to tech-spec's `valid_from`/`valid_until`. |
+| `VersionRange` | `{ Since: string, SinceIndex: int, Until: string?, UntilIndex: int? }` | Commit SHA + monotonic index. Maps to tech-spec's `valid_from`/`valid_until` via index. |
 | `Confidence` | `double` | `0.0`–`1.0`. Direct calls = `1.0`; dynamic dispatch = `0.5`–`0.7`. |
 | `Stale` | `bool` | `true` when pending re-confirmation after upstream signature change. |
 | `OriginalEdgeType` | `string` | Original `HyperedgeType` enum name for lossless mapping back to Ast.Core. |
@@ -411,7 +450,7 @@ HypergraphNode (from Ast.Core — unchanged)
 ├── Modifiers      : List<string>
 └── Metadata       : Dictionary<string, object?>
     ├── MemoryLayer     : string   ← "structural" | "call_chain" | "semantic" | "expertise"
-    ├── VersionRange    : { Since: string (commit SHA), Until: string? (commit SHA or null) }
+    ├── VersionRange    : { Since: string (commit SHA), SinceIndex: int, Until: string? (commit SHA or null), UntilIndex: int? }
     ├── ContentHash     : string   ← SHA-256 of source span
     ├── LastTouched     : string   ← ISO-8601 timestamp (wall-clock)
     ├── Embedding       : float[]  ← dense vector (dim = model-dependent, e.g., 768)
@@ -433,7 +472,7 @@ Hyperedge (from Ast.Core — unchanged)
 └── Metadata       : Dictionary<string, object?>
     ├── MemoryLayer        : string   ← "structural" | "call_chain" | "semantic" | "expertise"
     ├── SemanticRelation   : string   ← canonical name: "CALLS", "DEPENDS_ON", "CONTAINS", etc.
-    ├── VersionRange       : { Since: string (commit SHA), Until: string? }
+    ├── VersionRange       : { Since: string (commit SHA), SinceIndex: int, Until: string?, UntilIndex: int? }
     ├── Confidence         : double   ← 0.0–1.0 (direct calls=1.0, dynamic dispatch=0.5–0.7)
     ├── Stale              : bool     ← true when pending re-confirmation
     ├── OriginalEdgeType   : string   ← HyperedgeType enum name for lossless mapping
@@ -550,7 +589,32 @@ public class Citation
 }
 ```
 
-### 4.4 Version Snapshot
+### 4.4 Embedding Lifecycle
+
+Embeddings are dense vectors stored in `Metadata["Embedding"]` and indexed in
+the vector store (Qdrant for team mode, in-process HNSW for local). The
+lifecycle differs by node origin:
+
+| Node origin | When embedded | Embedding input | Vector index update |
+|---|---|---|---|
+| **Code nodes** (Structural / Call-Chain) | At extraction time, inside the Extraction Pipeline's Semantic Indexer step | `HypergraphNode.GetEnhancedEmbeddingText()` — combines symbol type, signature, docstring, callers/callees, modifiers | Synchronous — vector is written to the index in the same `ApplyDiffAsync` transaction |
+| **Expertise nodes** (Pattern, Pitfall, Preference, Insight) | At write-back time, inside `EvolutionEngine.RecordExpertiseAsync` | `"{ExpertiseKind}: {Title}\n{Body}"` — uses the same `IEmbeddingGenerator` as code nodes | Synchronous — vector is written before the method returns |
+| **Topic / SemanticCluster nodes** | At community-summarization time, inside `EvolutionEngine.ConsolidateAsync` | LLM-generated prose summary of the cluster | Synchronous — written as part of the consolidation pass |
+| **Re-embedding on code change** | During incremental sync, when a node's `ContentHash` changes | Same as initial extraction | Old vector is overwritten in-place (same node ID) |
+
+**Model consistency:** All nodes use the same embedding model (configured in
+`ExtractionOptions.EmbeddingModel`, default: `code-embedding-v2`, dimension
+768). Mixing models produces incomparable vectors, so model changes require a
+full re-embedding pass (triggered via `ast memory reindex --reembed`).
+
+**Vector index consistency:** The vector index is a secondary index over the
+graph store. It is updated synchronously during `ApplyDiffAsync` (for code
+nodes) and `RecordExpertiseAsync` (for expertise nodes). If the vector index
+is lost, it can be rebuilt from `Metadata["Embedding"]` on all nodes. The
+`IMemoryGraphStore.RebuildVectorIndexAsync()` method supports this recovery
+path.
+
+### 4.5 Version Snapshot
 
 A `Snapshot` is a logical point-in-time view of the graph, keyed by commit:
 
@@ -559,6 +623,7 @@ public class Snapshot
 {
     public required string Id { get; init; }               // string — e.g., "snapshot:{commitSha}"
     public required string CommitSha { get; init; }        // string — git commit SHA
+    public required int CommitIndex { get; init; }         // int — monotonic index for ordering
     public string? ParentSha { get; init; }                // string — parent commit SHA
     public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
     public required SnapshotStats Stats { get; init; }
@@ -639,7 +704,7 @@ public record GraphDiff(
     IReadOnlyList<GraphFact> Updates,
     IReadOnlyList<string> Tombstones);   // list of node/edge IDs (string)
 
-public record VersionRange(string Since, string? Until);
+public record VersionRange(string Since, int SinceIndex, string? Until, int? UntilIndex);
 ```
 
 ### 5.2 Graph Store Interface (Extended)
@@ -696,13 +761,50 @@ public interface IMemoryGraphStore : IGraphStore
         IReadOnlyList<string>? kinds = null,
         int limit = 20,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Rebuild the vector index from Metadata["Embedding"] on all nodes.
+    /// Recovery path if vector index is lost or embedding model changed.
+    /// </summary>
+    Task RebuildVectorIndexAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Resolve a commit SHA to its integer index (for range queries).
+    /// Returns null if the commit is not in the commits table.
+    /// </summary>
+    Task<int?> ResolveCommitIndexAsync(
+        string commitSha,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Register a new commit and assign the next monotonic index.
+    /// </summary>
+    Task<int> RegisterCommitAsync(
+        string commitSha,
+        string? parentSha,
+        DateTime timestamp,
+        CancellationToken cancellationToken = default);
 }
 
 public class TraversalPlan
 {
     public required string Direction { get; init; } // "outbound" | "inbound" | "both"
-    public required IReadOnlyList<HyperedgeType> EdgeTypes { get; init; }
-    public IReadOnlyList<string>? SemanticRelations { get; init; }  // canonical names: "CALLS", "DEPENDS_ON", "SIMILAR_TO", etc.
+
+    /// <summary>
+    /// Primary edge filter — uses canonical semantic relation names.
+    /// Supports BOTH code-derived edges (CALLS, CONTAINS, DEPENDS_ON, etc.)
+    /// AND memory-only edges (SIMILAR_TO, APPLIES_TO, SUPERSEDES, etc.).
+    /// If null or empty, all edge types on the selected layer(s) are traversed.
+    /// </summary>
+    public IReadOnlyList<string>? SemanticRelations { get; init; }  // canonical names: "CALLS", "SIMILAR_TO", "APPLIES_TO", etc.
+
+    /// <summary>
+    /// Optional legacy filter — restricts to specific HyperedgeType enum values.
+    /// Only matches code-derived edges (memory-only edges have no HyperedgeType).
+    /// When both SemanticRelations and EdgeTypes are set, edges matching EITHER filter are included.
+    /// </summary>
+    public IReadOnlyList<HyperedgeType>? EdgeTypes { get; init; }
+
     public string? LayerFilter { get; init; }    // "structural", "call_chain", "semantic", "expertise", or null for all
     public int MaxDepth { get; init; } = 3;
     public NodeFilter? Filter { get; init; }
@@ -858,17 +960,20 @@ public class WatchOptions
 Actor: Developer triggers "onboard repo" command.
 
 1. IncrementalSync.syncToCommit(repoRoot, HEAD)
+   ├─ 1a. GraphStore.registerCommit(HEAD, parentSha, timestamp)
+   │      → assigns monotonic commit_index for temporal ordering.
    ├─ 2. ExtractionPipeline.extractAll(repoRoot, options)
    │     ├─ 2a. Language Parser produces AST facts for each file.
    │     ├─ 2b. Structure Builder emits Structural-layer nodes/edges.
    │     ├─ 2c. Call-Chain Analyzer emits Call-chain-layer edges.
-   │     ├─ 2d. Semantic Indexer computes embeddings, emits vectors.
+   │     ├─ 2d. Semantic Indexer computes embeddings via IEmbeddingGenerator,
+   │     │      attaches float[] to Metadata["Embedding"] on each node.
    │     └─ 2e. Fact Normalizer deduplicates, assigns IDs, attaches
-   │            version_range = {since: HEAD, until: null}.
+   │            version_range = {since: HEAD, sinceIndex: N, until: null, untilIndex: null}.
    │
    ├─ 3. GraphStore.applyDiff(diff, HEAD)
    │     ├─ 3a. Inserts all nodes and edges.
-   │     ├─ 3b. Builds vector index for Semantic layer.
+   │     ├─ 3b. Writes embedding vectors to vector index (synchronous).
    │     └─ 3c. Creates initial Snapshot record.
    │
    └─ 4. EvolutionEngine.consolidate("*")
@@ -885,11 +990,14 @@ Result: Full graph available; Snapshot created; community summaries populated.
 Trigger: Git post-commit hook or file-system watcher detects changes.
 
 1. IncrementalSync detects changed files between baseCommit and headCommit.
+   ├─ 1a. GraphStore.registerCommit(headCommit, baseCommit, timestamp)
+   │      → assigns next commit_index for temporal ordering.
 
 2. ExtractionPipeline.extractIncremental(repoRoot, base, head, changedFiles)
    ├─ 2a. Re-parse only changed files.
    ├─ 2b. Diff new facts against current graph → produces GraphDiff.
-   └─ 2c. Mark removed symbols' version_range.until = headCommit.
+   ├─ 2c. Mark removed symbols' version_range.until = headCommit,
+   │       version_range.untilIndex = headCommitIndex.
 
 3. GraphStore.applyDiff(diff, headCommit)
    ├─ 3a. Insert new nodes/edges.
@@ -996,9 +1104,13 @@ Actor: Agent completes a task and records a learning.
 
 2. Evolution Engine:
    ├─ 2a. Creates a new PITFALL node with confidence = 1.0.
-   ├─ 2b. Creates APPLIES_TO edges to CheckoutService.process and
-   │       InventoryClient.reserve.
-   ├─ 2c. Checks for existing pitfall nodes on the same targets:
+   ├─ 2b. Computes embedding from "{kind}: {title}\n{body}" via
+   │       IEmbeddingGenerator, stores in Metadata["Embedding"].
+   ├─ 2c. Writes embedding vector to vector index (synchronous).
+   ├─ 2d. Creates APPLIES_TO edges (memory-only, filtered by
+   │       SemanticRelation="APPLIES_TO") to CheckoutService.process
+   │       and InventoryClient.reserve.
+   ├─ 2e. Checks for existing pitfall nodes on the same targets:
    │       ├─ If semantically overlapping (cosine > 0.85): create
    │       │   DERIVED_FROM edge and schedule consolidation.
    │       └─ If no overlap: standalone node.
@@ -1104,13 +1216,18 @@ remaining discrepancies for the next iteration.
 |---|---|---|---|
 | **Layer names** | Structural, Call-Chain, Semantic, Expertise (§1.4) | tech-spec §7 uses flat schema without explicit layers; e2e uses same 4 names | ✅ Aligned — tech-spec should adopt the 4-layer partitioning on next iteration |
 | **Edge names** | `DEPENDS_ON` for imports (§1.4, §4.1) | tech-spec §7.2 uses `DEPENDS_ON` ✅; e2e uses "dependency edge" ✅ | ✅ Aligned — replaced `IMPORTS` from iteration 1 |
+| **Edge names in implementation-plan** | `DEPENDS_ON`, `EXTENDS`, `REFERENCES` — no `CALLED_BY`, `INHERITS`, or `IMPORTS` stored edges (§1.4, §4.1) | implementation-plan §2.2 uses `CALLED_BY`, `INHERITS`, and `IMPORTS` | ⚠️ **MISALIGNED** — implementation-plan §2.2 must: (1) drop `CALLED_BY` (use reverse traversal of `CALLS`), (2) rename `INHERITS` → `EXTENDS`, (3) rename `IMPORTS` → `DEPENDS_ON`. See retired names in §1.4. |
+| **Canonical ID format** | Path-based strings: `/src/auth/login::AuthService` (§4.1) | implementation-plan §2.1 uses `{repo}:{language}:{fqn}:{hash_short}` | ⚠️ **MISALIGNED** — implementation-plan must adopt path-based ID format matching e2e-scenarios and this architecture doc. The `{repo}:{language}:{fqn}:{hash_short}` format was retired after iteration 1. |
 | **Node hierarchy** | Repo → Workspace → Package → Module → Class → Function (§3.2) | tech-spec §7.1 includes `Workspace` ✅; e2e §1.1 shows directory-based hierarchy | ✅ Aligned — added `Workspace` in this iteration |
 | **ID format** | Path-based strings: `/src/auth/login::AuthService` (§4.1) | e2e §1.2 uses `/src/auth/login::AuthService` format ✅ | ✅ Aligned — changed from language-prefixed format in iteration 1 |
 | **ID type** | `string` everywhere (§4.1) | implementation-plan uses `string` node IDs ✅ | ✅ Aligned |
-| **Temporal model** | `VersionRange {Since, Until}` commit SHAs + `LastTouched` ISO-8601 (§4.1) | tech-spec §7.4 uses `valid_from`/`valid_until` ISO-8601 timestamps | ✅ Reconciled — both models coexist; commit SHAs for code axis, timestamps for wall-clock |
+| **Temporal model** | `VersionRange {Since, SinceIndex, Until, UntilIndex}` commit SHAs + monotonic integer index + `LastTouched` ISO-8601 (§4.1) | tech-spec §7.4 uses `valid_from`/`valid_until` ISO-8601 timestamps | ✅ Reconciled — commit SHAs for provenance, integer `commit_index` for range queries, timestamps for wall-clock |
+| **Temporal ordering** | Integer `commit_index` from `commits` table for range queries (§1.4) | tech-spec §7.4 uses ISO-8601 for ordering | ⚠️ **NEW** — tech-spec should adopt integer `commit_index` as the ordering key, mapping SHA → index via a `commits` table. ISO-8601 timestamps remain for wall-clock axis. |
+| **Embedding lifecycle** | Explicit lifecycle per node type (§4.4): code nodes at extraction, expertise at write-back, topics at consolidation | tech-spec §8.1 step 4 mentions embeddings during extraction only | ⚠️ **INCOMPLETE** — tech-spec should document expertise-node embedding at write-back time and topic-node embedding at consolidation time. |
+| **Memory-only edge traversal** | `TraversalPlan.SemanticRelations` is the primary filter; `EdgeTypes` is optional/legacy (§5.2, §3.3) | implementation-plan §3.1 references `IMemoryQuery` without specifying how memory-only edges are filtered | ⚠️ **INCOMPLETE** — implementation-plan should use `SemanticRelations` (not `HyperedgeType`) for Expertise and Semantic layer traversals. |
 | **Model extension** | Non-breaking Metadata extension; `MemoryNode`/`MemoryEdge` compose (not inherit) base types (§1.4, §3.0) | implementation-plan §1.1 says "extending HypergraphNode" | ⚠️ Partial — documented reconciliation: wrappers compose, don't inherit. Implementation-plan should clarify on next iteration. |
 | **Storage schema** | Hyperedge model (`NodeIds: List<string>`) preserved in API (§4.1) | tech-spec §8.2 SQLite schema uses binary `source_id, target_id` | ⚠️ Compatible — SQLite stores decomposed pairs for indexing; API exposes full hyperedge. Implementation detail, not a conflict. |
-| **Retrieval scoring weights** | α=0.35, β=0.25, γ=0.20, δ=0.10, ε=0.10 (§6.3) | tech-spec §8.3 uses α·sim + β·structural + γ·expertise (3 terms) | ⚠️ Minor — architecture refines tech-spec's 3-term model into 5 terms. Not contradictory, just more granular. |
+| **Retrieval scoring weights** | α=0.35, β=0.25, γ=0.20, δ=0.10, ε=0.10 (§6.3) | tech-spec §8.3 uses α·sim + β·structural + γ·expertise (3 terms); implementation-plan §3.2 uses 5 terms with different defaults (structural=0.3, semantic=0.3, centrality=0.15, recency=0.15, expertise=0.1) | ⚠️ Minor — three different weight sets across docs. Architecture's 5-term model is canonical; implementation-plan's weights are acceptable alternative defaults. Tech-spec's 3-term model is a simplification. |
 
 ---
 
@@ -1120,9 +1237,12 @@ remaining discrepancies for the next iteration.
 |---|---|
 | **Graph Fact** | A single node or edge record produced by the Extraction Pipeline. |
 | **Graph Diff** | A batch of inserts, updates, and tombstones applied atomically to the Graph Store. |
-| **Tombstone** | A soft-delete: the node/edge's `version_range.until` is set to the current commit SHA. The record is retained for time-travel. |
+| **Tombstone** | A soft-delete: the node/edge's `version_range.until` is set to the current commit SHA and `version_range.untilIndex` to the commit's index. The record is retained for time-travel. |
+| **Commit Index** | A monotonically increasing integer assigned to each processed commit SHA. Stored in the `commits` table. Enables orderable point-in-time queries since commit SHAs are not lexicographically orderable. |
 | **Community** | A cluster of tightly-coupled nodes detected by graph partitioning (e.g., Louvain algorithm) on the Structural + Call-chain layers. |
-| **Expertise Node** | An agent-authored knowledge record (pattern, pitfall, preference, or insight) stored in the Expertise layer. |
-| **Snapshot** | A logical point-in-time bookmark keyed by commit SHA, used for time-travel retrieval. |
+| **Expertise Node** | An agent-authored knowledge record (pattern, pitfall, preference, or insight) stored in the Expertise layer. Carries its own embedding vector for vector-search participation. |
+| **Snapshot** | A logical point-in-time bookmark keyed by commit SHA + commit index, used for time-travel retrieval. |
 | **Decay Factor** | A multiplier (0 < d ≤ 1) applied to an expertise node's confidence when its associated code changes. |
 | **Context Block** | The final Markdown document returned by the Context Assembler, ready for insertion into an LLM prompt. |
+| **Semantic Relation** | A canonical string name (e.g., `CALLS`, `APPLIES_TO`, `SIMILAR_TO`) stored in `Metadata["SemanticRelation"]` on every edge. The primary filtering mechanism for graph traversal, supporting both code-derived and memory-only edges. |
+| **Memory-only Edge** | An edge type that exists only in the memory layer (SIMILAR_TO, BELONGS_TO_CLUSTER, APPLIES_TO, SUPERSEDES, DERIVED_FROM). Has no `HyperedgeType` enum value; identified solely by its `SemanticRelation` string. |
