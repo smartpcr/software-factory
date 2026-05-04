@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 20
+> **Status:** Iteration 22
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -127,7 +127,7 @@ All planning documents in this story use these definitions.
 
 | Layer | Tag value (`MemoryLayer`) | Purpose | Edge types |
 |---|---|---|---|
-| **Structural** | `structural` | Containment: Repo → Workspace → Package → Module → Class → Function | `CONTAINS`, `DEPENDS_ON` |
+| **Structural** | `structural` | Containment: Repo → [Workspace] → Package → Module → Class → Function (Workspace is optional — present only in monorepo layouts) | `CONTAINS`, `DEPENDS_ON` |
 | **Call-Chain** | `call_chain` | Invocations and type relationships between symbols | `CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES` |
 | **Semantic** | `semantic` | Embedding-similarity clusters and topic summaries | `SIMILAR_TO`, `BELONGS_TO_CLUSTER` |
 | **Expertise** | `expertise` | Agent-authored knowledge nodes | `APPLIES_TO`, `SUPERSEDES`, `DERIVED_FROM` |
@@ -195,6 +195,7 @@ documents. Implementations read these from `MemoryOptions` configuration.
 | `TokenBudgetDefault` | 8,000 | Budget Controller | Per-query default token budget |
 | `TokenBudgetCeiling` | 32,000 | Budget Controller | Maximum allowed token budget |
 | `IncrementalSyncDebounceMs` | 1,000 | Incremental Sync | Debounce for file-system watcher |
+| `CentralityBoostFactor` | 0.5 | Evolution Engine (Decay) | Multiplied by normalized PageRank (range 0–1) and added to 1.0 to form `centrality_boost` (range 1.0–1.5) |
 
 **Scoring weights** (used by the Ranker, sum = 1.00):
 
@@ -244,14 +245,14 @@ src/ast/
 
 | Sub-component | Class | Description |
 |---|---|---|
-| **Structure Builder** | `StructureBuilder` | Walks existing `HypergraphData` (produced by `Ast.Csharp` / `Ast.PowerShell` parsers) and emits Structural-layer nodes (Repo, Package, Module, Class, Function) with `CONTAINS` and `DEPENDS_ON` edges. |
+| **Structure Builder** | `StructureBuilder` | Walks existing `HypergraphData` (produced by `Ast.Csharp` / `Ast.PowerShell` parsers) and emits Structural-layer nodes (Repo, Workspace (monorepo only), Package, Module, Class, Function) with `CONTAINS` and `DEPENDS_ON` edges. |
 | **Call-Chain Analyzer** | `CallChainAnalyzer` | Reads `Hyperedge` entries of type `MethodInvocation`, `ConstructorInvocation`, `CmdletCall`, etc. and emits Call-Chain-layer edges (`CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES`). |
 | **Semantic Indexer** | `SemanticIndexer` | Batches nodes through `IEmbeddingGenerator.GenerateBatchEmbeddingsAsync()` (from existing `Ast.Embedding`), stores vectors, and creates `SIMILAR_TO` edges where cosine similarity ≥ `SimilarityThreshold` (0.85). |
 | **Fact Normalizer** | `FactNormalizer` | Deduplicates nodes across languages (e.g., a C# class and its PowerShell caller) and assigns canonical IDs. |
 
 **Dependency chain:** `StructureBuilder` → `CallChainAnalyzer` → `SemanticIndexer` (sequential — each stage requires the previous stage's nodes to exist).
 
-The pipeline exposes a single entry point:
+The pipeline exposes two entry points:
 
 ```csharp
 interface IExtractionPipeline
@@ -260,8 +261,19 @@ interface IExtractionPipeline
         string repoRoot,
         ExtractionOptions options,
         CancellationToken ct = default);
+
+    /// Re-extract only the specified files (used by IncrementalSync).
+    Task<ExtractionResult> ExtractFilesAsync(
+        string repoRoot,
+        IReadOnlyList<string> relativePaths,
+        ExtractionOptions options,
+        CancellationToken ct = default);
 }
 ```
+
+`ExtractAsync` performs full repository extraction (first-time indexing).
+`ExtractFilesAsync` re-extracts only the listed files, returning their
+nodes/edges for diffing by `IncrementalSync`.
 
 ### 3.2 Storage Layer
 
@@ -345,7 +357,7 @@ summarization — the mechanisms by which the graph improves over sessions.
 |---|---|---|
 | **Write-back** | `EvolutionEngine.RecordExpertiseAsync()` | Creates `ExpertiseEntry` nodes (§4.2) linked to code nodes via `APPLIES_TO` edges. Each entry has a `Confidence` value (0.0–1.0), `ExpertiseKind` (`Pattern`, `Pitfall`, `Preference`, `Insight`), and `SourceAgent` provenance. |
 | **Consolidation** | `ConsolidationService` | LLM-powered merge of semantically similar expertise entries (cosine ≥ `SimilarityThreshold`). Creates `SUPERSEDES` edge from merged entry to originals. Acquires a write-level lock to prevent concurrent merges. |
-| **Decay** | `DecayService` | Two decay mechanisms: (a) **Event-driven** — `StaleDecayFactor` (0.5) applied when target code's `ContentHash` changes on a non-trivial edit; `MinorDecayFactor` (0.9) for whitespace/comment-only changes. (b) **Time-based** — exponential decay with `DecayHalfLifeDays` (1,095 days / 3 years). Entries below `ArchiveConfidenceFloor` (0.1) are soft-deleted. |
+| **Decay** | `DecayService` | Two decay mechanisms: (a) **Event-driven** — `StaleDecayFactor` (0.5) applied when target code's `ContentHash` changes on a non-trivial edit; `MinorDecayFactor` (0.9) for whitespace/comment-only changes. (b) **Time-based** — `decayed_confidence = confidence × 2^(−age_days / DecayHalfLifeDays) × centrality_boost`, where `centrality_boost = 1.0 + 0.5 × normalized_pagerank` (range 1.0–1.5). Uses base-2 exponential so that `DecayHalfLifeDays` (1,095 / 3 years) is the exact half-life. Entries below `ArchiveConfidenceFloor` (0.1) are soft-deleted. |
 | **Community Detection** | `EvolutionEngine.DetectCommunitiesAsync()` | Louvain algorithm over `CALLS`/`SIMILAR_TO` edges → creates `BELONGS_TO_CLUSTER` edges and `Topic` summary nodes in the Semantic layer (GraphRAG pattern). |
 
 ### 3.6 Incremental Sync
@@ -360,8 +372,10 @@ summarization — the mechanisms by which the graph improves over sessions.
 On trigger:
 
 1. `GitDiffDriver` identifies added/modified/deleted files.
-2. For each modified file: re-extract via `IExtractionPipeline`, diff old vs.
-   new nodes, upsert changes, set `UntilIndex` on removed nodes/edges.
+2. For each batch of modified files: re-extract via
+   `IExtractionPipeline.ExtractFilesAsync(repoRoot, changedPaths, ...)`,
+   diff old vs. new nodes, upsert changes, set `UntilIndex` on removed
+   nodes/edges.
 3. For deleted files: set `UntilIndex` on all nodes/edges rooted in that file.
 4. Propagate invalidation: mark downstream `CALLS` edges for re-validation.
 5. Re-run `SemanticIndexer` on changed nodes only (incremental embedding).
@@ -398,7 +412,7 @@ tools registered in `Ast.Memory/Mcp/`. The handler logic lives entirely in
 | MCP Tool | Maps to | Description |
 |---|---|---|
 | `memory_query` | `IMemoryRetrievalEngine.RetrieveAsync()` | Hybrid context retrieval with configurable mode and budget |
-| `memory_status` | `IMemoryGraphStore.GetStatisticsAsync()` | Graph statistics (node/edge counts by layer) |
+| `memory_status` | `IMemoryGraphStore.GetMemoryStatisticsAsync()` | Graph statistics (node/edge counts by layer) |
 | `memory_record_expertise` | `IEvolutionEngine.RecordExpertiseAsync()` | Write an expertise entry |
 | `memory_sync` | `IIncrementalSync.ApplyDiffAsync()` | Trigger incremental sync |
 | `memory_consolidate` | `IEvolutionEngine.ConsolidateAsync()` | Run consolidation (admin) |
@@ -424,7 +438,7 @@ public class MemoryNode
         => (string)this.Inner.Metadata["MemoryLayer"];
 
     public string NodeKind
-        => this.Inner.NodeType;  // "Repo","Package","Module","Class","Function","ExpertiseEntry","Topic"
+        => this.Inner.NodeType;  // "Repo","Workspace","Package","Module","Class","Interface","Function","Method","Property","ExpertiseEntry","Topic"
 
     public VersionRange Version { get; }
 
@@ -459,7 +473,7 @@ public class MemoryEdge
 |---|---|---|---|
 | `Id` | `string` | `HypergraphNode.Id` | Format: `"{relativePath}::{qualifiedName}"` for symbols; `"{relativePath}"` for files; `"/"` for repo root |
 | `Name` | `string` | `HypergraphNode.Name` | Short name of the symbol |
-| `NodeType` | `string` | `HypergraphNode.NodeType` | `"Repo"`, `"Package"`, `"Module"`, `"Class"`, `"Interface"`, `"Function"`, `"Method"`, `"Property"` |
+| `NodeType` | `string` | `HypergraphNode.NodeType` | `"Repo"`, `"Workspace"` (monorepo only), `"Package"`, `"Module"`, `"Class"`, `"Interface"`, `"Function"`, `"Method"`, `"Property"` |
 | `Language` | `string` | `HypergraphNode.Language` | `"C#"`, `"PowerShell"` |
 | `FilePath` | `string` | `HypergraphNode.FilePath` | Relative path from repo root |
 | `LineStart` / `LineEnd` | `int` | `HypergraphNode.LineStart/LineEnd` | Source location |
@@ -834,6 +848,14 @@ public interface IExtractionPipeline
         string repoRoot,
         ExtractionOptions options,
         CancellationToken ct = default);
+
+    /// Re-extract only the specified files (used by IncrementalSync).
+    /// Returns nodes/edges for the changed files only.
+    Task<ExtractionResult> ExtractFilesAsync(
+        string repoRoot,
+        IReadOnlyList<string> relativePaths,
+        ExtractionOptions options,
+        CancellationToken ct = default);
 }
 
 public class ExtractionOptions
@@ -1032,8 +1054,8 @@ Git hook / Watcher      IncrementalSync         GitDiffDriver      ExtractionPip
   │                          │  [(status, path)]     │                    │                    │                    │
   │                          │◀──────────────────────│                    │                    │                    │
   │                          │                       │                    │                    │                    │
-  │                          │  ── per modified file ──                   │                    │                    │
-  │                          │  ExtractAsync(file)   │                    │                    │                    │
+  │                          │  ── per batch of modified files ──         │                    │                    │
+  │                          │  ExtractFilesAsync(repo, paths)            │                    │                    │                    │
   │                          │──────────────────────────────────────────▶│                    │                    │
   │                          │  new nodes/edges      │                    │                    │                    │
   │                          │◀──────────────────────────────────────────│                    │                    │
@@ -1190,7 +1212,7 @@ document will produce correct code.
 | T-2 | `centrality=0.15` weight | **`centrality=0.20`** | §2.4 |
 | T-3 | `MaxTokens` default = 32768 | Default = **8,000**; ceiling = 32,000 | §2.4 |
 | T-4 | Decay half-life = 60 days | **`DecayHalfLifeDays = 1095`** (3 years) | §2.4 |
-| T-5 | Decay formula `e^(−λ×days)` | **`2^(−age/1095) × centrality_boost`** (base-2) | §3.5 |
+| T-5 | Decay formula `e^(−λ×days)` | **`confidence × 2^(−age_days/1095) × (1.0 + 0.5 × normalized_pagerank)`** (base-2, with centrality boost) | §2.4, §3.5 |
 
 #### 8.2.6 Other Conflicts (6 items)
 
