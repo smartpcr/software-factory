@@ -2,10 +2,10 @@
 
 **Story:** `code-intelligence:AGENT-MEMORY`  
 **Points:** 10  
-**Status:** DRAFT — Iteration 9  
+**Status:** DRAFT — Iteration 10  
 
 > **Companion documents** (written in parallel — referenced by name, not duplicated):
-> - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, and ID format.
+> - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, and ID format. Currently at iteration 14.
 > - [`implementation-plan.md`](implementation-plan.md) — phased work items, deliverables, evaluation harness.
 > - [`e2e-scenarios.md`](e2e-scenarios.md) — BDD Gherkin acceptance scenarios (7 features, 30+ scenarios covering Extraction, Storage, Retrieval, Evolution, End-to-End, and Performance).
 >
@@ -29,16 +29,22 @@ This draws directly from the *Graph-based Agent Memory* taxonomy (Yang et al., a
 
 ### 1.1 Existing Infrastructure
 
-The system builds on the existing Code Intelligence stack in `src/ast/` (970+ tests across 13 test projects):
+The system builds on the existing Code Intelligence stack in `src/ast/` (24 `.csproj` projects, 13 test projects, 970+ tests). **Two existing projects receive additive-only changes** (per `architecture.md` §3.0):
+
+1. **`Ast.Core`** — one new enum value `HyperedgeType.MemoryRelation` in `HypergraphModels.cs`.
+2. **`Ast.Cli`** — additive `config.AddBranch("memory", ...)` lines in `Program.cs` to register memory sub-commands (Spectre.Console.Cli manual registration — consistent with how the existing 7 commands are registered). MCP tool registration and handler logic live in `Ast.Memory/Mcp/`.
+
+All other existing projects are referenced (as project dependencies) but never modified:
 
 | Existing project | Reuse strategy |
 |---|---|
-| **Ast.Core** (`HypergraphNode`, `Hyperedge`, `HyperedgeType` — 44 enum values covering C#, PowerShell, cross-language, and architectural patterns) | Extend via `Metadata` dictionary — no breaking changes to base types. |
-| **Ast.GraphDb** (`IGraphStore`, `Neo4jGraphStore`) | Add `IMemoryGraphStore` sub-interface with temporal queries; add `SqliteGraphStore` for local mode. |
+| **Ast.Core** (`HypergraphNode`, `Hyperedge`, `HyperedgeType` — 44 enum values) | Reference types via `Metadata` dict for extension. One additive enum value `MemoryRelation`. No changes to `HypergraphNode` or `Hyperedge` class signatures. |
+| **Ast.GraphDb** (`IGraphStore`, `Neo4jGraphStore`) | Reference only — no modifications. `Ast.Memory` defines `IMemoryGraphStore` (extending `IGraphStore`) and `SqliteGraphStore` / `Neo4jMemoryGraphStore` in its own project. |
 | **Ast.Embedding** (`IEmbeddingGenerator`, `CodeEmbeddingService`, `EnrichedEmbeddingPipeline`) | Reuse directly for embedding code and expertise nodes. `CodeEmbeddingService.GenerateNodeEmbeddingsAsync()` batches via `IEmbeddingGenerator.GenerateBatchEmbeddingsAsync()`. `EnrichedEmbeddingPipeline` chains optional LSP enrichment with embedding generation. Existing `EmbeddingGeneratorOptions.ModelName` defaults to `"nomic-embed-text"` (general-purpose, consistent with D1). |
-| **Ast.Query** (`ICodeQuery`, `HybridQueryService`) | Extend with memory-aware retrieval modes and token-budgeted context assembly. |
-| **Ast.VectorDb** (`IVectorStore`, `QdrantVectorStore`) | Reuse for team mode; add in-process HNSW adapter for local mode. |
-| **CodeIntelligence** (27 analyzers, 4 detectors, `RelationshipGraphBuilder`) | Consume as a source of call-chain and structural edges. |
+| **Ast.Query** (`ICodeQuery`, `HybridQueryService`) | Reference only — no modifications. `Ast.Memory` defines its own `IMemoryRetrievalEngine` that internally composes `ICodeQuery` when needed. |
+| **Ast.VectorDb** (`IVectorStore`, `QdrantVectorStore`) | Reference only — no modifications. Reuse for team mode; `Ast.Memory` adds in-process HNSW adapter for local mode. |
+| **Ast.Lsp** (LSP integration) | Optional enrichment — pipeline never blocks on LSP. No modifications. |
+| **CodeIntelligence** (27 analyzers, 4 detectors, `RelationshipGraphBuilder`) | Consume as call-chain / structural edge source. No modifications. |
 
 New code is delivered as `Ast.Memory` (single new project) plus `Ast.Memory.UnitTests` and `Ast.Memory.IntegrationTests`, following the established naming convention under `src/ast/`.
 
@@ -371,11 +377,11 @@ All previously-pending conflicts between this document and `architecture.md` are
 
 ### 12.3 Alignment with `implementation-plan.md`
 
-The implementation-plan contains 20 naming, data-model, and numeric divergences from canonical vocabulary defined in `architecture.md`. **These are not unresolved conflicts** — each has a defined canonical resolution, and `architecture.md` governs on all points (see this document's header).
+The implementation-plan contains 25 naming, data-model, numeric, and project-mutation divergences from canonical vocabulary defined in `architecture.md` (across 8 categories in architecture.md §10.1.1 through §10.1.8). **These are not unresolved conflicts** — each has a defined canonical resolution, and `architecture.md` governs on all points (see this document's header).
 
 > **Implementer directive:** When the implementation-plan's literal text (class names, interface names, edge names, scoring weights, ID formats, defaults) conflicts with `architecture.md`, **follow `architecture.md`**. The implementation-plan describes *work items and phasing*; the canonical vocabulary and values come from `architecture.md`. The conflicts listed below are documentation debt in the implementation-plan that will be corrected in its next iteration. They do not affect this tech-spec's correctness or completeness.
 
-The 20 items are catalogued in `architecture.md` §10.1 (the single source of truth for cross-document conflicts). This tech-spec mirrors them below in summarized form for implementer awareness. Each item's canonical value is stated inline; the architecture.md section number provides the governing reference.
+The 25 items are catalogued in `architecture.md` §10.1 (the single source of truth for cross-document conflicts). This tech-spec mirrors them below in summarized form for implementer awareness. Each item's canonical value is stated inline; the architecture.md section number provides the governing reference.
 
 #### 12.3.1 Naming & Type Conflicts (4 items — architecture.md §10.1.1)
 
@@ -436,9 +442,17 @@ The 20 items are catalogued in `architecture.md` §10.1 (the single source of tr
 | S-1 | `IMemoryStore` with `UpsertAnnotationAsync`, `GetAnnotationsAsync`, etc. | **`IMemoryGraphStore`** with `ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, etc. | arch §5.2 |
 | S-2 | `Neo4jMemoryStore` with annotation CRUD | **`Neo4jMemoryGraphStore`** implementing `IMemoryGraphStore` | arch §3.2, §5.2 |
 
-#### 12.3.8 Net Assessment
+#### 12.3.8 Project Mutation Policy (3 items — architecture.md §10.1.8)
 
-All 20 items have **stated canonical resolutions** in architecture.md §10.1. The implementation-plan describes valid *work items and phasing* that remain useful for project management — only the literal names, values, and data-model shapes need updating. Implementers who follow the canonical values from architecture.md will produce correct code. These divergences do not represent ambiguity in the tech-spec or architecture; they represent documentation debt in the implementation-plan.
+| # | impl-plan says | Canonical value | Governing §|
+|---|------|----------------|-----|
+| P-1 | `IMemoryStore.cs` placement implied in `Ast.GraphDb` | **`IMemoryGraphStore`** defined in `Ast.Memory/Interfaces/`, not in `Ast.GraphDb`. No files in `Ast.GraphDb` are created or modified. | arch §3.0, §3.2, §5.2 |
+| P-2 | `Neo4jMemoryStore.cs` | **`Neo4jMemoryGraphStore`** in `Ast.Memory/Storage/`, **composing** existing `Neo4jGraphStore` from `Ast.GraphDb` — not modifying it. | arch §3.2 |
+| P-3 | MCP files created in `Ast.Cli` | MCP tools and handler logic in **`Ast.Memory/Mcp/`**. CLI command classes in `Ast.Memory/Cli/`. `Ast.Cli/Program.cs` receives only additive `config.AddBranch("memory", ...)` lines. | arch §5.6, §5.6.4 |
+
+#### 12.3.9 Net Assessment
+
+All 25 items have **stated canonical resolutions** in architecture.md §10.1. The implementation-plan describes valid *work items and phasing* that remain useful for project management — only the literal names, values, and data-model shapes need updating. Implementers who follow the canonical values from architecture.md will produce correct code. These divergences do not represent ambiguity in the tech-spec or architecture; they represent documentation debt in the implementation-plan.
 
 ### 12.4 Annotation Schema: Curated Registry (D4)
 
@@ -472,9 +486,10 @@ The [`e2e-scenarios.md`](e2e-scenarios.md) document covers 7 features with 30+ G
 
 | # | Item | Status |
 |---|------|--------|
-| X-1 | Architecture.md §10.3 TS-1 references "12 implementation-plan conflicts (IP1–IP12)" | ✅ **Cosmetic discrepancy.** Tech-spec iteration 6 regrouped the same 12 logical conflicts into items across 8 categories (including new §10.1.6 Embedding Model in architecture.md iteration 12) to mirror architecture.md §10.1's own grouping. The underlying conflicts are identical. Architecture.md can update the count in its next iteration. |
+| X-1 | Architecture.md §10.3 TS-1 confirms tech-spec and architecture list the same implementation-plan conflicts | ✅ **Resolved.** Architecture.md §10.3 TS-1 now says "✅ Consistent — same conflicts listed here in §10.1." This tech-spec §12.3 mirrors all 25 items across 8 categories (§12.3.1 through §12.3.8), matching architecture.md §10.1.1 through §10.1.8. Counts are consistent. |
 | X-2 | All implementation-plan conflicts (§12.3) have canonical resolutions | ✅ **Resolved.** Each item has a stated canonical value from architecture.md. §12.3 is reframed as documentation debt in the sibling document, not as unresolved conflicts in this tech-spec. Implementers follow architecture.md canonical values. |
 | X-3 | Architecture.md §10.3 TS-4 confirms `ExtractionOptions.EmbeddingModel` default fixed to `"nomic-embed-text"` in iteration 12 | ✅ **Resolved.** Tech-spec §12.2 and source-code model note updated to reflect this alignment. All three sources (codebase, architecture.md, tech-spec) now agree on `"nomic-embed-text"`. |
+| X-4 | Architecture.md §10.3 TS-5 confirms project mutation policy alignment | ✅ **Resolved.** Two additive changes to existing projects: (1) `HyperedgeType.MemoryRelation` in `Ast.Core`, (2) `config.AddBranch("memory", ...)` in `Ast.Cli/Program.cs`. All new interfaces/implementations in `Ast.Memory`. Matches HC8. |
 
 ---
 
@@ -496,4 +511,4 @@ The [`e2e-scenarios.md`](e2e-scenarios.md) document covers 7 features with 30+ G
 
 ---
 
-*End of tech spec — Iteration 9. All open questions from Iteration 1 are resolved via operator decisions D1–D6. Iteration 9 fixes: (1) resolved retrieval/no-network ambiguity — HC5 now explicitly distinguishes between extraction-time embedding (pre-computed via local Ollama) and retrieval-time query embedding (one local HTTP call to Ollama, gracefully degraded if unavailable); §8.3 Retrieval updated to enumerate the query embedding step separately; S5 updated to clarify query-time vs. extraction-time embedding; (2) reframed §12.3 implementation-plan contradictions — removed "awaiting impl-plan adoption" language that implied unresolved conflicts; added implementer directive stating architecture.md governs; compressed from verbose tables to compact reference format; added §12.3.8 Net Assessment stating these are documentation debt in the sibling document, not ambiguity in this tech-spec; (3) added X-2 clarification in §12.7.*
+*End of tech spec — Iteration 10. All open questions from Iteration 1 are resolved via operator decisions D1–D6. Iteration 10 fixes: (1) fixed §1.1 reuse strategy for `Ast.GraphDb` and `Ast.Query` — both are reference-only, no modifications; new interfaces are in `Ast.Memory` (consistent with architecture.md §3.0, §3.2); (2) updated §12.3 implementation-plan conflict count from 20 to 25 — added §12.3.8 Project Mutation Policy (P-1, P-2, P-3 from architecture.md §10.1.8 iteration 13); renumbered Net Assessment to §12.3.9; (3) fixed §12.7 X-1 to reflect architecture.md §10.3 TS-1's current wording (no longer references "12 (IP1–IP12)" count); added X-4 for TS-5 project mutation policy alignment; (4) all cross-document alignment counts now match architecture.md §10.1 exactly (25 items across 8 categories).*
