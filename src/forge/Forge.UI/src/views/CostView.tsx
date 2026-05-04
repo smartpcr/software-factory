@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStateStore } from '@/state/useStateStore';
 import { sampleState } from '@/sampleData';
 import { forgeApi } from '@/api/forgeApi';
@@ -71,6 +71,14 @@ function fmt(v: number): string {
   return v >= 10 ? `$${v.toFixed(0)}` : `$${v.toFixed(2)}`;
 }
 
+const TEAM_CHIPS: Array<{ key: string; label: string }> = [
+  { key: 'all',  label: 'All' },
+  { key: 'arch', label: 'Architect' },
+  { key: 'eng',  label: 'Engineer' },
+  { key: 'rev',  label: 'Review' },
+  { key: 'qa',   label: 'QA' },
+];
+
 export function CostView() {
   const apiState = useStateStore((s) => s.state);
   const epics: Epic[] = apiState?.epics ?? sampleState.epics;
@@ -81,23 +89,62 @@ export function CostView() {
   // fixtures only when the runner is offline").
   const [summary, setSummary] = useState<CostSummary>(() => buildFallback());
 
+  // Filter state
+  const [teamFilter, setTeamFilter] = useState('all');
+  const [productFilter, setProductFilter] = useState<string[]>([]);
+  const [repoFilter, setRepoFilter] = useState<string[]>([]);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
         const live = await forgeApi.getCostSummary(7);
         if (cancelled) return;
-        // Treat an entirely-empty ledger (no rows yet on a fresh install)
-        // as "real but zero" — show the live shape rather than fallback
-        // fixtures so operators see the truthful state.
         setSummary(live);
       } catch (err) {
-        // Network / 5xx — keep the fallback already in state.
         console.warn('[forge] /api/cost/summary failed, using fallback fixtures', err);
       }
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // Apply client-side filters to agents
+  const filteredAgents = useMemo(() => {
+    let result = summary.agents;
+    if (teamFilter !== 'all') {
+      result = result.filter((a) => a.role === teamFilter);
+    }
+    if (productFilter.length > 0) {
+      result = result.filter((a) => a.products?.some((p) => productFilter.includes(p)));
+    }
+    if (repoFilter.length > 0) {
+      result = result.filter((a) => a.repos?.some((r) => repoFilter.includes(r)));
+    }
+    return result;
+  }, [summary.agents, teamFilter, productFilter, repoFilter]);
+
+  const hasFilter = teamFilter !== 'all' || productFilter.length > 0 || repoFilter.length > 0;
+
+  // Derive filter options from agent data
+  const teamCounts = useMemo(() => {
+    const counts: Record<string, number> = { all: summary.agents.length };
+    for (const a of summary.agents) {
+      counts[a.role] = (counts[a.role] ?? 0) + 1;
+    }
+    return counts;
+  }, [summary.agents]);
+
+  const productOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of summary.agents) for (const p of a.products ?? []) set.add(p);
+    return [...set].sort();
+  }, [summary.agents]);
+
+  const repoOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of summary.agents) for (const r of a.repos ?? []) set.add(r);
+    return [...set].sort();
+  }, [summary.agents]);
 
   const todayTotal = summary.todayUsd;
   const week7d = summary.week7dUsd;
@@ -131,7 +178,7 @@ export function CostView() {
       .slice(0, 8);
   }, [cards]);
 
-  const totalAgentBurn = summary.agents.reduce((s, a) => s + a.cost7dUsd, 0);
+  const totalAgentBurn = filteredAgents.reduce((s, a) => s + a.cost7dUsd, 0);
   const budgetPct = dailyCap > 0
     ? Math.min(100, Math.round((todayTotal / dailyCap) * 100))
     : 0;
@@ -156,6 +203,50 @@ export function CostView() {
           <button className="btn btn-secondary">Export CSV</button>
           <button className="btn btn-primary">Adjust caps</button>
         </div>
+      </div>
+
+      {/* ── Filter bar ─────────────────────────────────────────────── */}
+      <div className="filter-bar" style={{ paddingBottom: 14 }}>
+        <div className="filter-chips">
+          {TEAM_CHIPS.map((chip) => (
+            <button
+              key={chip.key}
+              className={`filter-chip${teamFilter === chip.key ? ' active' : ''}`}
+              onClick={() => setTeamFilter(chip.key)}
+            >
+              {chip.label}
+              <span className="count">{teamCounts[chip.key] ?? 0}</span>
+            </button>
+          ))}
+        </div>
+
+        {productOptions.length > 0 && (
+          <CostMultiSelect
+            label="Product"
+            options={productOptions.map((p) => ({ value: p, label: p }))}
+            selected={productFilter}
+            onChange={setProductFilter}
+          />
+        )}
+
+        {repoOptions.length > 0 && (
+          <CostMultiSelect
+            label="Repo"
+            options={repoOptions.map((r) => ({ value: r, label: r }))}
+            selected={repoFilter}
+            onChange={setRepoFilter}
+          />
+        )}
+
+        {hasFilter && (
+          <button
+            className="btn btn-secondary"
+            style={{ fontSize: 11, padding: '4px 10px' }}
+            onClick={() => { setTeamFilter('all'); setProductFilter([]); setRepoFilter([]); }}
+          >
+            Clear filters
+          </button>
+        )}
       </div>
 
       <div className="workstreams-stats" style={{ margin: '0 28px 16px' }}>
@@ -240,7 +331,7 @@ export function CostView() {
           <div className="cost-card">
             <div className="cost-card-head">
               <span className="cost-card-title">Per-agent burn</span>
-              <span className="cost-card-eyebrow">7d · ${totalAgentBurn.toFixed(2)} across {summary.agents.length} agents</span>
+              <span className="cost-card-eyebrow">7d · ${totalAgentBurn.toFixed(2)} across {filteredAgents.length} agents{hasFilter ? ' (filtered)' : ''}</span>
             </div>
             <table className="burn-table">
               <thead>
@@ -255,7 +346,7 @@ export function CostView() {
                 </tr>
               </thead>
               <tbody>
-                {summary.agents.map((a) => {
+                {filteredAgents.map((a) => {
                   const share = totalAgentBurn > 0 ? (a.cost7dUsd / totalAgentBurn) * 100 : 0;
                   return (
                     <tr key={a.id}>
@@ -407,8 +498,4 @@ function Sparkline({ values }: { values: number[] }) {
         cx={w}
         cy={h - ((lastVal - min) / span) * h}
         r={1.6}
-        fill={trendUp ? 'var(--success)' : 'var(--danger)'}
-      />
-    </svg>
-  );
-}
+        fill={trendUp ? 'var(--success)' : 'var(--dange

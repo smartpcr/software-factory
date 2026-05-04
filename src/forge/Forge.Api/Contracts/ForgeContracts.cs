@@ -646,7 +646,9 @@ public sealed record AgentBurn(
     decimal Cost24hUsd,
     decimal Cost7dUsd,
     long Tokens,
-    IReadOnlyList<decimal> Spark);
+    IReadOnlyList<decimal> Spark,
+    IReadOnlyList<string>? Repos = null,
+    IReadOnlyList<string>? Products = null);
 
 // -- Phase 12 — Work Item Tracking ---------------------------------------
 

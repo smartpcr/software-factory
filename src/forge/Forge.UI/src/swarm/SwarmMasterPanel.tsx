@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { forgeApi, type StorySpawnArtifacts, type StorySpawnDetail, type StorySpawnWorkstreamSummary } from '@/api/forgeApi';
 import type { SwarmMode } from './SwarmPipelineStrip';
+import { avatarFor } from '@/agentAvatar';
 
 export type SelectionKind = 'overview' | 'phase' | 'doc' | 'gate';
 export interface Selection {
@@ -215,13 +216,14 @@ function DesignMaster({ detail, artifacts, selection, onSelect, collapsed, onTog
       <div className="panel-bd">
         <div className="doc-list">
           {PLAN_DOCS.map((doc) => {
-            const status = planMerged ? 'merged' : planOpen ? 'review' : 'draft';
+            const prState = planMerged ? 'merged' : planOpen ? 'review' : 'draft';
             const id = `doc:${doc.key}`;
             const stats = docStats[doc.key];
+            const loopStatus = stats?.status ?? 'pending';
             return (
               <div
                 key={doc.key}
-                className={`doc-card ${status}${selection.kind === 'doc' && selection.id === id ? ' selected' : ''}`}
+                className={`doc-card ${prState}${selection.kind === 'doc' && selection.id === id ? ' selected' : ''}`}
                 onClick={() => onSelect({ kind: 'doc', id })}
               >
                 <div className="doc-no">DOC {doc.no}</div>
@@ -230,7 +232,10 @@ function DesignMaster({ detail, artifacts, selection, onSelect, collapsed, onTog
                   <span>plan PR · <b>{artifacts?.plan.pr ?? '—'}</b></span>
                   <span>branch · <b>{artifacts?.plan.branch ?? '—'}</b></span>
                 </div>
-                <div className="doc-status">{status}</div>
+                <div className={`doc-status doc-status--${loopStatus}`}>{loopStatus}</div>
+                {(stats?.generator || stats?.evaluator) && (
+                  <DocAgentStrip generator={stats.generator} evaluator={stats.evaluator} />
+                )}
                 {stats && (stats.iter > 0 || stats.score != null) && (
                   <div className="doc-iter-badges">
                     <span className="doc-iter-badge">ITER {stats.iter}</span>
@@ -349,11 +354,24 @@ function shortId(id: string): string {
   return ('…' + id.slice(-13)).toUpperCase();
 }
 
+interface DocAgentInfo {
+  agentId: string;
+  name: string;
+  model: string | null;
+}
+
 interface DocStats {
   iter: number;
   score: number | null;
   verdict: string;
   cost: number;
+  /** Loop lifecycle — `live` while events flow, `iterating` between iters
+   *  (sub-pass), `awaiting-pr-review` after a passing verdict but before
+   *  the plan PR merges, `completed` after the PR merges, `pending` before
+   *  the first run. */
+  status: 'live' | 'iterating' | 'awaiting-pr-review' | 'completed' | 'pending';
+  generator: DocAgentInfo | null;
+  evaluator: DocAgentInfo | null;
 }
 
 /**
@@ -372,9 +390,15 @@ function useDocStats(storyId: string, keys: string[]): Record<string, DocStats |
         const next: Record<string, DocStats | null> = {};
         results.forEach((r, i) => {
           const last = r.iterations[r.iterations.length - 1];
-          next[keys[i]] = last
-            ? { iter: r.iterations.length, score: last.score, verdict: last.verdict, cost: r.totalCostUsd }
-            : { iter: 0, score: null, verdict: '', cost: r.totalCostUsd };
+          next[keys[i]] = {
+            iter: r.iterations.length,
+            score: last?.score ?? null,
+            verdict: last?.verdict ?? '',
+            cost: r.totalCostUsd,
+            status: r.status,
+            generator: r.generator,
+            evaluator: r.evaluator,
+          };
         });
         setStats(next);
       } catch {
@@ -382,7 +406,9 @@ function useDocStats(storyId: string, keys: string[]): Record<string, DocStats |
       }
     }
     void load();
-    const id = setInterval(() => { void load(); }, 12_000);
+    // Tighter cadence than the original 12s — `live` should turn over within
+    // an iteration boundary, and the iterations endpoint is cheap.
+    const id = setInterval(() => { void load(); }, 6_000);
     return () => { cancelled = true; clearInterval(id); };
   }, [storyId, keys.join('|')]);
   return stats;
@@ -394,4 +420,37 @@ function verdictTone(verdict: string): 'pass' | 'iterate' | 'reject' | 'neutral'
   if (v.startsWith('reject') || v.startsWith('stalled')) return 'reject';
   if (!v) return 'neutral';
   return 'iterate';
+}
+
+interface DocAgentStripProps {
+  generator: DocAgentInfo | null;
+  evaluator: DocAgentInfo | null;
+}
+
+function DocAgentStrip({ generator, evaluator }: DocAgentStripProps) {
+  return (
+    <div className="doc-agents">
+      <DocAgentAvatar info={generator} role="generator" />
+      <span className="doc-agents-link">⇄</span>
+      <DocAgentAvatar info={evaluator} role="evaluator" />
+    </div>
+  );
+}
+
+function DocAgentAvatar({ info, role }: { info: DocAgentInfo | null; role: 'generator' | 'evaluator' }) {
+  if (!info) {
+    return <span className={`doc-agent doc-agent--${role} doc-agent--empty`} title={`no ${role} yet`}>—</span>;
+  }
+  const url = avatarFor(info.agentId, info.name);
+  // Compact tooltip: line 1 = agent id + display name, line 2 = role + model.
+  const tip = `${info.agentId} · ${info.name}\n${role} · ${info.model ?? 'unknown model'}`;
+  return (
+    <span className={`doc-agent doc-agent--${role}`} title={tip}>
+      {url ? (
+        <img src={url} alt={info.name} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+      ) : (
+        <span className="doc-agent-mono">{role === 'generator' ? 'G' : 'E'}</span>
+      )}
+    </span>
+  );
 }

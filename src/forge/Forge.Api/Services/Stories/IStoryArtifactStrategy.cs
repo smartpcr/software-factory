@@ -18,9 +18,16 @@ using Forge.Api.Persistence;
 /// </summary>
 public interface IStoryArtifactStrategy
 {
-    /// <summary>Architect's plan-phase artifacts. Returns relative-path → file content.</summary>
+    /// <summary>
+    /// Architect's plan-phase artifacts. Returns relative-path → file content.
+    /// When <paramref name="forceResume"/> is true, the workspace-cache
+    /// short-circuit (which skips the LLM if the file is already on disk)
+    /// is bypassed — used by the spawn-retry endpoint after a non-pass
+    /// verdict so the architect crew re-iterates instead of replaying the
+    /// stalled artifact unchanged.
+    /// </summary>
     Task<IReadOnlyDictionary<string, string>> ProducePlanArtifactsAsync(
-        StorySpawnRow spawn, WorkItemRow story, CancellationToken ct = default);
+        StorySpawnRow spawn, WorkItemRow story, bool forceResume = false, CancellationToken ct = default);
 
     /// <summary>Architect's decomposition — split the plan into N parallel workstreams.</summary>
     Task<IReadOnlyList<DecompositionWorkstream>> ProduceDecompositionAsync(

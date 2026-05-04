@@ -68,6 +68,7 @@ public static class StoriesEndpoints
         grp.MapGet("/spawns", ListSpawns).WithName("ListStorySpawns");
         grp.MapGet("/{storyId}/spawn", GetSpawn).WithName("GetStorySpawn");
         grp.MapPatch("/{storyId}/spawn/phase", AdvancePhase).WithName("AdvanceStoryPhase");
+        grp.MapPost("/{storyId}/spawn/retry", RetrySpawn).WithName("RetryStorySpawn");
         grp.MapPost("/{storyId}/spawn/decompose", SubmitDecomposition).WithName("SubmitStoryDecomposition");
         grp.MapPost("/{storyId}/spawn/decompose/approve", ApproveDecomposition).WithName("ApproveStoryDecomposition");
         grp.MapGet("/{storyId}/spawn/artifacts", GetArtifacts).WithName("GetStoryArtifacts");
@@ -387,6 +388,57 @@ public static class StoriesEndpoints
         if (OrchestratorEnabled(ctx)) await orchestrator.DriveAsync(storyId, ctx.RequestAborted);
         var refreshed = await db.StorySpawns.AsNoTracking().FirstAsync(s => s.StoryId == storyId);
         return Results.Ok(ToContract(refreshed));
+    }
+
+    /// <summary>
+    /// Phase 37 — operator clicks Retry on the workstream banner: clear the
+    /// persisted LastError and immediately re-drive the spawn so the next
+    /// orchestrator tick attempts the failing step again. Used after the
+    /// operator has resolved the underlying cause (rebased the plan branch,
+    /// fixed branch protection, bumped iter cap, etc.).
+    /// </summary>
+    private static async Task<IResult> RetrySpawn(
+        HttpContext ctx,
+        string storyId,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub,
+        StorySpawnOrchestrator orchestrator)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        spawn.LastError = null;
+        spawn.LastErrorAt = null;
+        spawn.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+
+        await hub.Clients.All.SendAsync("story-spawn.changed",
+            new { kind = "spawn-retry", spawn = ToContract(spawn) });
+
+        // Fire-and-forget the re-drive so the HTTP response returns
+        // immediately — DriveAsync runs the full phase pipeline (architect
+        // crew, decomposition, engineer claims, etc.) and can take many
+        // minutes. The operator clicking Retry expects fast feedback; the
+        // background scheduler picks up unfinished work on its 15s tick
+        // anyway. Detach from the request CT so a navigation away doesn't
+        // cancel the orchestrator mid-step.
+        // forceResume=true tells the architect strategy to bypass the
+        // workspace-cache short-circuit so the gen↔eval loop re-iterates
+        // (otherwise the retry would replay the stalled artifact unchanged
+        // and immediately re-fail with the same verdict).
+        if (OrchestratorEnabled(ctx))
+        {
+            _ = Task.Run(async () =>
+            {
+                try { await orchestrator.DriveAsync(storyId, forceResume: true, CancellationToken.None); }
+                catch { /* failures repersist via PersistLastErrorAsync */ }
+            });
+        }
+
+        return Results.Ok(ToContract(spawn));
     }
 
     /// <summary>
@@ -910,6 +962,9 @@ public static class StoriesEndpoints
             {
                 key,
                 workItemId = (string?)null,
+                status = "pending",
+                generator = (object?)null,
+                evaluator = (object?)null,
                 iterations = Array.Empty<object>(),
                 totalCostUsd = 0.0,
             });
@@ -949,12 +1004,100 @@ public static class StoriesEndpoints
             judgeScore = d.JudgeScore,
             judgeNotes = d.JudgeNotes,
             createdAt = d.CreatedAt.ToString("O"),
-        });
+        }).ToList();
+
+        // Status — derived. Plan docs don't go through TaskQueue, so "live" is
+        // inferred from a recent transcript event on this workItemId. The 60s
+        // window matches the gen→eval cadence; quieter than that means the
+        // loop has paused or finished.
+        // SQLite can't ORDER BY DateTimeOffset server-side, so order by Id
+        // descending (monotonic by insertion time) and re-read At client-side.
+        var lastEvent = await db.TaskTranscriptEvents.AsNoTracking()
+            .Where(t => t.WorkItemId == workItemId)
+            .OrderByDescending(t => t.Id)
+            .Select(t => new { t.At })
+            .FirstOrDefaultAsync();
+        DateTimeOffset? lastEventAt = lastEvent?.At;
+        var lastDeliverable = rows.LastOrDefault();
+        var isRecent = lastEventAt.HasValue
+            && DateTimeOffset.UtcNow - lastEventAt.Value < TimeSpan.FromSeconds(60);
+
+        // Lifecycle (Layer A.1): a doc is only "completed" once its plan PR
+        // is merged. A passing evaluator verdict means the iteration loop
+        // ended — but the doc isn't done until the PR closes. Between pass
+        // and merge the status is "awaiting-pr-review" so the operator sees
+        // the loop is finished but the doc hasn't shipped yet.
+        string status;
+        bool planPrMerged = false;
+        if (!string.IsNullOrEmpty(spawn.PlanPrId))
+        {
+            var planPr = await db.Prs.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.Id == spawn.PlanPrId);
+            planPrMerged = string.Equals(planPr?.Col, "merged", StringComparison.OrdinalIgnoreCase);
+        }
+        bool lastWasPass = lastDeliverable is not null
+            && string.Equals(lastDeliverable.Verdict, "pass", StringComparison.OrdinalIgnoreCase);
+
+        if (isRecent) status = "live";
+        else if (lastDeliverable is null) status = "pending";
+        else if (lastWasPass && planPrMerged) status = "completed";
+        else if (lastWasPass) status = "awaiting-pr-review";
+        else status = "iterating";
+
+        // Agent info — name + model for the latest gen/eval pair so the doc
+        // tile can render avatars with hover tooltips. Two EF passes: agents
+        // by id, then their crews for the model fallback.
+        object? genInfo = null, evalInfo = null;
+        if (lastDeliverable is not null)
+        {
+            // Resolve the two agent ids individually — clearer than a Contains
+            // pass and avoids EF parameter-extraction quirks with array nulls.
+            var genAgentId = lastDeliverable.GeneratorAgentId;
+            var evalAgentId = lastDeliverable.EvaluatorAgentId;
+            var genAgent = string.IsNullOrEmpty(genAgentId) ? null
+                : await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == genAgentId);
+            var evalAgent = string.IsNullOrEmpty(evalAgentId) ? null
+                : await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == evalAgentId);
+
+            // Resolve crew model fallbacks individually — same reason.
+            async Task<string?> CrewModelAsync(string? crewId)
+            {
+                if (string.IsNullOrEmpty(crewId)) return null;
+                return await db.Crews.AsNoTracking()
+                    .Where(c => c.Id == crewId)
+                    .Select(c => c.Model)
+                    .FirstOrDefaultAsync();
+            }
+
+            if (genAgent is not null)
+            {
+                var fallback = genAgent.GeneratorModel is null ? await CrewModelAsync(genAgent.CrewId) : null;
+                genInfo = new
+                {
+                    agentId = genAgent.Id,
+                    name = genAgent.Name,
+                    model = genAgent.GeneratorModel ?? fallback,
+                };
+            }
+            if (evalAgent is not null)
+            {
+                var fallback = evalAgent.EvaluatorModel is null ? await CrewModelAsync(evalAgent.CrewId) : null;
+                evalInfo = new
+                {
+                    agentId = evalAgent.Id,
+                    name = evalAgent.Name,
+                    model = evalAgent.EvaluatorModel ?? fallback,
+                };
+            }
+        }
 
         return Results.Ok(new
         {
             key,
             workItemId,
+            status,
+            generator = genInfo,
+            evaluator = evalInfo,
             iterations,
             totalCostUsd = totalCost,
         });
@@ -977,6 +1120,11 @@ public static class StoriesEndpoints
         qaPrId = row.QaPrId,
         createdAt = row.CreatedAt,
         updatedAt = row.UpdatedAt,
+        // Phase 37 — operator-visible failure surfaced on the workstream UI.
+        // Cleared by the orchestrator on the next successful step or by an
+        // explicit POST /api/stories/{storyId}/spawn/retry from the UI.
+        lastError = row.LastError,
+        lastErrorAt = row.LastErrorAt,
     };
 
     private static string SlugFor(string title)

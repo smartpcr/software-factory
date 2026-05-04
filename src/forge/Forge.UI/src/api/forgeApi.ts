@@ -66,6 +66,11 @@ export interface StorySpawn {
   qaPrId: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Phase 37 — operator-visible failure surfaced on the workstream banner.
+   *  Cleared by the orchestrator on the next successful step or by an
+   *  explicit POST /api/stories/{storyId}/spawn/retry. */
+  lastError?: string | null;
+  lastErrorAt?: string | null;
 }
 
 export interface StorySpawnWorkstreamSummary {
@@ -396,6 +401,98 @@ export interface BuildValidationRun {
   errorMessage?: string | null;
 }
 
+// ── Performance scorecard types ──────────────────────────────────────
+
+export type ReviewWindow = 'trailing20' | 'mtd' | 'lastMonth';
+export type PromotionVerdict = 'promote' | 'hold' | 'watch' | 'demote' | 'lead-pending';
+
+export interface ScoreDims {
+  correctness: number;
+  quality: number;
+  tests: number;
+  scope: number;
+  risk: number;
+}
+
+export interface AgentScorecard {
+  agentId: string;
+  name: string;
+  team: 'Architect' | 'Engineer' | 'Review' | 'QA';
+  crew: string;
+  crewId: string;
+  level: number;
+  title: string;
+  hourlyUsd: number;
+  throughput: number;
+  passRate: number;
+  avgScore: number;
+  iterP50: number;
+  iterP90: number;
+  rejectRate: number;
+  disputeRate: number;
+  stalledRate: number;
+  utilization: number;
+  costPerPass: number;
+  scoreSpark: number[];
+  dims: ScoreDims;
+  promotionEta: number | null;
+  demotionRisk: boolean;
+  verdict: PromotionVerdict;
+  verdictNote: string;
+  lastPromotedAt: string | null;
+  nextEligibleAt: string;
+  monthlyAvg: number[];
+  monthlyMonths: string[];
+  repos: string[];
+  products: string[];
+}
+
+export interface PromotionDecision {
+  agentId: string;
+  name: string;
+  team: AgentScorecard['team'];
+  fromLevel: number;
+  fromTitle: string;
+  toLevel: number;
+  toTitle: string;
+  windowAvg: number;
+  windowSize: number;
+  rejectsInWindow: number;
+  cooldownDaysRemaining: number;
+  signedOff: boolean;
+  signedOffBy: string | null;
+  rationale: string[];
+  risks: string[];
+  nominatedAt: string;
+}
+
+export interface MonthlySnapshot {
+  month: string;
+  agents: number;
+  avgScore: number;
+  promotions: number;
+  demotions: number;
+  payrollUsd: number;
+  spendUsd: number;
+  passRate: number;
+  rejectRate: number;
+  locked: boolean;
+}
+
+export interface PerformanceFilterOptions {
+  products: Array<{ id: string; name: string }>;
+  repos: Array<{ id: string; productId: string }>;
+  teams: string[];
+}
+
+export interface PerformanceScorecardsResponse {
+  window: string;
+  scorecards: AgentScorecard[];
+  promotionDecisions: PromotionDecision[];
+  monthlySnapshots: MonthlySnapshot[];
+  filterOptions: PerformanceFilterOptions;
+}
+
 export const forgeApi = {
   async getState(): Promise<ForgeState> {
     if (useLocalSeed()) {
@@ -573,6 +670,16 @@ export const forgeApi = {
   async reopenPrComment(prId: string, commentId: number): Promise<import('@/types').PrComment> {
     return fetchJson(`/api/prs/${encodeURIComponent(prId)}/comments/${commentId}/reopen`, {
       method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/prs/{prId}/comments/{id}/react — toggle thumbsup/thumbsdown. */
+  async reactToPrComment(prId: string, commentId: number, reaction: 'thumbsup' | 'thumbsdown'):
+    Promise<import('@/types').PrComment> {
+    return fetchJson(`/api/prs/${encodeURIComponent(prId)}/comments/${commentId}/react`, {
+      method: 'POST',
+      body: JSON.stringify({ reaction }),
       headers: { 'X-Forge-User': writerHeader() },
     });
   },
@@ -782,6 +889,17 @@ export const forgeApi = {
     });
   },
 
+  /** POST /api/stories/{storyId}/spawn/retry — clear the persisted spawn LastError
+   *  and re-drive the orchestrator immediately. Operator clicks this from the
+   *  workstream-view error banner after resolving the underlying cause
+   *  (rebased plan branch, fixed branch protection, etc.). */
+  async retryStorySpawn(storyId: string): Promise<StorySpawn> {
+    return fetchJson<StorySpawn>(`/api/stories/${encodeURIComponent(storyId)}/spawn/retry`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   /** POST /api/stories/{storyId}/spawn/decompose — submit workstream definitions. */
   async submitStoryDecomposition(
     storyId: string,
@@ -832,6 +950,14 @@ export const forgeApi = {
   async getStoryArtifactIterations(storyId: string, key: string): Promise<{
     key: string;
     workItemId: string | null;
+    /** Derived lifecycle: live (events still flowing) → iterating (last
+     *  verdict !pass) → awaiting-pr-review (verdict=pass but plan PR not
+     *  merged yet) → completed (PR merged) | pending (no iterations yet). */
+    status: 'live' | 'iterating' | 'awaiting-pr-review' | 'completed' | 'pending';
+    /** Latest generator agent name + model, null until first iteration lands. */
+    generator: { agentId: string; name: string; model: string | null } | null;
+    /** Latest evaluator agent name + model, null until first iteration lands. */
+    evaluator: { agentId: string; name: string; model: string | null } | null;
     iterations: Array<{
       id: number;
       iter: number;
@@ -1777,6 +1903,12 @@ export const forgeApi = {
       body: reason ? JSON.stringify({ reason }) : undefined,
       headers: { 'X-Forge-User': writerHeader() },
     });
+  },
+
+  // -- Performance scorecards -------------------------------------------
+
+  async getPerformanceScorecards(window: ReviewWindow = 'trailing20'): Promise<PerformanceScorecardsResponse> {
+    return fetchJson<PerformanceScorecardsResponse>(`/api/performance/scorecards?window=${window}`);
   },
 };
 

@@ -164,7 +164,7 @@ public class GitHubProvider : IForgeProvider
             var prs = new List<Pr>();
             foreach (var pr in doc.RootElement.EnumerateArray())
             {
-                prs.Add(GitHubMapper.PrToPr(pr, this.options.Repo));
+                prs.Add(WithScopedId(GitHubMapper.PrToPr(pr, this.options.Repo), this.options.Repo));
             }
             this.health.MarkSync();
             return prs;
@@ -654,7 +654,20 @@ public class GitHubProvider : IForgeProvider
         };
         var resp = await client.SendAsync(msg, ct);
         this.health.RecordResponse(resp);
-        resp.EnsureSuccessStatusCode();
+        // Read the body before throwing — GitHub's 405 / 409 bodies carry the
+        // actual reason (conflicts, failing required checks, branch
+        // protection, draft state, disallowed merge_method). Discarding them
+        // via bare EnsureSuccessStatusCode() collapses every failure to a
+        // generic status-code line in the orchestrator log.
+        if (!resp.IsSuccessStatusCode)
+        {
+            var body = string.Empty;
+            try { body = await resp.Content.ReadAsStringAsync(ct); } catch { /* best-effort */ }
+            throw new HttpRequestException(
+                $"GitHub PUT pulls/{num}/merge → {(int)resp.StatusCode} {resp.ReasonPhrase}. Body: {body}",
+                inner: null,
+                statusCode: resp.StatusCode);
+        }
         // Merge POST succeeded — the PR is merged on GitHub. The post-merge
         // GET is a nice-to-have for hydrating the full Pr; if it fails
         // (rate limit, transient 5xx) return a stub with Col=merged so

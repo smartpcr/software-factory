@@ -59,7 +59,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     // ── Per-phase entry points ───────────────────────────────────────────────
 
     public async Task<IReadOnlyDictionary<string, string>> ProducePlanArtifactsAsync(
-        StorySpawnRow spawn, WorkItemRow story, CancellationToken ct = default)
+        StorySpawnRow spawn, WorkItemRow story, bool forceResume = false, CancellationToken ct = default)
     {
         // StoryPaths.Safe — story ids may contain `:` (e.g. "code-intelligence:AGENT-MEMORY")
         // which is illegal in Windows file paths and crashes the commit
@@ -87,7 +87,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
              $"{docDir}/e2e-scenarios.md"),
         };
 
-        var tasks = specs.Select(spec => this.ProducePlanFileAsync(spawn, story, spec, budget, ct)).ToArray();
+        var tasks = specs.Select(spec => this.ProducePlanFileAsync(spawn, story, spec, budget, forceResume, ct)).ToArray();
         var results = await Task.WhenAll(tasks);
 
         var dict = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -101,7 +101,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private async Task<string> ProducePlanFileAsync(
         StorySpawnRow spawn, WorkItemRow story,
         (string FileName, string Brief, string RepoPath) spec,
-        TimeSpan budget, CancellationToken ct)
+        TimeSpan budget, bool forceResume, CancellationToken ct)
     {
         // Per-file workspace so 4 parallel SDKs don't share a cwd.
         var workspace = this.PrepareWorkspace(spawn.Id, $"plan-{Path.GetFileNameWithoutExtension(spec.FileName)}");
@@ -110,9 +110,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // Resume case — a previous tick's architect already wrote this file
         // (typical when commit/push failed and the orchestrator re-ticks).
         // Skip re-invoking the LLM so we don't burn tokens regenerating
-        // identical content on every retry. To force a fresh run, wipe the
-        // workspace (E:\forge\storyworkspaces\{spawn-id}\plan-{name}\).
-        if (File.Exists(diskPath))
+        // identical content on every retry. The forceResume flag (set when
+        // the operator explicitly clicked Retry/Resume after a non-pass
+        // verdict) bypasses this short-circuit so the gen↔eval loop
+        // re-iterates against the cached workspace contents instead of
+        // returning them unchanged.
+        if (!forceResume && File.Exists(diskPath))
         {
             var existing = await File.ReadAllTextAsync(diskPath, ct);
             if (!string.IsNullOrWhiteSpace(existing))
@@ -151,15 +154,28 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ### Brief for this file
             {{spec.Brief}}
 
-            ## How to deliver
-            Use your filesystem tools to write a SINGLE file named
-            `{{spec.FileName}}` at the root of your working directory. Do NOT
-            create subdirectories. Do NOT write any other files.
+            ## How to deliver — CRITICAL
+            You MUST invoke your filesystem write tool to save the file. The
+            file does not exist until you call the tool. Content typed in
+            your chat reply is NOT saved — the workspace is checked at the
+            end of your turn and an empty workspace fails this iteration
+            with score 0. If you find yourself writing the document body
+            into your reply, STOP and use the write tool instead.
 
-            End your reply with a `## Iteration Summary` section that lists
-            (a) what you wrote, (b) which parts of the story description it
-            addresses, and (c) any open questions. The orchestrator extracts
-            this section into the per-iteration UI summary.
+            Concretely:
+            1. Call your write/edit/create-file tool with `path={{spec.FileName}}`
+               (relative to the working directory — no leading slash, no
+               subdirectories) and `content=<the full markdown body>`.
+            2. Verify with your read/view tool that the file is on disk and
+               its byte count matches what you intended.
+            3. ONLY THEN reply with the summary below. Your chat reply is
+               for the summary; the FILE is the deliverable.
+
+            End your chat reply with a `## Iteration Summary` section that
+            lists (a) the path you wrote to and the byte count, (b) which
+            parts of the story description the file covers, (c) any open
+            questions for the next iteration. The orchestrator extracts
+            this into the per-iteration UI summary.
 
             Reply `DONE` after the summary and stop.
             """;
@@ -712,6 +728,22 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 ? generatorPrompt
                 : $"{generatorPrompt}\n\n---\n\nEvaluator feedback from iteration {iter - 1}:\n{evalNotes}";
 
+            // task.prompt — same shape CrewQueueWorker emits, so the live-exec /
+            // doc-conv view's latestPrompt extraction works against plan-doc
+            // workItemIds the same way it does against work-item runs.
+            await this.taskChannel.EmitAsync(workItemId, "task.prompt", new
+            {
+                agentId = genAgentId,
+                crewId = crew.Id,
+                systemPrompt = (string?)null,
+                userPrompt = iterPrompt,
+                model = genContext.Model,
+                backend = genBackendStr,
+                invokeMode = genInvokeStr,
+                role = "generator",
+                iter,
+            }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+
             var invocation = await this.runner.StartAsync(workItemId, genAgentId, iterPrompt, genContext, iterCt);
             var output = new StringBuilder();
             decimal cost = 0m;
@@ -751,6 +783,20 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                     "{\"score\":95,\"verdict\":\"pass\",\"notes\":\"No evaluator configured; auto-pass.\"}",
                     0m);
             }
+
+            await this.taskChannel.EmitAsync(workItemId, "task.prompt", new
+            {
+                agentId = evalAgentId,
+                crewId = evalCrewId,
+                systemPrompt = (string?)null,
+                userPrompt = evaluatorPrompt,
+                model = evalContext.Model,
+                backend = evalContext.Backend.ToString().ToLowerInvariant(),
+                invokeMode = evalContext.InvokeMode.ToString().ToLowerInvariant(),
+                role = "evaluator",
+                iter,
+            }, agentId: evalAgentId, crewId: evalCrewId, ct: iterCt);
+
             var invocation = await this.runner.StartAsync(workItemId, evalAgentId, evaluatorPrompt, evalContext, iterCt);
             var output = new StringBuilder();
             decimal cost = 0m;
@@ -791,10 +837,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             EvaluatorCrewId: evalCrewId,
             WorkItemPoints: storyPoints), ct);
 
-        if (string.Equals(result.FinalVerdict, "reject", StringComparison.OrdinalIgnoreCase))
+        // The plan PR ships unattended (no human gate), so anything short of
+        // a passing verdict is shipping subpar work. Throw on every non-pass
+        // terminal verdict (iterate / stalled / stalled-budget / reject); the
+        // caller (StorySpawnOrchestrator.DrivePlanAsync) records the failure
+        // on the spawn so the operator sees why the lifecycle halted.
+        if (!string.Equals(result.FinalVerdict, "pass", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
-                $"Gen-eval loop for {phaseTag} ended with verdict=reject after {result.Iterations} iterations (final score {result.FinalScore}).");
+                $"Gen-eval loop for {phaseTag} ended with verdict={result.FinalVerdict} after {result.Iterations} iterations (final score {result.FinalScore}). The plan PR will not be opened — bump max-iterations or restart the architect crew.");
         }
     }
 

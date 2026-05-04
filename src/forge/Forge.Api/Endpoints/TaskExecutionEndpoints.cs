@@ -62,8 +62,20 @@ public static class TaskExecutionEndpoints
             .ToListAsync(ct);
         var latestQueue = queueRows.OrderByDescending(r => r.EnqueuedAt).FirstOrDefault();
 
+        // Synthetic workItemIds (e.g. `plan-doc:{spawn}:{file}.md` from
+        // CrewStoryArtifactStrategy) bypass TaskQueue entirely — they invoke
+        // IDeliverableLoop directly. Treat the existence of any transcript or
+        // deliverable as proof the workItemId is real, so the live-exec /
+        // doc-conv view can still subscribe + page history.
         if (wi is null && latestQueue is null)
-            return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
+        {
+            var hasTranscript = await db.TaskTranscriptEvents.AsNoTracking()
+                .AnyAsync(e => e.WorkItemId == id, ct);
+            var hasDeliverable = await db.Deliverables.AsNoTracking()
+                .AnyAsync(d => d.WorkItemId == id, ct);
+            if (!hasTranscript && !hasDeliverable)
+                return Results.Problem(title: $"Work item {id} not found", statusCode: 404);
+        }
 
         // Deliverables for this work item, oldest → newest.
         var deliverableRows = await db.Deliverables.AsNoTracking()

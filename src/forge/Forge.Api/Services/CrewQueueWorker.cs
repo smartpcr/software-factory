@@ -688,7 +688,28 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // runs asynchronously — the claim sweep doesn't wait for it.
             // Use CancellationToken.None so the agent isn't cancelled when the
             // sweep loop's token is disposed — the agent manages its own lifetime.
-            _ = Task.Run(() => RunAgentAsync(row.WorkItemId, crewId, picked!, crew, wi, row.Kind, CancellationToken.None));
+            //
+            // Wrap in a try/catch swallowing ObjectDisposedException so test
+            // host shutdown (factory.Dispose) racing with a still-running
+            // agent doesn't crash the test process. Production hosts run
+            // forever; this is a no-op there.
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await RunAgentAsync(row.WorkItemId, crewId, picked!, crew, wi, row.Kind, CancellationToken.None);
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Host shutdown raced with agent — service provider /
+                    // DbContext disposed mid-flight. Nothing to do.
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("disposed", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Same as above (some EF / DI paths surface as InvalidOperationException
+                    // rather than ObjectDisposedException).
+                }
+            });
         }
         return (claimed, skips);
     }
@@ -1129,11 +1150,13 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // pick up the latest one *since the last deliverable* so stale
             // notes from earlier pauses don't leak into the current run, and
             // prepend it to the user prompt so the generator sees it first.
-            var lastDelivAt = await db.Deliverables.AsNoTracking()
+            // SQLite can't ORDER BY DateTimeOffset; use Id (monotonic by
+            // insertion) and re-read CreatedAt client-side.
+            var lastDelivAt = (await db.Deliverables.AsNoTracking()
                 .Where(d => d.WorkItemId == workItemId)
-                .OrderByDescending(d => d.CreatedAt)
-                .Select(d => (DateTimeOffset?)d.CreatedAt)
-                .FirstOrDefaultAsync(ct);
+                .OrderByDescending(d => d.Id)
+                .Select(d => new { d.CreatedAt })
+                .FirstOrDefaultAsync(ct))?.CreatedAt;
             var noteEvt = await db.TaskTranscriptEvents.AsNoTracking()
                 .Where(e => e.WorkItemId == workItemId && e.Kind == "task.operator-note"
                     && (lastDelivAt == null || e.At > lastDelivAt))
@@ -2361,10 +2384,12 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             return $"Work item: {workItemTitle}\n\nThis task asked you to address PR comments, but no PR is linked to this work item.";
         }
 
-        var openComments = await db.PrComments.AsNoTracking()
+        // SQLite can't ORDER BY DateTimeOffset; materialize then sort.
+        var openComments = (await db.PrComments.AsNoTracking()
             .Where(c => c.PrId == pr.Id && c.RequiresAttention)
+            .ToListAsync(ct))
             .OrderBy(c => c.CreatedAt)
-            .ToListAsync(ct);
+            .ToList();
 
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"Work item: {workItemTitle}");

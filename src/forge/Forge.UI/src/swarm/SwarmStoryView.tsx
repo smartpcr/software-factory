@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { forgeApi, type StorySpawnArtifacts, type StorySpawnDetail, type StorySpawnPhase } from '@/api/forgeApi';
 import { useSpawnStore } from '@/state/useSpawnStore';
+import { useToastStore } from '@/state/useToastStore';
 import { SwarmTopbar } from './SwarmTopbar';
 import { SwarmNavBar } from './SwarmNavBar';
 import { SwarmPipelineStrip, type PipelineStageSpec, type SwarmMode } from './SwarmPipelineStrip';
@@ -188,6 +189,14 @@ export function SwarmStoryView() {
           ]}
           onBack={() => navigate('/workstreams')}
         />
+        {detail.spawn.lastError && (
+          <SpawnErrorBanner
+            storyId={storyId}
+            error={detail.spawn.lastError}
+            errorAt={detail.spawn.lastErrorAt ?? null}
+            onRetried={() => useSpawnStore.getState().bump(storyId)}
+          />
+        )}
         <SwarmPipelineStrip
           stages={stages}
           active={mode}
@@ -226,6 +235,60 @@ export function SwarmStoryView() {
         </div>
       </div>
       <Toaster />
+    </div>
+  );
+}
+
+/** Phase 37 — surfaces the spawn's persisted LastError above the pipeline
+ *  strip so the operator sees why the orchestrator halted (e.g. the plan
+ *  loop fell short of pass, or the plan PR has merge conflicts). The Retry
+ *  button POSTs to /api/stories/{storyId}/spawn/retry which clears the
+ *  error and re-drives the orchestrator. */
+function SpawnErrorBanner(props: {
+  storyId: string;
+  error: string;
+  errorAt: string | null;
+  onRetried: () => void;
+}) {
+  const { storyId, error, errorAt, onRetried } = props;
+  const [busy, setBusy] = useState(false);
+  const showToast = useToastStore((s) => s.show);
+  const when = errorAt
+    ? new Date(errorAt).toLocaleString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', month: 'short', day: 'numeric' })
+    : null;
+
+  async function handleRetry() {
+    setBusy(true);
+    try {
+      await forgeApi.retryStorySpawn(storyId);
+      showToast('Retry kicked off; orchestrator re-driving the spawn.', 'success');
+      onRetried();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Retry failed';
+      showToast(msg, 'danger');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="spawn-error-banner" role="alert">
+      <div className="spawn-error-banner__icon" aria-hidden>!</div>
+      <div className="spawn-error-banner__body">
+        <div className="spawn-error-banner__title">
+          ▌ ORCHESTRATOR HALTED
+          {when && <span className="spawn-error-banner__when"> · {when}</span>}
+        </div>
+        <div className="spawn-error-banner__msg">{error}</div>
+      </div>
+      <button
+        type="button"
+        className="spawn-error-banner__retry"
+        disabled={busy}
+        onClick={() => void handleRetry()}
+      >
+        {busy ? '⏳ retrying…' : '↻ retry'}
+      </button>
     </div>
   );
 }

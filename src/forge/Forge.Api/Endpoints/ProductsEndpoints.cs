@@ -337,6 +337,7 @@ public static class ProductsEndpoints
         var row = await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
         if (row is null) return Results.Problem(title: $"Repo {id} not found", statusCode: 404);
 
+        // StartedAt is stored as ISO-8601 string, so lexicographic sort = chronological.
         var runs = await db.BuildValidationRuns
             .AsNoTracking()
             .Where(r => r.RepoId == id)
@@ -954,6 +955,7 @@ public static class ProductsEndpoints
         else if (string.Equals(target, "wi", StringComparison.OrdinalIgnoreCase))
             query = query.Where(r => !r.Kind.StartsWith("pr-"));
 
+        // StartedAt is stored as ISO-8601 string, so lexicographic sort = chronological.
         var runs = await query
             .OrderByDescending(r => r.StartedAt)
             .Take(max)

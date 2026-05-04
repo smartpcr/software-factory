@@ -321,7 +321,7 @@ public static class ForgeSeed
     /// <c>atlas-platform</c> repo if they don't yet exist. Used both by the
     /// boot path and by Phase 8.3 backfill against pre-existing dev DBs.
     /// </summary>
-    private static async Task EnsureDefaultProductAndRepoAsync(ForgeDbContext db)
+    public static async Task EnsureDefaultProductAndRepoAsync(ForgeDbContext db)
     {
         var changed = false;
 
@@ -346,7 +346,7 @@ public static class ForgeSeed
             {
                 Id = DefaultRepoId,
                 Sort = 0,
-               
+                ProductId = DefaultProductId,
                 Kind = "ado",
                 RemoteUrl = "https://dev.azure.com/atlas/atlas-platform/_git/atlas-platform",
                 DisplayName = "atlas-platform",

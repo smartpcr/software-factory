@@ -64,11 +64,23 @@ public sealed class StorySpawnOrchestrator
     /// Called: after a phase advance from the API, after a PR merges (via
     /// <c>SpawnDependencyScheduler</c>), and on server boot for resumption.
     /// </summary>
-    public async Task DriveAsync(string storyId, CancellationToken ct = default)
+    public Task DriveAsync(string storyId, CancellationToken ct = default)
+        => this.DriveAsync(storyId, forceResume: false, ct);
+
+    /// <summary>
+    /// Drive variant that propagates a one-shot <paramref name="forceResume"/>
+    /// signal to the architect strategy. Used by the spawn-retry endpoint
+    /// after a non-pass verdict so the workspace-cache short-circuit in
+    /// <see cref="CrewStoryArtifactStrategy.ProducePlanFileAsync"/> is
+    /// bypassed and the gen↔eval loop re-iterates instead of replaying the
+    /// stalled artifact unchanged.
+    /// </summary>
+    public async Task DriveAsync(string storyId, bool forceResume, CancellationToken ct = default)
     {
         // Loop bound is generous so dev-mode auto-progress can chain
         // plan → decompose → implement → review → qa → done in one call.
         // Each phase's drive method is idempotent so a re-tick is cheap.
+        var firstStep = true;
         for (var safety = 0; safety < 32; safety++)
         {
             var advanced = false;
@@ -79,9 +91,14 @@ public sealed class StorySpawnOrchestrator
                 var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId, ct);
                 if (spawn is null) return;
 
-                advanced = await this.RunOneStepAsync(db, hub, spawn, ct);
+                // forceResume only applies to the FIRST step of this drive
+                // (the failing step the operator intended to retry). Once
+                // we've successfully advanced past that step, downstream
+                // phases use the normal cache.
+                advanced = await this.RunOneStepAsync(db, hub, spawn, firstStep && forceResume, ct);
             }
             if (!advanced) return;
+            firstStep = false;
         }
     }
 
@@ -90,7 +107,7 @@ public sealed class StorySpawnOrchestrator
     /// (so the caller can loop). Reads the spawn fresh inside its own scope.
     /// </summary>
     private async Task<bool> RunOneStepAsync(
-        ForgeDbContext db, IHubContext<ForgeHub>? hub, StorySpawnRow spawn, CancellationToken ct)
+        ForgeDbContext db, IHubContext<ForgeHub>? hub, StorySpawnRow spawn, bool forceResume, CancellationToken ct)
     {
         // The spawn may originate from either an upstream WorkItem (ADO Feature/Epic)
         // or a locally-authored ProductStory. When no WorkItem matches the spawn id,
@@ -127,7 +144,7 @@ public sealed class StorySpawnOrchestrator
         switch (spawn.Phase)
         {
             case StorySpawnPhases.Plan:
-                advanced |= await this.DrivePlanAsync(db, hub, spawn, story, repo, ct);
+                advanced |= await this.DrivePlanAsync(db, hub, spawn, story, repo, forceResume, ct);
                 break;
             case StorySpawnPhases.Decompose:
                 advanced |= await this.DriveDecomposeAsync(db, hub, spawn, story, repo, ct);
@@ -155,47 +172,61 @@ public sealed class StorySpawnOrchestrator
     // ── plan ─────────────────────────────────────────────────────────────────
     private async Task<bool> DrivePlanAsync(
         ForgeDbContext db, IHubContext<ForgeHub>? hub,
-        StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, CancellationToken ct)
+        StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, bool forceResume, CancellationToken ct)
     {
         // Step 1 — PR doesn't exist yet: produce artifacts, commit, open PR.
         if (string.IsNullOrEmpty(spawn.PlanPrId))
         {
             var planBranch = spawn.PlanBranch ?? $"story/{GitSafe(spawn.StoryId)}/plan";
-            await this.git.EnsureBranchAsync(repo, planBranch, "main", ct);
-
-            var artifacts = await this.strategy.ProducePlanArtifactsAsync(spawn, story, ct);
-            await this.git.CommitFilesAsync(repo, planBranch, artifacts,
-                $"plan: artifacts for story {GitSafe(spawn.StoryId)}", ct);
-
-            var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
-                Branch: planBranch,
-                BaseBranch: "main",
-                Title: $"[plan] {story.Title}",
-                Body: $"Planning artifacts for story `{GitSafe(spawn.StoryId)}` produced by the architect crew.",
-                Repo: repo,
-                WorkItemId: story.Id,
-                Workstream: null,
-                Epic: spawn.StoryId), ct);
-
-            var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
-            spawnRow.PlanBranch = planBranch;
-            spawnRow.PlanPrId = prId;
-            spawnRow.UpdatedAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync(ct);
-
-            // Kick off QA in parallel — the spec requires QA to start after the
-            // plan PR exists. The QA crew works on a separate qa branch; merging
-            // the plan PR is the gate that lets QA *commit* (handled inside
-            // DriveQaAsync via qa branch existence check).
-            if (string.IsNullOrEmpty(spawnRow.QaBranch))
+            try
             {
-                spawnRow.QaBranch = $"story/{GitSafe(spawn.StoryId)}/qa";
-                await db.SaveChangesAsync(ct);
-                await this.git.EnsureBranchAsync(repo, spawnRow.QaBranch, "main", ct);
-            }
+                await this.git.EnsureBranchAsync(repo, planBranch, "main", ct);
 
-            await EmitChange(hub, "plan-pr-opened", spawnRow, ct);
-            return true;
+                var artifacts = await this.strategy.ProducePlanArtifactsAsync(spawn, story, forceResume, ct);
+                await this.git.CommitFilesAsync(repo, planBranch, artifacts,
+                    $"plan: artifacts for story {GitSafe(spawn.StoryId)}", ct);
+
+                var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
+                    Branch: planBranch,
+                    BaseBranch: "main",
+                    Title: $"[plan] {story.Title}",
+                    Body: $"Planning artifacts for story `{GitSafe(spawn.StoryId)}` produced by the architect crew.",
+                    Repo: repo,
+                    WorkItemId: story.Id,
+                    Workstream: null,
+                    Epic: spawn.StoryId), ct);
+
+                var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
+                spawnRow.PlanBranch = planBranch;
+                spawnRow.PlanPrId = prId;
+                spawnRow.UpdatedAt = DateTimeOffset.UtcNow;
+                await ClearLastErrorAsync(db, spawnRow, ct);
+                await db.SaveChangesAsync(ct);
+
+                // Kick off QA in parallel — the spec requires QA to start after the
+                // plan PR exists. The QA crew works on a separate qa branch; merging
+                // the plan PR is the gate that lets QA *commit* (handled inside
+                // DriveQaAsync via qa branch existence check).
+                if (string.IsNullOrEmpty(spawnRow.QaBranch))
+                {
+                    spawnRow.QaBranch = $"story/{GitSafe(spawn.StoryId)}/qa";
+                    await db.SaveChangesAsync(ct);
+                    await this.git.EnsureBranchAsync(repo, spawnRow.QaBranch, "main", ct);
+                }
+
+                await EmitChange(hub, "plan-pr-opened", spawnRow, ct);
+                return true;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Architect crew below pass / commit failure / PR-open failure.
+                // Persist + surface so the operator sees why the spawn halted.
+                this.logger?.LogError(ex,
+                    "Plan artifact production failed for spawn {SpawnId} ({StoryId}).",
+                    spawn.Id, spawn.StoryId);
+                await PersistLastErrorAsync(db, spawn.Id, $"plan artifacts failed: {ex.Message}", hub, ct);
+                return false;
+            }
         }
 
         // Step 2 — PR exists. Auto-approve + merge if it's still open.
@@ -212,19 +243,22 @@ public sealed class StorySpawnOrchestrator
             try
             {
                 await this.ApproveAndMergeAsync(spawn.PlanPrId, planBranch, reviewer, repo, ct);
+                var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
+                await ClearLastErrorAsync(db, spawnRow, ct);
+                await db.SaveChangesAsync(ct);
                 await EmitChange(hub, "plan-pr-merged", spawn, ct);
                 return true;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // Common cause: PR was merged externally already, so the
-                // upstream merge endpoint returns 405. PrSyncJob picks up
-                // the merged state on its periodic tick and the merged
-                // branch below then advances the phase.
-                this.logger?.LogInformation(
-                    ex,
-                    "Plan PR {PrId} auto-merge failed; deferring to PrSyncJob.",
+                // Common causes: merge conflicts vs main, branch protection,
+                // failing required checks, PR merged externally (405).
+                // Surface to the operator instead of silently deferring — the
+                // spawn was visibly stalled for ~1hr without any UI signal.
+                this.logger?.LogWarning(ex,
+                    "Plan PR {PrId} auto-merge failed; surfacing to operator and deferring to PrSyncJob.",
                     spawn.PlanPrId);
+                await PersistLastErrorAsync(db, spawn.Id, $"plan PR merge failed: {ex.Message}", hub, ct);
                 return false;
             }
         }
@@ -236,9 +270,36 @@ public sealed class StorySpawnOrchestrator
         var sRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
         sRow.Phase = StorySpawnPhases.Decompose;
         sRow.UpdatedAt = DateTimeOffset.UtcNow;
+        await ClearLastErrorAsync(db, sRow, ct);
         await db.SaveChangesAsync(ct);
         await EmitChange(hub, "phase-advanced", sRow, ct);
         return true;
+    }
+
+    /// <summary>
+    /// Persist a Phase 37 LastError entry on the spawn so the workstream UI
+    /// shows the operator why the orchestrator halted. Also broadcasts a
+    /// SignalR `spawn-error` event so the open browser tab updates without
+    /// waiting for the next /api/state poll.
+    /// </summary>
+    private static async Task PersistLastErrorAsync(
+        ForgeDbContext db, string spawnId, string message, IHubContext<ForgeHub>? hub, CancellationToken ct)
+    {
+        var row = await db.StorySpawns.FirstOrDefaultAsync(s => s.Id == spawnId, ct);
+        if (row is null) return;
+        row.LastError = message;
+        row.LastErrorAt = DateTimeOffset.UtcNow;
+        row.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+        await EmitChange(hub, "spawn-error", row, ct);
+    }
+
+    private static Task ClearLastErrorAsync(ForgeDbContext db, StorySpawnRow row, CancellationToken ct)
+    {
+        if (row.LastError is null && row.LastErrorAt is null) return Task.CompletedTask;
+        row.LastError = null;
+        row.LastErrorAt = null;
+        return Task.CompletedTask;
     }
 
     // ── decompose ────────────────────────────────────────────────────────────

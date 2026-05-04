@@ -119,6 +119,26 @@ public sealed class DeliverableLoop : IDeliverableLoop
     private readonly ForgeDbContext db;
     private readonly TaskChannel? channel;
 
+    /// <summary>
+    /// Phase 38 (Layer A.3) — map a work item's story points to a per-loop
+    /// iteration cap. Bigger work earns more attempts before the loop
+    /// stalls; tiny work doesn't burn LLM tokens on retries it can't
+    /// productively use. Falls back to <see cref="ScoringConstants.MaxIterations"/>
+    /// for points &lt;= 0 (e.g. legacy synthetic workItemIds with no work-item row).
+    /// Exposed as <c>public static</c> so call sites + tests can reference
+    /// the same mapping without duplicating the table.
+    /// </summary>
+    public static int PointsToMaxIter(int points) => points switch
+    {
+        <= 0 => ScoringConstants.MaxIterations,
+        1    => 3,
+        2    => 4,
+        3    => 5,
+        4 or 5 => 8,
+        6 or 7 or 8 => 12,
+        _    => 15,  // 13+ pts (largest single-story bucket)
+    };
+
     public DeliverableLoop(ForgeDbContext db) : this(db, channel: null) { }
 
     /// <summary>
@@ -158,7 +178,14 @@ public sealed class DeliverableLoop : IDeliverableLoop
         var pinnedEvaluator = request.EvaluatorAgentId;
         var evalCrewId = request.EvaluatorCrewId ?? request.CrewId;
 
-        var maxIter = request.MaxIterations ?? ScoringConstants.MaxIterations;
+        // Phase 38 (Layer A.3): when the caller didn't pin MaxIterations,
+        // derive the cap from the work item's points so a 1-point doc gets a
+        // tight 3-iter budget while a 13-point delivery gets up to 15. This
+        // matches the operator intuition that bigger work earns more
+        // attempts before stalling. PATCH /api/work-items/{id}/execution
+        // (Q20.2) still wins via MaxIterOverride on the queue row, which
+        // the loop reads each iteration below.
+        var maxIter = request.MaxIterations ?? PointsToMaxIter(request.WorkItemPoints);
 
         // Resume support — when boot-recovery puts a half-finished work item
         // back on the queue, the agent invocation re-enters this loop. Seed

@@ -141,22 +141,21 @@ export function PrDetailPanel() {
                 <span>{pr.epic}</span>
                 <span style={{ opacity: 0.4 }}>/</span>
                 <span>{pr.col}</span>
+              </div>
+              <div className="detail-head-actions">
                 {pr.webUrl && (
                   <a
                     href={pr.webUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    style={{ color: 'var(--accent)', fontSize: 10, marginLeft: 4, display: 'inline-flex', alignItems: 'center', gap: 2 }}
-                    title="Open in ADO"
+                    className="detail-open-link"
+                    title={pr.provider === 'github' ? 'Open in GitHub' : pr.provider === 'ado' ? 'Open in ADO' : 'Open in browser'}
                   >
-                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                    <svg width="12" height="12" viewBox="0 0 10 10" fill="none">
                       <path d="M3.5 1.5H1.5V8.5H8.5V6.5M5.5 1.5H8.5V4.5M8.5 1.5L4.5 5.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
                     </svg>
-                    Open
                   </a>
                 )}
-              </div>
-              <div className="detail-head-actions">
                 <button
                   className="detail-fullscreen"
                   title={maximized ? 'Restore (Esc)' : 'Maximize'}

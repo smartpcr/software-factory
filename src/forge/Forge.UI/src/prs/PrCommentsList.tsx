@@ -180,6 +180,14 @@ export function PrCommentsList({ prId, comments, error: parentError, onRefresh, 
     finally { setBusyId(null); }
   };
 
+  const onReact = async (c: PrComment, reaction: 'thumbsup' | 'thumbsdown') => {
+    setBusyId(c.id);
+    setActionError(null);
+    try { await forgeApi.reactToPrComment(prId, c.id, reaction); await onRefresh(); }
+    catch (e: unknown) { setActionError(e instanceof Error ? e.message : 'react failed'); }
+    finally { setBusyId(null); }
+  };
+
   return (
     <div className="pr-comments" data-testid="pr-comments-list">
       <div className="pr-comments-filters">
@@ -204,6 +212,9 @@ export function PrCommentsList({ prId, comments, error: parentError, onRefresh, 
             busyId={busyId}
             onResolve={onResolve}
             onReopen={onReopen}
+            onReact={onReact}
+            prId={prId}
+            onRefresh={onRefresh}
           />
         ))}
       </div>
@@ -242,12 +253,35 @@ interface ThreadProps {
   busyId: number | null;
   onResolve: (c: PrComment) => void;
   onReopen: (c: PrComment) => void;
+  onReact: (c: PrComment, reaction: 'thumbsup' | 'thumbsdown') => void;
+  prId: string;
+  onRefresh: () => Promise<void> | void;
 }
 
 function CommentThread({
   parent, replies, expanded, onToggle,
-  callerIsHuman, busyId, onResolve, onReopen,
+  callerIsHuman, busyId, onResolve, onReopen, onReact,
+  prId, onRefresh,
 }: ThreadProps) {
+  const [replyOpen, setReplyOpen] = useState(false);
+  const [replyText, setReplyText] = useState('');
+  const [replying, setReplying] = useState(false);
+
+  const submitReply = async () => {
+    if (!replyText.trim()) return;
+    setReplying(true);
+    try {
+      await forgeApi.createPrComment(prId, { body: replyText, parentCommentId: parent.id });
+      setReplyText('');
+      setReplyOpen(false);
+      await onRefresh();
+    } catch {
+      // Error is shown via parent error state on next refresh
+    } finally {
+      setReplying(false);
+    }
+  };
+
   const cls = [
     'pr-comment-thread',
     expanded ? 'is-expanded' : 'is-collapsed',
@@ -271,6 +305,8 @@ function CommentThread({
             busyId={busyId}
             onResolve={onResolve}
             onReopen={onReopen}
+            onReact={onReact}
+            onReply={() => setReplyOpen(true)}
           />
           {replies.map((r) => (
             <CommentBody
@@ -281,8 +317,44 @@ function CommentThread({
               busyId={busyId}
               onResolve={onResolve}
               onReopen={onReopen}
+              onReact={onReact}
             />
           ))}
+          {replyOpen && (
+            <div className="pr-comment-reply-composer">
+              <textarea
+                value={replyText}
+                onChange={(e) => setReplyText(e.target.value)}
+                rows={2}
+                placeholder="Write a reply…"
+                autoFocus
+                className="pr-comment-reply-input"
+              />
+              <div className="pr-comment-reply-actions">
+                <button
+                  className="btn btn-primary btn-sm"
+                  disabled={!replyText.trim() || replying}
+                  onClick={() => void submitReply()}
+                >
+                  {replying ? 'Sending…' : 'Reply'}
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => { setReplyOpen(false); setReplyText(''); }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+          {!replyOpen && parent.state === 'active' && (
+            <button
+              className="btn btn-ghost btn-sm pr-comment-reply-btn"
+              onClick={() => setReplyOpen(true)}
+            >
+              Reply
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -357,9 +429,11 @@ interface BodyProps {
   busyId: number | null;
   onResolve: (c: PrComment) => void;
   onReopen: (c: PrComment) => void;
+  onReply?: () => void;
+  onReact: (c: PrComment, reaction: 'thumbsup' | 'thumbsdown') => void;
 }
 
-function CommentBody({ c, isReply, callerIsHuman, busyId, onResolve, onReopen }: BodyProps) {
+function CommentBody({ c, isReply, callerIsHuman, busyId, onResolve, onReopen, onReply: _onReply, onReact }: BodyProps) {
   const html = useMemo(() => renderRichText(c.body ?? ''), [c.body]);
   const author = effectiveAuthor(c);
   return (
@@ -379,29 +453,47 @@ function CommentBody({ c, isReply, callerIsHuman, busyId, onResolve, onReopen }:
           className="pr-comment-body detail-desc-md"
           dangerouslySetInnerHTML={{ __html: html }}
         />
-        {!isReply && (
-          <div className="pr-comment-actions">
-            {c.state === 'active' ? (
-              <button
-                className="btn btn-ghost"
-                disabled={!callerIsHuman || busyId === c.id}
-                title={!callerIsHuman ? 'Only reviewers can resolve comments' : 'Resolve thread'}
-                onClick={() => onResolve(c)}
-              >
-                Resolve
-              </button>
-            ) : (
-              <button
-                className="btn btn-ghost"
-                disabled={!callerIsHuman || busyId === c.id}
-                title={!callerIsHuman ? 'Only reviewers can reopen comments' : 'Reopen thread'}
-                onClick={() => onReopen(c)}
-              >
-                Reopen
-              </button>
-            )}
-          </div>
-        )}
+        <div className="pr-comment-actions">
+          <button
+            className={`btn btn-ghost btn-sm pr-react-btn${c.reaction === 'thumbsup' ? ' is-active' : ''}`}
+            title="Thumbs up"
+            onClick={() => onReact(c, 'thumbsup')}
+            disabled={busyId === c.id}
+          >
+            👍{c.reaction === 'thumbsup' ? ' 1' : ''}
+          </button>
+          <button
+            className={`btn btn-ghost btn-sm pr-react-btn${c.reaction === 'thumbsdown' ? ' is-active' : ''}`}
+            title="Thumbs down"
+            onClick={() => onReact(c, 'thumbsdown')}
+            disabled={busyId === c.id}
+          >
+            👎{c.reaction === 'thumbsdown' ? ' 1' : ''}
+          </button>
+          {!isReply && (
+            <>
+              {c.state === 'active' ? (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  disabled={!callerIsHuman || busyId === c.id}
+                  title={!callerIsHuman ? 'Only reviewers can resolve comments' : 'Resolve thread'}
+                  onClick={() => onResolve(c)}
+                >
+                  Resolve
+                </button>
+              ) : (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  disabled={!callerIsHuman || busyId === c.id}
+                  title={!callerIsHuman ? 'Only reviewers can reopen comments' : 'Reopen thread'}
+                  onClick={() => onReopen(c)}
+                >
+                  Reopen
+                </button>
+              )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

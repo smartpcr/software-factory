@@ -213,6 +213,8 @@ export interface PrComment {
   linkedCommitSha?: string | null;
   linkedAgentResponseId?: number | null;
   requiresAttention: boolean;
+  /** Phase 34 — user reaction: 'thumbsup' | 'thumbsdown' | null. */
+  reaction?: string | null;
 }
 
 export interface PrCommentHistory {
@@ -769,6 +771,8 @@ export interface AgentBurn {
   cost7dUsd: number;
   tokens: number;
   spark: number[];
+  repos?: string[];
+  products?: string[];
 }
 
 // ─── Phase 15 — sprint & area path management ──────────────────────────────

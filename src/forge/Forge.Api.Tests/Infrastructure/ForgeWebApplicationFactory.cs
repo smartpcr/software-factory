@@ -6,12 +6,15 @@
 
 namespace Forge.Api.Tests.Infrastructure;
 
+using System.Linq;
 using Forge.Api.Services.Stories;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// Test factory that copies the production SQLite DB to a per-instance
@@ -92,6 +95,26 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Development");
+
+        // Strip the Windows EventLog logger provider — it gets registered
+        // by default on Windows and writes to a Win32 event-log handle that
+        // gets disposed when the test host tears down. Fire-and-forget tasks
+        // (CrewQueueWorker.RunAgentAsync) that try to log AFTER teardown
+        // throw `Cannot access a disposed object. Object name: 'EventLogInternal'`,
+        // which crashes the entire test process even though
+        // TaskScheduler.UnobservedTaskException calls SetObserved() —
+        // because the Logger.Log path rethrows synchronously from the
+        // logging extension, not from a Task. Stripping it removes the
+        // race entirely. Console + Debug providers stay so test output
+        // still shows everything.
+        builder.ConfigureLogging(logging =>
+        {
+            var eventLog = logging.Services
+                .Where(s => s.ImplementationType?.FullName?.Contains("EventLog", System.StringComparison.Ordinal) == true)
+                .ToList();
+            foreach (var s in eventLog) logging.Services.Remove(s);
+        });
+
         builder.ConfigureAppConfiguration((_, config) =>
         {
             var settings = new Dictionary<string, string?>
@@ -112,6 +135,12 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
                 // the gate-only (manual-API) flow. End-to-end orchestrator tests
                 // override this to "true" via the dedicated factory ctor.
                 ["Forge:Stories:OrchestratorEnabled"] = "false",
+                // Keep prod hosted services (CrewQueueWorker, ProviderSyncService,
+                // WorkItemSyncJob, BuildSyncJob, AutoMergeWatcher, etc.) registered
+                // in DI but not auto-started. Tests that need them call
+                // RunOnceAsync deterministically; tests that don't need them
+                // aren't fighting their background writes.
+                ["Forge:Background:Disabled"] = "true",
             };
             foreach (var kv in this.extraConfig)
             {

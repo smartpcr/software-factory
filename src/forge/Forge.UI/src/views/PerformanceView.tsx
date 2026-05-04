@@ -1,21 +1,20 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { avatarFor } from '@/agentAvatar';
 import {
-  SCORECARDS,
-  PROMOTION_DECISIONS,
-  MONTHLY_SNAPSHOTS,
-  RUBRIC_DIMS,
-  LEVEL_TITLES,
+  forgeApi,
   type AgentScorecard,
   type ReviewWindow,
   type PromotionVerdict,
   type PromotionDecision,
   type MonthlySnapshot,
-} from '@/sampleScorecards';
+  type ScoreDims,
+  type PerformanceFilterOptions,
+} from '@/api/forgeApi';
 
 // ────────────────────────────────────────────────────────────────────
-// Phase 14 — Performance view (Q14.8 + Q14.9 spec). Mocked client-side.
-// Three layers stack from rubric → decision → outcome:
+// Phase 14 — Performance view (Q14.8 + Q14.9 spec). Wired to
+// GET /api/performance/scorecards. Three layers stack from rubric →
+// decision → outcome:
 //   1. Headline strip — payroll, spend, avg score, promotions ready
 //   2. Promotion ladder (left) + Lead-floor card (rail)
 //   3. Roster scorecard table + drill-in detail (radar + trend)
@@ -23,22 +22,119 @@ import {
 //   5. Monthly review history (rail)
 // ────────────────────────────────────────────────────────────────────
 
+const RUBRIC_DIMS: ReadonlyArray<{ key: keyof ScoreDims; label: string; max: number }> = [
+  { key: 'correctness', label: 'Correctness', max: 40 },
+  { key: 'quality',     label: 'Quality',     max: 25 },
+  { key: 'tests',       label: 'Tests',       max: 15 },
+  { key: 'scope',       label: 'Scope',       max: 10 },
+  { key: 'risk',        label: 'Risk',        max: 10 },
+];
+
+const LEVEL_TITLES: Record<number, string> = {
+  0: 'Trainee',
+  1: 'Engineer I', 2: 'Engineer II', 3: 'Engineer III',
+  4: 'Senior I', 5: 'Senior II', 6: 'Senior III',
+  7: 'Staff', 8: 'Principal',
+  9: 'Distinguished', 10: 'Fellow',
+};
+
 const WINDOW_LABELS: Record<ReviewWindow, string> = {
   trailing20: 'Iteration · 20',
   mtd:        'This month',
   lastMonth:  'Last month',
 };
 
+const TEAM_CHIPS: Array<{ key: string; label: string }> = [
+  { key: 'all',       label: 'All' },
+  { key: 'Architect', label: 'Architect' },
+  { key: 'Engineer',  label: 'Engineer' },
+  { key: 'Review',    label: 'Review' },
+  { key: 'QA',        label: 'QA' },
+];
+
 export function PerformanceView() {
   const [windowKey, setWindowKey] = useState<ReviewWindow>('trailing20');
-  const [selected, setSelected] = useState<string>(SCORECARDS[0].agentId);
+  const [allScorecards, setAllScorecards] = useState<AgentScorecard[]>([]);
+  const [decisions, setDecisions] = useState<PromotionDecision[]>([]);
+  const [snapshots, setSnapshots] = useState<MonthlySnapshot[]>([]);
+  const [filterOpts, setFilterOpts] = useState<PerformanceFilterOptions | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string>('');
+
+  // Filter state
+  const [teamFilter, setTeamFilter] = useState('all');
+  const [productFilter, setProductFilter] = useState<string[]>([]);
+  const [repoFilter, setRepoFilter] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      setError(null);
+      try {
+        const r = await forgeApi.getPerformanceScorecards(windowKey);
+        if (cancelled) return;
+        setAllScorecards(r.scorecards);
+        setDecisions(r.promotionDecisions);
+        setSnapshots(r.monthlySnapshots);
+        setFilterOpts(r.filterOptions);
+        if (!r.scorecards.find((c) => c.agentId === selected) && r.scorecards.length > 0) {
+          setSelected(r.scorecards[0].agentId);
+        }
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load scorecards');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    void load();
+    return () => { cancelled = true; };
+  }, [windowKey]);
+
+  // Apply client-side filters
+  const scorecards = useMemo(() => {
+    let result = allScorecards;
+    if (teamFilter !== 'all') {
+      result = result.filter((c) => c.team === teamFilter);
+    }
+    if (productFilter.length > 0) {
+      result = result.filter((c) => c.products.some((p) => productFilter.includes(p)));
+    }
+    if (repoFilter.length > 0) {
+      result = result.filter((c) => c.repos.some((r) => repoFilter.includes(r)));
+    }
+    return result;
+  }, [allScorecards, teamFilter, productFilter, repoFilter]);
+
+  // Filter to agents with data (throughput > 0) for the main table,
+  // but show all in the ladder.
+  const activeCards = useMemo(() => scorecards.filter((c) => c.throughput > 0), [scorecards]);
 
   const selectedAgent = useMemo(
-    () => SCORECARDS.find((a) => a.agentId === selected) ?? SCORECARDS[0],
-    [selected],
+    () => scorecards.find((a) => a.agentId === selected) ?? activeCards[0] ?? null,
+    [selected, scorecards, activeCards],
   );
 
-  const summary = useMemo(() => deriveSummary(SCORECARDS, MONTHLY_SNAPSHOTS), []);
+  const summary = useMemo(() => deriveSummary(scorecards, snapshots), [scorecards, snapshots]);
+
+  // Derive team counts from unfiltered data (so chips always show total)
+  const teamCounts = useMemo(() => {
+    const counts: Record<string, number> = { all: allScorecards.length };
+    for (const c of allScorecards) {
+      counts[c.team] = (counts[c.team] ?? 0) + 1;
+    }
+    return counts;
+  }, [allScorecards]);
+
+  // Product/repo options from filterOptions
+  const productOptions = filterOpts?.products ?? [];
+  const repoOptions = useMemo(() => {
+    // Derive from actual scorecard data — only repos that appear
+    const repoSet = new Set<string>();
+    for (const c of allScorecards) for (const r of c.repos) repoSet.add(r);
+    return [...repoSet].sort();
+  }, [allScorecards]);
 
   return (
     <section className="view active" id="view-performance">
@@ -47,7 +143,7 @@ export function PerformanceView() {
           <div className="page-eyebrow">
             <span><span className="num">14</span>&nbsp;Performance</span>
             <span className="sep">/</span>
-            <span>{SCORECARDS.length} agents · 4 teams</span>
+            <span>{scorecards.length} agents · {new Set(scorecards.map((c) => c.team)).size} teams</span>
             <span className="sep">/</span>
             <span><span className="live-dot" />nightly job @ 02:00 PT</span>
           </div>
@@ -62,112 +158,176 @@ export function PerformanceView() {
         </div>
       </div>
 
-      {/* ── Headline strip ─────────────────────────────────────────── */}
-      <div className="perf-strip">
-        <div className="perf-strip-cell accent">
-          <span className="corner">USD / day</span>
-          <span className="label">Payroll today</span>
-          <span className="val">${summary.payrollTodayUsd.toFixed(0)}</span>
-          <span className="sub">12 h × hourly · {summary.activeAgents} on shift</span>
+      {/* ── Filter bar ─────────────────────────────────────────────── */}
+      <div className="filter-bar" style={{ paddingBottom: 14 }}>
+        <div className="filter-chips">
+          {TEAM_CHIPS.map((chip) => (
+            <button
+              key={chip.key}
+              className={`filter-chip${teamFilter === chip.key ? ' active' : ''}`}
+              onClick={() => setTeamFilter(chip.key)}
+            >
+              {chip.label}
+              <span className="count">{teamCounts[chip.key] ?? 0}</span>
+            </button>
+          ))}
         </div>
-        <div className="perf-strip-cell">
-          <span className="corner">USD / day</span>
-          <span className="label">Spend today</span>
-          <span className="val">${summary.spendTodayUsd.toFixed(2)}</span>
-          <span className="sub">tokens billed via registry · est. on Copilot</span>
-        </div>
-        <div className="perf-strip-cell">
-          <span className="corner">avg / 20</span>
-          <span className="label">Roster average</span>
-          <span className="val">{summary.rosterAvg.toFixed(1)}</span>
-          <span className="sub">window · {WINDOW_LABELS[windowKey]}</span>
-        </div>
-        <div className="perf-strip-cell">
-          <span className="corner">advisory</span>
-          <span className="label">Ready for promo</span>
-          <span className="val">{summary.readyToPromote} <span style={{ fontSize: 16, color: 'var(--text-tertiary)' }}>/ {summary.atRisk} risk</span></span>
-          <span className="sub">{summary.leadVacancies} lead vacancy{summary.leadVacancies === 1 ? '' : 'ies'} · 9 days to fill</span>
-        </div>
+
+        {productOptions.length > 0 && (
+          <MultiSelectDropdown
+            label="Product"
+            options={productOptions.map((p) => ({ value: p.id, label: p.name }))}
+            selected={productFilter}
+            onChange={setProductFilter}
+          />
+        )}
+
+        {repoOptions.length > 0 && (
+          <MultiSelectDropdown
+            label="Repo"
+            options={repoOptions.map((r) => ({ value: r, label: r }))}
+            selected={repoFilter}
+            onChange={setRepoFilter}
+          />
+        )}
+
+        {(teamFilter !== 'all' || productFilter.length > 0 || repoFilter.length > 0) && (
+          <button
+            className="btn btn-secondary"
+            style={{ fontSize: 11, padding: '4px 10px' }}
+            onClick={() => { setTeamFilter('all'); setProductFilter([]); setRepoFilter([]); }}
+          >
+            Clear filters
+          </button>
+        )}
       </div>
 
-      {/* ── Two-column layout ──────────────────────────────────────── */}
-      <div className="perf-wrap">
-        <div className="perf-main">
-          <PromotionLadder agents={SCORECARDS} selectedId={selected} onSelect={setSelected} />
-
-          <div className="scorecard-card">
-            <div className="head">
-              <div className="title">Roster scorecard — Q14.9 KPIs</div>
-              <div className="sub">click a row to inspect · {WINDOW_LABELS[windowKey]}</div>
-            </div>
-            <ScorecardTable agents={SCORECARDS} selectedId={selected} onSelect={setSelected} />
-            <ScorecardDrawer agent={selectedAgent} />
-          </div>
-
-          <div className="perf-section-head">
-            <div className="title">Promotion decisions — advisory</div>
-            <div className="sub">PromotionJob · 02:00 PT · cooldown 30 d</div>
-          </div>
-          <div className="decisions">
-            {PROMOTION_DECISIONS.map((d) => (
-              <DecisionCard key={d.agentId} d={d} />
-            ))}
-          </div>
+      {loading && (
+        <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-tertiary)' }}>Loading scorecards…</div>
+      )}
+      {error && (
+        <div style={{ padding: 40, textAlign: 'center', color: 'var(--danger)' }}>{error}</div>
+      )}
+      {!loading && !error && scorecards.length === 0 && (
+        <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-tertiary)' }}>
+          No agent data available yet. Scorecards appear once deliverables are recorded.
         </div>
+      )}
 
-        {/* ── Right rail ──────────────────────────────────────────── */}
-        <aside className="perf-rail">
-          <div className="lead-floor-card">
-            <div className="num">L7</div>
-            <div className="copy">
-              <strong>Lead floor</strong> — promoting a member to crew lead requires
-              level&nbsp;≥&nbsp;7 (Q14.5). Below floor returns&nbsp;
-              <code>400&nbsp;crew.lead.level_too_low</code>.
+      {!loading && !error && scorecards.length > 0 && (
+        <>
+          {/* ── Headline strip ─────────────────────────────────────────── */}
+          <div className="perf-strip">
+            <div className="perf-strip-cell accent">
+              <span className="corner">USD / day</span>
+              <span className="label">Payroll today</span>
+              <span className="val">${summary.payrollTodayUsd.toFixed(0)}</span>
+              <span className="sub">12 h × hourly · {summary.activeAgents} on shift</span>
+            </div>
+            <div className="perf-strip-cell">
+              <span className="corner">USD / day</span>
+              <span className="label">Spend today</span>
+              <span className="val">${summary.spendTodayUsd.toFixed(2)}</span>
+              <span className="sub">tokens billed via registry · est. on Copilot</span>
+            </div>
+            <div className="perf-strip-cell">
+              <span className="corner">avg / 20</span>
+              <span className="label">Roster average</span>
+              <span className="val">{summary.rosterAvg.toFixed(1)}</span>
+              <span className="sub">window · {WINDOW_LABELS[windowKey]}</span>
+            </div>
+            <div className="perf-strip-cell">
+              <span className="corner">advisory</span>
+              <span className="label">Ready for promo</span>
+              <span className="val">{summary.readyToPromote} <span style={{ fontSize: 16, color: 'var(--text-tertiary)' }}>/ {summary.atRisk} risk</span></span>
+              <span className="sub">{summary.leadVacancies} lead vacancy{summary.leadVacancies === 1 ? '' : 'ies'} · 9 days to fill</span>
             </div>
           </div>
 
-          <div className="rail-card">
-            <div className="head">
-              <div className="title">Monthly snapshots</div>
-              <div className="eyebrow">last 6 mo</div>
-            </div>
-            <div className="month-list">
-              {MONTHLY_SNAPSHOTS.slice().reverse().map((m, i, arr) => {
-                const prev = arr[i + 1];
-                const delta = prev ? m.avgScore - prev.avgScore : 0;
-                return <MonthRow key={m.month} m={m} delta={delta} />;
-              })}
-            </div>
-          </div>
+          {/* ── Two-column layout ──────────────────────────────────────── */}
+          <div className="perf-wrap">
+            <div className="perf-main">
+              <PromotionLadder agents={scorecards} selectedId={selected} onSelect={setSelected} />
 
-          <div className="rail-card">
-            <div className="head">
-              <div className="title">KPI catalogue</div>
-              <div className="eyebrow">Q14.9 locked</div>
-            </div>
-            <div className="kpi-legend">
-              {KPI_LEGEND.map((k) => (
-                <div className="kpi-row" key={k.key}>
-                  <span>{k.label}</span><span className="key">{k.key}</span>
+              <div className="scorecard-card">
+                <div className="head">
+                  <div className="title">Roster scorecard — Q14.9 KPIs</div>
+                  <div className="sub">click a row to inspect · {WINDOW_LABELS[windowKey]} · showing {activeCards.length} agents with data</div>
                 </div>
-              ))}
-            </div>
-          </div>
+                <ScorecardTable agents={activeCards} selectedId={selected} onSelect={setSelected} />
+                {selectedAgent && <ScorecardDrawer agent={selectedAgent} />}
+              </div>
 
-          <div className="rail-card">
-            <div className="head">
-              <div className="title">Iteration cadence</div>
-              <div className="eyebrow">spec §3</div>
+              {decisions.length > 0 && (
+                <>
+                  <div className="perf-section-head">
+                    <div className="title">Promotion decisions — advisory</div>
+                    <div className="sub">PromotionJob · 02:00 PT · cooldown 30 d</div>
+                  </div>
+                  <div className="decisions">
+                    {decisions.map((d) => (
+                      <DecisionCard key={d.agentId} d={d} />
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
-            <div style={{ fontSize: 11.5, lineHeight: 1.55, color: 'var(--text-secondary)' }}>
-              Trailing-20 final-iteration scores feed promotion. Score
-              boundaries are <strong style={{ color: 'var(--success)' }}>≥ 90 pass</strong>,
-              <strong> 70–89 iterate</strong>, <strong style={{ color: 'var(--danger)' }}>&lt; 70 reject</strong>.
-              Hard cap at 5 iterations · stalled rolls back to lead.
-            </div>
+
+            {/* ── Right rail ──────────────────────────────────────────── */}
+            <aside className="perf-rail">
+              <div className="lead-floor-card">
+                <div className="num">L7</div>
+                <div className="copy">
+                  <strong>Lead floor</strong> — promoting a member to crew lead requires
+                  level&nbsp;≥&nbsp;7 (Q14.5). Below floor returns&nbsp;
+                  <code>400&nbsp;crew.lead.level_too_low</code>.
+                </div>
+              </div>
+
+              <div className="rail-card">
+                <div className="head">
+                  <div className="title">Monthly snapshots</div>
+                  <div className="eyebrow">last 6 mo</div>
+                </div>
+                <div className="month-list">
+                  {snapshots.slice().reverse().map((m, i, arr) => {
+                    const prev = arr[i + 1];
+                    const delta = prev ? m.avgScore - prev.avgScore : 0;
+                    return <MonthRow key={m.month} m={m} delta={delta} />;
+                  })}
+                </div>
+              </div>
+
+              <div className="rail-card">
+                <div className="head">
+                  <div className="title">KPI catalogue</div>
+                  <div className="eyebrow">Q14.9 locked</div>
+                </div>
+                <div className="kpi-legend">
+                  {KPI_LEGEND.map((k) => (
+                    <div className="kpi-row" key={k.key}>
+                      <span>{k.label}</span><span className="key">{k.key}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rail-card">
+                <div className="head">
+                  <div className="title">Iteration cadence</div>
+                  <div className="eyebrow">spec §3</div>
+                </div>
+                <div style={{ fontSize: 11.5, lineHeight: 1.55, color: 'var(--text-secondary)' }}>
+                  Trailing-20 final-iteration scores feed promotion. Score
+                  boundaries are <strong style={{ color: 'var(--success)' }}>≥ 90 pass</strong>,
+                  <strong> 70–89 iterate</strong>, <strong style={{ color: 'var(--danger)' }}>&lt; 70 reject</strong>.
+                  Hard cap at 5 iterations · stalled rolls back to lead.
+                </div>
+              </div>
+            </aside>
           </div>
-        </aside>
-      </div>
+        </>
+      )}
     </section>
   );
 }
@@ -423,11 +583,13 @@ function ScorecardDrawer({ agent }: { agent: AgentScorecard }) {
       <div className="detail-trend">
         <div className="trend-label">trailing-20 score · oldest → today</div>
         <BigSpark values={agent.scoreSpark} />
-        <div className="legend">
-          <span>min {Math.min(...agent.scoreSpark)}</span>
-          <span>avg {(agent.scoreSpark.reduce((s, v) => s + v, 0) / agent.scoreSpark.length).toFixed(1)}</span>
-          <span>max {Math.max(...agent.scoreSpark)}</span>
-        </div>
+        {agent.scoreSpark.length > 0 && (
+          <div className="legend">
+            <span>min {Math.min(...agent.scoreSpark)}</span>
+            <span>avg {(agent.scoreSpark.reduce((s, v) => s + v, 0) / agent.scoreSpark.length).toFixed(1)}</span>
+            <span>max {Math.max(...agent.scoreSpark)}</span>
+          </div>
+        )}
         <div className="trend-label" style={{ marginTop: 6 }}>monthly · 6 mo</div>
         <MonthlyBars values={agent.monthlyAvg} labels={agent.monthlyMonths} />
       </div>
@@ -554,7 +716,7 @@ function MonthRow({ m, delta }: { m: MonthlySnapshot; delta: number }) {
 // ════════════════════════════════════════════════════════════════════
 
 function Spark({ values }: { values: number[] }) {
-  if (values.length === 0) return null;
+  if (values.length < 2) return null;
   const min = Math.min(...values), max = Math.max(...values);
   const range = Math.max(1, max - min);
   const w = 80, h = 22, pad = 1;
@@ -573,7 +735,7 @@ function Spark({ values }: { values: number[] }) {
 }
 
 function BigSpark({ values }: { values: number[] }) {
-  if (values.length === 0) return null;
+  if (values.length < 2) return null;
   const w = 220, h = 60, pad = 4;
   const min = Math.min(...values), max = Math.max(...values);
   const range = Math.max(1, max - min);
@@ -706,6 +868,103 @@ function RadarChart({ dims }: { dims: AgentScorecard['dims'] }) {
 }
 
 // ════════════════════════════════════════════════════════════════════
+// Multi-select dropdown (inline, reusable within this view)
+// ════════════════════════════════════════════════════════════════════
+
+function MultiSelectDropdown({ label, options, selected, onChange }: {
+  label: string;
+  options: Array<{ value: string; label: string }>;
+  selected: string[];
+  onChange: (v: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    if (open) document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  const toggle = (value: string) => {
+    onChange(
+      selected.includes(value)
+        ? selected.filter((v) => v !== value)
+        : [...selected, value],
+    );
+  };
+
+  const displayLabel = selected.length === 0
+    ? `${label}: All`
+    : `${label}: ${selected.length} selected`;
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        className="filter-select"
+        onClick={() => setOpen(!open)}
+        style={{
+          cursor: 'pointer',
+          background: selected.length > 0 ? 'var(--accent-bg, rgba(79,140,255,0.12))' : undefined,
+          borderColor: selected.length > 0 ? 'var(--accent)' : undefined,
+          minWidth: 120,
+        }}
+      >
+        {displayLabel} ▾
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute',
+          top: '100%',
+          left: 0,
+          zIndex: 100,
+          background: 'var(--bg-elevated)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-md)',
+          padding: '6px 0',
+          minWidth: 180,
+          maxHeight: 240,
+          overflow: 'auto',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
+        }}>
+          {options.map((opt) => (
+            <label
+              key={opt.value}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '5px 12px',
+                cursor: 'pointer',
+                fontSize: 12,
+                color: 'var(--text-primary)',
+              }}
+              onMouseDown={(e) => e.preventDefault()}
+            >
+              <input
+                type="checkbox"
+                checked={selected.includes(opt.value)}
+                onChange={() => toggle(opt.value)}
+                style={{ accentColor: 'var(--accent)' }}
+              />
+              {opt.label}
+            </label>
+          ))}
+          {options.length === 0 && (
+            <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text-tertiary)' }}>
+              No options available
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════
 // Helpers
 // ════════════════════════════════════════════════════════════════════
 
@@ -733,8 +992,9 @@ function verdictLabel(v: PromotionVerdict): string {
 
 function deriveSummary(cards: AgentScorecard[], months: MonthlySnapshot[]) {
   const payrollTodayUsd = cards.reduce((s, c) => s + c.hourlyUsd * 12, 0);
-  const spendTodayUsd = cards.reduce((s, c) => s + c.costPerPass * (c.throughput / 20), 0);
-  const rosterAvg = cards.reduce((s, c) => s + c.avgScore, 0) / cards.length;
+  const spendTodayUsd = cards.reduce((s, c) => s + (c.throughput > 0 ? c.costPerPass * (c.throughput / 20) : 0), 0);
+  const activeCards = cards.filter((c) => c.throughput > 0);
+  const rosterAvg = activeCards.length > 0 ? activeCards.reduce((s, c) => s + c.avgScore, 0) / activeCards.length : 0;
   const readyToPromote = cards.filter((c) => c.verdict === 'promote').length;
   const atRisk = cards.filter((c) => c.demotionRisk).length;
   const leadVacancies = cards.filter((c) => c.verdict === 'lead-pending').length;

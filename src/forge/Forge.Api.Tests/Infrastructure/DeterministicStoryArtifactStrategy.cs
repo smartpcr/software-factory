@@ -32,7 +32,7 @@ using Forge.Api.Services.Stories;
 public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
 {
     public Task<IReadOnlyDictionary<string, string>> ProducePlanArtifactsAsync(
-        StorySpawnRow spawn, WorkItemRow story, CancellationToken ct = default)
+        StorySpawnRow spawn, WorkItemRow story, bool forceResume = false, CancellationToken ct = default)
     {
         var dir = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}";
         var techSpec = new StringBuilder()

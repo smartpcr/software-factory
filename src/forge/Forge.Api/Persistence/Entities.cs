@@ -332,6 +332,9 @@ public class PrCommentRow
     public long? LinkedAgentResponseId { get; set; }
 
     public bool RequiresAttention { get; set; }
+
+    /// <summary>Phase 34 — user reaction: null, "thumbsup", or "thumbsdown".</summary>
+    public string? Reaction { get; set; }
 }
 
 /// <summary>Phase 24 — append-only audit per comment state transition.</summary>
@@ -2004,6 +2007,18 @@ public class StorySpawnRow
 
     /// <summary>Story points carried over from the originating story for sprint planning.</summary>
     public int StoryPoints { get; set; }
+
+    /// <summary>
+    /// Operator-visible error message captured the last time the orchestrator
+    /// failed to drive this spawn forward (architect crew below pass, plan PR
+    /// merge conflict, decomposition empty, etc.). Null while healthy. Cleared
+    /// when the failing step succeeds or the operator clicks Retry from the
+    /// workstream view.
+    /// </summary>
+    public string? LastError { get; set; }
+
+    /// <summary>Timestamp paired with <see cref="LastError"/>; null when error is null.</summary>
+    public DateTimeOffset? LastErrorAt { get; set; }
 }
 
 /// <summary>Well-known phase constants for <see cref="StorySpawnRow.Phase"/>.</summary>

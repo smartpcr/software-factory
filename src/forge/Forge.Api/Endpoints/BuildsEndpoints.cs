@@ -50,6 +50,7 @@ public static class BuildsEndpoints
         ForgeDbContext db,
         [FromQuery] int limit = 50)
     {
+        prId = Uri.UnescapeDataString(prId);
         if (!await db.Prs.AnyAsync(p => p.Id == prId))
             return Results.Problem(title: $"PR {prId} not found", statusCode: 404);
 

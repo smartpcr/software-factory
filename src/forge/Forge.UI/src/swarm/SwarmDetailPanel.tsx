@@ -4,6 +4,7 @@ import type { SwarmMode } from './SwarmPipelineStrip';
 import type { Selection } from './SwarmMasterPanel';
 import { DocumentPane } from './DocumentPane';
 import { DocConversationPane } from './DocConversationPane';
+import { WorkstreamConversationPane } from './WorkstreamConversationPane';
 
 export type DetailTab =
   | 'overview' | 'conv' | 'arch' | 'pr' | 'qa' | 'trace'
@@ -83,10 +84,12 @@ export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTa
               storyId={detail.spawn.storyId}
               docId={selection.id}
             />
+          ) : tab === 'conv' && selection.kind === 'phase' && selection.id ? (
+            <WorkstreamConversationPane workstreamId={selection.id} />
           ) : tab === 'conv' && (
             <Placeholder
               label="conversation tab"
-              sub="paired-agent transcript with iteration history, score-bumps, and live tail. Wired to /api/work-items/:id/transcript once a workstream is selected."
+              sub="Select a doc (Design mode) or a workstream (Impl/Review mode) to see its paired-agent transcript."
             />
           )}
         </div>
