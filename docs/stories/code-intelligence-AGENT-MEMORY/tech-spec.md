@@ -2,10 +2,10 @@
 
 **Story:** `code-intelligence:AGENT-MEMORY`  
 **Points:** 10  
-**Status:** DRAFT — Iteration 17  
+**Status:** DRAFT — Iteration 18  
 
 > **Companion documents** (written in parallel — referenced by name, not duplicated):
-> - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, ID format, and constants. Defines graph layers (§2.1), edge taxonomy (§2.2), retired names (§2.3), and constants/thresholds (§2.4). Currently at iteration 20.
+> - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, ID format, and constants. Defines graph layers (§2.1), edge taxonomy (§2.2), retired names (§2.3), and constants/thresholds (§2.4). Currently at iteration 22.
 > - [`implementation-plan.md`](implementation-plan.md) — phased work items (6 phases), deliverables, evaluation harness. Contains 25 naming/data-model divergences from canonical vocabulary (see §12.3 of this document); `architecture.md` governs on all conflicts.
 > - [`e2e-scenarios.md`](e2e-scenarios.md) — BDD Gherkin acceptance scenarios (13 features, 82 scenarios covering Structural Extraction, Call-Chain, Semantic, Expertise, Temporal Versioning, Hybrid Retrieval, Incremental Sync, Evolution, Cross-Session Learning, MCP Tool Interface, Backward Compatibility, Performance & Storage, and Graph Schema Integrity).
 >
@@ -168,10 +168,7 @@ Components map to `src/ast/` projects as detailed in `architecture.md` §1.3.
 | `External` | Call-Chain | `package`, `fqn` | Out-of-repo boundary symbol (stub — no embedding, no `VersionRange`). ID format: `"ext:{package}:{qualifiedName}"`. Created when in-repo code references NuGet/npm dependencies. Participates in `CALLS` and `REFERENCES` edges but is never extracted or embedded. |
 | `SemanticCluster` | Semantic | `centroid_embedding`, `member_count` | Auto-detected community of similar nodes. |
 | `Topic` | Semantic | `title`, `summary_prose` | GraphRAG-inspired cluster summary. |
-| `Pattern` | Expertise | `title`, `body`, `confidence`, `source_session` | Agent-authored: recurring code pattern. |
-| `Pitfall` | Expertise | `title`, `body`, `confidence`, `source_session` | Agent-authored: known failure mode. |
-| `Preference` | Expertise | `title`, `body`, `confidence`, `source_session` | Agent-authored: coding convention / style. |
-| `Insight` | Expertise | `title`, `body`, `confidence`, `source_session` | Agent-authored: architectural observation. |
+| `ExpertiseEntry` | Expertise | `title`, `body`, `confidence`, `source_session`, `kind` (`ExpertiseKind`: Pattern, Pitfall, Preference, Insight) | Agent-authored knowledge node. Differentiated by `Kind` field, not by `NodeType`. ID format: `"expertise:{kind}:{hash8}"` where `hash8` = first 8 chars of SHA-256(`Content` + `TargetNodeId`). Linked to code targets via `APPLIES_TO` edges. See `ExpertiseEntry` class and `ExpertiseKind` enum in `architecture.md` §4.2. |
 
 **ID format:** Path-based strings: `"{filePath}::{qualifiedName}"` for symbols (e.g., `/src/auth/login::AuthService.validate`), `"{filePath}"` for files, `"/"` for repo root. All IDs are `string` — no GUIDs or integer IDs.
 
