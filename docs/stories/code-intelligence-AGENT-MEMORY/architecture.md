@@ -62,13 +62,13 @@ The interaction model:
 ### 1.3 Existing Infrastructure (`src/ast/`)
 
 The system builds on the Code Intelligence stack in `src/ast/` (26 projects
-total — 13 production, 13 test — verified via directory listing).
+total — 11 production, 15 test/benchmark — verified via directory listing).
 **Two existing projects receive additive-only changes:**
 
 1. **`Ast.Core`** (`src/ast/Ast.Core/HypergraphModels.cs`) — one new enum
-   value `HyperedgeType.MemoryRelation` appended to the existing 43-value
+   value `HyperedgeType.MemoryRelation` appended to the existing 44-value
    `HyperedgeType` enum (lines 12–69 of `HypergraphModels.cs`), bringing the
-   total to 44.
+   total to 45.
 2. **`Ast.Cli`** (`src/ast/Ast.Cli/Program.cs`) — additive
    `config.AddBranch("memory", ...)` block appended after the existing 7
    `config.AddCommand<T>()` registrations (lines 17–44). A project reference
@@ -80,7 +80,7 @@ dependencies, never mutated beyond the two additive changes above.
 
 | Existing project | Key types (verified) | How memory layer uses it |
 |---|---|---|
-| **Ast.Core** | `HypergraphNode`, `Hyperedge`, `HyperedgeType` (43 enum values) — `HypergraphModels.cs` | Reference types via `Metadata` dict. One additive enum value `MemoryRelation` (total → 44). |
+| **Ast.Core** | `HypergraphNode`, `Hyperedge`, `HyperedgeType` (44 enum values) — `HypergraphModels.cs` | Reference types via `Metadata` dict. One additive enum value `MemoryRelation` (total → 45). |
 | **AgentMemory** | `IAgentMemoryStore`, `Episode`, `ExpertiseRecord`, `MemoryEdge` — `AgentMemory.csproj` | Existing prototype with episode-based model. `Ast.Memory` supersedes it; no dependency on it. |
 | **Ast.GraphDb** | `IGraphStore` (17 methods including `CreateNodeAsync`, `GetCallersAsync`, `FindPathsAsync`) — `IGraphStore.cs` | `Ast.Memory` defines `IMemoryGraphStore` extending `IGraphStore`. Zero files in `Ast.GraphDb/` modified. |
 | **Ast.Embedding** | `IEmbeddingGenerator` (`GenerateEmbeddingAsync`, `GenerateBatchEmbeddingsAsync`, `Dimensions`, `ModelName`) — `IEmbeddingGenerator.cs`; default model `nomic-embed-text` | Reuse directly for embedding code and expertise nodes. |
@@ -794,13 +794,31 @@ stores equivalent data as Neo4j node/relationship properties.
 | `edge_type` | TEXT NOT NULL | `HyperedgeType` enum name |
 | `semantic_relation` | TEXT NOT NULL | Canonical edge name from §2.2 |
 | `memory_layer` | TEXT NOT NULL | Layer tag from §2.1 |
-| `source_id` | TEXT NOT NULL | Source node ID (FK → nodes) |
-| `target_id` | TEXT NOT NULL | Target node ID (FK → nodes) |
+| `source_id` | TEXT NOT NULL | Source entity ID — references `nodes.id` for code-derived edges, `expertise.id` for expertise-layer edges (logical reference, not SQL FK) |
+| `target_id` | TEXT NOT NULL | Target entity ID — references `nodes.id` for code-derived edges, `expertise.id` for expertise-layer edges (logical reference, not SQL FK) |
 | `since_commit` | TEXT | |
 | `since_index` | INTEGER | |
 | `until_commit` | TEXT | |
 | `until_index` | INTEGER | |
 | `metadata` | TEXT | JSON-serialized metadata dict |
+
+**Edge entity references (polymorphic):** The `source_id` and `target_id`
+columns are **logical references** — they are not SQL-enforced foreign keys.
+For code-derived edges (Structural and Call-Chain layers), both IDs
+reference `nodes.id`. For expertise-layer edges, IDs may reference
+`expertise.id`:
+
+| Edge | `source_id` references | `target_id` references |
+|---|---|---|
+| `APPLIES_TO` | `expertise.id` | `nodes.id` |
+| `SUPERSEDES` | `expertise.id` (merged entry) | `expertise.id` (original entry) |
+| `DERIVED_FROM` | `expertise.id` (derived entry) | `expertise.id` (source entry) |
+
+This polymorphic reference model is why `ExpertiseEntry` uses a separate
+table (§4.2) rather than the `nodes` table — expertise entries have
+domain-specific columns (`confidence`, `archived`, `embedding` BLOB) that
+do not map to the `nodes` schema. The `Hyperedge.NodeIds` list in the
+in-memory representation contains entity IDs from either table.
 
 **`expertise` table:**
 
@@ -881,7 +899,7 @@ public static class MemoryMetadataKeys
 
 A single new enum value `MemoryRelation` is appended to the existing
 `HyperedgeType` enum in `src/ast/Ast.Core/HypergraphModels.cs` (currently
-43 values at lines 12–69, bringing the total to 44). This is the **sole
+44 values at lines 12–69, bringing the total to 45). This is the **sole
 modification** to any existing project.
 
 All memory-only edges (`SIMILAR_TO`, `BELONGS_TO_CLUSTER`, `APPLIES_TO`,
@@ -1529,6 +1547,8 @@ shapes, formulas, constants, and interface signatures.
 | A-10 | Decay formula: `final = event_adjusted × time_factor` | Canonical in §3.5.1. tech-spec defers to architecture.md. |
 | A-11 | External-node temporal carve-out (NULL `since_index`) | Canonical in §4.3. Siblings adopted. |
 | A-12 | MemoryNode/MemoryEdge use composition, not inheritance | Canonical in §4.1. Implementation-plan Stage 1.1 aligned. |
+| A-13 | Edge `source_id`/`target_id` are polymorphic logical references | Canonical in §4.4. Expertise-layer edges reference `expertise.id`, not `nodes.id`. |
+| A-14 | HyperedgeType enum has 44 existing values; MemoryRelation brings total to 45 | Canonical in §1.3, §4.6. tech-spec §1.1 says "44 enum values" — correct for its table entry but its prose ("24 .csproj projects, 13 test projects") uses different project counts; architecture.md governs (26 total: 11 production, 15 test/benchmark). |
 
 ### 8.2 Implementation-Plan Divergences
 
@@ -1556,6 +1576,9 @@ items (E2E-1 through E2E-10):
 
 ### 8.4 Resolution Status
 
-All catalogued divergences (A-1 through A-12, S-1 through S-6, E2E-1
+All catalogued divergences (A-1 through A-14, S-1 through S-6, E2E-1
 through E2E-10) are resolved in the latest iterations of all sibling
-documents. No open alignment issues remain.
+documents. Sibling docs that still reference "43 enum values" or
+"13 production, 13 test" should adopt the corrected counts from this
+document (§1.3): 44 existing HyperedgeType values, 45 with MemoryRelation;
+26 projects total — 11 production, 15 test/benchmark.
