@@ -262,12 +262,14 @@
 ### Stage 4.3: File-System Watcher Integration
 
 #### Implementation Steps
-- [ ] Add file-system watcher support to `IncrementalSync` — watches for file saves in the repo with `IncrementalSyncDebounceMs` (1000 ms) debounce (architecture.md §3.6)
-- [ ] On trigger: compute HEAD commit, call `ApplyDiffAsync` with previous HEAD as `fromCommit`
+- [ ] Add `FileSystemWatcher`-based trigger to `IncrementalSync` — watches for file saves (`.cs`, `.ps1`, `.psm1`, `.psd1`) in the repo with `IncrementalSyncDebounceMs` (1000 ms) debounce (architecture.md §3.6); coalesces rapid saves into a single sync batch
+- [ ] On trigger: collect changed file paths from debounced events, re-extract via `IExtractionPipeline.ExtractFilesAsync(repoRoot, changedPaths, opts)`, diff new extraction results against existing graph state (lookup existing nodes by file path via `IMemoryGraphStore`), upsert changed nodes, retire removed nodes/edges, and apply expertise decay — the same upsert/retire/decay logic as `ApplyDiffAsync` but driven by filesystem events instead of `git diff` (architecture.md §3.6); the working-tree state serves as the "to" snapshot while the current graph state serves as the "from" baseline
+- [ ] Track last-synced state per file to avoid redundant re-extraction on unchanged content (`ContentHash` comparison)
 
 #### Test Scenarios
-- [ ] Scenario: Debounce — Given rapid file saves (3 saves within 500ms), When the watcher triggers, Then `ApplyDiffAsync` is called exactly once (debounced)
+- [ ] Scenario: Debounce — Given rapid file saves (3 saves within 500ms), When the watcher triggers, Then re-extraction runs exactly once with the combined set of changed files (debounced)
 - [ ] Scenario: Watcher resilience — Given the watcher is running and a file save triggers an extraction error, When the error is caught, Then the watcher continues running and logs the error
+- [ ] Scenario: ContentHash skip — Given a file save that does not change the file's content (e.g., save without edits), When the watcher triggers and `ContentHash` matches the existing graph node, Then no upsert or decay occurs
 
 ## Phase 5: Evolution Engine
 
