@@ -2,12 +2,12 @@
 
 **Story:** `code-intelligence:AGENT-MEMORY`  
 **Points:** 10  
-**Status:** DRAFT — Iteration 16  
+**Status:** DRAFT — Iteration 17  
 
 > **Companion documents** (written in parallel — referenced by name, not duplicated):
 > - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, ID format, and constants. Defines graph layers (§2.1), edge taxonomy (§2.2), retired names (§2.3), and constants/thresholds (§2.4). Currently at iteration 20.
 > - [`implementation-plan.md`](implementation-plan.md) — phased work items (6 phases), deliverables, evaluation harness. Contains 25 naming/data-model divergences from canonical vocabulary (see §12.3 of this document); `architecture.md` governs on all conflicts.
-> - [`e2e-scenarios.md`](e2e-scenarios.md) — BDD Gherkin acceptance scenarios (13 features, 79 scenarios covering Structural Extraction, Call-Chain, Semantic, Expertise, Temporal Versioning, Hybrid Retrieval, Incremental Sync, Evolution, Cross-Session Learning, MCP Tool Interface, Backward Compatibility, Performance & Storage, and Graph Schema Integrity).
+> - [`e2e-scenarios.md`](e2e-scenarios.md) — BDD Gherkin acceptance scenarios (13 features, 82 scenarios covering Structural Extraction, Call-Chain, Semantic, Expertise, Temporal Versioning, Hybrid Retrieval, Incremental Sync, Evolution, Cross-Session Learning, MCP Tool Interface, Backward Compatibility, Performance & Storage, and Graph Schema Integrity).
 >
 > When this document and `architecture.md` disagree on naming, the architecture
 > document governs. This document owns the problem statement, scope/non-goals,
@@ -331,7 +331,7 @@ The following open questions from Iteration 1 have been resolved by operator inp
 
 | # | Question | Decision | Rationale / Impact |
 |---|----------|----------|--------------------|
-| D1 | **Embedding model selection** — code-specific (CodeBERT, StarEncoder) vs. general-purpose (e.g., `text-embedding-3-small`)? | **General-purpose model.** Use a general-purpose text-embedding model for all nodes — code, expertise, and topics alike. | Simplifies the pipeline (single model, single vector dimension), avoids the complexity of a hybrid approach, and handles natural-language task descriptions and expertise prose fluently alongside code symbols. The `IEmbeddingGenerator` abstraction in `Ast.Embedding` makes model swapping a config change if retrieval quality needs improvement later. The existing `Ast.Core.EmbeddingConfiguration` defaults to `"nomic-embed-text"` (768 dims, served via Ollama at `localhost:11434`); `architecture.md` §4.7 and §5.1 also default to `"nomic-embed-text"` — all consistent with this decision. The specific model is a deployment-time choice; the memory layer is model-agnostic and tracks the model used per-node in `Metadata["EmbeddingModel"]`. |
+| D1 | **Embedding model selection** — code-specific (CodeBERT, StarEncoder) vs. general-purpose (e.g., `text-embedding-3-small`)? | **General-purpose model.** Use a general-purpose text-embedding model for all nodes — code, expertise, and topics alike. | Simplifies the pipeline (single model, single vector dimension), avoids the complexity of a hybrid approach, and handles natural-language task descriptions and expertise prose fluently alongside code symbols. The `IEmbeddingGenerator` abstraction in `Ast.Embedding` makes model swapping a config change if retrieval quality needs improvement later. The existing `Ast.Core.EmbeddingConfiguration` defaults to `"nomic-embed-text"` (768 dims, served via Ollama at `localhost:11434`); `architecture.md` §1.3 and §5.1 also default to `"nomic-embed-text"` — all consistent with this decision. The specific model is a deployment-time choice; the memory layer is model-agnostic and tracks the model used per-node in `Metadata["EmbeddingModel"]`. |
 | D2 | **Graph query language** — Cypher-like DSL vs. purely programmatic API? | **Purely programmatic.** The agent interacts via typed function calls: `get_callers(fqn, depth)`, `get_callees(fqn, depth)`, `find_related(query, top_k)`, `get_expertise(fqn)`, `record_expertise(...)`. No query DSL. | Keeps the MCP tool surface minimal and predictable. Graph traversals use recursive CTEs internally (SQLite) or Cypher internally (Neo4j), but this is an implementation detail hidden behind `IMemoryGraphStore`. Aligns with `architecture.md` §3.3 retrieval modes (`StructuralDrill`, `CallTrace`, `SemanticSearch`, `ExpertiseRecall`, `Hybrid` — the `RetrievalMode` enum in §5.3) which are programmatic, not query-string-based. |
 | D3 | **Cross-branch memory** — annotations branch-scoped or visible across branches? | **Annotations are visible cross-branch.** Expertise-layer nodes written on any branch are globally queryable, regardless of which branch the agent is currently on. | This maximizes knowledge reuse — an insight discovered while working on a feature branch should inform work on `main` and other branches immediately. The `commits` table still tracks which commit introduced an annotation (provenance), but retrieval does NOT filter by branch lineage. Staleness detection uses `ContentHash` comparison against the current branch's version of the target code, so an annotation whose target has diverged on the current branch is flagged as potentially stale. |
 | D4 | **Annotation schema governance** — free-form property bag vs. curated registry? | **Curated well-known tag registry** with an `extra` bag for ad-hoc data. | A `AnnotationKeyRegistry` defines the set of well-known `Metadata` keys with typed schemas (e.g., `MemoryLayer: string`, `Confidence: double`, `ContentHash: string` — see §7.3 for the full list). Each key entry specifies: name, CLR type, allowed values (if enum), and a short description. Agent-authored keys that are not in the registry are stored under a namespaced prefix (`ext:`) in `Metadata` and surfaced with a validation warning. This prevents fragmentation while preserving flexibility. The registry is defined in code (`AnnotationKeyRegistry.cs` in `Ast.Memory/Schema/`) and versioned with the project — not runtime-configurable. |
@@ -356,8 +356,8 @@ The following open questions from Iteration 1 have been resolved by operator inp
 | HyperedgeType count | Tech-spec Iter 1–2 claimed "68+ enum values" | **Corrected in Iter 3**: actual count is **44 enum values** (verified from `Ast.Core/HypergraphModels.cs` lines 12–69). |
 | Composition vs. inheritance | Tech-spec Iter 1–2 did not explicitly state composition model | **Clarified in Iter 3**: HC8 now explicitly states `MemoryNode` uses a `HypergraphNode Inner { get; }` property (composition), NOT `: HypergraphNode` inheritance. Aligns with architecture.md §4.1. |
 | `GetEnhancedEmbeddingText()` source-code inclusion | Tech-spec Iter 3 R7 claimed both embedding methods produce "structural-only text" | **Corrected in Iter 4**: `GetEmbeddingText()` is structural-only, but `GetEnhancedEmbeddingText()` includes `Metadata["SourceCode"]` (up to 2000 chars). R7 updated with accurate mitigations. |
-| Architecture.md embedding model alignment | Tech-spec Iter 3 §12.2 still listed architecture.md §4.4 as pending | **Resolved in Iter 4, fully aligned in Iter 8**: architecture.md §4.7, §5.1 now default to `"nomic-embed-text"` — matching both codebase defaults and this spec's D1 decision. All sources consistent. |
-| Source-code default model grounding | Tech-spec did not reference actual `EmbeddingConfiguration` defaults | **Added in Iter 4, updated in Iter 8**: `Ast.Core.EmbeddingConfiguration.ModelName` (in `AstConfiguration.cs:96`) defaults to `"nomic-embed-text"` (768 dims); `Ast.Embedding.EmbeddingGeneratorOptions.ModelName` (in `EmbeddingModels.cs:119`) also defaults to `"nomic-embed-text"`. Architecture.md §4.7 and §5.1 now also default to `"nomic-embed-text"` (corrected in architecture.md iteration 12). All three sources consistent. |
+| Architecture.md embedding model alignment | Tech-spec Iter 3 §12.2 still listed architecture.md §4.4 as pending | **Resolved in Iter 4, fully aligned in Iter 8**: architecture.md §1.3 and §5.1 default to `"nomic-embed-text"` — matching both codebase defaults and this spec's D1 decision. All sources consistent. |
+| Source-code default model grounding | Tech-spec did not reference actual `EmbeddingConfiguration` defaults | **Added in Iter 4, updated in Iter 8**: `Ast.Core.EmbeddingConfiguration.ModelName` (in `AstConfiguration.cs:96`) defaults to `"nomic-embed-text"` (768 dims); `Ast.Embedding.EmbeddingGeneratorOptions.ModelName` (in `EmbeddingModels.cs:119`) also defaults to `"nomic-embed-text"`. Architecture.md §1.3 (Ast.Embedding table) also defaults to `"nomic-embed-text"`. All three sources consistent. |
 | Architecture.md R-8 SGMem note | Tech-spec Iter 4 flagged architecture.md R-8 as using "code-specific" phrasing | **Resolved in Iter 5**: The R-8/SGMem entry has been removed from architecture.md (as of its Iteration 12 the research table lists R-1 through R-7 only). No conflict remains. |
 
 ### 12.2 Alignment with `architecture.md`
@@ -366,32 +366,32 @@ All previously-pending conflicts between this document and `architecture.md` are
 
 | Issue | Prior state | Resolution |
 |-------|------------|------------|
-| Embedding model default | Tech-spec D1 mandated general-purpose; architecture.md previously defaulted to `code-embedding-v2` | ✅ **Resolved.** Architecture.md §4.7 now defaults to `"nomic-embed-text"` — matching the actual codebase defaults in `EmbeddingGeneratorOptions.ModelName` and `EmbeddingConfiguration.ModelName`. All docs consistent. |
+| Embedding model default | Tech-spec D1 mandated general-purpose; architecture.md previously defaulted to `code-embedding-v2` | ✅ **Resolved.** Architecture.md §1.3 (Ast.Embedding table) now defaults to `"nomic-embed-text"` — matching the actual codebase defaults in `EmbeddingGeneratorOptions.ModelName` and `EmbeddingConfiguration.ModelName`. All docs consistent. |
 | Cross-branch visibility | Tech-spec D3 mandated cross-branch; architecture.md §3.3 did not cover it | ✅ **Resolved.** Architecture.md §3.3 now includes cross-branch expertise visibility subsection. |
 | Time-based decay formula | Tech-spec D5 mandated 3-year half-life; architecture.md §3.5 did not specify | ✅ **Resolved.** Architecture.md §3.5 now includes full dual decay mechanism with `DecayHalfLifeDays = 1095`. |
 | SGMem research note wording | Architecture.md R-8 previously said "code-specific embedding models" | ✅ **Resolved.** The SGMem/R-8 entry has been removed from architecture.md. No conflict remains. |
-| ExtractionOptions.EmbeddingModel default | Architecture.md §5.1 previously defaulted to `"text-embedding-3-small"` | ✅ **Resolved in architecture.md Iteration 12.** Architecture.md §4.7 and §5.1 now default to `"nomic-embed-text"`, matching the existing codebase defaults in `EmbeddingGeneratorOptions.ModelName` (`src/ast/Ast.Embedding/EmbeddingModels.cs:119`) and `EmbeddingConfiguration.ModelName` (`src/ast/Ast.Core/AstConfiguration.cs:96`). |
+| ExtractionOptions.EmbeddingModel default | Architecture.md §5.1 previously defaulted to `"text-embedding-3-small"` | ✅ **Resolved in architecture.md Iteration 12.** Architecture.md §1.3 and §5.1 now default to `"nomic-embed-text"`, matching the existing codebase defaults in `EmbeddingGeneratorOptions.ModelName` (`src/ast/Ast.Embedding/EmbeddingModels.cs:119`) and `EmbeddingConfiguration.ModelName` (`src/ast/Ast.Core/AstConfiguration.cs:96`). |
 
 **No remaining conflicts** between this document and `architecture.md`.
 
-**Source-code default model note:** The existing `Ast.Core.EmbeddingConfiguration.ModelName` (in `AstConfiguration.cs:96`) defaults to `"nomic-embed-text"` (768 dimensions, via Ollama). The `Ast.Embedding.EmbeddingGeneratorOptions.ModelName` (in `EmbeddingModels.cs:119`) also defaults to `"nomic-embed-text"`. Architecture.md §4.7 and §5.1 (`ExtractionOptions.EmbeddingModel`) also default to `"nomic-embed-text"` — all three are now consistent. The `IEmbeddingGenerator` abstraction means the specific model is a deployment-time configuration choice; the memory layer is model-agnostic and only requires that all nodes use the **same** model within a graph instance (tracked per-node via `Metadata["EmbeddingModel"]`).
+**Source-code default model note:** The existing `Ast.Core.EmbeddingConfiguration.ModelName` (in `AstConfiguration.cs:96`) defaults to `"nomic-embed-text"` (768 dimensions, via Ollama). The `Ast.Embedding.EmbeddingGeneratorOptions.ModelName` (in `EmbeddingModels.cs:119`) also defaults to `"nomic-embed-text"`. Architecture.md §1.3 (Ast.Embedding table row) and §5.1 (`ExtractionOptions.EmbeddingModel`) also default to `"nomic-embed-text"` — all three are now consistent. The `IEmbeddingGenerator` abstraction means the specific model is a deployment-time configuration choice; the memory layer is model-agnostic and only requires that all nodes use the **same** model within a graph instance (tracked per-node via `Metadata["EmbeddingModel"]`).
 
 ### 12.3 Alignment with `implementation-plan.md`
 
-The implementation-plan contains 25 naming, data-model, numeric, and project-mutation divergences from canonical vocabulary defined in `architecture.md` (catalogued in architecture.md §10.2). **These are not unresolved conflicts** — each has a defined canonical resolution, and `architecture.md` governs on all points (see this document's header).
+The implementation-plan contains 25 naming, data-model, numeric, and project-mutation divergences from canonical vocabulary defined in `architecture.md` (catalogued in architecture.md §8.2). **These are not unresolved conflicts** — each has a defined canonical resolution, and `architecture.md` governs on all points (see this document's header).
 
 > **Implementer directive:** When the implementation-plan's literal text (class names, interface names, edge names, scoring weights, ID formats, defaults) conflicts with `architecture.md`, **follow `architecture.md`**. The implementation-plan describes *work items and phasing*; the canonical vocabulary and values come from `architecture.md`. The conflicts listed below are documentation debt in the implementation-plan that will be corrected in its next iteration. They do not affect this tech-spec's correctness or completeness.
 
-The 25 items are catalogued in `architecture.md` §10.1 (the single source of truth for cross-document conflicts). This tech-spec mirrors them below in summarized form for implementer awareness. Each item's canonical value is stated inline; the architecture.md section number provides the governing reference.
+The 25 items are catalogued in `architecture.md` §8.2 (the single source of truth for cross-document conflicts). This tech-spec mirrors them below in summarized form for implementer awareness. Each item's canonical value is stated inline; the architecture.md section number provides the governing reference.
 
 #### 12.3.1 Naming & Type Conflicts (4 items)
 
 | # | impl-plan says | Canonical value | Governing §|
 |---|------|----------------|-----|
-| N-1 | `ExpertiseNote` (Stage 1.1) | **`ExpertiseEntry`** | arch §2.3, §5.4 |
-| N-2 | `IMemoryStore` (Stage 1.2) | **`IMemoryGraphStore`** | arch §2.3, §5.2 |
-| N-3 | Separate `IExpertiseStore` (Stage 1.2) | Merged into **`IEvolutionEngine`** | arch §2.3, §5.4 |
-| N-4 | `AgentMemoryService` composes `IExpertiseStore` (Stage 5.1) | Compose **`IEvolutionEngine`** | arch §5.4 |
+| N-1 | `ExpertiseNote` (Stage 1.1) | **`ExpertiseEntry`** | arch §2.3, §4.2 |
+| N-2 | `IMemoryStore` (Stage 1.2) | **`IMemoryGraphStore`** | arch §2.3, §5.1 |
+| N-3 | Separate `IExpertiseStore` (Stage 1.2) | Merged into **`IEvolutionEngine`** | arch §2.3, §5.3 |
+| N-4 | `AgentMemoryService` composes `IExpertiseStore` (Stage 5.1) | Compose **`IEvolutionEngine`** | arch §5.3 |
 
 #### 12.3.2 Data Model Conflicts (4 items)
 
@@ -399,15 +399,15 @@ The 25 items are catalogued in `architecture.md` §10.1 (the single source of tr
 |---|------|----------------|-----|
 | D-1 | `MemoryNode` "extending `HypergraphNode`" (inheritance) | **Composition wrapper** (`HypergraphNode Inner { get; }`) | arch §4.1 |
 | D-2 | `MemoryEdge` "extending `Hyperedge`" (inheritance) | **Composition wrapper** (`Hyperedge Inner { get; }`) | arch §4.1 |
-| D-3 | `PatternType` enum name | **`ExpertiseKind`** enum; class = `ExpertiseEntry`; field = `Kind` | arch §2.3, §5.4 |
+| D-3 | `PatternType` enum name | **`ExpertiseKind`** enum; class = `ExpertiseEntry`; field = `Kind` | arch §2.3, §4.2 |
 | D-4 | Separate `Annotation.cs` entity | **No separate class** — `Metadata` key/value pairs + `AnnotationKeyRegistry` | arch §4.5 |
 
 #### 12.3.3 ID Format Conflicts (2 items)
 
 | # | impl-plan says | Canonical value | Governing §|
 |---|------|----------------|-----|
-| I-1 | `{repo}:{language}:{fqn}:{hash_short}` | **`"{filePath}::{qualifiedName}"`** (path-based) | arch §4.4 |
-| I-2 | `IdReconciliationTable` backed by `ID_MAPS_TO` Neo4j edges | ID *format* must follow §4.4; backing is implementation choice | arch §4.4 |
+| I-1 | `{repo}:{language}:{fqn}:{hash_short}` | **`"{filePath}::{qualifiedName}"`** (path-based) | arch §4.2 |
+| I-2 | `IdReconciliationTable` backed by `ID_MAPS_TO` Neo4j edges | ID *format* must follow §4.2; backing is implementation choice | arch §4.2 |
 
 #### 12.3.4 Edge Name Conflicts (4 items)
 
@@ -432,7 +432,7 @@ The 25 items are catalogued in `architecture.md` §10.1 (the single source of tr
 
 | # | impl-plan says | Canonical value | Governing §|
 |---|------|----------------|-----|
-| M-1 | No explicit model specified | **`"nomic-embed-text"`** (768 dims) | arch §4.7 |
+| M-1 | No explicit model specified | **`"nomic-embed-text"`** (768 dims) | arch §1.3 |
 
 > Matches existing `EmbeddingGeneratorOptions.ModelName` (`src/ast/Ast.Embedding/EmbeddingModels.cs:119`) and `EmbeddingConfiguration.ModelName` (`src/ast/Ast.Core/AstConfiguration.cs:96`).
 
@@ -440,20 +440,20 @@ The 25 items are catalogued in `architecture.md` §10.1 (the single source of tr
 
 | # | impl-plan says | Canonical value | Governing §|
 |---|------|----------------|-----|
-| S-1 | `IMemoryStore` with `UpsertAnnotationAsync`, `GetAnnotationsAsync`, etc. | **`IMemoryGraphStore`** with `ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, etc. | arch §5.2 |
-| S-2 | `Neo4jMemoryStore` with annotation CRUD | **`Neo4jMemoryGraphStore`** implementing `IMemoryGraphStore` | arch §3.2, §5.2 |
+| S-1 | `IMemoryStore` with `UpsertAnnotationAsync`, `GetAnnotationsAsync`, etc. | **`IMemoryGraphStore`** with `ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, etc. | arch §5.1 |
+| S-2 | `Neo4jMemoryStore` with annotation CRUD | **`Neo4jMemoryGraphStore`** implementing `IMemoryGraphStore` | arch §3.2, §5.1 |
 
 #### 12.3.8 Project Mutation Policy (3 items)
 
 | # | impl-plan says | Canonical value | Governing §|
 |---|------|----------------|-----|
-| P-1 | `IMemoryStore.cs` placement implied in `Ast.GraphDb` | **`IMemoryGraphStore`** defined in `Ast.Memory/Interfaces/`, not in `Ast.GraphDb`. No files in `Ast.GraphDb` are created or modified. | arch §3.0, §3.2, §5.2 |
+| P-1 | `IMemoryStore.cs` placement implied in `Ast.GraphDb` | **`IMemoryGraphStore`** defined in `Ast.Memory/Interfaces/`, not in `Ast.GraphDb`. No files in `Ast.GraphDb` are created or modified. | arch §3.2, §5.1 |
 | P-2 | `Neo4jMemoryStore.cs` | **`Neo4jMemoryGraphStore`** in `Ast.Memory/Storage/`, **composing** existing `Neo4jGraphStore` from `Ast.GraphDb` — not modifying it. | arch §3.2 |
-| P-3 | MCP files created in `Ast.Cli` | MCP tools and handler logic in **`Ast.Memory/Mcp/`**. CLI command classes in `Ast.Memory/Cli/`. `Ast.Cli/Program.cs` receives only additive `config.AddBranch("memory", ...)` lines. | arch §5.6, §5.6.4 |
+| P-3 | MCP files created in `Ast.Cli` | MCP tools and handler logic in **`Ast.Memory/Mcp/`**. CLI command classes in `Ast.Memory/Cli/`. `Ast.Cli/Program.cs` receives only additive `config.AddBranch("memory", ...)` lines. | arch §3.8 |
 
 #### 12.3.9 Net Assessment
 
-All 25 items have **stated canonical resolutions** in architecture.md §10.2. The implementation-plan describes valid *work items and phasing* that remain useful for project management — only the literal names, values, and data-model shapes need updating. Implementers who follow the canonical values from architecture.md will produce correct code. These divergences do not represent ambiguity in the tech-spec or architecture; they represent documentation debt in the implementation-plan.
+All 25 items have **stated canonical resolutions** in architecture.md §8.2. The implementation-plan describes valid *work items and phasing* that remain useful for project management — only the literal names, values, and data-model shapes need updating. Implementers who follow the canonical values from architecture.md will produce correct code. These divergences do not represent ambiguity in the tech-spec or architecture; they represent documentation debt in the implementation-plan.
 
 ### 12.4 Annotation Schema: Curated Registry (D4)
 
@@ -474,19 +474,19 @@ Expertise nodes are **globally visible** regardless of the current git branch. I
 
 ### 12.6 Alignment with `e2e-scenarios.md`
 
-The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 79 Gherkin scenarios** across Structural Extraction (Feature 1, 8 scenarios), Call-Chain (Feature 2, 7), Semantic (Feature 3, 5), Expertise (Feature 4, 7), Temporal Versioning (Feature 5, 5), Hybrid Retrieval (Feature 6, 9), Incremental Sync (Feature 7, 6), Evolution (Feature 8, 6), Cross-Session Learning (Feature 9, 3), MCP Tool Interface (Feature 10, 7), Backward Compatibility (Feature 11, 4), Performance & Storage (Feature 12, 6), and Graph Schema Integrity (Feature 13, 6). Architecture.md §10.3 documents 9 alignment items (E2E-1 through E2E-9) describing divergences between the e2e-scenarios and canonical vocabulary. Key points relevant to this tech-spec:
+The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 82 Gherkin scenarios** across Structural Extraction (Feature 1, 8 scenarios), Call-Chain (Feature 2, 7), Semantic (Feature 3, 5), Expertise (Feature 4, 7), Temporal Versioning (Feature 5, 5), Hybrid Retrieval (Feature 6, 9), Incremental Sync (Feature 7, 6), Evolution (Feature 8, 6), Cross-Session Learning (Feature 9, 3), MCP Tool Interface (Feature 10, 10), Backward Compatibility (Feature 11, 4), Performance & Storage (Feature 12, 6), and Graph Schema Integrity (Feature 13, 6). Architecture.md §8.3 documents 9 alignment items (E2E-1 through E2E-9) describing divergences between the e2e-scenarios and canonical vocabulary. Key points relevant to this tech-spec:
 
 - **E2E-1:** Scenario 4.1 uses `called_by` as a result-table label. This is a reverse traversal of `CALLS`, not a stored edge — consistent with this spec §7.2 and D2 (retired names). Scenario is behaviorally correct.
 - **E2E-2/3/4:** Scenarios use presentation aliases (`direct_call`, `polymorphic`, `recursive`) for edge types. All map to `CALLS` edges with varying `Confidence` values — consistent with §7.2.
-- **E2E-5:** Scenario 2.7 uses `service_call` edge type for cross-service RPC. This is out of scope per this spec §3 O1 (runtime/dynamic tracing excluded). Architecture.md §10.2 recommends tagging this scenario `@deferred`.
+- **E2E-5:** Scenario 2.7 uses `service_call` edge type for cross-service RPC. This is out of scope per this spec §3 O1 (runtime/dynamic tracing excluded). Architecture.md §8.3 recommends tagging this scenario `@deferred`.
 - **E2E-6:** Scenarios use unqualified symbol IDs (e.g., `AuthService.login`) as abbreviations. Canonical format is path-based per §7.1 (e.g., `/src/auth/login::AuthService.login`).
-- **E2E-7:** Scenario 2.4 uses `ext::` prefix for boundary nodes. Canonical format: `"ext:{package}:{qualifiedName}"` per `architecture.md` §4.4. Semantics: stub nodes, `NodeType = "External"`, no embedding, no `VersionRange`.
+- **E2E-7:** Scenario 2.4 uses `ext::` prefix for boundary nodes. Canonical format: `"ext:{package}:{qualifiedName}"` per `architecture.md` §4.2. Semantics: stub nodes, `NodeType = "External"`, no embedding, no `VersionRange`.
 - **E2E-8:** Scenario 6.4 describes cross-repo memory transfer — out of scope per this spec §3 O2. Should be tagged `@deferred`.
 - **E2E-9:** Scenario 3.4 describes conflict errors on concurrent writes. Architecture specifies SQLite WAL mode (serialized writes, no optimistic-concurrency errors) for local and Neo4j for team mode. The scenario should be adjusted to test write serialization, not conflict errors — consistent with R6 in this spec.
 
 **Features 10–13 alignment** (added in later e2e-scenarios iterations):
 
-- **Feature 10 (MCP Tool Interface):** Scenarios 10.1–10.7 exercise the five MCP tools (`memory_query`, `memory_call_chain`, `memory_find_similar`, `memory_annotate`, `memory_status`) defined in `architecture.md` §5.6. Input/output schemas in the scenarios align with §5.6.1–5.6.2. Scenarios 10.6–10.7 cover error paths (budget exceeds ceiling, missing required fields) — consistent with HC1 (token budget ceiling) and D4 (annotation registry).
+- **Feature 10 (MCP Tool Interface):** Scenarios 10.1–10.10 exercise the five MCP tools (`memory_query`, `memory_status`, `memory_record_expertise`, `memory_sync`, `memory_consolidate`) defined in `architecture.md` §3.8. Scenarios 10.1–10.3 cover `memory_query` in Hybrid, CallTrace, and SemanticSearch modes; 10.4 covers `memory_record_expertise`; 10.5 covers `memory_status`; 10.6 covers `memory_sync`; 10.7 covers `memory_consolidate`. Scenarios 10.8–10.10 cover error paths (budget exceeds ceiling, missing required fields, nonexistent target node) — consistent with HC1 (token budget ceiling) and D4 (annotation registry).
 - **Feature 11 (Backward Compatibility):** Scenarios 11.1–11.4 directly validate HC8 (non-breaking extension) and HC9 (hyperedge semantics). Scenario 11.4 lists 9 unit-test projects as a representative subset; the full regression check covers all 13 existing test projects per this spec §10 success criteria.
 - **Feature 12 (Performance & Storage):** Scenarios 12.1–12.6 encode the performance SLOs from this spec §10 (p95 < 500 ms, incremental < 2 s, storage < 500 MB) and HC4 (durability) / HC5 (no network during retrieval) / HC7 (audit trail).
 - **Feature 13 (Graph Schema Integrity):** Scenarios 13.1–13.6 validate HC6 (deterministic schema) — all edges carry `SemanticRelation`, binary edges have exactly 2 `NodeIds`, memory-only edges use `HyperedgeType.MemoryRelation`, code-derived edges preserve original `HyperedgeType`, `AnnotationKeyRegistry` validates well-known keys, and node IDs follow canonical format.
@@ -495,10 +495,11 @@ The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 79
 
 | # | Item | Status |
 |---|------|--------|
-| X-1 | Architecture.md §10.1 confirms tech-spec is fully aligned; §10.2 lists the same implementation-plan conflicts | ✅ **Resolved.** Architecture.md §10.1 confirms "All conflicts resolved as of tech-spec.md iteration 10." Architecture.md §10.2 lists the same implementation-plan divergences catalogued here in §12.3. Counts are consistent. |
+| X-1 | Architecture.md §8.1 confirms tech-spec is fully aligned; §8.2 lists the same implementation-plan conflicts | ✅ **Resolved.** Architecture.md §8.1 confirms "All conflicts between this document and `tech-spec.md` are resolved." Architecture.md §8.2 lists the same implementation-plan divergences catalogued here in §12.3. Counts are consistent. |
 | X-2 | All implementation-plan conflicts (§12.3) have canonical resolutions | ✅ **Resolved.** Each item has a stated canonical value from architecture.md. §12.3 is reframed as documentation debt in the sibling document, not as unresolved conflicts in this tech-spec. Implementers follow architecture.md canonical values. |
-| X-3 | Architecture.md §10.1 confirms `ExtractionOptions.EmbeddingModel` default fixed to `"nomic-embed-text"` | ✅ **Resolved.** Tech-spec §12.2 and source-code model note updated to reflect this alignment. All three sources (codebase, architecture.md, tech-spec) now agree on `"nomic-embed-text"`. |
-| X-4 | Architecture.md §10.1 confirms project mutation policy alignment | ✅ **Resolved.** Two additive changes to existing projects: (1) `HyperedgeType.MemoryRelation` in `Ast.Core`, (2) `config.AddBranch("memory", ...)` in `Ast.Cli/Program.cs`. All new interfaces/implementations in `Ast.Memory`. Matches HC8. |
+| X-3 | Architecture.md §8.1 confirms `ExtractionOptions.EmbeddingModel` default fixed to `"nomic-embed-text"` | ✅ **Resolved.** Tech-spec §12.2 and source-code model note updated to reflect this alignment. All three sources (codebase, architecture.md, tech-spec) now agree on `"nomic-embed-text"`. |
+| X-4 | Architecture.md §8.1 confirms project mutation policy alignment | ✅ **Resolved.** Two additive changes to existing projects: (1) `HyperedgeType.MemoryRelation` in `Ast.Core`, (2) `config.AddBranch("memory", ...)` in `Ast.Cli/Program.cs`. All new interfaces/implementations in `Ast.Memory`. Matches HC8. |
+| X-5 | Architecture.md §8.3 e2e scenario count | ⚠️ **Stale in architecture.md.** Architecture.md §8.3 claims "13 features with 79 Gherkin scenarios." The actual e2e-scenarios.md contains **82 scenarios** (verified by counting all `Scenario:` lines). The discrepancy is Feature 10: architecture.md §8.3 predates the addition of scenarios 10.8–10.10 (three error-path scenarios added in a later e2e-scenarios iteration). This tech-spec reports the correct count (82) independently verified from the Gherkin source. Architecture.md should update its §8.3 count in its next iteration. |
 
 ---
 
@@ -520,4 +521,4 @@ The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 79
 
 ---
 
-*End of tech spec — Iteration 16. All open questions from Iteration 1 are resolved via operator decisions D1–D6. Iteration 16 fixes: (1) corrected test-project count from "14 test projects including benchmark" to "13 test projects" — `Ast.Benchmark` is a benchmark project, not a test project; the 13 test projects are: `Ast.Core.UnitTests`, `Ast.Csharp.UnitTests`, `Ast.E2E.IntegrationTests`, `Ast.Embedding.UnitTests`, `Ast.GraphDb.IntegrationTests`, `Ast.GraphDb.UnitTests`, `Ast.IntegrationTests`, `Ast.Lsp.IntegrationTests`, `Ast.Lsp.UnitTests`, `Ast.PowerShell.UnitTests`, `Ast.Query.UnitTests`, `Ast.VectorDb.UnitTests`, `CodeIntelligence.UnitTests` — matching `architecture.md` §1.3 and `implementation-plan.md`; (2) corrected `CodeEmbeddingService`/enriched embedding attribution — `CodeEmbeddingService.GenerateNodeEmbeddingsAsync()` always calls `GetEmbeddingText()` (structural-only, line 54 of `CodeEmbeddingService.cs`); it is the separate `EnrichedEmbeddingPipeline.ProcessAsync()` that conditionally calls `GetEnhancedEmbeddingText()` for LSP-enriched nodes (lines 183, 245 of `EnrichedEmbeddingPipeline.cs`) or `GetEmbeddingText()` for non-enriched nodes, using `IEmbeddingGenerator.GenerateBatchEmbeddingsAsync()` directly; S5, §1.1 table, and §8.1 all updated; (3) updated iteration metadata — header now shows Iteration 16, architecture.md cross-reference updated to iteration 20 (matching current architecture.md §Status); (4) corrected §12.6 Feature 11 description — e2e Scenario 11.4 lists 9 unit-test projects (representative subset), not 13; full 13-project regression is governed by §10 success criteria; (5) verified all architecture.md cross-references remain valid against iteration 20 §-numbering; (6) verified e2e-scenarios total: 13 features, 79 scenarios (Feature 1: 8, Feature 2: 7, Feature 3: 5, Feature 4: 7, Feature 5: 5, Feature 6: 9, Feature 7: 6, Feature 8: 6, Feature 9: 3, Feature 10: 7, Feature 11: 4, Feature 12: 6, Feature 13: 6).*
+*End of tech spec — Iteration 17. All open questions from Iteration 1 are resolved via operator decisions D1–D6. Iteration 17 fixes: (1) corrected e2e-scenarios.md total from 79 to **82 scenarios** — actual count by scenario number: Feature 1: 8 (1.1–1.8), Feature 2: 7 (2.1–2.7), Feature 3: 5 (3.1–3.5), Feature 4: 7 (4.1–4.7), Feature 5: 5 (5.1–5.5), Feature 6: 9 (6.1–6.9), Feature 7: 6 (7.1–7.6), Feature 8: 6 (8.1–8.6), Feature 9: 3 (9.1–9.3), Feature 10: **10** (10.1–10.10), Feature 11: 4 (11.1–11.4), Feature 12: 6 (12.1–12.6), Feature 13: 6 (13.1–13.6); (2) corrected MCP tool names in §12.6 — previously listed stale names (`memory_call_chain`, `memory_find_similar`, `memory_annotate`) that do not appear in the current e2e-scenarios.md; replaced with correct names matching both architecture.md §3.8 and the actual Gherkin: `memory_query`, `memory_status`, `memory_record_expertise`, `memory_sync`, `memory_consolidate`; (3) corrected Feature 10 scenario breakdown — 10 scenarios not 7: scenarios 10.1–10.3 cover `memory_query` modes, 10.4 covers `memory_record_expertise`, 10.5 covers `memory_status`, 10.6 covers `memory_sync`, 10.7 covers `memory_consolidate`, 10.8–10.10 are error paths (not 10.6–10.7 as previously stated); (4) fixed stale architecture.md §-reference — e2e alignment items are in architecture.md §8.3, not §10.3; (5) noted that architecture.md §8.3 itself still claims "79 Gherkin scenarios" — this is stale in the architecture doc (actual count is 82); tech-spec now reports the correct count independently verified from the Gherkin source.*
