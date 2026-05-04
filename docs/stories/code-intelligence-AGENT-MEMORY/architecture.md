@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 42
+> **Status:** Iteration 43
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -79,15 +79,15 @@ The interaction model is:
 ### 1.3 Existing Infrastructure (`src/ast/`)
 
 The system builds on the Code Intelligence stack in `src/ast/` (24 `.csproj`
-projects, 13 test projects — verified via directory listing). **Two existing
-projects receive additive-only changes:**
+projects total — 11 production, 13 test — verified via directory listing).
+**Two existing projects receive additive-only changes:**
 
 1. **`Ast.Core`** (`src/ast/Ast.Core/HypergraphModels.cs`) — one new enum
-   value `HyperedgeType.MemoryRelation` appended to the existing 44-value
+   value `HyperedgeType.MemoryRelation` appended to the existing 33-value
    `HyperedgeType` enum (lines 12–69).
 2. **`Ast.Cli`** (`src/ast/Ast.Cli/Program.cs`) — additive
    `config.AddBranch("memory", ...)` block appended after the existing 7
-   `config.AddCommand<T>()` registrations (lines 17–44). A project reference
+   `config.AddCommand<T>()` registrations (lines 17–41). A project reference
    to `Ast.Memory` is added to `Ast.Cli.csproj`.
 
 All new code ships as **`Ast.Memory`** (+ `Ast.Memory.UnitTests` +
@@ -96,14 +96,14 @@ dependencies, never mutated beyond the two additive changes above.
 
 | Existing project | Key types (verified source paths) | How memory layer uses it |
 |---|---|---|
-| **Ast.Core** | `HypergraphNode`, `Hyperedge`, `HyperedgeType` (44 values) — `HypergraphModels.cs`; `RepositoryProcessor` — `RepositoryProcessor.cs` | Reference types via `Metadata` dict. One additive enum value `MemoryRelation`. |
+| **Ast.Core** | `HypergraphNode`, `Hyperedge`, `HyperedgeType` (33 values) — `HypergraphModels.cs`; `RepositoryProcessor` — `RepositoryProcessor.cs` | Reference types via `Metadata` dict. One additive enum value `MemoryRelation`. |
 | **Ast.GraphDb** | `IGraphStore : IAsyncDisposable, IDisposable` — `IGraphStore.cs`; `Neo4jGraphStore` — `Neo4jGraphStore.cs`; `NodeFilter`, `GraphPath`, `NodeWithDepth` — `GraphModels.cs` | `Ast.Memory` defines `IMemoryGraphStore` extending `IGraphStore` in its own project. Zero files in `Ast.GraphDb/` modified. |
 | **Ast.Embedding** | `IEmbeddingGenerator : IDisposable` — `IEmbeddingGenerator.cs`; `CodeEmbeddingService` — `CodeEmbeddingService.cs`; `EmbeddingGeneratorOptions.ModelName` defaults to `"nomic-embed-text"` — `EmbeddingModels.cs` | Reuse directly. `Ast.Memory` calls `GenerateBatchEmbeddingsAsync()`. |
 | **Ast.Query** | `ICodeQuery` — `ICodeQuery.cs`; `HybridQueryService` — `HybridQueryService.cs`; `ScoredNode` — `QueryModels.cs` | Reference only. `Ast.Memory` defines `IMemoryRetrievalEngine` that internally composes `ICodeQuery`. |
 | **Ast.VectorDb** | `IVectorStore : IDisposable` — `IVectorStore.cs` (10 members: `Name`, `CreateCollectionAsync`, `CollectionExistsAsync`, `DeleteCollectionAsync`, `UpsertAsync`, `SearchAsync`, `GetAsync`, `DeleteAsync`, `CountAsync`, `IsAvailableAsync`); `QdrantVectorStore` — `QdrantVectorStore.cs` | Reference only. Reuse `QdrantVectorStore` for team mode; `Ast.Memory` adds `SqliteVssVectorStore` (in `Storage/SqliteVssVectorStore.cs`) implementing `IVectorStore` for local mode via sqlite-vss extension. Zero files in `Ast.VectorDb/` modified. |
 | **Ast.Lsp** | LSP integration — `src/ast/Ast.Lsp/` | Optional enrichment — pipeline never blocks on LSP. No modifications. |
 | **CodeIntelligence** | 27 analyzers in `Analyzers/`, 4 detectors in `Detectors/`, `RelationshipGraphBuilder` in `Graph/` | Consume as call-chain / structural edge source. No modifications. |
-| **Ast.Cli** | CLI host — `Program.cs` uses Spectre.Console.Cli with manual `AddCommand<T>()` registration (7 commands: parse, enrich, embed, index, query, pipeline, stats — lines 17–44). | Additive: `config.AddBranch("memory", ...)` + project ref to `Ast.Memory`. |
+| **Ast.Cli** | CLI host — `Program.cs` uses Spectre.Console.Cli with manual `AddCommand<T>()` registration (7 commands: parse, enrich, embed, index, query, pipeline, stats — lines 17–41). | Additive: `config.AddBranch("memory", ...)` + project ref to `Ast.Memory`. |
 
 ### 1.4 Research Foundations
 
@@ -1530,7 +1530,7 @@ the canonical definition are resolved by governance:
 | # | Topic | impl-plan wording | Canonical definition (this doc) | Status |
 |---|---|---|---|---|
 | R-1 | `MemoryEdge.Version` nullability | Listed as `VersionRange Version` without explicit non-nullable annotation | `VersionRange Version` is non-nullable — all edges carry versioning (§4.1, §4.3) | **Resolved.** Correct behavior; annotation is presentational. |
-| R-2 | `UpsertEdgeAsync` method | Stage 1.2 lists 12 methods (omitting `UpsertEdgeAsync`). Stage 2.1 line 126 says "inherited `IGraphStore` edge-creation methods." | **Canonical interface has 13 methods** (§5.1), including `UpsertEdgeAsync(Hyperedge, VersionRange, CancellationToken)`. All edge-writing code paths must use `UpsertEdgeAsync` to set temporal and denormalized columns. The base `IGraphStore` does not define `UpsertEdgeAsync` — it is a memory-layer addition. Implementors **must not** fall back to `IGraphStore.AddEdgesAsync()` for memory edges, as that method does not set `since_index`, `until_index`, `semantic_rel`, or `memory_layer` denormalized columns. | **Resolved by governance.** Implementations follow §5.1. |
+| R-2 | `UpsertEdgeAsync` method | Stage 1.2 lists 12 methods (omitting `UpsertEdgeAsync`). Stage 2.1 line 126 says "inherited `IGraphStore` edge-creation methods." | **Canonical interface has 13 methods** (§5.1), including `UpsertEdgeAsync(Hyperedge, VersionRange, CancellationToken)`. All edge-writing code paths must use `UpsertEdgeAsync` to set temporal and denormalized columns. The base `IGraphStore` does not define `UpsertEdgeAsync` — it is a memory-layer addition. Implementors **must not** fall back to `IGraphStore.CreateEdgesAsync()` for memory edges, as that method does not set `since_index`, `until_index`, `semantic_rel`, or `memory_layer` denormalized columns. | **Resolved by governance.** Implementations follow §5.1. |
 | R-3 | Decay formula notation | Stage 5.3 line 318: `decayed_confidence = current_confidence × 2^(−age_days / DecayHalfLifeDays) × centrality_boost` — this puts `centrality_boost` (range 1.0–1.5) as an **output multiplier**, which would **incorrectly increase** confidence above `current_confidence`. | **Canonical formula** (§3.5): `final = event_adjusted_confidence × 2^(−age_days / (DecayHalfLifeDays × centrality_boost))` — centrality extends the half-life in the **exponent denominator**, producing a `time_factor ≤ 1.0` that can only decrease confidence. The impl-plan formula is algebraically wrong; implementors must follow §3.5. | **Resolved by governance.** Implementations follow §3.5. |
 
 Previously-catalogued naming/composition/schema conflicts have all been
