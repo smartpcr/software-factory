@@ -57,13 +57,63 @@ document owns a distinct concern; shared concepts are referenced by name.
 | [implementation-plan.md](implementation-plan.md) | Phased work items, deliverables, dependencies, evaluation harness |
 | [e2e-scenarios.md](e2e-scenarios.md) | BDD Gherkin scenarios for each feature |
 
-**Layer naming alignment:** The tech-spec uses four *trust-separated* layer
-names (Fact, Derived, Interaction, Temporal). This architecture uses four
-*purpose-separated* layer names (Structural, Call-Chain, Semantic, Expertise).
-The mapping: Fact ≈ Structural + Call-Chain; Derived ≈ Semantic; Interaction ≈
-Expertise; Temporal is an orthogonal concern (version ranges on all layers).
-Both views are valid projections of the same graph; the implementation uses a
-single `layer` tag per node/edge so either lens can be applied at query time.
+**Unified layer naming (cross-document alignment):** All four sibling
+documents MUST use the same canonical layer names. The canonical names are:
+
+| Canonical layer | Tag value | Content |
+|---|---|---|
+| **Structural** | `structural` | Containment hierarchy: Repo → Workspace → Package → Module → Class → Function. Edges: `CONTAINS`, `DEPENDS_ON`. |
+| **Call-Chain** | `call_chain` | Invocation graph between symbol nodes. Edges: `CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES`. |
+| **Semantic** | `semantic` | Embedding-similarity clusters and topics. Edges: `SIMILAR_TO`, `BELONGS_TO_CLUSTER`. |
+| **Expertise** | `expertise` | Agent-authored knowledge. Edges: `APPLIES_TO`, `SUPERSEDES`, `DERIVED_FROM`. |
+
+**Cross-document edge-name alignment (CRITICAL):**
+
+| Canonical edge | Tech-spec name | E2E scenarios name | HyperedgeType enum values (Ast.Core) | Notes |
+|---|---|---|---|---|
+| `CONTAINS` | `CONTAINS` | containment edge | `ClassDefinition`, `InterfaceDefinition`, `StructDefinition`, `RecordDefinition`, `MethodDefinition`, `ConstructorDefinition`, `PropertyDefinition`, `FunctionDefinition` | Structural hierarchy parent→child |
+| `DEPENDS_ON` | `DEPENDS_ON` | dependency edge | `UsingDirective`, `ModuleImport`, `DotSource` | Module/package-level imports. Replaces the earlier name `IMPORTS` used in iteration 1. |
+| `CALLS` | `CALLS` | call edge | `MethodInvocation`, `ConstructorInvocation`, `CmdletCall`, `ModuleFunctionCall`, `CrossLanguageMethodCall` | Function-level invocation |
+| `EXTENDS` | `EXTENDS` | inheritance edge | `Extends` | Class inheritance |
+| `IMPLEMENTS` | `IMPLEMENTS` | interface edge | `Implements` | Interface implementation |
+| `REFERENCES` | `REFERENCES` | reference edge | `DataFlow`, `Assignment`, `CrossLanguageTypeReference` | Non-call symbol references (type annotations, variable types, data flow) |
+| `SIMILAR_TO` | — | similarity edge | *(memory-only)* | Semantic-layer embedding proximity |
+| `BELONGS_TO_CLUSTER` | — | cluster membership | *(memory-only)* | Semantic-layer community grouping |
+| `APPLIES_TO` | — | expertise link | *(memory-only)* | Expertise→code target |
+| `SUPERSEDES` | — | supersession | *(memory-only)* | Expertise merge chain |
+| `DERIVED_FROM` | — | derivation | *(memory-only)* | Expertise provenance |
+
+**⚠ Retired names from iteration 1:** `IMPORTS` → now `DEPENDS_ON`; `RE_EXPORTS` → subsumed by `DEPENDS_ON`; `CALLED_BY` → not a stored edge, use reverse traversal of `CALLS`; `INSTANTIATES` → subsumed by `CALLS` with `ConstructorInvocation` original type; `OVERRIDES` → subsumed by `EXTENDS` (override relationship is an inheritance variant).
+
+The tech-spec previously referred to Fact / Derived / Interaction / Temporal
+layers. Those names are **retired** in favour of the canonical names above.
+Temporal versioning is an orthogonal concern applied to nodes and edges on
+*all* layers — it is not a separate layer. The implementation stores a `layer`
+string tag on every node and edge so queries can filter by any single layer or
+combine layers.
+
+**Cross-document temporal model alignment:** The tech-spec (§7.4) defines
+temporality as `valid_from` / `valid_until` ISO-8601 timestamps with
+provenance. This architecture uses `VersionRange { Since, Until }` with commit
+SHAs. These are **complementary, not contradictory**: commit SHAs provide the
+code-change axis (which commit introduced/removed this fact), while ISO-8601
+timestamps provide the wall-clock axis (when did extraction run). The canonical
+model stores **both**: `VersionRange` for commit-based versioning and
+`LastTouched` ISO-8601 timestamp for recency. The SQLite storage schema
+(tech-spec §8.2) maps `VersionRange.Since` → `valid_from` column and
+`VersionRange.Until` → `valid_until` column, treating commit SHAs as the
+temporal key. Point-in-time queries follow the tech-spec pattern:
+`WHERE valid_from <= $commit AND (valid_until IS NULL OR valid_until > $commit)`.
+
+**Cross-document model extension alignment:** The implementation-plan (§1.1)
+proposes `MemoryNode` extending `HypergraphNode` via C# inheritance and
+`MemoryEdge` extending `Hyperedge`. This architecture specifies a
+**non-breaking Metadata-based extension** instead (§4.1). Both approaches
+coexist: `MemoryNode` / `MemoryEdge` are convenience wrapper classes that
+compose (not inherit from) `HypergraphNode` / `Hyperedge` and provide
+strongly-typed accessors for the Metadata keys. The underlying storage and
+inter-component interfaces always use the base `HypergraphNode` / `Hyperedge`
+types to avoid breaking existing parsers and tests.
 
 ---
 
@@ -98,23 +148,51 @@ architecture.
 ### 3.0 Integration Map — New vs. Existing Projects
 
 The agent memory system is delivered as a mix of new projects and extensions to
-existing ones. The `src/ast/` directory is the home for all code intelligence
-work.
+existing ones. All projects live under `src/ast/` following the established
+naming convention (`Ast.<Capability>`). New projects follow the same pattern —
+**no dot-separated sub-namespaces** (e.g., `Ast.Memory`, not
+`Ast.Memory.Extraction`). Each new project gets a matching unit-test project
+(`Ast.Memory.UnitTests`, etc.).
 
-| Component (architecture) | Project | Status | Notes |
+| Component (architecture) | Project (csproj) | Status | Notes |
 |---|---|---|---|
-| Extraction Pipeline — Language Parser | `Ast.Core` / `Ast.Csharp` / `Ast.PowerShell` | **Existing** — extend | Add `version_range` to `HypergraphNode`; wrap parsers behind a unified `ILanguageParser` interface. |
-| Extraction Pipeline — Structure Builder | New: `Ast.Memory.Extraction` | **New** | Consumes `HypergraphNode` stream, builds Structural-layer containment hierarchy. |
-| Extraction Pipeline — Call-Chain Analyzer | New: `Ast.Memory.Extraction` | **New** | Reads `Hyperedge` of type `MethodInvocation`, `ConstructorInvocation`, etc., emits typed CALLS/OVERRIDES edges. |
-| Extraction Pipeline — Semantic Indexer | `Ast.Embedding` / `CodeEmbeddingService` | **Existing** — reuse | Produces dense vectors via `IEmbeddingGenerator`; attaches to nodes. |
-| Extraction Pipeline — Fact Normalizer | New: `Ast.Memory.Extraction` | **New** | Dedup, stable ID assignment, content hashing, version-range stamping. |
-| Graph Store | `Ast.GraphDb` (`IGraphStore`, `Neo4jGraphStore`) | **Existing** — extend | Add `ApplyDiffAsync`, `TraverseAsync`, temporal range queries. Add `SqliteGraphStore` for local mode. |
-| Vector Index | `Ast.VectorDb` | **Existing** — reuse | Qdrant for team mode; add in-process HNSW for local mode. |
-| Retrieval Engine | `Ast.Query` (`ICodeQuery`, `HybridQueryService`) | **Existing** — extend | Add retrieval modes (STRUCTURAL_DRILL, CALL_TRACE, EXPERTISE_RECALL, HYBRID), Budget Controller, Ranker. |
-| Context Assembler | New: `Ast.Memory.Context` | **New** | Markdown context-block formatter with hierarchy compression and dedup. |
-| Evolution Engine | New: `Ast.Memory.Evolution` | **New** | Expertise write-back, LLM-powered consolidation, confidence decay. |
-| Incremental Sync | New: `Ast.Memory.Sync` | **New** | File-system watcher + git-diff driver, triggers extraction pipeline. |
-| Agent API / MCP | New: `Ast.Memory.Api` | **New** | Exposes retrieve + write-back as MCP tool or gRPC/HTTP service. |
+| Extraction Pipeline — Language Parser | `Ast.Core` / `Ast.Csharp` / `Ast.PowerShell` | **Existing** — extend | Add optional `VersionRange` and `ContentHash` to `HypergraphNode.Metadata`; wrap parsers behind a unified `ILanguageParser` interface. **No breaking changes to `HypergraphNode` or `Hyperedge` record shapes.** |
+| Extraction Pipeline — Structure Builder, Call-Chain Analyzer, Fact Normalizer | `Ast.Memory` (new) | **New** | Consumes `HypergraphNode` + `Hyperedge` streams from existing parsers. Builds Structural-layer containment hierarchy (Repo → Workspace → Package → Module → Class → Function), Call-chain-layer edges (`CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES`), and normalizes facts with stable path-based IDs and `VersionRange` stamps. Single project to avoid over-splitting. |
+| Extraction Pipeline — Semantic Indexer | `Ast.Embedding` (`IEmbeddingGenerator`, `CodeEmbeddingService`) | **Existing** — reuse | Produces dense vectors via `IEmbeddingGenerator`; attaches to `HypergraphNode.Metadata["Embedding"]`. |
+| Graph Store (memory-layer extension) | `Ast.GraphDb` (`IGraphStore`, `Neo4jGraphStore`) | **Existing** — extend | Add `IMemoryGraphStore` sub-interface with `ApplyDiffAsync`, `TraverseAsync`, temporal range queries. Add `SqliteGraphStore` for local mode. **The `IMemoryGraphStore` interface operates on `HypergraphNode`/`Hyperedge` — not on wrapper types.** |
+| Vector Index | `Ast.VectorDb` (`IVectorStore`, `QdrantVectorStore`) | **Existing** — reuse | Qdrant for team mode; add in-process HNSW adapter for local mode. |
+| Retrieval Engine | `Ast.Query` (`ICodeQuery`, `HybridQueryService`) | **Existing** — extend | Add `IMemoryRetrievalEngine` with retrieval modes (`StructuralDrill`, `CallTrace`, `ExpertiseRecall`, `Hybrid`), Budget Controller, Ranker. |
+| Context Assembler | `Ast.Memory` (new, same project) | **New** | Markdown context-block formatter with hierarchy compression and dedup. Lives in `Ast.Memory/Context/` namespace. |
+| Evolution Engine | `Ast.Memory` (new, same project) | **New** | Expertise write-back, LLM-powered consolidation, confidence decay. Lives in `Ast.Memory/Evolution/` namespace. |
+| Incremental Sync | `Ast.Memory` (new, same project) | **New** | File-system watcher + git-diff driver, triggers extraction pipeline. Lives in `Ast.Memory/Sync/` namespace. |
+| Convenience Wrappers | `Ast.Memory` (new, same project) | **New** | `MemoryNode` and `MemoryEdge` classes that **compose** (not inherit from) `HypergraphNode`/`Hyperedge`, providing strongly-typed accessors for memory Metadata keys. Lives in `Ast.Memory/Models/` namespace. See §4.1 for details. |
+| Agent API / MCP | `Ast.Cli` (existing CLI host) | **Existing** — extend | Expose retrieve + write-back as MCP tools. Avoids a new host binary. |
+| Unit Tests | `Ast.Memory.UnitTests` (new) | **New** | Unit tests for extraction, context assembly, evolution, models. |
+| Integration Tests | `Ast.Memory.IntegrationTests` (new) | **New** | End-to-end tests for onboarding, sync, retrieval, and write-back flows. |
+
+**Project layout on disk:**
+
+```
+src/ast/
+  Ast.Memory/                     ← NEW: core memory library
+    Ast.Memory.csproj             ←   references Ast.Core, Ast.GraphDb, Ast.Embedding
+    Models/                       ←   MemoryNode (composes HypergraphNode), MemoryEdge (composes Hyperedge),
+                                  ←   ExpertiseEntry, MemoryMetadataKeys (constants), Enums
+    Extraction/                   ←   StructureBuilder, CallChainAnalyzer, FactNormalizer
+    Context/                      ←   ContextAssembler, BudgetController
+    Evolution/                    ←   EvolutionEngine, ConsolidationService, DecayService
+    Sync/                         ←   IncrementalSync, GitDiffDriver
+    Storage/                      ←   IMemoryGraphStore, SqliteGraphStore
+  Ast.Memory.UnitTests/           ← NEW: unit tests
+  Ast.Memory.IntegrationTests/    ← NEW: integration tests
+  Ast.Core/                       ← EXISTING: HypergraphNode, Hyperedge, HyperedgeType
+  Ast.GraphDb/                    ← EXISTING: IGraphStore, Neo4jGraphStore — extended
+  Ast.Embedding/                  ← EXISTING: IEmbeddingGenerator — reused
+  Ast.VectorDb/                   ← EXISTING: IVectorStore — reused
+  Ast.Query/                      ← EXISTING: ICodeQuery, HybridQueryService — extended
+  Ast.Cli/                        ← EXISTING: CLI entry point — extended with MCP tools
+  CodeIntelligence/               ← EXISTING: analyzers — consumed as edge source
+```
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -151,8 +229,8 @@ the four graph layers.
 | Sub-component | Input | Output | Notes |
 |---|---|---|---|
 | **Language Parser** | Source files | Unresolved AST facts (symbols, scopes, imports) | One parser adapter per language. Uses tree-sitter grammars for breadth; LSP for type-resolved facts where available. |
-| **Structure Builder** | AST facts | Structural-layer nodes + `CONTAINS` / `IMPORTS` edges | Builds the repo → package → module → symbol hierarchy. |
-| **Call-Chain Analyzer** | AST facts + resolved types | Call-chain-layer `CALLS` / `OVERRIDES` / `IMPLEMENTS` edges | Static call graph. Edges carry arity, argument types, and whether the call is conditional/async. |
+| **Structure Builder** | AST facts | Structural-layer nodes + `CONTAINS` / `DEPENDS_ON` edges | Builds the repo → workspace → package → module → symbol hierarchy. `Workspace` nodes appear in monorepos; single-package repos skip directly to Package. |
+| **Call-Chain Analyzer** | AST facts + resolved types | Call-chain-layer `CALLS` / `EXTENDS` / `IMPLEMENTS` / `REFERENCES` edges | Static call graph and type relationships. `CALLS` edges carry arity, argument types, and whether the call is conditional/async. `REFERENCES` edges capture non-call symbol usage. |
 | **Semantic Indexer** | Docstrings, comments, symbol names | Semantic-layer embedding vectors attached to nodes | Produces dense vector embeddings (e.g., code-embedding model) for similarity retrieval. |
 | **Fact Normalizer** | Raw nodes/edges from above | Canonical graph facts with `version_range` and `content_hash` | De-duplicates, assigns stable IDs, attaches commit metadata. |
 
@@ -178,19 +256,19 @@ same node ID namespace so cross-layer joins are natural.
 
 #### Layer definitions
 
-| Layer | Node labels | Edge types | Purpose |
-|---|---|---|---|
-| **Structural** | `Repo`, `Package`, `Module`, `Class`, `Function`, `Variable` | `CONTAINS`, `IMPORTS`, `RE_EXPORTS` | Top-down containment and dependency hierarchy. |
-| **Call-Chain** | (shares symbol nodes from Structural) | `CALLS`, `CALLED_BY`, `OVERRIDES`, `IMPLEMENTS`, `INSTANTIATES` | Directed invocation graph. Captures who-calls-whom and with what signature. |
-| **Semantic** | `SemanticCluster`, `Topic` | `SIMILAR_TO`, `BELONGS_TO_CLUSTER` | Grouping by embedding similarity. Enables "find all code related to X" queries. |
-| **Expertise** | `Pattern`, `Pitfall`, `Preference`, `Insight` | `APPLIES_TO`, `SUPERSEDES`, `DERIVED_FROM` | Agent-authored knowledge. Grows over time through the Evolution Engine. |
+| Layer | Tag value | Node labels | Edge types | Purpose |
+|---|---|---|---|---|
+| **Structural** | `structural` | `Repo`, `Workspace`, `Package`, `Module`, `Class`, `Function`, `Variable` | `CONTAINS`, `DEPENDS_ON` | Top-down containment and dependency hierarchy. `Workspace` is present in monorepos (maps to project root / csproj / package.json); absent in single-package repos. |
+| **Call-Chain** | `call_chain` | (shares symbol nodes from Structural) | `CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES` | Directed invocation and type-relationship graph. `CALLS` = who-calls-whom. `EXTENDS` = inheritance. `IMPLEMENTS` = interface conformance. `REFERENCES` = non-call symbol usage (type annotations, data flow). |
+| **Semantic** | `semantic` | `SemanticCluster`, `Topic` | `SIMILAR_TO`, `BELONGS_TO_CLUSTER` | Grouping by embedding similarity. Enables "find all code related to X" queries. |
+| **Expertise** | `expertise` | `Pattern`, `Pitfall`, `Preference`, `Insight` | `APPLIES_TO`, `SUPERSEDES`, `DERIVED_FROM` | Agent-authored knowledge. Grows over time through the Evolution Engine. |
 
 **Storage backend:** The existing `Neo4jGraphStore` (in `Ast.GraphDb`) handles
-the team/CI deployment. For local/CI use, a new `SqliteGraphStore` will
-implement `IMemoryGraphStore` using SQLite + recursive CTEs for graph traversal.
-The existing `Ast.VectorDb` Qdrant integration handles vector search in team
-mode; an in-process HNSW index (via `sqlite-vss` or `usearch`) is provided for
-local mode.
+the team/CI deployment. For local/CI use, a new `SqliteGraphStore` in
+`Ast.Memory/Storage/` implements `IMemoryGraphStore` using SQLite + recursive
+CTEs for graph traversal. The existing `Ast.VectorDb` Qdrant integration
+handles vector search in team mode; an in-process HNSW index (via
+`sqlite-vss` or `usearch`) is provided for local mode.
 
 ### 3.3 Retrieval Engine
 
@@ -268,88 +346,207 @@ in < 2 seconds for repositories up to 500 K LOC.
 ### 4.1 Core Entities
 
 The data model extends the existing `HypergraphNode` and `Hyperedge` from
-`Ast.Core` with versioning, annotation, and layer-tagging fields. The
-extensions are additive — existing node/edge shapes remain valid.
+`Ast.Core` with versioning, annotation, and layer-tagging fields. Extensions
+are **non-breaking** — they use the existing `Metadata` dictionary on both
+types rather than adding new properties to the base classes.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Node (base)                             │
-├─────────────────────────────────────────────────────────────────┤
-│  id             : UUID          — stable across renames (via    │
-│                                    content_hash fallback)       │
-│  qualified_name : string        — e.g., "auth.jwt.validate"    │
-│  kind           : NodeKind      — enum (see below)             │
-│  layer          : LayerTag[]    — which layers this node is in  │
-│  file_path      : string | null — source location              │
-│  span           : {start, end}  — byte range in file           │
-│  content_hash   : bytes         — hash of the source span       │
-│  summary        : string        — LLM-generated one-liner      │
-│  version_range  : {since, until} — commit SHA range             │
-│  last_touched   : timestamp     — last extraction time          │
-│  embedding      : float[768]    — dense vector (Semantic layer) │
-│  metadata       : JSON          — language-specific extras      │
-└─────────────────────────────────────────────────────────────────┘
+**Critical alignment with existing code:**
 
-NodeKind enum:
-  REPO | PACKAGE | MODULE | CLASS | FUNCTION | METHOD | VARIABLE |
-  INTERFACE | ENUM | TYPE_ALIAS |
-  SEMANTIC_CLUSTER | TOPIC |
-  PATTERN | PITFALL | PREFERENCE | INSIGHT
-```
+- `HypergraphNode.Id` is `string` (not UUID/Guid). The memory layer follows
+  this convention. Stable IDs are path-based strings using the format
+  `"{filePath}::{qualifiedName}"` for symbol nodes (e.g.,
+  `/src/auth/login::AuthService`, `/src/auth/login::AuthService.validate`) and
+  `"{filePath}"` for file/module nodes (e.g., `/src/auth/login`). Directory
+  nodes use their relative path (e.g., `/src/auth`). The `Repo` root node
+  uses `"/"`. This format aligns with the e2e-scenarios node IDs.
+  **All IDs across all layers are `string` type.** There are no GUIDs, UUIDs,
+  or integer IDs anywhere in the memory layer.
+- `Hyperedge` is a **multi-node hyperedge** with `NodeIds: List<string>` and
+  `Roles: Dictionary<string, string>`. It is NOT a binary source→target edge.
+  The memory layer preserves this model. For binary relationships (e.g., CALLS),
+  the hyperedge has exactly 2 `NodeIds` with roles `"caller"` and `"callee"`.
+- `Hyperedge.EdgeType` is `HyperedgeType` enum (e.g., `MethodInvocation`,
+  `Implements`, `Extends`). The memory layer maps these to semantic relation
+  names (e.g., `MethodInvocation` → `CALLS`) but stores the original
+  `HyperedgeType` in `Metadata["OriginalEdgeType"]` for lossless round-trips.
+- Both `HypergraphNode.Metadata` and `Hyperedge.Metadata` are
+  `Dictionary<string, object?>` — the memory layer stores version ranges,
+  layer tags, and annotations in these dictionaries.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Edge (base)                             │
-├─────────────────────────────────────────────────────────────────┤
-│  id             : UUID                                          │
-│  source         : NodeID                                        │
-│  target         : NodeID                                        │
-│  relation       : RelationType   — enum (see below)            │
-│  layer          : LayerTag                                      │
-│  weight         : float          — confidence / frequency      │
-│  properties     : JSON           — relation-specific payload   │
-│  version_range  : {since, until} — commit SHA range             │
-│  stale          : boolean        — pending re-confirmation     │
-└─────────────────────────────────────────────────────────────────┘
+#### Memory-layer metadata keys (stored in `HypergraphNode.Metadata`)
 
-RelationType enum:
-  — Structural: CONTAINS | IMPORTS | RE_EXPORTS
-  — Call-chain: CALLS | CALLED_BY | OVERRIDES | IMPLEMENTS | INSTANTIATES
-  — Semantic:   SIMILAR_TO | BELONGS_TO_CLUSTER
-  — Expertise:  APPLIES_TO | SUPERSEDES | DERIVED_FROM
-```
-
-### 4.2 Edge Property Schemas
-
-Each `RelationType` defines the shape of its `properties` JSON:
-
-| Relation | Properties | Example |
+| Key | Type | Description |
 |---|---|---|
-| `CALLS` | `{ arg_count: int, is_async: bool, is_conditional: bool, call_site: Span }` | `{ arg_count: 2, is_async: true, is_conditional: false, call_site: {start:120, end:145} }` |
-| `IMPORTS` | `{ alias: string?, is_wildcard: bool, is_type_only: bool }` | `{ alias: "jwt", is_wildcard: false, is_type_only: false }` |
-| `APPLIES_TO` | `{ confidence: float, scope: "exact" \| "subtree" }` | `{ confidence: 0.85, scope: "subtree" }` |
-| `SUPERSEDES` | `{ reason: string, superseded_at: timestamp }` | `{ reason: "Merged duplicate pattern", superseded_at: "2026-05-01T..." }` |
-| `SIMILAR_TO` | `{ cosine_sim: float }` | `{ cosine_sim: 0.92 }` |
+| `MemoryLayer` | `string` | Canonical layer tag: `"structural"`, `"call_chain"`, `"semantic"`, `"expertise"` |
+| `VersionRange` | `{ Since: string, Until: string? }` | Commit SHA range. `Since` = commit that introduced this fact. `Until = null` means current; non-null = commit that removed it. Maps to tech-spec's `valid_from`/`valid_until` columns. |
+| `ContentHash` | `string` | SHA-256 of the source span. Used for change detection. |
+| `LastTouched` | `string` (ISO-8601) | Wall-clock timestamp of last extraction or modification. |
+| `Embedding` | `float[]` | Dense vector (dimension = model-dependent). Only present on Semantic-layer nodes. |
+| `Summary` | `string` | LLM-generated one-liner. |
+| `QualifiedName` | `string` | Fully-qualified name, e.g., `"Ast.Core.HypergraphNode.GetEmbeddingText"`. |
+
+#### Memory-layer metadata keys (stored in `Hyperedge.Metadata`)
+
+| Key | Type | Description |
+|---|---|---|
+| `MemoryLayer` | `string` | Canonical layer tag. |
+| `SemanticRelation` | `string` | Canonical relation name: `"CALLS"`, `"DEPENDS_ON"`, `"CONTAINS"`, `"EXTENDS"`, `"IMPLEMENTS"`, `"REFERENCES"`, `"SIMILAR_TO"`, `"BELONGS_TO_CLUSTER"`, `"APPLIES_TO"`, `"SUPERSEDES"`, `"DERIVED_FROM"`. Present on ALL edges (code-derived and memory-only). |
+| `VersionRange` | `{ Since: string, Until: string? }` | Commit SHA range. Maps to tech-spec's `valid_from`/`valid_until`. |
+| `Confidence` | `double` | `0.0`–`1.0`. Direct calls = `1.0`; dynamic dispatch = `0.5`–`0.7`. |
+| `Stale` | `bool` | `true` when pending re-confirmation after upstream signature change. |
+| `OriginalEdgeType` | `string` | Original `HyperedgeType` enum name for lossless mapping back to Ast.Core. |
+
+#### Node shape (extended via Metadata)
+
+```
+HypergraphNode (from Ast.Core — unchanged)
+├── Id             : string      ← path-based: "/src/auth/login::AuthService.validate"
+├── Name           : string
+├── NodeType       : string      ← e.g., "Class", "Method", "Function"
+├── Language       : string
+├── FilePath       : string
+├── Scope          : string
+├── LineStart      : int
+├── LineEnd        : int
+├── Modifiers      : List<string>
+└── Metadata       : Dictionary<string, object?>
+    ├── MemoryLayer     : string   ← "structural" | "call_chain" | "semantic" | "expertise"
+    ├── VersionRange    : { Since: string (commit SHA), Until: string? (commit SHA or null) }
+    ├── ContentHash     : string   ← SHA-256 of source span
+    ├── LastTouched     : string   ← ISO-8601 timestamp (wall-clock)
+    ├── Embedding       : float[]  ← dense vector (dim = model-dependent, e.g., 768)
+    ├── Summary         : string   ← LLM-generated one-liner
+    ├── QualifiedName   : string   ← e.g., "Ast.Core.HypergraphNode.GetEmbeddingText"
+    └── ... (language-specific extras)
+```
+
+#### Edge shape (extended via Metadata)
+
+```
+Hyperedge (from Ast.Core — unchanged)
+├── Id             : string      ← "{sourceId}→{relation}→{targetId}" for deterministic dedup
+├── EdgeType       : HyperedgeType enum   ← original Ast.Core enum value
+├── NodeIds        : List<string>   ← multi-node (typically 2 for binary relations)
+├── Roles          : Dictionary<string, string>   ← e.g., { "/src/auth/login::fn": "caller", "/src/auth/token::verify": "callee" }
+├── Languages      : List<string>
+├── Weight         : double      ← confidence / frequency
+└── Metadata       : Dictionary<string, object?>
+    ├── MemoryLayer        : string   ← "structural" | "call_chain" | "semantic" | "expertise"
+    ├── SemanticRelation   : string   ← canonical name: "CALLS", "DEPENDS_ON", "CONTAINS", etc.
+    ├── VersionRange       : { Since: string (commit SHA), Until: string? }
+    ├── Confidence         : double   ← 0.0–1.0 (direct calls=1.0, dynamic dispatch=0.5–0.7)
+    ├── Stale              : bool     ← true when pending re-confirmation
+    ├── OriginalEdgeType   : string   ← HyperedgeType enum name for lossless mapping
+    └── ... (relation-specific payload — see §4.2)
+```
+
+#### HyperedgeType → semantic relation mapping
+
+The existing `HyperedgeType` enum in `Ast.Core` has 30+ values. The memory
+layer groups them into the four canonical layers:
+
+| HyperedgeType (existing) | Semantic relation | Layer | Typical role names |
+|---|---|---|---|
+| `ClassDefinition`, `InterfaceDefinition`, `StructDefinition`, `RecordDefinition` | `CONTAINS` (class defines members) | Structural | `parent`, `child` |
+| `MethodDefinition`, `ConstructorDefinition`, `PropertyDefinition`, `FunctionDefinition` | `CONTAINS` (scope contains symbol) | Structural | `parent`, `child` |
+| `UsingDirective`, `ModuleImport`, `DotSource` | `DEPENDS_ON` | Structural | `importer`, `imported` |
+| `MethodInvocation`, `ConstructorInvocation`, `CmdletCall`, `ModuleFunctionCall` | `CALLS` | Call-Chain | `caller`, `callee` |
+| `Implements` | `IMPLEMENTS` | Call-Chain | `implementor`, `interface` |
+| `Extends` | `EXTENDS` | Call-Chain | `subclass`, `superclass` |
+| `DataFlow`, `Assignment` | `REFERENCES` | Call-Chain | `source`, `target` |
+| `CrossLanguageMethodCall` | `CALLS` | Call-Chain | `caller`, `callee` |
+| `CrossLanguageTypeReference` | `REFERENCES` | Call-Chain | `source`, `target` |
+| (memory-layer only) | `SIMILAR_TO` | Semantic | `node_a`, `node_b` |
+| (memory-layer only) | `BELONGS_TO_CLUSTER` | Semantic | `member`, `cluster` |
+| (memory-layer only) | `APPLIES_TO` | Expertise | `expertise`, `target` |
+| (memory-layer only) | `SUPERSEDES` | Expertise | `newer`, `older` |
+| (memory-layer only) | `DERIVED_FROM` | Expertise | `derived`, `source` |
+
+**Unmapped HyperedgeType values:** The following existing enum values are NOT
+mapped to memory-layer semantic relations in the MVP. They are preserved in
+`Metadata["OriginalEdgeType"]` for diagnostic purposes but do not generate
+memory edges: `AttributeDecoration`, `LambdaExpression`, `LinqQuery`,
+`AsyncAwait`, `DependencyInjection`, `EventHandler`, `GenericTypeConstraint`,
+`ServiceRegistration`, `ApiEndpoint`, `EntryPoint`, `HttpClientUsage`,
+`DatabaseAccess`, `FileSystemAccess`, `ConfigurationAccess`, `LoggingCall`,
+`MiddlewarePipeline`, `Pipeline`, `RemoteExecution`, `ParamBlock`,
+`DscConfiguration`, `DscResource`, `ControlFlow`, `ExceptionHandling`.
+These may be promoted to semantic relations in future iterations.
+
+**Memory-only edge types** (SIMILAR_TO, BELONGS_TO_CLUSTER, APPLIES_TO,
+SUPERSEDES, DERIVED_FROM) are not in the existing `HyperedgeType` enum. They
+are represented using a `SemanticRelation` string stored in
+`Hyperedge.Metadata["SemanticRelation"]`. The `Hyperedge.EdgeType` field is set
+to a placeholder value (e.g., `HyperedgeType.DataFlow`) for these edges, with
+the true semantic type in metadata. This avoids modifying the existing enum
+(which would be a breaking change to all existing parsers).
+
+**All edges** (both code-derived and memory-only) carry `Metadata["SemanticRelation"]`
+with the canonical name (`CALLS`, `DEPENDS_ON`, `CONTAINS`, `EXTENDS`,
+`IMPLEMENTS`, `REFERENCES`, `SIMILAR_TO`, `BELONGS_TO_CLUSTER`, `APPLIES_TO`,
+`SUPERSEDES`, `DERIVED_FROM`). This provides a uniform filtering path
+regardless of whether the edge originated from an Ast.Core parser or the
+memory layer.
+
+### 4.2 Edge Property Schemas (via `Hyperedge.Metadata`)
+
+Each semantic relation type stores its payload in `Hyperedge.Metadata`. The
+keys below are in addition to the standard memory-layer keys (`MemoryLayer`,
+`VersionRange`, `Confidence`, `Stale`) documented in §4.1.
+
+| Semantic relation | Extra metadata keys | Example values |
+|---|---|---|
+| `CALLS` | `ArgCount: int`, `IsAsync: bool`, `IsConditional: bool`, `CallSiteStart: int`, `CallSiteEnd: int` | `ArgCount=2, IsAsync=true, IsConditional=false, CallSiteStart=120, CallSiteEnd=145` |
+| `DEPENDS_ON` | `Alias: string?`, `IsWildcard: bool`, `IsTypeOnly: bool` | `Alias="jwt", IsWildcard=false, IsTypeOnly=false` |
+| `APPLIES_TO` | `Scope: string` (`"exact"` or `"subtree"`) | `Scope="subtree"` |
+| `SUPERSEDES` | `Reason: string`, `SupersededAt: string (ISO-8601)` | `Reason="Merged duplicate pattern", SupersededAt="2026-05-01T..."` |
+| `SIMILAR_TO` | `CosineSim: double` | `CosineSim=0.92` |
+| `CONTAINS` | (none — parent/child implicit in `Roles`) | — |
+| `EXTENDS` | (none — relationship implicit in `EdgeType`) | — |
+| `IMPLEMENTS` | (none — relationship implicit in `EdgeType`) | — |
+| `REFERENCES` | `ReferenceKind: string` (`"type_annotation"`, `"variable"`, `"parameter"`, `"data_flow"`) | `ReferenceKind="type_annotation"` |
+
+**Roles dictionary convention for binary relations:**
+
+| Semantic relation | `Roles` keys | Example |
+|---|---|---|
+| `CALLS` | `{ callerId: "caller", calleeId: "callee" }` | `{ "/src/auth/login::AuthService.login": "caller", "/src/auth/token::verify": "callee" }` |
+| `CONTAINS` | `{ parentId: "parent", childId: "child" }` | `{ "/src/auth/login": "parent", "/src/auth/login::AuthService": "child" }` |
+| `DEPENDS_ON` | `{ importerId: "importer", importedId: "imported" }` | `{ "/src/auth/login": "importer", "/src/auth/token": "imported" }` |
+| `EXTENDS` | `{ subclassId: "subclass", superclassId: "superclass" }` | — |
+| `IMPLEMENTS` | `{ implementorId: "implementor", interfaceId: "interface" }` | — |
+| `REFERENCES` | `{ sourceId: "source", targetId: "target" }` | — |
+| `APPLIES_TO` | `{ expertiseId: "expertise", targetId: "target" }` | — |
+| `SIMILAR_TO` | `{ nodeA: "node_a", nodeB: "node_b" }` | — |
+| `SUPERSEDES` | `{ newerId: "newer", olderId: "older" }` | — |
+| `DERIVED_FROM` | `{ derivedId: "derived", sourceId: "source" }` | — |
 
 ### 4.3 Expertise Node Schema
 
-Expertise nodes carry richer payloads than code-derived nodes:
+Expertise nodes are regular `HypergraphNode` instances with `NodeType` set to
+one of `"Pattern"`, `"Pitfall"`, `"Preference"`, or `"Insight"`, and
+`Metadata["MemoryLayer"] = "expertise"`. They carry richer metadata than
+code-derived nodes:
 
-```
-ExpertiseNode extends Node {
-  expertise_kind : "pattern" | "pitfall" | "preference" | "insight"
-  title          : string        — human-readable label
-  body           : string        — detailed description (Markdown)
-  confidence     : float [0, 1]  — decays over time
-  source_agent   : string        — which agent/session authored it
-  evidence       : Citation[]    — references to code spans or commits
-  tags           : string[]      — free-form taxonomy
-}
+| Metadata key | Type | Description |
+|---|---|---|
+| `ExpertiseKind` | `string` | `"pattern"`, `"pitfall"`, `"preference"`, or `"insight"` |
+| `Title` | `string` | Human-readable label |
+| `Body` | `string` | Detailed description (Markdown) |
+| `Confidence` | `double` | `[0, 1]` — decays over time |
+| `SourceAgent` | `string` | Agent session ID that authored it |
+| `Evidence` | `List<Citation>` | References to code spans or commits |
+| `Tags` | `List<string>` | Free-form taxonomy |
 
-Citation {
-  node_id     : NodeID
-  commit_sha  : string
-  snippet     : string     — verbatim code excerpt (≤ 500 chars)
+```csharp
+/// <summary>
+/// A reference to a code location that supports an expertise claim.
+/// </summary>
+public class Citation
+{
+    public required string NodeId { get; init; }      // string — path-based, e.g., "/src/auth/login::AuthService"
+    public required string CommitSha { get; init; }    // string — git commit SHA
+    public string? Snippet { get; init; }             // verbatim code excerpt (≤ 500 chars)
 }
 ```
 
@@ -357,13 +554,21 @@ Citation {
 
 A `Snapshot` is a logical point-in-time view of the graph, keyed by commit:
 
-```
-Snapshot {
-  id          : UUID
-  commit_sha  : string
-  parent_sha  : string | null
-  created_at  : timestamp
-  stats       : { nodes: int, edges: int, expertise_nodes: int }
+```csharp
+public class Snapshot
+{
+    public required string Id { get; init; }               // string — e.g., "snapshot:{commitSha}"
+    public required string CommitSha { get; init; }        // string — git commit SHA
+    public string? ParentSha { get; init; }                // string — parent commit SHA
+    public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
+    public required SnapshotStats Stats { get; init; }
+}
+
+public class SnapshotStats
+{
+    public int Nodes { get; init; }
+    public int Edges { get; init; }
+    public int ExpertiseNodes { get; init; }
 }
 ```
 
@@ -380,7 +585,7 @@ interface maps to its owning project in `src/ast/`.
 
 ### 5.1 Extraction Pipeline Interface
 
-**Project:** `Ast.Memory.Extraction`
+**Project:** `Ast.Memory`
 
 ```csharp
 /// <summary>
@@ -421,17 +626,18 @@ public class ExtractionOptions
 /// <summary>
 /// A single node or edge record produced by extraction.
 /// Wraps the existing HypergraphNode/Hyperedge with version metadata.
+/// ID is string to match HypergraphNode.Id / Hyperedge.Id.
 /// </summary>
-public abstract record GraphFact(Guid Id, string ContentHash, VersionRange VersionRange);
-public record NodeFact(Guid Id, string ContentHash, VersionRange VersionRange, HypergraphNode Node)
+public abstract record GraphFact(string Id, string ContentHash, VersionRange VersionRange);
+public record NodeFact(string Id, string ContentHash, VersionRange VersionRange, HypergraphNode Node)
     : GraphFact(Id, ContentHash, VersionRange);
-public record EdgeFact(Guid Id, string ContentHash, VersionRange VersionRange, Hyperedge Edge)
+public record EdgeFact(string Id, string ContentHash, VersionRange VersionRange, Hyperedge Edge)
     : GraphFact(Id, ContentHash, VersionRange);
 
 public record GraphDiff(
     IReadOnlyList<GraphFact> Inserts,
     IReadOnlyList<GraphFact> Updates,
-    IReadOnlyList<Guid> Tombstones);
+    IReadOnlyList<string> Tombstones);   // list of node/edge IDs (string)
 
 public record VersionRange(string Since, string? Until);
 ```
@@ -496,6 +702,8 @@ public class TraversalPlan
 {
     public required string Direction { get; init; } // "outbound" | "inbound" | "both"
     public required IReadOnlyList<HyperedgeType> EdgeTypes { get; init; }
+    public IReadOnlyList<string>? SemanticRelations { get; init; }  // canonical names: "CALLS", "DEPENDS_ON", "SIMILAR_TO", etc.
+    public string? LayerFilter { get; init; }    // "structural", "call_chain", "semantic", "expertise", or null for all
     public int MaxDepth { get; init; } = 3;
     public NodeFilter? Filter { get; init; }
     public int Limit { get; init; } = 100;
@@ -566,7 +774,7 @@ public class RetrievalResult
 
 ### 5.4 Evolution Engine Interface
 
-**Project:** `Ast.Memory.Evolution`
+**Project:** `Ast.Memory`
 
 ```csharp
 /// <summary>
@@ -575,7 +783,7 @@ public class RetrievalResult
 public interface IEvolutionEngine
 {
     /// <summary>Agent writes back a learning.</summary>
-    Task<Guid> RecordExpertiseAsync(
+    Task<string> RecordExpertiseAsync(
         ExpertiseEntry entry,
         CancellationToken cancellationToken = default);
 
@@ -595,7 +803,7 @@ public class ExpertiseEntry
     public required string Kind { get; init; }        // "pattern" | "pitfall" | "preference" | "insight"
     public required string Title { get; init; }
     public required string Body { get; init; }
-    public required IReadOnlyList<string> AppliesTo { get; init; }  // node IDs
+    public required IReadOnlyList<string> AppliesTo { get; init; }  // node IDs (string — matches HypergraphNode.Id)
     public string Scope { get; init; } = "exact";     // "exact" | "subtree"
     public IReadOnlyList<Citation> Evidence { get; init; } = [];
     public required string SourceAgent { get; init; }
@@ -612,7 +820,7 @@ public class ConsolidationReport
 
 ### 5.5 Incremental Sync Interface
 
-**Project:** `Ast.Memory.Sync`
+**Project:** `Ast.Memory`
 
 ```csharp
 /// <summary>
@@ -875,6 +1083,9 @@ Result: The system accumulates expertise that compounds across sessions.
 | Decision | Rationale | Trade-off |
 |---|---|---|
 | **Extend existing `src/ast/` stack rather than greenfield** | The Ast.Core, Ast.GraphDb, Ast.Embedding, and Ast.Query projects already provide 437+ tested capabilities for AST extraction, graph storage, embeddings, and querying. Building on top avoids redoing that work. | Couples memory system to existing models (`HypergraphNode`, `Hyperedge`); may need adapters if those models change. |
+| **Single new project `Ast.Memory` with namespace-separated concerns** | Avoids over-splitting into `Ast.Memory.Extraction`, `Ast.Memory.Evolution`, etc. Follows the repo convention where each `Ast.*` project is a cohesive library. Internal sub-namespaces (Extraction, Evolution, Context, Sync, Storage) provide logical separation without project proliferation. | Larger compilation unit; mitigated by clear namespace boundaries. |
+| **Non-breaking extension via `Metadata` dictionary** | Memory-layer fields (version range, layer tag, content hash) are stored in `HypergraphNode.Metadata` and `Hyperedge.Metadata` rather than adding new properties to base classes. This avoids breaking existing parsers and tests. | Metadata keys are string-typed (not compile-time checked); mitigated by a constants class `MemoryMetadataKeys` with strongly-typed accessor extensions. |
+| **Memory-only edge types via `SemanticRelation` string in Metadata** | The existing `HyperedgeType` enum is owned by `Ast.Core` and used by all parsers. Adding memory-only values (SIMILAR_TO, APPLIES_TO, etc.) would be a breaking change. Storing them in `Metadata["SemanticRelation"]` keeps the existing enum stable. All edges (code-derived and memory-only) carry this key for uniform filtering. | String-typed relation names (not compile-time checked); mitigated by `MemoryMetadataKeys` constants class and validated at write time. |
 | **Four separate graph layers sharing a node namespace** | Avoids the entanglement problem identified by MAGMA. Each layer can be queried, indexed, and evolved independently. | Cross-layer queries require joins; slight overhead vs. a single unified graph. |
 | **Existing Ast.Csharp/PowerShell parsers as primary, tree-sitter for new languages** | Existing parsers are battle-tested with 166+ tests. Tree-sitter adds breadth for TypeScript, Python, Go without rewriting C#/PowerShell extraction. | Two parser stacks to maintain; unified `ILanguageParser` interface mitigates this. |
 | **Version ranges on nodes/edges instead of full graph snapshots** | Space-efficient: O(changed entities) per commit instead of O(total graph). Enables time-travel queries. | Point-in-time reconstruction requires range filtering, which adds query complexity. |
@@ -884,7 +1095,26 @@ Result: The system accumulates expertise that compounds across sessions.
 
 ---
 
-## 9. Appendix: Glossary
+## 9. Cross-Document Alignment Log
+
+This section tracks alignment decisions between sibling documents and flags
+remaining discrepancies for the next iteration.
+
+| Topic | This doc (architecture.md) | Sibling doc | Status |
+|---|---|---|---|
+| **Layer names** | Structural, Call-Chain, Semantic, Expertise (§1.4) | tech-spec §7 uses flat schema without explicit layers; e2e uses same 4 names | ✅ Aligned — tech-spec should adopt the 4-layer partitioning on next iteration |
+| **Edge names** | `DEPENDS_ON` for imports (§1.4, §4.1) | tech-spec §7.2 uses `DEPENDS_ON` ✅; e2e uses "dependency edge" ✅ | ✅ Aligned — replaced `IMPORTS` from iteration 1 |
+| **Node hierarchy** | Repo → Workspace → Package → Module → Class → Function (§3.2) | tech-spec §7.1 includes `Workspace` ✅; e2e §1.1 shows directory-based hierarchy | ✅ Aligned — added `Workspace` in this iteration |
+| **ID format** | Path-based strings: `/src/auth/login::AuthService` (§4.1) | e2e §1.2 uses `/src/auth/login::AuthService` format ✅ | ✅ Aligned — changed from language-prefixed format in iteration 1 |
+| **ID type** | `string` everywhere (§4.1) | implementation-plan uses `string` node IDs ✅ | ✅ Aligned |
+| **Temporal model** | `VersionRange {Since, Until}` commit SHAs + `LastTouched` ISO-8601 (§4.1) | tech-spec §7.4 uses `valid_from`/`valid_until` ISO-8601 timestamps | ✅ Reconciled — both models coexist; commit SHAs for code axis, timestamps for wall-clock |
+| **Model extension** | Non-breaking Metadata extension; `MemoryNode`/`MemoryEdge` compose (not inherit) base types (§1.4, §3.0) | implementation-plan §1.1 says "extending HypergraphNode" | ⚠️ Partial — documented reconciliation: wrappers compose, don't inherit. Implementation-plan should clarify on next iteration. |
+| **Storage schema** | Hyperedge model (`NodeIds: List<string>`) preserved in API (§4.1) | tech-spec §8.2 SQLite schema uses binary `source_id, target_id` | ⚠️ Compatible — SQLite stores decomposed pairs for indexing; API exposes full hyperedge. Implementation detail, not a conflict. |
+| **Retrieval scoring weights** | α=0.35, β=0.25, γ=0.20, δ=0.10, ε=0.10 (§6.3) | tech-spec §8.3 uses α·sim + β·structural + γ·expertise (3 terms) | ⚠️ Minor — architecture refines tech-spec's 3-term model into 5 terms. Not contradictory, just more granular. |
+
+---
+
+## 10. Appendix: Glossary
 
 | Term | Definition |
 |---|---|
