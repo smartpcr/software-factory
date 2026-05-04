@@ -931,11 +931,37 @@ public static class TaskExecutionEndpoints
             if (!string.IsNullOrEmpty(repo?.DefaultBranch)) baseBranch = repo.DefaultBranch;
         }
 
-        var sanitizedId = id.Replace("/", "-").Replace("\\", "-").Replace(" ", "-");
-        var branch = $"ws/{id}";
-        var worktreePath = !string.IsNullOrEmpty(cloneRoot)
-            ? Path.Combine(cloneRoot, ".worktree", $"ws-{sanitizedId}")
-            : null;
+        // Phase 42 — plan-doc work-items (id pattern `plan-doc:{spawnId}:{file}`)
+        // share the spawn's plan-branch worktree at `{cloneRoot}/.worktree/spawn-{slug}`,
+        // not the per-workstream `.worktree/ws-{id}` convention. Route to the
+        // right worktree based on the id prefix; engineer workstreams take
+        // the legacy path.
+        string branch;
+        string? worktreePath;
+        if (id.StartsWith("plan-doc:", StringComparison.Ordinal))
+        {
+            // Extract `spawn-{storyId}` from `plan-doc:{spawnId}:{file}`.
+            var spawnId = id.Substring("plan-doc:".Length);
+            var lastColon = spawnId.LastIndexOf(':');
+            if (lastColon > 0) spawnId = spawnId.Substring(0, lastColon);
+            // Look up the spawn so we use its real PlanBranch (preserves
+            // any custom branch name the orchestrator picked at spawn time).
+            var spawn = await db.StorySpawns.AsNoTracking().FirstOrDefaultAsync(s => s.Id == spawnId, ct);
+            branch = spawn?.PlanBranch ?? $"story/{Forge.Api.Services.Stories.StoryPaths.Safe(spawn?.StoryId ?? string.Empty)}/plan";
+            // Mirror RealStoryGitOps.WorktreePath: spawn-{sanitizedBranchSlug}.
+            var sanitizedBranch = SanitizeBranchSlug(branch);
+            worktreePath = !string.IsNullOrEmpty(cloneRoot)
+                ? Path.Combine(cloneRoot, ".worktree", $"spawn-{sanitizedBranch}")
+                : null;
+        }
+        else
+        {
+            var sanitizedId = id.Replace("/", "-").Replace("\\", "-").Replace(" ", "-");
+            branch = $"ws/{id}";
+            worktreePath = !string.IsNullOrEmpty(cloneRoot)
+                ? Path.Combine(cloneRoot, ".worktree", $"ws-{sanitizedId}")
+                : null;
+        }
 
         // Empty response when the worktree directory isn't on disk yet.
         if (string.IsNullOrEmpty(worktreePath) || !Directory.Exists(worktreePath))
@@ -1083,6 +1109,23 @@ public static class TaskExecutionEndpoints
             HeadSha: headShaStr,
             Commits: commits,
             Uncommitted: new UncommittedChanges(uAdded, uMod, uDel)));
+    }
+
+    /// <summary>
+    /// Phase 42 — keep this in sync with <c>RealStoryGitOps.SanitizeBranchSlug</c>
+    /// so the commits endpoint computes the same worktree path the architect
+    /// strategy creates. Branches like <c>story/foo/plan</c> become
+    /// <c>story-foo-plan</c>; the worktree mounts at
+    /// <c>{cloneRoot}/.worktree/spawn-{slug}</c>.
+    /// </summary>
+    private static string SanitizeBranchSlug(string branch)
+    {
+        var sb = new System.Text.StringBuilder(branch.Length);
+        foreach (var c in branch)
+        {
+            sb.Append(char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '-');
+        }
+        return sb.ToString().Trim('-');
     }
 
     private static async Task<(int code, string stdout, string stderr)> RunGitAsync(

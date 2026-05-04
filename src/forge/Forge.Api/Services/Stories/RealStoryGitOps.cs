@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Services.Stories;
 
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using Forge.Api.Persistence;
@@ -29,6 +30,13 @@ using Forge.Api.Persistence;
 public sealed class RealStoryGitOps : IStoryGitOps
 {
     private readonly ILogger<RealStoryGitOps>? logger;
+
+    /// <summary>
+    /// Phase 42 — per-branch git lock. Concurrent architect agents share one
+    /// worktree (git refuses two worktrees on one branch); this serialises
+    /// staging + commit ops so they don't race the git index.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> branchLocks = new();
 
     public RealStoryGitOps(ILogger<RealStoryGitOps>? logger = null)
     {
@@ -138,6 +146,83 @@ public sealed class RealStoryGitOps : IStoryGitOps
             "-c", "user.name=Forge",
             "merge", "--no-ff", "-m", $"Merge {branch} into {baseBranch}", $"origin/{branch}");
         await this.GitAsync(wtPath, ct, "push", "origin", baseBranch);
+    }
+
+    public async Task<string> EnsureWorktreeAsync(
+        RepoRow? repo, string branch, string baseBranch, CancellationToken ct = default)
+    {
+        var root = ResolveCloneRoot(repo);
+        var sanitized = SanitizeBranchSlug(branch);
+        var wtPath = WorktreePath(root, sanitized);
+
+        // Serialise the ensure step against itself per-branch so two concurrent
+        // callers don't race `git worktree add`.
+        var gate = branchLocks.GetOrAdd(branch, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            await this.EnsureWorktreeAsync(root, wtPath, branch, baseBranch, ct);
+        }
+        finally
+        {
+            gate.Release();
+        }
+        return wtPath;
+    }
+
+    public async Task<string> CommitPathInWorktreeAsync(
+        RepoRow? repo, string branch, string repoRelativePath, string message, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(repoRelativePath))
+            throw new ArgumentException("Path is required.", nameof(repoRelativePath));
+        if (Path.IsPathRooted(repoRelativePath) || repoRelativePath.Contains(".."))
+            throw new InvalidOperationException($"Refusing absolute or parent-traversal path '{repoRelativePath}'.");
+
+        var root = ResolveCloneRoot(repo);
+        var sanitized = SanitizeBranchSlug(branch);
+        var wtPath = WorktreePath(root, sanitized);
+
+        // Serialise per-branch so concurrent agent commits don't race the
+        // git index lock.
+        var gate = branchLocks.GetOrAdd(branch, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            // Worktree must exist before we stage anything.
+            await this.EnsureWorktreeAsync(root, wtPath, branch, "main", ct);
+
+            // Stage only the requested path so a sibling agent's mid-edit
+            // changes don't get rolled into this commit.
+            var diskPath = Path.Combine(wtPath, repoRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            if (!File.Exists(diskPath))
+            {
+                this.logger?.LogInformation(
+                    "CommitPathInWorktreeAsync: file '{Path}' does not exist on disk for branch {Branch}; skipping commit.",
+                    repoRelativePath, branch);
+                return string.Empty;
+            }
+            await this.GitAsync(wtPath, ct, "add", "--", repoRelativePath);
+
+            // No-op when the path's content is identical to the branch tip.
+            var (statusCode, statusOut, _) = await this.RunGitCaptureAsync(
+                wtPath, ct, "status", "--porcelain", "--", repoRelativePath);
+            if (statusCode == 0 && string.IsNullOrWhiteSpace(statusOut))
+            {
+                return string.Empty;
+            }
+
+            await this.GitAsync(wtPath, ct,
+                "-c", "user.email=forge-architect@local",
+                "-c", "user.name=Forge Architect",
+                "commit", "-m", message, "--", repoRelativePath);
+
+            var (shaCode, shaOut, _) = await this.RunGitCaptureAsync(wtPath, ct, "rev-parse", "HEAD");
+            return shaCode == 0 ? shaOut.Trim() : string.Empty;
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

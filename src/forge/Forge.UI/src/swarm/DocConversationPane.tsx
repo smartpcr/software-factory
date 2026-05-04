@@ -12,6 +12,7 @@ import {
   TranscriptLine,
   SummaryView,
 } from '@/views/conversation';
+import { WorktreePane } from './WorktreePane';
 
 interface Props {
   storyId: string;
@@ -181,11 +182,12 @@ export function DocConversationPane({ storyId, docId }: Props) {
   }, [rows]);
 
   const isSummaryMode = filter === 'summary';
+  const isWorktreeMode = filter === 'worktree';
   const totalIters = isSummaryMode ? summaryIters.length : iterations.length;
   const activeIter = selectedIter ?? (totalIters > 0 ? totalIters - 1 : 0);
-  const visibleEvents = !isSummaryMode && totalIters > 0
+  const visibleEvents = !isSummaryMode && !isWorktreeMode && totalIters > 0
     ? iterations[activeIter]?.events ?? []
-    : (!isSummaryMode ? filtered : []);
+    : (!isSummaryMode && !isWorktreeMode ? filtered : []);
   const activeSummary = isSummaryMode && totalIters > 0 ? summaryIters[activeIter] ?? null : null;
 
   const currentIteration = rows.length > 0 ? rows[rows.length - 1].iter : 0;
@@ -299,9 +301,11 @@ export function DocConversationPane({ storyId, docId }: Props) {
         </nav>
       )}
 
-      {/* Body — Summary card OR transcript list */}
+      {/* Body — Summary card | Worktree (commits + file changes) | transcript list */}
       <div className="live-exec__transcript" style={{ userSelect: 'text' }}>
-        {isSummaryMode ? (
+        {isWorktreeMode ? (
+          <WorktreePane workItemId={workItemId} />
+        ) : isSummaryMode ? (
           <SummaryView
             deliverable={activeSummary}
             loading={loading}

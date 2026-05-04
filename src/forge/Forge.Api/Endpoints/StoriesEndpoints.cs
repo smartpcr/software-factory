@@ -1252,52 +1252,48 @@ public static class StoriesEndpoints
 
         var safeStoryId = StoryPaths.Safe(storyId);
         var relPath = $"docs/stories/{safeStoryId}/{key.ToLowerInvariant()}.md";
-        var repoRoot = ForgeSeed.FindRepoRoot();
-        var fullPath = Path.Combine(repoRoot, relPath.Replace('/', Path.DirectorySeparatorChar));
 
-        // Phase 41 — also check the agent workspace for the latest draft.
-        // During iterations, the generator writes to the workspace but the
-        // file only reaches git (main or plan branch) after a pass+commit.
-        // Show the workspace copy so the operator sees the latest draft.
-        var dbPath = db.Database.GetConnectionString()?.Replace("Data Source=", "") ?? @"E:\forge\forge.db";
-        var stateDir = Path.GetDirectoryName(dbPath) ?? @"E:\forge";
-        var wsFileName = $"{key.ToLowerInvariant()}.md";
-        var wsPhaseTag = $"plan-{key.ToLowerInvariant()}";
-        // Try both slug conventions (dashes vs underscores)
-        var wsSlugDash = safeStoryId;
-        var wsSlugUnderscore = safeStoryId.Replace('-', '_');
-        string? workspaceDraft = null;
-        string? workspaceDraftPath = null;
-        foreach (var slug in new[] { wsSlugDash, wsSlugUnderscore })
-        {
-            var candidate = Path.Combine(stateDir, "storyworkspaces", slug, wsPhaseTag, wsFileName);
-            if (File.Exists(candidate))
-            {
-                workspaceDraft = await File.ReadAllTextAsync(candidate);
-                workspaceDraftPath = candidate;
-                break;
-            }
-        }
+        // Phase 42 — read source priority:
+        //   1. Worktree   — `{repo.CloneRoot}/.worktree/spawn-{sanitizedPlanBranch}/{relPath}`
+        //                   The architect's gen↔eval loop reads + writes here every
+        //                   iteration. This is the LIVE agent state; show it first.
+        //   2. Main       — `{repo.CloneRoot}/{relPath}` after the plan PR merges.
+        //   3. Plan branch — `git show story/.../plan:{relPath}` (pushed but not merged).
+        // Each source returns a distinct `source` field so the UI banner shows the
+        // operator whether they're looking at WIP / shipped / pre-merge content.
+        var repo = !string.IsNullOrEmpty(spawn.RepoId)
+            ? await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == spawn.RepoId)
+            : null;
+        var cloneRoot = !string.IsNullOrEmpty(repo?.CloneRoot) && Directory.Exists(repo!.CloneRoot)
+            ? repo.CloneRoot
+            : ForgeSeed.FindRepoRoot();
 
-        // Priority: workspace draft (latest) > main (committed) > plan branch (pushed but not merged)
-        if (!string.IsNullOrEmpty(workspaceDraft))
+        var planBranch = spawn.PlanBranch ?? $"story/{safeStoryId}/plan";
+        var worktreePath = ComputeWorktreePath(cloneRoot, planBranch);
+        var worktreeFilePath = Path.Combine(worktreePath, relPath.Replace('/', Path.DirectorySeparatorChar));
+
+        // (1) Worktree — live agent state. Highest priority.
+        if (File.Exists(worktreeFilePath))
         {
-            var lastModified = File.GetLastWriteTimeUtc(workspaceDraftPath!).ToString("O");
+            var content = await File.ReadAllTextAsync(worktreeFilePath);
+            var lastModified = File.GetLastWriteTimeUtc(worktreeFilePath).ToString("O");
             return Results.Ok(new
             {
                 key,
                 path = relPath,
-                content = workspaceDraft,
+                content,
                 lastModifiedAt = lastModified,
                 exists = true,
-                source = "workspace",
+                source = "worktree",
             });
         }
 
-        if (File.Exists(fullPath))
+        // (2) Main — committed and merged.
+        var mainPath = Path.Combine(cloneRoot, relPath.Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(mainPath))
         {
-            var content = await File.ReadAllTextAsync(fullPath);
-            var lastModified = File.GetLastWriteTimeUtc(fullPath).ToString("O");
+            var content = await File.ReadAllTextAsync(mainPath);
+            var lastModified = File.GetLastWriteTimeUtc(mainPath).ToString("O");
             return Results.Ok(new
             {
                 key,
@@ -1309,12 +1305,11 @@ public static class StoriesEndpoints
             });
         }
 
-        // File isn't on main yet — check the plan branch (architect crew has
-        // committed but PR not merged). git show returns the file as it
-        // exists on the branch tip without mutating the working tree.
+        // (3) Plan branch — pushed but not merged. `git show` against the
+        // local clone reads the branch tip without mutating the working tree.
         if (!string.IsNullOrEmpty(spawn.PlanBranch))
         {
-            var fromBranch = await TryGitShowAsync(repoRoot, spawn.PlanBranch!, relPath);
+            var fromBranch = await TryGitShowAsync(cloneRoot, spawn.PlanBranch!, relPath);
             if (fromBranch is not null)
             {
                 return Results.Ok(new
@@ -1329,8 +1324,6 @@ public static class StoriesEndpoints
             }
         }
 
-        // Not on main, not on plan branch — plan hasn't produced this file
-        // yet. Return exists=false so the UI can render an empty state.
         return Results.Ok(new
         {
             key,
@@ -1340,6 +1333,24 @@ public static class StoriesEndpoints
             exists = false,
             source = (string?)null,
         });
+    }
+
+    /// <summary>
+    /// Phase 42 — keep this in sync with <c>RealStoryGitOps.WorktreePath</c> +
+    /// <c>SanitizeBranchSlug</c>. The architect strategy creates the worktree
+    /// at this path; the artifact-content endpoint must read from the same
+    /// path or the UI will show stale committed content while the agent is
+    /// mid-iteration.
+    /// </summary>
+    private static string ComputeWorktreePath(string cloneRoot, string branch)
+    {
+        var sb = new System.Text.StringBuilder(branch.Length);
+        foreach (var c in branch)
+        {
+            sb.Append(char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '-');
+        }
+        var slug = sb.ToString().Trim('-');
+        return Path.Combine(cloneRoot, ".worktree", $"spawn-{slug}");
     }
 
     /// <summary>

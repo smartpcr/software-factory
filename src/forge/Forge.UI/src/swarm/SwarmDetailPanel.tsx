@@ -2,7 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import type { StorySpawnArtifacts, StorySpawnDetail, PrDetailsResponse } from '@/api/forgeApi';
 import { forgeApi, ForgeApiError } from '@/api/forgeApi';
-import type { Build } from '@/types';
+import type { Build, PrComment } from '@/types';
+import { PrCommentsList } from '@/prs/PrCommentsList';
+import { PrApprovalBadge } from '@/prs/PrApprovalBadge';
+import { deriveVerdict } from '@/prs/prVerdict';
+import { isBuildEvent } from '@/prs/prBuildEvents';
 import type { SwarmMode } from './SwarmPipelineStrip';
 import type { Selection } from './SwarmMasterPanel';
 import { DocumentPane } from './DocumentPane';
@@ -881,50 +885,185 @@ function PrPane({ detail, selection }: { detail: StorySpawnDetail; selection: Se
 function PrCard({ prId }: { prId: string }) {
   const [data, setData] = useState<PrDetailsResponse | null>(null);
   const [err, setErr] = useState(false);
+  const [comments, setComments] = useState<PrComment[]>([]);
+  const [commentsErr, setCommentsErr] = useState<string | null>(null);
+  const [builds, setBuilds] = useState<Build[]>([]);
+
   useEffect(() => {
     let cancelled = false;
     forgeApi.getPrDetails(prId).then((d) => { if (!cancelled) setData(d); }).catch(() => { if (!cancelled) setErr(true); });
+    forgeApi.listPrBuilds(prId, { limit: 5 }).then((d) => { if (!cancelled) setBuilds(d.items); }).catch(() => {});
     return () => { cancelled = true; };
   }, [prId]);
+
+  const refreshComments = async () => {
+    try {
+      const r = await forgeApi.listPrComments(prId, { take: 200 });
+      setComments(r.items);
+      setCommentsErr(null);
+    } catch (e) {
+      setCommentsErr(e instanceof Error ? e.message : 'Failed to load comments');
+    }
+  };
+
+  useEffect(() => {
+    void refreshComments();
+    // 12s — comments are slower-moving than the live transcript; this
+    // matches the cadence PrDetailPanel uses on the dedicated PR page.
+    const id = setInterval(() => { void refreshComments(); }, 12_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prId]);
+
+  // Approval verdict — derived from review comments (skips bot/CI events).
+  const verdict = useMemo(() => deriveVerdict(comments), [comments]);
+
+  // Split human review comments from CI-bot build/policy events. Build events
+  // get their own compact strip below the header; review comments + threads
+  // render via the shared PrCommentsList component.
+  const buildEventComments = useMemo(() => comments.filter(isBuildEvent), [comments]);
 
   if (err) return <div style={dimStyle}>Failed to load PR {prId}</div>;
   if (!data) return <div style={dimStyle}>Loading PR {prId}…</div>;
 
   const { pr, description, reviewers } = data;
-  const colColor = pr.col === 'merged' ? '#4ec9b0' : pr.col === 'review' ? '#dcdcaa' : pr.col === 'build' ? '#569cd6' : 'var(--sc-text-dim)';
+  const colColor = pr.col === 'merged' ? '#4ec9b0'
+    : pr.col === 'review' ? '#dcdcaa'
+    : pr.col === 'build'  ? '#569cd6'
+    : 'var(--sc-text-dim)';
+
   return (
-    <div style={{ border: '1px solid var(--sc-border)', borderRadius: 4, padding: 10 }}>
+    <div style={{ border: '1px solid var(--sc-border)', borderRadius: 4, padding: 12 }}>
+      {/* ── Header ───────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--sc-text)' }}>{pr.title}</div>
-          <div style={{ fontSize: 10, color: 'var(--sc-text-dim)', marginTop: 2 }}>
-            {pr.author?.name ?? '—'} · {pr.branch} → {pr.base}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--sc-text)' }}>{pr.title}</div>
+            <PrApprovalBadge verdict={verdict} showPending />
+          </div>
+          <div style={{ fontSize: 10.5, color: 'var(--sc-text-dim)', marginTop: 3, fontFamily: 'var(--sc-font-mono, monospace)' }}>
+            <strong style={{ color: 'var(--sc-text)' }}>{pr.id}</strong>
+            {' · '}{pr.author?.name ?? '—'}
+            {' · '}{pr.branch} → {pr.base}
           </div>
         </div>
-        <span style={{ fontSize: 9, fontFamily: 'var(--sc-font-display)', letterSpacing: '0.12em', color: colColor, flexShrink: 0 }}>
+        <span style={{ fontSize: 9, fontFamily: 'var(--sc-font-display)', letterSpacing: '0.16em', color: colColor, flexShrink: 0 }}>
           {pr.col.toUpperCase()}
         </span>
       </div>
-      <div style={{ display: 'flex', gap: 16, marginTop: 8, fontSize: 11, fontFamily: 'var(--sc-font-mono, monospace)', color: 'var(--sc-text-dim)' }}>
-        <span>{pr.files} files</span>
-        <span>{pr.commits} commits</span>
+
+      {/* ── Stats strip ──────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 11, fontFamily: 'var(--sc-font-mono, monospace)', color: 'var(--sc-text-dim)', flexWrap: 'wrap' }}>
+        <span><b style={{ color: 'var(--sc-text)' }}>{pr.files}</b> files</span>
+        <span><b style={{ color: 'var(--sc-text)' }}>{pr.commits}</b> commits</span>
         <span style={{ color: '#4ec9b0' }}>+{pr.additions}</span>
         <span style={{ color: '#f44747' }}>−{pr.deletions}</span>
+        <span>{comments.length} comment{comments.length === 1 ? '' : 's'}</span>
         {reviewers.length > 0 && <span>reviewers: {reviewers.join(', ')}</span>}
+        {pr.webUrl && (
+          <a href={pr.webUrl} target="_blank" rel="noopener noreferrer"
+            style={{ marginLeft: 'auto', fontSize: 10, color: '#569cd6', textDecoration: 'none' }}>
+            Open in {pr.id.startsWith('PR-') || pr.id.startsWith('PR ') ? 'ADO' : 'GitHub'} ↗
+          </a>
+        )}
       </div>
+
+      {/* ── Description ─────────────────────────────────────────────── */}
       {description && (
-        <div style={{ fontSize: 11, color: 'var(--sc-text-dim)', marginTop: 8, whiteSpace: 'pre-wrap', maxHeight: 120, overflow: 'auto', lineHeight: '1.5' }}>
-          {description}
+        <details style={{ marginTop: 10 }}>
+          <summary style={{
+            fontSize: 9.5, fontFamily: 'var(--sc-font-display, monospace)', letterSpacing: '0.18em',
+            color: 'var(--sc-muted)', cursor: 'pointer', textTransform: 'uppercase',
+          }}>
+            Description
+          </summary>
+          <div style={{
+            fontSize: 11.5, color: 'var(--sc-text-dim)', marginTop: 6,
+            whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto', lineHeight: 1.55,
+            fontFamily: 'var(--sc-font-mono, monospace)',
+            paddingLeft: 8, borderLeft: '1px solid var(--sc-hairline)',
+          }}>
+            {description}
+          </div>
+        </details>
+      )}
+
+      {/* ── Builds ──────────────────────────────────────────────────── */}
+      {builds.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{
+            fontSize: 9.5, fontFamily: 'var(--sc-font-display, monospace)', letterSpacing: '0.18em',
+            color: 'var(--sc-muted)', textTransform: 'uppercase', marginBottom: 6,
+          }}>
+            Builds <span style={{ color: 'var(--sc-text-dim)', letterSpacing: '0.04em', textTransform: 'none' }}>· latest {builds.length}</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {builds.map((b) => (
+              <div key={b.id} style={{
+                display: 'flex', alignItems: 'center', gap: 12,
+                padding: '4px 8px',
+                borderLeft: `2px solid ${buildBorderColor(b.state, b.result)}`,
+                background: 'rgba(255,255,255,0.02)',
+                fontSize: 11, fontFamily: 'var(--sc-font-mono, monospace)',
+              }}>
+                <span style={{ color: 'var(--sc-text-dim)', minWidth: 90 }}>#{b.providerBuildId}</span>
+                <span style={{
+                  fontSize: 9, fontFamily: 'var(--sc-font-display, monospace)',
+                  letterSpacing: '0.14em', textTransform: 'uppercase',
+                  padding: '1px 6px', borderRadius: 2,
+                  color: buildBorderColor(b.state, b.result),
+                  border: `1px solid ${buildBorderColor(b.state, b.result)}`,
+                }}>
+                  {(b.result ?? b.state).toUpperCase()}
+                </span>
+                {b.startedAt && (
+                  <span style={{ color: 'var(--sc-muted)', fontSize: 10 }}>
+                    {new Date(b.startedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                )}
+                {b.webUrl && (
+                  <a href={b.webUrl} target="_blank" rel="noopener noreferrer"
+                    style={{ marginLeft: 'auto', fontSize: 10, color: '#569cd6', textDecoration: 'none' }}>
+                    logs ↗
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
-      {pr.webUrl && (
-        <a href={pr.webUrl} target="_blank" rel="noopener noreferrer"
-          style={{ display: 'inline-block', marginTop: 8, fontSize: 10, color: '#569cd6' }}>
-          Open in browser ↗
-        </a>
-      )}
+
+      {/* ── Comments (review + thread) ──────────────────────────────── */}
+      <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--sc-hairline)' }}>
+        <div style={{
+          fontSize: 9.5, fontFamily: 'var(--sc-font-display, monospace)', letterSpacing: '0.18em',
+          color: 'var(--sc-muted)', textTransform: 'uppercase', marginBottom: 8,
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <span>Comments</span>
+          {comments.length > 0 && (
+            <span style={{ color: 'var(--sc-text-dim)', letterSpacing: '0.04em', textTransform: 'none', fontFamily: 'var(--sc-font-mono, monospace)' }}>
+              · {comments.length - buildEventComments.length} review · {buildEventComments.length} CI events
+            </span>
+          )}
+        </div>
+        <PrCommentsList
+          prId={prId}
+          comments={comments}
+          error={commentsErr}
+          onRefresh={refreshComments}
+          callerIsHuman
+        />
+      </div>
     </div>
   );
+}
+
+function buildBorderColor(state: string, result: string | null | undefined): string {
+  if (result === 'succeeded' || state === 'completed' && result === 'succeeded') return '#4ec9b0';
+  if (result === 'failed' || state === 'failed') return '#f44747';
+  if (state === 'inProgress' || state === 'running' || state === 'queued') return '#569cd6';
+  return 'var(--sc-text-dim)';
 }
 
 /* ─── QA PANE ────────────────────────────────────────────────────────── */

@@ -118,16 +118,29 @@ function MarkdownDocPane({ storyId, docId, planPr, planBranch }: Props) {
     }
   };
 
+  // Phase 42 — header meta is a list of (text, tone) so the source pill can
+  // be coloured differently depending on what the operator is reading:
+  //   worktree  → amber  (live agent state, mid-iteration)
+  //   main      → green  (post-merge, shipped)
+  //   branch:*  → cyan   (committed but pre-merge)
   const headerMeta = useMemo(() => {
-    const parts: string[] = [];
-    if (latestIter) parts.push(`ITER ${latestIter.iter}`);
-    if (latestIter) parts.push(`SCORE ${latestIter.score}`);
-    if (state.totalCostUsd > 0) parts.push(`COST $${state.totalCostUsd.toFixed(2)}`);
-    if (state.doc?.source) parts.push(state.doc.source.toUpperCase());
-    if (state.doc?.lastModifiedAt) {
-      parts.push(`UPDATED ${formatAgo(state.doc.lastModifiedAt)}`);
+    type Part = { text: string; tone?: 'live' | 'shipped' | 'pre-merge' };
+    const parts: Part[] = [];
+    if (latestIter) parts.push({ text: `ITER ${latestIter.iter}` });
+    if (latestIter) parts.push({ text: `SCORE ${latestIter.score}` });
+    if (state.totalCostUsd > 0) parts.push({ text: `COST $${state.totalCostUsd.toFixed(2)}` });
+    const src = state.doc?.source ?? null;
+    if (src) {
+      const tone: Part['tone'] = src === 'worktree' ? 'live'
+        : src === 'main' ? 'shipped'
+        : src.startsWith('branch:') ? 'pre-merge'
+        : undefined;
+      parts.push({ text: src === 'worktree' ? '● WORKTREE (live)' : src.toUpperCase(), tone });
     }
-    return parts.join(' · ');
+    if (state.doc?.lastModifiedAt) {
+      parts.push({ text: `UPDATED ${formatAgo(state.doc.lastModifiedAt)}` });
+    }
+    return parts;
   }, [latestIter, state.totalCostUsd, state.doc]);
 
   if (state.loading && !state.doc) {
@@ -178,7 +191,22 @@ function MarkdownDocPane({ storyId, docId, planPr, planBranch }: Props) {
               </>
             )}
           </div>
-          <div className="doc-body-hd-r">{headerMeta || '—'}</div>
+          <div className="doc-body-hd-r">
+            {headerMeta.length === 0 ? '—' : headerMeta.map((p, i) => (
+              <span key={i}>
+                {i > 0 && <span style={{ color: 'var(--sc-muted)', margin: '0 6px' }}>·</span>}
+                <span style={{
+                  color: p.tone === 'live' ? 'var(--sc-amber)'
+                    : p.tone === 'shipped' ? 'var(--sc-green)'
+                    : p.tone === 'pre-merge' ? 'var(--sc-cyan)'
+                    : undefined,
+                  fontWeight: p.tone ? 600 : undefined,
+                }}>
+                  {p.text}
+                </span>
+              </span>
+            ))}
+          </div>
         </div>
 
         <h1 className="doc-title">{docTitle}</h1>

@@ -96,6 +96,7 @@ public sealed class ProviderStoryProviderOps : IStoryProviderOps
                     LastSyncStatus = "idle",
                     Provider = req.Repo.Kind,
                     WorkItemId = req.WorkItemId,
+                    WebUrl = prContract.WebUrl,
                 });
                 await db.SaveChangesAsync(ct);
             }

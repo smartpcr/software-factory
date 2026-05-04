@@ -12,6 +12,7 @@ import {
   TranscriptLine,
   SummaryView,
 } from '@/views/conversation';
+import { WorktreePane } from './WorktreePane';
 
 interface Props {
   /** Workstream id (also the workItemId emitted on the task.{wid} channel by
@@ -112,11 +113,12 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
   const summaryIters = snapshot?.deliverables ?? [];
 
   const isSummaryMode = filter === 'summary';
+  const isWorktreeMode = filter === 'worktree';
   const totalIters = isSummaryMode ? summaryIters.length : iterations.length;
   const activeIter = selectedIter ?? (totalIters > 0 ? totalIters - 1 : 0);
-  const visibleEvents = !isSummaryMode && totalIters > 0
+  const visibleEvents = !isSummaryMode && !isWorktreeMode && totalIters > 0
     ? iterations[activeIter]?.events ?? []
-    : (!isSummaryMode ? filtered : []);
+    : (!isSummaryMode && !isWorktreeMode ? filtered : []);
   const activeSummary = isSummaryMode && totalIters > 0 ? summaryIters[activeIter] ?? null : null;
   const reversedEvents = useMemo(() => [...visibleEvents].reverse(), [visibleEvents]);
 
@@ -221,7 +223,9 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
       )}
 
       <div className="live-exec__transcript" style={{ userSelect: 'text' }}>
-        {isSummaryMode ? (
+        {isWorktreeMode ? (
+          <WorktreePane workItemId={workstreamId} />
+        ) : isSummaryMode ? (
           <SummaryView
             deliverable={activeSummary}
             loading={live?.loading === true}

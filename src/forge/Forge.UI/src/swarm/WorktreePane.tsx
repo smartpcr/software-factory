@@ -72,7 +72,16 @@ export function WorktreePane({ workItemId }: Props) {
     );
   }
 
-  if (!snap && !data && !loading && !error) {
+  // First-load spinner. The /commits endpoint shells out to `git log` against
+  // the worktree directory, which can take several seconds when the operator
+  // first opens the tab (cold disk + slow `git fetch origin`). Show a busy
+  // indicator instead of leaving the pane blank — otherwise the tab looks
+  // broken / stuck. Once `data` lands we drop into the regular render below.
+  if (loading && !snap && !data) {
+    return <WorktreeBusySkeleton />;
+  }
+
+  if (!snap && !data && !error) {
     return (
       <div className="tab-placeholder">
         <div className="lbl">▌ NO WORKTREE ACTIVITY YET</div>
@@ -130,7 +139,12 @@ export function WorktreePane({ workItemId }: Props) {
             {commits.length} commit{commits.length === 1 ? '' : 's'}
           </span>
         )}
-        {loading && <span style={{ fontSize: 10, color: 'var(--sc-text-dim)' }}>loading commits…</span>}
+        {loading && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 10, color: 'var(--sc-text-dim)' }}>
+            <Spinner size={10} />
+            <span>refreshing…</span>
+          </span>
+        )}
       </div>
 
       {error && (
@@ -212,6 +226,101 @@ export function WorktreePane({ workItemId }: Props) {
           list truncated at 200 paths.
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Spinner glyph — two concentric arcs rotating at different speeds. Pure
+ * SVG + CSS so it works on any theme without JS animation. Sized via the
+ * `size` prop (px); text colour follows currentColor.
+ */
+function Spinner({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      style={{ animation: 'forge-spin 0.8s linear infinite', flexShrink: 0 }}
+      aria-hidden
+    >
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" strokeOpacity="0.18" />
+      <path
+        d="M 12 3 A 9 9 0 0 1 21 12"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+/**
+ * First-load skeleton for the worktree pane. The `/commits` endpoint can
+ * take several seconds (cold disk, `git fetch origin` over the network),
+ * so we show a busy indicator with placeholder shimmer rows instead of
+ * leaving the pane blank — otherwise the operator wonders if the tab is
+ * broken. Replaced by real content as soon as the API responds.
+ */
+function WorktreeBusySkeleton() {
+  return (
+    <div style={{ padding: 16 }}>
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        color: 'var(--sc-amber)',
+        fontFamily: 'var(--sc-font-display, monospace)',
+        fontSize: 10,
+        letterSpacing: '0.22em',
+        textTransform: 'uppercase',
+        marginBottom: 14,
+      }}>
+        <Spinner size={14} />
+        Loading worktree
+        <span style={{ color: 'var(--sc-text-dim)', letterSpacing: '0.04em', textTransform: 'none', fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11 }}>
+          fetching git log + tracking refs…
+        </span>
+      </div>
+
+      {/* Placeholder rows — three commit-card shapes pulsing so the operator
+       * sees structure, not just a void. */}
+      {[0, 1, 2].map((i) => (
+        <div
+          key={i}
+          style={{
+            border: '1px solid var(--sc-hairline)',
+            borderRadius: 4,
+            padding: '10px 12px',
+            marginBottom: 8,
+            background: 'var(--sc-surface)',
+            animation: `forge-skeleton-pulse 1.4s ease-in-out infinite`,
+            animationDelay: `${i * 0.16}s`,
+          }}
+        >
+          <div style={{
+            height: 11,
+            width: '38%',
+            background: 'var(--sc-border)',
+            borderRadius: 2,
+            marginBottom: 8,
+          }} />
+          <div style={{
+            height: 9,
+            width: '72%',
+            background: 'var(--sc-border)',
+            borderRadius: 2,
+            marginBottom: 6,
+          }} />
+          <div style={{
+            height: 8,
+            width: '50%',
+            background: 'var(--sc-border)',
+            borderRadius: 2,
+          }} />
+        </div>
+      ))}
     </div>
   );
 }

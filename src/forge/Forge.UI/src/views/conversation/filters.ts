@@ -4,14 +4,28 @@
 // transcript stream, so the filter / grouping / paging logic moved here.
 import type { TaskTranscriptEvent } from '@/realtime/useTaskLiveStore';
 
-export type FilterKey = 'all' | 'generator' | 'evaluator' | 'tools' | 'commits' | 'summary';
+/**
+ * Filter keys for the paged-conversation view's tab strip.
+ *
+ * `worktree` (formerly `commits`) renders a different SHAPE than the other
+ * filters: instead of filtering the transcript event list, the conversation
+ * panes branch when this key is active and render the
+ * <c>&lt;WorktreePane&gt;</c> inline. That shows the actual git history of
+ * the work-item's branch (commits + per-commit file changes), which is what
+ * operators want when they ask "what did the agent change?". The old
+ * `commits` filter scanned for `task.branch-pushed` / `task.pr-opened`
+ * events that almost never fired for the architect crew, so the tab was
+ * always empty for plan tasks. Coding-task panes get the same treatment so
+ * the view is consistent everywhere.
+ */
+export type FilterKey = 'all' | 'generator' | 'evaluator' | 'tools' | 'worktree' | 'summary';
 
 export const FILTERS: Array<{ key: FilterKey; label: string }> = [
   { key: 'all',       label: 'All' },
   { key: 'generator', label: 'Generator' },
   { key: 'evaluator', label: 'Evaluator' },
   { key: 'tools',     label: 'Tools' },
-  { key: 'commits',   label: 'Commits' },
+  { key: 'worktree',  label: 'Worktree' },
   { key: 'summary',   label: 'Summary' },
 ];
 
@@ -24,10 +38,6 @@ export const FILTERS: Array<{ key: FilterKey; label: string }> = [
 // Filters and renderers must accept both forms.
 const TOOL_CALL_KINDS = new Set(['task.tool-call', 'task.toolcall']);
 const TOOL_RESULT_KINDS = new Set(['task.tool-result', 'task.toolresult']);
-// Commit-style activity comes from `task.branch-pushed` (the engineer
-// pushed local commits to the remote) and `task.pr-opened`. The
-// `task.commit` kind is documented but never emitted in this codebase.
-const COMMIT_KINDS = new Set(['task.commit', 'task.branch-pushed', 'task.pr-opened', 'task.comment-response-pushed']);
 
 export function filterEvents(
   events: TaskTranscriptEvent[],
@@ -38,7 +48,10 @@ export function filterEvents(
   evalAgentId?: string | null,
 ): TaskTranscriptEvent[] {
   if (f === 'all') return events;
-  if (f === 'commits') return events.filter((e) => COMMIT_KINDS.has(e.kind));
+  // `worktree` is rendered specially by the calling pane (WorktreePane);
+  // returning [] here prevents the transcript list from rendering anything
+  // when the caller forgets to branch.
+  if (f === 'worktree') return [];
   if (f === 'tools')   return events.filter((e) => TOOL_CALL_KINDS.has(e.kind) || TOOL_RESULT_KINDS.has(e.kind));
 
   const EVAL_KINDS = new Set([

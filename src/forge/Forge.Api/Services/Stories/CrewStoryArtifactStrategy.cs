@@ -40,6 +40,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private readonly IAgentRunner runner;
     private readonly TaskChannel taskChannel;
     private readonly IConfiguration config;
+    private readonly IStoryGitOps git;
     private readonly ILogger<CrewStoryArtifactStrategy>? logger;
 
     public CrewStoryArtifactStrategy(
@@ -47,12 +48,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         IAgentRunner runner,
         TaskChannel taskChannel,
         IConfiguration config,
+        IStoryGitOps git,
         ILogger<CrewStoryArtifactStrategy>? logger = null)
     {
         this.scopeFactory = scopeFactory;
         this.runner = runner;
         this.taskChannel = taskChannel;
         this.config = config;
+        this.git = git;
         this.logger = logger;
     }
 
@@ -130,19 +133,32 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         var specs = BuildPlanDocSpecs(docDir).Values.ToArray();
 
+        // Phase 42 — set up the real git worktree for plan work. All four
+        // architects share this worktree (git refuses two worktrees on one
+        // branch), with per-iter commits serialised by the IStoryGitOps lock.
+        // The agent's working dir is now the actual repo root, so its tools
+        // can read source files / prior docs / etc. — no more isolated
+        // scratch dir + sibling-copy trick.
+        var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
+        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
+        var worktreePath = await this.git.EnsureWorktreeAsync(repo, planBranch, "main", ct);
+
         // ── Assign different generator agents per doc (round-robin) ────
         // Load all available architect crew agents so each doc gets a
         // distinct generator. This improves diversity — four agents writing
         // in parallel each bring a different perspective, and the evaluator
-        // catches cross-doc inconsistencies via the sibling-doc context.
+        // catches cross-doc inconsistencies (siblings live at their real
+        // repo paths in the shared worktree, so each agent's tools see them).
         var generatorAgentIds = await this.LoadArchitectRosterAsync(specs.Length, ct);
 
         var tasks = specs.Select((spec, idx) =>
             this.ProducePlanFileAsync(
                 spawn, story, spec, budget, forceResume,
                 generatorAgentOverride: generatorAgentIds.Count > idx ? generatorAgentIds[idx] : null,
-                siblingSpecs: specs.Where((_, i) => i != idx).Select(s => s.FileName).ToArray(),
-                spawnId: spawn.Id,
+                siblingSpecs: specs.Where((_, i) => i != idx).Select(s => s.RepoPath).ToArray(),
+                worktreePath: worktreePath,
+                repo: repo,
+                planBranch: planBranch,
                 ct)).ToArray();
         var results = await Task.WhenAll(tasks);
 
@@ -152,6 +168,22 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             dict[specs[i].RepoPath] = results[i];
         }
         return dict;
+    }
+
+    /// <summary>
+    /// Phase 42 — resolve the <see cref="RepoRow"/> for a spawn so we can
+    /// drive the real-repo worktree. Returns null when the spawn isn't
+    /// bound to a repo (legacy / synthetic cases — the strategy then
+    /// falls back to the deterministic-test no-op path that doesn't touch
+    /// git). Logged at warning when null + ProducePlan is called so the
+    /// operator sees why the worktree tab stays empty.
+    /// </summary>
+    private async Task<RepoRow?> LookupRepoAsync(string? repoId, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(repoId)) return null;
+        using var scope = this.scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        return await db.Repos.AsNoTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct);
     }
 
     /// <summary>
@@ -200,22 +232,28 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         TimeSpan budget, bool forceResume,
         string? generatorAgentOverride,
         string[] siblingSpecs,
-        string spawnId,
+        string worktreePath,
+        RepoRow? repo,
+        string planBranch,
         CancellationToken ct)
     {
-        // Per-file workspace so 4 parallel SDKs don't share a cwd.
-        var workspace = this.PrepareWorkspace(spawn.Id, $"plan-{Path.GetFileNameWithoutExtension(spec.FileName)}");
-        var diskPath = Path.Combine(workspace, spec.FileName);
+        // Phase 42 — agent's working dir IS the git worktree root. Doc lives
+        // at its real repo path inside the worktree so the agent's tools see
+        // both the doc AND the rest of the codebase (siblings, source files,
+        // prior docs) at their real locations.
+        var diskPath = Path.Combine(worktreePath, spec.RepoPath.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(diskPath)!);
 
-        // Resume case — a previous tick's architect already wrote this file.
-        // Skip re-invoking the LLM unless forceResume is set.
+        // Resume case — a previous tick's architect already wrote this file
+        // and committed it to the branch. Skip re-invoking the LLM unless
+        // forceResume is set.
         if (!forceResume && File.Exists(diskPath))
         {
             var existing = await File.ReadAllTextAsync(diskPath, ct);
             if (!string.IsNullOrWhiteSpace(existing))
             {
                 this.logger?.LogInformation(
-                    "Plan file '{File}' cached in workspace ({Bytes} bytes); skipping architect invocation.",
+                    "Plan file '{File}' already in worktree ({Bytes} bytes); skipping architect invocation.",
                     spec.FileName, existing.Length);
                 return existing;
             }
@@ -223,60 +261,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         var docWorkItemId = $"plan-doc:{spawn.Id}:{spec.FileName}";
 
-        // ── Cross-doc context ─────────────────────────────────────────
-        // Copy sibling doc files into this agent's workspace so it can
-        // read them with its filesystem tools. This gives full content
-        // access without bloating the prompt. Each sibling is placed in
-        // a `siblings/` subdirectory so the agent's own output file stays
-        // at the workspace root.
-        var siblingsDir = Path.Combine(workspace, "siblings");
-        Directory.CreateDirectory(siblingsDir);
-        var availableSiblings = new List<string>();
-        foreach (var sibling in siblingSpecs)
-        {
-            var sibWorkspace = this.PrepareWorkspace(spawnId, $"plan-{Path.GetFileNameWithoutExtension(sibling)}");
-            var sibPath = Path.Combine(sibWorkspace, sibling);
-            if (File.Exists(sibPath))
-            {
-                try
-                {
-                    var content = await File.ReadAllTextAsync(sibPath, ct);
-                    if (!string.IsNullOrWhiteSpace(content))
-                    {
-                        await File.WriteAllTextAsync(Path.Combine(siblingsDir, sibling), content, ct);
-                        availableSiblings.Add(sibling);
-                    }
-                }
-                catch
-                {
-                    // best-effort — sibling may not exist yet (parallel execution)
-                }
-            }
-        }
-
-        var crossDocSection = availableSiblings.Count > 0
-            ? $"""
-
-            ## Sibling documents (MUST READ before writing)
-            The following sibling plan docs have been placed in `siblings/`
-            in your working directory. You MUST read them with your
-            filesystem tools BEFORE writing your own file so you stay
-            consistent with terminology, components, and constraints:
-            {string.Join("\n", availableSiblings.Select(s => $"  - `siblings/{s}`"))}
-
-            Do NOT duplicate their content. Reference shared concepts by
-            name. If you spot an inconsistency, note it in your Iteration
-            Summary.
-            """
-            : """
-
-            ## Sibling documents
-            You are one of 4 architect agents producing plan docs in parallel.
-            The sibling docs (tech-spec.md, architecture.md, implementation-plan.md,
-            e2e-scenarios.md) are not available yet. Use consistent terminology
-            and components across all docs. If you make architectural decisions,
-            state them explicitly so sibling agents can align.
-            """;
+        // Phase 42 — sibling docs live at their real repo paths in the
+        // shared worktree (no copy-into-siblings/ trick anymore). Some may
+        // not exist yet on iter 1 of parallel execution; the agent reads
+        // whichever are present at the time.
+        var siblingPathsList = string.Join("\n", siblingSpecs.Select(p => $"  - `{p}`"));
 
         var generatorPrompt = $$"""
             You are the Architect agent for Forge story `{{spawn.StoryId}}`.
@@ -291,22 +280,42 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             {{spawn.StoryPoints}}
 
             ## Your task
-            Produce ONE planning artifact: `{{spec.FileName}}`. It must be a
-            real, production-quality markdown document — not a placeholder,
-            not an outline. Anchor every section on the story description's
-            concrete details.
+            Produce ONE planning artifact at `{{spec.RepoPath}}` (relative to
+            your working directory, which is the repo root). Real,
+            production-quality markdown — not a placeholder, not an outline.
+            Anchor every section on the story description's concrete details.
 
             ### Brief for this file
             {{spec.Brief}}
-            {{crossDocSection}}
+
+            ## Repository context — IMPORTANT
+            Your working directory is a git worktree of the actual repo on
+            branch `{{planBranch}}`. You can READ ANY FILE in this repo with
+            your filesystem tools. Use that to:
+              - Read existing source code so the plan reflects what's already
+                there (don't invent module names that don't exist).
+              - Read prior docs under `docs/` for decisions already made.
+              - Reference real package names, component boundaries, and
+                module structure when describing what to build.
+            A plan written in isolation drifts from the codebase. A plan
+            written WITH the codebase under your tools stays anchored.
+
+            ## Sibling plan documents
+            The other plan docs in this story are written in PARALLEL by
+            sibling architects. They live at:
+            {{siblingPathsList}}
+
+            Read whichever already exist (some may not exist yet on iter 1).
+            Don't duplicate their content — reference shared concepts by
+            name. If you spot an inconsistency, note it in your Iteration
+            Summary so the next iteration of EITHER doc can align.
 
             ## How to deliver — CRITICAL
-            You MUST invoke your filesystem write tool to save the file. The
-            file does not exist until you call the tool. Content typed in
-            your chat reply is NOT saved — the workspace is checked at the
-            end of your turn and an empty workspace fails this iteration
-            with score 0. If you find yourself writing the document body
-            into your reply, STOP and use the write tool instead.
+            You MUST invoke your filesystem write tool to save the file at
+            `{{spec.RepoPath}}` (relative to working directory — no leading
+            slash, no extra path components). Content typed in your chat
+            reply is NOT saved — at end of turn the workspace is checked
+            and an empty file fails this iteration with score 0.
 
             Concretely:
             1. For large files, prefer incremental edits (edit_file / replace)
@@ -318,7 +327,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                its byte count matches what you intended.
             3. ONLY THEN reply with the summary below. Your chat reply is
                for the summary; the FILE is the deliverable.
-            4. NEVER delete {{spec.FileName}} — if you need to restructure,
+            4. NEVER delete `{{spec.RepoPath}}` — if you need to restructure,
                edit in place. Deleting the file causes the evaluator to
                score 0 and the iteration is wasted.
 
@@ -356,7 +365,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
         var evaluatorPrompt = $$"""
             You are the Architect-reviewer scoring another architect's draft of
-            `{{spec.FileName}}` for story `{{spawn.StoryId}}`.
+            `{{spec.RepoPath}}` for story `{{spawn.StoryId}}`.
 
             ## Story title
             {{story.Title}}
@@ -367,17 +376,24 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ## File brief
             {{spec.Brief}}
 
+            ## Repository context
+            Your working directory is a git worktree of the actual repo on
+            branch `{{planBranch}}`. The draft you're scoring lives at
+            `{{spec.RepoPath}}`. You can also READ source files / prior
+            docs / sibling plan docs to verify the draft anchors to real
+            code structure (vs invented module names).
+
             ## Your job
-            Read the draft at `{{spec.FileName}}` in your working directory
-            using your read-only tools (view / ls / grep). Do NOT modify
-            the file. Score on:
-            - Anchored to the story description (every section grounded in
-              specifics from the operator's prompt — references, constraints,
-              terminology — not generic boilerplate).
+            Read the draft at `{{spec.RepoPath}}` using your read-only tools
+            (view / ls / grep). Do NOT modify the file. Score on:
+            - Anchored to the story description AND to the real repo (no
+              invented packages / modules / files; references resolve).
             - Production-quality markdown (no placeholders, no outline-only
               sections, no "TODO" markers).
             - Coverage of the file's stated brief.
-            - Internal consistency (no contradictions between sections).
+            - Internal consistency (no contradictions between sections,
+              and no contradictions with sibling plan docs that already
+              exist on disk).
 
             Reply with three short sections in this order:
             1. **What improved this iteration** — one bullet list.
@@ -414,25 +430,40 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             phaseTag: $"plan:{spec.FileName}",
             generatorPrompt: generatorPrompt,
             evaluatorPrompt: evaluatorPrompt,
-            workspace: workspace,
+            workspace: worktreePath,
             budget: budget,
             storyPoints: docPoints,
             generatorAgentOverride: generatorAgentOverride,
-            // Phase 41 (option 2) — revoke shell access for plan-doc agents.
-            // The architect's job here is pure file I/O (read siblings, write
-            // the spec); Bash was only ever used to delete the file before
-            // a partial rewrite (observed 2026-05-04 on tech-spec.md).
+            // Phase 41 — revoke shell access. The architect's job is file I/O.
             disallowedTools: ArchitectDisallowedTools,
-            // Phase 41 (option 3) — protect this iteration's artifact. If the
-            // generator nukes the file without rewriting it, restore from the
-            // prior iteration's snapshot before the evaluator scores.
+            // Phase 41 — restore from snapshot if the generator destroys the file.
             protectedFile: diskPath,
+            // Phase 42 — commit the doc per iteration so the Worktree tab
+            // shows real progress. CommitPathInWorktreeAsync is no-op when
+            // content didn't change since last commit. Per-branch lock
+            // serialises concurrent architects against the git index.
+            onIterationCompleted: async (iter, verdict) =>
+            {
+                if (repo is null) return;
+                try
+                {
+                    await this.git.CommitPathInWorktreeAsync(
+                        repo, planBranch, spec.RepoPath,
+                        $"plan({spec.FileName}): iter {iter} ({verdict})", ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    this.logger?.LogWarning(ex,
+                        "Per-iter commit failed for {File} iter {Iter}; loop continues.",
+                        spec.FileName, iter);
+                }
+            },
             ct: ct);
 
         if (!File.Exists(diskPath))
         {
             throw new InvalidOperationException(
-                $"Architect did not produce '{spec.FileName}'. Workspace: {workspace}");
+                $"Architect did not produce '{spec.RepoPath}'. Worktree: {worktreePath}");
         }
         return await File.ReadAllTextAsync(diskPath, ct);
     }
@@ -460,9 +491,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             throw new InvalidOperationException($"Unknown artifact key '{key}'. Expected one of: {string.Join(", ", specs.Keys)}");
         }
 
-        var siblingFileNames = specs.Values
+        var siblingPaths = specs.Values
             .Where(s => !string.Equals(s.FileName, spec.FileName, StringComparison.OrdinalIgnoreCase))
-            .Select(s => s.FileName)
+            .Select(s => s.RepoPath)
             .ToArray();
 
         // Assign a stable generator per doc key — uses the roster index
@@ -474,12 +505,19 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var roster = await this.LoadArchitectRosterAsync(allKeys.Count, ct);
         var generatorOverride = roster.Count > docIndex ? roster[docIndex] : null;
 
+        // Phase 42 — same git-worktree plumbing as the full plan run.
+        var planBranch = spawn.PlanBranch ?? $"story/{StoryPaths.Safe(spawn.StoryId)}/plan";
+        var repo = await this.LookupRepoAsync(spawn.RepoId, ct);
+        var worktreePath = await this.git.EnsureWorktreeAsync(repo, planBranch, "main", ct);
+
         await this.ProducePlanFileAsync(
             spawn, story, spec, budget, forceResume: true,
             generatorAgentOverride: generatorOverride,
-            siblingSpecs: siblingFileNames,
-            spawnId: spawn.Id,
-            ct);
+            siblingSpecs: siblingPaths,
+            worktreePath: worktreePath,
+            repo: repo,
+            planBranch: planBranch,
+            ct: ct);
     }
 
     public async Task<IReadOnlyList<DecompositionWorkstream>> ProduceDecompositionAsync(
@@ -1017,6 +1055,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // "delete-then-forget-to-rewrite" failure mode regardless of which
         // tool was used to delete (defense in depth alongside disallowedTools).
         string? protectedFile = null,
+        // Phase 42 — invoked after each iteration's deliverable row is
+        // persisted. Used by the architect plan path to commit the doc per
+        // iteration so the Worktree tab shows real progress. Args are
+        // (iter, verdict). Best-effort — exceptions log but don't break
+        // the loop. Null = no per-iter side effects (engineer crews don't
+        // need this; their CommitFilesAsync runs once at the end).
+        Func<int, string, Task>? onIterationCompleted = null,
         CancellationToken ct = default)
     {
         var prefix = CrewIdPrefix(team);
@@ -1284,6 +1329,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 if (evt.InputTokens is > 0) inTok += evt.InputTokens.Value;
                 if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
             }
+
+            // Phase 42 — fire the per-iter post-completion hook AFTER the
+            // evaluator has produced its text. The file's on disk; the
+            // architect plan path uses this to commit the doc per iter.
+            // Best-effort — exceptions bubble up but the surrounding
+            // try/catch wrapper at the call site keeps the loop alive.
+            if (onIterationCompleted is not null)
+            {
+                try { await onIterationCompleted(iter, "post-eval"); }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    this.logger?.LogWarning(ex,
+                        "onIterationCompleted callback threw at iter {Iter} for {WorkItemId}; loop continues.",
+                        iter, workItemId);
+                }
+            }
+
             return new EvaluatorRunOutput(output.ToString(), cost, inTok, outTok);
         }
 

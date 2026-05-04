@@ -733,6 +733,20 @@
   50%      { opacity: 0.55; transform: scale(1.4); }
 }
 
+/* Spinner used by the WorktreePane busy indicator + any other slow-load
+ * surface. Pure SVG rotation; the colour follows the parent's currentColor. */
+@keyframes forge-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Softer opacity-only pulse for skeleton cards (without scaling — full-size
+ * card sliders look bad if they scale). Used by WorktreePane while the
+ * /commits endpoint is still resolving. */
+@keyframes forge-skeleton-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 0.95; }
+}
+
 /* ── Phase 19 — Iteration pager ─────────────────────────────────────── */
 .live-exec__iter-pager {
   display: flex;
