@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { forgeApi } from '@/api/forgeApi';
 import { useTaskLive, useTaskLiveStore, type TaskTranscriptEvent } from '@/realtime/useTaskLiveStore';
 import { useToastStore } from '@/state/useToastStore';
+import { useConfirmStore } from '@/state/useConfirmStore';
 import {
   type FilterKey,
   FILTERS,
@@ -61,7 +62,23 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
     } finally { setResuming(false); }
   }
   async function handleRestart() {
-    if (!window.confirm('Restart this workstream? Clears deliverables, resets branch.')) return;
+    const ok = await useConfirmStore.getState().ask({
+      title: 'Restart workstream?',
+      body: 'This nukes the gen↔eval state for this workstream and re-enters the loop from iter 1.',
+      tone: 'warn',
+      confirmLabel: '↻ Restart',
+      cancelLabel: 'Cancel',
+      checklist: [
+        'Clear all deliverables for this workstream',
+        'Clear transcript events',
+        'Reset workstream status to "active"',
+        'Reset PRs / commits / ahead-behind counters',
+        'Wipe the impl workspace on disk',
+        'Reset the branch worktree to origin/main',
+        'Re-drive the orchestrator (next tick re-enters gen↔eval at iter 1)',
+      ],
+    });
+    if (!ok) return;
     setRestarting(true);
     try {
       const r = await forgeApi.restartWorkstream(workstreamId);

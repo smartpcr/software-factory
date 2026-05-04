@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { forgeApi } from '@/api/forgeApi';
 import { useTaskLive, useTaskLiveStore, type TaskTranscriptEvent, type DeliverableShape } from '@/realtime/useTaskLiveStore';
 import { useToastStore } from '@/state/useToastStore';
+import { useConfirmStore } from '@/state/useConfirmStore';
 import {
   type FilterKey,
   FILTERS,
@@ -67,12 +68,15 @@ export function DocConversationPane({ storyId, docId }: Props) {
   const [filter, setFilter] = useState<FilterKey>('summary');
   const [selectedIter, setSelectedIter] = useState<number | null>(null);
   const [resuming, setResuming] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const showToast = useToastStore((s) => s.show);
 
   const isLive = status === 'live';
   const isCompleted = status === 'completed';
   const hasIterations = rows.length > 0;
   const canResume = !isLive && !isCompleted && hasIterations;
+  const busy = resuming || cancelling || restarting;
 
   async function handleResume() {
     setResuming(true);
@@ -82,6 +86,39 @@ export function DocConversationPane({ storyId, docId }: Props) {
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Resume failed', 'danger');
     } finally { setResuming(false); }
+  }
+  async function handleCancel() {
+    setCancelling(true);
+    try {
+      const r = await forgeApi.cancelStoryArtifact(storyId, key);
+      showToast(`Cancelled ${key}.md — ${r.invocationsCancelled} invocation(s) stopped.`, 'info');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Cancel failed', 'danger');
+    } finally { setCancelling(false); }
+  }
+  async function handleRestart() {
+    const ok = await useConfirmStore.getState().ask({
+      title: `Restart ${key}.md?`,
+      body: 'This nukes the gen↔eval state for this document and re-enters the loop from iter 1.',
+      tone: 'warn',
+      confirmLabel: '↻ Restart',
+      cancelLabel: 'Cancel',
+      checklist: [
+        `Clear all iterations for ${key}.md`,
+        'Clear transcript events',
+        'Reset doc execution status to idle',
+        'Wipe the architect workspace on disk',
+        'Re-enter the gen↔eval loop at iter 1',
+      ],
+    });
+    if (!ok) return;
+    setRestarting(true);
+    try {
+      const r = await forgeApi.restartStoryArtifact(storyId, key);
+      showToast(`Restarted ${key}.md — ${r.deliverablesCleaned} iteration(s) cleared.`, 'success');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Restart failed', 'danger');
+    } finally { setRestarting(false); }
   }
 
   useEffect(() => {
@@ -191,12 +228,24 @@ export function DocConversationPane({ storyId, docId }: Props) {
           </button>
         ))}
         <span style={{ flex: 1 }} />
-        <button type="button" className="doc-conv-resume-btn" disabled={!canResume || resuming}
+        <button type="button" className="doc-conv-resume-btn" disabled={!canResume || busy}
           title={isLive ? 'Running.' : isCompleted ? 'Shipped.' : !hasIterations ? 'No iterations.' : 'Resume loop.'}
           onClick={() => void handleResume()} style={{ margin: '0 2px', padding: '4px 10px' }}>
           {resuming ? '⏳…' : isLive ? (
             <span style={{ color: 'var(--sc-cyan, #5eead4)', fontWeight: 700 }}>● LIVE</span>
           ) : '↻ RESUME'}
+        </button>
+        <button type="button" className="doc-conv-resume-btn" disabled={isCompleted || busy}
+          title={isCompleted ? 'Shipped.' : 'Cancel running invocations for this doc.'}
+          onClick={() => void handleCancel()}
+          style={{ margin: '0 2px', padding: '4px 10px', borderColor: 'var(--sc-red, #ff6b80)' }}>
+          {cancelling ? '⏳…' : '✕ CANCEL'}
+        </button>
+        <button type="button" className="doc-conv-resume-btn" disabled={busy}
+          title="Wipe iterations and restart from iter 1."
+          onClick={() => void handleRestart()}
+          style={{ margin: '0 2px', padding: '4px 10px', borderColor: 'var(--sc-amber, #ffb347)' }}>
+          {restarting ? '⏳…' : '⟲ RESTART'}
         </button>
       </nav>
 

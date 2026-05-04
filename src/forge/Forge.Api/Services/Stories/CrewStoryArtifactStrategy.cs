@@ -465,10 +465,18 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             .Select(s => s.FileName)
             .ToArray();
 
-        // Use the crew default generator for single-doc resume
+        // Assign a stable generator per doc key — uses the roster index
+        // so each doc gets a different agent even on resume. The key index
+        // is deterministic: architecture=0, tech-spec=1, etc.
+        var allKeys = specs.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList();
+        var docIndex = allKeys.IndexOf(key);
+        if (docIndex < 0) docIndex = 0;
+        var roster = await this.LoadArchitectRosterAsync(allKeys.Count, ct);
+        var generatorOverride = roster.Count > docIndex ? roster[docIndex] : null;
+
         await this.ProducePlanFileAsync(
             spawn, story, spec, budget, forceResume: true,
-            generatorAgentOverride: null,
+            generatorAgentOverride: generatorOverride,
             siblingSpecs: siblingFileNames,
             spawnId: spawn.Id,
             ct);
@@ -553,6 +561,21 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     {
         var workspace = this.PrepareWorkspace(spawn.Id, $"impl-{Slug(workstream.Id)}");
         var repoPrefix = $"src/.story-artifacts/{StoryPaths.Safe(spawn.StoryId)}/{workstream.Id}";
+
+        // Look up the work item's description — the operator may have edited
+        // it with more specific requirements (e.g. "use C# not TypeScript").
+        // Falls back to workstream.Summary when no work item row exists.
+        string workItemDescription;
+        using (var scope = this.scopeFactory.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            var wi = await db.WorkItems.AsNoTracking()
+                .FirstOrDefaultAsync(w => w.Id == workstream.Id, ct);
+            workItemDescription = !string.IsNullOrEmpty(wi?.DescriptionMd)
+                ? wi!.DescriptionMd
+                : workstream.Summary ?? string.Empty;
+        }
+
         var generatorPrompt = $$"""
             You are the Engineer agent implementing workstream `{{workstream.Id}}`
             for story `{{spawn.StoryId}}`.
@@ -567,9 +590,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             **{{workstream.Name}}** — {{workstream.Summary}}
             Branch: `{{workstream.Branch}}`
 
+            ## Detailed requirements
+            {{workItemDescription}}
+
             ## Your task
-            Produce the source-code changes that implement this workstream. Use
-            real implementation — types, methods, tests — not placeholders.
+            Produce the source-code changes that implement this workstream per
+            the detailed requirements above. Use real implementation — types,
+            methods, tests — not placeholders. Follow the language and
+            conventions specified in the requirements; if none are stated,
+            match the repository's primary language.
 
             ## How to deliver
             Use your filesystem tools to write files inside your working
@@ -604,6 +633,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ## Workstream
             **{{workstream.Name}}** — {{workstream.Summary}}
 
+            ## Detailed requirements
+            {{workItemDescription}}
+
             ## Story
             {{spawn.StoryTitle}}
             {{NonEmpty(spawn.StoryDescription)}}
@@ -616,6 +648,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             Score on:
             - Real implementation vs placeholder/scaffolding (types, methods,
               tests must be substantive).
+            - Adherence to the detailed requirements above (language, contracts,
+              naming conventions, deliverables specified).
             - Coverage of the workstream's stated goals + acceptance criteria.
             - Internal consistency with the story description and the merged
               planning artifacts on `main` (architecture.md / implementation-plan.md).

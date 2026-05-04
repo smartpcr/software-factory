@@ -5,6 +5,7 @@ import { useStateStore } from '@/state/useStateStore';
 import { useWorkstreamsStore, filterWorkstreams, type WorkstreamFilter } from '@/state/useWorkstreamsStore';
 import { useBoardStore } from '@/state/useBoardStore';
 import { useToastStore } from '@/state/useToastStore';
+import { useConfirmStore } from '@/state/useConfirmStore';
 import { sampleState } from '@/sampleData';
 import { StatsStrip } from '@/workstreams/StatsStrip';
 import { WorkstreamCard } from '@/workstreams/WorkstreamCard';
@@ -159,9 +160,19 @@ export function WorkstreamsView() {
 
   // Phase 6.4 — open a PR from this workstream via the configured provider.
   async function onOpenPr(ws: Workstream) {
+    // window.prompt is also a browser-default modal — left in place pending
+    // a styled prompt component (follow-up). The confirm below was the more
+    // pressing replacement: misusing yes/no for a 2-provider choice.
     const title = window.prompt('PR title', `${ws.name}: ${ws.summary.split('.')[0]}`);
     if (!title) return;
-    const provider = window.confirm('Use GitHub? (Cancel = ADO)') ? 'github' : 'ado';
+    const useGithub = await useConfirmStore.getState().ask({
+      title: 'Pick a provider for this PR',
+      body: 'The PR opens against the provider you select. Switching providers later means closing this PR and opening a new one.',
+      tone: 'info',
+      confirmLabel: 'GitHub',
+      cancelLabel: 'Azure DevOps',
+    });
+    const provider = useGithub ? 'github' : 'ado';
     try {
       const pr = await forgeApi.openWorkstreamPr(ws.id, {
         title,

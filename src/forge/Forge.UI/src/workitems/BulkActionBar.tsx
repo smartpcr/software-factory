@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useWitStore } from './useWitStore';
 import { useWorkItemsStore } from './useWorkItemsStore';
 import { useToastStore } from '@/state/useToastStore';
+import { useConfirmStore } from '@/state/useConfirmStore';
 import { WORK_ITEM_STATES, type WorkItemState } from './workItemTypes';
 import { DispatchToAiModal } from './DispatchToAiModal';
 
@@ -48,7 +49,15 @@ export function BulkActionBar({ count }: Props) {
   }
 
   async function bulkDelete() {
-    if (!window.confirm(`Soft-delete ${selection.size} item${selection.size === 1 ? '' : 's'}?`)) return;
+    const n = selection.size;
+    const ok = await useConfirmStore.getState().ask({
+      title: `Soft-delete ${n} item${n === 1 ? '' : 's'}?`,
+      body: 'Soft-delete moves the items to the "closed" state. They stay in the database and can be reopened from the work-items list.',
+      tone: 'warn',
+      confirmLabel: '✕ Close items',
+      cancelLabel: 'Cancel',
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       const ids = [...selection];

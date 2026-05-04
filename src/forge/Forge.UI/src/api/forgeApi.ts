@@ -943,6 +943,35 @@ export const forgeApi = {
     });
   },
 
+  /** POST /api/stories/{storyId}/spawn/artifacts/{key}/cancel — stop the running gen↔eval loop for a single doc. */
+  async cancelStoryArtifact(storyId: string, key: string): Promise<{
+    storyId: string;
+    key: string;
+    status: string;
+    queueRowsCancelled: number;
+    invocationsCancelled: number;
+  }> {
+    return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/cancel`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/stories/{storyId}/spawn/artifacts/{key}/restart — wipe iterations + transcript and re-enter the loop at iter 1. */
+  async restartStoryArtifact(storyId: string, key: string): Promise<{
+    storyId: string;
+    key: string;
+    status: string;
+    deliverablesCleaned: number;
+    eventsCleaned: number;
+    queueRowsCancelled: number;
+  }> {
+    return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/restart`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   /** POST /api/stories/{storyId}/spawn/decompose — submit workstream definitions. */
   async submitStoryDecomposition(
     storyId: string,

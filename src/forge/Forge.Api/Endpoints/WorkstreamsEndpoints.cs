@@ -6,6 +6,7 @@
 
 namespace Forge.Api.Endpoints;
 
+using Forge.Api.Agents;
 using Forge.Api.Auth;
 using Forge.Api.Contracts;
 using Forge.Api.Persistence;
@@ -581,13 +582,23 @@ public static class WorkstreamsEndpoints
 
     /// <summary>
     /// POST /api/workstreams/{id}/cancel — stop the currently running gen/eval
-    /// loop for this workstream. Kills the running agent process and marks the
-    /// workstream as stalled.
+    /// loop for this workstream. Kills the running agent invocation(s),
+    /// marks queue rows as cancelled, and flips ExecutionStatus to idle.
+    ///
+    /// <para>Before 2026-05-04 this endpoint only flipped DB state — the
+    /// in-flight agent stream was unaware of the cancellation and kept
+    /// emitting events for minutes after the operator clicked Cancel.
+    /// Now we route through <see cref="IAgentRunner.CancelByTaskAsync"/>
+    /// which cancels the per-invocation CTS — for Claude/Copilot CLI the
+    /// dispatcher's <c>ctReg.Register</c> calls <c>process.Kill(entireProcessTree: true)</c>
+    /// on cancel, so the subprocess dies. For the SDK paths the streaming
+    /// HTTP request errors out and the agent loop exits.</para>
     /// </summary>
     private static async Task<IResult> Cancel(
         HttpContext ctx,
         string id,
         ForgeDbContext db,
+        IAgentRunner runner,
         IHubContext<ForgeHub> hub)
     {
         var auth = ForgeUser.RequireWriter(ctx);
@@ -596,7 +607,21 @@ public static class WorkstreamsEndpoints
         var ws = await db.Workstreams.FirstOrDefaultAsync(w => w.Id == id);
         if (ws is null) return Results.Problem(title: $"Workstream {id} not found", statusCode: 404);
 
-        // Cancel any queued/active task_queue rows for this workstream
+        // (1) Kill in-flight agent invocations FIRST so no stray events land
+        // after we flip the DB state below. Best-effort — the runner is
+        // tolerant of unknown taskIds (returns 0).
+        var invocationsCancelled = 0;
+        try
+        {
+            invocationsCancelled = await runner.CancelByTaskAsync(id, ctx.RequestAborted);
+        }
+        catch
+        {
+            // Don't let runner failures prevent DB cleanup — the queue row
+            // is the source of truth for whether the workstream is "running".
+        }
+
+        // (2) Cancel any queued/active task_queue rows for this workstream
         var queueRows = await db.TaskQueue
             .Where(q => q.WorkItemId == id && q.State != "completed" && q.State != "cancelled")
             .ToListAsync();
@@ -607,15 +632,24 @@ public static class WorkstreamsEndpoints
             q.LastUpdatedAt = DateTimeOffset.UtcNow;
         }
 
-        // Mark the work item execution as cancelled
+        // (3) Mark the work item execution as cancelled — TERMINAL state.
+        // Earlier this code wrote "idle" which the StorySpawnOrchestrator
+        // tick treats as re-claimable, so 15 seconds after a cancel a fresh
+        // iter would start (observed 2026-05-04). "cancelled" is a real
+        // terminal status and the orchestrator skips it.
         var wi = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == id);
-        if (wi is not null && wi.ExecutionStatus is "live" or "queued")
+        if (wi is not null)
         {
-            wi.ExecutionStatus = "idle";
+            wi.ExecutionStatus = ExecutionStatuses.Cancelled;
             wi.UpdatedAt = DateTimeOffset.UtcNow;
         }
 
-        // Mark the last deliverable as stalled if it's in iterate state
+        // (4) Mark the workstream itself as cancelled so DriveImplementAsync
+        // skips it on subsequent ticks. The Restart endpoint flips it back
+        // to "active" and clears deliverables/transcripts to revive the loop.
+        ws.Status = "cancelled";
+
+        // (5) Mark the last deliverable as stalled if it's in iterate state
         var lastDel = (await db.Deliverables
             .Where(d => d.WorkItemId == id)
             .ToListAsync())
@@ -629,6 +663,12 @@ public static class WorkstreamsEndpoints
         await db.SaveChangesAsync();
         await hub.Clients.All.SendAsync("workstream.changed", new { kind = "cancelled", id });
 
-        return Results.Ok(new { id, status = "cancelled", queueRowsCancelled = queueRows.Count });
+        return Results.Ok(new
+        {
+            id,
+            status = "cancelled",
+            queueRowsCancelled = queueRows.Count,
+            invocationsCancelled,
+        });
     }
 }

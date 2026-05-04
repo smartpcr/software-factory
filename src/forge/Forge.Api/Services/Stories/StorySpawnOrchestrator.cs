@@ -566,7 +566,13 @@ public sealed class StorySpawnOrchestrator
         foreach (var w in workstreams)
         {
             // Already merged into review queue — skip.
-            if (w.Status is "review" or "merging" or "complete") continue;
+            // "cancelled" is the operator-explicit terminal state; the tick
+            // must NOT re-claim a cancelled workstream or the cancel button
+            // becomes a no-op (observed 2026-05-04: cancel killed the inner
+            // invocation but the next 15-second tick fired a fresh iter).
+            // The Restart endpoint clears deliverables and flips status back
+            // to "active" to revive the loop.
+            if (w.Status is "review" or "merging" or "complete" or "cancelled") continue;
 
             // Block until every dep is merged.
             var blocking = deps

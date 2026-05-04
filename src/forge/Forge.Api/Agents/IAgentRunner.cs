@@ -31,6 +31,16 @@ public interface IAgentRunner
     /// <summary>Stop a running invocation; the runner records a partial-finish ledger row.</summary>
     Task CancelAsync(string invocationId, CancellationToken ct);
 
+    /// <summary>
+    /// Cancel every active invocation tied to a given <paramref name="taskId"/>
+    /// (a.k.a. workItemId — the value the caller passed to <see cref="StartAsync"/>'s
+    /// first argument). Returns the number of invocations cancelled. Used by
+    /// the workstream/work-item Cancel endpoints to actually stop the agent
+    /// stream — flipping DB state alone leaves the running process emitting
+    /// events past the cancel call.
+    /// </summary>
+    Task<int> CancelByTaskAsync(string taskId, CancellationToken ct);
+
     /// <summary>Halt the agent's task pickup loop. Live invocations run to completion.</summary>
     Task PauseAsync(string agentId, CancellationToken ct);
 

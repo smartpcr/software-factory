@@ -9,9 +9,11 @@ import { DocumentPane } from './DocumentPane';
 import { DocConversationPane } from './DocConversationPane';
 import { WorkstreamConversationPane } from './WorkstreamConversationPane';
 import { OpenQuestionsWizard } from './OpenQuestionsWizard';
+import { WorktreePane } from './WorktreePane';
 import { useTaskLive, type TaskTranscriptEvent } from '@/realtime/useTaskLiveStore';
 import { useToastStore } from '@/state/useToastStore';
 import { useSpawnStore } from '@/state/useSpawnStore';
+import { useConfirmStore } from '@/state/useConfirmStore';
 import { PairSide } from '@/views/conversation';
 
 export type DetailTab =
@@ -178,10 +180,7 @@ export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTa
         </div>
         <div className={`tab-pane${tab === 'worktree' ? ' active' : ''}`}>
           {tab === 'worktree' && (
-            <Placeholder
-              label="worktree tab"
-              sub="File tree + diff view for the workstream branch. Shows what files the agent added, modified, or deleted relative to main."
-            />
+            <WorktreePane workItemId={effectiveWorkItemId} />
           )}
         </div>
         <div className={`tab-pane${tab === 'questions' ? ' active' : ''}`}>
@@ -271,16 +270,21 @@ function SwarmGridPane({ mode, detail, selection }: SwarmGridProps) {
    */
   async function handleDeleteWorkstream(workstreamId: string, workstreamName: string) {
     if (deleting) return;
-    if (!window.confirm(
-      `Delete workstream "${workstreamName}"?\n\n` +
-      `This removes:\n` +
-      `  • the workstream row + work-item\n` +
-      `  • all deliverables, transcripts, queue + dep rows\n` +
-      `  • the impl/review/fix workspaces on disk\n` +
-      `  • the worktree mount + local git branch\n\n` +
-      `Closed/merged PRs and the cost ledger are kept for history.\n` +
-      `Continue?`,
-    )) return;
+    const ok = await useConfirmStore.getState().ask({
+      title: `Delete workstream "${workstreamName}"?`,
+      body: 'Closed/merged PRs and the cost ledger are kept for history. Everything else is wiped.',
+      tone: 'danger',
+      confirmLabel: '✕ Delete',
+      cancelLabel: 'Cancel',
+      checklist: [
+        'Workstream row + synthesized work-item',
+        'All deliverables, transcripts, queue + dep rows',
+        'Board card + agent assignments + work-item links',
+        'impl / review / fix workspaces on disk',
+        'Worktree mount + local git branch',
+      ],
+    });
+    if (!ok) return;
 
     setDeleting(true);
     try {
@@ -299,11 +303,14 @@ function SwarmGridPane({ mode, detail, selection }: SwarmGridProps) {
       // 422 → workstream has open PRs; re-prompt for force-delete.
       const is422 = err instanceof ForgeApiError && err.status === 422;
       if (is422) {
-        if (window.confirm(
-          `Workstream "${workstreamName}" still has open PR(s).\n\n` +
-          `Force-delete anyway? The PRs will remain on the provider but their\n` +
-          `local branch and workspace will be wiped.`,
-        )) {
+        const force = await useConfirmStore.getState().ask({
+          title: `"${workstreamName}" has open PR(s)`,
+          body: 'Force-delete anyway? The PRs stay on the provider, but their local branch and workspace are wiped here.',
+          tone: 'danger',
+          confirmLabel: '✕ Force delete',
+          cancelLabel: 'Keep workstream',
+        });
+        if (force) {
           try {
             const r = await forgeApi.deleteWorkstream(workstreamId, true);
             const totalRows = Object.values(r.counts ?? {}).reduce((a, b) => a + b, 0);
@@ -526,7 +533,7 @@ function SwarmGridPane({ mode, detail, selection }: SwarmGridProps) {
 
 /* ─── AGENT OVERVIEW PANE (doc / workstream selection) ───────────────── */
 
-type PromptShape = { systemPrompt: string; userPrompt: string; model: string; backend: string; mode: string; eventId: number | null };
+type PromptShape = { agentId: string | null; systemPrompt: string; userPrompt: string; model: string; backend: string; mode: string; eventId: number | null };
 
 function useLatestPrompts(transcript: TaskTranscriptEvent[]): { gen: PromptShape | null; ev: PromptShape | null } {
   return useMemo(() => {
@@ -538,13 +545,12 @@ function useLatestPrompts(transcript: TaskTranscriptEvent[]): { gen: PromptShape
       if (!p) continue;
       const role = (p.role as string) ?? '';
       const candidate: PromptShape = {
+        agentId: (p.agentId as string) ?? null,
         systemPrompt: (p.systemPrompt as string) ?? '',
         userPrompt: (p.userPrompt as string) ?? '',
         model: (p.model as string) ?? '',
         backend: (p.backend as string) ?? '',
         mode: (p.invokeMode as string) ?? '',
-        // Carry the transcript-event id so the "Show full prompt" button can
-        // re-fetch the untruncated payload via /transcript/{eventId}.
         eventId: (transcript[i].id as number | undefined) ?? null,
       };
       if (role === 'evaluator' && !ev) ev = candidate;
@@ -609,14 +615,6 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
   const snapshot = live?.snapshot ?? null;
   const transcript = live?.transcript ?? [];
 
-  // Agent identity
-  const genId = isWorkstream ? (snapshot?.generatorAgentId ?? null) : (docGen?.agentId ?? null);
-  const evalId = isWorkstream ? (snapshot?.evaluatorAgentId ?? null) : (docEval?.agentId ?? null);
-  const genName = isWorkstream ? (snapshot?.generatorAgentName ?? genId) : (docGen?.name ?? genId);
-  const evalName = isWorkstream ? (snapshot?.evaluatorAgentName ?? evalId) : (docEval?.name ?? evalId);
-  const genModel = isWorkstream ? (snapshot?.generatorModel ?? null) : (docGen?.model ?? null);
-  const evalModel = isWorkstream ? (snapshot?.evaluatorModel ?? null) : (docEval?.model ?? null);
-
   // Costs and iteration
   const totalCost = isWorkstream ? (snapshot?.totalCostUsd ?? 0) : docCost;
   const lastDeliverable = snapshot?.deliverables?.[snapshot.deliverables.length - 1] ?? null;
@@ -631,6 +629,44 @@ function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps
   const latestPrompts = useLatestPrompts(allTranscript);
   const [promptRole, setPromptRole] = useState<'generator' | 'evaluator'>('generator');
   const activePrompt = promptRole === 'evaluator' ? latestPrompts.ev : latestPrompts.gen;
+
+  // Agent name lookup — resolve agent IDs to display names so the avatar
+  // matches the prompt's agent, not the snapshot's (which may be stale).
+  const [agentNames, setAgentNames] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/agents', { credentials: 'include' })
+      .then((r) => r.ok ? r.json() : [])
+      .then((arr: Array<{ id: string; name: string }>) => {
+        if (cancelled || !Array.isArray(arr)) return;
+        const map: Record<string, string> = {};
+        for (const a of arr) map[a.id] = a.name;
+        setAgentNames(map);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  // Agent identity — prefer prompt-derived agent info (matches what the
+  // system/user prompt sections display) over snapshot/API data which may
+  // be from a different iteration with different round-robin agents.
+  const promptGenId = latestPrompts.gen?.agentId ?? null;
+  const promptEvalId = latestPrompts.ev?.agentId ?? null;
+  const fallbackGenId = isWorkstream ? (snapshot?.generatorAgentId ?? null) : (docGen?.agentId ?? null);
+  const fallbackEvalId = isWorkstream ? (snapshot?.evaluatorAgentId ?? null) : (docEval?.agentId ?? null);
+  const genId = promptGenId ?? fallbackGenId;
+  const evalId = promptEvalId ?? fallbackEvalId;
+  // When the prompt carries a different agentId than the snapshot, use the
+  // agentNames map (or raw ID) — never mix a prompt-derived ID with a
+  // snapshot-derived name from a different agent.
+  const genName = promptGenId
+    ? (agentNames[promptGenId] ?? promptGenId)
+    : (isWorkstream ? (snapshot?.generatorAgentName ?? fallbackGenId) : (docGen?.name ?? fallbackGenId));
+  const evalName = promptEvalId
+    ? (agentNames[promptEvalId] ?? promptEvalId)
+    : (isWorkstream ? (snapshot?.evaluatorAgentName ?? fallbackEvalId) : (docEval?.name ?? fallbackEvalId));
+  const genModel = latestPrompts.gen?.model || (isWorkstream ? (snapshot?.generatorModel ?? null) : (docGen?.model ?? null));
+  const evalModel = latestPrompts.ev?.model || (isWorkstream ? (snapshot?.evaluatorModel ?? null) : (docEval?.model ?? null));
 
   // Cache of `eventId → { systemPrompt, userPrompt }` after the operator
   // clicks "Show full". The transcript-stream truncates strings >320 chars
