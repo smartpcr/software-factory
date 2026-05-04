@@ -684,9 +684,9 @@ Feature: Evolution Engine — Consolidation and Decay
 
   Scenario: 8.6 — Community summarization produces Topic nodes
     When ConsolidateAsync runs community detection (Louvain) on the structural layer
-    Then SemanticCluster nodes are created for each detected community
-    And Topic nodes are created with LLM-generated summary_prose
-    And BELONGS_TO_CLUSTER edges link member nodes to their cluster:
+    Then Topic nodes are created for each detected community with LLM-generated summary_prose
+    And each Topic node has NodeType = "Topic" and Metadata["MemoryLayer"] = "semantic"
+    And BELONGS_TO_CLUSTER edges link member nodes to their Topic node:
       | EdgeType       | SemanticRelation      | Metadata.MemoryLayer |
       | MemoryRelation | BELONGS_TO_CLUSTER    | semantic             |
 ```
@@ -768,7 +768,7 @@ Feature: MCP Tool Interface — External Agent Integration
     And the MCP server is running with 5 registered tools:
       | tool_name                | maps_to                                    |
       | memory_query             | IMemoryRetrievalEngine.RetrieveAsync()      |
-      | memory_status            | IMemoryGraphStore.GetMemoryStatisticsAsync() |
+      | memory_status            | IMemoryGraphStore.GetStatisticsAsync()       |
       | memory_record_expertise  | IEvolutionEngine.RecordExpertiseAsync()     |
       | memory_sync              | IIncrementalSync.ApplyDiffAsync()           |
       | memory_consolidate       | IEvolutionEngine.ConsolidateAsync()         |
@@ -934,20 +934,26 @@ Feature: Backward Compatibility — Existing Tests Unbroken
     Then the edge is stored successfully (MemoryRelation is a valid HyperedgeType)
     And existing IGraphStore methods work unchanged for non-memory edges
 
-  Scenario: 11.4 — Full test suite regression check
-    When dotnet test runs on all existing test projects:
-      | project                          |
-      | Ast.Core.UnitTests               |
-      | Ast.Csharp.UnitTests             |
-      | Ast.PowerShell.UnitTests         |
-      | Ast.Embedding.UnitTests          |
-      | Ast.GraphDb.UnitTests            |
-      | Ast.Query.UnitTests              |
-      | Ast.VectorDb.UnitTests           |
-      | Ast.Lsp.UnitTests                |
-      | CodeIntelligence.UnitTests       |
+  Scenario: 11.4 — Full test suite regression check (all 13 test projects)
+    When dotnet test runs on all 13 existing test projects:
+      | project                          | kind        |
+      | Ast.Core.UnitTests               | unit        |
+      | Ast.Csharp.UnitTests             | unit        |
+      | Ast.PowerShell.UnitTests         | unit        |
+      | Ast.Embedding.UnitTests          | unit        |
+      | Ast.GraphDb.UnitTests            | unit        |
+      | Ast.Query.UnitTests              | unit        |
+      | Ast.VectorDb.UnitTests           | unit        |
+      | Ast.Lsp.UnitTests                | unit        |
+      | CodeIntelligence.UnitTests       | unit        |
+      | Ast.E2E.IntegrationTests         | integration |
+      | Ast.GraphDb.IntegrationTests     | integration |
+      | Ast.IntegrationTests             | integration |
+      | Ast.Lsp.IntegrationTests         | integration |
     Then all tests pass with 0 failures
     And the total test count matches or exceeds the pre-memory-layer baseline
+    # Per tech-spec §10 success criterion: "0 failures in existing Ast.* and
+    # CodeIntelligence tests (across 13 test projects) after memory layer integration"
 ```
 
 ---
