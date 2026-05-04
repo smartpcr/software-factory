@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 32
+> **Status:** Iteration 33
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -14,9 +14,9 @@
 >
 > | Document | Owns | Current state |
 > |---|---|---|
-> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Currently at iteration 23. Aligned on structural/naming points. Sixteen alignment items (A1–A16) tracked in §8.1, all resolved. A13–A16 added in iteration 28 (node-ID format, `LastTouched` type, `MemoryNode.Version` nullability, expertise hash input). |
-> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Currently at latest iteration. Fully aligned with canonical vocabulary — uses correct names (`IMemoryGraphStore`, `ExpertiseEntry`, composition wrappers, `VersionRange?`, correct method signatures), correctly specifies both hash formulas (ContentHash and Id hash8). One minor presentational gap catalogued in §8.2 below. `architecture.md` governs on all conflicts. |
-> | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Currently at latest iteration. All 10 previously-catalogued divergences (E2E-1 through E2E-10) have been resolved in its current iteration — see §8.3 for historical record. |
+> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | At iteration 23. Aligned on structural/naming points. Sixteen alignment items (A1–A16) tracked in §8.1, all resolved. A13–A16 added in iteration 28 (node-ID format, `LastTouched` type, `MemoryNode.Version` nullability, expertise hash input). Tech-spec's own header references architecture at "iteration 25" — this is stale header metadata; the alignment conclusions remain valid. |
+> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Fully aligned with canonical vocabulary — uses correct names (`IMemoryGraphStore`, `ExpertiseEntry`, composition wrappers, `VersionRange?`, correct method signatures), correctly specifies both hash formulas (ContentHash and Id hash8). One minor presentational gap catalogued in §8.2 below. `architecture.md` governs on all conflicts. |
+> | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | All 10 previously-catalogued divergences (E2E-1 through E2E-10) have been resolved in its current iteration — see §8.3 for historical record. |
 
 ---
 
@@ -532,7 +532,7 @@ public class ExpertiseEntry
     // Pattern, Pitfall, Preference, Insight
 
     public required string Title { get; init; }
-    // Short headline summarizing the expertise (e.g., "Fragile null-handling in processRefund")
+    // Short headline summarizing the expertise (e.g., "AnalyzeExceptions misses catch-all patterns")
 
     public required string Body { get; init; }
     // Detailed description of the expertise observation
@@ -1231,30 +1231,38 @@ Git hook / Watcher      IncrementalSync         GitDiffDriver      ExtractionPip
 
 ### 6.5 Cross-Session Learning (Expertise Lifecycle)
 
-This is not a single API call but a multi-session lifecycle:
+This is not a single API call but a multi-session lifecycle. The example
+uses real symbols from this repository's `src/ast/CodeIntelligence/` project.
 
-1. **Session 1:** Agent fixes a null-dereference bug in `PaymentService.processRefund()`.
-   Agent calls `RecordExpertiseAsync` with `Kind=Pitfall`,
-   `title="Fragile null-handling in processRefund"`, and `body` describing
-   the fragile null-handling and how callers in `OrderController` assume non-null.
+1. **Session 1:** Agent investigates fragile exception handling in
+   `ErrorHandlingAnalyzer.AnalyzeExceptions()` (`src/ast/CodeIntelligence/Analyzers/ErrorHandlingAnalyzer.cs`, line 50).
+   Agent calls `RecordExpertiseAsync` with
+   `targetNodeId="/src/ast/CodeIntelligence/Analyzers/ErrorHandlingAnalyzer.cs::ErrorHandlingAnalyzer.AnalyzeExceptions"`,
+   `Kind=Pitfall`,
+   `title="AnalyzeExceptions misses catch-all patterns"`, and `body` describing
+   how the method's `SyntaxTree` traversal does not account for `catch` blocks
+   that re-throw without filtering, and how its caller
+   `RepositoryAnalysisService.AnalyzeRepositoryAsync()` (`src/ast/CodeIntelligence/Services/RepositoryAnalysisService.cs`, line 51)
+   depends on non-null results from all analyzer methods.
 
 2. **Session 2:** A different agent (or the same agent in a new session) works
-   on `OrderController`. During context retrieval (`RetrieveAsync` with
-   `Mode=Hybrid`), the Ranker finds the Pitfall expertise node via the
+   on `RepositoryAnalysisService`. During context retrieval (`RetrieveAsync`
+   with `Mode=Hybrid`), the Ranker finds the Pitfall expertise node via the
    `APPLIES_TO` edge. The expertise contributes to the `expertise` score signal
-   (weight 0.10), boosting `PaymentService.processRefund()` in the ranked
-   results. The Context Assembler includes it under `## Known Expertise`.
+   (weight 0.10), boosting `ErrorHandlingAnalyzer.AnalyzeExceptions()` in the
+   ranked results. The Context Assembler includes it under `## Known Expertise`.
 
-3. **Between sessions:** `DecayService` runs. If `processRefund()`'s
+3. **Between sessions:** `DecayService` runs. If `AnalyzeExceptions()`'s
    `ContentHash` has changed since the expertise was written, the decay factor
    (0.5 for substantive change, 0.9 for whitespace-only) is applied to the
    expertise's `Confidence`. If `Confidence` drops below
    `ArchiveConfidenceFloor` (0.1), the entry is soft-deleted.
 
 4. **Consolidation (periodic):** `ConsolidateAsync` finds two expertise entries
-   targeting `processRefund()` with cosine similarity ≥ 0.85. The LLM merges
-   them into a single entry. A `SUPERSEDES` edge links the merged entry to the
-   originals. A `DERIVED_FROM` edge links the merged entry to its sources.
+   targeting `ErrorHandlingAnalyzer.AnalyzeExceptions()` with cosine
+   similarity ≥ 0.85. The LLM merges them into a single entry. A `SUPERSEDES`
+   edge links the merged entry to the originals. A `DERIVED_FROM` edge links
+   the merged entry to its sources.
 
 ---
 
@@ -1392,6 +1400,6 @@ transfer) have been removed or replaced with in-scope content.
 
 ### 8.4 Net Assessment
 
-- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Sixteen alignment items (A1–A16) tracked, all resolved. Tech-spec §12.2 confirms "No remaining conflicts." Tech-spec's own header references architecture.md at "iteration 25" — this is stale iteration metadata in the tech-spec; the alignment conclusions (A1–A16) remain valid. Three stale presentation items remain in the tech-spec (not conflicts — this document governs): (1) §7.1 line 173 shows ID format without leading `/` (governed by A13); (2) §7.1 line 171 uses `SHA-256(Content + TargetNodeId)` instead of `SHA-256(Title + Body + TargetNodeId)` (governed by A16); (3) §8.4 uses column names `valid_from_idx`/`valid_until_idx` while architecture §4.4 uses `since_index`/`until_index` (architecture governs — tech-spec §8.4 is a quick-reference, not normative).
+- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Sixteen alignment items (A1–A16) tracked, all resolved. Tech-spec §12.2 confirms "No remaining conflicts." Tech-spec's own header references architecture.md at "iteration 25" — this is stale iteration metadata in the tech-spec's header; the alignment conclusions (A1–A16) remain valid and the tech-spec (iteration 23) has not changed since. Three stale presentation items remain in the tech-spec (not conflicts — this document governs): (1) §7.1 line 173 shows ID format without leading `/` (governed by A13); (2) §7.1 line 171 uses `SHA-256(Content + TargetNodeId)` instead of `SHA-256(Title + Body + TargetNodeId)` (governed by A16); (3) §8.4 uses column names `valid_from_idx`/`valid_until_idx` while architecture §4.4 uses `since_index`/`until_index` (architecture governs — tech-spec §8.4 is a quick-reference, not normative).
 - **implementation-plan ↔ architecture:** Fully aligned on vocabulary, composition model, interface signatures, scoring weights, constants, node-ID format, and project placement. The implementation-plan correctly specifies both the `ContentHash` formula (SHA-256 of Title+Body for dedup) and the `Id` hash8 formula (SHA-256 of Title+Body+TargetNodeId for uniqueness) in its model definitions and test scenarios. One minor presentational gap remains (R-1 in §8.2: `MemoryEdge.Version` non-nullable annotation), not affecting correctness. The implementation-plan's own header defers to this document on all conflicts.
 - **e2e-scenarios ↔ architecture:** All 10 previously-catalogued divergences (E2E-1 through E2E-10) are now **resolved** in the current iteration of e2e-scenarios.md. The e2e-scenarios document uses canonical vocabulary throughout: correct edge names, qualified node IDs with leading `/`, single-colon `ext:` prefix, separate `Title`/`Body` parameters, and in-scope-only scenario content. The e2e-scenarios header (lines 17–23) confirms this alignment and notes that prior architecture.md divergence catalogs were stale — this section has been updated accordingly. No remaining divergences exist between this document and e2e-scenarios.md.
