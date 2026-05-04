@@ -48,7 +48,7 @@
 #### Implementation Steps
 - [ ] Create `src/ast/Ast.Memory/Interfaces/IMemoryGraphStore.cs` extending `IGraphStore` (from `Ast.GraphDb`) with methods per architecture.md §5.1: `GetNodesByLayerAsync(string memoryLayer, int? atCommitIndex, NodeFilter?, int limit, CancellationToken)`, `GetEdgesBySemanticRelationAsync(string semanticRelation, string? memoryLayer, int? atCommitIndex, int limit, CancellationToken)`, `UpsertNodeAsync(HypergraphNode, VersionRange, CancellationToken)`, `RetireNodeAsync(string nodeId, int untilCommitIndex, CancellationToken)`, `RetireEdgeAsync(string edgeId, int untilCommitIndex, CancellationToken)`, `UpdateEdgeMetadataAsync(string edgeId, IDictionary<string,object?>, CancellationToken)`, `GetExpertiseForNodeAsync(string targetNodeId, double minConfidence, CancellationToken)`, `UpsertExpertiseAsync(ExpertiseEntry, CancellationToken)`, `ArchiveExpertiseAsync(string expertiseId, CancellationToken)`, `GetArchivedExpertiseAsync(string? targetNodeId, int limit, CancellationToken)`, `GetMemoryStatisticsAsync(CancellationToken)`, `LogAuditAsync(string sessionId, string operation, object detail, CancellationToken)`
 - [ ] Create `src/ast/Ast.Memory/Models/MemoryGraphStatistics.cs` with per-layer node/edge counts
-- [ ] Create `src/ast/Ast.Memory/Models/MemoryOptions.cs` with all constants from architecture.md §2.4: `SimilarityThreshold` (0.85), `StaleDecayFactor` (0.5), `MinorDecayFactor` (0.9), `ArchiveConfidenceFloor` (0.1), `DecayHalfLifeDays` (1095), `TokenBudgetDefault` (8000), `TokenBudgetCeiling` (32000), `IncrementalSyncDebounceMs` (1000), `CentralityBoostFactor` (0.5), `Backend` (`MemoryBackend`), `SqlitePath`, `Neo4jUri`, `QdrantEndpoint`
+- [ ] Create `src/ast/Ast.Memory/Models/MemoryOptions.cs` with all constants from architecture.md §2.4: `SimilarityThreshold` (0.85), `StaleDecayFactor` (0.5), `MinorDecayFactor` (0.9), `ArchiveConfidenceFloor` (0.1), `DecayHalfLifeDays` (1095), `TokenBudgetDefault` (8000), `TokenBudgetCeiling` (32000), `IncrementalSyncDebounceMs` (1000), `CentralityBoostFactor` (0.5), `Backend` (`MemoryBackend`), `SqlitePath`, `Neo4jUri`, `QdrantEndpoint`, `ConsolidationModelName` (string, operator-configured — model name for the Ollama LLM used by `ConsolidationService` and `DetectCommunitiesAsync`; no hardcoded default since the model depends on what the operator has deployed to their local Ollama instance at `http://localhost:11434`)
 - [ ] Create `src/ast/Ast.Memory/Models/ScoringWeights.cs` as record with defaults: structural=0.30, semantic=0.25, centrality=0.20, recency=0.15, expertise=0.10 (sum=1.00) — per architecture.md §2.4
 
 #### Test Scenarios
@@ -107,7 +107,14 @@
 > `Ast.Csharp`, `Ast.PowerShell` parsers and `Ast.Embedding` service.
 >
 > **Hard dependency:** Phase 1 (storage must exist).
-> **Parallel-safe:** Stages 2.1 and 2.2 are independent after Stage 2.1 completes.
+>
+> **Internal sequencing (architecture.md §3.1):** Stage 2.1 (StructureBuilder)
+> must complete first — it produces the nodes that Stages 2.2 and 2.3 attach
+> edges to. Stage 2.2 (CallChainAnalyzer) requires Stage 2.1's nodes to
+> resolve caller/callee endpoints. Stage 2.3 (SemanticIndexer) requires all
+> nodes from Stages 2.1–2.2 to compute embeddings and similarity edges.
+> Stage 2.4 (pipeline orchestrator) depends on all three. The pipeline enforces
+> this order: `StructureBuilder → CallChainAnalyzer → SemanticIndexer`.
 
 ### Stage 2.1: StructureBuilder — Structural Layer
 
@@ -296,7 +303,7 @@
 ### Stage 5.2: ConsolidationService
 
 #### Implementation Steps
-- [ ] Create `src/ast/Ast.Memory/Evolution/ConsolidationService.cs` — LLM-powered merge of semantically similar expertise entries (cosine similarity of embeddings ≥ `SimilarityThreshold` 0.85); uses configurable LLM endpoint (default: local Qwen 3.6 via Ollama) per operator answer
+- [ ] Create `src/ast/Ast.Memory/Evolution/ConsolidationService.cs` — LLM-powered merge of semantically similar expertise entries (cosine similarity of embeddings ≥ `SimilarityThreshold` 0.85); uses a configurable LLM endpoint via `MemoryOptions.ConsolidationModelName` (operator-specified; served by the local Ollama instance at `http://localhost:11434` — the same infrastructure used by `Ast.Embedding`'s `HttpEmbeddingGenerator` per HC5). The `Ast.Core.UnitTests/AstConfigurationTests.cs` already validates Ollama model configuration (line 82). Consolidation calls the Ollama `/api/generate` endpoint to produce merged Title+Body text
 - [ ] Create `SUPERSEDES` edge from merged entry to each original with roles `newer`/`older`; create `DERIVED_FROM` edge with roles `derived`/`source` (architecture.md §3.5)
 - [ ] Acquire write-level lock during consolidation to prevent concurrent merges (architecture.md §3.7)
 
@@ -321,7 +328,7 @@
 
 #### Implementation Steps
 - [ ] Implement `EvolutionEngine.DetectCommunitiesAsync()` — Louvain algorithm over `CALLS`/`SIMILAR_TO` edges; creates `BELONGS_TO_CLUSTER` edges with roles `member`/`cluster` and `Topic` summary nodes (Id=`"topic:{hash8}"`, NodeType=`"Topic"`, `Metadata["MemoryLayer"]="semantic"`, `Metadata["Summary"]`, `Metadata["MemberCount"]`) in the Semantic layer (architecture.md §3.5, §4.2)
-- [ ] Topic summaries generated via configurable LLM (default: local Qwen 3.6)
+- [ ] Topic summaries generated via configurable LLM endpoint (same `MemoryOptions.ConsolidationModelName` and Ollama instance as `ConsolidationService`)
 
 #### Test Scenarios
 - [ ] Scenario: Community detection — Given a graph with 20+ nodes and CALLS/SIMILAR_TO edges forming 3 natural clusters, When `DetectCommunitiesAsync` runs, Then at least 3 `Topic` nodes are created with `BELONGS_TO_CLUSTER` edges connecting member nodes
@@ -343,8 +350,8 @@
 
 #### Test Scenarios
 - [ ] Scenario: MCP tool registration — Given `MemoryMcpToolRegistration`, When tools are enumerated, Then exactly 5 tools are registered: `memory_query`, `memory_status`, `memory_record_expertise`, `memory_sync`, `memory_consolidate`
-- [ ] Scenario: memory_query roundtrip — Given a populated graph, When `memory_query` MCP tool is invoked with `{"queryText": "payment", "tokenBudget": 4000}`, Then the response contains `contextMarkdown` and `tokensUsed ≤ 4000`
-- [ ] Scenario: memory_record_expertise via MCP — Given a valid target node, When `memory_record_expertise` is invoked with `{"targetNodeId": "/src/X.cs::Y", "kind": "Pitfall", "title": "...", "body": "...", "sourceAgent": "test"}`, Then an `ExpertiseEntry` is created and returned
+- [ ] Scenario: memory_query roundtrip — Given a graph populated from the `src/ast/Ast.Core/` fixture containing node `/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode`, When `memory_query` MCP tool is invoked with `{"queryText": "HypergraphNode embedding text", "tokenBudget": 4000}`, Then the JSON response contains `contextMarkdown` with a `## Structure` section referencing `HypergraphNode`, `tokensUsed` is a positive integer ≤ 4000, and `nodes` array includes at least one entry with `nodeId` matching `/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode`
+- [ ] Scenario: memory_record_expertise via MCP — Given the graph contains node `/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode`, When `memory_record_expertise` is invoked with `{"targetNodeId": "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode", "kind": "Pitfall", "title": "GetEmbeddingText misses enum members", "body": "GetEmbeddingText does not include enum member names in the embedding text, reducing semantic search quality for enum types", "sourceAgent": "test-agent-1"}`, Then the response contains an `ExpertiseEntry` with `id` matching `"expertise:pitfall:{hash8}"` and `confidence` of `1.0`, and a subsequent `memory_query` for "HypergraphNode" includes the pitfall in `contextMarkdown` under `## Known Expertise`
 
 ### Stage 6.2: CLI Commands
 
