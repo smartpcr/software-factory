@@ -71,6 +71,41 @@ function fmt(v: number): string {
   return v >= 10 ? `$${v.toFixed(0)}` : `$${v.toFixed(2)}`;
 }
 
+// Y-axis tick formatter — collapses thousands/millions so labels stay
+// short ("$1.2k" not "$1200") and the axis column doesn't fight the bars
+// for horizontal space.
+function fmtAxis(v: number): string {
+  if (v === 0) return '$0';
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+  if (v >= 1_000) return `$${(v / 1_000).toFixed(1).replace(/\.0$/, '')}k`;
+  if (v >= 10) return `$${v.toFixed(0)}`;
+  return `$${v.toFixed(2)}`;
+}
+
+// Pick a "nice" Y-axis scale for the spend chart. Targets `segments`
+// equal divisions with a step that's a 1/1.5/2/2.5/3/4/5/7.5/10 × 10ⁿ
+// number, and bumps the step until the ceiling sits at least 5% above
+// the tallest bar so the data resolves visually.
+function niceTicks(maxVal: number, segments: number): { max: number; ticks: number[] } {
+  if (maxVal <= 0) return { max: 1, ticks: [0, 1 / 3, 2 / 3, 1] };
+  const choices = [1, 1.5, 2, 2.5, 3, 4, 5, 7.5, 10];
+  const rawStep = maxVal / segments;
+  const exp = Math.floor(Math.log10(rawStep));
+  const base = Math.pow(10, exp);
+  let idx = choices.findIndex((c) => c >= rawStep / base);
+  if (idx < 0) idx = choices.length - 1;
+  let step = choices[idx] * base;
+  while (step * segments < maxVal * 1.05) {
+    idx++;
+    if (idx >= choices.length) { idx = 0; step = base * 10; break; }
+    step = choices[idx] * base;
+  }
+  const max = step * segments;
+  const ticks: number[] = [];
+  for (let i = 0; i <= segments; i++) ticks.push(step * i);
+  return { max, ticks };
+}
+
 const TEAM_CHIPS: Array<{ key: string; label: string }> = [
   { key: 'all',  label: 'All' },
   { key: 'arch', label: 'Architect' },
@@ -152,10 +187,15 @@ export function CostView() {
   const burnRate = summary.days.length > 0 ? week7d / summary.days.length : 0;
   const forecast7d = burnRate * 7;
 
-  const dayMax = useMemo(() => Math.max(
-    dailyCap,
-    ...summary.days.map((d) => d.totalUsd),
-  ) || 1, [summary, dailyCap]);
+  // Scale Y-axis to the actual spend distribution, not the daily cap. The
+  // cap is shown by the right-rail gauge ("Today vs cap") and the Today
+  // stat cell — including it here flattens every bar to a hairline when
+  // realised spend is well below the cap (the common case during ramp-up).
+  const yScale = useMemo(
+    () => niceTicks(Math.max(0, ...summary.days.map((d) => d.totalUsd)), 3),
+    [summary],
+  );
+  const dayMax = yScale.max;
 
   const epicById = useMemo(() => new Map(epics.map((e) => [e.id, e])), [epics]);
 
@@ -281,10 +321,9 @@ export function CostView() {
             </div>
             <div className="cost-chart">
               <div className="cost-chart-yaxis">
-                <span>${dayMax.toFixed(0)}</span>
-                <span>${(dayMax * 0.66).toFixed(0)}</span>
-                <span>${(dayMax * 0.33).toFixed(0)}</span>
-                <span>$0</span>
+                {[...yScale.ticks].reverse().map((t) => (
+                  <span key={t}>{fmtAxis(t)}</span>
+                ))}
               </div>
               <div className="cost-chart-bars">
                 <div className="cost-chart-grid">

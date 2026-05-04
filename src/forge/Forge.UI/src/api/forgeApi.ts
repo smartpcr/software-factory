@@ -776,6 +776,22 @@ export const forgeApi = {
     });
   },
 
+  /** POST /api/workstreams/{id}/restart — nuke and restart from scratch. */
+  async restartWorkstream(id: string): Promise<{ id: string; status: string; deliverablesCleaned: number }> {
+    return fetchJson(`/api/workstreams/${encodeURIComponent(id)}/restart`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/workstreams/{id}/cancel — stop the running gen/eval loop. */
+  async cancelWorkstream(id: string): Promise<{ id: string; status: string; queueRowsCancelled: number }> {
+    return fetchJson(`/api/workstreams/${encodeURIComponent(id)}/cancel`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   /** GET /api/audit. */
   async listAudit(take = 200): Promise<AuditEntry[]> {
     return fetchJson<AuditEntry[]>(`/api/audit?take=${take}`);
@@ -848,9 +864,21 @@ export const forgeApi = {
     });
   },
 
-  /** DELETE /api/workstreams/{id}?force=true. */
-  async deleteWorkstream(id: string, force = false): Promise<void> {
-    await fetchJson<void>(`/api/workstreams/${encodeURIComponent(id)}?force=${force}`, {
+  /**
+   * DELETE /api/workstreams/{id}?force=true — cascading delete. Removes the
+   * workstream row, the synthesized work-item, all deliverables /
+   * transcripts / queue rows / dep edges / agent assignments / board card,
+   * plus the on-disk gen↔eval workspace, the worktree mount, and the local
+   * git branch. Returns `{ id, status, counts }` so the caller can surface
+   * what got removed. The server returns 422 if the workstream has open
+   * PRs and `force` is false.
+   */
+  async deleteWorkstream(id: string, force = false): Promise<{
+    id: string;
+    status: string;
+    counts: Record<string, number>;
+  }> {
+    return fetchJson(`/api/workstreams/${encodeURIComponent(id)}?force=${force}`, {
       method: 'DELETE',
       headers: { 'X-Forge-User': writerHeader() },
     });
@@ -895,6 +923,13 @@ export const forgeApi = {
    *  (rebased plan branch, fixed branch protection, etc.). */
   async retryStorySpawn(storyId: string): Promise<StorySpawn> {
     return fetchJson<StorySpawn>(`/api/stories/${encodeURIComponent(storyId)}/spawn/retry`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  async dismissStorySpawnError(storyId: string): Promise<StorySpawn> {
+    return fetchJson<StorySpawn>(`/api/stories/${encodeURIComponent(storyId)}/spawn/dismiss-error`, {
       method: 'POST',
       headers: { 'X-Forge-User': writerHeader() },
     });
@@ -961,7 +996,8 @@ export const forgeApi = {
     /** Derived lifecycle: live (events still flowing) → iterating (last
      *  verdict !pass) → awaiting-pr-review (verdict=pass but plan PR not
      *  merged yet) → completed (PR merged) | pending (no iterations yet). */
-    status: 'live' | 'iterating' | 'awaiting-pr-review' | 'completed' | 'pending';
+    status: 'live' | 'iterating' | 'stalled' | 'awaiting-pr-review' | 'completed' | 'pending';
+    maxIterations: number;
     /** Latest generator agent name + model, null until first iteration lands. */
     generator: { agentId: string; name: string; model: string | null } | null;
     /** Latest evaluator agent name + model, null until first iteration lands. */
@@ -1828,6 +1864,25 @@ export const forgeApi = {
     if (opts?.order) params.set('order', opts.order);
     const qs = params.toString();
     return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/transcript${qs ? `?${qs}` : ''}`);
+  },
+
+  /**
+   * GET /api/work-items/{id}/transcript/{eventId} — full untruncated event
+   * payload. The bulk transcript stream truncates large string fields
+   * (systemPrompt / userPrompt / tool results) to 320 chars per field; this
+   * endpoint backs the "Show full prompt" affordance the UI surfaces when
+   * a truncation marker appears in the inline preview.
+   */
+  async getWorkItemTranscriptEvent(workItemId: string, eventId: number | string): Promise<{
+    id: number;
+    workItemId: string;
+    kind: string;
+    agentId: string | null;
+    crewId: string | null;
+    payload: Record<string, unknown>;
+    at: string;
+  }> {
+    return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/transcript/${encodeURIComponent(String(eventId))}`);
   },
 
   async clearWorkItemTranscript(workItemId: string): Promise<{ deleted: number }> {

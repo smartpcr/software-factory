@@ -1,16 +1,22 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import type { StorySpawnArtifacts, StorySpawnDetail, PrDetailsResponse } from '@/api/forgeApi';
-import { forgeApi } from '@/api/forgeApi';
+import { forgeApi, ForgeApiError } from '@/api/forgeApi';
 import type { Build } from '@/types';
 import type { SwarmMode } from './SwarmPipelineStrip';
 import type { Selection } from './SwarmMasterPanel';
 import { DocumentPane } from './DocumentPane';
 import { DocConversationPane } from './DocConversationPane';
 import { WorkstreamConversationPane } from './WorkstreamConversationPane';
+import { OpenQuestionsWizard } from './OpenQuestionsWizard';
+import { useTaskLive, type TaskTranscriptEvent } from '@/realtime/useTaskLiveStore';
+import { useToastStore } from '@/state/useToastStore';
+import { useSpawnStore } from '@/state/useSpawnStore';
+import { PairSide } from '@/views/conversation';
 
 export type DetailTab =
-  | 'overview' | 'conv' | 'arch' | 'pr' | 'qa' | 'trace'
-  | 'document' | 'impl' | 'contributors';
+  | 'overview' | 'document' | 'conv' | 'pr' | 'worktree' | 'questions'
+  | 'qa' | 'trace';
 
 interface Props {
   mode: SwarmMode;
@@ -22,19 +28,53 @@ interface Props {
 }
 
 const TAB_LABELS: { key: DetailTab; label: string }[] = [
-  { key: 'overview',     label: 'Overview' },
-  { key: 'document',     label: 'Document' },
-  { key: 'conv',         label: 'Conversation' },
-  { key: 'arch',         label: 'Arch Doc' },
-  { key: 'pr',           label: 'PR' },
-  { key: 'impl',         label: 'Impl Progress' },
-  { key: 'contributors', label: 'Contributors' },
-  { key: 'qa',           label: 'QA / E2E' },
-  { key: 'trace',        label: 'Trace' },
+  { key: 'overview',   label: 'Overview' },
+  { key: 'document',   label: 'Document' },
+  { key: 'conv',       label: 'Conversation' },
+  { key: 'pr',         label: 'PR' },
+  { key: 'worktree',   label: 'Worktree' },
+  { key: 'questions',  label: 'Questions' },
+  { key: 'qa',         label: 'QA / E2E' },
+  { key: 'trace',      label: 'Trace' },
 ];
 
 export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTab }: Props) {
-  const tabsAvailable = useMemo(() => availableTabs(mode, selection, detail), [mode, selection, detail]);
+  // Resolve workItemId for question polling + Overview data.
+  // For workstream selections: workItemId = selection.id.
+  // For doc selections: fetched from the artifact iterations endpoint.
+  const [docWorkItemId, setDocWorkItemId] = useState<string | null>(null);
+  useEffect(() => {
+    if (selection.kind !== 'doc' || !selection.id || selection.id === 'doc:decomposition') {
+      setDocWorkItemId(null);
+      return;
+    }
+    const key = selection.id.startsWith('doc:') ? selection.id.slice(4) : selection.id;
+    let cancelled = false;
+    forgeApi.getStoryArtifactIterations(detail.spawn.storyId, key)
+      .then((r) => { if (!cancelled) setDocWorkItemId(r.workItemId); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [selection, detail.spawn.storyId]);
+
+  const effectiveWorkItemId = selection.kind === 'phase' ? (selection.id ?? null) : docWorkItemId;
+
+  // Unanswered question count — polled above tab content for badge rendering.
+  const [questionCount, setQuestionCount] = useState(0);
+  useEffect(() => {
+    if (!effectiveWorkItemId) { setQuestionCount(0); return; }
+    let cancelled = false;
+    async function poll() {
+      try {
+        const r = await forgeApi.listQuestions(effectiveWorkItemId!);
+        if (!cancelled) setQuestionCount(r.unansweredCount);
+      } catch { /* silent */ }
+    }
+    void poll();
+    const id = setInterval(poll, 10_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [effectiveWorkItemId]);
+
+  const tabsAvailable = useMemo(() => availableTabs(mode, selection, detail, questionCount), [mode, selection, detail, questionCount]);
 
   // If the current tab isn't available for this selection, jump to the first available.
   useEffect(() => {
@@ -75,13 +115,38 @@ export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTa
             type="button"
           >
             {t.label}
-            <span className="ct">{tabCount(t.key, mode, selection, detail, artifacts)}</span>
+            {t.key === 'questions' && questionCount > 0 && (
+              <span
+                className="ct ct--badge"
+                style={{ background: '#f44747', color: '#fff' }}
+                title={`${questionCount} unanswered question(s) blocking progress`}
+              >
+                {questionCount}
+              </span>
+            )}
+            {t.key === 'document' && questionCount > 0 && (
+              <span
+                className="ct ct--badge"
+                style={{ background: '#ffd57c', color: '#1e1e2e' }}
+                title={`${questionCount} unanswered question(s) — answer them in the Questions tab`}
+              >
+                ⚠ {questionCount}
+              </span>
+            )}
           </button>
         ))}
       </div>
       <div className="tab-body">
         <div className={`tab-pane${tab === 'overview' ? ' active' : ''}`}>
-          {tab === 'overview' && <OverviewPane mode={mode} detail={detail} selection={selection} />}
+          {tab === 'overview' && (selection.kind === 'doc' || selection.kind === 'phase') ? (
+            <AgentOverviewPane
+              detail={detail}
+              selection={selection}
+              workItemId={effectiveWorkItemId}
+            />
+          ) : tab === 'overview' ? (
+            <SwarmGridPane mode={mode} detail={detail} selection={selection} />
+          ) : null}
         </div>
         <div className={`tab-pane${tab === 'document' ? ' active' : ''}`}>
           {tab === 'document' && selection.kind === 'doc' && selection.id && (
@@ -108,35 +173,32 @@ export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTa
             />
           )}
         </div>
-        <div className={`tab-pane${tab === 'arch' ? ' active' : ''}`}>
-          {tab === 'arch' && (
-            <ArchDocPane storyId={detail.spawn.storyId} artifacts={artifacts} />
-          )}
-        </div>
         <div className={`tab-pane${tab === 'pr' ? ' active' : ''}`}>
-          {tab === 'pr' && (
-            <PrPane detail={detail} selection={selection} />
+          {tab === 'pr' && <PrPane detail={detail} selection={selection} />}
+        </div>
+        <div className={`tab-pane${tab === 'worktree' ? ' active' : ''}`}>
+          {tab === 'worktree' && (
+            <Placeholder
+              label="worktree tab"
+              sub="File tree + diff view for the workstream branch. Shows what files the agent added, modified, or deleted relative to main."
+            />
           )}
         </div>
-        <div className={`tab-pane${tab === 'impl' ? ' active' : ''}`}>
-          {tab === 'impl' && (
-            <ImplProgressPane detail={detail} />
-          )}
-        </div>
-        <div className={`tab-pane${tab === 'contributors' ? ' active' : ''}`}>
-          {tab === 'contributors' && (
-            <ContributorsPane detail={detail} />
-          )}
+        <div className={`tab-pane${tab === 'questions' ? ' active' : ''}`}>
+          {tab === 'questions' && effectiveWorkItemId ? (
+            <QuestionsPane workItemId={effectiveWorkItemId} />
+          ) : tab === 'questions' ? (
+            <Placeholder
+              label="open questions"
+              sub="No work item selected — questions appear once the gen↔eval loop has started."
+            />
+          ) : null}
         </div>
         <div className={`tab-pane${tab === 'qa' ? ' active' : ''}`}>
-          {tab === 'qa' && (
-            <QaPane detail={detail} artifacts={artifacts} />
-          )}
+          {tab === 'qa' && <QaPane detail={detail} artifacts={artifacts} />}
         </div>
         <div className={`tab-pane${tab === 'trace' ? ' active' : ''}`}>
-          {tab === 'trace' && (
-            <TracePane detail={detail} />
-          )}
+          {tab === 'trace' && <TracePane detail={detail} />}
         </div>
       </div>
     </section>
@@ -145,116 +207,125 @@ export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTa
 
 /* ─── TAB AVAILABILITY ───────────────────────────────────────────────── */
 
-function availableTabs(mode: SwarmMode, sel: Selection, detail: StorySpawnDetail): DetailTab[] {
+function availableTabs(mode: SwarmMode, sel: Selection, detail: StorySpawnDetail, questionCount: number): DetailTab[] {
   // Decomposition gets no tabs — it renders a full-width diagram instead.
   if (sel.kind === 'doc' && sel.id === 'doc:decomposition') {
     return [];
   }
   if (sel.kind === 'doc') {
-    // Doc-centric tab strip: the document body is the headline; everything
-    // else hangs off the doc's lifecycle (plan PR, contributors, downstream
-    // implementation progress that this doc seeded).
-    const tabs: DetailTab[] = ['document', 'conv'];
+    const tabs: DetailTab[] = ['overview', 'document', 'conv'];
     if (detail.spawn.planPrId) tabs.push('pr');
-    tabs.push('impl', 'contributors');
+    tabs.push('worktree');
+    if (questionCount > 0) tabs.push('questions');
     return tabs;
   }
-  // Overview is always available — even at story root.
-  const tabs: DetailTab[] = ['overview'];
+  // Workstream (phase) selection
   if (sel.kind === 'phase') {
+    const tabs: DetailTab[] = ['overview', 'conv'];
     const ws = detail.workstreams.find((w) => w.id === sel.id);
-    if (ws) {
-      tabs.push('conv');
-      if (ws.prs.length > 0) tabs.push('pr');
-    }
+    if (ws && ws.prs.length > 0) tabs.push('pr');
+    tabs.push('worktree');
+    if (questionCount > 0) tabs.push('questions');
     if (mode === 'impl') tabs.push('qa', 'trace');
-  } else if (sel.kind === 'gate') {
-    tabs.push('trace');
-  } else {
-    // overview-level selection — show trace too so the global event log is always reachable.
-    tabs.push('trace');
+    return tabs;
   }
+  // Gate or overview-level
+  const tabs: DetailTab[] = ['overview'];
+  if (sel.kind === 'gate') tabs.push('trace');
+  else tabs.push('trace');
   return tabs;
 }
 
-function tabCount(
-  tab: DetailTab,
-  mode: SwarmMode,
-  sel: Selection,
-  detail: StorySpawnDetail,
-  artifacts: StorySpawnArtifacts | null,
-): string {
-  if (tab === 'pr') {
-    if (sel.kind === 'phase') {
-      const ws = detail.workstreams.find((w) => w.id === sel.id);
-      return String(ws?.prs.length ?? 0);
-    }
-    if (sel.kind === 'doc' && detail.spawn.planPrId) {
-      // Render the actual plan PR id (e.g. "PR-1812") rather than just a count
-      // so the tab strip matches the mock.
-      return shortPrId(detail.spawn.planPrId);
-    }
-    return '0';
-  }
-  if (tab === 'document' && sel.kind === 'doc') {
-    return '·';
-  }
-  if (tab === 'conv' && sel.kind === 'doc') {
-    // Mocked count of in-thread comments / scratch refs until a real
-    // comment-stream API lands.
-    return '·';
-  }
-  if (tab === 'contributors' && sel.kind === 'doc') {
-    return String(contributorCountForDoc(sel.id, artifacts));
-  }
-  if (tab === 'impl' && sel.kind === 'doc') {
-    return String(detail.workstreams.length);
-  }
-  if (tab === 'overview' && sel.kind === 'overview') return String(detail.workstreams.length);
-  if (tab === 'arch' && mode === 'design') return '4';
-  return '·';
-}
-
-function shortPrId(id: string): string {
-  // Accept "PR #1812" / "PR-1812" / "1812" forms — render as compact "PR-1812"
-  // for the tab chip.
-  const trimmed = id.replace(/^pr[\s#-]*/i, '');
-  return `PR-${trimmed}`;
-}
-
-/** Mocked contributor counts per doc key — matches DocumentPane's MOCKS. */
-function contributorCountForDoc(docId: string | null, _artifacts: StorySpawnArtifacts | null): number {
-  if (!docId) return 0;
-  const key = docId.startsWith('doc:') ? docId.slice(4) : docId;
-  switch (key) {
-    case 'architecture':         return 3;
-    case 'tech-spec':            return 2;
-    case 'implementation-plan':  return 2;
-    case 'e2e-scenarios':        return 2;
-    case 'decomposition':        return 1;
-    default:                     return 0;
-  }
-}
-
-/* ─── OVERVIEW PANE ──────────────────────────────────────────────────── */
-
-interface OvProps {
-  mode: SwarmMode;
-  detail: StorySpawnDetail;
-  selection: Selection;
-}
+/* ─── SWARM GRID (default overview for non-doc/workstream selections) ── */
 
 interface AgentRow {
   id: string;
   name: string;
-  role: string; // arch / eng / rev / qa
+  role: string;
   crewId: string | null;
   state: string;
   generatorModel: string | null;
   evaluatorModel: string | null;
 }
 
-function OverviewPane({ mode, detail, selection }: OvProps) {
+interface SwarmGridProps {
+  mode: SwarmMode;
+  detail: StorySpawnDetail;
+  selection: Selection;
+}
+
+function SwarmGridPane({ mode, detail, selection }: SwarmGridProps) {
+  const showToast = useToastStore((s) => s.show);
+  const bumpSpawn = useSpawnStore((s) => s.bump);
+  const [, setSearchParams] = useSearchParams();
+  const [deleting, setDeleting] = useState(false);
+
+  /**
+   * Cascading delete for the selected workstream. Backend wipes:
+   *  - WorkstreamRow + matching WorkItemRow + board card
+   *  - Deliverables, transcripts, queue rows, dep edges, links, agent assignments
+   *  - On-disk impl/review/fix workspaces
+   *  - Worktree mount + local git branch
+   * Returns 422 with `requireConfirm` when open PRs exist; we re-prompt and
+   * pass `force=true`.
+   */
+  async function handleDeleteWorkstream(workstreamId: string, workstreamName: string) {
+    if (deleting) return;
+    if (!window.confirm(
+      `Delete workstream "${workstreamName}"?\n\n` +
+      `This removes:\n` +
+      `  • the workstream row + work-item\n` +
+      `  • all deliverables, transcripts, queue + dep rows\n` +
+      `  • the impl/review/fix workspaces on disk\n` +
+      `  • the worktree mount + local git branch\n\n` +
+      `Closed/merged PRs and the cost ledger are kept for history.\n` +
+      `Continue?`,
+    )) return;
+
+    setDeleting(true);
+    try {
+      const r = await forgeApi.deleteWorkstream(workstreamId, false);
+      const totalRows = Object.values(r.counts ?? {}).reduce((a, b) => a + b, 0);
+      showToast(`Deleted ${workstreamId} — ${totalRows} rows / artifacts removed.`, 'success');
+      // Drop selection back to overview so the now-stale id doesn't dangle.
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('sel'); next.delete('selId');
+        return next;
+      }, { replace: true });
+      // Refresh spawn detail so the workstreams list re-fetches.
+      bumpSpawn(detail.spawn.storyId);
+    } catch (err) {
+      // 422 → workstream has open PRs; re-prompt for force-delete.
+      const is422 = err instanceof ForgeApiError && err.status === 422;
+      if (is422) {
+        if (window.confirm(
+          `Workstream "${workstreamName}" still has open PR(s).\n\n` +
+          `Force-delete anyway? The PRs will remain on the provider but their\n` +
+          `local branch and workspace will be wiped.`,
+        )) {
+          try {
+            const r = await forgeApi.deleteWorkstream(workstreamId, true);
+            const totalRows = Object.values(r.counts ?? {}).reduce((a, b) => a + b, 0);
+            showToast(`Force-deleted ${workstreamId} — ${totalRows} rows / artifacts removed.`, 'success');
+            setSearchParams((prev) => {
+              const next = new URLSearchParams(prev);
+              next.delete('sel'); next.delete('selId');
+              return next;
+            }, { replace: true });
+            bumpSpawn(detail.spawn.storyId);
+          } catch (e2) {
+            showToast(e2 instanceof Error ? e2.message : 'Force-delete failed', 'danger');
+          }
+        }
+      } else {
+        showToast(err instanceof Error ? err.message : 'Delete failed', 'danger');
+      }
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   const [agents, setAgents] = useState<AgentRow[]>([]);
   useEffect(() => {
     let cancelled = false;
@@ -333,8 +404,40 @@ function OverviewPane({ mode, detail, selection }: OvProps) {
           <div className="ov-headline"><span className="pre">{headlinePre}</span>{prettyId(headlineId)}</div>
           <div className="ov-sub">{subline}</div>
         </div>
-        <div style={{ fontFamily: 'var(--sc-font-display)', fontSize: 9, letterSpacing: '0.18em', color: 'var(--sc-text-dim)' }}>
-          MODE · {mode.toUpperCase()}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {selection.kind === 'phase' && selection.id && (() => {
+            const ws = detail.workstreams.find((w) => w.id === selection.id);
+            const wsName = ws?.name ?? selection.id;
+            return (
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => void handleDeleteWorkstream(selection.id!, wsName)}
+                title="Delete this workstream and all associated data (cascading)."
+                style={{
+                  background: 'transparent',
+                  border: '1px solid var(--sc-red-d, #9f3d4d)',
+                  color: 'var(--sc-red, #ff6b80)',
+                  fontFamily: 'var(--sc-font-display)',
+                  fontSize: 9,
+                  letterSpacing: '0.22em',
+                  textTransform: 'uppercase',
+                  padding: '5px 10px',
+                  borderRadius: 3,
+                  cursor: deleting ? 'wait' : 'pointer',
+                  opacity: deleting ? 0.5 : 1,
+                  transition: 'background 120ms ease, color 120ms ease',
+                }}
+                onMouseEnter={(e) => { if (!deleting) e.currentTarget.style.background = 'rgba(255, 107, 128, 0.08)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+              >
+                {deleting ? '⏳ deleting…' : '✕ Delete workstream'}
+              </button>
+            );
+          })()}
+          <div style={{ fontFamily: 'var(--sc-font-display)', fontSize: 9, letterSpacing: '0.18em', color: 'var(--sc-text-dim)' }}>
+            MODE · {mode.toUpperCase()}
+          </div>
         </div>
       </div>
 
@@ -421,27 +524,293 @@ function OverviewPane({ mode, detail, selection }: OvProps) {
 
 /* ─── ARCH DOC PANE ──────────────────────────────────────────────────── */
 
-function ArchDocPane({ storyId, artifacts }: { storyId: string; artifacts: StorySpawnArtifacts | null }) {
-  const files = artifacts?.plan.files ?? [];
-  if (files.length === 0) {
-    return (
-      <div className="tab-placeholder">
-        <div className="lbl">▌ Plan Documents</div>
-        <div className="sub">No plan documents yet.</div>
-      </div>
-    );
+/* ─── AGENT OVERVIEW PANE (doc / workstream selection) ───────────────── */
+
+type PromptShape = { systemPrompt: string; userPrompt: string; model: string; backend: string; mode: string; eventId: number | null };
+
+function useLatestPrompts(transcript: TaskTranscriptEvent[]): { gen: PromptShape | null; ev: PromptShape | null } {
+  return useMemo(() => {
+    let gen: PromptShape | null = null;
+    let ev: PromptShape | null = null;
+    for (let i = transcript.length - 1; i >= 0 && (!gen || !ev); i--) {
+      if (transcript[i].kind !== 'task.prompt') continue;
+      const p = transcript[i].payload as Record<string, unknown> | null;
+      if (!p) continue;
+      const role = (p.role as string) ?? '';
+      const candidate: PromptShape = {
+        systemPrompt: (p.systemPrompt as string) ?? '',
+        userPrompt: (p.userPrompt as string) ?? '',
+        model: (p.model as string) ?? '',
+        backend: (p.backend as string) ?? '',
+        mode: (p.invokeMode as string) ?? '',
+        // Carry the transcript-event id so the "Show full prompt" button can
+        // re-fetch the untruncated payload via /transcript/{eventId}.
+        eventId: (transcript[i].id as number | undefined) ?? null,
+      };
+      if (role === 'evaluator' && !ev) ev = candidate;
+      else if (role !== 'evaluator' && !gen) gen = candidate;
+    }
+    return { gen, ev };
+  }, [transcript]);
+}
+
+/**
+ * The transcript stream truncates string fields > 320 chars and appends a
+ * marker like "…[truncated 8440 → 320 — GET …]". We detect that marker so
+ * the UI can offer a "Show full" affordance that fetches the untruncated
+ * payload from the per-event endpoint.
+ */
+const TRUNCATION_MARKER_RE = /\[truncated \d+ → 320/;
+function isTruncated(s: string | undefined | null): boolean {
+  return !!s && TRUNCATION_MARKER_RE.test(s);
+}
+
+interface AgentOverviewProps {
+  detail: StorySpawnDetail;
+  selection: Selection;
+  workItemId: string | null;
+}
+
+function AgentOverviewPane({ detail, selection, workItemId }: AgentOverviewProps) {
+  const showToast = useToastStore((s) => s.show);
+  const isWorkstream = selection.kind === 'phase';
+
+  // ── Doc-specific state (loaded from artifact iterations API) ──
+  const [docGen, setDocGen] = useState<{ agentId: string; name: string; model: string | null } | null>(null);
+  const [docEval, setDocEval] = useState<{ agentId: string; name: string; model: string | null } | null>(null);
+  const [docCost, setDocCost] = useState(0);
+  const [docStatus, setDocStatus] = useState<string>('pending');
+  const [docMaxIter, setDocMaxIter] = useState(0);
+  const [docCurrentIter, setDocCurrentIter] = useState(0);
+
+  useEffect(() => {
+    if (isWorkstream || !selection.id || selection.id === 'doc:decomposition') return;
+    const key = selection.id.startsWith('doc:') ? selection.id.slice(4) : selection.id;
+    let cancelled = false;
+    async function load() {
+      try {
+        const r = await forgeApi.getStoryArtifactIterations(detail.spawn.storyId, key);
+        if (cancelled) return;
+        setDocGen(r.generator);
+        setDocEval(r.evaluator);
+        setDocCost(r.totalCostUsd);
+        setDocStatus(r.status);
+        setDocMaxIter(r.maxIterations);
+        setDocCurrentIter(r.iterations.length > 0 ? r.iterations[r.iterations.length - 1].iter : 0);
+      } catch { /* silent */ }
+    }
+    void load();
+    const id = setInterval(load, 8_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [isWorkstream, selection.id, detail.spawn.storyId]);
+
+  // ── Workstream-specific state (from live store) ──
+  const live = useTaskLive(isWorkstream ? (selection.id ?? null) : null);
+  const snapshot = live?.snapshot ?? null;
+  const transcript = live?.transcript ?? [];
+
+  // Agent identity
+  const genId = isWorkstream ? (snapshot?.generatorAgentId ?? null) : (docGen?.agentId ?? null);
+  const evalId = isWorkstream ? (snapshot?.evaluatorAgentId ?? null) : (docEval?.agentId ?? null);
+  const genName = isWorkstream ? (snapshot?.generatorAgentName ?? genId) : (docGen?.name ?? genId);
+  const evalName = isWorkstream ? (snapshot?.evaluatorAgentName ?? evalId) : (docEval?.name ?? evalId);
+  const genModel = isWorkstream ? (snapshot?.generatorModel ?? null) : (docGen?.model ?? null);
+  const evalModel = isWorkstream ? (snapshot?.evaluatorModel ?? null) : (docEval?.model ?? null);
+
+  // Costs and iteration
+  const totalCost = isWorkstream ? (snapshot?.totalCostUsd ?? 0) : docCost;
+  const lastDeliverable = snapshot?.deliverables?.[snapshot.deliverables.length - 1] ?? null;
+  const currentIter = isWorkstream ? (snapshot?.currentIteration ?? lastDeliverable?.iter ?? 0) : docCurrentIter;
+  const executionStatus = isWorkstream ? (snapshot?.executionStatus ?? null) : docStatus;
+  const effectiveMaxIter = isWorkstream ? (snapshot?.maxIterations ?? 5) : docMaxIter;
+
+  // Prompts from transcript
+  const liveForDoc = useTaskLive(!isWorkstream ? workItemId : null);
+  const docTranscript = liveForDoc?.transcript ?? [];
+  const allTranscript = isWorkstream ? transcript : docTranscript;
+  const latestPrompts = useLatestPrompts(allTranscript);
+  const [promptRole, setPromptRole] = useState<'generator' | 'evaluator'>('generator');
+  const activePrompt = promptRole === 'evaluator' ? latestPrompts.ev : latestPrompts.gen;
+
+  // Cache of `eventId → { systemPrompt, userPrompt }` after the operator
+  // clicks "Show full". The transcript-stream truncates strings >320 chars
+  // per field; this hits /transcript/{eventId} for the full payload.
+  const [expandedPrompts, setExpandedPrompts] = useState<Record<number, { systemPrompt?: string; userPrompt?: string }>>({});
+  const expandedActive = activePrompt?.eventId != null ? expandedPrompts[activePrompt.eventId] : undefined;
+  const effectiveSystemPrompt = expandedActive?.systemPrompt ?? activePrompt?.systemPrompt ?? '';
+  const effectiveUserPrompt = expandedActive?.userPrompt ?? activePrompt?.userPrompt ?? '';
+
+  async function handleShowFullPrompt() {
+    if (!workItemId || activePrompt?.eventId == null) return;
+    try {
+      const evt = await forgeApi.getWorkItemTranscriptEvent(workItemId, activePrompt.eventId);
+      const p = evt.payload as Record<string, unknown> | null | undefined;
+      setExpandedPrompts((prev) => ({
+        ...prev,
+        [activePrompt.eventId!]: {
+          systemPrompt: (p?.systemPrompt as string) ?? '',
+          userPrompt: (p?.userPrompt as string) ?? '',
+        },
+      }));
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Failed to fetch full prompt', 'danger');
+    }
   }
+
+  const showsTruncationBanner =
+    activePrompt && (isTruncated(activePrompt.systemPrompt) || isTruncated(activePrompt.userPrompt))
+    && !expandedActive;
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, overflow: 'auto', padding: '4px 0' }}>
-      {files.map((f) => (
-        <DocumentPane
-          key={f}
-          storyId={storyId}
-          docId={`doc:${f}`}
-          planPr={artifacts?.plan.pr ?? null}
-          planBranch={artifacts?.plan.branch ?? null}
+    <div style={{ padding: 16, overflow: 'auto' }}>
+      {/* Agent pair — centered */}
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 16, marginBottom: 16 }}>
+        <PairSide
+          role="generator"
+          agentId={genId}
+          agentName={genName}
+          model={genModel}
+          sameAsOther={!!genModel && genModel === evalModel}
+          selected={promptRole === 'generator'}
+          onClick={() => setPromptRole('generator')}
         />
-      ))}
+        <span style={{ fontFamily: 'var(--sc-font-display)', fontSize: 14, color: 'var(--sc-text-dim)' }}>⇄</span>
+        <PairSide
+          role="evaluator"
+          agentId={evalId}
+          agentName={evalName}
+          model={evalModel}
+          sameAsOther={!!genModel && genModel === evalModel}
+          selected={promptRole === 'evaluator'}
+          onClick={() => setPromptRole('evaluator')}
+        />
+      </div>
+
+      {/* Telemetry row */}
+      <div style={{ display: 'flex', justifyContent: 'center', gap: 24, marginBottom: 16, fontFamily: 'var(--sc-font-display)', fontSize: 10, letterSpacing: '0.14em', color: 'var(--sc-text-dim)' }}>
+        <span><span style={{ color: 'var(--sc-muted)' }}>COST</span> <strong style={{ color: 'var(--sc-text)' }}>${totalCost.toFixed(2)}</strong></span>
+        {effectiveMaxIter > 0 && (
+          <span><span style={{ color: 'var(--sc-muted)' }}>ITER</span> <strong style={{ color: 'var(--sc-text)' }}>{currentIter}/{effectiveMaxIter}</strong></span>
+        )}
+        {executionStatus && executionStatus !== 'idle' && (
+          <span>
+            <span style={{ color: 'var(--sc-muted)' }}>STATUS</span>{' '}
+            <strong style={{ color: executionStatus === 'completed' ? 'var(--sc-green)' : executionStatus === 'live' ? 'var(--sc-cyan)' : executionStatus === 'failed' || executionStatus === 'stalled' ? 'var(--sc-red)' : 'var(--sc-text)' }}>
+              {executionStatus.toUpperCase()}
+            </strong>
+          </span>
+        )}
+      </div>
+
+      {/* Prompt role switcher */}
+      <div style={{ display: 'flex', gap: 0, marginBottom: 8, borderBottom: '1px solid var(--sc-border)' }}>
+        {(['generator', 'evaluator'] as const).map((role) => (
+          <button
+            key={role}
+            type="button"
+            onClick={() => setPromptRole(role)}
+            style={{
+              flex: 1,
+              padding: '8px 0',
+              background: 'transparent',
+              border: 'none',
+              borderBottom: promptRole === role ? '2px solid var(--sc-amber)' : '2px solid transparent',
+              fontFamily: 'var(--sc-font-display)',
+              fontSize: 10,
+              letterSpacing: '0.16em',
+              textTransform: 'uppercase',
+              color: promptRole === role ? 'var(--sc-amber)' : 'var(--sc-text-dim)',
+              cursor: 'pointer',
+            }}
+          >
+            {role}
+          </button>
+        ))}
+      </div>
+
+      {/* Prompts — always shown */}
+      <div>
+        {!activePrompt ? (
+          <em style={{ color: 'var(--sc-text-dim)', fontFamily: 'var(--sc-font-mono)', fontSize: 11 }}>
+            No {promptRole} prompt captured yet. Prompts appear once the crew dispatches.
+          </em>
+        ) : (
+          <>
+            {/* Truncation banner — backend trims systemPrompt/userPrompt to
+             * 320 chars per field on the bulk transcript stream when an
+             * event payload exceeds 4 KB. Click "Show full" to fetch the
+             * untruncated event from /transcript/{eventId}. */}
+            {showsTruncationBanner && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                padding: '6px 10px', marginBottom: 10,
+                background: 'rgba(255, 179, 71, 0.06)',
+                border: '1px solid var(--sc-amber-d)',
+                borderRadius: 3,
+                fontFamily: 'var(--sc-font-mono)', fontSize: 10.5, color: 'var(--sc-text-dim)',
+              }}>
+                <span style={{ color: 'var(--sc-amber)', fontFamily: 'var(--sc-font-display)', fontSize: 9, letterSpacing: '0.18em' }}>
+                  TRUNCATED
+                </span>
+                <span style={{ flex: 1 }}>
+                  Prompt fields over 320 chars are clipped on the live stream. Fetch the full payload to verify.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void handleShowFullPrompt()}
+                  style={{
+                    background: 'transparent',
+                    border: '1px solid var(--sc-amber-d)',
+                    color: 'var(--sc-amber)',
+                    fontFamily: 'var(--sc-font-display)', fontSize: 9, letterSpacing: '0.18em',
+                    textTransform: 'uppercase',
+                    padding: '4px 10px', borderRadius: 3, cursor: 'pointer',
+                  }}
+                >
+                  ↗ Show full
+                </button>
+              </div>
+            )}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontFamily: 'var(--sc-font-display)', fontSize: 9, letterSpacing: '0.16em', color: 'var(--sc-muted)', marginBottom: 4, textTransform: 'uppercase' }}>
+                System prompt
+                {expandedActive?.systemPrompt && <span style={{ color: 'var(--sc-green)', marginLeft: 6 }}>· FULL</span>}
+              </div>
+              {effectiveSystemPrompt
+                ? <pre style={{ fontFamily: 'var(--sc-font-mono)', fontSize: 11, color: 'var(--sc-text)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, lineHeight: 1.5 }}>{effectiveSystemPrompt}</pre>
+                : <em style={{ color: 'var(--sc-text-dim)', fontFamily: 'var(--sc-font-mono)', fontSize: 11 }}>(no system prompt)</em>}
+            </div>
+            <div>
+              <div style={{ fontFamily: 'var(--sc-font-display)', fontSize: 9, letterSpacing: '0.16em', color: 'var(--sc-muted)', marginBottom: 4, textTransform: 'uppercase' }}>
+                User prompt
+                {expandedActive?.userPrompt && <span style={{ color: 'var(--sc-green)', marginLeft: 6 }}>· FULL</span>}
+              </div>
+              {effectiveUserPrompt
+                ? <pre style={{ fontFamily: 'var(--sc-font-mono)', fontSize: 11, color: 'var(--sc-text)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, lineHeight: 1.5 }}>{effectiveUserPrompt}</pre>
+                : <em style={{ color: 'var(--sc-text-dim)', fontFamily: 'var(--sc-font-mono)', fontSize: 11 }}>(empty user prompt)</em>}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ─── QUESTIONS PANE ─────────────────────────────────────────────────── */
+
+function QuestionsPane({ workItemId }: { workItemId: string }) {
+  const showToast = useToastStore((s) => s.show);
+
+  return (
+    <div style={{ padding: 12 }}>
+      <OpenQuestionsWizard
+        workItemId={workItemId}
+        onAnswered={(left) => {
+          if (left === 0) {
+            showToast('All questions answered — the next iteration can proceed.', 'success');
+          }
+        }}
+      />
     </div>
   );
 }
@@ -518,146 +887,6 @@ function PrCard({ prId }: { prId: string }) {
           Open in browser ↗
         </a>
       )}
-    </div>
-  );
-}
-
-/* ─── IMPL PROGRESS PANE ─────────────────────────────────────────────── */
-
-const statusPercent: Record<string, number> = {
-  pending: 0, claimed: 10, coding: 40, building: 60, testing: 70,
-  review: 80, merging: 90, complete: 100, stalled: 0,
-};
-
-function ImplProgressPane({ detail }: { detail: StorySpawnDetail }) {
-  const ws = detail.workstreams;
-  if (ws.length === 0) {
-    return (
-      <div className="tab-placeholder">
-        <div className="lbl">▌ Implementation Progress</div>
-        <div className="sub">No workstreams yet.</div>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ overflow: 'auto', padding: '4px 0' }}>
-      {/* header */}
-      <div style={{ ...rowStyle, fontFamily: 'var(--sc-font-display)', fontSize: 9, letterSpacing: '0.14em', color: 'var(--sc-text-dim)', borderBottom: '1px solid var(--sc-border)' }}>
-        <span style={{ flex: 2, minWidth: 0 }}>NAME</span>
-        <span style={{ width: 80, textAlign: 'center' }}>STATUS</span>
-        <span style={{ width: 100 }}>PROGRESS</span>
-        <span style={{ width: 50, textAlign: 'right' }}>ITER</span>
-        <span style={{ width: 50, textAlign: 'right' }}>SCORE</span>
-        <span style={{ width: 60, textAlign: 'right' }}>COMMITS</span>
-        <span style={{ width: 60, textAlign: 'right' }}>COST</span>
-      </div>
-      {ws.map((w) => {
-        const pct = statusPercent[w.status] ?? 0;
-        return (
-          <div key={w.id} style={{ ...rowStyle, borderBottom: '1px solid var(--sc-border)' }}>
-            <span style={{ flex: 2, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, color: 'var(--sc-text)' }} title={w.name}>
-              {w.name}
-            </span>
-            <span style={{ width: 80, textAlign: 'center' }}>
-              <span style={{ fontSize: 9, fontFamily: 'var(--sc-font-display)', letterSpacing: '0.1em', padding: '1px 6px', borderRadius: 3, background: statusBg(w.status), color: statusFg(w.status) }}>
-                {w.status.toUpperCase()}
-              </span>
-            </span>
-            <span style={{ width: 100 }}>
-              <div style={{ height: 4, borderRadius: 2, background: 'var(--sc-border)', overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: `${pct}%`, borderRadius: 2, background: pct >= 100 ? '#4ec9b0' : '#569cd6', transition: 'width 0.3s' }} />
-              </div>
-            </span>
-            <span style={{ width: 50, textAlign: 'right', fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11, color: 'var(--sc-text-dim)' }}>
-              {w.iter ?? '—'}
-            </span>
-            <span style={{ width: 50, textAlign: 'right', fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11, color: 'var(--sc-text-dim)' }}>
-              {w.latestScore ?? '—'}
-            </span>
-            <span style={{ width: 60, textAlign: 'right', fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11, color: 'var(--sc-text-dim)' }}>
-              {w.commits ?? '—'}
-            </span>
-            <span style={{ width: 60, textAlign: 'right', fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11, color: 'var(--sc-text-dim)' }}>
-              {(w.costUsd ?? 0) > 0 ? `$${w.costUsd!.toFixed(2)}` : '—'}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/* ─── CONTRIBUTORS PANE ──────────────────────────────────────────────── */
-
-function ContributorsPane({ detail }: { detail: StorySpawnDetail }) {
-  const [agents, setAgents] = useState<AgentRow[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    fetch('/api/agents', { credentials: 'include' })
-      .then((r) => r.ok ? r.json() : [])
-      .then((json) => { if (!cancelled && Array.isArray(json)) setAgents(json as AgentRow[]); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
-
-  const agentsById = new Map(agents.map((a) => [a.id, a]));
-  const nameOf = (id: string | null | undefined): string => {
-    if (!id) return '—';
-    return agentsById.get(id)?.name ?? id;
-  };
-
-  // Aggregate: how many workstreams each agent contributed to and in what role
-  const contribs = new Map<string, { name: string; genCount: number; evalCount: number; workstreams: string[] }>();
-  for (const w of detail.workstreams) {
-    for (const [agentId, role] of [[w.latestGenAgentId, 'gen'], [w.latestEvalAgentId, 'eval']] as const) {
-      if (!agentId) continue;
-      let entry = contribs.get(agentId);
-      if (!entry) { entry = { name: nameOf(agentId), genCount: 0, evalCount: 0, workstreams: [] }; contribs.set(agentId, entry); }
-      entry.name = nameOf(agentId);
-      if (role === 'gen') entry.genCount++; else entry.evalCount++;
-      if (!entry.workstreams.includes(w.name)) entry.workstreams.push(w.name);
-    }
-  }
-
-  if (contribs.size === 0) {
-    return (
-      <div className="tab-placeholder">
-        <div className="lbl">▌ Contributors</div>
-        <div className="sub">No agent contributions recorded yet.</div>
-      </div>
-    );
-  }
-
-  const sorted = [...contribs.entries()].sort((a, b) => (b[1].genCount + b[1].evalCount) - (a[1].genCount + a[1].evalCount));
-  return (
-    <div style={{ overflow: 'auto', padding: '4px 0' }}>
-      <div style={{ ...rowStyle, fontFamily: 'var(--sc-font-display)', fontSize: 9, letterSpacing: '0.14em', color: 'var(--sc-text-dim)', borderBottom: '1px solid var(--sc-border)' }}>
-        <span style={{ flex: 1, minWidth: 0 }}>AGENT</span>
-        <span style={{ width: 80, textAlign: 'right' }}>GEN</span>
-        <span style={{ width: 80, textAlign: 'right' }}>EVAL</span>
-        <span style={{ width: 60, textAlign: 'right' }}>TOTAL</span>
-        <span style={{ flex: 2, minWidth: 0, paddingLeft: 12 }}>WORKSTREAMS</span>
-      </div>
-      {sorted.map(([id, c]) => (
-        <div key={id} style={{ ...rowStyle, borderBottom: '1px solid var(--sc-border)' }}>
-          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, color: 'var(--sc-text)' }} title={id}>
-            {c.name}
-          </span>
-          <span style={{ width: 80, textAlign: 'right', fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11, color: 'var(--sc-text-dim)' }}>
-            {c.genCount || '—'}
-          </span>
-          <span style={{ width: 80, textAlign: 'right', fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11, color: 'var(--sc-text-dim)' }}>
-            {c.evalCount || '—'}
-          </span>
-          <span style={{ width: 60, textAlign: 'right', fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11, color: 'var(--sc-text)' }}>
-            {c.genCount + c.evalCount}
-          </span>
-          <span style={{ flex: 2, minWidth: 0, paddingLeft: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 10, color: 'var(--sc-text-dim)' }} title={c.workstreams.join(', ')}>
-            {c.workstreams.join(', ')}
-          </span>
-        </div>
-      ))}
     </div>
   );
 }

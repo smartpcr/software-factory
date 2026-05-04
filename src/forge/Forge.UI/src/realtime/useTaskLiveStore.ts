@@ -318,6 +318,24 @@ export const useTaskLiveStore = create<TaskLiveStore>((set, get) => ({
         }
       }
     }
+    // Patch executionStatus from lifecycle events. The snapshot is fetched
+    // once on attach, so post-fetch transitions (failed → restart → live,
+    // or live → completed) would otherwise leave the badge stuck on the
+    // stale status — any event arriving for this work item proves the run
+    // is in motion; the terminal kinds flip to their respective end states.
+    if (snap) {
+      let nextStatus: string | undefined;
+      if (evt.kind === 'task.failed' || evt.kind === 'task.delivery-failed') {
+        nextStatus = 'failed';
+      } else if (evt.kind === 'task.completed') {
+        nextStatus = 'completed';
+      } else if (evt.kind.startsWith('task.')) {
+        nextStatus = 'live';
+      }
+      if (nextStatus && snap.executionStatus !== nextStatus) {
+        snap = { ...snap, executionStatus: nextStatus };
+      }
+    }
     set({ entries: { ...get().entries, [workItemId]: { ...cur, snapshot: snap, transcript: next, lastEventId: Math.max(cur.lastEventId, evt.id), transcriptTotalCount: cur.transcriptTotalCount + 1 } } });
   },
 

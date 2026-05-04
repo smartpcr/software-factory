@@ -104,9 +104,23 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
     public Task ResumeSingleArtifactAsync(
         StorySpawnRow spawn, WorkItemRow story, string key, CancellationToken ct = default)
     {
-        // Deterministic strategy has no gen↔eval loop — resume is a no-op.
+        // Deterministic strategy has no gen↔eval loop — record an observable
+        // signal so integration tests can assert "the recovery service called
+        // through" without running real agents. Each call appends to a static
+        // dictionary keyed by spawnId+key; tests inspect Resumed.Snapshot()
+        // and clear it before the next setup.
+        var bucket = $"{spawn.Id}:{key}";
+        Resumed.AddOrUpdate(bucket, 1, (_, n) => n + 1);
         return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// Test hook — counter of <see cref="ResumeSingleArtifactAsync"/> invocations
+    /// keyed by <c>{spawnId}:{key}</c>. Reset between tests via <see cref="Reset"/>.
+    /// </summary>
+    public static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> Resumed = new();
+
+    public static void Reset() => Resumed.Clear();
 
     public Task<IReadOnlyList<DecompositionWorkstream>> ProduceDecompositionAsync(
         StorySpawnRow spawn, WorkItemRow story, CancellationToken ct = default)

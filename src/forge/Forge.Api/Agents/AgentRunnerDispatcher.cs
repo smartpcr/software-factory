@@ -354,7 +354,6 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
         var psi = new ProcessStartInfo
         {
             FileName = cliPath,
-            Arguments = $"--print --model {context.Model}",
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -362,6 +361,19 @@ public sealed class AgentRunnerDispatcher : IAgentRunner
             CreateNoWindow = true,
             WorkingDirectory = string.IsNullOrEmpty(context.WorktreePath) ? null : context.WorktreePath,
         };
+        psi.ArgumentList.Add("--print");
+        psi.ArgumentList.Add("--model");
+        psi.ArgumentList.Add(context.Model);
+
+        // Phase 41 — pass --disallowedTools when the caller has decided this
+        // agent must NOT have certain tools (e.g. revoke Bash for the
+        // architect plan-doc loop after observing the agent shell out to
+        // `Remove-Item tech-spec.md` mid-iteration and never rewrite it).
+        if (context.DisallowedTools is { Count: > 0 } disallowed)
+        {
+            psi.ArgumentList.Add("--disallowedTools");
+            psi.ArgumentList.Add(string.Join(",", disallowed));
+        }
 
         await foreach (var ev in this.RunCliAsync(psi, fullPrompt, context, ct))
         {

@@ -277,6 +277,14 @@ builder.Services.AddSingleton<Forge.Api.Services.Stories.StorySpawnOrchestrator>
 builder.Services.AddSingleton<Forge.Api.Services.Stories.SpawnDependencyScheduler>();
 if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.Stories.SpawnDependencyScheduler>());
 
+// Phase 41 — boot-time sweep that re-fires plan-doc Resume loops killed by
+// a previous process exit. Reads StorySpawnRow.ResumePendingJson and re-fires
+// the gen↔eval loop for each unfinished key. Registered as a singleton so
+// integration tests can resolve it and call SweepAsync deterministically;
+// only auto-started when enableBackground (production runtime).
+builder.Services.AddSingleton<Forge.Api.Services.Stories.StoryResumeRecoveryService>();
+if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<Forge.Api.Services.Stories.StoryResumeRecoveryService>());
+
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IUserContext, HttpUserContext>();
 
@@ -401,6 +409,10 @@ using (var scope = app.Services.CreateScope())
     // Phase 40 — backfill WorkItemRow rows for legacy story ids so the
     // ParentId on plan-docs / workstreams resolves to a real parent.
     await Phase40Migration.ApplyAsync(db);
+    // Phase 41 — ResumePendingJson column on story_spawns so a plan-doc
+    // Resume kicked off via /spawn/artifacts/{key}/resume survives a
+    // process restart (StoryResumeRecoveryService re-fires unfinished keys).
+    await Phase41Migration.ApplyAsync(db);
     // Phase 29 — cancel orphaned validation runs left from a previous crash/restart.
     {
         var now = DateTime.UtcNow.ToString("O");

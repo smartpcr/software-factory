@@ -10,9 +10,7 @@ import {
   groupByIteration,
   TranscriptLine,
   SummaryView,
-  PairSide,
 } from '@/views/conversation';
-import { OpenQuestionsWizard } from './OpenQuestionsWizard';
 
 interface Props {
   storyId: string;
@@ -60,17 +58,31 @@ export function DocConversationPane({ storyId, docId }: Props) {
   // Commits modes.
   const [rows, setRows] = useState<IterRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [totalCost, setTotalCost] = useState(0);
+  const [, setTotalCost] = useState(0);
   const [workItemId, setWorkItemId] = useState<string | null>(null);
   const [generator, setGenerator] = useState<AgentInfo | null>(null);
   const [evaluator, setEvaluator] = useState<AgentInfo | null>(null);
-  const [status, setStatus] = useState<'live' | 'iterating' | 'awaiting-pr-review' | 'completed' | 'pending'>('pending');
+  const [status, setStatus] = useState<'live' | 'iterating' | 'stalled' | 'awaiting-pr-review' | 'completed' | 'pending'>('pending');
+  const [maxIterations, setMaxIterations] = useState(0);
   const [filter, setFilter] = useState<FilterKey>('summary');
   const [selectedIter, setSelectedIter] = useState<number | null>(null);
-  const [promptsCollapsed, setPromptsCollapsed] = useState(true);
-  const [promptRole, setPromptRole] = useState<'generator' | 'evaluator'>('generator');
   const [resuming, setResuming] = useState(false);
   const showToast = useToastStore((s) => s.show);
+
+  const isLive = status === 'live';
+  const isCompleted = status === 'completed';
+  const hasIterations = rows.length > 0;
+  const canResume = !isLive && !isCompleted && hasIterations;
+
+  async function handleResume() {
+    setResuming(true);
+    try {
+      await forgeApi.resumeStoryArtifact(storyId, key);
+      showToast(`Resuming ${key}.md — gen↔eval loop re-entered.`, 'success');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Resume failed', 'danger');
+    } finally { setResuming(false); }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -84,6 +96,7 @@ export function DocConversationPane({ storyId, docId }: Props) {
         setGenerator(r.generator);
         setEvaluator(r.evaluator);
         setStatus(r.status);
+        setMaxIterations(r.maxIterations);
         setLoading(false);
       } catch {
         if (!cancelled) setLoading(false);
@@ -95,35 +108,11 @@ export function DocConversationPane({ storyId, docId }: Props) {
     return () => { cancelled = true; clearInterval(id); };
   }, [storyId, key]);
 
-  async function handleResume() {
-    setResuming(true);
-    try {
-      await forgeApi.resumeStoryArtifact(storyId, key);
-      showToast(`Resuming ${key}.md — gen↔eval loop re-entered with workspace cache bypassed.`, 'success');
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Resume failed', 'danger');
-    } finally {
-      setResuming(false);
-    }
-  }
-  // Resume disabled while a run is live (events still flowing) or when the
-  // doc has fully shipped (PR merged). Follows the same pattern as
-  // WorkstreamConversationPane and LiveExecutionView:
-  //   isLive    = server says the loop is running
-  //   canResume = not live, not completed, and has prior iterations
-  //   disabled  = canResume is false OR a resume is in flight
-  // The button is always VISIBLE but disabled when not applicable.
   const liveEntry = useTaskLive(workItemId);
   const transcript = liveEntry?.transcript ?? [];
   const transcriptTotalCount = liveEntry?.transcriptTotalCount ?? 0;
   const loadingOlder = liveEntry?.loadingOlder ?? false;
   const hasOlderEvents = transcript.length < transcriptTotalCount;
-
-  const isLive = status === 'live';
-  const isCompleted = status === 'completed';
-  const hasIterations = rows.length > 0 || transcript.length > 0;
-  const canResume = !isLive && !isCompleted && hasIterations;
-  const resumeDisabled = !canResume || resuming;
 
   // Reset selection when filter or doc changes so the latest page is sticky.
   useEffect(() => { setSelectedIter(null); }, [filter, key]);
@@ -133,31 +122,6 @@ export function DocConversationPane({ storyId, docId }: Props) {
     [transcript, filter, generator?.agentId, evaluator?.agentId],
   );
   const iterations = useMemo(() => groupByIteration(filtered), [filtered]);
-
-  // Latest prompt per role — extracted from the most recent task.prompt event
-  // matching the role. Backs the collapsible system+user prompt sections.
-  const latestPrompts = useMemo(() => {
-    type PromptShape = { systemPrompt: string; userPrompt: string; model: string; backend: string; mode: string };
-    let gen: PromptShape | null = null;
-    let ev: PromptShape | null = null;
-    for (let i = transcript.length - 1; i >= 0 && (!gen || !ev); i--) {
-      if (transcript[i].kind !== 'task.prompt') continue;
-      const p = transcript[i].payload as Record<string, unknown> | null;
-      if (!p) continue;
-      const role = (p.role as string) ?? '';
-      const candidate: PromptShape = {
-        systemPrompt: (p.systemPrompt as string) ?? '',
-        userPrompt: (p.userPrompt as string) ?? '',
-        model: (p.model as string) ?? '',
-        backend: (p.backend as string) ?? '',
-        mode: (p.invokeMode as string) ?? '',
-      };
-      if (role === 'evaluator' && !ev) ev = candidate;
-      else if (role !== 'evaluator' && !gen) gen = candidate;
-    }
-    return { gen, ev };
-  }, [transcript]);
-  const activePrompt = promptRole === 'evaluator' ? latestPrompts.ev : latestPrompts.gen;
 
   // Summary mode iteration source. Map IterRow → DeliverableShape so the
   // shared SummaryView component renders the same way live-exec does.
@@ -187,6 +151,8 @@ export function DocConversationPane({ storyId, docId }: Props) {
     : (!isSummaryMode ? filtered : []);
   const activeSummary = isSummaryMode && totalIters > 0 ? summaryIters[activeIter] ?? null : null;
 
+  const currentIteration = rows.length > 0 ? rows[rows.length - 1].iter : 0;
+
   // Reverse-chronological: newest events on top within the active iteration.
   const reversedEvents = useMemo(() => [...visibleEvents].reverse(), [visibleEvents]);
 
@@ -210,111 +176,8 @@ export function DocConversationPane({ storyId, docId }: Props) {
   }
 
   return (
-    <div className="doc-conv">
-      {/* Pair header — generator + evaluator avatar + name + model */}
-      <header className="doc-conv-pair-bar">
-        <PairSide
-          role="generator"
-          agentId={generator?.agentId ?? null}
-          agentName={generator?.name ?? null}
-          model={generator?.model ?? null}
-          sameAsOther={!!generator && !!evaluator && generator.model != null && generator.model === evaluator.model}
-          selected={promptRole === 'generator'}
-          onClick={() => { setPromptRole('generator'); setPromptsCollapsed(false); }}
-        />
-        <span className="doc-conv-pair-link">⇄</span>
-        <PairSide
-          role="evaluator"
-          agentId={evaluator?.agentId ?? null}
-          agentName={evaluator?.name ?? null}
-          model={evaluator?.model ?? null}
-          sameAsOther={!!generator && !!evaluator && generator.model != null && generator.model === evaluator.model}
-          selected={promptRole === 'evaluator'}
-          onClick={() => { setPromptRole('evaluator'); setPromptsCollapsed(false); }}
-        />
-        <span className="doc-conv-pair-cost">
-          TOTAL COST · <b>${totalCost.toFixed(2)}</b>
-        </span>
-        <button
-          type="button"
-          className="doc-conv-resume-btn"
-          disabled={resumeDisabled}
-          title={
-            isLive ? 'Architect crew is currently running — resume disabled.'
-            : isCompleted ? 'Plan PR merged — doc is shipped.'
-            : !hasIterations ? 'No iterations yet — nothing to resume.'
-            : resuming ? 'Resuming…'
-            : 'Resume the gen↔eval loop on the cached workspace.'
-          }
-          onClick={() => void handleResume()}
-        >
-          {resuming ? '⏳ resuming…' : isLive ? '● LIVE' : '↻ RESUME'}
-        </button>
-      </header>
-
-      {/* Collapsible system + user prompt — toggles between generator/evaluator */}
-      <section className="live-exec__prompts">
-        <div
-          className="live-exec__prompts-header"
-          onClick={() => setPromptsCollapsed(!promptsCollapsed)}
-          role="button"
-          tabIndex={0}
-        >
-          <strong>
-            {promptsCollapsed ? '▸' : '▾'} {promptRole === 'generator' ? 'Generator' : 'Evaluator'} Prompts
-          </strong>
-          {!promptsCollapsed && (
-            <div className="live-exec__prompts-roleswitch" onClick={(e) => e.stopPropagation()}>
-              <button
-                type="button"
-                className={promptRole === 'generator' ? 'active' : ''}
-                onClick={() => setPromptRole('generator')}
-              >
-                Generator
-              </button>
-              <button
-                type="button"
-                className={promptRole === 'evaluator' ? 'active' : ''}
-                onClick={() => setPromptRole('evaluator')}
-              >
-                Evaluator
-              </button>
-            </div>
-          )}
-        </div>
-        {!promptsCollapsed && (
-          <div className="live-exec__prompts-body">
-            {!activePrompt ? (
-              <em style={{ color: 'var(--text-tertiary)' }}>
-                No {promptRole} prompt captured yet. The first one appears once the architect crew dispatches.
-              </em>
-            ) : (
-              <>
-                <div className="live-exec__prompt-standalone">
-                  <div className="live-exec__prompt-label">System prompt</div>
-                  {activePrompt.systemPrompt
-                    ? <pre className="live-exec__prompt-pre">{activePrompt.systemPrompt}</pre>
-                    : <em style={{ color: 'var(--text-tertiary)' }}>
-                        (no system prompt — agent has no <code>soul.md</code> configured)
-                      </em>}
-                </div>
-                <div className="live-exec__prompt-standalone">
-                  <div className="live-exec__prompt-label">User prompt</div>
-                  {activePrompt.userPrompt
-                    ? <pre className="live-exec__prompt-pre">{activePrompt.userPrompt}</pre>
-                    : <em style={{ color: 'var(--text-tertiary)' }}>(empty user prompt)</em>}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-      </section>
-
-      {/* Open-questions wizard — surfaces only when the generator emitted any */}
-      {workItemId && <OpenQuestionsWizard workItemId={workItemId} onAnswered={(left) => { if (left === 0) void handleResume(); }} />}
-
-      {/* Filter tab strip */}
-      <nav className="live-exec__filters" role="tablist">
+    <div className="doc-conv doc-conv--quiet">
+      <nav className="live-exec__filters" role="tablist" style={{ display: 'flex', alignItems: 'center' }}>
         {FILTERS.map((f) => (
           <button
             key={f.key}
@@ -327,6 +190,14 @@ export function DocConversationPane({ storyId, docId }: Props) {
             {f.label}
           </button>
         ))}
+        <span style={{ flex: 1 }} />
+        <button type="button" className="doc-conv-resume-btn" disabled={!canResume || resuming}
+          title={isLive ? 'Running.' : isCompleted ? 'Shipped.' : !hasIterations ? 'No iterations.' : 'Resume loop.'}
+          onClick={() => void handleResume()} style={{ margin: '0 2px', padding: '4px 10px' }}>
+          {resuming ? '⏳…' : isLive ? (
+            <span style={{ color: 'var(--sc-cyan, #5eead4)', fontWeight: 700 }}>● LIVE</span>
+          ) : '↻ RESUME'}
+        </button>
       </nav>
 
       {/* Iteration pager — windowed page list with score chips */}
@@ -371,10 +242,11 @@ export function DocConversationPane({ storyId, docId }: Props) {
           >
             ▸
           </button>
-          <span className="live-exec__iter-pager-label">
-            Iteration {activeIter + 1} of {totalIters}
-            {selectedIter === null && ' (latest)'}
-          </span>
+          {maxIterations > 0 && (
+            <span style={{ marginLeft: 'auto', fontFamily: 'var(--sc-font-display, monospace)', fontSize: 9, letterSpacing: '0.14em', color: 'var(--sc-text-dim, #8d94a3)' }}>
+              iter <strong style={{ color: 'var(--sc-text, #e9e6dc)' }}>{currentIteration}</strong> of <strong style={{ color: 'var(--sc-text, #e9e6dc)' }}>{maxIterations}</strong>
+            </span>
+          )}
         </nav>
       )}
 

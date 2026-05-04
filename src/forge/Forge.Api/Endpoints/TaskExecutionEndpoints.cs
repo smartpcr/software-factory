@@ -41,6 +41,7 @@ public static class TaskExecutionEndpoints
         var grp = app.MapGroup("/api/work-items").WithTags("WorkItems");
         grp.MapGet("/{id}/execution", GetExecution).WithName("GetWorkItemExecution");
         grp.MapGet("/{id}/transcript", GetTranscript).WithName("GetWorkItemTranscript");
+        grp.MapGet("/{id}/transcript/{eventId:long}", GetTranscriptEvent).WithName("GetWorkItemTranscriptEvent");
         grp.MapDelete("/{id}/transcript", ClearTranscript).WithName("ClearWorkItemTranscript");
         grp.MapPatch("/{id}/execution", PatchExecution).WithName("PatchWorkItemExecution");
         grp.MapPost("/{id}/resume", Resume).WithName("ResumeWorkItem");
@@ -587,6 +588,41 @@ public static class TaskExecutionEndpoints
         return Results.Ok(snap);
     }
 
+    /// <summary>
+    /// Per-event lookup that returns the FULL untruncated payload. The bulk
+    /// transcript stream (<see cref="GetTranscript"/>) trims systemPrompt /
+    /// userPrompt / large tool results to 320 chars per field so a long
+    /// session doesn't ship multi-MB responses; this endpoint backs the
+    /// "Show full prompt" affordance the operator clicks when a marker
+    /// appears in the live-exec / Overview view.
+    /// </summary>
+    private static async Task<IResult> GetTranscriptEvent(
+        string id,
+        long eventId,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var row = await db.TaskTranscriptEvents.AsNoTracking()
+            .FirstOrDefaultAsync(e => e.WorkItemId == id && e.Id == eventId, ct);
+        if (row is null) return Results.NotFound();
+
+        // Bypass TruncateBulkyFields — the caller asked for the full
+        // payload explicitly. Parse the raw JSON so the response shape
+        // matches MapTranscript's contract; only the bulk fields differ.
+        JsonElement payload;
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrEmpty(row.PayloadJson) ? "{}" : row.PayloadJson);
+            payload = doc.RootElement.Clone();
+        }
+        catch
+        {
+            using var doc = JsonDocument.Parse("{}");
+            payload = doc.RootElement.Clone();
+        }
+        return Results.Ok(new TaskTranscriptEvent(row.Id, row.WorkItemId, row.Kind, row.AgentId, row.CrewId, payload, row.At));
+    }
+
     private static async Task<IResult> GetTranscript(
         string id,
         ForgeDbContext db,
@@ -738,7 +774,7 @@ public static class TaskExecutionEndpoints
                         var s = prop.Value.GetString() ?? string.Empty;
                         if (s.Length > 320)
                         {
-                            w.WriteString(prop.Name, s[..320] + $"…[truncated {s.Length} → 320, GET /transcript/{{id}} for full]");
+                            w.WriteString(prop.Name, s[..320] + $"…[truncated {s.Length} → 320 — GET /api/work-items/{{wi}}/transcript/{{eventId}} for full]");
                             continue;
                         }
                     }

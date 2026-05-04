@@ -58,53 +58,77 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
     // ── Per-phase entry points ───────────────────────────────────────────────
 
+    /// <summary>
+    /// Single source of truth for the four plan-doc briefs the architect
+    /// agent receives in its user prompt. Both <see cref="ProducePlanArtifactsAsync"/>
+    /// (full plan run) and <see cref="ResumeSingleArtifactAsync"/> (operator
+    /// re-runs one doc) MUST consume this so the brief stays consistent —
+    /// the two were drifted in 2026-05-04: Resume was sending a one-liner
+    /// brief while the full-run path had been expanded to detail the LIVEDOC
+    /// structure, so a Resume click was producing a doc that didn't match
+    /// the spec. Keying by the URL slug (no <c>.md</c> extension) matches
+    /// the <c>POST /spawn/artifacts/{key}/resume</c> route.
+    /// </summary>
+    internal static Dictionary<string, (string FileName, string Brief, string RepoPath)> BuildPlanDocSpecs(string docDir)
+    {
+        return new Dictionary<string, (string FileName, string Brief, string RepoPath)>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["tech-spec"] = ("tech-spec.md",
+                "Problem statement, in/out-of-scope items, non-goals, hard constraints, identified risks. Anchor every section in the story description's concrete details.",
+                $"{docDir}/tech-spec.md"),
+
+            ["architecture"] = ("architecture.md",
+                "Components and their responsibilities, data model (entities + key fields), interfaces between components, end-to-end sequence flows for the primary scenarios.",
+                $"{docDir}/architecture.md"),
+
+            ["implementation-plan"] = ("implementation-plan.md",
+                """
+                This file is a LIVEDOC — it tracks implementation progress with checkboxes.
+                Operators tick boxes as work lands; the doc is the source of truth for "what's done".
+
+                Structure MUST follow this hierarchy EXACTLY:
+
+                # Implementation Plan — {story title}
+
+                ## Phase N: {phase name}
+
+                ### Stage N.M: {stage name}
+
+                #### Implementation Steps
+                - [ ] Step description (concrete, actionable — one PR-sized unit of work)
+                - [ ] Another step
+                - …
+
+                #### Test Scenarios
+                - [ ] Scenario: {name} — Given {context}, When {action}, Then {expected outcome}
+                - [ ] Scenario: {name} — …
+
+                Hard requirements (the evaluator will refuse pass if any are violated):
+                - Each Phase MUST contain Stage subsections (`### Stage N.M: …`); no "naked" steps directly under a phase.
+                - Each Stage MUST contain BOTH an `#### Implementation Steps` block AND a `#### Test Scenarios` block.
+                - At most 20 Stages per Phase. At most 20 Implementation Steps per Stage. (Spec cap: forge_implementation.md §16.5 Plan-tree validator.)
+                - Each step changes ≤ 20 files in the eventual PR.
+                - Every Implementation Step is a checkbox `- [ ]` (not bullets, not numbered).
+                - Every Test Scenario is a checkbox `- [ ]` (not bullets, not numbered) and is verifiable pass/fail (not subjective).
+                - Include at least 2 test scenarios per Stage.
+                - Order phases so each builds on the previous; call out hard sequencing dependencies and parallel-safe items inline.
+                - Each Implementation Step must be small enough for a single agent iteration to complete.
+                """,
+                $"{docDir}/implementation-plan.md"),
+
+            ["e2e-scenarios"] = ("e2e-scenarios.md",
+                "Gherkin-style feature scenarios (Feature / Scenario / Given-When-Then) covering happy paths and the edge cases QA will run.",
+                $"{docDir}/e2e-scenarios.md"),
+        };
+    }
+
     public async Task<IReadOnlyDictionary<string, string>> ProducePlanArtifactsAsync(
         StorySpawnRow spawn, WorkItemRow story, bool forceResume = false, CancellationToken ct = default)
     {
         var docDir = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}";
         var budget = BudgetForPhase(spawn.StoryPoints, "plan");
 
-        var specs = new (string FileName, string Brief, string RepoPath)[]
-        {
-            ("tech-spec.md",
-             "Problem statement, in/out-of-scope items, non-goals, hard constraints, identified risks. Anchor every section in the story description's concrete details.",
-             $"{docDir}/tech-spec.md"),
-            ("architecture.md",
-             "Components and their responsibilities, data model (entities + key fields), interfaces between components, end-to-end sequence flows for the primary scenarios.",
-             $"{docDir}/architecture.md"),
-            ("implementation-plan.md",
-             """
-             This file is a LIVEDOC — it tracks implementation progress with checkboxes.
-             
-             Structure MUST follow this hierarchy:
-             
-             # Implementation Plan — {story title}
-             
-             ## Phase N: {phase name}
-             
-             ### Stage N.M: {stage name}
-             
-             #### Implementation Steps
-             - [ ] Step description (concrete, actionable — one PR-sized unit of work)
-             - [ ] Another step
-             
-             #### Test Scenarios
-             - [ ] Scenario: {name} — Given {context}, When {action}, Then {expected outcome}
-             - [ ] Scenario: {name} — ...
-             
-             Requirements:
-             - Order phases so each builds on the previous
-             - Call out hard sequencing dependencies and parallel-safe items
-             - Each step must be small enough for a single agent iteration
-             - Each test scenario must be verifiable (pass/fail, not subjective)
-             - Checkboxes will be checked off as work completes — this is the live progress tracker
-             - Include at least 2-3 test scenarios per stage
-             """,
-             $"{docDir}/implementation-plan.md"),
-            ("e2e-scenarios.md",
-             "Gherkin-style feature scenarios (Feature / Scenario / Given-When-Then) covering happy paths and the edge cases QA will run.",
-             $"{docDir}/e2e-scenarios.md"),
-        };
+        var specs = BuildPlanDocSpecs(docDir).Values.ToArray();
 
         // ── Assign different generator agents per doc (round-robin) ────
         // Load all available architect crew agents so each doc gets a
@@ -285,13 +309,18 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             into your reply, STOP and use the write tool instead.
 
             Concretely:
-            1. Call your write/edit/create-file tool with `path={{spec.FileName}}`
-               (relative to the working directory — no leading slash, no
-               subdirectories) and `content=<the full markdown body>`.
+            1. For large files, prefer incremental edits (edit_file / replace)
+               over rewriting the entire file. Full-file create_file calls on
+               files >5 KB risk hitting output limits and producing empty files.
+               Use create_file for the initial draft; use edit_file for
+               subsequent iterations.
             2. Verify with your read/view tool that the file is on disk and
                its byte count matches what you intended.
             3. ONLY THEN reply with the summary below. Your chat reply is
                for the summary; the FILE is the deliverable.
+            4. NEVER delete {{spec.FileName}} — if you need to restructure,
+               edit in place. Deleting the file causes the evaluator to
+               score 0 and the iteration is wasted.
 
             End your chat reply with a `## Iteration Summary` section that
             lists (a) the path you wrote to and the byte count, (b) which
@@ -389,6 +418,15 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             budget: budget,
             storyPoints: docPoints,
             generatorAgentOverride: generatorAgentOverride,
+            // Phase 41 (option 2) — revoke shell access for plan-doc agents.
+            // The architect's job here is pure file I/O (read siblings, write
+            // the spec); Bash was only ever used to delete the file before
+            // a partial rewrite (observed 2026-05-04 on tech-spec.md).
+            disallowedTools: ArchitectDisallowedTools,
+            // Phase 41 (option 3) — protect this iteration's artifact. If the
+            // generator nukes the file without rewriting it, restore from the
+            // prior iteration's snapshot before the evaluator scores.
+            protectedFile: diskPath,
             ct: ct);
 
         if (!File.Exists(diskPath))
@@ -399,29 +437,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         return await File.ReadAllTextAsync(diskPath, ct);
     }
 
+    /// <summary>
+    /// Phase 41 — Claude-Code-SDK tool names the architect MUST NOT use when
+    /// producing plan docs. Today: <c>Bash</c> only (the agent has no
+    /// legitimate need for a shell when writing a markdown spec, and
+    /// permitting it produced an observed delete-then-forget-to-rewrite
+    /// failure mode). Reused by all four plan-doc loops; resume calls
+    /// flow through <see cref="ProducePlanFileAsync"/> too.
+    /// </summary>
+    private static readonly string[] ArchitectDisallowedTools = new[] { "Bash" };
+
     public async Task ResumeSingleArtifactAsync(
         StorySpawnRow spawn, WorkItemRow story, string key, CancellationToken ct = default)
     {
         var docDir = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}";
         var budget = BudgetForPhase(spawn.StoryPoints, "plan");
 
-        var specs = new Dictionary<string, (string FileName, string Brief, string RepoPath)>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["tech-spec"] = ("tech-spec.md",
-                "Problem statement, in/out-of-scope items, non-goals, hard constraints, identified risks.",
-                $"{docDir}/tech-spec.md"),
-            ["architecture"] = ("architecture.md",
-                "Components and their responsibilities, data model, interfaces, sequence flows.",
-                $"{docDir}/architecture.md"),
-            ["implementation-plan"] = ("implementation-plan.md",
-                """
-                LIVEDOC with checkboxes tracking progress. Structure: Phase → Stage → Implementation Steps (checkboxes) + Test Scenarios (checkboxes). Each step = one PR-sized unit. Each test = verifiable pass/fail.
-                """,
-                $"{docDir}/implementation-plan.md"),
-            ["e2e-scenarios"] = ("e2e-scenarios.md",
-                "Gherkin-style feature scenarios covering happy paths and edge cases.",
-                $"{docDir}/e2e-scenarios.md"),
-        };
+        var specs = BuildPlanDocSpecs(docDir);
 
         if (!specs.TryGetValue(key, out var spec))
         {
@@ -903,20 +935,18 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     /// </summary>
     internal static TimeSpan BudgetForPhase(int points, string phaseTag)
     {
-        var baseSeconds = Math.Max(120.0, points * 30.0);
-        // phaseTag examples: "plan", "plan:tech-spec.md", "decompose",
-        //                    "impl:ws-...", "review:ws-...:r0", "review-fix:ws-...",
-        //                    "qa-features", "qa-steps:ws-..."
+        // Base budget scales with story points: 60s per point, floor 180s.
+        var baseSeconds = Math.Max(180.0, points * 60.0);
         var prefix = phaseTag.Split(':', 2)[0];
         var multiplier = prefix switch
         {
-            "plan" => 1.0,           // per-file budget when run in parallel
+            "plan" => 1.0,
             "decompose" => 0.7,
-            "impl" => 1.5,           // engineering writes more code than planning
-            "review" => 0.5,         // reviewer skim
-            "review-fix" => 0.5,
-            "qa-features" => 0.8,
-            "qa-steps" => 0.7,
+            "impl" => 2.0,
+            "review" => 1.0,
+            "review-fix" => 1.0,
+            "qa-features" => 1.0,
+            "qa-steps" => 0.8,
             _ => 1.0,
         };
         return TimeSpan.FromSeconds(baseSeconds * multiplier);
@@ -943,6 +973,16 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         TimeSpan? budget,
         int storyPoints,
         string? generatorAgentOverride = null,
+        // Phase 41 — Claude-Code tool names to revoke for this invocation
+        // (forwarded to the CLI as `--disallowedTools`). Architect plan-doc
+        // generators pass `["Bash"]` so an agent can't `Remove-Item` its
+        // own artifact mid-turn.
+        IReadOnlyList<string>? disallowedTools = null,
+        // Phase 41 — single artifact to snapshot before each generator turn
+        // and restore from snapshot if the agent loses it. Catches the
+        // "delete-then-forget-to-rewrite" failure mode regardless of which
+        // tool was used to delete (defense in depth alongside disallowedTools).
+        string? protectedFile = null,
         CancellationToken ct = default)
     {
         var prefix = CrewIdPrefix(team);
@@ -965,6 +1005,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var (genAgentId, genContext, genBackendStr, genInvokeStr) = await this.ResolveAgentRunConfigAsync(
             db, crew, useEvaluatorRole: false, workspace, budget, ct);
 
+        // Phase 41 — apply per-loop tool restrictions (Bash revoked for
+        // architect plan-doc loops). Records are immutable; layer the field
+        // on with `with`.
+        if (disallowedTools is { Count: > 0 })
+        {
+            genContext = genContext with { DisallowedTools = disallowedTools };
+        }
+
         // Evaluator is best-effort — when crew has no evaluator wiring, the
         // loop's null delegate path returns an auto-pass score so we still
         // exit after one generator iteration.
@@ -984,6 +1032,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 evalAgentId = eId;
                 evalContext = eCtx;
                 evalCrewId = evalCrew.Id;
+                if (disallowedTools is { Count: > 0 })
+                {
+                    evalContext = evalContext with { DisallowedTools = disallowedTools };
+                }
             }
             catch
             {
@@ -1028,6 +1080,25 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 ? generatorPrompt
                 : $"{generatorPrompt}\n\n---\n\nEvaluator feedback from iteration {iter - 1}:\n{evalNotes}";
 
+            // Phase 41 — snapshot the protected file before invoking the
+            // generator so an agent that deletes it mid-turn (observed:
+            // architect ran `Remove-Item tech-spec.md` then forgot to write
+            // it back) gets restored from the prior iteration's content.
+            // Also snapshot on iter 1 so we have a baseline if the generator
+            // nukes the seed file.
+            string? snapshotPath = null;
+            long snapshotSize = 0;
+            if (!string.IsNullOrEmpty(protectedFile) && File.Exists(protectedFile))
+            {
+                snapshotPath = protectedFile + ".iter-snapshot.bak";
+                try
+                {
+                    File.Copy(protectedFile, snapshotPath, overwrite: true);
+                    snapshotSize = new FileInfo(snapshotPath).Length;
+                }
+                catch { snapshotPath = null; }
+            }
+
             // task.prompt — same shape CrewQueueWorker emits, so the live-exec /
             // doc-conv view's latestPrompt extraction works against plan-doc
             // workItemIds the same way it does against work-item runs.
@@ -1035,7 +1106,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             {
                 agentId = genAgentId,
                 crewId = crew.Id,
-                systemPrompt = (string?)null,
+                systemPrompt = string.IsNullOrEmpty(genContext.SoulMd) ? (string?)null : genContext.SoulMd,
                 userPrompt = iterPrompt,
                 model = genContext.Model,
                 backend = genBackendStr,
@@ -1070,6 +1141,62 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 if (evt.InputTokens is > 0) inTok += evt.InputTokens.Value;
                 if (evt.OutputTokens is > 0) outTok += evt.OutputTokens.Value;
             }
+
+            // Phase 41 — restore the protected file from snapshot if the
+            // generator destroyed it (deleted OR emptied/truncated). A file
+            // that shrinks to <10% of the snapshot size is treated as
+            // truncated — the generator's "rewrite completely" pattern often
+            // hits tool-output limits, leaving an empty or stub file.
+            if (!string.IsNullOrEmpty(protectedFile) && !string.IsNullOrEmpty(snapshotPath) && File.Exists(snapshotPath))
+            {
+                var needsRestore = false;
+                string reason;
+                if (!File.Exists(protectedFile))
+                {
+                    needsRestore = true;
+                    reason = "generator-destroyed-artifact";
+                }
+                else
+                {
+                    var currentSize = new FileInfo(protectedFile).Length;
+                    // Truncation guard: if the snapshot was meaningful (>100 bytes)
+                    // and the current file is <10% of that, restore the snapshot.
+                    if (snapshotSize > 100 && currentSize < snapshotSize / 10)
+                    {
+                        needsRestore = true;
+                        reason = "generator-truncated-artifact";
+                    }
+                    else
+                    {
+                        reason = "";
+                    }
+                }
+
+                if (needsRestore)
+                {
+                    try
+                    {
+                        File.Copy(snapshotPath, protectedFile, overwrite: true);
+                        await this.taskChannel.EmitAsync(workItemId, "task.recovery", new
+                        {
+                            iter,
+                            reason,
+                            file = Path.GetFileName(protectedFile),
+                            snapshotBytes = snapshotSize,
+                            note = reason == "generator-truncated-artifact"
+                                ? $"Agent truncated the artifact to near-zero bytes (snapshot was {snapshotSize:N0}B). Restored from previous iteration's snapshot before evaluator scoring."
+                                : "Agent deleted the artifact mid-turn and didn't rewrite it. Restored from previous iteration's snapshot before evaluator scoring.",
+                        }, agentId: genAgentId, crewId: crew.Id, ct: iterCt);
+                    }
+                    catch
+                    {
+                        // best-effort; if the restore fails the evaluator
+                        // will score 0 on a missing file as it does today.
+                    }
+                }
+                try { File.Delete(snapshotPath); } catch { /* best-effort */ }
+            }
+
             return new GeneratorRunOutput(output.ToString(), cost, inTok, outTok);
         }
 
@@ -1088,7 +1215,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             {
                 agentId = evalAgentId,
                 crewId = evalCrewId,
-                systemPrompt = (string?)null,
+                systemPrompt = string.IsNullOrEmpty(evalContext.SoulMd) ? (string?)null : evalContext.SoulMd,
                 userPrompt = evaluatorPrompt,
                 model = evalContext.Model,
                 backend = evalContext.Backend.ToString().ToLowerInvariant(),
@@ -1186,9 +1313,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ? AgentInvokeMode.Cli : AgentInvokeMode.Sdk;
 
         var soul = string.Empty;
-        if (!string.IsNullOrEmpty(agent?.SoulPath) && File.Exists(agent!.SoulPath))
+        var resolvedSoul1 = ForgeSeed.ResolveSoulPath(agent?.SoulPath);
+        if (!string.IsNullOrEmpty(resolvedSoul1))
         {
-            try { soul = await File.ReadAllTextAsync(agent!.SoulPath, ct); }
+            try { soul = await File.ReadAllTextAsync(resolvedSoul1, ct); }
             catch { /* best effort */ }
         }
 
@@ -1242,9 +1370,10 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ? AgentInvokeMode.Cli : AgentInvokeMode.Sdk;
 
         var soul = string.Empty;
-        if (!string.IsNullOrEmpty(agent?.SoulPath) && File.Exists(agent!.SoulPath))
+        var resolvedSoul2 = ForgeSeed.ResolveSoulPath(agent?.SoulPath);
+        if (!string.IsNullOrEmpty(resolvedSoul2))
         {
-            try { soul = await File.ReadAllTextAsync(agent!.SoulPath, ct); }
+            try { soul = await File.ReadAllTextAsync(resolvedSoul2, ct); }
             catch { /* best effort */ }
         }
 
