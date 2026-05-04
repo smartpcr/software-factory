@@ -2,7 +2,7 @@
 
 **Story:** `code-intelligence:AGENT-MEMORY`  
 **Points:** 10  
-**Status:** DRAFT — Iteration 2  
+**Status:** DRAFT — Iteration 2 (revised)  
 
 > **Companion documents** (written in parallel — referenced by name, not duplicated):
 > - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, and ID format.
@@ -52,8 +52,8 @@ New code is delivered as `Ast.Memory` (single new project) plus `Ast.Memory.Unit
 | S2 | **Call-chain overlay** | The **Call-Chain layer** (`layer = "call_chain"`) adds `CALLS` (from `MethodInvocation`, `ConstructorInvocation`, `CmdletCall`), `EXTENDS`, `IMPLEMENTS`, and `REFERENCES` (from `DataFlow`, `Assignment`, `CrossLanguageTypeReference`) edges between symbol nodes. Note: `CALLED_BY` is a reverse traversal of `CALLS`, not a stored edge (see `architecture.md` §1.5 retired names). |
 | S3 | **Expertise layer** | The **Expertise layer** (`layer = "expertise"`) stores agent-authored knowledge as typed nodes (`Pattern`, `Pitfall`, `Preference`, `Insight`) linked to code nodes via `APPLIES_TO` edges. Agent sessions write back learnings which are consolidated via `SUPERSEDES` and `DERIVED_FROM` edges. This replaces the per-node property-bag model with structured expertise nodes that have their own embeddings. |
 | S4 | **Temporal versioning** | Every node and edge carries a `VersionRange` with commit SHA + monotonic `commit_index` (not ISO-8601 timestamps — see `architecture.md` §1.6 for the dual-axis temporal model). Point-in-time queries use integer range comparison: `WHERE valid_from_idx <= $target AND (valid_until_idx IS NULL OR valid_until_idx > $target)`. Wall-clock timestamps are available via join to the `commits` table. Inspired by Zep temporal KG (Rasmussen et al., arXiv:2501.13956). |
-| S5 | **Hybrid retrieval** | Five retrieval modes merged by a Ranker: `STRUCTURAL_DRILL`, `CALL_TRACE`, `SEMANTIC_SEARCH`, `EXPERTISE_RECALL`, `HYBRID`. The **Semantic layer** (`layer = "semantic"`) clusters code via `SIMILAR_TO` and `BELONGS_TO_CLUSTER` edges using pre-computed embeddings. Inspired by MAGMA's orthogonal-graph traversal policy (Jiang et al., arXiv:2601.03236). Edge filtering uses `Metadata["SemanticRelation"]` uniformly across all layers (see `architecture.md` §3.3). |
-| S6 | **Memory evolution pipeline** | Post-session consolidation: write-back (create Expertise nodes), consolidation (LLM-powered merge with `SUPERSEDES` edges), decay (reduce confidence of stale annotations based on Ebbinghaus-curve weighting factored by structural centrality), and community summarization (GraphRAG-inspired cluster prose stored as `Topic` nodes in the Semantic layer). |
+| S5 | **Hybrid retrieval** | Five retrieval modes merged by a Ranker: `STRUCTURAL_DRILL`, `CALL_TRACE`, `SEMANTIC_SEARCH`, `EXPERTISE_RECALL`, `HYBRID`. The **Semantic layer** (`layer = "semantic"`) clusters code via `SIMILAR_TO` and `BELONGS_TO_CLUSTER` edges using pre-computed embeddings (general-purpose model — see D1). Inspired by MAGMA's orthogonal-graph traversal policy (Jiang et al., arXiv:2601.03236). Edge filtering uses `Metadata["SemanticRelation"]` uniformly across all layers (see `architecture.md` §3.3). Scoring uses a 5-signal weighted model: structural proximity (0.30), semantic similarity (0.25), centrality (0.20), recency (0.15), expertise signal (0.10) — canonical weights defined in `architecture.md` §3.3. |
+| S6 | **Memory evolution pipeline** | Post-session consolidation: write-back (create Expertise nodes), consolidation (LLM-powered merge with `SUPERSEDES` edges), decay (3-year half-life with structural centrality boost — see D5; plus one-time `StaleDecayFactor = 0.5` when target `ContentHash` changes), and community summarization (GraphRAG-inspired cluster prose stored as `Topic` nodes in the Semantic layer). |
 | S7 | **Context window construction** | Token-budgeted context assembly via the Context Assembler: hierarchy compression (parent summary when all children selected), deduplication (same code span from multiple paths emitted once), and deterministic Markdown output with sections `## Structure`, `## Call Graph`, `## Related Code`, `## Known Expertise`. Budget Controller collapses children into parent summaries when tokens are scarce (HiAgent pattern). |
 
 ---
@@ -87,15 +87,17 @@ These are things the system **explicitly will not attempt**, even if technically
 
 | ID | Constraint | Source |
 |----|-----------|--------|
-| HC1 | **Token budget ceiling.** Context windows produced by the Context Assembler must respect a configurable max-token limit (default: 32 K tokens). The Budget Controller truncates gracefully using the structural hierarchy: parent summaries replace child details when budget is tight (HiAgent pattern). | Operational: avoids blowing LLM context limits. |
+| HC1 | **Token budget ceiling.** Context windows produced by the Context Assembler must respect a configurable max-token limit (system ceiling: 32 K tokens; per-query default: 8 K tokens). Agents may request up to the ceiling; the Budget Controller never exceeds it. The Budget Controller truncates gracefully using the structural hierarchy: parent summaries replace child details when budget is tight (HiAgent pattern). | Operational: avoids blowing LLM context limits. Canonical scoring weights are in `architecture.md` §3.3. |
 | HC2 | **Incremental update, not full rebuild.** After a `git pull` or file save, only changed files trigger re-extraction. Full-repo re-parse is an explicit admin action, not the default path. The Incremental Sync component (see `architecture.md` §3.6) diffs changed files, re-extracts, and propagates invalidation to downstream `CALLS` edges. Target: < 2 s for a single-file change on repos ≤ 500 K LOC. | Performance: large repos (100 K+ files) cannot afford full re-index on every change. |
 | HC3 | **Language-agnostic core, language-specific extractors.** The graph schema, storage engine, and all four layers are language-neutral. Each supported language provides an extractor adapter behind a unified `ILanguageParser` interface. MVP leverages existing `Ast.Csharp` and `Ast.PowerShell`; TypeScript, Python, and Go adapters are additive and require no schema changes. | Extensibility. |
 | HC4 | **Storage must survive agent process restarts.** The graph is persisted to disk. SQLite + FTS5 + sqlite-vss for local/single-machine use. Neo4j + Qdrant for team/CI deployment (via existing `Ast.GraphDb` and `Ast.VectorDb` adapters). Backend selection is via DI configuration; all backends implement `IMemoryGraphStore`. | Durability. |
-| HC5 | **No external network calls during retrieval.** Embedding vectors are pre-computed at extraction time (code nodes) and write-back time (expertise nodes). Retrieval is a local graph traversal + vector-similarity operation. The agent must not block on an API call to construct its context. | Latency SLO: < 500 ms p95 for context construction. |
+| HC5 | **No external network calls during retrieval.** Embedding vectors are pre-computed at extraction time (code nodes) and write-back time (expertise nodes) using a general-purpose text-embedding model (see D1). Retrieval is a local graph traversal + vector-similarity operation. The agent must not block on an API call to construct its context. | Latency SLO: < 500 ms p95 for context construction. |
 | HC6 | **Deterministic graph schema.** Node types and core edge types are fixed (see `architecture.md` §1.5 for the canonical edge taxonomy mapping to `HyperedgeType` enum values). Extension is via `Metadata` keys on existing types and via the Expertise layer's typed nodes, not by adding ad-hoc node/edge types. A single new enum value `HyperedgeType.MemoryRelation` is added to `Ast.Core` for memory-only edges; the true semantic type lives in `Metadata["SemanticRelation"]`. | Schema stability for downstream consumers. |
 | HC7 | **Audit trail.** Every write to the graph (node creation, annotation update, edge addition/removal) is logged in an `audit_log` table with agent-session-id, timestamp, operation type, and detail JSON. This is the post-mortem trail. | Operational: we instrument before we optimise. |
 | HC8 | **Non-breaking extension of Ast.Core.** `MemoryNode` and `MemoryEdge` are composition wrappers that delegate to `HypergraphNode` / `Hyperedge` respectively. They provide strongly-typed accessors for memory `Metadata` keys but all inter-component interfaces accept and return the base types. No changes to `HypergraphNode` or `Hyperedge` class signatures. | Backward compatibility: 437+ existing tests must pass unmodified. |
 | HC9 | **Hyperedge semantics preserved.** `Hyperedge` is a multi-node hyperedge with `NodeIds: List<string>` and `Roles: Dictionary<string, string>`, not a binary source→target edge. The memory layer preserves this model. For binary relationships (e.g., CALLS), the hyperedge has exactly 2 `NodeIds` with semantic roles (e.g., `"caller"` / `"callee"`). | Data model consistency with Ast.Core. |
+| HC10 | **Cross-branch expertise visibility.** Expertise-layer nodes are globally visible regardless of the current git branch (see D3). Retrieval does not filter by branch lineage. Staleness is detected via `ContentHash` comparison against the current branch's version of the target code. | Knowledge reuse: insights from feature branches inform work on `main` immediately. |
+| HC11 | **Curated annotation key registry.** `Metadata` keys on memory nodes are governed by `AnnotationKeyRegistry` — a code-defined registry of well-known keys with typed schemas (see D4, §12.2). Agent-authored extension keys use the `ext:` prefix and surface a validation warning. | Schema stability: prevents ad-hoc key proliferation while preserving extensibility. |
 
 ---
 
@@ -186,19 +188,23 @@ Components map to `src/ast/` projects as detailed in `architecture.md` §3.0.
 
 ### 7.3 Annotation Metadata
 
-Annotations live in `HypergraphNode.Metadata` (the existing `Dictionary<string, object?>` on `Ast.Core.HypergraphNode`). Memory-specific keys include:
+Annotations live in `HypergraphNode.Metadata` (the existing `Dictionary<string, object?>` on `Ast.Core.HypergraphNode`). Keys are governed by the **curated `AnnotationKeyRegistry`** (see D4, §12.2). Well-known memory-specific keys:
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `MemoryLayer` | `string` | `"structural"` \| `"call_chain"` \| `"semantic"` \| `"expertise"` |
-| `VersionRange` | `{ Since, SinceIndex, Until?, UntilIndex? }` | Commit SHA + monotonic index. `Until = null` = current. |
-| `ContentHash` | `string` | SHA-256 of source span. |
-| `LastTouched` | `string` (ISO-8601) | Wall-clock time of last extraction (informational). |
-| `Embedding` | `float[]` | Dense vector (dimension = model-dependent). |
-| `Summary` | `string` | LLM-generated one-liner for the node. |
-| `QualifiedName` | `string` | Fully-qualified name. |
-| `Confidence` | `double` | 0.0–1.0 for edges: direct calls = 1.0; dynamic dispatch = 0.5–0.7. |
-| `Stale` | `bool` | Pending re-confirmation after upstream signature change. |
+| Key | Type | Governance | Description |
+|-----|------|-----------|-------------|
+| `MemoryLayer` | `string` | **Registry** | `"structural"` \| `"call_chain"` \| `"semantic"` \| `"expertise"` |
+| `VersionRange` | `{ Since, SinceIndex, Until?, UntilIndex? }` | **Registry** | Commit SHA + monotonic index. `Until = null` = current. |
+| `ContentHash` | `string` | **Registry** | SHA-256 of source span. |
+| `LastTouched` | `string` (ISO-8601) | **Registry** | Wall-clock time of last extraction (informational). |
+| `Embedding` | `float[]` | **Registry** | Dense vector (general-purpose model — see D1). |
+| `EmbeddingModel` | `string` | **Registry** | Model identifier (e.g., `text-embedding-3-small`). Enables re-embedding on model upgrade. |
+| `Summary` | `string` | **Registry** | LLM-generated one-liner for the node. |
+| `QualifiedName` | `string` | **Registry** | Fully-qualified name. |
+| `Confidence` | `double` | **Registry** | 0.0–1.0 for edges: direct calls = 1.0; dynamic dispatch = 0.5–0.7. |
+| `Stale` | `bool` | **Registry** | Pending re-confirmation after upstream signature change. |
+| `SemanticRelation` | `string` | **Registry** | Canonical edge name (e.g., `CALLS`, `APPLIES_TO`). Primary retrieval filter. |
+| `OriginalEdgeType` | `string` | **Registry** | Original `HyperedgeType` enum value. Preserved for lossless round-trip. |
+| `ext:*` | `object?` | **Extension** | Agent-authored ad-hoc keys. Prefixed `ext:` to avoid collisions. Surfaced with validation warning. |
 
 ### 7.4 Temporal Model
 
@@ -273,7 +279,7 @@ Runs as a post-session consolidation job (see `architecture.md` §3.5):
 |-----------|---------|--------|
 | **Write-back** | Agent emits structured annotation (Pattern, Pitfall, Preference, Insight). | Creates Expertise-layer node, links via `APPLIES_TO` edges to code targets. Embeds title + body via `IEmbeddingGenerator`. |
 | **Consolidation** | Scheduled (post-PR-merge) or manual. | LLM-powered pass merges overlapping expertise nodes. Produces `SUPERSEDES` / `DERIVED_FROM` edges. |
-| **Decay** | On every retrieval. | Expertise nodes whose `APPLIES_TO` targets have been deleted or substantially rewritten get reduced confidence. Below threshold → archived (soft-deleted). Decay factors in structural centrality (PageRank on call graph), not just recency. |
+| **Decay** | On every retrieval. | Expertise nodes whose `APPLIES_TO` targets have been deleted or substantially rewritten get reduced confidence. Below threshold → archived (soft-deleted). **Two decay mechanisms:** (1) **Time-based:** Ebbinghaus-inspired with 3-year half-life (1095 days), factored by structural centrality — high-centrality nodes (PageRank) decay ~50 % slower. Formula: `confidence × 2^(−age_days / 1095) × (1.0 + 0.5 × normalized_pagerank)`. (2) **Event-based:** one-time `StaleDecayFactor = 0.5` multiplicative penalty when target `ContentHash` changes; `MinorDecayFactor = 0.9` for whitespace/comment-only changes (per `architecture.md` §3.5). Configurable via `MemoryStoreOptions.DecayHalfLifeDays`. |
 | **Community Summarization** | Structural change exceeding threshold. | GraphRAG-inspired: detect tightly coupled clusters, generate `Topic` nodes with prose summaries in the Semantic layer. |
 | **Prune** | Git branch deleted, file removed. | Structural nodes and edges get `VersionRange.Until = current_commit`. Remain queryable for history but excluded from default retrieval. |
 | **Re-embed** | Node content changed, or embedding model upgraded. | Re-compute embedding vector; old vector node gets `VersionRange.Until`. Model version tracked per node. |
@@ -311,30 +317,54 @@ Runs as a post-session consolidation job (see `architecture.md` §3.5):
 
 ---
 
-## 11. Open Questions
+## 11. Resolved Decisions (from Operator)
 
-1. **Embedding model selection.** Should we use a code-specific embedding model (e.g., CodeBERT, StarEncoder) or a general-purpose one (e.g., `text-embedding-3-small`)? The existing `Ast.Embedding.IEmbeddingGenerator` abstracts the model; the choice affects retrieval quality. A hybrid approach (code model for code nodes, general model for expertise nodes) adds complexity. **Recommendation:** Start with the model already configured in `Ast.Embedding` and benchmark.
+The following open questions from Iteration 1 have been resolved by operator input. Each decision is final and governs the implementation.
 
-2. **Graph query language exposure.** For the SQLite backend, graph traversals are recursive CTEs. Should we expose a higher-level query DSL (Cypher-like) to the agent, or keep the interface purely programmatic (retrieval modes like `STRUCTURAL_DRILL`, `CALL_TRACE` — see `architecture.md` §3.3)? **Recommendation:** Programmatic modes only in MVP; Cypher-like DSL is future work.
-
-3. **Cross-branch memory.** When the agent works on a feature branch, should Expertise-layer annotations be visible on `main`? Merging annotation branches mirrors the git merge problem. **Initial stance:** Annotations are branch-scoped; merging is deferred. The `commits` table tracks branch lineage.
-
-4. **Annotation schema governance.** Expertise nodes have typed `PatternType` values (`Pattern`, `Pitfall`, `Preference`, `Insight`). Should additional types be extensible, or is this a closed enum? **Recommendation:** Closed enum for MVP; agent can use `Insight` as a catch-all. Extension requires a code change, not config.
-
-5. **Decay curve calibration.** The Ebbinghaus-inspired decay model needs empirical tuning. What half-life is appropriate for code annotations? A function untouched for 90 days may still be critical infrastructure. **Recommendation:** Decay must factor in structural centrality (PageRank on call graph) and access frequency, not just recency. Default half-life = 90 days; tunable via `MemoryStoreOptions`.
-
-6. **`MemoryRelation` enum value.** Adding a single new value to `HyperedgeType` is the least-invasive extension strategy, but it means the enum grows indefinitely over time. Alternative: memory-only edges use `HyperedgeType.DataFlow` (existing catch-all) with semantic type in `Metadata`. **Recommendation:** Single new enum value per `architecture.md` §1.5 — cleaner than overloading `DataFlow`.
+| # | Question | Decision | Rationale / Impact |
+|---|----------|----------|--------------------|
+| D1 | **Embedding model selection** — code-specific (CodeBERT, StarEncoder) vs. general-purpose (e.g., `text-embedding-3-small`)? | **General-purpose model.** Use a general-purpose text-embedding model (e.g., `text-embedding-3-small`) for all nodes — code, expertise, and topics alike. | Simplifies the pipeline (single model, single vector dimension), avoids the complexity of a hybrid approach, and handles natural-language task descriptions and expertise prose fluently alongside code symbols. The `IEmbeddingGenerator` abstraction in `Ast.Embedding` makes model swapping a config change if retrieval quality needs improvement later. Note: `architecture.md` §4.4 references `code-embedding-v2` as the default — that should be updated to reflect this decision. |
+| D2 | **Graph query language** — Cypher-like DSL vs. purely programmatic API? | **Purely programmatic.** The agent interacts via typed function calls: `get_callers(fqn, depth)`, `get_callees(fqn, depth)`, `find_related(query, top_k)`, `get_expertise(fqn)`, `record_expertise(...)`. No query DSL. | Keeps the MCP tool surface minimal and predictable. Graph traversals use recursive CTEs internally (SQLite) or Cypher internally (Neo4j), but this is an implementation detail hidden behind `IMemoryGraphStore`. Aligns with `architecture.md` §3.3 retrieval modes (`STRUCTURAL_DRILL`, `CALL_TRACE`, `SEMANTIC_SEARCH`, `EXPERTISE_RECALL`, `HYBRID`) which are programmatic, not query-string-based. |
+| D3 | **Cross-branch memory** — annotations branch-scoped or visible across branches? | **Annotations are visible cross-branch.** Expertise-layer nodes written on any branch are globally queryable, regardless of which branch the agent is currently on. | This maximizes knowledge reuse — an insight discovered while working on a feature branch should inform work on `main` and other branches immediately. The `commits` table still tracks which commit introduced an annotation (provenance), but retrieval does NOT filter by branch lineage. Staleness detection uses `ContentHash` comparison against the current branch's version of the target code, so an annotation whose target has diverged on the current branch is flagged as potentially stale. |
+| D4 | **Annotation schema governance** — free-form property bag vs. curated registry? | **Curated well-known tag registry** with an `extra` bag for ad-hoc data. | A `AnnotationKeyRegistry` defines the set of well-known `Metadata` keys with typed schemas (e.g., `MemoryLayer: string`, `Confidence: double`, `ContentHash: string` — see §7.3 for the full list). Each key entry specifies: name, CLR type, allowed values (if enum), and a short description. Agent-authored keys that are not in the registry are stored under a namespaced prefix (`ext:`) in `Metadata` and surfaced with a validation warning. This prevents fragmentation while preserving flexibility. The registry is defined in code (`AnnotationKeyRegistry.cs` in `Ast.Memory/Schema/`) and versioned with the project — not runtime-configurable. |
+| D5 | **Decay curve calibration** — what half-life for expertise annotations? | **3-year half-life**, factored by structural centrality (PageRank on call graph). | A 3-year half-life reflects the reality that code annotations remain relevant far longer than conversation memory. Even untouched functions may be critical infrastructure. The decay formula: `decayed_confidence = initial_confidence × 2^(−age_days / (3 × 365)) × centrality_boost`, where `centrality_boost = 1.0 + 0.5 × normalized_pagerank` (range 1.0–1.5). This means a highly central function's annotations decay ~50 % slower than a leaf function's. The `StaleDecayFactor` (0.5, architecture.md §3.5) applies as a one-time multiplicative penalty when a target's `ContentHash` changes — this is separate from the time-based decay curve. Configurable via `MemoryStoreOptions.DecayHalfLifeDays` (default: 1095). |
+| D6 | **`MemoryRelation` enum value** — single new enum vs. overloading `DataFlow`? | **Single new `HyperedgeType.MemoryRelation` enum value.** | Per `architecture.md` §1.5 — cleaner than overloading `DataFlow`. The true semantic type lives in `Metadata["SemanticRelation"]`. This is the only additive change to `Ast.Core`'s `HyperedgeType` enum. |
 
 ---
 
 ## 12. Alignment Notes (Cross-Document)
 
+### 12.1 Resolved in This Iteration
+
 | Issue | This doc (tech-spec) | Architecture doc | Resolution |
 |-------|---------------------|------------------|------------|
-| Temporal model type | Iteration 1 used ISO-8601 `valid_from`/`valid_until` | Uses `commit_index` integers with SHA+index dual axis | **Resolved in Iteration 2**: tech-spec now uses `commit_index`. |
-| Expertise model | Iteration 1 used per-node property bags | Uses typed Expertise-layer nodes (`Pattern`, `Pitfall`, etc.) with edges | **Resolved in Iteration 2**: tech-spec now references typed nodes. |
-| `CALLED_BY` edge | Iteration 1 listed as stored edge | Is a reverse traversal of `CALLS`, not stored | **Resolved in Iteration 2**: removed from stored edge list. |
-| Context Assembler naming | Iteration 1 called "Context Constructor" | Uses "Context Assembler" | **Resolved in Iteration 2**: aligned to architecture name. |
+| Temporal model type | Iteration 1 used ISO-8601 `valid_from`/`valid_until` | Uses `commit_index` integers with SHA+index dual axis | **Resolved in Iteration 1→2**: tech-spec now uses `commit_index`. |
+| Expertise model | Iteration 1 used per-node property bags | Uses typed Expertise-layer nodes (`Pattern`, `Pitfall`, etc.) with edges | **Resolved in Iteration 1→2**: tech-spec now references typed nodes. |
+| `CALLED_BY` edge | Iteration 1 listed as stored edge | Is a reverse traversal of `CALLS`, not stored | **Resolved in Iteration 1→2**: removed from stored edge list. |
+| Context Assembler naming | Iteration 1 called "Context Constructor" | Uses "Context Assembler" | **Resolved in Iteration 1→2**: aligned to architecture name. |
+| Annotation Writer component (C9) | Iteration 1 diagram showed "Annotation Writer" | §3.5: write-back is a path inside `IEvolutionEngine.RecordExpertiseAsync` | **Resolved in Iteration 2**: diagram updated — no separate "Annotation Writer" component. |
+| Token budget default (C17) | §5 HC1 said "default: 32 K tokens" | §3.3: system ceiling = 32 K; per-query default = 8 K | **Resolved in Iteration 2**: HC1 clarified — 32 K is the ceiling; per-query default is 8 K. |
+| Scoring formula ref (C16) | §5 S5 listed retrieval modes without scoring weights | §3.3 defines all 5 signals and canonical weights | **Resolved in Iteration 2**: S5 now references architecture.md §3.3 for the canonical scoring formula. |
+| Embedding model (C—new) | This doc now mandates general-purpose (D1) | §4.4 defaults to `code-embedding-v2` | **Pending in architecture.md**: operator decision is general-purpose; architecture.md should update its default model reference. |
+| Cross-branch visibility (C—new) | This doc now mandates cross-branch visibility (D3) | No explicit stance | **Pending in architecture.md**: architecture.md should document that expertise retrieval is not branch-filtered. |
+| Decay half-life (C—new) | This doc now specifies 3-year half-life (D5) | §3.5 specifies `StaleDecayFactor = 0.5` per hash-change but no time-based half-life | **Pending in architecture.md**: architecture.md should add the 3-year time-based decay formula from D5. |
+
+### 12.2 Annotation Schema: Curated Registry (D4)
+
+Per operator decision, `Metadata` keys on memory nodes are governed by a curated registry. The canonical list of well-known keys is defined in §7.3 above. The governance model:
+
+1. **Well-known keys** (defined in `AnnotationKeyRegistry.cs`): strongly typed, validated at write time. Adding a new key requires a code change.
+2. **Extension keys** (prefixed `ext:`): stored in `Metadata` without schema enforcement. Surfaced with a validation warning in telemetry. Intended for agent experimentation; keys that prove useful are promoted to well-known status.
+3. **Expertise pattern types** (`Pattern`, `Pitfall`, `Preference`, `Insight`): closed enum for MVP. Agent uses `Insight` as catch-all for novel categories. Promotion to a named type requires a code change to `ExpertisePatternType`.
+
+### 12.3 Cross-Branch Memory Model (D3)
+
+Expertise nodes are **globally visible** regardless of the current git branch. Implementation details:
+
+- The `commits` table records which branch each commit belongs to (provenance), but `IMemoryGraphStore.TraverseAsync` does **not** filter by branch lineage.
+- When the agent queries expertise, all active (non-tombstoned) expertise nodes are candidates.
+- **Staleness heuristic:** If an expertise node's `APPLIES_TO` target has a different `ContentHash` on the current branch vs. the commit where the expertise was written, the Context Assembler injects a `⚠ stale — target code has changed since this expertise was recorded` marker into the prompt.
+- **Merge conflicts:** Not applicable — expertise nodes are additive, not merge-conflicting. Two agents writing contradictory expertise on different branches produce two nodes; the Evolution Engine's consolidation step (LLM-powered) resolves contradictions post-merge via `SUPERSEDES` edges.
 
 ---
 
@@ -356,4 +386,4 @@ Runs as a post-session consolidation job (see `architecture.md` §3.5):
 
 ---
 
-*End of tech spec — Iteration 2.*
+*End of tech spec — Iteration 2 (revised). All open questions from Iteration 1 are resolved via operator decisions D1–D6.*
