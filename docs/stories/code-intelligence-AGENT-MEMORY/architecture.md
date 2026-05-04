@@ -95,7 +95,7 @@ dependencies, never mutated beyond the two additive changes above.
 | ID | Source | Adopted technique | Where applied |
 |---|---|---|---|
 | R-1 | MAGMA (arXiv:2601.03236) | Orthogonal graph layers prevent signal entanglement | Four independent layers (§2.1) |
-| R-2 | HiAgent (ACL '25) | Hierarchical working memory with abstraction-level control | Budget Controller collapses children into parent summaries (§3.4) |
+| R-2 | HiAgent (ACL '25) | Hierarchical working memory with abstraction-level control | Budget Controller collapses children into parent summaries (§3.3) |
 | R-3 | Zep/Graphiti (arXiv:2501.13956) | Temporal KG with timestamped edges | Dual-axis temporal model: commit-index + wall-clock (§4.3) |
 | R-4 | Mem0 (arXiv:2504.19413) | Agent write-back for compounding value | Evolution Engine expertise write-back (§3.5) |
 | R-5 | Reflexion (NeurIPS '23) | Verbal RL — reflect on past failures | Cross-session learning via Expertise layer (§6.5) |
@@ -211,7 +211,7 @@ All configurable parameters. Implementations read from `MemoryOptions`.
 | `TokenBudgetDefault` | 8,000 | Budget Controller | Per-query default token budget |
 | `TokenBudgetCeiling` | 32,000 | Budget Controller | Maximum allowed token budget |
 | `IncrementalSyncDebounceMs` | 1,000 | Incremental Sync | Debounce for file-system watcher |
-| `CentralityBoostFactor` | 0.5 | Evolution Engine (Decay) | Multiplied by normalized PageRank and added to 1.0 to form `centrality_boost` (range 1.0–1.5). See §3.5 for the decay computation model. |
+| `CentralityBoostFactor` | 0.5 | Evolution Engine (Decay) | Multiplied by normalized PageRank and added to 1.0 to form `centrality_boost` (range 1.0–1.5). See §3.5.1 for the decay computation model. |
 
 **Scoring weights** (used by the Ranker, sum = 1.00):
 
@@ -1126,6 +1126,14 @@ public record ScoredMemoryNode(
     double RecencyScore,
     double ExpertiseScore
 );
+
+public record ScoringWeights(
+    double Structural = 0.30,
+    double Semantic   = 0.25,
+    double Centrality = 0.20,
+    double Recency    = 0.15,
+    double Expertise  = 0.10
+);
 ```
 
 ### 5.3 IEvolutionEngine
@@ -1155,8 +1163,8 @@ public interface IEvolutionEngine
         ConsolidationOptions options,
         CancellationToken ct = default);
 
-    /// Apply time-based and event-driven decay to expertise entries.
-    /// Archives entries below ArchiveConfidenceFloor (0.1).
+    /// Evaluate time-based decay and archive entries below ArchiveConfidenceFloor (0.1).
+    /// Event-driven decay (code-change triggers) is handled separately by IncrementalSync (§3.6).
     Task<DecayResult> DecayStaleExpertiseAsync(
         DecayOptions? options = null,
         CancellationToken ct = default);
@@ -1192,9 +1200,9 @@ public record DecayOptions(
 );
 
 public record DecayResult(
-    int EntriesEvaluated,
-    int EntriesDecayed,
-    int EntriesArchived
+    int EntriesEvaluated,     // Total active entries inspected
+    int EntriesDecayed,       // Entries whose effective_confidence < stored_confidence (informational — no persistence; time-based decay is transient)
+    int EntriesArchived       // Entries whose effective_confidence < ArchiveConfidenceFloor (persisted as archived = true)
 );
 
 public record CommunityResult(
@@ -1644,7 +1652,7 @@ shapes, formulas, constants, and interface signatures.
 ### 8.2 Implementation-Plan Divergences
 
 The implementation-plan (latest iteration) contains naming and data-model
-items that defer to this document. Key resolved divergences:
+items that defer to this document. Key divergences:
 
 - **S-1:** `RetireEdgeAsync` — added to `IMemoryGraphStore` (§5.1).
 - **S-2:** `ArchiveExpertiseAsync` — confirmed on `IMemoryGraphStore` (§5.1).
@@ -1652,6 +1660,8 @@ items that defer to this document. Key resolved divergences:
 - **S-4:** Scoring weights — implementation-plan references §2.4 values.
 - **S-5:** `ScoringWeights` record — defined in §5.2 via `RetrievalRequest`.
 - **S-6:** `UpdateEdgeMetadataAsync` — added to `IMemoryGraphStore` (§5.1).
+- **S-7:** `VersionRange` field naming — implementation-plan uses `Since`/`Until`; canonical names are `SinceCommit`/`UntilCommit` per §4.3. **Unresolved** — implementation-plan should adopt `SinceCommit`/`UntilCommit`.
+- **S-8:** `ContentHash` formula — implementation-plan says `SHA-256(Title+Body)` (missing `TargetNodeId`); canonical formula is `SHA-256(Title + Body + TargetNodeId)` per §4.2. **Unresolved** — implementation-plan should include `TargetNodeId`.
 
 ### 8.3 E2E-Scenarios Divergences
 
@@ -1665,11 +1675,22 @@ items (E2E-1 through E2E-10):
 - E2E-9: Conflict errors rewritten as write-serialization test.
 - E2E-10: Single `Content` field split into `Title` + `Body`.
 
+Remaining divergences:
+
+- **E2E-11:** `ContentHash` formula — e2e-scenarios quick-reference (header block) says `SHA-256 of Title + Body` but the canonical formula is `SHA-256(Title + Body + TargetNodeId)` per §4.2. **Unresolved** — e2e-scenarios should include `TargetNodeId` in the formula.
+- **E2E-12:** Project count — e2e-scenarios Feature 11 Scenario 11.4 says "13 test projects"; actual count is 15 test/benchmark projects (§1.3). **Unresolved** — e2e-scenarios should adopt 15.
+
 ### 8.4 Resolution Status
 
-All catalogued divergences (A-1 through A-14, S-1 through S-6, E2E-1
-through E2E-10) are resolved in the latest iterations of all sibling
-documents. Sibling docs that still reference "43 enum values" or
-"13 production, 13 test" should adopt the corrected counts from this
-document (§1.3): 44 existing HyperedgeType values, 45 with MemoryRelation;
-26 projects total — 11 production, 15 test/benchmark.
+Alignment items A-1 through A-17 are resolved within this document.
+Implementation-plan items S-1 through S-6 are resolved; S-7
+(`VersionRange` field naming) and S-8 (`ContentHash` formula) are
+**unresolved** — implementation-plan should adopt canonical values from
+§4.3 and §4.2 respectively. E2E-scenarios items E2E-1 through E2E-10
+are resolved; E2E-11 (`ContentHash` formula) and E2E-12 (project count)
+are **unresolved** — e2e-scenarios should adopt values from §4.2 and §1.3.
+
+Tech-spec §1.1 still says "24 .csproj projects, 13 test projects" and
+should adopt the verified count from §1.3: 26 projects total — 11
+production, 15 test/benchmark. HyperedgeType has 44 existing values;
+`MemoryRelation` brings the total to 45.
