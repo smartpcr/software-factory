@@ -2,7 +2,7 @@
 
 **Story:** `code-intelligence:AGENT-MEMORY`  
 **Points:** 10  
-**Status:** DRAFT — Iteration 8  
+**Status:** DRAFT — Iteration 9  
 
 > **Companion documents** (written in parallel — referenced by name, not duplicated):
 > - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, and ID format.
@@ -52,7 +52,7 @@ New code is delivered as `Ast.Memory` (single new project) plus `Ast.Memory.Unit
 | S2 | **Call-chain overlay** | The **Call-Chain layer** (`layer = "call_chain"`) adds `CALLS` (from `MethodInvocation`, `ConstructorInvocation`, `CmdletCall`), `EXTENDS`, `IMPLEMENTS`, and `REFERENCES` (from `DataFlow`, `Assignment`, `CrossLanguageTypeReference`) edges between symbol nodes. Note: `CALLED_BY` is a reverse traversal of `CALLS`, not a stored edge (see `architecture.md` §2.3 retired names). |
 | S3 | **Expertise layer** | The **Expertise layer** (`layer = "expertise"`) stores agent-authored knowledge as typed nodes (`Pattern`, `Pitfall`, `Preference`, `Insight`) linked to code nodes via `APPLIES_TO` edges. Agent sessions write back learnings which are consolidated via `SUPERSEDES` and `DERIVED_FROM` edges. This replaces the per-node property-bag model with structured expertise nodes that have their own embeddings. |
 | S4 | **Temporal versioning** | Every node and edge carries a `VersionRange` with commit SHA + monotonic `commit_index` (not ISO-8601 timestamps — see `architecture.md` §4.3 for the dual-axis temporal model). Point-in-time queries use integer range comparison: `WHERE valid_from_idx <= $target AND (valid_until_idx IS NULL OR valid_until_idx > $target)`. Wall-clock timestamps are available via join to the `commits` table. Inspired by Zep temporal KG (Rasmussen et al., arXiv:2501.13956). |
-| S5 | **Hybrid retrieval** | Five retrieval modes merged by a Ranker: `STRUCTURAL_DRILL`, `CALL_TRACE`, `SEMANTIC_SEARCH`, `EXPERTISE_RECALL`, `HYBRID`. The **Semantic layer** (`layer = "semantic"`) clusters code via `SIMILAR_TO` and `BELONGS_TO_CLUSTER` edges using pre-computed embeddings (general-purpose model — see D1). Embeddings are generated via the existing `Ast.Embedding.IEmbeddingGenerator` interface; the `CodeEmbeddingService.GenerateNodeEmbeddingsAsync()` method calls `HypergraphNode.GetEmbeddingText()` (lines 93–113, structural-only: node type, language, file path, scope, modifiers) or `GetEnhancedEmbeddingText()` when LSP enrichment is available (lines 120–186; includes signatures, docstrings, caller/callee context, and optionally up to 2000 chars of source code from `Metadata["SourceCode"]` — see `HypergraphModels.cs`). Inspired by MAGMA's orthogonal-graph traversal policy (Jiang et al., arXiv:2601.03236). Edge filtering uses `Metadata["SemanticRelation"]` uniformly across all layers (see `architecture.md` §3.3). Scoring uses a 5-signal weighted model: structural proximity (0.30), semantic similarity (0.25), centrality (0.20), recency (0.15), expertise signal (0.10) — canonical weights defined in `architecture.md` §3.3. |
+| S5 | **Hybrid retrieval** | Five retrieval modes merged by a Ranker: `STRUCTURAL_DRILL`, `CALL_TRACE`, `SEMANTIC_SEARCH`, `EXPERTISE_RECALL`, `HYBRID`. The **Semantic layer** (`layer = "semantic"`) clusters code via `SIMILAR_TO` and `BELONGS_TO_CLUSTER` edges using pre-computed embeddings (general-purpose model — see D1). Embeddings are generated via the existing `Ast.Embedding.IEmbeddingGenerator` interface; the `CodeEmbeddingService.GenerateNodeEmbeddingsAsync()` method calls `HypergraphNode.GetEmbeddingText()` (lines 93–113, structural-only: node type, language, file path, scope, modifiers) or `GetEnhancedEmbeddingText()` when LSP enrichment is available (lines 120–186; includes signatures, docstrings, caller/callee context, and optionally up to 2000 chars of source code from `Metadata["SourceCode"]` — see `HypergraphModels.cs`). Inspired by MAGMA's orthogonal-graph traversal policy (Jiang et al., arXiv:2601.03236). Edge filtering uses `Metadata["SemanticRelation"]` uniformly across all layers (see `architecture.md` §3.3). Scoring uses a 5-signal weighted model: structural proximity (0.30), semantic similarity (0.25), centrality (0.20), recency (0.15), expertise signal (0.10) — canonical weights defined in `architecture.md` §3.3. At query time, the query text is embedded via a single local call to the embedding service (see HC5); all node embeddings are pre-computed at extraction/write-back time. If the embedding service is unavailable at query time, semantic search is gracefully skipped. |
 | S6 | **Memory evolution pipeline** | Post-session consolidation: write-back (create Expertise nodes), consolidation (LLM-powered merge with `SUPERSEDES` edges), decay (3-year half-life with structural centrality boost — see D5; plus one-time `StaleDecayFactor = 0.5` when target `ContentHash` changes), and community summarization (GraphRAG-inspired cluster prose stored as `Topic` nodes in the Semantic layer). |
 | S7 | **Context window construction** | Token-budgeted context assembly via the Context Assembler: hierarchy compression (parent summary when all children selected), deduplication (same code span from multiple paths emitted once), and deterministic Markdown output with sections `## Structure`, `## Call Graph`, `## Related Code`, `## Known Expertise`. Budget Controller collapses children into parent summaries when tokens are scarce (HiAgent pattern). |
 
@@ -91,7 +91,7 @@ These are things the system **explicitly will not attempt**, even if technically
 | HC2 | **Incremental update, not full rebuild.** After a `git pull` or file save, only changed files trigger re-extraction. Full-repo re-parse is an explicit admin action, not the default path. The Incremental Sync component (see `architecture.md` §3.6) diffs changed files, re-extracts, and propagates invalidation to downstream `CALLS` edges. Target: < 2 s for a single-file change on repos ≤ 500 K LOC. | Performance: large repos (100 K+ files) cannot afford full re-index on every change. |
 | HC3 | **Language-agnostic core, language-specific extractors.** The graph schema, storage engine, and all four layers are language-neutral. Each supported language provides an extractor adapter behind a unified `ILanguageParser` interface. MVP leverages existing `Ast.Csharp` and `Ast.PowerShell`; TypeScript, Python, and Go adapters are additive and require no schema changes. | Extensibility. |
 | HC4 | **Storage must survive agent process restarts.** The graph is persisted to disk. SQLite + FTS5 + sqlite-vss for local/single-machine use. Neo4j + Qdrant for team/CI deployment (via existing `Ast.GraphDb` and `Ast.VectorDb` adapters). Backend selection is via DI configuration; all backends implement `IMemoryGraphStore`. | Durability. |
-| HC5 | **No external network calls during retrieval.** Embedding vectors are pre-computed at extraction time (code nodes) and write-back time (expertise nodes) using a general-purpose text-embedding model (see D1). Retrieval is a local graph traversal + vector-similarity operation. The agent must not block on an API call to construct its context. | Latency SLO: < 500 ms p95 for context construction. |
+| HC5 | **No cloud / internet calls during retrieval.** Code-node and expertise-node embeddings are pre-computed at extraction and write-back time using the local Ollama embedding service (`http://localhost:11434`, model `nomic-embed-text` — see D1). At retrieval time, the system makes exactly **one local HTTP call** to the same Ollama instance to embed the query text; all subsequent operations — graph traversal, vector-similarity ranking, context assembly — use only pre-computed vectors and local storage. The constraint means: the retrieval path **never contacts a cloud API, remote service, or the internet**. The local Ollama call is permitted because it runs on the same machine with sub-10 ms latency and zero availability dependency on external infrastructure. If Ollama is unavailable, retrieval degrades gracefully: semantic search is skipped and the system falls back to structural + call-chain + expertise retrieval modes only. | Latency SLO: < 500 ms p95 for context construction. |
 | HC6 | **Deterministic graph schema.** Node types and core edge types are fixed (see `architecture.md` §2.2 for the canonical edge taxonomy mapping to `HyperedgeType` enum values). Extension is via `Metadata` keys on existing types and via the Expertise layer's typed nodes, not by adding ad-hoc node/edge types. A single new enum value `HyperedgeType.MemoryRelation` is added to `Ast.Core` for memory-only edges; the true semantic type lives in `Metadata["SemanticRelation"]`. | Schema stability for downstream consumers. |
 | HC7 | **Audit trail.** Every write to the graph (node creation, annotation update, edge addition/removal) is logged in an `audit_log` table with agent-session-id, timestamp, operation type, and detail JSON. This is the post-mortem trail. | Operational: we instrument before we optimise. |
 | HC8 | **Non-breaking extension of Ast.Core.** `MemoryNode` and `MemoryEdge` are composition wrappers that delegate to `HypergraphNode` / `Hyperedge` respectively (i.e., `MemoryNode` contains a `HypergraphNode Inner { get; }` property — **not** class inheritance via `: HypergraphNode`). They provide strongly-typed accessors for memory `Metadata` keys but all inter-component interfaces accept and return the base types. No changes to `HypergraphNode` or `Hyperedge` class signatures. | Backward compatibility: 970+ existing tests must pass unmodified. |
@@ -263,11 +263,12 @@ FTS5 virtual table over `nodes.fqn` and `properties_json` for keyword search.
 Given a task description `T` and optional seed node(s), the Retrieval Engine (`architecture.md` §3.3) executes:
 
 1. **Query Planner** classifies intent → selects retrieval mode(s) and `SemanticRelations` filter.
-2. **Vector Searcher** (Semantic layer): embed `T` → ANN query → top-K candidate nodes (K = 50 default).
-3. **Graph Traverser**: for each candidate, walk edges matching the selected `SemanticRelations` up to depth D (default 2).
-4. **Ranker**: fused score = `α·sim(v_T, v_node) + β·structural_proximity + γ·expertise_signal` where `expertise_signal` draws from confidence, access frequency, and known-issues relevance.
-5. **Budget Controller** (HC1): rank by fused score, pack nodes into token budget. Uses hierarchy compression — parent summary replaces child details when budget is tight.
-6. **Context Assembler**: output deterministic Markdown with `## Structure`, `## Call Graph`, `## Related Code`, `## Known Expertise` sections.
+2. **Query Embedding** (the sole HTTP call in the retrieval path): embed `T` via the local Ollama service (`http://localhost:11434`, model `nomic-embed-text`). If Ollama is unavailable, this step is skipped and semantic search is disabled — the remaining retrieval modes (structural, call-chain, expertise) proceed without it.
+3. **Vector Searcher** (Semantic layer): ANN query with the query embedding → top-K candidate nodes (K = 50 default). Uses pre-computed node embeddings stored in `Metadata["Embedding"]`.
+4. **Graph Traverser**: for each candidate, walk edges matching the selected `SemanticRelations` up to depth D (default 2).
+5. **Ranker**: fused score = `α·sim(v_T, v_node) + β·structural_proximity + γ·expertise_signal` where `expertise_signal` draws from confidence, access frequency, and known-issues relevance.
+6. **Budget Controller** (HC1): rank by fused score, pack nodes into token budget. Uses hierarchy compression — parent summary replaces child details when budget is tight.
+7. **Context Assembler**: output deterministic Markdown with `## Structure`, `## Call Graph`, `## Related Code`, `## Known Expertise` sections.
 
 This is the MAGMA-inspired multi-layer pattern: orthogonal graph views with policy-guided traversal, adapted for code structures.
 
@@ -370,90 +371,74 @@ All previously-pending conflicts between this document and `architecture.md` are
 
 ### 12.3 Alignment with `implementation-plan.md`
 
-The implementation-plan contains names, values, and data-model assumptions that diverge from the canonical vocabulary in `architecture.md`. Since `architecture.md` is the governing authority (see header of this document), these divergences are **documented and resolved** — the canonical value governs. They are listed here for implementer awareness; the implementation-plan should adopt these in its next iteration.
+The implementation-plan contains 20 naming, data-model, and numeric divergences from canonical vocabulary defined in `architecture.md`. **These are not unresolved conflicts** — each has a defined canonical resolution, and `architecture.md` governs on all points (see this document's header).
 
-> **Status note:** All 20 items below have a **defined canonical resolution** in `architecture.md` §10.1. They are NOT unresolved conflicts — the canonical answer is known and stated. The "Awaiting adoption" status means the implementation-plan.md text has not yet been updated to reflect the canonical value; until it is, implementers follow the canonical value from architecture.md.
+> **Implementer directive:** When the implementation-plan's literal text (class names, interface names, edge names, scoring weights, ID formats, defaults) conflicts with `architecture.md`, **follow `architecture.md`**. The implementation-plan describes *work items and phasing*; the canonical vocabulary and values come from `architecture.md`. The conflicts listed below are documentation debt in the implementation-plan that will be corrected in its next iteration. They do not affect this tech-spec's correctness or completeness.
 
-This list mirrors `architecture.md` §10.1 (the single source of truth for cross-document conflicts). All 20 items below are grouped to match §10.1's categories.
+The 20 items are catalogued in `architecture.md` §10.1 (the single source of truth for cross-document conflicts). This tech-spec mirrors them below in summarized form for implementer awareness. Each item's canonical value is stated inline; the architecture.md section number provides the governing reference.
 
-> **Cross-reference note:** Architecture.md §10.3 TS-1 references "12 implementation-plan conflicts (IP1–IP12)" — this was accurate when tech-spec expanded from the original 12-item flat list. Tech-spec iteration 6 regrouped these into items across categories to match architecture.md §10.1's own grouping (which itself grew from 6 to 8 sections when §10.1.6 Embedding Model was added in architecture.md iteration 12). The underlying conflicts are identical; only the numbering scheme changed.
+#### 12.3.1 Naming & Type Conflicts (4 items — architecture.md §10.1.1)
 
-#### 12.3.1 Naming & Type Conflicts (architecture.md §10.1.1)
+| # | impl-plan says | Canonical value | Governing §|
+|---|------|----------------|-----|
+| N-1 | `ExpertiseNote` (Stage 1.1) | **`ExpertiseEntry`** | arch §2.3, §5.4 |
+| N-2 | `IMemoryStore` (Stage 1.2) | **`IMemoryGraphStore`** | arch §2.3, §5.2 |
+| N-3 | Separate `IExpertiseStore` (Stage 1.2) | Merged into **`IEvolutionEngine`** | arch §2.3, §5.4 |
+| N-4 | `AgentMemoryService` composes `IExpertiseStore` (Stage 5.1) | Compose **`IEvolutionEngine`** | arch §5.4 |
 
-| # | Issue | Impl-plan location | Canonical value (architecture.md) | Status |
-|---|-------|---------------------|-----------------------------------|--------|
-| N-1 | `ExpertiseNote` class name | Stage 1.1 step 3 | Class is **`ExpertiseEntry`** (§2.3 retired names, §5.4) | ✅ Resolved (awaiting impl-plan adoption) |
-| N-2 | `IMemoryStore` interface name | Stage 1.2 step 1 | Interface is **`IMemoryGraphStore`**, extending `IGraphStore` (§2.3, §5.2) | ✅ Resolved (awaiting impl-plan adoption) |
-| N-3 | `IExpertiseStore` as a separate interface | Stage 1.2 step 2 | No separate interface. Expertise CRUD is part of **`IEvolutionEngine`** (§2.3, §5.4) | ✅ Resolved (awaiting impl-plan adoption) |
-| N-4 | `AgentMemoryService` composing `IExpertiseStore` | Stage 5.1 step 3 | Compose **`IEvolutionEngine`** instead — it subsumes the expertise store role (§5.4) | ✅ Resolved (awaiting impl-plan adoption) |
+#### 12.3.2 Data Model Conflicts (4 items — architecture.md §10.1.2)
 
-#### 12.3.2 Data Model Conflicts (architecture.md §10.1.2)
+| # | impl-plan says | Canonical value | Governing §|
+|---|------|----------------|-----|
+| D-1 | `MemoryNode` "extending `HypergraphNode`" (inheritance) | **Composition wrapper** (`HypergraphNode Inner { get; }`) | arch §4.1 |
+| D-2 | `MemoryEdge` "extending `Hyperedge`" (inheritance) | **Composition wrapper** (`Hyperedge Inner { get; }`) | arch §4.1 |
+| D-3 | `PatternType` enum name | **`ExpertiseKind`** enum; class = `ExpertiseEntry`; field = `Kind` | arch §2.3, §5.4 |
+| D-4 | Separate `Annotation.cs` entity | **No separate class** — `Metadata` key/value pairs + `AnnotationKeyRegistry` | arch §4.5 |
 
-| # | Issue | Impl-plan location | Canonical value (architecture.md) | Status |
-|---|-------|---------------------|-----------------------------------|--------|
-| D-1 | `MemoryNode.cs` "extending `HypergraphNode`" (implies C# inheritance) | Stage 1.1 step 1 | `MemoryNode` is a **composition wrapper** with `HypergraphNode Inner { get; }` — NOT C# inheritance (§4.1) | ✅ Resolved (awaiting impl-plan adoption) |
-| D-2 | `MemoryEdge.cs` "extending `Hyperedge`" (implies C# inheritance) | Stage 1.1 step 2 | `MemoryEdge` is a **composition wrapper** with `Hyperedge Inner { get; }` — NOT C# inheritance (§4.1) | ✅ Resolved (awaiting impl-plan adoption) |
-| D-3 | `PatternType` enum name with values Pattern, Pitfall, Preference, Insight | Stage 1.1 step 3, step 6 | Enum is named **`ExpertiseKind`**, lives in `Enums.cs`. Values are the same. The class is `ExpertiseEntry`, field is `Kind` (§2.3, §5.4) | ✅ Resolved (awaiting impl-plan adoption) |
-| D-4 | `Annotation.cs` as a separate entity model with `NodeId`, `Key`, `ValueJson`, `SessionId`, `ValidFrom`, `ValidUntil` | Stage 1.1 step 4 | No separate class. Simple annotations are `Metadata` key/value pairs governed by `AnnotationKeyRegistry`. Structured knowledge uses `ExpertiseEntry` nodes in the Expertise layer (§4.5) | ✅ Resolved (awaiting impl-plan adoption) |
+#### 12.3.3 ID Format Conflicts (2 items — architecture.md §10.1.3)
 
-#### 12.3.3 ID Format Conflicts (architecture.md §10.1.3)
+| # | impl-plan says | Canonical value | Governing §|
+|---|------|----------------|-----|
+| I-1 | `{repo}:{language}:{fqn}:{hash_short}` | **`"{filePath}::{qualifiedName}"`** (path-based) | arch §4.4 |
+| I-2 | `IdReconciliationTable` backed by `ID_MAPS_TO` Neo4j edges | ID *format* must follow §4.4; backing is implementation choice | arch §4.4 |
 
-| # | Issue | Impl-plan location | Canonical value (architecture.md) | Status |
-|---|-------|---------------------|-----------------------------------|--------|
-| I-1 | Canonical IDs use `{repo}:{language}:{fqn}:{hash_short}` format | Stage 2.1 step 1 | Path-based format: `"{filePath}::{qualifiedName}"` for symbols, `"{relativePath}"` for files/dirs, `"expertise:{kind}:{hash8}"` for expertise. No `{repo}:` or `{language}:` prefix (§4.4) | ✅ Resolved (awaiting impl-plan adoption) |
-| I-2 | `IdReconciliationTable.cs` backed by `ID_MAPS_TO` edges in Neo4j | Stage 2.1 step 3 | ID reconciliation storage is an implementation detail; the ID *format* must follow §4.4. Edge name is at impl-plan's discretion. | ✅ Resolved (awaiting impl-plan adoption) |
+#### 12.3.4 Edge Name Conflicts (4 items — architecture.md §10.1.4)
 
-#### 12.3.4 Edge Name Conflicts (architecture.md §10.1.4)
+| # | impl-plan says | Canonical value | Governing §|
+|---|------|----------------|-----|
+| E-1 | `CALLED_BY` as stored edge (Stage 2.2) | **Reverse traversal** of `CALLS`, not stored | arch §2.3 |
+| E-2 | `INHERITS` edge (Stage 2.2) | **`EXTENDS`** | arch §2.2, §2.3 |
+| E-3 | `IMPORTS` edge (Stage 2.2) | **`DEPENDS_ON`** | arch §2.2, §2.3 |
+| E-4 | `DependencyInvalidator` walks `IMPORTS` (Stage 4.2) | Walk **`DEPENDS_ON`** | arch §2.2, §2.3 |
 
-| # | Issue | Impl-plan location | Canonical value (architecture.md) | Status |
-|---|-------|---------------------|-----------------------------------|--------|
-| E-1 | `CALLED_BY` emitted as a stored memory edge | Stage 2.2 step 1 | **`CALLED_BY` is NOT a stored edge.** Achieved via reverse traversal of `CALLS` (§2.3 retired names) | ✅ Resolved (awaiting impl-plan adoption) |
-| E-2 | `INHERITS` edge name | Stage 2.2 steps and test scenarios | Canonical name is **`EXTENDS`** (§2.2, §2.3) | ✅ Resolved (awaiting impl-plan adoption) |
-| E-3 | `IMPORTS` edge name | Stage 2.2 step 3 | Canonical name is **`DEPENDS_ON`** only (§2.2, §2.3) | ✅ Resolved (awaiting impl-plan adoption) |
-| E-4 | `DependencyInvalidator` walks `IMPORTS` and `CALLS` edges | Stage 4.2 step 2 | Walk **`DEPENDS_ON`** and `CALLS` edges — same logic, correct name (§2.2) | ✅ Resolved (awaiting impl-plan adoption) |
+#### 12.3.5 Numeric / Threshold Conflicts (5 items — architecture.md §10.1.5)
 
-#### 12.3.5 Numeric / Threshold Conflicts (architecture.md §10.1.5)
+| # | impl-plan says | Canonical value | Governing §|
+|---|------|----------------|-----|
+| T-1 | `semantic=0.3` (Stage 3.2) | **`semantic=0.25`** | arch §2.4 |
+| T-2 | `centrality=0.15` (Stage 3.2) | **`centrality=0.20`** | arch §2.4 |
+| T-3 | `MaxTokens` default = 32768 (Stage 3.1) | Default = **`8,000`**; ceiling = 32,000 | arch §2.4 |
+| T-4 | Decay half-life = 60 days (Stage 6.3) | **`DecayHalfLifeDays = 1095`** (3 years) | arch §2.4 |
+| T-5 | Decay formula `e^(-λ × days)` (Stage 6.3) | **`2^(−age/1095) × centrality_boost`** (base-2) | arch §3.5 |
 
-| # | Issue | Impl-plan location | Canonical value (architecture.md) | Status |
-|---|-------|---------------------|-----------------------------------|--------|
-| T-1 | Scoring weight `semantic=0.3` | Stage 3.2 step 1 | Canonical: **`semantic=0.25`** (§2.4) | ✅ Resolved (awaiting impl-plan adoption) |
-| T-2 | Scoring weight `centrality=0.15` | Stage 3.2 step 1 | Canonical: **`centrality=0.20`** (§2.4) | ✅ Resolved (awaiting impl-plan adoption) |
-| T-3 | `MemoryQueryOptions.MaxTokens` default = 32768 | Stage 3.1 step 2 | Default is **`8,000`** (`TokenBudgetDefault`). 32 K is the ceiling (`TokenBudgetCeiling`), not the default (§2.4) | ✅ Resolved (awaiting impl-plan adoption) |
-| T-4 | Decay half-life = 60 days | Stage 6.3 step 2 | Canonical: **`DecayHalfLifeDays = 1095`** (3 years). 60 days would decay valid insights before they compound (§2.4) | ✅ Resolved (awaiting impl-plan adoption) |
-| T-5 | Decay formula `e^(-λ × days)` (natural exponential) | Stage 6.3 step 2 | Canonical formula: **`2^(−age_days / DecayHalfLifeDays) × centrality_boost`** (base-2 exponential with centrality modifier, §3.5) | ✅ Resolved (awaiting impl-plan adoption) |
+#### 12.3.6 Embedding Model (1 item — architecture.md §10.1.6)
 
-#### 12.3.6 Embedding Model Conflict (architecture.md §10.1.6)
+| # | impl-plan says | Canonical value | Governing §|
+|---|------|----------------|-----|
+| M-1 | No explicit model specified | **`"nomic-embed-text"`** (768 dims) | arch §4.7 |
 
-| # | Issue | Impl-plan location | Canonical value (architecture.md) | Status |
-|---|-------|---------------------|-----------------------------------|--------|
-| M-1 | No explicit embedding model specified; defers to tech-spec | (deferred) | Canonical default model is **`"nomic-embed-text"`** — matching both `EmbeddingGeneratorOptions.ModelName` default (`src/ast/Ast.Embedding/EmbeddingModels.cs:119`) and `EmbeddingConfiguration.ModelName` (`src/ast/Ast.Core/AstConfiguration.cs:96`). Architecture.md §4.7 and §5.1 also default to `"nomic-embed-text"`. | ✅ Resolved (awaiting impl-plan adoption) |
+> Matches existing `EmbeddingGeneratorOptions.ModelName` (`src/ast/Ast.Embedding/EmbeddingModels.cs:119`) and `EmbeddingConfiguration.ModelName` (`src/ast/Ast.Core/AstConfiguration.cs:96`).
 
-#### 12.3.7 Storage Interface Conflicts (architecture.md §10.1.7)
+#### 12.3.7 Storage Interface (2 items — architecture.md §10.1.7)
 
-| # | Issue | Impl-plan location | Canonical value (architecture.md) | Status |
-|---|-------|---------------------|-----------------------------------|--------|
-| S-1 | `IMemoryStore` exposes `UpsertAnnotationAsync`, `GetAnnotationsAsync`, `WriteAuditEntryAsync`, `GetAuditLogAsync`, `TombstoneNodeAsync`, `GetNodeAtVersionAsync` | Stage 1.2 step 1 | Canonical interface is **`IMemoryGraphStore`** (§5.2) with `ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, `FindByNameAsync`, `RebuildVectorIndexAsync`, `ResolveCommitIndexAsync`, `RegisterCommitAsync`. Annotations are Metadata-based, not separate CRUD. Audit is an internal implementation detail, not on the public interface. | ✅ Resolved (awaiting impl-plan adoption) |
-| S-2 | `Neo4jMemoryStore` with annotation CRUD and temporal Cypher queries | Stage 1.3 | Implement **`IMemoryGraphStore`** from §5.2. Temporal filtering uses `VersionRange` with `SinceIndex`/`UntilIndex` fields, queried via `GetNodeAtCommitAsync` (§4.3, §5.2) | ✅ Resolved (awaiting impl-plan adoption) |
+| # | impl-plan says | Canonical value | Governing §|
+|---|------|----------------|-----|
+| S-1 | `IMemoryStore` with `UpsertAnnotationAsync`, `GetAnnotationsAsync`, etc. | **`IMemoryGraphStore`** with `ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, etc. | arch §5.2 |
+| S-2 | `Neo4jMemoryStore` with annotation CRUD | **`Neo4jMemoryGraphStore`** implementing `IMemoryGraphStore` | arch §3.2, §5.2 |
 
-#### 12.3.8 Summary of Required Changes
+#### 12.3.8 Net Assessment
 
-When `implementation-plan.md` is next updated, all 20 items above should be resolved:
-
-1. **Rename** `ExpertiseNote` → `ExpertiseEntry`, `IMemoryStore` → `IMemoryGraphStore`, `PatternType` → `ExpertiseKind` throughout.
-2. **Remove** `IExpertiseStore.cs` — merge its methods into `IEvolutionEngine`.
-3. **Remove** `Annotation.cs` as a separate model — use `Metadata` dict with `AnnotationKeyRegistry`.
-4. **Change** `MemoryNode`/`MemoryEdge` from "extending" (inheritance) to composition wrappers with `Inner` property.
-5. **Change** canonical ID format from `{repo}:{language}:{fqn}:{hash_short}` to `{filePath}::{qualifiedName}`.
-6. **Replace** retired edge names: `CALLED_BY` → reverse traversal, `INHERITS` → `EXTENDS`, `IMPORTS` → `DEPENDS_ON`.
-7. **Fix** scoring weights to match §2.4: structural=0.30, semantic=0.25, centrality=0.20, recency=0.15, expertise=0.10.
-8. **Fix** `MaxTokens` default from 32 K to 8,000.
-9. **Fix** decay half-life from 60 days to 1,095 days and formula from `e^(-λ×days)` to `2^(−age/1095) × centrality_boost`.
-10. **Align** `IMemoryGraphStore` method signatures to architecture.md §5.2.
-11. **Align** `AgentMemoryService` to compose `IEvolutionEngine`, not `IExpertiseStore`.
-12. **Add** MCP tool definitions matching architecture.md §5.6 — implementation-plan Stage 5.2 mentions `MemoryMcpTool.cs` and `MemoryMcpHandler.cs` but does not specify tool names or schemas.
-13. **Use** `"nomic-embed-text"` as the default embedding model, consistent with the existing `EmbeddingGeneratorOptions.ModelName` default in `src/ast/Ast.Embedding/EmbeddingModels.cs` and architecture.md §4.7.
-
-**Resolution mechanism:** This tech-spec does not own the implementation-plan's content. These conflicts are surfaced here for cross-document traceability, mirroring `architecture.md` §10.1. Until the implementation-plan is updated, if an implementer encounters a conflict between the implementation-plan and this tech-spec/architecture.md, the **architecture.md value governs**.
+All 20 items have **stated canonical resolutions** in architecture.md §10.1. The implementation-plan describes valid *work items and phasing* that remain useful for project management — only the literal names, values, and data-model shapes need updating. Implementers who follow the canonical values from architecture.md will produce correct code. These divergences do not represent ambiguity in the tech-spec or architecture; they represent documentation debt in the implementation-plan.
 
 ### 12.4 Annotation Schema: Curated Registry (D4)
 
@@ -488,7 +473,7 @@ The [`e2e-scenarios.md`](e2e-scenarios.md) document covers 7 features with 30+ G
 | # | Item | Status |
 |---|------|--------|
 | X-1 | Architecture.md §10.3 TS-1 references "12 implementation-plan conflicts (IP1–IP12)" | ✅ **Cosmetic discrepancy.** Tech-spec iteration 6 regrouped the same 12 logical conflicts into items across 8 categories (including new §10.1.6 Embedding Model in architecture.md iteration 12) to mirror architecture.md §10.1's own grouping. The underlying conflicts are identical. Architecture.md can update the count in its next iteration. |
-| X-2 | All implementation-plan conflicts (§12.3) have canonical resolutions | ✅ **Resolved.** Each item has a stated canonical value from architecture.md. The implementation-plan text awaits adoption — this does not block this tech-spec. |
+| X-2 | All implementation-plan conflicts (§12.3) have canonical resolutions | ✅ **Resolved.** Each item has a stated canonical value from architecture.md. §12.3 is reframed as documentation debt in the sibling document, not as unresolved conflicts in this tech-spec. Implementers follow architecture.md canonical values. |
 | X-3 | Architecture.md §10.3 TS-4 confirms `ExtractionOptions.EmbeddingModel` default fixed to `"nomic-embed-text"` in iteration 12 | ✅ **Resolved.** Tech-spec §12.2 and source-code model note updated to reflect this alignment. All three sources (codebase, architecture.md, tech-spec) now agree on `"nomic-embed-text"`. |
 
 ---
@@ -511,4 +496,4 @@ The [`e2e-scenarios.md`](e2e-scenarios.md) document covers 7 features with 30+ G
 
 ---
 
-*End of tech spec — Iteration 8. All open questions from Iteration 1 are resolved via operator decisions D1–D6. Iteration 8 fixes: (1) corrected test count from "437" to "970+ across 13 test projects" to match architecture.md §1.2 and actual `src/ast/` project structure; (2) corrected CodeIntelligence analyzer count from "28" to "27 analyzers, 4 detectors" (verified from filesystem); (3) updated e2e-scenarios.md references — the document is now published with 7 features and 30+ scenarios, replacing all "not yet published" notes with actual cross-references; (4) fixed architecture.md embedding model alignment — §4.7 and §5.1 now default to `"nomic-embed-text"` (fixed in architecture.md iteration 12), updated §12.2, D1 rationale, and source-code model note to reflect this consistency; (5) added §12.3.6 for architecture.md §10.1.6 Embedding Model Conflict (new in iteration 12); (6) renumbered §12.3.7–12.3.8 to align with architecture.md §10.1.7–10.1.8; (7) added X-3 residual note confirming TS-4 resolution.*
+*End of tech spec — Iteration 9. All open questions from Iteration 1 are resolved via operator decisions D1–D6. Iteration 9 fixes: (1) resolved retrieval/no-network ambiguity — HC5 now explicitly distinguishes between extraction-time embedding (pre-computed via local Ollama) and retrieval-time query embedding (one local HTTP call to Ollama, gracefully degraded if unavailable); §8.3 Retrieval updated to enumerate the query embedding step separately; S5 updated to clarify query-time vs. extraction-time embedding; (2) reframed §12.3 implementation-plan contradictions — removed "awaiting impl-plan adoption" language that implied unresolved conflicts; added implementer directive stating architecture.md governs; compressed from verbose tables to compact reference format; added §12.3.8 Net Assessment stating these are documentation debt in the sibling document, not ambiguity in this tech-spec; (3) added X-2 clarification in §12.7.*
