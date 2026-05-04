@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 33
+> **Status:** Iteration 34
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -478,7 +478,7 @@ public class MemoryEdge
 
 | Field | Type | Source | Description |
 |---|---|---|---|
-| `Id` | `string` | `HypergraphNode.Id` | Format: `"/{relativePath}::{qualifiedName}"` for symbols (leading `/` always present); `"/{relativePath}"` for files/packages; `"/"` for repo root; `"ext:{package}:{qualifiedName}"` for external stubs (no leading `/`); `"expertise:{kind}:{hash8}"` for expertise nodes |
+| `Id` | `string` | `HypergraphNode.Id` | Format: `"/{relativePath}::{qualifiedName}"` for symbols (leading `/` always present); `"/{relativePath}"` for files/packages; `"/"` for repo root; `"ext:{package}:{qualifiedName}"` for external stubs (no leading `/`). Note: expertise nodes are **not** `HypergraphNode` instances — see Expertise Nodes below for their ID format. |
 | `Name` | `string` | `HypergraphNode.Name` | Short name of the symbol |
 | `NodeType` | `string` | `HypergraphNode.NodeType` | `"Repo"`, `"Workspace"` (monorepo only), `"Package"`, `"Module"`, `"Class"`, `"Interface"`, `"Function"`, `"Method"`, `"Property"`, `"External"` |
 | `Language` | `string` | `HypergraphNode.Language` | `"C#"`, `"PowerShell"` |
@@ -1400,6 +1400,6 @@ transfer) have been removed or replaced with in-scope content.
 
 ### 8.4 Net Assessment
 
-- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Sixteen alignment items (A1–A16) tracked, all resolved. Tech-spec §12.2 confirms "No remaining conflicts." Tech-spec's own header references architecture.md at "iteration 25" — this is stale iteration metadata in the tech-spec's header; the alignment conclusions (A1–A16) remain valid and the tech-spec (iteration 23) has not changed since. Three stale presentation items remain in the tech-spec (not conflicts — this document governs): (1) §7.1 line 173 shows ID format without leading `/` (governed by A13); (2) §7.1 line 171 uses `SHA-256(Content + TargetNodeId)` instead of `SHA-256(Title + Body + TargetNodeId)` (governed by A16); (3) §8.4 uses column names `valid_from_idx`/`valid_until_idx` while architecture §4.4 uses `since_index`/`until_index` (architecture governs — tech-spec §8.4 is a quick-reference, not normative).
+- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Sixteen alignment items (A1–A16) tracked, all resolved. Tech-spec §12.2 confirms "No remaining conflicts." Tech-spec's own header references architecture.md at "iteration 25" — this is stale iteration metadata in the tech-spec's header; the alignment conclusions (A1–A16) remain valid and the tech-spec (iteration 23) has not changed since. Four stale presentation items remain in the tech-spec (not conflicts — this document governs): (1) §7.1 line 173 shows ID format without leading `/` (governed by A13); (2) §7.1 line 171 uses `SHA-256(Content + TargetNodeId)` instead of `SHA-256(Title + Body + TargetNodeId)` (governed by A16); (3) §8.4 uses column names `valid_from_idx`/`valid_until_idx` while architecture §4.4 uses `since_index`/`until_index` (architecture governs — tech-spec §8.4 is a quick-reference, not normative); (4) tech-spec header line 9 still describes implementation-plan as "Contains 31 naming/data-model divergences" — this is stale because those divergences have been corrected in the implementation-plan's current iteration (see §8.2 above).
 - **implementation-plan ↔ architecture:** Fully aligned on vocabulary, composition model, interface signatures, scoring weights, constants, node-ID format, and project placement. The implementation-plan correctly specifies both the `ContentHash` formula (SHA-256 of Title+Body for dedup) and the `Id` hash8 formula (SHA-256 of Title+Body+TargetNodeId for uniqueness) in its model definitions and test scenarios. One minor presentational gap remains (R-1 in §8.2: `MemoryEdge.Version` non-nullable annotation), not affecting correctness. The implementation-plan's own header defers to this document on all conflicts.
 - **e2e-scenarios ↔ architecture:** All 10 previously-catalogued divergences (E2E-1 through E2E-10) are now **resolved** in the current iteration of e2e-scenarios.md. The e2e-scenarios document uses canonical vocabulary throughout: correct edge names, qualified node IDs with leading `/`, single-colon `ext:` prefix, separate `Title`/`Body` parameters, and in-scope-only scenario content. The e2e-scenarios header (lines 17–23) confirms this alignment and notes that prior architecture.md divergence catalogs were stale — this section has been updated accordingly. No remaining divergences exist between this document and e2e-scenarios.md.
