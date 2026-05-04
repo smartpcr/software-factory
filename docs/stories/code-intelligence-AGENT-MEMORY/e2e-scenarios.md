@@ -49,9 +49,12 @@ Packages directly.
 Feature: Structural Layer — Repository Structure Graph Construction
 
   Background:
-    Given the repository root is "src/ast/"
+    Given the repository root is the working directory (the repo root)
+    And the extraction scope is "src/ast/" (a subtree within the repo root)
     And the extraction pipeline is configured with languages ["C#", "PowerShell"]
     And HEAD commit "abc1234" has been registered with commit_index 1
+    # Node IDs use paths relative to the repo root (always prefixed with "/"),
+    # e.g., "/src/ast/Ast.Core". The Repo root node itself has Id = "/".
 
   Scenario: 1.1 — Ingest src/ast/ and produce structural layer graph
     When the extraction pipeline processes the repository root
@@ -199,7 +202,8 @@ and `Metadata["Confidence"]` (1.0 for direct calls, 0.5–0.7 for dynamic dispat
 Feature: Call-Chain Layer — Call Graph Extraction
 
   Background:
-    Given the repository root is "src/ast/"
+    Given the repository root is the working directory
+    And the extraction scope is "src/ast/"
     And the structural layer graph has been built at commit_index 1
 
   Scenario: 2.1 — Direct method invocations produce CALLS edges
@@ -333,8 +337,10 @@ Feature: Semantic Layer — Embedding and Similarity
       | Mode           | SemanticSearch                          |
       | TokenBudget    | 4000                                    |
     Then the RetrievalResult.Nodes contains ranked ScoredMemoryNode entries
-    And the top result is likely a node from "src/ast/Ast.Csharp/CSharpHyperedgeExtractor.cs"
-    # Its embedding text contains "extract" and "hyperedge" terms
+    And the top 5 results include at least one node from the Ast.Csharp package
+    # Embedding similarity is non-deterministic across model versions;
+    # the assertion verifies that semantically relevant results (Ast.Csharp
+    # contains extraction logic) appear in the top results, not exact rank.
     And each ScoredMemoryNode has SemanticScore between 0.0 and 1.0
     And RetrievalResult.ModesExecuted contains SemanticSearch
 
@@ -397,7 +403,7 @@ Feature: Expertise Layer — Agent Learning and Write-Back
       | SourceAgent  | copilot-session-42                                                              |
     Then a Pattern ExpertiseEntry is created with Kind = Pattern and Confidence = 1.0
 
-  Scenario: 4.3 — Record a Preference expertise entry
+  Scenario: 4.3 — Record Preference and Insight expertise entries
     When the agent calls RecordExpertiseAsync with:
       | field        | value                                                              |
       | TargetNodeId | /                                                                  |
@@ -407,9 +413,8 @@ Feature: Expertise Layer — Agent Learning and Write-Back
       | SourceAgent  | copilot-session-42                                                 |
     Then a Preference ExpertiseEntry is created with Confidence = 1.0
     And the APPLIES_TO edge targets the repo root "/"
-
-  Scenario: 4.4 — Record an Insight expertise entry
-    When the agent calls RecordExpertiseAsync with:
+    # Preferences at the repo root apply to all code in the repository
+    When the agent also calls RecordExpertiseAsync with:
       | field        | value                                                                                        |
       | TargetNodeId | /src/ast/CodeIntelligence                                                                    |
       | Kind         | Insight                                                                                      |
@@ -417,8 +422,9 @@ Feature: Expertise Layer — Agent Learning and Write-Back
       | Body         | Each of the 27 analyzers in CodeIntelligence/Analyzers/ can run independently — no shared state between analyzer instances |
       | SourceAgent  | copilot-session-42                                                                           |
     Then an Insight ExpertiseEntry is created with TargetNodeId = "/src/ast/CodeIntelligence"
+    And both entries have separate APPLIES_TO edges and distinct expertise IDs
 
-  Scenario: 4.5 — Similar expertise detected at write-time schedules consolidation
+  Scenario: 4.4 — Similar expertise detected at write-time schedules consolidation
     Given an existing ExpertiseEntry "expertise:pitfall:a1a11111" with
       Title "Metadata access may throw KeyNotFoundException"
       and Body "Accessing HypergraphNode.Metadata keys directly without checking existence risks KeyNotFoundException at runtime"
@@ -432,13 +438,13 @@ Feature: Expertise Layer — Agent Learning and Write-Back
     # DERIVED_FROM edges are NOT created at write-time — they are produced
     # by ConsolidateAsync during consolidation (architecture.md §2.2, §6.5)
 
-  Scenario: 4.6 — Expertise with invalid target node is rejected
+  Scenario: 4.5 — Expertise with invalid target node is rejected
     When the agent calls RecordExpertiseAsync with targetNodeId = "/nonexistent/path::Foo"
     Then the call fails with a validation error indicating the target node does not exist
     And no ExpertiseEntry is created
     And no audit_log entry is written
 
-  Scenario: 4.7 — Restore an archived expertise entry
+  Scenario: 4.6 — Restore an archived expertise entry
     Given an ExpertiseEntry "expertise:pitfall:ab12cd34" with Archived = true
       and Confidence = 0.05 (below ArchiveConfidenceFloor 0.1)
       targeting "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
@@ -727,14 +733,21 @@ Feature: Evolution Engine — Consolidation and Decay
       | Superseded  | 3     |
 
   Scenario: 8.2 — Time-based decay with centrality boost
-    Given an ExpertiseEntry with initial Confidence = 1.0 created 1095 days ago
+    Given an ExpertiseEntry with current Confidence = 1.0 created 1095 days ago
+    And no prior event-driven decay has been applied
     And the target code node has normalized_pagerank = 0.6
     When DecayStaleExpertiseAsync runs time-based decay
-    Then the decayed confidence is approximately:
+    Then the raw decayed confidence is:
       1.0 × 2^(−1095 / 1095) × (1.0 + 0.5 × 0.6) = 0.5 × 1.3 = 0.65
+    And the result is clamped to [0.0, min(current_confidence, 1.0)]
+    # Centrality boost slows decay (important nodes decay slower) but
+    # never increases confidence above its current value or above 1.0.
+    # At age=0: 1.0 × 1.0 × 1.3 = 1.3 → clamped to 1.0 (no increase).
+    And the final decayed confidence is 0.65 (already below 1.0, no clamping needed)
     And the ExpertiseEntry remains active (0.65 > ArchiveConfidenceFloor 0.1)
-    # Time-based decay runs periodically or on-demand via
-    # IEvolutionEngine.DecayStaleExpertiseAsync (architecture.md §3.5)
+    # Time-based decay formula per architecture.md §3.5:
+    #   decayed_confidence = min(current_confidence, current_confidence × 2^(−age_days / DecayHalfLifeDays) × centrality_boost)
+    #   centrality_boost = 1.0 + CentralityBoostFactor(0.5) × normalized_pagerank
 
   Scenario: 8.3 — Event-based decay on major code change
     Given an ExpertiseEntry with Confidence = 0.8
@@ -1025,7 +1038,7 @@ Feature: Backward Compatibility — Existing Tests Unbroken
     Then the edge is stored successfully (MemoryRelation is a valid HyperedgeType)
     And existing IGraphStore methods work unchanged for non-memory edges
 
-  Scenario: 11.4 — Full test suite regression check (all 13 test projects)
+  Scenario: 11.4 — Full test suite regression check (13 test projects + Ast.Benchmark build)
     When dotnet test runs on all 13 existing test projects:
       | project                          | kind        |
       | Ast.Core.UnitTests               | unit        |
@@ -1045,6 +1058,12 @@ Feature: Backward Compatibility — Existing Tests Unbroken
     And the total test count matches or exceeds the pre-memory-layer baseline
     # Per tech-spec §10 success criterion: "0 failures in existing Ast.* and
     # CodeIntelligence tests (across 13 test projects) after memory layer integration"
+    # Additionally verify that Ast.Benchmark (not a test project — uses BenchmarkDotNet)
+    # at "src/ast/Ast.Benchmark/Ast.Benchmark.csproj" compiles cleanly:
+    And dotnet build succeeds for Ast.Benchmark which references Ast.Core types
+    # Ast.Benchmark contains ExtractionBenchmarks, QueryBenchmarks, and
+    # IngestionBenchmarks — it must compile against the updated Ast.Core
+    # with the additive HyperedgeType.MemoryRelation enum value.
 ```
 
 ---
