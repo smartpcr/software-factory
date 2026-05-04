@@ -47,18 +47,24 @@ for the full existing system design.
 
 ### 1.4 Sibling Documents
 
-This architecture document is part of a four-document planning set. Each
-document owns a distinct concern; shared concepts are referenced by name.
+This architecture document is part of a four-document planning set. **This
+document is the canonical authority** for component boundaries, data model,
+edge/layer naming, and ID format. When any sibling document uses different
+terminology, the names defined here govern the implementation.
 
-| Document | Owns |
-|---|---|
-| **architecture.md** (this file) | Components, data model, interfaces, sequence flows |
-| [tech-spec.md](tech-spec.md) | Problem statement, scope/non-goals, hard constraints, risks, success criteria |
-| [implementation-plan.md](implementation-plan.md) | Phased work items, deliverables, dependencies, evaluation harness |
-| [e2e-scenarios.md](e2e-scenarios.md) | BDD Gherkin scenarios for each feature |
+| Document | Owns | Reads from this doc |
+|---|---|---|
+| **architecture.md** (this file) | Components, data model, interfaces, sequence flows | — |
+| [tech-spec.md](tech-spec.md) | Problem statement, scope/non-goals, hard constraints, risks, success criteria | Layer names, edge names, temporal model, ID format |
+| [implementation-plan.md](implementation-plan.md) | Phased work items, deliverables, dependencies, evaluation harness | Project layout, interface signatures, model extension strategy |
+| [e2e-scenarios.md](e2e-scenarios.md) | BDD Gherkin scenarios for each feature | Node ID format, edge names, layer names |
 
-**Unified layer naming (cross-document alignment):** All four sibling
-documents MUST use the same canonical layer names. The canonical names are:
+### 1.5 Canonical Vocabulary
+
+All documents in this story use the vocabulary defined in this section. Terms
+not listed here have their plain-English meaning.
+
+#### Graph layers
 
 | Canonical layer | Tag value | Content |
 |---|---|---|
@@ -67,73 +73,104 @@ documents MUST use the same canonical layer names. The canonical names are:
 | **Semantic** | `semantic` | Embedding-similarity clusters and topics. Edges: `SIMILAR_TO`, `BELONGS_TO_CLUSTER`. |
 | **Expertise** | `expertise` | Agent-authored knowledge. Edges: `APPLIES_TO`, `SUPERSEDES`, `DERIVED_FROM`. |
 
-**Cross-document edge-name alignment (CRITICAL):**
+Temporal versioning is an **orthogonal concern** applied to nodes and edges on
+all layers. It is not a separate layer. Every node and edge carries a `layer`
+string tag so queries can filter by any single layer or combine layers.
 
-| Canonical edge | Tech-spec name | E2E scenarios name | HyperedgeType enum values (Ast.Core) | Notes |
-|---|---|---|---|---|
-| `CONTAINS` | `CONTAINS` | containment edge | `ClassDefinition`, `InterfaceDefinition`, `StructDefinition`, `RecordDefinition`, `MethodDefinition`, `ConstructorDefinition`, `PropertyDefinition`, `FunctionDefinition` | Structural hierarchy parent→child |
-| `DEPENDS_ON` | `DEPENDS_ON` | dependency edge | `UsingDirective`, `ModuleImport`, `DotSource` | Module/package-level imports. Replaces the earlier name `IMPORTS` used in iteration 1. |
-| `CALLS` | `CALLS` | call edge | `MethodInvocation`, `ConstructorInvocation`, `CmdletCall`, `ModuleFunctionCall`, `CrossLanguageMethodCall` | Function-level invocation |
-| `EXTENDS` | `EXTENDS` | inheritance edge | `Extends` | Class inheritance |
-| `IMPLEMENTS` | `IMPLEMENTS` | interface edge | `Implements` | Interface implementation |
-| `REFERENCES` | `REFERENCES` | reference edge | `DataFlow`, `Assignment`, `CrossLanguageTypeReference` | Non-call symbol references (type annotations, variable types, data flow) |
-| `SIMILAR_TO` | — | similarity edge | *(memory-only)* | Semantic-layer embedding proximity |
-| `BELONGS_TO_CLUSTER` | — | cluster membership | *(memory-only)* | Semantic-layer community grouping |
-| `APPLIES_TO` | — | expertise link | *(memory-only)* | Expertise→code target |
-| `SUPERSEDES` | — | supersession | *(memory-only)* | Expertise merge chain |
-| `DERIVED_FROM` | — | derivation | *(memory-only)* | Expertise provenance |
+#### Edge taxonomy
 
-**⚠ Retired names (authoritative — applies to ALL sibling docs):** `IMPORTS` → now `DEPENDS_ON`; `RE_EXPORTS` → subsumed by `DEPENDS_ON`; `CALLED_BY` → **not a stored edge** (tech-spec §S2 and implementation-plan §2.2 still reference it — they mean reverse traversal of `CALLS`); `INHERITS` → now `EXTENDS`; `INSTANTIATES` → subsumed by `CALLS` with `ConstructorInvocation` original type; `OVERRIDES` → subsumed by `EXTENDS` (override relationship is an inheritance variant). Any occurrence of these retired names in sibling documents should be read as the canonical replacement listed here.
+Edges fall into two categories based on their origin:
 
-The tech-spec previously referred to Fact / Derived / Interaction / Temporal
-layers. Those names are **retired** in favour of the canonical names above.
-Temporal versioning is an orthogonal concern applied to nodes and edges on
-*all* layers — it is not a separate layer. The implementation stores a `layer`
-string tag on every node and edge so queries can filter by any single layer or
-combine layers.
+**Code-derived edges** — produced by the Extraction Pipeline from source-code
+analysis. Each maps to one or more existing `HyperedgeType` enum values in
+`Ast.Core`:
 
-**Cross-document temporal model alignment:** The tech-spec (§7.4) defines
-temporality as `valid_from` / `valid_until` ISO-8601 timestamps with
-provenance. This architecture uses `VersionRange { Since, Until }` with commit
-SHAs **plus** a monotonic `CommitIndex` integer for ordering. These are
-**complementary, not contradictory**: commit SHAs identify the exact commit,
-while `CommitIndex` provides a total ordering for range queries (git's DAG
-structure means SHA strings are not lexicographically orderable). ISO-8601
-`LastTouched` timestamps provide the wall-clock axis (when extraction ran).
+| Canonical edge | `HyperedgeType` enum values | Layer | Notes |
+|---|---|---|---|
+| `CONTAINS` | `ClassDefinition`, `InterfaceDefinition`, `StructDefinition`, `RecordDefinition`, `MethodDefinition`, `ConstructorDefinition`, `PropertyDefinition`, `FunctionDefinition` | Structural | Parent→child containment |
+| `DEPENDS_ON` | `UsingDirective`, `ModuleImport`, `DotSource` | Structural | Module/package imports |
+| `CALLS` | `MethodInvocation`, `ConstructorInvocation`, `CmdletCall`, `ModuleFunctionCall`, `CrossLanguageMethodCall` | Call-Chain | Function invocation |
+| `EXTENDS` | `Extends` | Call-Chain | Class inheritance |
+| `IMPLEMENTS` | `Implements` | Call-Chain | Interface implementation |
+| `REFERENCES` | `DataFlow`, `Assignment`, `CrossLanguageTypeReference` | Call-Chain | Non-call symbol references |
 
-**Temporal ordering via CommitIndex (CRITICAL):** Commit SHAs are opaque
-identifiers — they cannot be compared with `<=` or `>` operators. To enable
-point-in-time queries, the system maintains a `commits` table that maps each
-processed commit SHA to a monotonically increasing integer `commit_index`.
-During extraction, `IncrementalSync` resolves `git rev-list --topo-order` to
-assign indices. The `VersionRange` on every node and edge stores both the
-commit SHA (for human-readable provenance) and the corresponding
-`commit_index` (for efficient range queries). The SQLite storage schema
-(tech-spec §8.2) maps `VersionRange.SinceIndex` → `valid_from` column and
-`VersionRange.UntilIndex` → `valid_until` column, both as `INTEGER`.
-Point-in-time queries use the integer index:
-`WHERE valid_from_idx <= $target_idx AND (valid_until_idx IS NULL OR valid_until_idx > $target_idx)`.
+**Memory-only edges** — produced by the Evolution Engine or Semantic Indexer.
+These have no corresponding `HyperedgeType` enum value in the existing
+`Ast.Core` codebase. They are stored as `Hyperedge` instances whose
+`EdgeType` is set to a new `HyperedgeType.MemoryRelation` value (a single
+additive enum value added to `Ast.Core` — see §4.6 for rationale). The true
+semantic type is always in `Metadata["SemanticRelation"]`:
 
-The `commits` table schema:
+| Canonical edge | Layer | Created by | Semantics |
+|---|---|---|---|
+| `SIMILAR_TO` | Semantic | Semantic Indexer (at extraction) | Two code nodes whose embeddings exceed a cosine-similarity threshold |
+| `BELONGS_TO_CLUSTER` | Semantic | Evolution Engine (community detection) | A code node is a member of a detected community |
+| `APPLIES_TO` | Expertise | Evolution Engine (write-back) | An expertise node annotates a code target |
+| `SUPERSEDES` | Expertise | Evolution Engine (consolidation) | A merged expertise node replaces an older one |
+| `DERIVED_FROM` | Expertise | Evolution Engine (consolidation) | An expertise node was derived from another |
+
+**Uniform filtering:** Every edge — code-derived and memory-only alike —
+carries `Metadata["SemanticRelation"]` with its canonical name. This is the
+**sole edge-filtering mechanism** used by the Retrieval Engine. The legacy
+`HyperedgeType` enum is preserved for backward compatibility with existing
+parsers but is never used as a filter in the memory layer.
+
+#### Retired names
+
+The following names appeared in earlier iterations or appear in sibling
+documents. They are replaced by the canonical names above:
+
+| Retired name | Canonical replacement | Notes |
+|---|---|---|
+| `IMPORTS` | `DEPENDS_ON` | |
+| `RE_EXPORTS` | `DEPENDS_ON` | |
+| `CALLED_BY` | Reverse traversal of `CALLS` | Not a stored edge |
+| `INHERITS` | `EXTENDS` | |
+| `INSTANTIATES` | `CALLS` (with `ConstructorInvocation` original type) | |
+| `OVERRIDES` | `EXTENDS` (override is an inheritance variant) | |
+| Fact / Derived / Interaction / Temporal layers | Structural / Call-Chain / Semantic / Expertise | Temporal versioning is orthogonal, not a layer |
+
+### 1.6 Temporal Model
+
+Commit SHAs are opaque identifiers that cannot be compared with `<=` or `>`
+operators. The system uses a dual-axis temporal model:
+
+1. **Commit axis** — each processed commit SHA is mapped to a monotonically
+   increasing `commit_index` integer in the `commits` table (below). The
+   `VersionRange` on every node and edge stores both the commit SHA (for
+   human-readable provenance) and the corresponding `commit_index` (for
+   efficient range queries).
+2. **Wall-clock axis** — `LastTouched` (ISO-8601) records when extraction or
+   modification last ran. This is informational; range queries use the commit
+   index.
+
 ```sql
 CREATE TABLE commits (
-    commit_sha  TEXT PRIMARY KEY,
+    commit_sha   TEXT PRIMARY KEY,
     commit_index INTEGER NOT NULL UNIQUE,
-    timestamp   TEXT NOT NULL,  -- ISO-8601 wall-clock time
-    parent_sha  TEXT            -- for lineage
+    timestamp    TEXT NOT NULL,  -- ISO-8601 wall-clock time
+    parent_sha   TEXT            -- for lineage
 );
 CREATE INDEX idx_commits_index ON commits(commit_index);
 ```
 
-**Cross-document model extension alignment:** The implementation-plan (§1.1)
-proposes `MemoryNode` extending `HypergraphNode` via C# inheritance and
-`MemoryEdge` extending `Hyperedge`. This architecture specifies a
-**non-breaking Metadata-based extension** instead (§4.1). Both approaches
-coexist: `MemoryNode` / `MemoryEdge` are convenience wrapper classes that
-compose (not inherit from) `HypergraphNode` / `Hyperedge` and provide
-strongly-typed accessors for the Metadata keys. The underlying storage and
-inter-component interfaces always use the base `HypergraphNode` / `Hyperedge`
-types to avoid breaking existing parsers and tests.
+Point-in-time queries:
+`WHERE valid_from_idx <= $target_idx AND (valid_until_idx IS NULL OR valid_until_idx > $target_idx)`.
+
+The tech-spec (§7.4) uses `valid_from` / `valid_until` ISO-8601 timestamps.
+In the canonical model, those columns store the integer `commit_index`, not
+timestamps. The wall-clock timestamp is available via a join to the `commits`
+table.
+
+### 1.7 Model Extension Strategy
+
+The memory layer extends `HypergraphNode` and `Hyperedge` from `Ast.Core`
+**non-breakingly** via the existing `Metadata` dictionary — no new properties
+are added to the base classes. `MemoryNode` / `MemoryEdge` are convenience
+**wrapper** classes that **compose** (not inherit from) the base types and
+provide strongly-typed accessors for memory Metadata keys. All inter-component
+interfaces accept and return the base `HypergraphNode` / `Hyperedge` types to
+avoid breaking existing parsers and their 437+ tests.
 
 ---
 
@@ -315,23 +352,28 @@ memory fragments.
 | `EXPERTISE_RECALL` | Pattern/pitfall lookup filtered by `APPLIES_TO` scope | "Known pitfalls for the payments module?" |
 | `HYBRID` | Fan-out across ≥2 modes, merge via Ranker | "Explain the authentication flow and flag any known issues" |
 
-**Memory-only edge traversal (CRITICAL):** The `EXPERTISE_RECALL` and
-`SEMANTIC_SEARCH` modes traverse edges that exist only in the memory layer
-(APPLIES_TO, SUPERSEDES, DERIVED_FROM, SIMILAR_TO, BELONGS_TO_CLUSTER). These
-edges have no `HyperedgeType` enum value — they are identified solely by their
-`Metadata["SemanticRelation"]` string. The `TraversalPlan.SemanticRelations`
-field is the **primary** edge filter for all retrieval modes. The legacy
-`TraversalPlan.EdgeTypes` field is optional and only matches code-derived edges.
-When traversing the Expertise layer, the Graph Traverser uses:
-```
-SemanticRelations = ["APPLIES_TO", "SUPERSEDES", "DERIVED_FROM"]
-LayerFilter = "expertise"
-```
-When traversing the Semantic layer for similarity:
-```
-SemanticRelations = ["SIMILAR_TO", "BELONGS_TO_CLUSTER"]
-LayerFilter = "semantic"
-```
+**Edge filtering in retrieval:** The `TraversalPlan.SemanticRelations` field
+(a list of canonical edge names) is the **sole** edge filter for all retrieval
+modes. It works uniformly for both code-derived and memory-only edges because
+every edge in the graph carries `Metadata["SemanticRelation"]`. The legacy
+`TraversalPlan.EdgeTypes` field (list of `HyperedgeType` enum values) is
+**deprecated for retrieval** — it exists only for backward compatibility with
+pre-memory queries and is never set by the memory retrieval engine.
+
+Example traversal plans by mode:
+
+| Mode | `SemanticRelations` | `LayerFilter` |
+|---|---|---|
+| `STRUCTURAL_DRILL` | `["CONTAINS", "DEPENDS_ON"]` | `"structural"` |
+| `CALL_TRACE` | `["CALLS", "EXTENDS", "IMPLEMENTS", "REFERENCES"]` | `"call_chain"` |
+| `SEMANTIC_SEARCH` | `["SIMILAR_TO", "BELONGS_TO_CLUSTER"]` | `"semantic"` |
+| `EXPERTISE_RECALL` | `["APPLIES_TO", "SUPERSEDES", "DERIVED_FROM"]` | `"expertise"` |
+| `HYBRID` | all of the above | `null` (all layers) |
+
+The Graph Traverser resolves `SemanticRelations` by matching against
+`Metadata["SemanticRelation"]` on each candidate edge. This is a string
+comparison, not an enum match. Memory-only edges (whose `HyperedgeType` is
+`MemoryRelation`) are reached exclusively through this path.
 
 ### 3.4 Context Assembler
 
@@ -464,7 +506,7 @@ HypergraphNode (from Ast.Core — unchanged)
 ```
 Hyperedge (from Ast.Core — unchanged)
 ├── Id             : string      ← "{sourceId}→{relation}→{targetId}" for deterministic dedup
-├── EdgeType       : HyperedgeType enum   ← original Ast.Core enum value
+├── EdgeType       : HyperedgeType enum   ← original Ast.Core value; MemoryRelation for memory-only edges
 ├── NodeIds        : List<string>   ← multi-node (typically 2 for binary relations)
 ├── Roles          : Dictionary<string, string>   ← e.g., { "/src/auth/login::fn": "caller", "/src/auth/token::verify": "callee" }
 ├── Languages      : List<string>
@@ -495,11 +537,11 @@ layer groups them into the four canonical layers:
 | `DataFlow`, `Assignment` | `REFERENCES` | Call-Chain | `source`, `target` |
 | `CrossLanguageMethodCall` | `CALLS` | Call-Chain | `caller`, `callee` |
 | `CrossLanguageTypeReference` | `REFERENCES` | Call-Chain | `source`, `target` |
-| (memory-layer only) | `SIMILAR_TO` | Semantic | `node_a`, `node_b` |
-| (memory-layer only) | `BELONGS_TO_CLUSTER` | Semantic | `member`, `cluster` |
-| (memory-layer only) | `APPLIES_TO` | Expertise | `expertise`, `target` |
-| (memory-layer only) | `SUPERSEDES` | Expertise | `newer`, `older` |
-| (memory-layer only) | `DERIVED_FROM` | Expertise | `derived`, `source` |
+| `MemoryRelation` (new) | `SIMILAR_TO` | Semantic | `node_a`, `node_b` |
+| `MemoryRelation` (new) | `BELONGS_TO_CLUSTER` | Semantic | `member`, `cluster` |
+| `MemoryRelation` (new) | `APPLIES_TO` | Expertise | `expertise`, `target` |
+| `MemoryRelation` (new) | `SUPERSEDES` | Expertise | `newer`, `older` |
+| `MemoryRelation` (new) | `DERIVED_FROM` | Expertise | `derived`, `source` |
 
 **Unmapped HyperedgeType values:** The following existing enum values are NOT
 mapped to memory-layer semantic relations in the MVP. They are preserved in
@@ -514,18 +556,16 @@ These may be promoted to semantic relations in future iterations.
 
 **Memory-only edge types** (SIMILAR_TO, BELONGS_TO_CLUSTER, APPLIES_TO,
 SUPERSEDES, DERIVED_FROM) are not in the existing `HyperedgeType` enum. They
-are represented using a `SemanticRelation` string stored in
-`Hyperedge.Metadata["SemanticRelation"]`. The `Hyperedge.EdgeType` field is set
-to a placeholder value (e.g., `HyperedgeType.DataFlow`) for these edges, with
-the true semantic type in metadata. This avoids modifying the existing enum
-(which would be a breaking change to all existing parsers).
+are represented using `Hyperedge.EdgeType = HyperedgeType.MemoryRelation` — a
+single new enum value added to `Ast.Core` (see §4.6 for rationale). The true
+semantic type is always in `Metadata["SemanticRelation"]`.
 
 **All edges** (both code-derived and memory-only) carry `Metadata["SemanticRelation"]`
 with the canonical name (`CALLS`, `DEPENDS_ON`, `CONTAINS`, `EXTENDS`,
 `IMPLEMENTS`, `REFERENCES`, `SIMILAR_TO`, `BELONGS_TO_CLUSTER`, `APPLIES_TO`,
 `SUPERSEDES`, `DERIVED_FROM`). This provides a uniform filtering path
-regardless of whether the edge originated from an Ast.Core parser or the
-memory layer.
+regardless of origin. The retrieval engine filters exclusively on
+`SemanticRelation`, never on `HyperedgeType`.
 
 ### 4.2 Edge Property Schemas (via `Hyperedge.Metadata`)
 
@@ -640,6 +680,105 @@ public class SnapshotStats
 Snapshots are not full copies; they are commit-SHA bookmarks. The
 `version_range` on each node/edge allows the store to reconstruct any
 snapshot view via range filtering.
+
+### 4.6 Memory-Only Edge Lifecycle
+
+This section fully specifies how memory-only edges are created, stored,
+queried, and evolved. Memory-only edges exist only in the Semantic and
+Expertise layers and have no source-code counterpart.
+
+#### 4.6.1 Enum extension: `HyperedgeType.MemoryRelation`
+
+A single new value `MemoryRelation` is added to the `HyperedgeType` enum in
+`Ast.Core/HypergraphModels.cs`. This is an **additive, non-breaking change** —
+existing parsers never emit this value, so no existing code path is affected.
+
+```csharp
+public enum HyperedgeType
+{
+    // ... existing values unchanged ...
+
+    /// <summary>
+    /// Edges created by the memory layer (Semantic and Expertise layers).
+    /// The specific relation is in Metadata["SemanticRelation"].
+    /// </summary>
+    MemoryRelation
+}
+```
+
+Why a dedicated enum value instead of reusing `DataFlow` or another existing
+value? Because queries that filter on `HyperedgeType` (e.g., existing analyzer
+code that asks "show me all DataFlow edges") would incorrectly include
+memory-only edges if we piggybacked on an existing value. A dedicated
+`MemoryRelation` value keeps the domains separated.
+
+#### 4.6.2 Creation triggers
+
+| Edge | Created by | Trigger | Inputs |
+|---|---|---|---|
+| `SIMILAR_TO` | Semantic Indexer (in Extraction Pipeline) | After embedding a batch of nodes, pairwise cosine similarity exceeds a configurable threshold (default: 0.85) | Two node IDs + cosine similarity score |
+| `BELONGS_TO_CLUSTER` | Evolution Engine → `ConsolidateAsync` | Community detection (Louvain) on the Structural + Call-Chain subgraph identifies clusters | Cluster ID + member node IDs |
+| `APPLIES_TO` | Evolution Engine → `RecordExpertiseAsync` | Agent writes back an expertise entry with `AppliesTo` node ID list | Expertise node ID + target node IDs + scope (`"exact"` or `"subtree"`) |
+| `SUPERSEDES` | Evolution Engine → `ConsolidateAsync` | Consolidation merges overlapping expertise nodes | New merged node ID + old node IDs + reason |
+| `DERIVED_FROM` | Evolution Engine → `RecordExpertiseAsync` | New expertise overlaps (cosine > 0.85) with an existing expertise node | New node ID + existing node ID |
+
+#### 4.6.3 Storage representation
+
+Every memory-only edge is stored as a `Hyperedge` with:
+
+```
+Hyperedge {
+  Id            = "{sourceId}→{relation}→{targetId}"  // deterministic, dedup-safe
+  EdgeType      = HyperedgeType.MemoryRelation         // the dedicated enum value
+  NodeIds       = [sourceId, targetId]                 // always 2 for binary relations
+  Roles         = { sourceId: "<role_a>", targetId: "<role_b>" }
+  Weight        = <confidence or similarity score>
+  Metadata      = {
+    "MemoryLayer":       "<semantic|expertise>",
+    "SemanticRelation":  "<SIMILAR_TO|BELONGS_TO_CLUSTER|APPLIES_TO|SUPERSEDES|DERIVED_FROM>",
+    "VersionRange":      { Since: "<sha>", SinceIndex: <int>, Until: null, UntilIndex: null },
+    "Confidence":        <double 0–1>,
+    "Stale":             false,
+    "OriginalEdgeType":  "MemoryRelation"
+    // + relation-specific keys from §4.2
+  }
+}
+```
+
+In SQLite, the `edges` table stores `edge_type = 'MemoryRelation'` and
+`semantic_relation = '<canonical name>'`. The retrieval engine's SQL queries
+filter on `semantic_relation`, never on `edge_type`.
+
+#### 4.6.4 Retrieval
+
+The Retrieval Engine accesses memory-only edges exclusively through
+`TraversalPlan.SemanticRelations`. The Graph Traverser matches candidate edges
+by comparing `Metadata["SemanticRelation"]` to the requested relation names.
+For example, an `EXPERTISE_RECALL` query sets:
+
+```csharp
+var plan = new TraversalPlan
+{
+    Direction = "outbound",
+    SemanticRelations = ["APPLIES_TO", "SUPERSEDES", "DERIVED_FROM"],
+    LayerFilter = "expertise",
+    MaxDepth = 2
+};
+```
+
+The `EdgeTypes` field on `TraversalPlan` is ignored for memory-only edges (it
+is `null` in all memory-layer queries). Conversely, code-derived edges also
+carry `SemanticRelation`, so the same filter works uniformly across all layers.
+
+#### 4.6.5 Evolution
+
+| Event | Effect on memory-only edges |
+|---|---|
+| **Code target tombstoned** (file deleted, symbol removed) | `APPLIES_TO` edges pointing to the target get `VersionRange.Until` set. Expertise node's `Confidence` decays by 0.5. |
+| **Code target content changed** (content_hash differs) | `APPLIES_TO` edges are marked `Stale = true`. The next consolidation pass re-evaluates relevance. |
+| **Expertise merged** | Old expertise nodes' outbound `APPLIES_TO` edges get `VersionRange.Until` set. New merged node gets fresh `APPLIES_TO` edges. `SUPERSEDES` edge links new → old. |
+| **Embedding model changed** | `SIMILAR_TO` edges are bulk-deleted (all get `VersionRange.Until`). Re-embedding pass re-creates them from scratch. |
+| **Community re-detection** | Old `BELONGS_TO_CLUSTER` edges get `VersionRange.Until` set. New cluster assignments create fresh edges. |
 
 ---
 
@@ -791,18 +930,20 @@ public class TraversalPlan
     public required string Direction { get; init; } // "outbound" | "inbound" | "both"
 
     /// <summary>
-    /// Primary edge filter — uses canonical semantic relation names.
-    /// Supports BOTH code-derived edges (CALLS, CONTAINS, DEPENDS_ON, etc.)
-    /// AND memory-only edges (SIMILAR_TO, APPLIES_TO, SUPERSEDES, etc.).
-    /// If null or empty, all edge types on the selected layer(s) are traversed.
+    /// Sole edge filter — uses canonical semantic relation names (§1.5).
+    /// Works uniformly for code-derived edges (CALLS, CONTAINS, DEPENDS_ON,
+    /// EXTENDS, IMPLEMENTS, REFERENCES) and memory-only edges (SIMILAR_TO,
+    /// APPLIES_TO, SUPERSEDES, BELONGS_TO_CLUSTER, DERIVED_FROM).
+    /// If null or empty, all edges on the selected layer(s) are traversed.
     /// </summary>
-    public IReadOnlyList<string>? SemanticRelations { get; init; }  // canonical names: "CALLS", "SIMILAR_TO", "APPLIES_TO", etc.
+    public IReadOnlyList<string>? SemanticRelations { get; init; }
 
     /// <summary>
-    /// Optional legacy filter — restricts to specific HyperedgeType enum values.
-    /// Only matches code-derived edges (memory-only edges have no HyperedgeType).
-    /// When both SemanticRelations and EdgeTypes are set, edges matching EITHER filter are included.
+    /// Deprecated — retained for backward compatibility with pre-memory queries.
+    /// Memory-layer code MUST NOT set this field. Memory-only edges have
+    /// HyperedgeType.MemoryRelation and are not reachable through this filter.
     /// </summary>
+    [Obsolete("Use SemanticRelations instead. This field is ignored by memory-layer queries.")]
     public IReadOnlyList<HyperedgeType>? EdgeTypes { get; init; }
 
     public string? LayerFilter { get; init; }    // "structural", "call_chain", "semantic", "expertise", or null for all
@@ -1197,7 +1338,7 @@ Result: The system accumulates expertise that compounds across sessions.
 | **Extend existing `src/ast/` stack rather than greenfield** | The Ast.Core, Ast.GraphDb, Ast.Embedding, and Ast.Query projects already provide 437+ tested capabilities for AST extraction, graph storage, embeddings, and querying. Building on top avoids redoing that work. | Couples memory system to existing models (`HypergraphNode`, `Hyperedge`); may need adapters if those models change. |
 | **Single new project `Ast.Memory` with namespace-separated concerns** | Avoids over-splitting into `Ast.Memory.Extraction`, `Ast.Memory.Evolution`, etc. Follows the repo convention where each `Ast.*` project is a cohesive library. Internal sub-namespaces (Extraction, Evolution, Context, Sync, Storage) provide logical separation without project proliferation. | Larger compilation unit; mitigated by clear namespace boundaries. |
 | **Non-breaking extension via `Metadata` dictionary** | Memory-layer fields (version range, layer tag, content hash) are stored in `HypergraphNode.Metadata` and `Hyperedge.Metadata` rather than adding new properties to base classes. This avoids breaking existing parsers and tests. | Metadata keys are string-typed (not compile-time checked); mitigated by a constants class `MemoryMetadataKeys` with strongly-typed accessor extensions. |
-| **Memory-only edge types via `SemanticRelation` string in Metadata** | The existing `HyperedgeType` enum is owned by `Ast.Core` and used by all parsers. Adding memory-only values (SIMILAR_TO, APPLIES_TO, etc.) would be a breaking change. Storing them in `Metadata["SemanticRelation"]` keeps the existing enum stable. All edges (code-derived and memory-only) carry this key for uniform filtering. | String-typed relation names (not compile-time checked); mitigated by `MemoryMetadataKeys` constants class and validated at write time. |
+| **Memory-only edge types via `HyperedgeType.MemoryRelation` + `SemanticRelation` metadata** | A single new enum value `MemoryRelation` is added to `HyperedgeType` (additive, non-breaking). The specific relation is in `Metadata["SemanticRelation"]`. All edges (code-derived and memory-only) carry this key for uniform filtering. | String-typed relation names (not compile-time checked); mitigated by `MemoryMetadataKeys` constants class and validated at write time. |
 | **Four separate graph layers sharing a node namespace** | Avoids the entanglement problem identified by MAGMA. Each layer can be queried, indexed, and evolved independently. | Cross-layer queries require joins; slight overhead vs. a single unified graph. |
 | **Existing Ast.Csharp/PowerShell parsers as primary, tree-sitter for new languages** | Existing parsers are battle-tested with 166+ tests. Tree-sitter adds breadth for TypeScript, Python, Go without rewriting C#/PowerShell extraction. | Two parser stacks to maintain; unified `ILanguageParser` interface mitigates this. |
 | **Version ranges on nodes/edges instead of full graph snapshots** | Space-efficient: O(changed entities) per commit instead of O(total graph). Enables time-travel queries. | Point-in-time reconstruction requires range filtering, which adds query complexity. |
@@ -1207,28 +1348,27 @@ Result: The system accumulates expertise that compounds across sessions.
 
 ---
 
-## 9. Cross-Document Alignment Log
+## 9. Cross-Document Alignment Summary
 
-This section records the **authoritative resolution** for every cross-document
-discrepancy. Architecture.md is the canonical source for component boundaries,
-data model, edge names, and ID formats. When a sibling document deviates from
-a decision listed here, the sibling document is out of date — the resolution
-below is the correct answer.
+This document is the **canonical authority** for all naming, data model, and
+interface decisions. The table below lists topics where sibling documents may
+use different terminology. In every case, the name defined in this document
+governs the implementation.
 
-| # | Topic | Canonical answer (this doc) | Sibling deviation | Resolution |
-|---|---|---|---|---|
-| A1 | **Layer names** | Structural, Call-Chain, Semantic, Expertise (§1.4) | tech-spec §7 uses a flat schema without explicit layer tags; e2e uses the same 4 names | ✅ **Resolved.** The 4-layer model is canonical. Tech-spec's flat schema is a storage-level detail — the logical layer tags apply on top of it. No conflict. |
-| A2 | **Edge name: `DEPENDS_ON`** | `DEPENDS_ON` for all import/dependency relationships (§1.4, §4.1) | tech-spec §7.2 uses `DEPENDS_ON` ✅; e2e uses "dependency edge" ✅ | ✅ **Resolved.** All docs aligned. The iteration-1 name `IMPORTS` is retired. |
-| A3 | **Edge names: `CALLED_BY`, `INHERITS`, `IMPORTS`** | These are **retired names** (§1.4). Canonical names: reverse traversal of `CALLS` (not stored `CALLED_BY`), `EXTENDS` (not `INHERITS`), `DEPENDS_ON` (not `IMPORTS`). | implementation-plan §2.2 uses `CALLED_BY`, `INHERITS`, and `IMPORTS`; tech-spec §S2 mentions `CALLED_BY` as a stored edge | ✅ **Resolved authoritatively.** The architecture does not store a `CALLED_BY` edge — reverse traversal of the `CALLS` edge covers that query. `INHERITS` → use `EXTENDS`. `IMPORTS` → use `DEPENDS_ON`. Sibling docs should be updated to match, but these canonical names are final and implementation must follow them regardless of what sibling text currently says. |
-| A4 | **Node ID format** | Path-based strings: `"/src/auth/login::AuthService"` (§4.1) | implementation-plan §2.1 references a `{repo}:{language}:{fqn}:{hash_short}` format from iteration 1 | ✅ **Resolved authoritatively.** The `{repo}:{language}:{fqn}:{hash_short}` format is retired. Path-based `"{filePath}::{qualifiedName}"` is the only valid ID format. E2e-scenarios already use this format. |
-| A5 | **Node hierarchy** | Repo → Workspace → Package → Module → Class → Function (§3.2) | tech-spec §7.1 includes `Workspace` ✅; e2e §1.1 shows directory-based hierarchy ✅ | ✅ **Resolved.** All docs aligned. Workspace is optional (monorepo only). |
-| A6 | **ID type** | `string` everywhere — no GUIDs, UUIDs, or integer IDs (§4.1) | All sibling docs use `string` ✅ | ✅ **Resolved.** |
-| A7 | **Temporal model** | Dual-axis: commit SHA + monotonic `commit_index` (integer) for ordering, plus `LastTouched` ISO-8601 for wall-clock. `VersionRange { Since, SinceIndex, Until, UntilIndex }` (§1.4, §4.1). The `commits` table (§1.4) maps SHA → index. | tech-spec §7.4 uses `valid_from`/`valid_until` ISO-8601 timestamps only | ✅ **Resolved authoritatively.** The tech-spec's ISO-8601 timestamps map to `LastTouched` (wall-clock axis). For ordering in range queries, integer `commit_index` is required because commit SHAs are not lexicographically orderable. The SQLite columns `valid_from_idx` and `valid_until_idx` are `INTEGER` and store the commit index. Tech-spec's timestamp-only model is a simplification that omits the ordering axis — the full model defined here is canonical. |
-| A8 | **Embedding lifecycle** | Three-phase: code nodes at extraction, expertise nodes at write-back, topic nodes at consolidation (§4.4) | tech-spec §8.1 step 4 mentions embeddings during extraction only | ✅ **Resolved authoritatively.** The extraction-only model covers code nodes. Expertise and topic nodes require additional embedding at write-back and consolidation time respectively. The full three-phase model in §4.4 is canonical. |
-| A9 | **Memory-only edge traversal** | `TraversalPlan.SemanticRelations` (string list) is the primary edge filter for ALL retrieval modes. `EdgeTypes` (HyperedgeType enum list) is optional/legacy and only matches code-derived edges (§5.2, §3.3). | implementation-plan §3.1 references `IMemoryQuery` without specifying the filter mechanism | ✅ **Resolved authoritatively.** Any query touching the Expertise or Semantic layers MUST use `SemanticRelations` because those layers have memory-only edges with no `HyperedgeType` enum value. Implementation must filter on `Metadata["SemanticRelation"]` string, not on `Hyperedge.EdgeType`. |
-| A10 | **Model extension strategy** | Non-breaking Metadata-based extension. `MemoryNode`/`MemoryEdge` are convenience wrappers that **compose** (not inherit from) `HypergraphNode`/`Hyperedge` (§1.4, §3.0, §4.1). | implementation-plan §1.1 says "extending `HypergraphNode`" (implying C# inheritance) | ✅ **Resolved authoritatively.** Composition, not inheritance. `MemoryNode` wraps a `HypergraphNode` instance and provides strongly-typed accessors for memory Metadata keys. It does not subclass `HypergraphNode`. This avoids breaking existing parser contracts. Implementation-plan's "extending" should be read as "extending with memory metadata," not as C# class inheritance. |
-| A11 | **SQLite storage: binary edges vs. hyperedge model** | The public API preserves the `Hyperedge` model (`NodeIds: List<string>`, `Roles: Dictionary<string, string>`). SQLite decomposes binary relationships into `source_id`/`target_id` columns for indexing efficiency (§4.1). | tech-spec §8.2 uses `source_id, target_id` in the schema | ✅ **Resolved — compatible.** This is not a contradiction. The SQLite schema is a storage optimization; the `IMemoryGraphStore` interface accepts and returns `Hyperedge` objects. The store implementation converts between the two representations internally. |
-| A12 | **Retrieval scoring weights** | 5-term model: structural proximity (0.35) + call-chain distance⁻¹ (0.25) + cosine similarity (0.20) + recency (0.10) + expertise confidence (0.10) — see §6.3 | tech-spec §8.3 uses 3 terms; implementation-plan §3.2 uses 5 terms with different default weights | ✅ **Resolved.** The 5-term model in §6.3 is canonical. All weights are configurable at runtime via `RankerOptions`. The tech-spec's 3-term model is a summary that omits recency and call-chain-distance; it is not wrong, just simplified. The implementation-plan's alternative defaults (0.3/0.3/0.15/0.15/0.1) are acceptable initial values that may be tuned empirically. |
+| Topic | This doc says | Where defined |
+|---|---|---|
+| Layer names | Structural, Call-Chain, Semantic, Expertise | §1.5 |
+| Edge names (code-derived) | CONTAINS, DEPENDS_ON, CALLS, EXTENDS, IMPLEMENTS, REFERENCES | §1.5 |
+| Edge names (memory-only) | SIMILAR_TO, BELONGS_TO_CLUSTER, APPLIES_TO, SUPERSEDES, DERIVED_FROM | §1.5, §4.6 |
+| Retired edge names | IMPORTS → DEPENDS_ON; CALLED_BY → reverse CALLS; INHERITS → EXTENDS | §1.5 |
+| Node ID format | Path-based strings: `"{filePath}::{qualifiedName}"` | §4.1 |
+| ID type | `string` everywhere — no GUIDs/UUIDs/ints | §4.1 |
+| Temporal model | Dual-axis: commit SHA + monotonic integer `commit_index`; wall-clock `LastTouched` | §1.6 |
+| Model extension | Composition wrappers, not C# inheritance | §1.7 |
+| Memory-only edge representation | `HyperedgeType.MemoryRelation` enum value + `SemanticRelation` metadata | §4.6 |
+| Embedding lifecycle | Three-phase: extraction, write-back, consolidation | §4.4 |
+| Retrieval scoring | 5-term model with configurable weights | §6.3 |
+| Edge filtering | `TraversalPlan.SemanticRelations` is the sole filter; `EdgeTypes` is deprecated | §5.2 |
 
 ---
 
@@ -1246,4 +1386,4 @@ below is the correct answer.
 | **Decay Factor** | A multiplier (0 < d ≤ 1) applied to an expertise node's confidence when its associated code changes. |
 | **Context Block** | The final Markdown document returned by the Context Assembler, ready for insertion into an LLM prompt. |
 | **Semantic Relation** | A canonical string name (e.g., `CALLS`, `APPLIES_TO`, `SIMILAR_TO`) stored in `Metadata["SemanticRelation"]` on every edge. The primary filtering mechanism for graph traversal, supporting both code-derived and memory-only edges. |
-| **Memory-only Edge** | An edge type that exists only in the memory layer (SIMILAR_TO, BELONGS_TO_CLUSTER, APPLIES_TO, SUPERSEDES, DERIVED_FROM). Has no `HyperedgeType` enum value; identified solely by its `SemanticRelation` string. |
+| **Memory-only Edge** | An edge type that exists only in the memory layer (SIMILAR_TO, BELONGS_TO_CLUSTER, APPLIES_TO, SUPERSEDES, DERIVED_FROM). Uses `HyperedgeType.MemoryRelation` as its enum value; identified by its `SemanticRelation` metadata string. Full lifecycle in §4.6. |
