@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 31
+> **Status:** Iteration 32
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -16,7 +16,7 @@
 > |---|---|---|
 > | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Currently at iteration 23. Aligned on structural/naming points. Sixteen alignment items (A1–A16) tracked in §8.1, all resolved. A13–A16 added in iteration 28 (node-ID format, `LastTouched` type, `MemoryNode.Version` nullability, expertise hash input). |
 > | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Currently at latest iteration. Fully aligned with canonical vocabulary — uses correct names (`IMemoryGraphStore`, `ExpertiseEntry`, composition wrappers, `VersionRange?`, correct method signatures), correctly specifies both hash formulas (ContentHash and Id hash8). One minor presentational gap catalogued in §8.2 below. `architecture.md` governs on all conflicts. |
-> | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Currently at latest iteration. Contains 10 divergences catalogued in §8.3 below — all semantically correct or out-of-scope. |
+> | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Currently at latest iteration. All 10 previously-catalogued divergences (E2E-1 through E2E-10) have been resolved in its current iteration — see §8.3 for historical record. |
 
 ---
 
@@ -1365,25 +1365,33 @@ document on all conflicts.
 ### 8.3 Alignment with `e2e-scenarios.md` (Current Iteration)
 
 The e2e-scenarios document covers **13 features with 82 Gherkin scenarios**.
-It contains 10 divergences from canonical vocabulary, all either presentation
-shorthand (semantically correct) or out-of-scope features. The scenario
-behaviors match the architecture.
+As of its current iteration, **all 10 previously-catalogued divergences have
+been resolved**. The e2e-scenarios document now uses canonical vocabulary
+throughout: correct edge names (`CALLS`, `EXTENDS`, `IMPLEMENTS`,
+`DEPENDS_ON`, `APPLIES_TO`, `SUPERSEDES`, `DERIVED_FROM`), qualified node
+IDs (`"/{relativePath}::{qualifiedName}"`), single-colon `ext:` prefix for
+External boundary nodes, separate `Title`/`Body` fields for
+`RecordExpertiseAsync`, and correct scenario descriptions. Two scenarios
+previously flagged as out-of-scope (cross-service RPC and cross-repo memory
+transfer) have been removed or replaced with in-scope content.
 
-| # | Topic | Scenario | Resolution |
+**Historical record** (for traceability — these are all resolved):
+
+| # | Original topic | Original scenario | Resolution |
 |---|---|---|---|
-| E2E-1 | `called_by` label in result table | 4.1 | Reverse traversal of `CALLS`, not a stored edge — consistent with §2.3. Scenario is behaviorally correct. |
-| E2E-2 | `direct_call` edge presentation | 2.x | Maps to `CALLS` with `Confidence=1.0` — consistent with §2.2. |
-| E2E-3 | `polymorphic` edge presentation | 2.x | Maps to `CALLS` with `Confidence=0.7` — consistent with §2.2. |
-| E2E-4 | `recursive` edge presentation | 2.x | Maps to `CALLS` with self-referencing `NodeIds` — consistent with §2.2. |
-| E2E-5 | `service_call` for cross-service RPC | 2.7 | Out of scope per tech-spec O1. Recommend tagging scenario `@deferred`. |
-| E2E-6 | Unqualified symbol IDs (e.g., `AuthService.login`) | Various | Shorthand for canonical `"/{relativePath}::{qualifiedName}"` per §4.2. |
-| E2E-7 | `ext::` prefix for boundary nodes | 2.4 | Canonical format: `"ext:{package}:{qualifiedName}"` per §4.2. |
-| E2E-8 | Cross-repo memory transfer | 6.4 | Out of scope per tech-spec O2. Recommend tagging `@deferred`. |
-| E2E-9 | Concurrent write conflict errors | 3.4 | Architecture specifies serialized writes (§3.7). Scenario should test write serialization, not optimistic-concurrency errors. |
-| E2E-10 | Expertise `content` parameter in Gherkin steps | 4.x, 6.x | Canonical: `RecordExpertiseAsync` takes `title` and `body` as separate parameters (§5.3). Gherkin steps using a single `content` field should be split into `title` and `body` parameters. |
+| E2E-1 | `called_by` label in result table | 4.1 | **Resolved.** Scenario 4.1 now uses `APPLIES_TO` edge for expertise write-back. No `called_by` label remains. |
+| E2E-2 | `direct_call` edge presentation | 2.x | **Resolved.** Scenarios use canonical `CALLS` with `Confidence=1.0`. |
+| E2E-3 | `polymorphic` edge presentation | 2.x | **Resolved.** Scenarios use canonical `CALLS` with `Confidence=0.5–0.7`. |
+| E2E-4 | `recursive` edge presentation | 2.x | **Resolved.** Scenarios use canonical `CALLS` with self-referencing `NodeIds`. |
+| E2E-5 | `service_call` for cross-service RPC | 2.7 | **Resolved.** Scenario 2.7 now covers External boundary nodes for dependency calls — no `service_call` edge type. |
+| E2E-6 | Unqualified symbol IDs | Various | **Resolved.** All scenarios use canonical `"/{relativePath}::{qualifiedName}"` format per §4.2. |
+| E2E-7 | `ext::` prefix for boundary nodes | 2.4 | **Resolved.** Scenarios use canonical `"ext:{package}:{qualifiedName}"` (single colon) per §4.2. |
+| E2E-8 | Cross-repo memory transfer | 6.4 | **Resolved.** Scenario 6.4 now covers ExpertiseRecall retrieval mode — no cross-repo content. |
+| E2E-9 | Concurrent write conflict errors | 3.4 | **Resolved.** Scenario 3.4 now covers SemanticSearch retrieval — no concurrent-write conflict scenario. |
+| E2E-10 | Expertise `content` parameter | 4.x, 6.x | **Resolved.** Scenarios use separate `Title` and `Body` parameters matching `RecordExpertiseAsync` signature in §5.3. |
 
 ### 8.4 Net Assessment
 
 - **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Sixteen alignment items (A1–A16) tracked, all resolved. Tech-spec §12.2 confirms "No remaining conflicts." Tech-spec's own header references architecture.md at "iteration 25" — this is stale iteration metadata in the tech-spec; the alignment conclusions (A1–A16) remain valid. Three stale presentation items remain in the tech-spec (not conflicts — this document governs): (1) §7.1 line 173 shows ID format without leading `/` (governed by A13); (2) §7.1 line 171 uses `SHA-256(Content + TargetNodeId)` instead of `SHA-256(Title + Body + TargetNodeId)` (governed by A16); (3) §8.4 uses column names `valid_from_idx`/`valid_until_idx` while architecture §4.4 uses `since_index`/`until_index` (architecture governs — tech-spec §8.4 is a quick-reference, not normative).
 - **implementation-plan ↔ architecture:** Fully aligned on vocabulary, composition model, interface signatures, scoring weights, constants, node-ID format, and project placement. The implementation-plan correctly specifies both the `ContentHash` formula (SHA-256 of Title+Body for dedup) and the `Id` hash8 formula (SHA-256 of Title+Body+TargetNodeId for uniqueness) in its model definitions and test scenarios. One minor presentational gap remains (R-1 in §8.2: `MemoryEdge.Version` non-nullable annotation), not affecting correctness. The implementation-plan's own header defers to this document on all conflicts.
-- **e2e-scenarios ↔ architecture:** 10 divergences catalogued in §8.3, all either presentation shorthand (semantically correct) or out-of-scope features. Two scenarios (E2E-5, E2E-8) exercise out-of-scope features and should be tagged `@deferred`. E2E-6 (unqualified IDs) and E2E-7 (`ext::` prefix) are presentation shorthand; canonical formats are in §4.2.
+- **e2e-scenarios ↔ architecture:** All 10 previously-catalogued divergences (E2E-1 through E2E-10) are now **resolved** in the current iteration of e2e-scenarios.md. The e2e-scenarios document uses canonical vocabulary throughout: correct edge names, qualified node IDs with leading `/`, single-colon `ext:` prefix, separate `Title`/`Body` parameters, and in-scope-only scenario content. The e2e-scenarios header (lines 17–23) confirms this alignment and notes that prior architecture.md divergence catalogs were stale — this section has been updated accordingly. No remaining divergences exist between this document and e2e-scenarios.md.
