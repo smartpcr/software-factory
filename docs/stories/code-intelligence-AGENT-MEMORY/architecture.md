@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 41
+> **Status:** Iteration 42
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -272,7 +272,7 @@ src/ast/
 |---|---|---|
 | **Structure Builder** | `StructureBuilder` | Walks existing `HypergraphData` (produced by `Ast.Csharp` / `Ast.PowerShell` parsers) and emits Structural-layer nodes (Repo, Workspace (monorepo only), Package, Module, Class, Function) with `CONTAINS` and `DEPENDS_ON` edges. |
 | **Call-Chain Analyzer** | `CallChainAnalyzer` | Reads `Hyperedge` entries of type `MethodInvocation`, `ConstructorInvocation`, `CmdletCall`, etc. and emits Call-Chain-layer edges (`CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES`). |
-| **Semantic Indexer** | `SemanticIndexer` | Batches nodes through `IEmbeddingGenerator.GenerateBatchEmbeddingsAsync()` (from existing `Ast.Embedding`), stores vectors, and creates `SIMILAR_TO` edges where cosine similarity ≥ `SimilarityThreshold` (0.85). |
+| **Semantic Indexer** | `SemanticIndexer` | Batches nodes through `IEmbeddingGenerator.GenerateBatchEmbeddingsAsync()` (from existing `Ast.Embedding`), stores resulting vectors in two places — (1) `Metadata["Embedding"]` on each node via `IMemoryGraphStore.UpsertNodeAsync()` and (2) the vector index via `IVectorStore.UpsertAsync()` for ANN retrieval — then computes pairwise cosine similarity and creates `SIMILAR_TO` edges where cosine ≥ `SimilarityThreshold` (0.85). |
 | **Fact Normalizer** | `FactNormalizer` | Deduplicates nodes across languages (e.g., a C# class and its PowerShell caller) and assigns canonical IDs. |
 
 **Dependency chain:** `StructureBuilder` → `CallChainAnalyzer` → `SemanticIndexer` (sequential — each stage requires the previous stage's nodes to exist).
@@ -357,7 +357,7 @@ The engine has three internal stages:
    values based on the query shape:
    - `StructuralDrill` — BFS from a seed node along `CONTAINS`/`DEPENDS_ON`.
    - `CallTrace` — forward/backward traversal along `CALLS`/`EXTENDS`/`IMPLEMENTS`.
-   - `SemanticSearch` — embed query text via `IEmbeddingGenerator.GenerateEmbeddingAsync()`, ANN lookup via `IVectorStore.SearchAsync()`.
+   - `SemanticSearch` — embed query text via a single local call to `IEmbeddingGenerator.GenerateEmbeddingAsync()` (HC5), then ANN lookup via `IVectorStore.SearchAsync()` against pre-computed node embeddings (stored at extraction time by `SemanticIndexer`). The vector store returns matching node IDs with similarity scores; the Ranker uses these as the `semantic` signal (weight 0.25).
    - `ExpertiseRecall` — filter nodes by `APPLIES_TO` edges from Expertise layer.
    - `Hybrid` — combine all four modes (default for free-text queries).
 
@@ -447,10 +447,12 @@ On trigger:
 8. Propagate invalidation: mark downstream `CALLS` edges for re-validation
    via `UpdateEdgeMetadataAsync(edgeId, { "Stale": true })` — this applies
    to `CALLS` edges whose caller or callee signature changed.
-9. Re-run `SemanticIndexer` on changed nodes only: re-compute embeddings,
-   then recalculate `SIMILAR_TO` edges. Old `SIMILAR_TO` edges that
-   referenced retired or re-embedded nodes are retired via `RetireEdgeAsync`;
-   new `SIMILAR_TO` edges are created where cosine ≥ `SimilarityThreshold`.
+9. Re-run `SemanticIndexer` on changed nodes only: re-compute embeddings
+   via `IEmbeddingGenerator`, update the vector index via
+   `IVectorStore.UpsertAsync()`, then recalculate `SIMILAR_TO` edges. Old
+   `SIMILAR_TO` edges that referenced retired or re-embedded nodes are
+   retired via `RetireEdgeAsync`; new `SIMILAR_TO` edges are created where
+   cosine ≥ `SimilarityThreshold`.
 10. Trigger event-driven expertise decay for expertise entries targeting
     changed code nodes (`StaleDecayFactor` or `MinorDecayFactor` per §3.5).
 11. Log all mutations to the audit log via `LogAuditAsync`.
@@ -1211,78 +1213,97 @@ Ast.Memory.IntegrationTests
 ### 6.1 Full Extraction (First-Time Indexing)
 
 ```
-Agent/CLI                     ExtractionPipeline       Parsers            IMemoryGraphStore    IEmbeddingGenerator
-  │                                │                      │                    │                      │
-  │  ExtractAsync(repoRoot, opts)  │                      │                    │                      │
-  │──────────────────────────────▶│                      │                    │                      │
-  │                                │  Parse(repoRoot)     │                    │                      │
-  │                                │─────────────────────▶│                    │                      │
-  │                                │  HypergraphData      │                    │                      │
-  │                                │◀─────────────────────│                    │                      │
-  │                                │                      │                    │                      │
-  │                                │  ── StructureBuilder ──                   │                      │
-  │                                │  Build Repo/Pkg/Module/Class/Fn nodes     │                      │
-  │                                │  + CONTAINS, DEPENDS_ON edges             │                      │
-  │                                │  UpsertNodeAsync(node, version) ×N        │                      │
-  │                                │  UpsertEdgeAsync(edge, version) ×E        │                      │
-  │                                │──────────────────────────────────────────▶│                      │
-  │                                │                      │                    │                      │
-  │                                │  ── CallChainAnalyzer ──                  │                      │
-  │                                │  Map MethodInvocation → CALLS edges       │                      │
-  │                                │  Map Extends/Implements edges             │                      │
-  │                                │  UpsertEdgeAsync(edge, version) ×M        │                      │
-  │                                │──────────────────────────────────────────▶│                      │
-  │                                │                      │                    │                      │
-  │                                │  ── SemanticIndexer ──                    │                      │
-  │                                │  GenerateBatchEmbeddingsAsync(texts)      │                      │
-  │                                │──────────────────────────────────────────────────────────────────▶│
-  │                                │  float[][] embeddings                     │                      │
-  │                                │◀──────────────────────────────────────────────────────────────────│
-  │                                │  UpsertNodeAsync(vectors) + UpsertEdgeAsync(SIMILAR_TO) │        │
-  │                                │──────────────────────────────────────────▶│                      │
-  │                                │                      │                    │                      │
-  │                                │  LogAuditAsync(...)   │                    │                      │
-  │                                │──────────────────────────────────────────▶│                      │
-  │  ExtractionResult              │                      │                    │                      │
-  │◀──────────────────────────────│                      │                    │                      │
+Agent/CLI                     ExtractionPipeline       Parsers            IMemoryGraphStore    IEmbeddingGenerator    IVectorStore
+  │                                │                      │                    │                      │                      │
+  │  ExtractAsync(repoRoot, opts)  │                      │                    │                      │                      │
+  │──────────────────────────────▶│                      │                    │                      │                      │
+  │                                │  Parse(repoRoot)     │                    │                      │                      │
+  │                                │─────────────────────▶│                    │                      │                      │
+  │                                │  HypergraphData      │                    │                      │                      │
+  │                                │◀─────────────────────│                    │                      │                      │
+  │                                │                      │                    │                      │                      │
+  │                                │  ── StructureBuilder ──                   │                      │                      │
+  │                                │  Build Repo/Pkg/Module/Class/Fn nodes     │                      │                      │
+  │                                │  + CONTAINS, DEPENDS_ON edges             │                      │                      │
+  │                                │  UpsertNodeAsync(node, version) ×N        │                      │                      │
+  │                                │  UpsertEdgeAsync(edge, version) ×E        │                      │                      │
+  │                                │──────────────────────────────────────────▶│                      │                      │
+  │                                │                      │                    │                      │                      │
+  │                                │  ── CallChainAnalyzer ──                  │                      │                      │
+  │                                │  Map MethodInvocation → CALLS edges       │                      │                      │
+  │                                │  Map Extends/Implements edges             │                      │                      │
+  │                                │  UpsertEdgeAsync(edge, version) ×M        │                      │                      │
+  │                                │──────────────────────────────────────────▶│                      │                      │
+  │                                │                      │                    │                      │                      │
+  │                                │  ── SemanticIndexer ──                    │                      │                      │
+  │                                │  GenerateBatchEmbeddingsAsync(texts)      │                      │                      │
+  │                                │──────────────────────────────────────────────────────────────────▶│                      │
+  │                                │  float[][] embeddings                     │                      │                      │
+  │                                │◀──────────────────────────────────────────────────────────────────│                      │
+  │                                │                      │                    │                      │                      │
+  │                                │  UpsertAsync(nodeId, embedding) ×N       │                      │                      │
+  │                                │  (store vectors for ANN retrieval)        │                      │                      │
+  │                                │──────────────────────────────────────────────────────────────────────────────────────────▶│
+  │                                │                      │                    │                      │                      │
+  │                                │  UpsertNodeAsync(node w/ Metadata["Embedding"]) ×N               │                      │
+  │                                │  + UpsertEdgeAsync(SIMILAR_TO where cosine ≥ 0.85) ×S            │                      │
+  │                                │──────────────────────────────────────────▶│                      │                      │
+  │                                │                      │                    │                      │                      │
+  │                                │  LogAuditAsync(...)   │                    │                      │                      │
+  │                                │──────────────────────────────────────────▶│                      │                      │
+  │  ExtractionResult              │                      │                    │                      │                      │
+  │◀──────────────────────────────│                      │                    │                      │                      │
 ```
 
 ### 6.2 Context Retrieval (Agent Query)
 
 ```
-Agent                  MCP/CLI              RetrievalEngine        QueryPlanner     Ranker        BudgetController   ContextAssembler
-  │                      │                       │                     │              │                 │                  │
-  │  memory_query(req)   │                       │                     │              │                 │                  │
-  │─────────────────────▶│                       │                     │              │                 │                  │
-  │                      │  RetrieveAsync(req)   │                     │              │                 │                  │
-  │                      │──────────────────────▶│                     │              │                 │                  │
-  │                      │                       │  PlanQuery(req)     │              │                 │                  │
-  │                      │                       │───────────────────▶│              │                 │                  │
-  │                      │                       │  [modes]            │              │                 │                  │
-  │                      │                       │◀───────────────────│              │                 │                  │
-  │                      │                       │                     │              │                 │                  │
-  │                      │                       │  ── per mode ──     │              │                 │                  │
-  │                      │                       │  BFS / ANN / filter │              │                 │                  │
-  │                      │                       │  → candidate nodes  │              │                 │                  │
-  │                      │                       │                     │              │                 │                  │
-  │                      │                       │  Rank(candidates, weights)         │                 │                  │
-  │                      │                       │──────────────────────────────────▶│                 │                  │
-  │                      │                       │  List<ScoredMemoryNode>            │                 │                  │
-  │                      │                       │◀──────────────────────────────────│                 │                  │
-  │                      │                       │                     │              │                 │                  │
-  │                      │                       │  ApplyBudget(ranked, tokenBudget)  │                 │                  │
-  │                      │                       │─────────────────────────────────────────────────────▶│                  │
-  │                      │                       │  trimmed list                      │                 │                  │
-  │                      │                       │◀─────────────────────────────────────────────────────│                  │
-  │                      │                       │                     │              │                 │                  │
-  │                      │                       │  Assemble(trimmed)  │              │                 │                  │
-  │                      │                       │────────────────────────────────────────────────────────────────────────▶│
-  │                      │                       │  contextMarkdown    │              │                 │                  │
-  │                      │                       │◀────────────────────────────────────────────────────────────────────────│
-  │                      │  RetrievalResult      │                     │              │                 │                  │
-  │                      │◀──────────────────────│                     │              │                 │                  │
-  │  RetrievalResult     │                       │                     │              │                 │                  │
-  │◀─────────────────────│                       │                     │              │                 │                  │
+Agent                  MCP/CLI              RetrievalEngine        QueryPlanner     IVectorStore     IEmbeddingGenerator   Ranker        BudgetController   ContextAssembler
+  │                      │                       │                     │              │                │                    │                 │                  │
+  │  memory_query(req)   │                       │                     │              │                │                    │                 │                  │
+  │─────────────────────▶│                       │                     │              │                │                    │                 │                  │
+  │                      │  RetrieveAsync(req)   │                     │              │                │                    │                 │                  │
+  │                      │──────────────────────▶│                     │              │                │                    │                 │                  │
+  │                      │                       │  PlanQuery(req)     │              │                │                    │                 │                  │
+  │                      │                       │───────────────────▶│              │                │                    │                 │                  │
+  │                      │                       │  [modes]            │              │                │                    │                 │                  │
+  │                      │                       │◀───────────────────│              │                │                    │                 │                  │
+  │                      │                       │                     │              │                │                    │                 │                  │
+  │                      │                       │  ── per mode ──     │              │                │                    │                 │                  │
+  │                      │                       │  StructuralDrill: BFS via IMemoryGraphStore (CONTAINS/DEPENDS_ON edges)  │                 │                  │
+  │                      │                       │  CallTrace: forward/backward via IMemoryGraphStore (CALLS/EXTENDS edges) │                 │                  │
+  │                      │                       │  SemanticSearch:    │              │                │                    │                 │                  │
+  │                      │                       │    Embed query text │              │                │                    │                 │                  │
+  │                      │                       │    (1 local call)   │              │                │                    │                 │                  │
+  │                      │                       │──────────────────────────────────────────────────▶│                    │                 │                  │
+  │                      │                       │    float[] qEmbed   │              │                │                    │                 │                  │
+  │                      │                       │◀──────────────────────────────────────────────────│                    │                 │                  │
+  │                      │                       │    ANN lookup       │              │                │                    │                 │                  │
+  │                      │                       │    SearchAsync(qEmbed, topK)       │                │                    │                 │                  │
+  │                      │                       │──────────────────────────────────▶│                │                    │                 │                  │
+  │                      │                       │    [(nodeId, score)] │              │                │                    │                 │                  │
+  │                      │                       │◀──────────────────────────────────│                │                    │                 │                  │
+  │                      │                       │  ExpertiseRecall: filter by APPLIES_TO edges via IMemoryGraphStore      │                 │                  │
+  │                      │                       │  → candidate nodes  │              │                │                    │                 │                  │
+  │                      │                       │                     │              │                │                    │                 │                  │
+  │                      │                       │  Rank(candidates, weights)         │                │                    │                 │                  │
+  │                      │                       │────────────────────────────────────────────────────────────────────────▶│                 │                  │
+  │                      │                       │  List<ScoredMemoryNode>            │                │                    │                 │                  │
+  │                      │                       │◀────────────────────────────────────────────────────────────────────────│                 │                  │
+  │                      │                       │                     │              │                │                    │                 │                  │
+  │                      │                       │  ApplyBudget(ranked, tokenBudget)  │                │                    │                 │                  │
+  │                      │                       │─────────────────────────────────────────────────────────────────────────────────────────▶│                  │
+  │                      │                       │  trimmed list                      │                │                    │                 │                  │
+  │                      │                       │◀─────────────────────────────────────────────────────────────────────────────────────────│                  │
+  │                      │                       │                     │              │                │                    │                 │                  │
+  │                      │                       │  Assemble(trimmed)  │              │                │                    │                 │                  │
+  │                      │                       │────────────────────────────────────────────────────────────────────────────────────────────────────────────▶│
+  │                      │                       │  contextMarkdown    │              │                │                    │                 │                  │
+  │                      │                       │◀────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+  │                      │  RetrievalResult      │                     │              │                │                    │                 │                  │
+  │                      │◀──────────────────────│                     │              │                │                    │                 │                  │
+  │  RetrievalResult     │                       │                     │              │                │                    │                 │                  │
+  │◀─────────────────────│                       │                     │              │                │                    │                 │                  │
 ```
 
 ### 6.3 Expertise Write-Back (Post-Session Learning)
@@ -1329,7 +1350,7 @@ Agent                  MCP/CLI              EvolutionEngine       IMemoryGraphSt
 ### 6.4 Incremental Sync (Git Commit)
 
 ```
-Git hook / Watcher      IncrementalSync         GitDiffDriver      ExtractionPipeline    IMemoryGraphStore     SemanticIndexer   DecayService
+Git hook / Watcher      IncrementalSync         GitDiffDriver      ExtractionPipeline    IMemoryGraphStore     IVectorStore     SemanticIndexer   DecayService
   │                          │                       │                    │                    │                    │                │
   │  ApplyDiffAsync          │                       │                    │                    │                    │                │
   │  (repo, from, to)        │                       │                    │                    │                    │                │
@@ -1374,11 +1395,13 @@ Git hook / Watcher      IncrementalSync         GitDiffDriver      ExtractionPip
   │                          │                       │                    │                    │                    │                │
   │                          │  ── Step 9: Re-embed changed nodes ──     │                    │                    │                │
   │                          │  SemanticIndexer.IndexAsync(changedNodes) │                    │                    │                │
-  │                          │  (re-embeds + retires old SIMILAR_TO      │                    │                    │                │
-  │                          │   + creates new SIMILAR_TO edges)         │                    │                    │                │
-  │                          │──────────────────────────────────────────────────────────────────────────────────▶│                │
+  │                          │  (re-embeds via IEmbeddingGenerator,      │                    │                    │                │
+  │                          │   upserts vectors via IVectorStore,       │                    │                    │                │
+  │                          │   retires old SIMILAR_TO edges,           │                    │                    │                │
+  │                          │   creates new SIMILAR_TO edges)           │                    │                    │                │
+  │                          │──────────────────────────────────────────────────────────────────────────────────────────────────────▶│                │
   │                          │  updated embeddings + SIMILAR_TO edges    │                    │                    │                │
-  │                          │◀──────────────────────────────────────────────────────────────────────────────────│                │
+  │                          │◀──────────────────────────────────────────────────────────────────────────────────────────────────────│                │
   │                          │                       │                    │                    │                    │                │
   │                          │  ── Step 10: Decay expertise ──           │                    │                    │                │
   │                          │  Decay expertise targeting changed nodes  │                    │                    │                │
@@ -1507,8 +1530,8 @@ the canonical definition are resolved by governance:
 | # | Topic | impl-plan wording | Canonical definition (this doc) | Status |
 |---|---|---|---|---|
 | R-1 | `MemoryEdge.Version` nullability | Listed as `VersionRange Version` without explicit non-nullable annotation | `VersionRange Version` is non-nullable — all edges carry versioning (§4.1, §4.3) | **Resolved.** Correct behavior; annotation is presentational. |
-| R-2 | `UpsertEdgeAsync` method | Stage 1.2 lists 12 methods (omitting `UpsertEdgeAsync`). Stage 2.1 line 126 says "inherited `IGraphStore` edge-creation methods." | **Canonical interface has 13 methods** (§5.1), including `UpsertEdgeAsync(Hyperedge, VersionRange, CancellationToken)`. All edge-writing code paths must use `UpsertEdgeAsync` to set temporal and denormalized columns. | **Resolved by governance.** Implementations follow §5.1. |
-| R-3 | Decay formula notation | Stage 5.3 line 318: `× centrality_boost` as output multiplier | **Canonical formula** (§3.5): `final = event_adjusted_confidence × 2^(−age_days / (DecayHalfLifeDays × centrality_boost))` — centrality extends the half-life (exponent denominator), ensuring confidence never increases. | **Resolved by governance.** Implementations follow §3.5. |
+| R-2 | `UpsertEdgeAsync` method | Stage 1.2 lists 12 methods (omitting `UpsertEdgeAsync`). Stage 2.1 line 126 says "inherited `IGraphStore` edge-creation methods." | **Canonical interface has 13 methods** (§5.1), including `UpsertEdgeAsync(Hyperedge, VersionRange, CancellationToken)`. All edge-writing code paths must use `UpsertEdgeAsync` to set temporal and denormalized columns. The base `IGraphStore` does not define `UpsertEdgeAsync` — it is a memory-layer addition. Implementors **must not** fall back to `IGraphStore.AddEdgesAsync()` for memory edges, as that method does not set `since_index`, `until_index`, `semantic_rel`, or `memory_layer` denormalized columns. | **Resolved by governance.** Implementations follow §5.1. |
+| R-3 | Decay formula notation | Stage 5.3 line 318: `decayed_confidence = current_confidence × 2^(−age_days / DecayHalfLifeDays) × centrality_boost` — this puts `centrality_boost` (range 1.0–1.5) as an **output multiplier**, which would **incorrectly increase** confidence above `current_confidence`. | **Canonical formula** (§3.5): `final = event_adjusted_confidence × 2^(−age_days / (DecayHalfLifeDays × centrality_boost))` — centrality extends the half-life in the **exponent denominator**, producing a `time_factor ≤ 1.0` that can only decrease confidence. The impl-plan formula is algebraically wrong; implementors must follow §3.5. | **Resolved by governance.** Implementations follow §3.5. |
 
 Previously-catalogued naming/composition/schema conflicts have all been
 corrected in the implementation-plan: `ExpertiseEntry` (not `ExpertiseNote`),
