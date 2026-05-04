@@ -219,6 +219,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             < 70 = reject.
             """;
 
+        // Phase 38 (Layer B.3) — read per-doc points from the real
+        // WorkItemRow created by the orchestrator before this call. Falls
+        // back to story.points/4 (consistent with EnsurePlanDocWorkItemsAsync)
+        // when the row is missing (older spawns until Phase38Migration runs).
+        var docPoints = await this.LookupWorkItemPointsAsync(
+            docWorkItemId, fallback: Math.Max(1, spawn.StoryPoints / 4), ct);
+
         await this.RunGenEvalLoopAsync(
             team: "Architect",
             workItemId: docWorkItemId,
@@ -227,7 +234,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             evaluatorPrompt: evaluatorPrompt,
             workspace: workspace,
             budget: budget,
-            storyPoints: spawn.StoryPoints,
+            storyPoints: docPoints,
             ct: ct);
 
         if (!File.Exists(diskPath))
@@ -375,6 +382,12 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             < 70 = reject.
             """;
 
+        // Phase 38 (Layer B.3) — read per-workstream points from the real
+        // WorkItemRow inserted by DriveDecomposeAsync. Falls back to the
+        // story-level points when the row is missing (legacy spawns).
+        var wsPoints = await this.LookupWorkItemPointsAsync(
+            workstream.Id, fallback: Math.Max(1, spawn.StoryPoints), ct);
+
         await this.RunGenEvalLoopAsync(
             team: "Engineer",
             workItemId: workstream.Id,
@@ -383,7 +396,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             evaluatorPrompt: evaluatorPrompt,
             workspace: workspace,
             budget: BudgetForPhase(spawn.StoryPoints, "impl"),
-            storyPoints: spawn.StoryPoints,
+            storyPoints: wsPoints,
             ct: ct);
 
         var files = ReadAllFiles(workspace);
@@ -1064,5 +1077,23 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         public int? Line { get; set; }
         public string? Body { get; set; }
         public string? Severity { get; set; }
+    }
+
+    /// <summary>
+    /// Phase 38 (Layer B.3) — fetch the WorkItem.Points value the gen↔eval
+    /// loop should size its iteration budget against. Returns
+    /// <paramref name="fallback"/> when the row hasn't been inserted yet
+    /// (legacy spawns that predate <c>EnsurePlanDocWorkItemsAsync</c> /
+    /// <c>Phase38Migration</c>).
+    /// </summary>
+    private async Task<int> LookupWorkItemPointsAsync(string workItemId, int fallback, CancellationToken ct)
+    {
+        using var scope = this.scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var pts = await db.WorkItems.AsNoTracking()
+            .Where(w => w.Id == workItemId)
+            .Select(w => (int?)w.Points)
+            .FirstOrDefaultAsync(ct);
+        return pts is > 0 ? pts.Value : Math.Max(1, fallback);
     }
 }

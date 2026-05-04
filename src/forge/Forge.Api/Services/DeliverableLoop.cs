@@ -122,22 +122,18 @@ public sealed class DeliverableLoop : IDeliverableLoop
     /// <summary>
     /// Phase 38 (Layer A.3) — map a work item's story points to a per-loop
     /// iteration cap. Bigger work earns more attempts before the loop
-    /// stalls; tiny work doesn't burn LLM tokens on retries it can't
-    /// productively use. Falls back to <see cref="ScoringConstants.MaxIterations"/>
-    /// for points &lt;= 0 (e.g. legacy synthetic workItemIds with no work-item row).
-    /// Exposed as <c>public static</c> so call sites + tests can reference
-    /// the same mapping without duplicating the table.
+    /// stalls; tiny work still gets a 5-iter floor so the gen↔eval pair has
+    /// breathing room to converge on subtle docs. Falls back to
+    /// <see cref="ScoringConstants.MaxIterations"/> for points &lt;= 0 (e.g.
+    /// legacy synthetic workItemIds with no work-item row). Exposed as
+    /// <c>public static</c> so call sites + tests can reference the same
+    /// mapping without duplicating the table.
     /// </summary>
-    public static int PointsToMaxIter(int points) => points switch
-    {
-        <= 0 => ScoringConstants.MaxIterations,
-        1    => 3,
-        2    => 4,
-        3    => 5,
-        4 or 5 => 8,
-        6 or 7 or 8 => 12,
-        _    => 15,  // 13+ pts (largest single-story bucket)
-    };
+    /// <summary>5 iterations per story point. 1pt=5, 8pt=40, 13pt=65.</summary>
+    public const int IterationsPerPoint = 5;
+
+    public static int PointsToMaxIter(int points) =>
+        points <= 0 ? ScoringConstants.MaxIterations : points * IterationsPerPoint;
 
     public DeliverableLoop(ForgeDbContext db) : this(db, channel: null) { }
 

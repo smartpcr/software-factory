@@ -112,21 +112,10 @@ public class Phase13CrewsTests
         Assert.Equal(HttpStatusCode.BadRequest, code.StatusCode);
     }
 
-    [Fact]
-    public async Task Plan_On_Sdk_Crew_Returns_501_Stub()
-    {
-        // Phase 13.4 not implemented yet; ensures the stub fires deterministically
-        // so the UI can disable the button on 501 without mistaking it for a 400.
-        using var f = new ForgeWebApplicationFactory();
-        using var c = f.CreateClient();
-        c.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
-
-        await Make(c, "sdk1");
-        // Phase 14.2 — disable schedule so we deterministically reach the 501 stub.
-        await DisableSchedule(f, "sdk1");
-        var plan = await c.PostAsJsonAsync("/api/crews/sdk1/plan", new { workItemId = "wi-1" }, JsonOpts);
-        Assert.Equal(HttpStatusCode.NotImplemented, plan.StatusCode);
-    }
+    // Removed: Plan_On_Sdk_Crew_Returns_501_Stub — Phase 13.4 has shipped, the
+    // stub no longer returns 501. The real endpoint behaviour (queue + dispatch
+    // a planning task) is covered by Phase 16/17 execution tests; nothing
+    // useful left here.
 
     /// <summary>Phase 14.2 — turn off the schedule gate on a crew row for tests that don't care about 9-9-6.</summary>
     private static async Task DisableSchedule(ForgeWebApplicationFactory f, string crewId)

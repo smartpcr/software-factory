@@ -384,6 +384,10 @@ using (var scope = app.Services.CreateScope())
     // Phase 37 — add LastError + LastErrorAt columns to story_spawns so the
     // orchestrator can persist failure reasons and the UI can surface them.
     await Phase37Migration.ApplyAsync(db);
+    // Phase 38 — backfill WorkItemRow rows for legacy plan-doc and
+    // workstream ids so DeliverableLoop.PointsToMaxIter has a real
+    // wi.Points to read from.
+    await Phase38Migration.ApplyAsync(db);
     // Phase 29 — cancel orphaned validation runs left from a previous crash/restart.
     {
         var now = DateTime.UtcNow.ToString("O");

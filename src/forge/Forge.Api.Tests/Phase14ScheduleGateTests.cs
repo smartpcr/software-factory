@@ -243,8 +243,11 @@ public class Phase14ScheduleGateTests
         await SetCrewScheduleEnabled(f, id, enabled: false);
 
         var resp = await c.PostAsJsonAsync($"/api/crews/{id}/plan", new { }, JsonOpts);
-        // Gate bypassed → falls through to the 13.4 stub (501 not_implemented).
-        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
+        // Gate bypassed → falls through to the validation that requires
+        // workItemId. Body is empty so we expect 400, NOT a schedule-gate
+        // 409. (Phase 13.4 stub used to be 501; that's been implemented and
+        // is now a real queue-and-dispatch path covered elsewhere.)
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
     }
 
     [Fact]
@@ -259,8 +262,9 @@ public class Phase14ScheduleGateTests
 
         var resp = await c.PostAsJsonAsync($"/api/crews/{id}/plan?override=true", new { }, JsonOpts);
         // After the override succeeds the request falls through to the
-        // 13.4 stub — so we expect 501, not 409.
-        Assert.Equal(HttpStatusCode.NotImplemented, resp.StatusCode);
+        // body validation (workItemId required) — empty body → 400.
+        // The dispatch-after-hours history row is the real assertion below.
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
 
         using var scope = f.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();

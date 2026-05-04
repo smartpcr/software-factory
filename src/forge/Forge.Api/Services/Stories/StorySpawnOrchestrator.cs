@@ -182,6 +182,13 @@ public sealed class StorySpawnOrchestrator
             {
                 await this.git.EnsureBranchAsync(repo, planBranch, "main", ct);
 
+                // Phase 38 (Layer B.1) — ensure each of the four plan docs has
+                // a real WorkItemRow before the architect crew dispatches.
+                // DeliverableLoop.PointsToMaxIter reads wi.Points to size each
+                // doc's iteration budget; without a row, the loop falls back
+                // to ScoringConstants.MaxIterations.
+                await EnsurePlanDocWorkItemsAsync(db, spawn, story, ct);
+
                 var artifacts = await this.strategy.ProducePlanArtifactsAsync(spawn, story, forceResume, ct);
                 await this.git.CommitFilesAsync(repo, planBranch, artifacts,
                     $"plan: artifacts for story {GitSafe(spawn.StoryId)}", ct);
@@ -302,6 +309,108 @@ public sealed class StorySpawnOrchestrator
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Phase 38 (Layer B.2) — best-effort parse of a decomposition's
+    /// <c>estimatedEffort</c> string into a points value. Architect output
+    /// is freeform ("3 pts", "M", "2-3 days", "small"); the regex picks up
+    /// the most common "{n} pts?" pattern, then T-shirt sizes, then falls
+    /// back to <paramref name="fallback"/>. Bounds: 1..21 (fibonacci max).
+    /// </summary>
+    private static int ParseEffortToPoints(string? estimatedEffort, int fallback)
+    {
+        if (string.IsNullOrWhiteSpace(estimatedEffort))
+            return Math.Clamp(fallback, 1, 21);
+        var s = estimatedEffort.Trim();
+
+        // "3 pts", "5pt", "8 points" — pick the first integer followed by pt/pts/point/points.
+        var m = System.Text.RegularExpressions.Regex.Match(
+            s, @"\b(\d{1,2})\s*(?:pt|pts|point|points)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (m.Success && int.TryParse(m.Groups[1].Value, out var n) && n > 0)
+            return Math.Clamp(n, 1, 21);
+
+        // T-shirt size shorthand the architect often emits.
+        var lower = s.ToLowerInvariant();
+        if (lower.Contains("xs") || lower.Contains("trivial")) return 1;
+        if (lower.Contains("small")) return 2;
+        if (lower == "m" || lower.Contains("medium")) return 3;
+        if (lower.Contains("large") || lower.Contains("xl")) return 8;
+        if (lower.Contains("xxl") || lower.Contains("epic")) return 13;
+
+        // "2-3 days", "1 day", "1 week" — convert to a coarse points map.
+        m = System.Text.RegularExpressions.Regex.Match(s, @"\b(\d{1,2})\s*(?:d|day|days)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (m.Success && int.TryParse(m.Groups[1].Value, out var d) && d > 0)
+            return Math.Clamp(d <= 1 ? 1 : d <= 2 ? 2 : d <= 3 ? 3 : d <= 5 ? 5 : 8, 1, 21);
+        m = System.Text.RegularExpressions.Regex.Match(s, @"\b(\d{1,2})\s*(?:w|week|weeks)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (m.Success && int.TryParse(m.Groups[1].Value, out var wk) && wk > 0)
+            return Math.Clamp(wk <= 1 ? 8 : wk <= 2 ? 13 : 21, 1, 21);
+
+        return Math.Clamp(fallback, 1, 21);
+    }
+
+    /// <summary>
+    /// Phase 38 (Layer B.1) — well-known plan-doc filenames mirroring the
+    /// architect strategy's specs[] array. Kept here so the orchestrator can
+    /// pre-create the WorkItemRows without taking a dependency on the
+    /// strategy implementation. Adding a fifth doc requires updates in both
+    /// places (small list — duplication is cheaper than indirection).
+    /// </summary>
+    private static readonly string[] PlanDocFileNames = new[]
+    {
+        "tech-spec.md",
+        "architecture.md",
+        "implementation-plan.md",
+        "e2e-scenarios.md",
+    };
+
+    /// <summary>
+    /// Phase 38 (Layer B.1) — ensure each of the four plan docs has a real
+    /// <see cref="WorkItemRow"/> backing its synthetic <c>plan-doc:*</c>
+    /// workItemId. Idempotent: rows already inserted by a prior tick or by
+    /// <c>Phase38Migration</c> are left alone. Each row gets points =
+    /// max(1, story.points / 4) so a 1-point story still gets a 1-pt doc
+    /// (3-iter budget) and a 13-point story gets 3-pt docs (5-iter budget
+    /// each). The id MUST match
+    /// <c>$"plan-doc:{spawn.Id}:{filename}"</c> — that's the workItemId
+    /// every existing deliverable + transcript event is keyed on, and what
+    /// /api/stories/{storyId}/spawn/artifacts/{key}/iterations queries.
+    /// </summary>
+    private static async Task EnsurePlanDocWorkItemsAsync(
+        ForgeDbContext db, StorySpawnRow spawn, WorkItemRow story, CancellationToken ct)
+    {
+        var docPoints = Math.Max(1, spawn.StoryPoints / 4);
+        var docIds = PlanDocFileNames.Select(f => $"plan-doc:{spawn.Id}:{f}").ToArray();
+
+        var existing = await db.WorkItems.AsNoTracking()
+            .Where(w => docIds.Contains(w.Id))
+            .Select(w => w.Id)
+            .ToListAsync(ct);
+        var existingSet = new HashSet<string>(existing, StringComparer.Ordinal);
+
+        foreach (var fileName in PlanDocFileNames)
+        {
+            var id = $"plan-doc:{spawn.Id}:{fileName}";
+            if (existingSet.Contains(id)) continue;
+            db.WorkItems.Add(new WorkItemRow
+            {
+                Id = id,
+                ParentId = spawn.StoryId,
+                RepoId = spawn.RepoId,
+                Provider = "local",
+                ProviderRef = null,
+                Track = "design",
+                Type = "step",
+                State = "active",
+                Title = $"plan: {fileName}",
+                DescriptionMd = $"Plan-phase artifact `{fileName}` for story `{story.Title}`.",
+                Points = docPoints,
+                Priority = "med",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+        }
+        if (db.ChangeTracker.HasChanges()) await db.SaveChangesAsync(ct);
+    }
+
     // ── decompose ────────────────────────────────────────────────────────────
     private async Task<bool> DriveDecomposeAsync(
         ForgeDbContext db, IHubContext<ForgeHub>? hub,
@@ -384,6 +493,31 @@ public sealed class StorySpawnOrchestrator
                 BarStart = 0, BarEnd = 5, Planned = true,
                 StorySpawnId = spawn.Id,
             });
+
+            // Phase 38 (Layer B.2) — back the workstream with a real
+            // WorkItemRow keyed on the same id. Engineer crew + DeliverableLoop
+            // read wi.Points for the per-task iteration budget. Idempotent —
+            // skip if a row already exists.
+            if (!await db.WorkItems.AnyAsync(x => x.Id == wsId, ct))
+            {
+                db.WorkItems.Add(new WorkItemRow
+                {
+                    Id = wsId,
+                    ParentId = spawn.StoryId,
+                    RepoId = spawn.RepoId,
+                    Provider = "local",
+                    ProviderRef = null,
+                    Track = "dev",
+                    Type = "task",
+                    State = "active",
+                    Title = w.Title,
+                    DescriptionMd = w.Description ?? string.Empty,
+                    Points = ParseEffortToPoints(w.EstimatedEffort, fallback: Math.Max(1, spawn.StoryPoints / Math.Max(1, ws.Count))),
+                    Priority = "med",
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    UpdatedAt = DateTimeOffset.UtcNow,
+                });
+            }
         }
         foreach (var w in ws)
         {

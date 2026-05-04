@@ -9,13 +9,16 @@ namespace Forge.Api.Tests;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Forge.Api.Persistence;
 using Forge.Api.Tests.Infrastructure;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 /// <summary>
 /// Phase 1.7 — contract tests for /api/cards endpoints.
 /// </summary>
-public class CardsEndpointsTests : IClassFixture<ForgeWebApplicationFactory>
+public class CardsEndpointsTests : IClassFixture<ForgeWebApplicationFactory>, IAsyncLifetime
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
@@ -26,15 +29,46 @@ public class CardsEndpointsTests : IClassFixture<ForgeWebApplicationFactory>
         this.factory = factory;
     }
 
-    [Fact]
-    public async Task GetCards_Returns_All_Seeded_Cards()
+    /// <summary>
+    /// Seeds the column ladder + the four named cards the tests below
+    /// reference (#234 in `build`, #831/#832 in `backlog`, #825 in `design`).
+    /// Idempotent so xUnit's per-class-fixture sharing doesn't double-insert.
+    /// Replaces the now-retired prototype seed in <c>ForgeSeed</c>.
+    /// </summary>
+    public async Task InitializeAsync()
     {
-        using var client = this.factory.CreateClient();
-        var resp = await client.GetAsync("/api/cards");
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        Assert.Equal(23, doc.RootElement.GetArrayLength());
+        using var scope = this.factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var existingColumns = await db.Columns.Select(c => c.Id).ToListAsync();
+        var columns = new[]
+        {
+            new ColumnRow { Id = "backlog", Name = "Backlog", Sort = 0 },
+            new ColumnRow { Id = "design",  Name = "Design",  Sort = 1 },
+            new ColumnRow { Id = "build",   Name = "Build",   Sort = 2 },
+            new ColumnRow { Id = "review",  Name = "Review",  Sort = 3 },
+            new ColumnRow { Id = "done",    Name = "Done",    Sort = 4 },
+        };
+        foreach (var c in columns) if (!existingColumns.Contains(c.Id)) db.Columns.Add(c);
+
+        var existingCards = await db.Cards.Select(c => c.Id).ToListAsync();
+        var cards = new[]
+        {
+            new CardRow { Id = "#234", Epic = "EPIC-024", Col = "build",   Type = "story", Title = "OIDC token rotation", Pts = 5, Priority = "high" },
+            new CardRow { Id = "#831", Epic = "EPIC-024", Col = "backlog", Type = "story", Title = "Tenant audit log retention policy", Pts = 5 },
+            new CardRow { Id = "#832", Epic = "EPIC-024", Col = "backlog", Type = "task",  Title = "Add tenant ID to OTel span attributes", Pts = 2 },
+            new CardRow { Id = "#825", Epic = "EPIC-026", Col = "design",  Type = "bug",   Title = "WMI quota violation telemetry", Pts = 3 },
+        };
+        foreach (var c in cards) if (!existingCards.Contains(c.Id)) db.Cards.Add(c);
+
+        await db.SaveChangesAsync();
     }
+
+    public Task DisposeAsync() => Task.CompletedTask;
+
+    // Removed: GetCards_Returns_All_Seeded_Cards — asserted the 23-row prototype
+    // seed; that seed (`ForgeSeed.EnsureSeededAsync`) was retired when prod
+    // started carrying real operator data. Tests that need a card now seed it
+    // themselves (see GetCard_ById_Returns_Card via IAsyncLifetime below).
 
     [Fact]
     public async Task GetCard_ById_Returns_Card()

@@ -8,16 +8,38 @@ namespace Forge.Api.Tests;
 
 using System.Net.Http.Json;
 using System.Text.Json;
+using Forge.Api.Persistence;
 using Forge.Api.Tests.Infrastructure;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 /// <summary>Phase 6.10 + 6.12 — audit + idempotency middleware behaviour.</summary>
-public class IdempotencyAndAuditTests : IClassFixture<ForgeWebApplicationFactory>
+public class IdempotencyAndAuditTests : IClassFixture<ForgeWebApplicationFactory>, IAsyncLifetime
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
     private readonly ForgeWebApplicationFactory factory;
 
     public IdempotencyAndAuditTests(ForgeWebApplicationFactory factory) { this.factory = factory; }
+
+    /// <summary>Seed PR #229 — the idempotency test SetAutoMerges against it.</summary>
+    public async Task InitializeAsync()
+    {
+        using var scope = this.factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        if (!await db.Prs.AnyAsync(p => p.Id == "PR #229"))
+        {
+            db.Prs.Add(new PrRow
+            {
+                Id = "PR #229", Col = "review", Epic = "EPIC-024", EpicColor = "024",
+                Workstream = "ws-idempotency", Base = "main", Branch = "ws/idempotency",
+                Title = "Token store refactor", Age = "30m",
+            });
+            await db.SaveChangesAsync();
+        }
+    }
+
+    public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
     public async Task Idempotency_Replays_Cached_Response_For_Duplicate_Key()

@@ -9,13 +9,16 @@ namespace Forge.Api.Tests;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Forge.Api.Persistence;
 using Forge.Api.Tests.Infrastructure;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 /// <summary>
 /// Phase 4.7 — contract tests for /api/prs.
 /// </summary>
-public class PrsEndpointsTests : IClassFixture<ForgeWebApplicationFactory>
+public class PrsEndpointsTests : IClassFixture<ForgeWebApplicationFactory>, IAsyncLifetime
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
@@ -26,15 +29,50 @@ public class PrsEndpointsTests : IClassFixture<ForgeWebApplicationFactory>
         this.factory = factory;
     }
 
-    [Fact]
-    public async Task GetPrs_Returns_All_Seeded()
+    /// <summary>
+    /// Seeds the two named PRs the tests below reference (PR #234 in review,
+    /// PR #237 with a build). The prototype seed used to provide these;
+    /// removed when prod started carrying real data.
+    /// </summary>
+    public async Task InitializeAsync()
     {
-        using var client = this.factory.CreateClient();
-        var resp = await client.GetAsync("/api/prs");
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        Assert.Equal(9, doc.RootElement.GetArrayLength());
+        using var scope = this.factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var existing = await db.Prs.Select(p => p.Id).ToListAsync();
+
+        if (!existing.Contains("PR #234"))
+        {
+            db.Prs.Add(new PrRow
+            {
+                Id = "PR #234", Col = "review", Epic = "EPIC-024", EpicColor = "024",
+                Workstream = "ws-oidc-rotation", Base = "main", Branch = "ws/oidc-rotation",
+                Title = "OIDC token rotation handler with key rollover",
+                Additions = 240, Deletions = 18, Files = 6, Commits = 3, Age = "2h",
+                AutoMerge = false,
+                BuildJson = JsonSerializer.Serialize(new { status = "passed", checks = new[] { "ci", "lint" }, log = new[] { "tests passed", "build ok" } }),
+                ReviewJson = JsonSerializer.Serialize(new { reviewers = new[] { new { id = "R3", name = "Cortex" } }, comments = 2 }),
+                ImplJson = JsonSerializer.Serialize(new { description = "OIDC rotation: rotate signing keys without invalidating in-flight tokens." }),
+            });
+        }
+        if (!existing.Contains("PR #237"))
+        {
+            db.Prs.Add(new PrRow
+            {
+                Id = "PR #237", Col = "review", Epic = "EPIC-021", EpicColor = "021",
+                Workstream = "ws-retry-jitter", Base = "main", Branch = "ws/retry-jitter",
+                Title = "Webhook retry with exponential backoff",
+                Additions = 90, Deletions = 4, Files = 3, Commits = 2, Age = "1h",
+                BuildJson = JsonSerializer.Serialize(new { status = "passed" }),
+                ImplJson = JsonSerializer.Serialize(new { description = "Backoff + jitter on webhook retry." }),
+            });
+        }
+        await db.SaveChangesAsync();
     }
+
+    public Task DisposeAsync() => Task.CompletedTask;
+
+    // Removed: GetPrs_Returns_All_Seeded — asserted the 9-row prototype seed;
+    // retired with the rest of the prototype data when prod carries real PRs.
 
     [Fact]
     public async Task GetPrDetails_Returns_Description_And_Build_Log()

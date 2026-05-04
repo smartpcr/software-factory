@@ -101,13 +101,16 @@ public class Phase14EvaluatorScoreParserTests
     }
 
     [Fact]
-    public void Notes_Are_Truncated_To_800_Chars()
+    public void Notes_Are_Truncated_At_MaxNotesChars()
     {
-        var huge = new string('x', 1000);
+        // Cap was bumped from 800 → 4000 in 2026-05-03 (see EvaluatorScoreParser
+        // MaxNotesChars). Push past the new cap so we still exercise the
+        // truncation path rather than just letting the input through.
+        var huge = new string('x', 5000);
         var input = Wrap("{ \"score\": 91, \"notes\": \"" + huge + "\" }");
         var r = EvaluatorScoreParser.Parse(input);
         Assert.False(r.ParseFailed);
-        Assert.Equal(800, r.Notes.Length);
+        Assert.Equal(4000, r.Notes.Length);
     }
 
     [Fact]

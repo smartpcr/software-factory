@@ -10,17 +10,64 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Forge.Api.Tests.Infrastructure;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 /// <summary>
 /// Phase 3.6 — contract tests for /api/workstreams.
 /// Authentication is the placeholder X-Forge-User header (Phase 3.11).
 /// </summary>
-public class WorkstreamsEndpointsTests : IClassFixture<ForgeWebApplicationFactory>
+public class WorkstreamsEndpointsTests : IClassFixture<ForgeWebApplicationFactory>, IAsyncLifetime
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
     private readonly ForgeWebApplicationFactory factory;
+
+    /// <summary>
+    /// Seeds the 8 named workstreams the contract tests reference. Replaces
+    /// the retired prototype seed. Idempotent.
+    /// </summary>
+    public async Task InitializeAsync()
+    {
+        using var scope = this.factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+        var existing = await db.Workstreams.Select(w => w.Id).ToListAsync();
+        // RepoId set to the default seed repo so the product-scope filter on
+        // /api/workstreams (which only shows workstreams whose RepoId is in
+        // the active product's repo set) doesn't drop them.
+        const string repo = Forge.Api.Persistence.ForgeSeed.DefaultRepoId;
+        var rows = new[]
+        {
+            // PrsJson populated so DeleteWorkstream_With_Open_Prs_Without_Force_Returns_422
+            // sees an "open PR" — the endpoint reads the workstream's JSON
+            // array, not the prs table (WorkstreamsEndpoints.cs:287).
+            new Forge.Api.Persistence.WorkstreamRow { Id = "ws-oidc",          RepoId = repo, Name = "OIDC token rotation",  Branch = "ws/oidc-rotation",   Epic = "EPIC-024", Status = "active", PrsJson = "[\"PR #ws-oidc-open\"]" },
+            new Forge.Api.Persistence.WorkstreamRow { Id = "ws-rate-limits",   RepoId = repo, Name = "Per-tenant rate limits", Branch = "ws/rate-limits",  Epic = "EPIC-024", Status = "active" },
+            new Forge.Api.Persistence.WorkstreamRow { Id = "ws-idp-failover",  RepoId = repo, Name = "IdP failover",         Branch = "ws/idp-failover",    Epic = "EPIC-024", Status = "active" },
+            new Forge.Api.Persistence.WorkstreamRow { Id = "ws-retry-jitter",  RepoId = repo, Name = "Webhook retry jitter", Branch = "ws/retry-jitter",    Epic = "EPIC-021", Status = "active" },
+            new Forge.Api.Persistence.WorkstreamRow { Id = "ws-dlq",           RepoId = repo, Name = "DLQ routing",          Branch = "ws/dlq-routing",     Epic = "EPIC-022", Status = "active" },
+            new Forge.Api.Persistence.WorkstreamRow { Id = "ws-tenant-admin",  RepoId = repo, Name = "Tenant admin UI",      Branch = "ws/tenant-admin-ui", Epic = "EPIC-024", Status = "active" },
+            new Forge.Api.Persistence.WorkstreamRow { Id = "ws-log-rotation",  RepoId = repo, Name = "Log rotation",         Branch = "ws/log-rotation",    Epic = "EPIC-026", Status = "active" },
+            new Forge.Api.Persistence.WorkstreamRow { Id = "ws-bits-cleanup",  RepoId = repo, Name = "BITS cleanup",         Branch = "ws/bits-cleanup",    Epic = "EPIC-018", Status = "done" },
+        };
+        foreach (var w in rows) if (!existing.Contains(w.Id)) db.Workstreams.Add(w);
+
+        // ws-oidc has an open PR — DeleteWorkstream_With_Open_Prs… expects 422.
+        var existingPrs = await db.Prs.Select(p => p.Id).ToListAsync();
+        if (!existingPrs.Contains("PR #ws-oidc-open"))
+        {
+            db.Prs.Add(new Forge.Api.Persistence.PrRow
+            {
+                Id = "PR #ws-oidc-open", Col = "review", Epic = "EPIC-024", EpicColor = "024",
+                Workstream = "ws-oidc", Base = "main", Branch = "ws/oidc-rotation",
+                Title = "OIDC rotation v2", Age = "1h",
+            });
+        }
+        await db.SaveChangesAsync();
+    }
+
+    public Task DisposeAsync() => Task.CompletedTask;
 
     public WorkstreamsEndpointsTests(ForgeWebApplicationFactory factory)
     {
@@ -106,10 +153,25 @@ public class WorkstreamsEndpointsTests : IClassFixture<ForgeWebApplicationFactor
     [Fact]
     public async Task DeleteWorkstream_With_Force_Removes_Row()
     {
+        // Seed our own workstream — the prototype seed (ws-tenant-admin etc.)
+        // is no longer loaded, so we can't rely on a named row existing.
+        using (var scope = this.factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<Forge.Api.Persistence.ForgeDbContext>();
+            if (!await db.Workstreams.AnyAsync(w => w.Id == "ws-delete-target"))
+            {
+                db.Workstreams.Add(new Forge.Api.Persistence.WorkstreamRow
+                {
+                    Id = "ws-delete-target", Name = "Delete target", Branch = "ws/delete",
+                    Epic = "EPIC-024", Status = "active",
+                });
+                await db.SaveChangesAsync();
+            }
+        }
+
         using var client = this.factory.CreateClient();
         client.DefaultRequestHeaders.Add("X-Forge-User", "test@forge.local");
-        // ws-tenant-admin has no PRs in the seed → simple delete.
-        var resp = await client.DeleteAsync("/api/workstreams/ws-tenant-admin");
+        var resp = await client.DeleteAsync("/api/workstreams/ws-delete-target");
         Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
 
         // Confirm it's gone.
@@ -119,7 +181,7 @@ public class WorkstreamsEndpointsTests : IClassFixture<ForgeWebApplicationFactor
         {
             ids.Add(w.GetProperty("id").GetString()!);
         }
-        Assert.DoesNotContain("ws-tenant-admin", ids);
+        Assert.DoesNotContain("ws-delete-target", ids);
     }
 
     [Fact]

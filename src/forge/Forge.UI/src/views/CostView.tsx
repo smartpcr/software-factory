@@ -498,4 +498,96 @@ function Sparkline({ values }: { values: number[] }) {
         cx={w}
         cy={h - ((lastVal - min) / span) * h}
         r={1.6}
-        fill={trendUp ? 'var(--success)' : 'var(--dange
+        fill={trendUp ? 'var(--success)' : 'var(--danger)'}
+      />
+    </svg>
+  );
+}
+
+function CostMultiSelect({ label, options, selected, onChange }: {
+  label: string;
+  options: Array<{ value: string; label: string }>;
+  selected: string[];
+  onChange: (v: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    if (open) document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  const toggle = (value: string) => {
+    onChange(
+      selected.includes(value)
+        ? selected.filter((v) => v !== value)
+        : [...selected, value],
+    );
+  };
+
+  const displayLabel = selected.length === 0
+    ? `${label}: All`
+    : `${label}: ${selected.length} selected`;
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        className="filter-select"
+        onClick={() => setOpen(!open)}
+        style={{
+          cursor: 'pointer',
+          background: selected.length > 0 ? 'var(--accent-bg, rgba(79,140,255,0.12))' : undefined,
+          borderColor: selected.length > 0 ? 'var(--accent)' : undefined,
+          minWidth: 120,
+        }}
+      >
+        {displayLabel} ▾
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute',
+          top: '100%',
+          left: 0,
+          zIndex: 100,
+          background: 'var(--bg-elevated)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-md)',
+          padding: '6px 0',
+          minWidth: 180,
+          maxHeight: 240,
+          overflow: 'auto',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
+        }}>
+          {options.map((opt) => (
+            <label
+              key={opt.value}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '5px 12px',
+                cursor: 'pointer',
+                fontSize: 12,
+                color: 'var(--text-primary)',
+              }}
+              onMouseDown={(e) => e.preventDefault()}
+            >
+              <input
+                type="checkbox"
+                checked={selected.includes(opt.value)}
+                onChange={() => toggle(opt.value)}
+                style={{ accentColor: 'var(--accent)' }}
+              />
+              {opt.label}
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
