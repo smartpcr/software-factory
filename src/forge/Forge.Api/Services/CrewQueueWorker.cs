@@ -124,6 +124,15 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     // post-boot call from doing work; log so the second-caller is identifiable.
     private int bootRecoveryLatch;
 
+    // Tracks the fire-and-forget agent Task.Runs spawned in SweepClaimsAsync.
+    // StopAsync awaits these (with a short timeout) before letting the DI
+    // container dispose the scope factory — without this, an agent task that
+    // outlives its parent host throws ObjectDisposedException reaching for a
+    // disposed IServiceScope, which crashes the test host process even though
+    // the unobserved-task handler calls SetObserved(). Bounded so a stuck
+    // agent (real LLM call hung on the network) can't deadlock shutdown.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Task, byte> runningAgentTasks = new();
+
     private readonly WorktreeChangeFeed worktreeFeed;
 
     public CrewQueueWorker(
@@ -168,6 +177,23 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         if (this.loop is not null)
         {
             try { await this.loop; } catch { /* shutdown */ }
+        }
+
+        // Drain in-flight fire-and-forget agent tasks before allowing the
+        // DI container to dispose our dependencies. Bounded at 5s so a
+        // genuinely-stuck agent (real LLM call, hung HTTP) can't deadlock
+        // shutdown. In-process tests with the local-stub backend finish
+        // in <1s so this rarely waits the full timeout.
+        var inflight = this.runningAgentTasks.Keys.ToArray();
+        if (inflight.Length > 0)
+        {
+            try
+            {
+                await Task.WhenAny(
+                    Task.WhenAll(inflight),
+                    Task.Delay(TimeSpan.FromSeconds(5), cancellationToken));
+            }
+            catch { /* swallow — we tried */ }
         }
     }
 
@@ -642,6 +668,10 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     agents,
                     team = crewTeam,
                     crewId,
+                    // The paired-crew end-to-end test asserts the evaluator
+                    // crew id is recorded on the work item (Phase 16 — both
+                    // sides of the pair are visible in the assignment row).
+                    evaluatorCrewId = evaluatorCrew?.Id,
                     role = "generator",
                     assignedAt = now.ToString("o"),
                     assignedBy = "queue-worker",
@@ -693,7 +723,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
             // host shutdown (factory.Dispose) racing with a still-running
             // agent doesn't crash the test process. Production hosts run
             // forever; this is a no-op there.
-            _ = Task.Run(async () =>
+            var agentTask = Task.Run(async () =>
             {
                 try
                 {
@@ -710,6 +740,15 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                     // rather than ObjectDisposedException).
                 }
             });
+            // Register so StopAsync can drain in-flight agents before
+            // the DI scope is disposed. Self-deregister on completion to
+            // bound memory growth in long-running production hosts.
+            this.runningAgentTasks.TryAdd(agentTask, 0);
+            _ = agentTask.ContinueWith(
+                t => this.runningAgentTasks.TryRemove(t, out _),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
         return (claimed, skips);
     }
@@ -1409,6 +1448,23 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
                         + "- Reply-only deliverables (zero git commits, only post_pr_comment_reply calls) ARE\n"
                         + "  valid when every failure point is genuinely non-code. They can score ≥ 90.\n"
                         + "- The build re-runs naturally on push — the runner does NOT manually re-trigger.\n";
+                }
+
+                // Pair-diversity gate (forge_implementation.md Phase 13e).
+                // Generator + evaluator MUST run on different models so the
+                // evaluator catches blind spots the generator's training
+                // distribution can't see. Throw before dispatch so a bad
+                // crew config surfaces as a task.failed event the operator
+                // can diagnose, instead of silently shipping pass-stamped
+                // subpar work that no second eye ever caught.
+                if (!string.IsNullOrEmpty(model)
+                    && !string.IsNullOrEmpty(evalModel)
+                    && string.Equals(model, evalModel, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException(
+                        $"Pair-diversity rule violated: generator and evaluator both resolved to model '{model}'. " +
+                        $"Generator: agent={agentId} crew={crewId}. Evaluator: agent={evaluatorAgentId} crew={evaluatorCrewId}. " +
+                        $"Set the evaluator crew's EvaluatorModel (or evaluator agent's EvaluatorModel override) to a different model.");
                 }
 
                 // Evaluator stays read-only across kinds; no post_pr_comment_reply

@@ -15,6 +15,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// forge_implementation.md Phase 28 — story-driven spawn endpoints. The
@@ -74,6 +76,7 @@ public static class StoriesEndpoints
         grp.MapGet("/{storyId}/spawn/artifacts", GetArtifacts).WithName("GetStoryArtifacts");
         grp.MapGet("/{storyId}/spawn/artifacts/{key}", GetArtifactContent).WithName("GetStoryArtifactContent");
         grp.MapGet("/{storyId}/spawn/artifacts/{key}/iterations", GetArtifactIterations).WithName("GetStoryArtifactIterations");
+        grp.MapPost("/{storyId}/spawn/artifacts/{key}/resume", ResumeArtifact).WithName("ResumeStoryArtifact");
 
         return app;
     }
@@ -431,14 +434,93 @@ public static class StoriesEndpoints
         // and immediately re-fail with the same verdict).
         if (OrchestratorEnabled(ctx))
         {
+            var scopeFactory = ctx.RequestServices.GetRequiredService<IServiceScopeFactory>();
+            var logger = ctx.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("forge.retry");
             _ = Task.Run(async () =>
             {
-                try { await orchestrator.DriveAsync(storyId, forceResume: true, CancellationToken.None); }
-                catch { /* failures repersist via PersistLastErrorAsync */ }
+                try
+                {
+                    await orchestrator.DriveAsync(storyId, forceResume: true, CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogError(ex, "Retry drive failed for story {StoryId}", storyId);
+                    try
+                    {
+                        using var scope = scopeFactory.CreateScope();
+                        var scopedDb = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                        var row = await scopedDb.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+                        if (row is not null)
+                        {
+                            row.LastError = $"retry failed: {ex.Message}";
+                            row.LastErrorAt = DateTimeOffset.UtcNow;
+                            row.UpdatedAt = DateTimeOffset.UtcNow;
+                            await scopedDb.SaveChangesAsync();
+                        }
+                    }
+                    catch
+                    {
+                        // best-effort error persistence
+                    }
+                }
             });
         }
 
         return Results.Ok(ToContract(spawn));
+    }
+
+    /// <summary>
+    /// Resume a single plan-doc artifact's gen↔eval loop. Unlike RetrySpawn
+    /// (which re-drives the full phase pipeline), this re-runs ONLY the
+    /// specified doc. Works even when the spawn has advanced past the plan
+    /// phase (e.g. phase=implement) — the doc loop is independent of the
+    /// spawn phase state machine.
+    /// </summary>
+    private static async Task<IResult> ResumeArtifact(
+        HttpContext ctx,
+        string storyId,
+        string key,
+        ForgeDbContext db,
+        IHubContext<ForgeHub> hub,
+        IStoryArtifactStrategy strategy)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        var story = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == storyId);
+        if (story is null) return Results.Problem(title: $"Story {storyId} not found", statusCode: 404);
+
+        // Fire-and-forget: re-run just this doc's gen↔eval loop with
+        // forceResume=true so the workspace cache is bypassed.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await strategy.ResumeSingleArtifactAsync(spawn, story, key, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                // Persist error on the spawn so the UI surfaces it.
+                using var scope = ctx.RequestServices.CreateScope();
+                var scopedDb = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+                var row = await scopedDb.StorySpawns.FirstOrDefaultAsync(s => s.Id == spawn.Id);
+                if (row is not null)
+                {
+                    row.LastError = $"resume {key} failed: {ex.Message}";
+                    row.LastErrorAt = DateTimeOffset.UtcNow;
+                    row.UpdatedAt = DateTimeOffset.UtcNow;
+                    await scopedDb.SaveChangesAsync();
+                }
+            }
+        });
+
+        await hub.Clients.All.SendAsync("story-spawn.changed",
+            new { kind = "artifact-resumed", storyId, key });
+
+        return Results.Ok(new { storyId, key, status = "resuming" });
     }
 
     /// <summary>
@@ -1038,10 +1120,29 @@ public static class StoriesEndpoints
         bool lastWasPass = lastDeliverable is not null
             && string.Equals(lastDeliverable.Verdict, "pass", StringComparison.OrdinalIgnoreCase);
 
+        // Count unanswered open questions — blocks pass and should show as
+        // stalled so the operator knows to answer before resuming.
+        var unansweredQuestions = 0;
+        if (!string.IsNullOrEmpty(workItemId))
+        {
+            // Dedupe by ExternalId — latest row per id wins.
+            var allQ = await db.DeliverableQuestions.AsNoTracking()
+                .Where(q => q.WorkItemId == workItemId)
+                .ToListAsync();
+            var byExtId = allQ.GroupBy(q => q.ExternalId)
+                .Select(g => g.OrderByDescending(q => q.CreatedAt).First());
+            unansweredQuestions = byExtId.Count(q => q.Answer == null);
+        }
+
         if (isRecent) status = "live";
         else if (lastDeliverable is null) status = "pending";
         else if (lastWasPass && planPrMerged) status = "completed";
         else if (lastWasPass) status = "awaiting-pr-review";
+        else if (unansweredQuestions > 0) status = "stalled";
+        else if (lastDeliverable.Verdict != null
+            && (lastDeliverable.Verdict.StartsWith("stalled", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(lastDeliverable.Verdict, "reject", StringComparison.OrdinalIgnoreCase)))
+            status = "stalled";
         else status = "iterating";
 
         // Agent info — name + model for the latest gen/eval pair so the doc
@@ -1059,34 +1160,47 @@ public static class StoriesEndpoints
             var evalAgent = string.IsNullOrEmpty(evalAgentId) ? null
                 : await db.Agents.AsNoTracking().FirstOrDefaultAsync(a => a.Id == evalAgentId);
 
-            // Resolve crew model fallbacks individually — same reason.
-            async Task<string?> CrewModelAsync(string? crewId)
+            // Resolve crew model fallbacks individually. Mirror exactly the
+            // runtime resolution chain in
+            // CrewStoryArtifactStrategy.ResolveAgentRunConfigAsync so the UI
+            // matches what the runner actually dispatches with:
+            //   generator: agent.GeneratorModel ?? crew.Model
+            //   evaluator: agent.EvaluatorModel ?? crew.EvaluatorModel ?? agent.GeneratorModel ?? crew.Model
+            // The previous fallback collapsed evaluator to crew.Model, which
+            // made a correctly-configured pair (gen=opus / evl=gpt) look
+            // identical in the wizard.
+            async Task<(string? Model, string? EvalModel)> CrewModelsAsync(string? crewId)
             {
-                if (string.IsNullOrEmpty(crewId)) return null;
-                return await db.Crews.AsNoTracking()
+                if (string.IsNullOrEmpty(crewId)) return (null, null);
+                var row = await db.Crews.AsNoTracking()
                     .Where(c => c.Id == crewId)
-                    .Select(c => c.Model)
+                    .Select(c => new { c.Model, c.EvaluatorModel })
                     .FirstOrDefaultAsync();
+                return (row?.Model, row?.EvaluatorModel);
             }
 
             if (genAgent is not null)
             {
-                var fallback = genAgent.GeneratorModel is null ? await CrewModelAsync(genAgent.CrewId) : null;
+                var (crewModel, _) = await CrewModelsAsync(genAgent.CrewId);
                 genInfo = new
                 {
                     agentId = genAgent.Id,
                     name = genAgent.Name,
-                    model = genAgent.GeneratorModel ?? fallback,
+                    model = !string.IsNullOrEmpty(genAgent.GeneratorModel) ? genAgent.GeneratorModel : crewModel,
                 };
             }
             if (evalAgent is not null)
             {
-                var fallback = evalAgent.EvaluatorModel is null ? await CrewModelAsync(evalAgent.CrewId) : null;
+                var (crewModel, crewEvalModel) = await CrewModelsAsync(evalAgent.CrewId);
+                var resolved = !string.IsNullOrEmpty(evalAgent.EvaluatorModel) ? evalAgent.EvaluatorModel
+                    : !string.IsNullOrEmpty(crewEvalModel) ? crewEvalModel
+                    : !string.IsNullOrEmpty(evalAgent.GeneratorModel) ? evalAgent.GeneratorModel
+                    : crewModel;
                 evalInfo = new
                 {
                     agentId = evalAgent.Id,
                     name = evalAgent.Name,
-                    model = evalAgent.EvaluatorModel ?? fallback,
+                    model = resolved,
                 };
             }
         }
@@ -1096,6 +1210,7 @@ public static class StoriesEndpoints
             key,
             workItemId,
             status,
+            unansweredQuestions,
             generator = genInfo,
             evaluator = evalInfo,
             iterations,

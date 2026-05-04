@@ -47,7 +47,27 @@ public static class AgentsEndpoints
     private static async Task<IResult> ListAgents(ForgeDbContext db, CancellationToken ct)
     {
         var rows = await db.Agents.AsNoTracking().OrderBy(a => a.Sort).ThenBy(a => a.Id).ToListAsync(ct);
-        return Results.Ok(rows.Select(MapAgent).ToList());
+
+        // Compute distinct work-item counts per agent from the usage ledger.
+        var taskCounts = await db.AgentUsage.AsNoTracking()
+            .Where(u => u.TaskId != null && u.TaskId != "")
+            .GroupBy(u => u.AgentId)
+            .Select(g => new { AgentId = g.Key, Count = g.Select(u => u.TaskId).Distinct().Count() })
+            .ToListAsync(ct);
+        var countMap = taskCounts.ToDictionary(x => x.AgentId, x => x.Count);
+
+        return Results.Ok(rows.Select(r =>
+        {
+            var detail = MapAgent(r);
+            countMap.TryGetValue(r.Id, out var wic);
+            return new
+            {
+                detail.Id, detail.Name, detail.Role, detail.CrewId, detail.SoulPath,
+                detail.Capabilities, detail.State, detail.Backend, detail.InvokeMode,
+                detail.GeneratorModel, detail.EvaluatorModel,
+                WorkItemCount = wic,
+            };
+        }).ToList());
     }
 
     private static async Task<IResult> GetAgent(string agentId, ForgeDbContext db, CancellationToken ct)

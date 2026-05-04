@@ -900,6 +900,14 @@ export const forgeApi = {
     });
   },
 
+  /** POST /api/stories/{storyId}/spawn/artifacts/{key}/resume — resume a single doc's gen↔eval loop. */
+  async resumeStoryArtifact(storyId: string, key: string): Promise<{ storyId: string; key: string; status: string }> {
+    return fetchJson(`/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/resume`, {
+      method: 'POST',
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
   /** POST /api/stories/{storyId}/spawn/decompose — submit workstream definitions. */
   async submitStoryDecomposition(
     storyId: string,
@@ -1893,6 +1901,55 @@ export const forgeApi = {
     return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/resume`, {
       method: 'POST',
       body: JSON.stringify({ note: note ?? null }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** GET /api/work-items/{id}/questions — list deduped questions for the
+   *  conversation-tab open-questions wizard. Phase 39 (Layer C). */
+  async listQuestions(workItemId: string): Promise<{
+    workItemId: string;
+    items: Array<{
+      id: number;
+      externalId: string;
+      iter: number;
+      text: string;
+      kind: 'choice' | 'open';
+      choices: string[];
+      answer: string | null;
+      answeredAt: string | null;
+      answeredBy: string | null;
+    }>;
+    unansweredCount: number;
+  }> {
+    return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/questions`);
+  },
+
+  /** POST /api/work-items/{id}/questions/answer — submit operator answers.
+   *  Server records them, the next iteration's prompt prepends a `## Operator
+   *  answers` block, and the verdict-gate releases pass when none remain. */
+  async answerQuestions(
+    workItemId: string,
+    answers: Array<{ externalId: string; answer: string }>,
+  ): Promise<{ workItemId: string; unansweredCount: number }> {
+    return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/questions/answer`, {
+      method: 'POST',
+      body: JSON.stringify({ answers }),
+      headers: { 'X-Forge-User': writerHeader() },
+    });
+  },
+
+  /** POST /api/work-items/{id}/questions/dismiss — mark questions as
+   *  "(dismissed by operator)" so they stop blocking the verdict gate
+   *  without forcing the operator to write a real answer. Used for legacy
+   *  prose questions that aren't usefully answerable. */
+  async dismissQuestions(
+    workItemId: string,
+    externalIds: string[],
+  ): Promise<{ workItemId: string; unansweredCount: number }> {
+    return fetchJson(`/api/work-items/${encodeURIComponent(workItemId)}/questions/dismiss`, {
+      method: 'POST',
+      body: JSON.stringify({ externalIds }),
       headers: { 'X-Forge-User': writerHeader() },
     });
   },

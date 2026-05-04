@@ -12,6 +12,7 @@ import {
   SummaryView,
   PairSide,
 } from '@/views/conversation';
+import { OpenQuestionsWizard } from './OpenQuestionsWizard';
 
 interface Props {
   storyId: string;
@@ -97,8 +98,8 @@ export function DocConversationPane({ storyId, docId }: Props) {
   async function handleResume() {
     setResuming(true);
     try {
-      await forgeApi.retryStorySpawn(storyId);
-      showToast('Architect crew resuming — iterations will continue against the cached workspace.', 'success');
+      await forgeApi.resumeStoryArtifact(storyId, key);
+      showToast(`Resuming ${key}.md — gen↔eval loop re-entered with workspace cache bypassed.`, 'success');
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Resume failed', 'danger');
     } finally {
@@ -106,17 +107,23 @@ export function DocConversationPane({ storyId, docId }: Props) {
     }
   }
   // Resume disabled while a run is live (events still flowing) or when the
-  // doc has fully shipped (PR merged). Awaiting-pr-review still allows
-  // resume — the operator can re-iterate before merge if they want.
-  const canResume = status !== 'live' && status !== 'completed';
-
-  // Subscribe to the live transcript channel for this doc's workItemId.
-  // useTaskLive is null-safe for null workItemId.
+  // doc has fully shipped (PR merged). Follows the same pattern as
+  // WorkstreamConversationPane and LiveExecutionView:
+  //   isLive    = server says the loop is running
+  //   canResume = not live, not completed, and has prior iterations
+  //   disabled  = canResume is false OR a resume is in flight
+  // The button is always VISIBLE but disabled when not applicable.
   const liveEntry = useTaskLive(workItemId);
   const transcript = liveEntry?.transcript ?? [];
   const transcriptTotalCount = liveEntry?.transcriptTotalCount ?? 0;
   const loadingOlder = liveEntry?.loadingOlder ?? false;
   const hasOlderEvents = transcript.length < transcriptTotalCount;
+
+  const isLive = status === 'live';
+  const isCompleted = status === 'completed';
+  const hasIterations = rows.length > 0 || transcript.length > 0;
+  const canResume = !isLive && !isCompleted && hasIterations;
+  const resumeDisabled = !canResume || resuming;
 
   // Reset selection when filter or doc changes so the latest page is sticky.
   useEffect(() => { setSelectedIter(null); }, [filter, key]);
@@ -212,6 +219,8 @@ export function DocConversationPane({ storyId, docId }: Props) {
           agentName={generator?.name ?? null}
           model={generator?.model ?? null}
           sameAsOther={!!generator && !!evaluator && generator.model != null && generator.model === evaluator.model}
+          selected={promptRole === 'generator'}
+          onClick={() => { setPromptRole('generator'); setPromptsCollapsed(false); }}
         />
         <span className="doc-conv-pair-link">⇄</span>
         <PairSide
@@ -220,6 +229,8 @@ export function DocConversationPane({ storyId, docId }: Props) {
           agentName={evaluator?.name ?? null}
           model={evaluator?.model ?? null}
           sameAsOther={!!generator && !!evaluator && generator.model != null && generator.model === evaluator.model}
+          selected={promptRole === 'evaluator'}
+          onClick={() => { setPromptRole('evaluator'); setPromptsCollapsed(false); }}
         />
         <span className="doc-conv-pair-cost">
           TOTAL COST · <b>${totalCost.toFixed(2)}</b>
@@ -227,16 +238,17 @@ export function DocConversationPane({ storyId, docId }: Props) {
         <button
           type="button"
           className="doc-conv-resume-btn"
-          disabled={!canResume || resuming}
+          disabled={resumeDisabled}
           title={
-            status === 'live' ? 'Architect crew is currently running — resume disabled.'
-            : status === 'completed' ? 'Plan PR merged — doc is shipped.'
-            : status === 'awaiting-pr-review' ? 'Verdict passed but PR not merged — Resume re-iterates against the workspace.'
+            isLive ? 'Architect crew is currently running — resume disabled.'
+            : isCompleted ? 'Plan PR merged — doc is shipped.'
+            : !hasIterations ? 'No iterations yet — nothing to resume.'
+            : resuming ? 'Resuming…'
             : 'Resume the gen↔eval loop on the cached workspace.'
           }
           onClick={() => void handleResume()}
         >
-          {resuming ? '⏳ resuming…' : '↻ resume'}
+          {resuming ? '⏳ resuming…' : isLive ? '● LIVE' : '↻ RESUME'}
         </button>
       </header>
 
@@ -297,6 +309,9 @@ export function DocConversationPane({ storyId, docId }: Props) {
           </div>
         )}
       </section>
+
+      {/* Open-questions wizard — surfaces only when the generator emitted any */}
+      {workItemId && <OpenQuestionsWizard workItemId={workItemId} onAnswered={(left) => { if (left === 0) void handleResume(); }} />}
 
       {/* Filter tab strip */}
       <nav className="live-exec__filters" role="tablist">

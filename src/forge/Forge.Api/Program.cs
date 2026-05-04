@@ -300,7 +300,14 @@ builder.Services.Configure<SoulOptions>(builder.Configuration.GetSection(SoulOpt
 builder.Services.AddSingleton<ISoulService, SoulService>();
 builder.Services.AddHttpClient(AgentRunnerDispatcher.ClientName);
 builder.Services.AddSingleton<CopilotServerManager>();
-if (enableBackground) builder.Services.AddHostedService(sp => sp.GetRequiredService<CopilotServerManager>());
+// CopilotServerManager registered as a hosted service unconditionally —
+// its StartAsync is a no-op (the CLI server starts lazily on first use)
+// but its StopAsync owns disposing the spawned `copilot.exe` child. Without
+// hosted-service registration, host shutdown skips StopAsync, the child
+// process leaks, and a later GC-driven Process callback hits a disposed
+// HasExited check that crashes the test host. The dispose path runs whether
+// or not the CLI server was ever started, so the test gate doesn't apply.
+builder.Services.AddHostedService(sp => sp.GetRequiredService<CopilotServerManager>());
 builder.Services.AddSingleton<IAgentRunner, AgentRunnerDispatcher>();
 
 // Problem details (RFC-7807). In Development, surface exception messages so
@@ -388,6 +395,12 @@ using (var scope = app.Services.CreateScope())
     // workstream ids so DeliverableLoop.PointsToMaxIter has a real
     // wi.Points to read from.
     await Phase38Migration.ApplyAsync(db);
+    // Phase 39 — create the deliverable_questions table for the
+    // open-questions wizard.
+    await Phase39Migration.ApplyAsync(db);
+    // Phase 40 — backfill WorkItemRow rows for legacy story ids so the
+    // ParentId on plan-docs / workstreams resolves to a real parent.
+    await Phase40Migration.ApplyAsync(db);
     // Phase 29 — cancel orphaned validation runs left from a previous crash/restart.
     {
         var now = DateTime.UtcNow.ToString("O");

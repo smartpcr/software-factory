@@ -29,12 +29,30 @@ public interface IStoryArtifactStrategy
     Task<IReadOnlyDictionary<string, string>> ProducePlanArtifactsAsync(
         StorySpawnRow spawn, WorkItemRow story, bool forceResume = false, CancellationToken ct = default);
 
+    /// <summary>
+    /// Resume a single plan-doc artifact's gen↔eval loop. Unlike
+    /// <see cref="ProducePlanArtifactsAsync"/> (which runs all 4 docs),
+    /// this re-runs only the specified <paramref name="key"/> with
+    /// forceResume semantics (workspace cache bypassed). Used by the
+    /// per-doc Resume button on the conversation tab.
+    /// </summary>
+    Task ResumeSingleArtifactAsync(
+        StorySpawnRow spawn, WorkItemRow story, string key, CancellationToken ct = default);
+
     /// <summary>Architect's decomposition — split the plan into N parallel workstreams.</summary>
     Task<IReadOnlyList<DecompositionWorkstream>> ProduceDecompositionAsync(
         StorySpawnRow spawn, WorkItemRow story, CancellationToken ct = default);
 
     /// <summary>Engineer's per-workstream change-set. Returns relative-path → file content.</summary>
     Task<IReadOnlyDictionary<string, string>> ProduceWorkstreamChangesAsync(
+        StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default);
+
+    /// <summary>
+    /// Read cached workspace files for a workstream whose gen/eval loop
+    /// already passed. Used by the orchestrator to commit + open PR without
+    /// re-running the loop.
+    /// </summary>
+    Task<IReadOnlyDictionary<string, string>> ReadCachedWorkstreamFilesAsync(
         StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default);
 
     /// <summary>Reviewer's comments to post on a workstream PR. Empty = approve.</summary>

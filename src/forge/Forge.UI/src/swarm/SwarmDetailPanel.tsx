@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { StorySpawnArtifacts, StorySpawnDetail } from '@/api/forgeApi';
+import type { StorySpawnArtifacts, StorySpawnDetail, PrDetailsResponse } from '@/api/forgeApi';
+import { forgeApi } from '@/api/forgeApi';
+import type { Build } from '@/types';
 import type { SwarmMode } from './SwarmPipelineStrip';
 import type { Selection } from './SwarmMasterPanel';
 import { DocumentPane } from './DocumentPane';
@@ -36,11 +38,24 @@ export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTa
 
   // If the current tab isn't available for this selection, jump to the first available.
   useEffect(() => {
-    if (!tabsAvailable.includes(tab)) {
+    if (tabsAvailable.length > 0 && !tabsAvailable.includes(tab)) {
       const next = tabsAvailable[0];
       if (next) onTab(next);
     }
   }, [tabsAvailable, tab, onTab]);
+
+  // Decomposition selection → full-width diagram, no tab strip.
+  if (selection.kind === 'doc' && selection.id === 'doc:decomposition') {
+    return (
+      <section className="panel sc-detail-panel">
+        <div className="tab-body">
+          <div className="tab-pane active">
+            <DecompositionDiagram detail={detail} />
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   // Order tabs visually as they appear in `tabsAvailable` so the doc-mode
   // tab strip reads `Document · Conversation · PR · Impl Progress · Contributors`
@@ -94,40 +109,34 @@ export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTa
           )}
         </div>
         <div className={`tab-pane${tab === 'arch' ? ' active' : ''}`}>
-          {tab === 'arch' && <Placeholder
-            label="arch doc tab"
-            sub="long-form view of the four merged plan artifacts (architecture / tech-spec / implementation-plan / e2e-scenarios) with sticky TOC. Wired to artifacts.plan.files."
-          />}
+          {tab === 'arch' && (
+            <ArchDocPane storyId={detail.spawn.storyId} artifacts={artifacts} />
+          )}
         </div>
         <div className={`tab-pane${tab === 'pr' ? ' active' : ''}`}>
-          {tab === 'pr' && <Placeholder
-            label="PR tab"
-            sub="file tree + side-by-side diff + comment side-rail + check-run rail. Wired to /api/prs/:id."
-          />}
+          {tab === 'pr' && (
+            <PrPane detail={detail} selection={selection} />
+          )}
         </div>
         <div className={`tab-pane${tab === 'impl' ? ' active' : ''}`}>
-          {tab === 'impl' && <Placeholder
-            label="impl progress tab"
-            sub="per-section completion rail derived from the implementation-plan doc. Wired once impl-plan section ↔ workstream mapping lands."
-          />}
+          {tab === 'impl' && (
+            <ImplProgressPane detail={detail} />
+          )}
         </div>
         <div className={`tab-pane${tab === 'contributors' ? ' active' : ''}`}>
-          {tab === 'contributors' && <Placeholder
-            label="contributors tab"
-            sub="agent-by-agent edit history with per-section authorship. Wired to git blame on the doc file."
-          />}
+          {tab === 'contributors' && (
+            <ContributorsPane detail={detail} />
+          )}
         </div>
         <div className={`tab-pane${tab === 'qa' ? ' active' : ''}`}>
-          {tab === 'qa' && <Placeholder
-            label="QA / E2E tab"
-            sub="Gherkin scenario list (pass / fail / warn) + coverage rail per file. Wired to QA PR diff + Phase 27 build results."
-          />}
+          {tab === 'qa' && (
+            <QaPane detail={detail} artifacts={artifacts} />
+          )}
         </div>
         <div className={`tab-pane${tab === 'trace' ? ' active' : ''}`}>
-          {tab === 'trace' && <Placeholder
-            label="trace tab"
-            sub="flat event log: time | KIND | actor | description with kind colors (tool / gen / evl / score / pass / fail)."
-          />}
+          {tab === 'trace' && (
+            <TracePane detail={detail} />
+          )}
         </div>
       </div>
     </section>
@@ -137,6 +146,10 @@ export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTa
 /* ─── TAB AVAILABILITY ───────────────────────────────────────────────── */
 
 function availableTabs(mode: SwarmMode, sel: Selection, detail: StorySpawnDetail): DetailTab[] {
+  // Decomposition gets no tabs — it renders a full-width diagram instead.
+  if (sel.kind === 'doc' && sel.id === 'doc:decomposition') {
+    return [];
+  }
   if (sel.kind === 'doc') {
     // Doc-centric tab strip: the document body is the headline; everything
     // else hangs off the doc's lifecycle (plan PR, contributors, downstream
@@ -402,6 +415,660 @@ function OverviewPane({ mode, detail, selection }: OvProps) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ─── ARCH DOC PANE ──────────────────────────────────────────────────── */
+
+function ArchDocPane({ storyId, artifacts }: { storyId: string; artifacts: StorySpawnArtifacts | null }) {
+  const files = artifacts?.plan.files ?? [];
+  if (files.length === 0) {
+    return (
+      <div className="tab-placeholder">
+        <div className="lbl">▌ Plan Documents</div>
+        <div className="sub">No plan documents yet.</div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, overflow: 'auto', padding: '4px 0' }}>
+      {files.map((f) => (
+        <DocumentPane
+          key={f}
+          storyId={storyId}
+          docId={`doc:${f}`}
+          planPr={artifacts?.plan.pr ?? null}
+          planBranch={artifacts?.plan.branch ?? null}
+        />
+      ))}
+    </div>
+  );
+}
+
+/* ─── PR PANE ────────────────────────────────────────────────────────── */
+
+function PrPane({ detail, selection }: { detail: StorySpawnDetail; selection: Selection }) {
+  const prIds = useMemo(() => {
+    if (selection.kind === 'doc' && detail.spawn.planPrId) return [detail.spawn.planPrId];
+    if (selection.kind === 'phase') {
+      const ws = detail.workstreams.find((w) => w.id === selection.id);
+      return ws?.prs ?? [];
+    }
+    return [];
+  }, [detail, selection]);
+
+  if (prIds.length === 0) {
+    return (
+      <div className="tab-placeholder">
+        <div className="lbl">▌ PR</div>
+        <div className="sub">No PR linked yet.</div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, overflow: 'auto', padding: '4px 0' }}>
+      {prIds.map((id) => <PrCard key={id} prId={id} />)}
+    </div>
+  );
+}
+
+function PrCard({ prId }: { prId: string }) {
+  const [data, setData] = useState<PrDetailsResponse | null>(null);
+  const [err, setErr] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    forgeApi.getPrDetails(prId).then((d) => { if (!cancelled) setData(d); }).catch(() => { if (!cancelled) setErr(true); });
+    return () => { cancelled = true; };
+  }, [prId]);
+
+  if (err) return <div style={dimStyle}>Failed to load PR {prId}</div>;
+  if (!data) return <div style={dimStyle}>Loading PR {prId}…</div>;
+
+  const { pr, description, reviewers } = data;
+  const colColor = pr.col === 'merged' ? '#4ec9b0' : pr.col === 'review' ? '#dcdcaa' : pr.col === 'build' ? '#569cd6' : 'var(--sc-text-dim)';
+  return (
+    <div style={{ border: '1px solid var(--sc-border)', borderRadius: 4, padding: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--sc-text)' }}>{pr.title}</div>
+          <div style={{ fontSize: 10, color: 'var(--sc-text-dim)', marginTop: 2 }}>
+            {pr.author?.name ?? '—'} · {pr.branch} → {pr.base}
+          </div>
+        </div>
+        <span style={{ fontSize: 9, fontFamily: 'var(--sc-font-display)', letterSpacing: '0.12em', color: colColor, flexShrink: 0 }}>
+          {pr.col.toUpperCase()}
+        </span>
+      </div>
+      <div style={{ display: 'flex', gap: 16, marginTop: 8, fontSize: 11, fontFamily: 'var(--sc-font-mono, monospace)', color: 'var(--sc-text-dim)' }}>
+        <span>{pr.files} files</span>
+        <span>{pr.commits} commits</span>
+        <span style={{ color: '#4ec9b0' }}>+{pr.additions}</span>
+        <span style={{ color: '#f44747' }}>−{pr.deletions}</span>
+        {reviewers.length > 0 && <span>reviewers: {reviewers.join(', ')}</span>}
+      </div>
+      {description && (
+        <div style={{ fontSize: 11, color: 'var(--sc-text-dim)', marginTop: 8, whiteSpace: 'pre-wrap', maxHeight: 120, overflow: 'auto', lineHeight: '1.5' }}>
+          {description}
+        </div>
+      )}
+      {pr.webUrl && (
+        <a href={pr.webUrl} target="_blank" rel="noopener noreferrer"
+          style={{ display: 'inline-block', marginTop: 8, fontSize: 10, color: '#569cd6' }}>
+          Open in browser ↗
+        </a>
+      )}
+    </div>
+  );
+}
+
+/* ─── IMPL PROGRESS PANE ─────────────────────────────────────────────── */
+
+const statusPercent: Record<string, number> = {
+  pending: 0, claimed: 10, coding: 40, building: 60, testing: 70,
+  review: 80, merging: 90, complete: 100, stalled: 0,
+};
+
+function ImplProgressPane({ detail }: { detail: StorySpawnDetail }) {
+  const ws = detail.workstreams;
+  if (ws.length === 0) {
+    return (
+      <div className="tab-placeholder">
+        <div className="lbl">▌ Implementation Progress</div>
+        <div className="sub">No workstreams yet.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ overflow: 'auto', padding: '4px 0' }}>
+      {/* header */}
+      <div style={{ ...rowStyle, fontFamily: 'var(--sc-font-display)', fontSize: 9, letterSpacing: '0.14em', color: 'var(--sc-text-dim)', borderBottom: '1px solid var(--sc-border)' }}>
+        <span style={{ flex: 2, minWidth: 0 }}>NAME</span>
+        <span style={{ width: 80, textAlign: 'center' }}>STATUS</span>
+        <span style={{ width: 100 }}>PROGRESS</span>
+        <span style={{ width: 50, textAlign: 'right' }}>ITER</span>
+        <span style={{ width: 50, textAlign: 'right' }}>SCORE</span>
+        <span style={{ width: 60, textAlign: 'right' }}>COMMITS</span>
+        <span style={{ width: 60, textAlign: 'right' }}>COST</span>
+      </div>
+      {ws.map((w) => {
+        const pct = statusPercent[w.status] ?? 0;
+        return (
+          <div key={w.id} style={{ ...rowStyle, borderBottom: '1px solid var(--sc-border)' }}>
+            <span style={{ flex: 2, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, color: 'var(--sc-text)' }} title={w.name}>
+              {w.name}
+            </span>
+            <span style={{ width: 80, textAlign: 'center' }}>
+              <span style={{ fontSize: 9, fontFamily: 'var(--sc-font-display)', letterSpacing: '0.1em', padding: '1px 6px', borderRadius: 3, background: statusBg(w.status), color: statusFg(w.status) }}>
+                {w.status.toUpperCase()}
+              </span>
+            </span>
+            <span style={{ width: 100 }}>
+              <div style={{ height: 4, borderRadius: 2, background: 'var(--sc-border)', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${pct}%`, borderRadius: 2, background: pct >= 100 ? '#4ec9b0' : '#569cd6', transition: 'width 0.3s' }} />
+              </div>
+            </span>
+            <span style={{ width: 50, textAlign: 'right', fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11, color: 'var(--sc-text-dim)' }}>
+              {w.iter ?? '—'}
+            </span>
+            <span style={{ width: 50, textAlign: 'right', fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11, color: 'var(--sc-text-dim)' }}>
+              {w.latestScore ?? '—'}
+            </span>
+            <span style={{ width: 60, textAlign: 'right', fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11, color: 'var(--sc-text-dim)' }}>
+              {w.commits ?? '—'}
+            </span>
+            <span style={{ width: 60, textAlign: 'right', fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11, color: 'var(--sc-text-dim)' }}>
+              {(w.costUsd ?? 0) > 0 ? `$${w.costUsd!.toFixed(2)}` : '—'}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ─── CONTRIBUTORS PANE ──────────────────────────────────────────────── */
+
+function ContributorsPane({ detail }: { detail: StorySpawnDetail }) {
+  const [agents, setAgents] = useState<AgentRow[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/agents', { credentials: 'include' })
+      .then((r) => r.ok ? r.json() : [])
+      .then((json) => { if (!cancelled && Array.isArray(json)) setAgents(json as AgentRow[]); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const agentsById = new Map(agents.map((a) => [a.id, a]));
+  const nameOf = (id: string | null | undefined): string => {
+    if (!id) return '—';
+    return agentsById.get(id)?.name ?? id;
+  };
+
+  // Aggregate: how many workstreams each agent contributed to and in what role
+  const contribs = new Map<string, { name: string; genCount: number; evalCount: number; workstreams: string[] }>();
+  for (const w of detail.workstreams) {
+    for (const [agentId, role] of [[w.latestGenAgentId, 'gen'], [w.latestEvalAgentId, 'eval']] as const) {
+      if (!agentId) continue;
+      let entry = contribs.get(agentId);
+      if (!entry) { entry = { name: nameOf(agentId), genCount: 0, evalCount: 0, workstreams: [] }; contribs.set(agentId, entry); }
+      entry.name = nameOf(agentId);
+      if (role === 'gen') entry.genCount++; else entry.evalCount++;
+      if (!entry.workstreams.includes(w.name)) entry.workstreams.push(w.name);
+    }
+  }
+
+  if (contribs.size === 0) {
+    return (
+      <div className="tab-placeholder">
+        <div className="lbl">▌ Contributors</div>
+        <div className="sub">No agent contributions recorded yet.</div>
+      </div>
+    );
+  }
+
+  const sorted = [...contribs.entries()].sort((a, b) => (b[1].genCount + b[1].evalCount) - (a[1].genCount + a[1].evalCount));
+  return (
+    <div style={{ overflow: 'auto', padding: '4px 0' }}>
+      <div style={{ ...rowStyle, fontFamily: 'var(--sc-font-display)', fontSize: 9, letterSpacing: '0.14em', color: 'var(--sc-text-dim)', borderBottom: '1px solid var(--sc-border)' }}>
+        <span style={{ flex: 1, minWidth: 0 }}>AGENT</span>
+        <span style={{ width: 80, textAlign: 'right' }}>GEN</span>
+        <span style={{ width: 80, textAlign: 'right' }}>EVAL</span>
+        <span style={{ width: 60, textAlign: 'right' }}>TOTAL</span>
+        <span style={{ flex: 2, minWidth: 0, paddingLeft: 12 }}>WORKSTREAMS</span>
+      </div>
+      {sorted.map(([id, c]) => (
+        <div key={id} style={{ ...rowStyle, borderBottom: '1px solid var(--sc-border)' }}>
+          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, color: 'var(--sc-text)' }} title={id}>
+            {c.name}
+          </span>
+          <span style={{ width: 80, textAlign: 'right', fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11, color: 'var(--sc-text-dim)' }}>
+            {c.genCount || '—'}
+          </span>
+          <span style={{ width: 80, textAlign: 'right', fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11, color: 'var(--sc-text-dim)' }}>
+            {c.evalCount || '—'}
+          </span>
+          <span style={{ width: 60, textAlign: 'right', fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11, color: 'var(--sc-text)' }}>
+            {c.genCount + c.evalCount}
+          </span>
+          <span style={{ flex: 2, minWidth: 0, paddingLeft: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 10, color: 'var(--sc-text-dim)' }} title={c.workstreams.join(', ')}>
+            {c.workstreams.join(', ')}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ─── QA PANE ────────────────────────────────────────────────────────── */
+
+function QaPane({ detail, artifacts }: { detail: StorySpawnDetail; artifacts: StorySpawnArtifacts | null }) {
+  const qaPrId = artifacts?.qa.pr ?? detail.spawn.qaPrId ?? null;
+  const qaFiles = artifacts?.qa.files ?? [];
+  const [builds, setBuilds] = useState<Build[]>([]);
+  const [prData, setPrData] = useState<PrDetailsResponse | null>(null);
+
+  useEffect(() => {
+    if (!qaPrId) return;
+    let cancelled = false;
+    forgeApi.getPrDetails(qaPrId)
+      .then((d) => { if (!cancelled) setPrData(d); })
+      .catch(() => {});
+    forgeApi.listPrBuilds(qaPrId, { limit: 5 })
+      .then((d) => { if (!cancelled) setBuilds(d.items); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [qaPrId]);
+
+  if (!qaPrId) {
+    return (
+      <div className="tab-placeholder">
+        <div className="lbl">▌ QA / E2E</div>
+        <div className="sub">QA phase not started yet.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ overflow: 'auto', padding: '4px 0' }}>
+      {/* QA PR summary */}
+      {prData && (
+        <div style={{ border: '1px solid var(--sc-border)', borderRadius: 4, padding: 10, marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--sc-text)' }}>{prData.pr.title}</div>
+          <div style={{ fontSize: 10, color: 'var(--sc-text-dim)', marginTop: 2 }}>
+            {prData.pr.author?.name ?? '—'} · {prData.pr.branch}
+          </div>
+          <div style={{ display: 'flex', gap: 16, marginTop: 6, fontSize: 11, fontFamily: 'var(--sc-font-mono, monospace)', color: 'var(--sc-text-dim)' }}>
+            <span>{prData.pr.files} files</span>
+            <span style={{ color: '#4ec9b0' }}>+{prData.pr.additions}</span>
+            <span style={{ color: '#f44747' }}>−{prData.pr.deletions}</span>
+          </div>
+          {prData.pr.webUrl && (
+            <a href={prData.pr.webUrl} target="_blank" rel="noopener noreferrer"
+              style={{ display: 'inline-block', marginTop: 6, fontSize: 10, color: '#569cd6' }}>
+              Open QA PR ↗
+            </a>
+          )}
+        </div>
+      )}
+      {!prData && <div style={dimStyle}>Loading QA PR {qaPrId}…</div>}
+
+      {/* Builds */}
+      {builds.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 9, fontFamily: 'var(--sc-font-display)', letterSpacing: '0.14em', color: 'var(--sc-text-dim)', marginBottom: 4 }}>BUILDS</div>
+          {builds.map((b) => (
+            <div key={b.id} style={{ ...rowStyle, borderBottom: '1px solid var(--sc-border)', gap: 12 }}>
+              <span style={{ fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11, color: 'var(--sc-text-dim)' }}>#{b.providerBuildId}</span>
+              <span style={{ fontSize: 9, fontFamily: 'var(--sc-font-display)', letterSpacing: '0.1em', padding: '1px 6px', borderRadius: 3, background: buildBg(b.state), color: buildFg(b.state) }}>
+                {b.state.toUpperCase()}
+              </span>
+              <span style={{ fontSize: 10, color: 'var(--sc-text-dim)' }}>{b.result ?? ''}</span>
+              {b.webUrl && (
+                <a href={b.webUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: 10, color: '#569cd6', marginLeft: 'auto' }}>
+                  logs ↗
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* QA file list */}
+      {qaFiles.length > 0 && (
+        <div>
+          <div style={{ fontSize: 9, fontFamily: 'var(--sc-font-display)', letterSpacing: '0.14em', color: 'var(--sc-text-dim)', marginBottom: 4 }}>QA FILES</div>
+          {qaFiles.map((f) => (
+            <div key={f} style={{ fontSize: 11, fontFamily: 'var(--sc-font-mono, monospace)', color: 'var(--sc-text-dim)', padding: '2px 0' }}>
+              {f}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── TRACE PANE ─────────────────────────────────────────────────────── */
+
+function TracePane({ detail }: { detail: StorySpawnDetail }) {
+  const entries = useMemo(() => {
+    return detail.workstreams
+      .filter((w) => w.lastActiveAt)
+      .map((w) => ({
+        ts: w.lastActiveAt!,
+        name: w.name,
+        status: w.status,
+        verdict: w.latestVerdict ?? null,
+        score: w.latestScore ?? null,
+      }))
+      .sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
+  }, [detail.workstreams]);
+
+  if (entries.length === 0) {
+    return (
+      <div className="tab-placeholder">
+        <div className="lbl">▌ Trace</div>
+        <div className="sub">No activity recorded yet.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ overflow: 'auto', padding: '4px 0' }}>
+      <div style={{ ...rowStyle, fontFamily: 'var(--sc-font-display)', fontSize: 9, letterSpacing: '0.14em', color: 'var(--sc-text-dim)', borderBottom: '1px solid var(--sc-border)' }}>
+        <span style={{ width: 70 }}>TIME</span>
+        <span style={{ flex: 2, minWidth: 0 }}>WORKSTREAM</span>
+        <span style={{ width: 80, textAlign: 'center' }}>STATUS</span>
+        <span style={{ width: 70, textAlign: 'center' }}>VERDICT</span>
+        <span style={{ width: 50, textAlign: 'right' }}>SCORE</span>
+      </div>
+      {entries.map((e, i) => {
+        const verdictColor = e.verdict === 'pass' ? '#4ec9b0' : e.verdict === 'fail' ? '#f44747' : 'var(--sc-text-dim)';
+        return (
+          <div key={i} style={{ ...rowStyle, borderBottom: '1px solid var(--sc-border)' }}>
+            <span style={{ width: 70, fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 10, color: 'var(--sc-text-dim)' }}>
+              {formatTimestamp(e.ts)}
+            </span>
+            <span style={{ flex: 2, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, color: 'var(--sc-text)' }} title={e.name}>
+              {e.name}
+            </span>
+            <span style={{ width: 80, textAlign: 'center' }}>
+              <span style={{ fontSize: 9, fontFamily: 'var(--sc-font-display)', letterSpacing: '0.1em', padding: '1px 6px', borderRadius: 3, background: statusBg(e.status), color: statusFg(e.status) }}>
+                {e.status.toUpperCase()}
+              </span>
+            </span>
+            <span style={{ width: 70, textAlign: 'center', fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11, color: verdictColor }}>
+              {e.verdict ?? '—'}
+            </span>
+            <span style={{ width: 50, textAlign: 'right', fontFamily: 'var(--sc-font-mono, monospace)', fontSize: 11, color: 'var(--sc-text-dim)' }}>
+              {e.score ?? '—'}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ─── SHARED STYLE/COLOR HELPERS ─────────────────────────────────────── */
+
+const dimStyle: React.CSSProperties = { fontSize: 11, color: 'var(--sc-text-dim)', padding: 8 };
+
+const rowStyle: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 8, padding: '5px 4px',
+};
+
+function statusBg(s: string): string {
+  if (s === 'complete') return 'rgba(78,201,176,0.15)';
+  if (s === 'review' || s === 'merging') return 'rgba(220,220,170,0.15)';
+  if (s === 'stalled') return 'rgba(244,71,71,0.15)';
+  if (s === 'coding' || s === 'building' || s === 'testing') return 'rgba(86,156,214,0.15)';
+  return 'rgba(128,128,128,0.10)';
+}
+
+function statusFg(s: string): string {
+  if (s === 'complete') return '#4ec9b0';
+  if (s === 'review' || s === 'merging') return '#dcdcaa';
+  if (s === 'stalled') return '#f44747';
+  if (s === 'coding' || s === 'building' || s === 'testing') return '#569cd6';
+  return 'var(--sc-text-dim)';
+}
+
+function buildBg(s: string): string {
+  if (s === 'succeeded' || s === 'completed') return 'rgba(78,201,176,0.15)';
+  if (s === 'failed') return 'rgba(244,71,71,0.15)';
+  if (s === 'inProgress' || s === 'running') return 'rgba(86,156,214,0.15)';
+  return 'rgba(128,128,128,0.10)';
+}
+
+function buildFg(s: string): string {
+  if (s === 'succeeded' || s === 'completed') return '#4ec9b0';
+  if (s === 'failed') return '#f44747';
+  if (s === 'inProgress' || s === 'running') return '#569cd6';
+  return 'var(--sc-text-dim)';
+}
+
+function formatTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+/* ─── Decomposition diagram ─────────────────────────────────────────── */
+
+const WS_STATUS_COLOR: Record<string, string> = {
+  active:   'var(--sc-green, #66e5b8)',
+  blocked:  'var(--sc-amber, #ffd57c)',
+  planning: 'var(--sc-blue, #7cc1ff)',
+  review:   'var(--sc-amber, #ffd57c)',
+  merging:  'var(--sc-green, #66e5b8)',
+  complete: 'var(--sc-muted, #888)',
+  stalled:  'var(--sc-red, #ff7caa)',
+};
+
+function DecompositionDiagram({ detail }: { detail: StorySpawnDetail }) {
+  const ws = detail.workstreams;
+
+  // Build adjacency: each workstream may depend on others via `deps[]`.
+  // Assign columns using a topological sort (BFS by dependency depth).
+  const depthMap = useMemo(() => {
+    const depths = new Map<string, number>();
+    const byId = new Map(ws.map((w) => [w.id, w]));
+
+    function getDepth(id: string, visited: Set<string>): number {
+      if (depths.has(id)) return depths.get(id)!;
+      if (visited.has(id)) return 0; // cycle guard
+      visited.add(id);
+      const w = byId.get(id);
+      if (!w || w.deps.length === 0) { depths.set(id, 0); return 0; }
+      const d = 1 + Math.max(...w.deps.map((dep) => getDepth(dep, visited)));
+      depths.set(id, d);
+      return d;
+    }
+    for (const w of ws) getDepth(w.id, new Set());
+    return depths;
+  }, [ws]);
+
+  const maxDepth = Math.max(0, ...Array.from(depthMap.values()));
+  const columns = useMemo(() => {
+    const cols: Array<typeof ws> = [];
+    for (let d = 0; d <= maxDepth; d++) {
+      cols.push(ws.filter((w) => (depthMap.get(w.id) ?? 0) === d));
+    }
+    return cols;
+  }, [ws, depthMap, maxDepth]);
+
+  // Layout constants
+  const nodeW = 220, nodeH = 80, colGap = 100, rowGap = 32, padX = 40, padY = 60;
+  const maxRows = Math.max(1, ...columns.map((c) => c.length));
+  const svgW = padX * 2 + (maxDepth + 1) * nodeW + maxDepth * colGap;
+  const svgH = padY * 2 + maxRows * nodeH + (maxRows - 1) * rowGap;
+
+  // Position each node
+  const positions = useMemo(() => {
+    const pos = new Map<string, { x: number; y: number }>();
+    for (let col = 0; col <= maxDepth; col++) {
+      const items = columns[col];
+      const totalH = items.length * nodeH + (items.length - 1) * rowGap;
+      const startY = (svgH - totalH) / 2;
+      items.forEach((w, row) => {
+        pos.set(w.id, {
+          x: padX + col * (nodeW + colGap),
+          y: startY + row * (nodeH + rowGap),
+        });
+      });
+    }
+    return pos;
+  }, [columns, maxDepth, svgH]);
+
+  const activeCount = ws.filter((w) => w.status === 'active').length;
+  const blockedCount = ws.filter((w) => w.status === 'blocked').length;
+  const completeCount = ws.filter((w) => w.status === 'complete').length;
+
+  return (
+    <div style={{ padding: 16, overflow: 'auto', height: '100%' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+        <span style={{
+          fontFamily: 'var(--sc-font-display, monospace)',
+          fontSize: 10,
+          letterSpacing: '0.16em',
+          color: 'var(--sc-text-dim, #888)',
+          textTransform: 'uppercase',
+        }}>
+          IMPLEMENTATION DIAGRAM
+        </span>
+        <span style={{ fontSize: 11, color: 'var(--sc-text-dim, #888)' }}>
+          {ws.length} workstreams · {activeCount} active · {blockedCount} blocked · {completeCount} complete
+        </span>
+        <span style={{
+          marginLeft: 'auto',
+          fontSize: 10,
+          color: 'var(--sc-text-dim, #888)',
+        }}>
+          {detail.spawn.decompositionApproved ? '✓ approved' : '⏳ pending approval'}
+        </span>
+      </div>
+
+      <svg
+        width={svgW}
+        height={svgH}
+        viewBox={`0 0 ${svgW} ${svgH}`}
+        style={{ display: 'block' }}
+      >
+        {/* Arrow marker definitions */}
+        <defs>
+          <marker id="dep-arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+            <path d="M 0 0 L 10 4 L 0 8 Z" fill="#7cc1ff" />
+          </marker>
+          <marker id="dep-arrow-blocked" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+            <path d="M 0 0 L 10 4 L 0 8 Z" fill="#ffd57c" />
+          </marker>
+        </defs>
+
+        {/* Column labels */}
+        {columns.map((_, col) => (
+          <text
+            key={col}
+            x={padX + col * (nodeW + colGap) + nodeW / 2}
+            y={20}
+            textAnchor="middle"
+            fontSize={9}
+            fontFamily="var(--sc-font-display, monospace)"
+            letterSpacing="0.14em"
+            fill="var(--sc-text-dim, #888)"
+          >
+            PHASE {String(col + 1).padStart(2, '0')}
+          </text>
+        ))}
+
+        {/* Workstream nodes */}
+        {ws.map((w) => {
+          const p = positions.get(w.id);
+          if (!p) return null;
+          const color = WS_STATUS_COLOR[w.status] ?? 'var(--sc-muted, #888)';
+          const shortName = w.name.length > 28 ? w.name.slice(0, 26) + '…' : w.name;
+          const shortId = w.id.length > 24 ? '…' + w.id.slice(-20) : w.id;
+          return (
+            <g key={w.id}>
+              <rect
+                x={p.x}
+                y={p.y}
+                width={nodeW}
+                height={nodeH}
+                rx={6}
+                fill="var(--sc-surface-2, #1e1e2e)"
+                stroke={color}
+                strokeWidth={w.status === 'active' ? 2 : 1}
+              />
+              {/* Status dot */}
+              <circle cx={p.x + 14} cy={p.y + 16} r={4} fill={color} />
+              <text x={p.x + 24} y={p.y + 20} fontSize={10} fontWeight={600} fill={color}
+                fontFamily="var(--sc-font-display, monospace)" letterSpacing="0.08em">
+                {w.status.toUpperCase()}
+              </text>
+              {/* Name */}
+              <text x={p.x + 10} y={p.y + 40} fontSize={12} fontWeight={500}
+                fill="var(--sc-text, #eee)">
+                {shortName}
+              </text>
+              {/* ID */}
+              <text x={p.x + 10} y={p.y + 58} fontSize={9}
+                fill="var(--sc-text-dim, #888)" fontFamily="var(--sc-font-mono, monospace)">
+                {shortId}
+              </text>
+              {/* Dep count */}
+              {w.deps.length > 0 && (
+                <text x={p.x + nodeW - 10} y={p.y + 20} fontSize={9} textAnchor="end"
+                  fill="var(--sc-text-dim, #888)">
+                  ⮨ {w.deps.length}
+                </text>
+              )}
+              {/* Branch badge */}
+              {w.branch && (
+                <text x={p.x + 10} y={p.y + nodeH - 8} fontSize={8}
+                  fill="var(--sc-text-dim, #666)" fontFamily="var(--sc-font-mono, monospace)">
+                  ⎇ {w.branch.split('/').pop()}
+                </text>
+              )}
+            </g>
+          );
+        })}
+
+        {/* Dependency arrows — rendered last so they draw on top of nodes */}
+        {ws.map((w) =>
+          w.deps.map((depId) => {
+            const from = positions.get(depId);
+            const to = positions.get(w.id);
+            if (!from || !to) return null;
+            const x1 = from.x + nodeW + 2;
+            const y1 = from.y + nodeH / 2;
+            const x2 = to.x - 12;
+            const y2 = to.y + nodeH / 2;
+            const midX = (x1 + x2) / 2;
+            const isBlocked = w.status === 'blocked';
+            const strokeColor = isBlocked ? '#ffd57c' : '#7cc1ff';
+            const markerId = isBlocked ? 'dep-arrow-blocked' : 'dep-arrow';
+            return (
+              <g key={`${depId}->${w.id}`}>
+                <path
+                  d={`M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`}
+                  fill="none"
+                  stroke={strokeColor}
+                  strokeWidth="2"
+                  strokeDasharray={isBlocked ? '6 4' : undefined}
+                  markerEnd={`url(#${markerId})`}
+                />
+              </g>
+            );
+          }),
+        )}
+      </svg>
     </div>
   );
 }

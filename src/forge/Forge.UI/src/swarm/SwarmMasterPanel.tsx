@@ -366,10 +366,10 @@ interface DocStats {
   verdict: string;
   cost: number;
   /** Loop lifecycle — `live` while events flow, `iterating` between iters
-   *  (sub-pass), `awaiting-pr-review` after a passing verdict but before
-   *  the plan PR merges, `completed` after the PR merges, `pending` before
-   *  the first run. */
-  status: 'live' | 'iterating' | 'awaiting-pr-review' | 'completed' | 'pending';
+   *  (sub-pass), `stalled` when max-iters hit or rejected, `awaiting-pr-review`
+   *  after a passing verdict but before the plan PR merges, `completed`
+   *  after the PR merges, `pending` before the first run. */
+  status: 'live' | 'iterating' | 'stalled' | 'awaiting-pr-review' | 'completed' | 'pending';
   generator: DocAgentInfo | null;
   evaluator: DocAgentInfo | null;
 }

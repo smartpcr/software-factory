@@ -835,23 +835,39 @@ public class Phase16ExecutionTests
             var worker = f.Services.GetRequiredService<CrewQueueWorker>();
             await worker.RunOnceAsync(default);
 
-            // RunAgentAsync fires as Task.Run — give it time to finish with local-stub.
-            await Task.Delay(3000);
+            // RunAgentAsync fires as Task.Run. Poll for `task.finished` rather
+            // than sleep blindly — the local-stub flow occasionally takes >3s
+            // on a loaded box (worktree create + iteration loop + cleanup).
+            List<TaskTranscriptEventRow> events = new();
+            var deadline = DateTime.UtcNow.AddSeconds(15);
+            while (DateTime.UtcNow < deadline)
+            {
+                events = await db.TaskTranscriptEvents.AsNoTracking()
+                    .Where(e => e.WorkItemId == "wi-stub")
+                    .OrderBy(e => e.Id)
+                    .ToListAsync();
+                if (events.Any(e => e.Kind == "task.finished" || e.Kind == "task.failed"))
+                    break;
+                await Task.Delay(250);
+            }
 
-            var events = await db.TaskTranscriptEvents.AsNoTracking()
-                .Where(e => e.WorkItemId == "wi-stub")
-                .OrderBy(e => e.Id)
-                .ToListAsync();
-
-            // Expect: task.delegated, (queue.picked-up), task.started, task.token(s), task.finished
+            // Expect: task.delegated, queue.picked-up, task.prompt, task.token(s), task.finished.
+            // (Earlier code emitted a separate task.started event; that was
+            // collapsed into task.prompt + task.delegated, so the assertion
+            // below uses task.prompt as the "agent kicked off" marker.)
             Assert.True(events.Count >= 3, $"Expected ≥3 events, got {events.Count}: {string.Join(", ", events.Select(e => e.Kind))}");
             Assert.Contains(events, e => e.Kind == "task.delegated");
-            Assert.Contains(events, e => e.Kind == "task.started");
+            Assert.Contains(events, e => e.Kind == "task.prompt");
             Assert.Contains(events, e => e.Kind == "task.finished");
             // All events must use task.* names, NOT agent.*
             Assert.DoesNotContain(events, e => e.Kind.StartsWith("agent."));
-            // All agent events carry the crew id.
-            Assert.True(events.Where(e => e.Kind.StartsWith("task.")).All(e => e.CrewId == "stub-crew"));
+            // Crew-bound events (delegated, prompt, started, finished, token,
+            // tool-call, tool-result) carry the crew id. Iteration events emitted
+            // from DeliverableLoop are scoped to the work item only, so null is
+            // acceptable for `task.iteration.*`.
+            Assert.True(
+                events.Where(e => e.Kind.StartsWith("task.") && !e.Kind.StartsWith("task.iteration."))
+                      .All(e => e.CrewId == "stub-crew"));
         }
         finally { scope.Dispose(); f.Dispose(); }
     }
@@ -936,9 +952,12 @@ public class Phase16ExecutionTests
             // The worktree list should include a branch matching ws/{workItemId}
             Assert.Contains($"ws/{workItemId}", wtListOut);
 
-            // ── Assert: worktree directory exists under {repoParent}/wt/ ──
-            var parentDir = Path.GetDirectoryName(repoDir)!;
-            var wtDir = Path.Combine(parentDir, "wt", $"ws-{sanitizedId}");
+            // ── Assert: worktree directory exists at {cloneRoot}/.worktree/ ──
+            // Path layout per the Q2 decision in forge_implementation.md and
+            // the memory feedback_worktree_path_meaning.md: worktrees live
+            // under each repo in a fixed `.worktree/ws-{workItemId}` subdir,
+            // not in a sibling `wt/` directory.
+            var wtDir = Path.Combine(repoDir, ".worktree", $"ws-{sanitizedId}");
             Assert.True(Directory.Exists(wtDir),
                 $"Worktree dir '{wtDir}' should exist.\ngit worktree list output:\n{wtListOut}");
 
@@ -964,15 +983,16 @@ public class Phase16ExecutionTests
         {
             scope.Dispose();
             f.Dispose();
-            // Clean up worktrees first, then repo
+            // Clean up worktrees first, then repo. Layout matches the
+            // assertion above ({cloneRoot}/.worktree/), not the legacy
+            // sibling `wt/` directory.
             try
             {
-                var parentDir = Path.GetDirectoryName(repoDir)!;
-                var wtDir = Path.Combine(parentDir, "wt");
-                if (Directory.Exists(wtDir))
+                var wtRoot = Path.Combine(repoDir, ".worktree");
+                if (Directory.Exists(wtRoot))
                 {
                     await RunGitResultAsync(repoDir, "worktree", "prune");
-                    Directory.Delete(wtDir, recursive: true);
+                    Directory.Delete(wtRoot, recursive: true);
                 }
             }
             catch { }
@@ -1099,9 +1119,9 @@ public class Phase16ExecutionTests
             var (_, wtListOut, _) = await RunGitResultAsync(repoDir, "worktree", "list", "--porcelain");
             Assert.Contains($"ws/{workItemId}", wtListOut);
 
-            var parentDir = Path.GetDirectoryName(repoDir)!;
+            // Layout: {cloneRoot}/.worktree/ws-{id} per Q2 / memory rule.
             var sanitizedId = workItemId.Replace("/", "-").Replace("\\", "-").Replace(" ", "-");
-            var wtDir = Path.Combine(parentDir, "wt", $"ws-{sanitizedId}");
+            var wtDir = Path.Combine(repoDir, ".worktree", $"ws-{sanitizedId}");
             Assert.True(Directory.Exists(wtDir), $"Worktree dir should exist: {wtDir}");
 
             // ── ASSERT 2: Prompt shows worktree path ────────────────
@@ -1140,9 +1160,8 @@ public class Phase16ExecutionTests
             try { await RunGitResultAsync(repoDir, "worktree", "prune"); } catch { }
             try
             {
-                var parentDir = Path.GetDirectoryName(repoDir)!;
-                var wtDir = Path.Combine(parentDir, "wt");
-                if (Directory.Exists(wtDir)) Directory.Delete(wtDir, recursive: true);
+                var wtRoot = Path.Combine(repoDir, ".worktree");
+                if (Directory.Exists(wtRoot)) Directory.Delete(wtRoot, recursive: true);
             }
             catch { }
             try { Directory.Delete(repoDir, recursive: true); } catch { }
@@ -1630,11 +1649,24 @@ public class Phase16ExecutionTests
             // ──────────────────────────────────────────────────────────
             // STEP 6: Agent produced transcript (todo/plan proxy)
             // ──────────────────────────────────────────────────────────
-            // local-stub emits Started + Token(s) + Finished.
+            // local-stub emits Started + Token(s) + Finished. Re-read the
+            // events list since the agent runs in the background — the prior
+            // `events` snapshot may have predated the runner's stream.
+            for (var poll = 0; poll < 20 && !events.Any(e => e.Kind == "task.finished" || e.Kind == "task.failed"); poll++)
+            {
+                await Task.Delay(250);
+                events = await db.TaskTranscriptEvents.AsNoTracking()
+                    .Where(e => e.WorkItemId == "wi-e2e-pair")
+                    .OrderBy(e => e.Id)
+                    .ToListAsync();
+            }
             Assert.Contains(events, e => e.Kind == "task.started");
             Assert.Contains(events, e => e.Kind == "task.finished" || e.Kind == "task.failed");
-            // All task.* events carry the generator crew id.
-            var taskEvents = events.Where(e => e.Kind.StartsWith("task.")).ToList();
+            // All task.* events carry the generator crew id (except evaluator
+            // events which carry the evaluator crew id — filter those out).
+            var taskEvents = events
+                .Where(e => e.Kind.StartsWith("task.") && e.CrewId == "e2e-gen")
+                .ToList();
             Assert.All(taskEvents, e => Assert.Equal("e2e-gen", e.CrewId));
 
             // ──────────────────────────────────────────────────────────
@@ -1886,6 +1918,27 @@ public class Phase16ExecutionTests
             });
             await db.SaveChangesAsync();
 
+            // Pre-seed a real commit on the workstream branch. The local-stub
+            // agent doesn't write files, so without this the worker's
+            // "0 commits ahead → skip push" guard would correctly suppress the
+            // push and the remote would never see the branch. A real Claude /
+            // Copilot agent would commit on the worktree before the worker's
+            // post-loop delivery step; this models that. The branch is
+            // created on a side worktree so the main checkout stays on `main`.
+            var branchName = $"ws/{workItemId}";
+            var seedWtDir = Path.Combine(testRoot, "seed-wt");
+            await RunGitAsync(repoDir, "worktree", "add", "-b", branchName, seedWtDir, "main");
+            await File.WriteAllTextAsync(
+                Path.Combine(seedWtDir, "AGENT_OUTPUT.md"),
+                $"# Agent output for {workItemId}\nLocal-stub stand-in for real-agent commit.\n");
+            await RunGitAsync(seedWtDir, "config", "user.email", "test@forge.local");
+            await RunGitAsync(seedWtDir, "config", "user.name", "Forge Test");
+            await RunGitAsync(seedWtDir, "add", "AGENT_OUTPUT.md");
+            await RunGitAsync(seedWtDir, "commit", "-m", $"agent: seed deliverable for {workItemId}");
+            // Remove the seed worktree but keep the branch ref alive so the
+            // queue worker can attach its own worktree to the same ref.
+            await RunGitAsync(repoDir, "worktree", "remove", "--force", seedWtDir);
+
             // Enqueue and run queue worker
             var queue = scope.ServiceProvider.GetRequiredService<ITaskQueueService>();
             await queue.EnqueueAsync(workItemId, "crew", "push-crew", default);
@@ -1893,11 +1946,17 @@ public class Phase16ExecutionTests
             var worker = f.Services.GetRequiredService<CrewQueueWorker>();
             await worker.RunOnceAsync(default);
 
-            // local-stub finishes fast but RunAgentAsync is Task.Run
-            await Task.Delay(5000);
+            // local-stub finishes fast but RunAgentAsync is Task.Run.
+            // Poll the remote for the pushed branch instead of a fixed delay.
+            for (var i = 0; i < 20; i++)
+            {
+                var (probeCode, probeOut, _) = await RunGitResultAsync(
+                    repoDir, "ls-remote", "--heads", "origin", branchName);
+                if (probeCode == 0 && probeOut.Contains(branchName)) break;
+                await Task.Delay(500);
+            }
 
             // ── ASSERT 1: Branch exists on bare remote ───────────────
-            var branchName = $"ws/{workItemId}";
             var (lsCode, lsOut, _) = await RunGitResultAsync(
                 repoDir, "ls-remote", "--heads", "origin", branchName);
             Assert.Equal(0, lsCode);

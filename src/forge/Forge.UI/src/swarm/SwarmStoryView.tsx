@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { forgeApi, type StorySpawnArtifacts, type StorySpawnDetail, type StorySpawnPhase } from '@/api/forgeApi';
 import { useSpawnStore } from '@/state/useSpawnStore';
 import { useToastStore } from '@/state/useToastStore';
@@ -23,18 +23,53 @@ export function SwarmStoryView() {
   const { storyId: rawId = '' } = useParams<{ storyId: string }>();
   const storyId = decodeURIComponent(rawId);
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const tick = useSpawnStore((s) => s.ticks[storyId] ?? 0);
 
   const [detail, setDetail] = useState<StorySpawnDetail | null>(null);
   const [artifacts, setArtifacts] = useState<StorySpawnArtifacts | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [mode, setMode] = useState<SwarmMode | null>(null);
-  const [selection, setSelection] = useState<Selection>({ kind: 'overview', id: null });
-  const [tab, setTab] = useState<DetailTab>('overview');
-  // Master defaults to collapsed (36px rail) so the tabbed detail panel
-  // takes the whole width on first render. User clicks the chevron to
-  // expand the master back to its 360px navigation list.
-  const [masterCollapsed, setMasterCollapsed] = useState(true);
+
+  // Restore state from URL search params on mount so page reload preserves
+  // the selected pipeline stage, master-panel item, and detail tab.
+  const [mode, setModeState] = useState<SwarmMode | null>(
+    () => (searchParams.get('mode') as SwarmMode | null) ?? null,
+  );
+  const [selection, setSelectionState] = useState<Selection>(() => {
+    const kind = searchParams.get('sel') as Selection['kind'] | null;
+    const id = searchParams.get('selId');
+    return kind ? { kind, id: id ?? null } : { kind: 'overview', id: null };
+  });
+  const [tab, setTabState] = useState<DetailTab>(
+    () => (searchParams.get('tab') as DetailTab) || 'overview',
+  );
+  const [masterCollapsed, setMasterCollapsed] = useState(
+    () => searchParams.get('master') !== 'open',
+  );
+
+  // Sync state changes back to URL params (replaceState — no history push).
+  function setMode(m: SwarmMode | null) {
+    setModeState(m);
+    updateParams({ mode: m });
+  }
+  function setSelection(sel: Selection) {
+    setSelectionState(sel);
+    updateParams({ sel: sel.kind, selId: sel.id });
+  }
+  function setTab(t: DetailTab) {
+    setTabState(t);
+    updateParams({ tab: t });
+  }
+  function updateParams(patch: Record<string, string | null | undefined>) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      for (const [k, v] of Object.entries(patch)) {
+        if (v == null || v === '' || v === 'overview') next.delete(k);
+        else next.set(k, v);
+      }
+      return next;
+    }, { replace: true });
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -47,7 +82,11 @@ export function SwarmStoryView() {
         if (!cancelled) {
           setDetail(d);
           setArtifacts(a);
-          setMode((curr) => curr ?? modeForPhase(d.spawn.phase));
+          setModeState((curr) => {
+            const next = curr ?? modeForPhase(d.spawn.phase);
+            if (next !== curr) updateParams({ mode: next });
+            return next;
+          });
         }
       } catch (e) {
         if (!cancelled) setErr(e instanceof Error ? e.message : 'Failed to load story');
@@ -58,8 +97,13 @@ export function SwarmStoryView() {
     return () => { cancelled = true; clearInterval(id); };
   }, [storyId, tick]);
 
-  // When mode flips, drop selection back to overview so the master panel renders cleanly.
-  useEffect(() => { setSelection({ kind: 'overview', id: null }); }, [mode]);
+  // When mode flips via pipeline click (not initial URL restore), drop
+  // selection back to overview so the master panel renders cleanly.
+  const modeRef = useMemo(() => ({ initial: true }), []);
+  useEffect(() => {
+    if (modeRef.initial) { modeRef.initial = false; return; }
+    setSelection({ kind: 'overview', id: null });
+  }, [mode]);
 
   const stages: PipelineStageSpec[] = useMemo(() => {
     if (!detail) return [];
@@ -214,12 +258,17 @@ export function SwarmStoryView() {
                   selection={selection}
                   onSelect={(sel) => {
                     setSelection(sel);
-                    // Auto-expand the master when the user selects a row from the
-                    // collapsed rail (so they can see the rest of the list).
-                    if (masterCollapsed && sel.kind !== 'overview') setMasterCollapsed(false);
+                    if (masterCollapsed && sel.kind !== 'overview') {
+                      setMasterCollapsed(false);
+                      updateParams({ master: 'open' });
+                    }
                   }}
                   collapsed={masterCollapsed}
-                  onToggleCollapsed={() => setMasterCollapsed((v) => !v)}
+                  onToggleCollapsed={() => {
+                    const next = !masterCollapsed;
+                    setMasterCollapsed(next);
+                    updateParams({ master: next ? null : 'open' });
+                  }}
                 />
                 <SwarmDetailPanel
                   mode={mode}

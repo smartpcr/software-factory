@@ -260,7 +260,51 @@ export const useTaskLiveStore = create<TaskLiveStore>((set, get) => ({
         const patched = { ...snap };
         if (typeof p.score === 'number') patched.currentScore = p.score;
         if (typeof p.verdict === 'string') patched.currentVerdict = p.verdict;
+        if (typeof p.iter === 'number') patched.currentIteration = p.iter;
+        // Cost: server emits totalCostUsd as the cumulative figure and
+        // generatorCostUsd / evaluatorCostUsd as per-iter deltas. Replace
+        // total with the cumulative value (authoritative); accumulate the
+        // role-split deltas onto the snapshot's role buckets so the
+        // workstream/doc Conversation pane's TOTAL COST + pair-side
+        // tokens refresh during live runs without needing a snapshot
+        // re-fetch.
+        if (typeof p.totalCostUsd === 'number') patched.totalCostUsd = p.totalCostUsd;
+        if (typeof p.generatorCostUsd === 'number') {
+          patched.generatorCostUsd = (patched.generatorCostUsd ?? 0) + p.generatorCostUsd;
+        }
+        if (typeof p.evaluatorCostUsd === 'number') {
+          patched.evaluatorCostUsd = (patched.evaluatorCostUsd ?? 0) + p.evaluatorCostUsd;
+        }
         snap = patched;
+      }
+      // Per-event token deltas — the runner emits them on task.token /
+      // task.tool-result with role and inputTokens/outputTokens. Accumulate
+      // onto the right side of the snapshot so the live pair tokens render
+      // even between iteration boundaries.
+      if (evt.kind === 'task.token' || evt.kind === 'task.tool-result' || evt.kind === 'task.toolresult') {
+        const role = (p.role as string) ?? '';
+        const inTok = typeof p.inputTokens === 'number' ? p.inputTokens : 0;
+        const outTok = typeof p.outputTokens === 'number' ? p.outputTokens : 0;
+        if (snap && (inTok > 0 || outTok > 0)) {
+          const patched = { ...snap };
+          if (role === 'evaluator') {
+            patched.evaluatorInputTokens = (patched.evaluatorInputTokens ?? 0) + inTok;
+            patched.evaluatorOutputTokens = (patched.evaluatorOutputTokens ?? 0) + outTok;
+          } else {
+            patched.generatorInputTokens = (patched.generatorInputTokens ?? 0) + inTok;
+            patched.generatorOutputTokens = (patched.generatorOutputTokens ?? 0) + outTok;
+          }
+          // Per-event cost is also commonly attached.
+          if (typeof p.costUsd === 'number' && p.costUsd > 0) {
+            patched.totalCostUsd = (patched.totalCostUsd ?? 0) + p.costUsd;
+            if (role === 'evaluator') {
+              patched.evaluatorCostUsd = (patched.evaluatorCostUsd ?? 0) + p.costUsd;
+            } else {
+              patched.generatorCostUsd = (patched.generatorCostUsd ?? 0) + p.costUsd;
+            }
+          }
+          snap = patched;
+        }
       }
       // task.prompt carries the actual model the runner just dispatched
       // with — patch the snapshot so the header reflects runtime overrides
