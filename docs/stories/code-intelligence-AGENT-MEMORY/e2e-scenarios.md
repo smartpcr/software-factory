@@ -90,15 +90,19 @@ Feature: Structural Layer — Repository Structure Graph Construction
       | node_id                                              | NodeType  | Language |
       | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode | Class     | C#       |
       | /src/ast/Ast.Core/HypergraphModels.cs::Hyperedge      | Class     | C#       |
-      | /src/ast/Ast.Core/HypergraphModels.cs::HyperedgeType  | Class     | C#       |
-      | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEmbeddingText | Function | C# |
-      | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEnhancedEmbeddingText | Function | C# |
+      | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEmbeddingText | Method | C# |
+      | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEnhancedEmbeddingText | Method | C# |
+      # Note: HyperedgeType is an enum — the C# extractor assigns NodeType "enum"
+      # to enum definitions, which the StructureBuilder normalizes to the canonical
+      # hierarchy. Enums are not listed here because the scenario focuses on Class
+      # and Method nodes in the containment hierarchy.
     And the HypergraphNode class node is connected to its method nodes via CONTAINS edges with Roles:
       | Roles.parent                                           | Roles.child                                                                    |
       | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode  | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEmbeddingText         |
       | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode  | /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEnhancedEmbeddingText |
     And the Module node "/src/ast/Ast.Core/HypergraphModels.cs" CONTAINS the class nodes
     And each symbol node has LineStart and LineEnd set to non-zero values
+    # GetEmbeddingText is at line 93; GetEnhancedEmbeddingText is at line 120 of HypergraphModels.cs
 
   Scenario: 1.3 — DEPENDS_ON edges from C# using directives
     Given "src/ast/Ast.Csharp/CSharpHyperedgeExtractor.cs" contains:
@@ -127,9 +131,9 @@ Feature: Structural Layer — Repository Structure Graph Construction
     And symbol nodes are created:
       | node_id                                                                       | NodeType |
       | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser            | Class    |
-      | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser.ParseFile  | Function |
-      | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser.ParseCode  | Function |
-      | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser.ParseRepository | Function |
+      | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser.ParseFile  | Method |
+      | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser.ParseCode  | Method |
+      | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser.ParseRepository | Method |
     And the Module node is linked to Package "/src/ast/Ast.PowerShell" via CONTAINS
     # External dependency System.Management.Automation produces an External stub node
     And an External boundary node "ext:System.Management.Automation:*" is created
@@ -213,7 +217,11 @@ Feature: Call-Chain Layer — Call Graph Extraction
     Given this call chain exists in the src/ast/ codebase:
       | caller_file                                    | caller_method                           | callee_method                                      |
       | src/ast/Ast.Core/RepositoryProcessor.cs        | RepositoryProcessor.Process             | CSharpHyperedgeExtractor.Extract (via CSharpExtractor delegate) |
-      | src/ast/Ast.Csharp/CSharpHyperedgeExtractor.cs | CSharpHyperedgeExtractor.Extract        | CSharpHyperedgeExtractor.ExtractMethodDefinition   |
+      | src/ast/Ast.Csharp/CSharpHyperedgeExtractor.cs | CSharpHyperedgeExtractor.Extract        | CSharpHyperedgeExtractor.ProcessMember             |
+      # RepositoryProcessor.Process calls this.ProcessCSharpFile (line 72),
+      # which invokes this.CSharpExtractor delegate (line 148), resolving to
+      # CSharpHyperedgeExtractor.Extract. Extract iterates members and calls
+      # this.ProcessMember(member) at line 104.
     When the retrieval engine resolves the call chain from RepositoryProcessor.Process with depth 2
     Then the result contains at least one GraphPath of length 2
     And each intermediate node carries its FilePath and Metadata["QualifiedName"]
@@ -792,7 +800,7 @@ Feature: Cross-Session Learning — Memory Compounds Over Time
     Then the Hybrid retrieval includes the Pattern in "## Known Expertise"
     When "copilot-session-B" calls RecordExpertiseAsync with kind = Insight,
       title = "GetEnhancedEmbeddingText includes source code up to 2000 chars",
-      body = "When LSP enrichment is available, GetEnhancedEmbeddingText appends up to 2000 chars from Metadata[SourceCode] — see line 175 of EnrichedEmbeddingPipeline.cs",
+      body = "When LSP enrichment is available, GetEnhancedEmbeddingText appends up to 2000 chars from Metadata[SourceCode] — see lines 175–178 of HypergraphModels.cs",
       and targetNodeId = "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEnhancedEmbeddingText"
     Then 2 ExpertiseEntry records exist
 
