@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 22
+> **Status:** Iteration 23
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -15,8 +15,8 @@
 > | Document | Owns | Current state |
 > |---|---|---|
 > | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Iteration 15. Fully aligned — tech-spec §12.2 confirms no remaining conflicts with this doc. |
-> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Iteration 15+. Contains 25 naming/data-model divergences from canonical vocabulary — all catalogued in §8.2 below with canonical resolutions. `architecture.md` governs on all conflicts. |
-> | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 79 scenarios) | Iteration 15+. Contains 9 presentation-level divergences catalogued in §8.3 below — all semantically correct. |
+> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Iteration 15+. Contains 27 naming/data-model divergences from canonical vocabulary — all catalogued in §8.2 below with canonical resolutions. `architecture.md` governs on all conflicts. |
+> | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Iteration 15+. Contains 9 presentation-level divergences catalogued in §8.3 below — all semantically correct. |
 
 ---
 
@@ -306,13 +306,15 @@ The engine has three internal stages:
    values based on the query shape:
    - `StructuralDrill` — BFS from a seed node along `CONTAINS`/`DEPENDS_ON`.
    - `CallTrace` — forward/backward traversal along `CALLS`/`EXTENDS`/`IMPLEMENTS`.
-   - `SemanticSearch` — embed query text, ANN lookup in vector store.
+   - `SemanticSearch` — embed query text via `IEmbeddingGenerator.GenerateEmbeddingAsync()`, ANN lookup via `IVectorStore.SearchAsync()`.
    - `ExpertiseRecall` — filter nodes by `APPLIES_TO` edges from Expertise layer.
    - `Hybrid` — combine all four modes (default for free-text queries).
 
 2. **Ranker** (`Ranker`) — scores candidate nodes using the 5-signal weighted
    model (§2.4). Produces a `List<ScoredMemoryNode>` sorted by descending
-   composite score.
+   composite score. If `IEmbeddingGenerator` is unavailable at query time,
+   semantic scores default to 0.0 and the remaining four signals are
+   re-normalized to sum to 1.0.
 
 3. **Budget Controller** (`BudgetController`) — serializes ranked nodes into a
    token-counted context window (default: 8,000 tokens; ceiling: 32,000).
@@ -357,7 +359,7 @@ summarization — the mechanisms by which the graph improves over sessions.
 |---|---|---|
 | **Write-back** | `EvolutionEngine.RecordExpertiseAsync()` | Creates `ExpertiseEntry` nodes (§4.2) linked to code nodes via `APPLIES_TO` edges. Each entry has a `Confidence` value (0.0–1.0), `ExpertiseKind` (`Pattern`, `Pitfall`, `Preference`, `Insight`), and `SourceAgent` provenance. |
 | **Consolidation** | `ConsolidationService` | LLM-powered merge of semantically similar expertise entries (cosine ≥ `SimilarityThreshold`). Creates `SUPERSEDES` edge from merged entry to originals. Acquires a write-level lock to prevent concurrent merges. |
-| **Decay** | `DecayService` | Two decay mechanisms: (a) **Event-driven** — `StaleDecayFactor` (0.5) applied when target code's `ContentHash` changes on a non-trivial edit; `MinorDecayFactor` (0.9) for whitespace/comment-only changes. (b) **Time-based** — `decayed_confidence = confidence × 2^(−age_days / DecayHalfLifeDays) × centrality_boost`, where `centrality_boost = 1.0 + 0.5 × normalized_pagerank` (range 1.0–1.5). Uses base-2 exponential so that `DecayHalfLifeDays` (1,095 / 3 years) is the exact half-life. Entries below `ArchiveConfidenceFloor` (0.1) are soft-deleted. |
+| **Decay** | `DecayService` | Two decay mechanisms applied **multiplicatively** (both reduce confidence; their effects compound): (a) **Event-driven** — triggered by `IncrementalSync` when a target code node's `ContentHash` changes. `StaleDecayFactor` (0.5) is applied on substantive code changes; `MinorDecayFactor` (0.9) on whitespace/comment-only changes. Applied immediately at sync time — each `ContentHash` change triggers exactly one event-driven decay. (b) **Time-based** — applied periodically (or on demand via `DecayStaleExpertiseAsync`): `decayed_confidence = current_confidence × 2^(−age_days / DecayHalfLifeDays) × centrality_boost`, where `centrality_boost = 1.0 + CentralityBoostFactor × normalized_pagerank` (range 1.0–1.5). Uses base-2 exponential so that `DecayHalfLifeDays` (1,095 = 3 years) is the exact half-life. `current_confidence` already reflects any prior event-driven decays. Entries below `ArchiveConfidenceFloor` (0.1) are soft-deleted (retained in storage with `archived = true`, excluded from retrieval). |
 | **Community Detection** | `EvolutionEngine.DetectCommunitiesAsync()` | Louvain algorithm over `CALLS`/`SIMILAR_TO` edges → creates `BELONGS_TO_CLUSTER` edges and `Topic` summary nodes in the Semantic layer (GraphRAG pattern). |
 
 ### 3.6 Incremental Sync
@@ -438,7 +440,7 @@ public class MemoryNode
         => (string)this.Inner.Metadata["MemoryLayer"];
 
     public string NodeKind
-        => this.Inner.NodeType;  // "Repo","Workspace","Package","Module","Class","Interface","Function","Method","Property","ExpertiseEntry","Topic"
+        => this.Inner.NodeType;  // "Repo","Workspace","Package","Module","Class","Interface","Function","Method","Property","Topic","External"
 
     public VersionRange Version { get; }
 
@@ -471,9 +473,9 @@ public class MemoryEdge
 
 | Field | Type | Source | Description |
 |---|---|---|---|
-| `Id` | `string` | `HypergraphNode.Id` | Format: `"{relativePath}::{qualifiedName}"` for symbols; `"{relativePath}"` for files; `"/"` for repo root |
+| `Id` | `string` | `HypergraphNode.Id` | Format: `"{relativePath}::{qualifiedName}"` for symbols; `"{relativePath}"` for files; `"/"` for repo root; `"ext:{package}:{qualifiedName}"` for external stubs |
 | `Name` | `string` | `HypergraphNode.Name` | Short name of the symbol |
-| `NodeType` | `string` | `HypergraphNode.NodeType` | `"Repo"`, `"Workspace"` (monorepo only), `"Package"`, `"Module"`, `"Class"`, `"Interface"`, `"Function"`, `"Method"`, `"Property"` |
+| `NodeType` | `string` | `HypergraphNode.NodeType` | `"Repo"`, `"Workspace"` (monorepo only), `"Package"`, `"Module"`, `"Class"`, `"Interface"`, `"Function"`, `"Method"`, `"Property"`, `"External"` |
 | `Language` | `string` | `HypergraphNode.Language` | `"C#"`, `"PowerShell"` |
 | `FilePath` | `string` | `HypergraphNode.FilePath` | Relative path from repo root |
 | `LineStart` / `LineEnd` | `int` | `HypergraphNode.LineStart/LineEnd` | Source location |
@@ -484,7 +486,18 @@ public class MemoryEdge
 | `Metadata["UntilCommit"]` | `string?` | Temporal model | Commit SHA when node was removed (null = still active) |
 | `Metadata["UntilIndex"]` | `int?` | Temporal model | Commit index when removed |
 
+**External boundary nodes** represent out-of-repo dependencies (e.g.,
+`Microsoft.CodeAnalysis`, `System.Management.Automation`). They are stored as
+`HypergraphNode` with `NodeType = "External"`, `MemoryLayer = "call_chain"`, no
+`ContentHash`, no `VersionRange`, and no embedding. They serve as termination
+points for `DEPENDS_ON` and `CALLS` edges that cross the repository boundary.
+
 #### Expertise Nodes (Expertise layer)
+
+Expertise entries are **not** `HypergraphNode` instances. They are first-class
+entities stored in their own `expertise` table (§4.4) and linked to code nodes
+via `APPLIES_TO` edges (which use `HyperedgeType.MemoryRelation`). The
+`ExpertiseEntry` class owns all expertise-specific fields directly:
 
 ```csharp
 public class ExpertiseEntry
@@ -655,10 +668,37 @@ CREATE INDEX idx_audit_session ON audit_log(session_id);
 | `Summary` | `string` | Semantic (Topic) | Evolution Engine |
 | `MemberCount` | `int` | Semantic (Topic) | Evolution Engine |
 | `SimilarityScore` | `double` | Semantic (`SIMILAR_TO` edges) | Semantic Indexer |
+| `OriginalEdgeType` | `string` | Code-derived edges | Extraction Pipeline |
+| `Confidence` | `double` | Call-Chain edges, Expertise edges | Extraction Pipeline / Evolution Engine |
+| `Stale` | `bool` | Call-Chain edges | Incremental Sync |
+| `QualifiedName` | `string` | All nodes | Extraction Pipeline |
+| `LastTouched` | `int` | All nodes | Incremental Sync |
+| `Embedding` | `float[]` | All nodes (serialized) | Semantic Indexer |
+| `EmbeddingModel` | `string` | Nodes with embeddings | Semantic Indexer |
 
 Agent-authored extension keys use the `ext:` prefix (e.g., `ext:team-owner`).
 Keys without `ext:` prefix that are not in the registry produce a validation
 warning at write time.
+
+### 4.6 HyperedgeType Preservation Rule
+
+**Code-derived edges** (CONTAINS, DEPENDS_ON, CALLS, EXTENDS, IMPLEMENTS,
+REFERENCES) retain their original `HyperedgeType` enum value (e.g.,
+`HyperedgeType.MethodInvocation` for a CALLS edge). The canonical semantic
+relation is stored in `Metadata["SemanticRelation"]`, and the original enum
+value is also recorded in `Metadata["OriginalEdgeType"]` for traceability.
+
+**Memory-only edges** (SIMILAR_TO, BELONGS_TO_CLUSTER, APPLIES_TO, SUPERSEDES,
+DERIVED_FROM) use the single new `HyperedgeType.MemoryRelation` enum value.
+Their semantic type is exclusively in `Metadata["SemanticRelation"]`.
+
+This split ensures:
+- Existing `IGraphStore` queries that filter by `HyperedgeType` continue to
+  work unchanged for code-derived edges (backward compatibility).
+- Memory-only edges are invisible to legacy code paths that do not know about
+  `MemoryRelation`.
+- The retrieval engine uses `Metadata["SemanticRelation"]` uniformly for all
+  edges, regardless of their `HyperedgeType`.
 
 ---
 
@@ -1159,16 +1199,16 @@ Tech-spec §12.2 confirms: "No remaining conflicts between this document and
 
 ### 8.2 Alignment with `implementation-plan.md` (Iteration 15+)
 
-The implementation-plan contains **25 naming, data-model, and numeric
+The implementation-plan contains **27 naming, data-model, and numeric
 divergences** from canonical vocabulary defined in this document. **These are
 documentation debt in the implementation-plan, not unresolved conflicts.** This
 document governs on all points (per the implementation-plan's own header, which
 states: "when literal names or values here conflict with `architecture.md`,
 follow `architecture.md`").
 
-Tech-spec §12.3 independently catalogues the same 25 items and confirms the
-canonical resolutions. Implementers who follow the canonical values from this
-document will produce correct code.
+Tech-spec §12.3 independently catalogues 25 of these items and confirms the
+canonical resolutions. Two additional method-name conflicts (S-3, S-4) are
+catalogued below in §8.2.6.
 
 #### 8.2.1 Naming & Type Conflicts (4 items)
 
@@ -1214,20 +1254,22 @@ document will produce correct code.
 | T-4 | Decay half-life = 60 days | **`DecayHalfLifeDays = 1095`** (3 years) | §2.4 |
 | T-5 | Decay formula `e^(−λ×days)` | **`confidence × 2^(−age_days/1095) × (1.0 + 0.5 × normalized_pagerank)`** (base-2, with centrality boost) | §2.4, §3.5 |
 
-#### 8.2.6 Other Conflicts (6 items)
+#### 8.2.6 Other Conflicts (8 items)
 
 | # | impl-plan says | Canonical (this doc) | Governing § |
 |---|---|---|---|
 | M-1 | No explicit embedding model | **`nomic-embed-text`** (768 dims) | §1.3 |
 | S-1 | `IMemoryStore` with annotation CRUD | **`IMemoryGraphStore`** with `GetNodesByLayerAsync`, `UpsertNodeAsync`, etc. | §5.1 |
 | S-2 | `Neo4jMemoryStore` | **`Neo4jMemoryGraphStore`** implementing `IMemoryGraphStore` | §3.2, §5.1 |
+| S-3 | `IMemoryGraphStore` with `ApplyDiffAsync(GraphDiff, ...)`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, `FindByNameAsync`, `RebuildVectorIndexAsync`, `ResolveCommitIndexAsync`, `RegisterCommitAsync` (Stage 1.2) | Canonical methods per §5.1: `GetNodesByLayerAsync`, `GetEdgesBySemanticRelationAsync`, `UpsertNodeAsync`, `RetireNodeAsync`, `GetExpertiseForNodeAsync`, `UpsertExpertiseAsync`, `GetMemoryStatisticsAsync`, `LogAuditAsync`. Traversal uses inherited `IGraphStore` methods. Vector search goes through `IVectorStore` (separate DI dependency), not through graph store. | §5.1 |
+| S-4 | `ApplyDiffAsync` on `IMemoryGraphStore` | `ApplyDiffAsync` belongs to **`IIncrementalSync`** (different interface); it takes `(repoRoot, fromCommit, toCommit)` not `(GraphDiff, commitSha)` | §5.4 |
 | P-1 | `IMemoryStore.cs` in `Ast.GraphDb` | **`IMemoryGraphStore`** in `Ast.Memory/Interfaces/` — no files in `Ast.GraphDb` created/modified | §3.0, §5.1 |
 | P-2 | `Neo4jMemoryStore.cs` | **`Neo4jMemoryGraphStore`** in `Ast.Memory/Storage/`, **composing** existing `Neo4jGraphStore` | §3.2 |
 | P-3 | MCP files in `Ast.Cli` | MCP tools in **`Ast.Memory/Mcp/`**; CLI commands in `Ast.Memory/Cli/`. Only additive `config.AddBranch("memory", ...)` in `Ast.Cli`. | §3.8 |
 
 ### 8.3 Alignment with `e2e-scenarios.md` (Iteration 15+)
 
-The e2e-scenarios document covers **13 features with 79 Gherkin scenarios**.
+The e2e-scenarios document covers **13 features with 82 Gherkin scenarios**.
 It contains 9 presentation-level divergences from canonical vocabulary. All
 are semantically correct — the scenario behaviors match the architecture. The
 divergences are documentation shorthand, not true conflicts.
@@ -1247,5 +1289,5 @@ divergences are documentation shorthand, not true conflicts.
 ### 8.4 Net Assessment
 
 - **tech-spec ↔ architecture:** Fully aligned. Zero remaining conflicts.
-- **implementation-plan ↔ architecture:** 25 naming/numeric divergences, all with stated canonical resolutions. These are documentation debt in the implementation-plan. The implementation-plan's own header defers to this document on all conflicts.
+- **implementation-plan ↔ architecture:** 27 naming/numeric/method-signature divergences, all with stated canonical resolutions. These are documentation debt in the implementation-plan. The implementation-plan's own header defers to this document on all conflicts. Implementers who follow the canonical values from this document will produce correct code.
 - **e2e-scenarios ↔ architecture:** 9 presentation-level divergences, all semantically correct. Two scenarios (E2E-5, E2E-8) exercise out-of-scope features and should be tagged `@deferred`.
