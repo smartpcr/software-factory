@@ -2,12 +2,12 @@
 
 **Story:** `code-intelligence:AGENT-MEMORY`  
 **Points:** 10  
-**Status:** DRAFT — Iteration 10  
+**Status:** DRAFT — Iteration 11  
 
 > **Companion documents** (written in parallel — referenced by name, not duplicated):
-> - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, and ID format. Currently at iteration 14.
+> - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, and ID format. Currently at iteration 15.
 > - [`implementation-plan.md`](implementation-plan.md) — phased work items, deliverables, evaluation harness.
-> - [`e2e-scenarios.md`](e2e-scenarios.md) — BDD Gherkin acceptance scenarios (7 features, 30+ scenarios covering Extraction, Storage, Retrieval, Evolution, End-to-End, and Performance).
+> - [`e2e-scenarios.md`](e2e-scenarios.md) — BDD Gherkin acceptance scenarios (13 features, 78 scenarios covering Structural Extraction, Call-Chain, Semantic, Expertise, Temporal Versioning, Hybrid Retrieval, Incremental Sync, Evolution, Cross-Session Learning, MCP Tool Interface, Backward Compatibility, Performance & Storage, and Graph Schema Integrity).
 >
 > When this document and `architecture.md` disagree on naming, the architecture
 > document governs. This document owns the problem statement, scope/non-goals,
@@ -29,7 +29,7 @@ This draws directly from the *Graph-based Agent Memory* taxonomy (Yang et al., a
 
 ### 1.1 Existing Infrastructure
 
-The system builds on the existing Code Intelligence stack in `src/ast/` (24 `.csproj` projects, 13 test projects, 970+ tests). **Two existing projects receive additive-only changes** (per `architecture.md` §3.0):
+The system builds on the existing Code Intelligence stack in `src/ast/` (24 `.csproj` projects, 13 test projects, ~997 tests). **Two existing projects receive additive-only changes** (per `architecture.md` §3.0):
 
 1. **`Ast.Core`** — one new enum value `HyperedgeType.MemoryRelation` in `HypergraphModels.cs`.
 2. **`Ast.Cli`** — additive `config.AddBranch("memory", ...)` lines in `Program.cs` to register memory sub-commands (Spectre.Console.Cli manual registration — consistent with how the existing 7 commands are registered). MCP tool registration and handler logic live in `Ast.Memory/Mcp/`.
@@ -85,7 +85,7 @@ These are things the system **explicitly will not attempt**, even if technically
 - **Guarantee 100 % call-graph completeness.** Static analysis of dynamic languages (Python `getattr`, JS `eval`) is inherently incomplete. The graph tolerates missing edges and tags each with a `Confidence` value: direct calls = 1.0; dynamic dispatch / callback patterns = 0.5–0.7.
 - **Be a general-purpose knowledge graph.** The schema is purpose-built for code structure. The node types (`Repo`, `Workspace`, `Package`, `Module`, `Class`, `Function`) and four layers (`structural`, `call_chain`, `semantic`, `expertise`) are fixed. Extension is via the `Metadata` dictionary and the Expertise layer, not by adding ad-hoc node or edge types.
 - **Enforce deterministic context construction.** Two identical queries against the same graph may produce slightly different context windows due to embedding non-determinism. This is acceptable; the agent's reasoning layer handles variation.
-- **Modify the base `HypergraphNode` or `Hyperedge` classes.** The memory layer extends these types via the existing `Metadata` dictionary and via composition wrappers (`MemoryNode`, `MemoryEdge`), never via inheritance or new properties on the base classes. This preserves backward compatibility with the existing 970+ tests (see `architecture.md` §4.1).
+- **Modify the base `HypergraphNode` or `Hyperedge` classes.** The memory layer extends these types via the existing `Metadata` dictionary and via composition wrappers (`MemoryNode`, `MemoryEdge`), never via inheritance or new properties on the base classes. This preserves backward compatibility with the existing ~997 tests (see `architecture.md` §4.1).
 
 ---
 
@@ -100,7 +100,7 @@ These are things the system **explicitly will not attempt**, even if technically
 | HC5 | **No cloud / internet calls during retrieval.** Code-node and expertise-node embeddings are pre-computed at extraction and write-back time using the local Ollama embedding service (`http://localhost:11434`, model `nomic-embed-text` — see D1). At retrieval time, the system makes exactly **one local HTTP call** to the same Ollama instance to embed the query text; all subsequent operations — graph traversal, vector-similarity ranking, context assembly — use only pre-computed vectors and local storage. The constraint means: the retrieval path **never contacts a cloud API, remote service, or the internet**. The local Ollama call is permitted because it runs on the same machine with sub-10 ms latency and zero availability dependency on external infrastructure. If Ollama is unavailable, retrieval degrades gracefully: semantic search is skipped and the system falls back to structural + call-chain + expertise retrieval modes only. | Latency SLO: < 500 ms p95 for context construction. |
 | HC6 | **Deterministic graph schema.** Node types and core edge types are fixed (see `architecture.md` §2.2 for the canonical edge taxonomy mapping to `HyperedgeType` enum values). Extension is via `Metadata` keys on existing types and via the Expertise layer's typed nodes, not by adding ad-hoc node/edge types. A single new enum value `HyperedgeType.MemoryRelation` is added to `Ast.Core` for memory-only edges; the true semantic type lives in `Metadata["SemanticRelation"]`. | Schema stability for downstream consumers. |
 | HC7 | **Audit trail.** Every write to the graph (node creation, annotation update, edge addition/removal) is logged in an `audit_log` table with agent-session-id, timestamp, operation type, and detail JSON. This is the post-mortem trail. | Operational: we instrument before we optimise. |
-| HC8 | **Non-breaking extension of Ast.Core.** `MemoryNode` and `MemoryEdge` are composition wrappers that delegate to `HypergraphNode` / `Hyperedge` respectively (i.e., `MemoryNode` contains a `HypergraphNode Inner { get; }` property — **not** class inheritance via `: HypergraphNode`). They provide strongly-typed accessors for memory `Metadata` keys but all inter-component interfaces accept and return the base types. No changes to `HypergraphNode` or `Hyperedge` class signatures. | Backward compatibility: 970+ existing tests must pass unmodified. |
+| HC8 | **Non-breaking extension of Ast.Core.** `MemoryNode` and `MemoryEdge` are composition wrappers that delegate to `HypergraphNode` / `Hyperedge` respectively (i.e., `MemoryNode` contains a `HypergraphNode Inner { get; }` property — **not** class inheritance via `: HypergraphNode`). They provide strongly-typed accessors for memory `Metadata` keys but all inter-component interfaces accept and return the base types. No changes to `HypergraphNode` or `Hyperedge` class signatures. | Backward compatibility: ~997 existing tests must pass unmodified. |
 | HC9 | **Hyperedge semantics preserved.** `Hyperedge` is a multi-node hyperedge with `NodeIds: List<string>` and `Roles: Dictionary<string, string>`, not a binary source→target edge. The memory layer preserves this model. For binary relationships (e.g., CALLS), the hyperedge has exactly 2 `NodeIds` with semantic roles (e.g., `"caller"` / `"callee"`). | Data model consistency with Ast.Core. |
 | HC10 | **Cross-branch expertise visibility.** Expertise-layer nodes are globally visible regardless of the current git branch (see D3). Retrieval does not filter by branch lineage. Staleness is detected via `ContentHash` comparison against the current branch's version of the target code. | Knowledge reuse: insights from feature branches inform work on `main` immediately. |
 | HC11 | **Curated annotation key registry.** `Metadata` keys on memory nodes are governed by `AnnotationKeyRegistry` — a code-defined registry of well-known keys with typed schemas (see D4, §12.4). Agent-authored extension keys use the `ext:` prefix and surface a validation warning. | Schema stability: prevents ad-hoc key proliferation while preserving extensibility. |
@@ -165,6 +165,7 @@ Components map to `src/ast/` projects as detailed in `architecture.md` §3.0.
 | `Module` | Structural | `file_path`, `language`, `hash` | One node per source file. `hash` = SHA-256 for change detection. |
 | `Class` | Structural | `name`, `fqn`, `is_abstract`, `is_exported` | Covers classes, interfaces, structs, enums, records. |
 | `Function` | Structural | `name`, `fqn`, `signature`, `line_start`, `line_end`, `is_exported` | Leaf structural node. |
+| `External` | Call-Chain | `package`, `fqn` | Out-of-repo boundary symbol (stub — no embedding, no `VersionRange`). ID format: `"ext:{package}:{qualifiedName}"` (see `architecture.md` §4.4). Created when in-repo code references NuGet/npm dependencies. Participates in `CALLS` and `REFERENCES` edges but is never extracted or embedded. |
 | `SemanticCluster` | Semantic | `centroid_embedding`, `member_count` | Auto-detected community of similar nodes. |
 | `Topic` | Semantic | `title`, `summary_prose` | GraphRAG-inspired cluster summary. |
 | `Pattern` | Expertise | `title`, `body`, `confidence`, `source_session` | Agent-authored: recurring code pattern. |
@@ -203,7 +204,7 @@ Annotations live in `HypergraphNode.Metadata` (the existing `Dictionary<string, 
 | `ContentHash` | `string` | **Registry** | SHA-256 of source span. |
 | `LastTouched` | `string` (ISO-8601) | **Registry** | Wall-clock time of last extraction (informational). |
 | `Embedding` | `float[]` | **Registry** | Dense vector (general-purpose model — see D1). |
-| `EmbeddingModel` | `string` | **Registry** | Model identifier (e.g., `text-embedding-3-small`). Enables re-embedding on model upgrade. |
+| `EmbeddingModel` | `string` | **Registry** | Model identifier (e.g., `nomic-embed-text`). Enables re-embedding on model upgrade. |
 | `Summary` | `string` | **Registry** | LLM-generated one-liner for the node. |
 | `QualifiedName` | `string` | **Registry** | Fully-qualified name. |
 | `Confidence` | `double` | **Registry** | 0.0–1.0 for edges: direct calls = 1.0; dynamic dispatch = 0.5–0.7. |
@@ -305,7 +306,7 @@ Runs as a post-session consolidation job (see `architecture.md` §3.5):
 | R6 | **Latency regression under concurrent access** — Multiple agent instances querying/writing the same SQLite database. | Low | High | SQLite WAL mode for concurrent reads. Write serialization via in-process mutex. For team deployments, the Neo4j + Qdrant path handles concurrency natively. The `IMemoryGraphStore` interface abstracts backend selection. |
 | R7 | **Privacy / secret leakage into graph** — Extractors might capture string literals, API keys, or secrets embedded in code as part of node summaries or embedding text. | Low | Critical | **Actual source-code surface area:** `HypergraphNode.GetEmbeddingText()` (lines 93–113) produces structural-only text (node type, language, file path, scope, modifiers). However, `GetEnhancedEmbeddingText()` (lines 120–186, used when LSP enrichment is enabled) includes `Metadata["SourceCode"]` if present — up to 2000 characters of source code (see `HypergraphModels.cs` line 175). This means function bodies *can* appear in embedding input text and potentially in stored `Metadata`. **Mitigations:** (1) The Extraction Pipeline controls what goes into `Metadata["SourceCode"]` — extractors should omit string literals and only store signatures + docstrings when the privacy-safe mode is enabled. (2) A pre-write filter rejects nodes whose summary or `SourceCode` metadata matches secret-like patterns (regex for API keys, tokens, connection strings, passwords). (3) The `Embedding` vector itself is a dense float array and cannot be reverse-engineered into source text, so stored vectors are safe even if the input text contained secrets. (4) For high-security deployments, disable `SourceCode` metadata population entirely via `ExtractionOptions`. |
 | R8 | **Over-reliance on graph memory** — Agents may trust stale expertise over fresh file content, producing incorrect fixes. | Medium | High | Context Assembler always includes the *current file content* for the primary task target (read live, not from graph). Graph memory supplements but never replaces reading actual code. A staleness warning is injected into the prompt when expertise `VersionRange.Since` is older than the latest commit touching that file. |
-| R9 | **Breaking existing Ast.Core tests** — Adding `HyperedgeType.MemoryRelation` or modifying `HypergraphNode` could break the 970+ existing tests. | Low | High | HC8 mandates composition-over-inheritance. `MemoryNode` / `MemoryEdge` are wrappers (composition, not inheritance — see `architecture.md` §4.1). Only one additive enum value (`MemoryRelation`) is added to `HyperedgeType` (which currently has 44 values). No properties added to base classes. Implementation-plan Phase 1 gates on zero test regression. |
+| R9 | **Breaking existing Ast.Core tests** — Adding `HyperedgeType.MemoryRelation` or modifying `HypergraphNode` could break the ~997 existing tests. | Low | High | HC8 mandates composition-over-inheritance. `MemoryNode` / `MemoryEdge` are wrappers (composition, not inheritance — see `architecture.md` §4.1). Only one additive enum value (`MemoryRelation`) is added to `HyperedgeType` (which currently has 44 values). No properties added to base classes. Implementation-plan Phase 1 gates on zero test regression. |
 | R10 | **Hyperedge model mismatch** — External consumers may assume binary edges (source→target) while `Hyperedge` uses multi-node `NodeIds` with `Roles`. | Low | Medium | HC9 preserves hyperedge semantics. For binary relationships, exactly 2 `NodeIds` with semantic roles. The Context Assembler renders edges in a familiar `A → B` format for prompt output regardless of internal representation. Documentation in all four plan docs uses the canonical model. |
 
 ---
@@ -319,7 +320,7 @@ Runs as a post-session consolidation job (see `architecture.md` §3.5):
 | **Incremental update** | Re-extraction after a 10-file commit completes in < 2 s | Benchmark harness. |
 | **Agent task accuracy lift** | ≥ 10 % improvement in first-attempt success rate on SWE-Bench-Lite tasks when memory is enabled vs. baseline (no memory) | A/B experiment with matched task sets. This is a stretch goal — may require multiple iteration cycles. |
 | **Storage efficiency** | Active graph for a 100 K-file repo fits in < 500 MB (excluding cold archive) | Size measurement after full extraction + 30-day simulated annotation workload. |
-| **Test regression** | 0 failures in existing 970+ Ast.* and CodeIntelligence tests (across 13 test projects) after memory layer integration | `dotnet test` on all existing test projects — gated in CI. |
+| **Test regression** | 0 failures in existing ~997 Ast.* and CodeIntelligence tests (across 13 test projects) after memory layer integration | `dotnet test` on all existing test projects — gated in CI. |
 | **Expertise accumulation** | After 10 agent sessions on the same repo, ≥ 5 expertise nodes with confidence > 0.7 are retrievable and relevant | Manual validation on the Forge repo. |
 
 ---
@@ -473,14 +474,22 @@ Expertise nodes are **globally visible** regardless of the current git branch. I
 
 ### 12.6 Alignment with `e2e-scenarios.md`
 
-The [`e2e-scenarios.md`](e2e-scenarios.md) document covers 7 features with 30+ Gherkin scenarios across Extraction, Storage, Retrieval, Evolution, End-to-End, and Performance. Architecture.md §10.2 documents 9 alignment items (E2E-1 through E2E-9) describing divergences between the e2e-scenarios and canonical vocabulary. Key points relevant to this tech-spec:
+The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 78 Gherkin scenarios** across Structural Extraction (Feature 1, 7 scenarios), Call-Chain (Feature 2, 7), Semantic (Feature 3, 5), Expertise (Feature 4, 7), Temporal Versioning (Feature 5, 5), Hybrid Retrieval (Feature 6, 9), Incremental Sync (Feature 7, 6), Evolution (Feature 8, 6), Cross-Session Learning (Feature 9, 3), MCP Tool Interface (Feature 10, 7), Backward Compatibility (Feature 11, 4), Performance & Storage (Feature 12, 6), and Graph Schema Integrity (Feature 13, 6). Architecture.md §10.2 documents 9 alignment items (E2E-1 through E2E-9) describing divergences between the e2e-scenarios and canonical vocabulary. Key points relevant to this tech-spec:
 
 - **E2E-1:** Scenario 4.1 uses `called_by` as a result-table label. This is a reverse traversal of `CALLS`, not a stored edge — consistent with this spec §7.2 and D2 (retired names). Scenario is behaviorally correct.
 - **E2E-2/3/4:** Scenarios use presentation aliases (`direct_call`, `polymorphic`, `recursive`) for edge types. All map to `CALLS` edges with varying `Confidence` values — consistent with §7.2.
 - **E2E-5:** Scenario 2.7 uses `service_call` edge type for cross-service RPC. This is out of scope per this spec §3 O1 (runtime/dynamic tracing excluded). Architecture.md §10.2 recommends tagging this scenario `@deferred`.
 - **E2E-6:** Scenarios use unqualified symbol IDs (e.g., `AuthService.login`) as abbreviations. Canonical format is path-based per §7.1 (e.g., `/src/auth/login::AuthService.login`).
+- **E2E-7:** Scenario 2.4 uses `ext::` prefix for boundary nodes. Canonical format: `"ext:{package}:{qualifiedName}"` per `architecture.md` §4.4. Semantics: stub nodes, `NodeType = "External"`, no embedding, no `VersionRange`.
 - **E2E-8:** Scenario 6.4 describes cross-repo memory transfer — out of scope per this spec §3 O2. Should be tagged `@deferred`.
 - **E2E-9:** Scenario 3.4 describes conflict errors on concurrent writes. Architecture specifies SQLite WAL mode (serialized writes, no optimistic-concurrency errors) for local and Neo4j for team mode. The scenario should be adjusted to test write serialization, not conflict errors — consistent with R6 in this spec.
+
+**Features 10–13 alignment** (added in later e2e-scenarios iterations):
+
+- **Feature 10 (MCP Tool Interface):** Scenarios 10.1–10.7 exercise the five MCP tools (`memory_query`, `memory_call_chain`, `memory_find_similar`, `memory_annotate`, `memory_status`) defined in `architecture.md` §5.6. Input/output schemas in the scenarios align with §5.6.1–5.6.2. Scenarios 10.6–10.7 cover error paths (budget exceeds ceiling, missing required fields) — consistent with HC1 (token budget ceiling) and D4 (annotation registry).
+- **Feature 11 (Backward Compatibility):** Scenarios 11.1–11.4 directly validate HC8 (non-breaking extension) and HC9 (hyperedge semantics). Scenario 11.4 requires zero regression across all 13 existing test projects (~997 tests) — consistent with this spec §10 success criteria.
+- **Feature 12 (Performance & Storage):** Scenarios 12.1–12.6 encode the performance SLOs from this spec §10 (p95 < 500 ms, incremental < 2 s, storage < 500 MB) and HC4 (durability) / HC5 (no network during retrieval) / HC7 (audit trail).
+- **Feature 13 (Graph Schema Integrity):** Scenarios 13.1–13.6 validate HC6 (deterministic schema) — all edges carry `SemanticRelation`, binary edges have exactly 2 `NodeIds`, memory-only edges use `HyperedgeType.MemoryRelation`, code-derived edges preserve original `HyperedgeType`, `AnnotationKeyRegistry` validates well-known keys, and node IDs follow canonical format.
 
 ### 12.7 Residual Cross-Document Notes
 
@@ -511,4 +520,4 @@ The [`e2e-scenarios.md`](e2e-scenarios.md) document covers 7 features with 30+ G
 
 ---
 
-*End of tech spec — Iteration 10. All open questions from Iteration 1 are resolved via operator decisions D1–D6. Iteration 10 fixes: (1) fixed §1.1 reuse strategy for `Ast.GraphDb` and `Ast.Query` — both are reference-only, no modifications; new interfaces are in `Ast.Memory` (consistent with architecture.md §3.0, §3.2); (2) updated §12.3 implementation-plan conflict count from 20 to 25 — added §12.3.8 Project Mutation Policy (P-1, P-2, P-3 from architecture.md §10.1.8 iteration 13); renumbered Net Assessment to §12.3.9; (3) fixed §12.7 X-1 to reflect architecture.md §10.3 TS-1's current wording (no longer references "12 (IP1–IP12)" count); added X-4 for TS-5 project mutation policy alignment; (4) all cross-document alignment counts now match architecture.md §10.1 exactly (25 items across 8 categories).*
+*End of tech spec — Iteration 11. All open questions from Iteration 1 are resolved via operator decisions D1–D6. Iteration 11 fixes: (1) updated architecture.md iteration reference from 14 to 15 (current); (2) corrected e2e-scenarios feature/scenario count from "7 features, 30+ scenarios" to "13 features, 78 scenarios" — the e2e document grew to include MCP Tool Interface (Feature 10), Backward Compatibility (Feature 11), Performance & Storage (Feature 12), and Graph Schema Integrity (Feature 13); (3) added `External` node type to §7.1 Node Types table — an out-of-repo boundary stub node defined in architecture.md §4.2; (4) expanded §12.6 e2e alignment section with Features 10–13 coverage notes, including E2E-7 (boundary node ID format) previously omitted; (5) updated test count from "970+" to "~997" (verified via `[TestMethod]` attribute count across 13 test projects).*
