@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <RootNamespace>CodeIntelligence.GraphMemory</RootNamespace>
+    <AssemblyName>CodeIntelligence.GraphMemory</AssemblyName>
+    <Description>Canonical contract model for the code knowledge graph used by agent memory.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- No external dependencies beyond the BCL for the contract library. -->
+  </ItemGroup>
+
+</Project>

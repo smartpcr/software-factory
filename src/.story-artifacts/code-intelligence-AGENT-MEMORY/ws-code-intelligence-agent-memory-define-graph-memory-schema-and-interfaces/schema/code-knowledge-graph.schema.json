@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://code-intelligence.dev/schemas/graph-memory/v1.0",
+  "title": "CodeKnowledgeGraph",
+  "description": "Code knowledge graph schema v1.0. Forward-compatible: consumers must tolerate unknown properties and enum values. See VERSIONING.md.",
+  "type": "object",
+  "required": [
+    "schemaVersion"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "$ref": "#/$defs/SchemaVersion"
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GraphNode"
+      },
+      "default": []
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GraphEdge"
+      },
+      "default": []
+    },
+    "metadata": {
+      "$ref": "#/$defs/PropertyBag"
+    }
+  },
+  "$defs": {
+    "EdgeKind": {
+      "title": "EdgeKind",
+      "type": "string",
+      "examples": [
+        "contains",
+        "calls",
+        "imports",
+        "inherits",
+        "expertise",
+        "similarTo"
+      ],
+      "description": "Known values: contains, calls, imports, inherits, expertise, similarTo. Additional values may be added in future minor versions."
+    },
+    "GraphEdge": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sourceNodeId": {
+          "type": "string"
+        },
+        "targetNodeId": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/EdgeKind"
+        },
+        "weight": {
+          "type": "number"
+        },
+        "properties": {
+          "$ref": "#/$defs/PropertyBag"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "sourceNodeId",
+        "targetNodeId",
+        "kind"
+      ]
+    },
+    "GraphNode": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/NodeKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "qualifiedName": {
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/SourceLocation"
+        },
+        "language": {
+          "type": "string"
+        },
+        "properties": {
+          "$ref": "#/$defs/PropertyBag"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "name"
+      ]
+    },
+    "NodeKind": {
+      "title": "NodeKind",
+      "type": "string",
+      "examples": [
+        "repo",
+        "module",
+        "file",
+        "class",
+        "function",
+        "variable"
+      ],
+      "description": "Known values: repo, module, file, class, function, variable. Additional values may be added in future minor versions."
+    },
+    "PropertyBag": {
+      "type": "object",
+      "description": "Extensible property bag. Keys must match pattern: ^[a-zA-Z][a-zA-Z0-9_.]*$",
+      "propertyNames": {
+        "pattern": "^[a-zA-Z][a-zA-Z0-9_.]*$"
+      },
+      "additionalProperties": true
+    },
+    "SchemaVersion": {
+      "type": "object",
+      "properties": {
+        "major": {
+          "type": "integer"
+        },
+        "minor": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "major",
+        "minor"
+      ]
+    },
+    "SourceLocation": {
+      "type": "object",
+      "properties": {
+        "filePath": {
+          "type": "string"
+        },
+        "startLine": {
+          "type": "integer"
+        },
+        "startColumn": {
+          "type": "integer"
+        },
+        "endLine": {
+          "type": "integer"
+        },
+        "endColumn": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "filePath"
+      ]
+    }
+  }
+}
