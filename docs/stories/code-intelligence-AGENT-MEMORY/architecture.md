@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 43
+> **Status:** Iteration 44
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -15,7 +15,7 @@
 > | Document | Owns | Alignment status |
 > |---|---|---|
 > | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | At iteration 23. Contains stale wording in 10 locations (§8.1 inventory). Architecture governs on all — no unresolved conflicts. |
-> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Uses canonical vocabulary; defers to this doc on conflicts. Three notation-level clarifications documented in §8.2. Architecture governs on all — no unresolved conflicts. |
+> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Uses canonical vocabulary; defers to this doc on conflicts. Three notation-level clarifications documented in §8.2 — including R-2 (`UpsertEdgeAsync` omitted from impl-plan's 12-method count; canonical count is 13 — see §8.2 for full method list). Architecture governs on all — no unresolved conflicts. |
 > | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Fully aligned. All 10 previously-catalogued items corrected in current iteration. |
 
 ---
@@ -83,7 +83,7 @@ projects total — 11 production, 13 test — verified via directory listing).
 **Two existing projects receive additive-only changes:**
 
 1. **`Ast.Core`** (`src/ast/Ast.Core/HypergraphModels.cs`) — one new enum
-   value `HyperedgeType.MemoryRelation` appended to the existing 33-value
+   value `HyperedgeType.MemoryRelation` appended to the existing 44-value
    `HyperedgeType` enum (lines 12–69).
 2. **`Ast.Cli`** (`src/ast/Ast.Cli/Program.cs`) — additive
    `config.AddBranch("memory", ...)` block appended after the existing 7
@@ -96,7 +96,7 @@ dependencies, never mutated beyond the two additive changes above.
 
 | Existing project | Key types (verified source paths) | How memory layer uses it |
 |---|---|---|
-| **Ast.Core** | `HypergraphNode`, `Hyperedge`, `HyperedgeType` (33 values) — `HypergraphModels.cs`; `RepositoryProcessor` — `RepositoryProcessor.cs` | Reference types via `Metadata` dict. One additive enum value `MemoryRelation`. |
+| **Ast.Core** | `HypergraphNode`, `Hyperedge`, `HyperedgeType` (44 values) — `HypergraphModels.cs`; `RepositoryProcessor` — `RepositoryProcessor.cs` | Reference types via `Metadata` dict. One additive enum value `MemoryRelation`. |
 | **Ast.GraphDb** | `IGraphStore : IAsyncDisposable, IDisposable` — `IGraphStore.cs`; `Neo4jGraphStore` — `Neo4jGraphStore.cs`; `NodeFilter`, `GraphPath`, `NodeWithDepth` — `GraphModels.cs` | `Ast.Memory` defines `IMemoryGraphStore` extending `IGraphStore` in its own project. Zero files in `Ast.GraphDb/` modified. |
 | **Ast.Embedding** | `IEmbeddingGenerator : IDisposable` — `IEmbeddingGenerator.cs`; `CodeEmbeddingService` — `CodeEmbeddingService.cs`; `EmbeddingGeneratorOptions.ModelName` defaults to `"nomic-embed-text"` — `EmbeddingModels.cs` | Reuse directly. `Ast.Memory` calls `GenerateBatchEmbeddingsAsync()`. |
 | **Ast.Query** | `ICodeQuery` — `ICodeQuery.cs`; `HybridQueryService` — `HybridQueryService.cs`; `ScoredNode` — `QueryModels.cs` | Reference only. `Ast.Memory` defines `IMemoryRetrievalEngine` that internally composes `ICodeQuery`. |
@@ -1530,7 +1530,7 @@ the canonical definition are resolved by governance:
 | # | Topic | impl-plan wording | Canonical definition (this doc) | Status |
 |---|---|---|---|---|
 | R-1 | `MemoryEdge.Version` nullability | Listed as `VersionRange Version` without explicit non-nullable annotation | `VersionRange Version` is non-nullable — all edges carry versioning (§4.1, §4.3) | **Resolved.** Correct behavior; annotation is presentational. |
-| R-2 | `UpsertEdgeAsync` method | Stage 1.2 lists 12 methods (omitting `UpsertEdgeAsync`). Stage 2.1 line 126 says "inherited `IGraphStore` edge-creation methods." | **Canonical interface has 13 methods** (§5.1), including `UpsertEdgeAsync(Hyperedge, VersionRange, CancellationToken)`. All edge-writing code paths must use `UpsertEdgeAsync` to set temporal and denormalized columns. The base `IGraphStore` does not define `UpsertEdgeAsync` — it is a memory-layer addition. Implementors **must not** fall back to `IGraphStore.CreateEdgesAsync()` for memory edges, as that method does not set `since_index`, `until_index`, `semantic_rel`, or `memory_layer` denormalized columns. | **Resolved by governance.** Implementations follow §5.1. |
+| R-2 | `UpsertEdgeAsync` method | Stage 1.2 test scenario (line 55) says "declares all 12 methods" and lists them without `UpsertEdgeAsync`. Stage 2.1 (line 126) says "inherited `IGraphStore` edge-creation methods" instead of calling `UpsertEdgeAsync`. | **Canonical interface has 13 methods** (§5.1): `GetNodesByLayerAsync`, `GetEdgesBySemanticRelationAsync`, `UpsertNodeAsync`, **`UpsertEdgeAsync`**, `RetireNodeAsync`, `RetireEdgeAsync`, `UpdateEdgeMetadataAsync`, `GetExpertiseForNodeAsync`, `UpsertExpertiseAsync`, `ArchiveExpertiseAsync`, `GetArchivedExpertiseAsync`, `GetMemoryStatisticsAsync`, `LogAuditAsync`. The impl-plan's "12 methods" count is stale — `UpsertEdgeAsync(Hyperedge, VersionRange, CancellationToken)` is required. All edge-writing code paths must use `UpsertEdgeAsync` (not `IGraphStore.CreateEdgesAsync()`) to set `since_index`, `until_index`, `semantic_rel`, and `memory_layer` denormalized columns. | **Resolved by governance.** Implementations follow §5.1. |
 | R-3 | Decay formula notation | Stage 5.3 line 318: `decayed_confidence = current_confidence × 2^(−age_days / DecayHalfLifeDays) × centrality_boost` — this puts `centrality_boost` (range 1.0–1.5) as an **output multiplier**, which would **incorrectly increase** confidence above `current_confidence`. | **Canonical formula** (§3.5): `final = event_adjusted_confidence × 2^(−age_days / (DecayHalfLifeDays × centrality_boost))` — centrality extends the half-life in the **exponent denominator**, producing a `time_factor ≤ 1.0` that can only decrease confidence. The impl-plan formula is algebraically wrong; implementors must follow §3.5. | **Resolved by governance.** Implementations follow §3.5. |
 
 Previously-catalogued naming/composition/schema conflicts have all been
