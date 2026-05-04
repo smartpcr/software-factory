@@ -2,12 +2,12 @@
 
 **Story:** `code-intelligence:AGENT-MEMORY`  
 **Points:** 10  
-**Status:** DRAFT — Iteration 12  
+**Status:** DRAFT — Iteration 13  
 
 > **Companion documents** (written in parallel — referenced by name, not duplicated):
-> - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, and ID format. Currently at iteration 16.
+> - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, and ID format. Currently at iteration 17.
 > - [`implementation-plan.md`](implementation-plan.md) — phased work items, deliverables, evaluation harness.
-> - [`e2e-scenarios.md`](e2e-scenarios.md) — BDD Gherkin acceptance scenarios (13 features, 78 scenarios covering Structural Extraction, Call-Chain, Semantic, Expertise, Temporal Versioning, Hybrid Retrieval, Incremental Sync, Evolution, Cross-Session Learning, MCP Tool Interface, Backward Compatibility, Performance & Storage, and Graph Schema Integrity).
+> - [`e2e-scenarios.md`](e2e-scenarios.md) — BDD Gherkin acceptance scenarios (13 features, 79 scenarios covering Structural Extraction, Call-Chain, Semantic, Expertise, Temporal Versioning, Hybrid Retrieval, Incremental Sync, Evolution, Cross-Session Learning, MCP Tool Interface, Backward Compatibility, Performance & Storage, and Graph Schema Integrity).
 >
 > When this document and `architecture.md` disagree on naming, the architecture
 > document governs. This document owns the problem statement, scope/non-goals,
@@ -474,7 +474,7 @@ Expertise nodes are **globally visible** regardless of the current git branch. I
 
 ### 12.6 Alignment with `e2e-scenarios.md`
 
-The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 78 Gherkin scenarios** across Structural Extraction (Feature 1, 7 scenarios), Call-Chain (Feature 2, 7), Semantic (Feature 3, 5), Expertise (Feature 4, 7), Temporal Versioning (Feature 5, 5), Hybrid Retrieval (Feature 6, 9), Incremental Sync (Feature 7, 6), Evolution (Feature 8, 6), Cross-Session Learning (Feature 9, 3), MCP Tool Interface (Feature 10, 7), Backward Compatibility (Feature 11, 4), Performance & Storage (Feature 12, 6), and Graph Schema Integrity (Feature 13, 6). Architecture.md §10.2 documents 9 alignment items (E2E-1 through E2E-9) describing divergences between the e2e-scenarios and canonical vocabulary. Key points relevant to this tech-spec:
+The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 79 Gherkin scenarios** across Structural Extraction (Feature 1, 8 scenarios), Call-Chain (Feature 2, 7), Semantic (Feature 3, 5), Expertise (Feature 4, 7), Temporal Versioning (Feature 5, 5), Hybrid Retrieval (Feature 6, 9), Incremental Sync (Feature 7, 6), Evolution (Feature 8, 6), Cross-Session Learning (Feature 9, 3), MCP Tool Interface (Feature 10, 7), Backward Compatibility (Feature 11, 4), Performance & Storage (Feature 12, 6), and Graph Schema Integrity (Feature 13, 6). Architecture.md §10.3 documents 9 alignment items (E2E-1 through E2E-9) describing divergences between the e2e-scenarios and canonical vocabulary. Key points relevant to this tech-spec:
 
 - **E2E-1:** Scenario 4.1 uses `called_by` as a result-table label. This is a reverse traversal of `CALLS`, not a stored edge — consistent with this spec §7.2 and D2 (retired names). Scenario is behaviorally correct.
 - **E2E-2/3/4:** Scenarios use presentation aliases (`direct_call`, `polymorphic`, `recursive`) for edge types. All map to `CALLS` edges with varying `Confidence` values — consistent with §7.2.
@@ -520,4 +520,4 @@ The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 78
 
 ---
 
-*End of tech spec — Iteration 12. All open questions from Iteration 1 are resolved via operator decisions D1–D6. Iteration 12 fixes: (1) updated architecture.md iteration reference from 15 to 16 (current); (2) updated tech-spec iteration label from 11 to 12; (3) verified e2e-scenarios feature/scenario counts remain accurate (13 features, 78 scenarios); (4) confirmed architecture.md §10.1 alignment table — all entries still current with no new divergences; (5) verified source-code references (embedding model defaults, HyperedgeType enum count, existing project list) remain accurate against latest codebase.*
+*End of tech spec — Iteration 13. All open questions from Iteration 1 are resolved via operator decisions D1–D6. Iteration 13 fixes: (1) updated architecture.md iteration reference from 16 to 17 (current); (2) corrected e2e-scenarios total scenario count from 78 to 79 (Feature 1 has 8 scenarios including Scenario 1.8 — HyperedgeType enum mapping); (3) corrected e2e alignment section reference from architecture.md §10.2 to §10.3 (§10.3 is the e2e-scenarios alignment section; §10.2 covers implementation-plan divergences); (4) verified all architecture.md section cross-references against current §-numbering; (5) confirmed source-code references (embedding model defaults, HyperedgeType enum count, existing project list) remain accurate against latest codebase.*
