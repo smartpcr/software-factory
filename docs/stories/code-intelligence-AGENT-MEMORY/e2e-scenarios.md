@@ -96,12 +96,20 @@ Feature: Structural Layer — Repository Structure Graph Construction
     And external imports ("Microsoft.CodeAnalysis") do not produce graph edges
       because external dependencies are out of scope (tech-spec §3 O2)
 
-  Scenario: 1.4 — PowerShell module extraction
+  Scenario: 1.4 — C# source extraction in Ast.PowerShell package
     Given the file "src/ast/Ast.PowerShell/PowerShellAstParser.cs" exists
-    When the extraction pipeline processes the file
-    Then the graph contains a Module node for the file
-    And symbol nodes are created for the PowerShellAstParser class and its methods
+    And it contains class PowerShellAstParser with methods ParseFile, ParseCode, ParseRepository
+    When the extraction pipeline processes the file as C# source
+    Then the graph contains a Module node "/src/ast/Ast.PowerShell/PowerShellAstParser.cs"
+    And symbol nodes are created:
+      | node_id                                                                       | NodeType |
+      | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser            | Class    |
+      | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser.ParseFile  | Function |
+      | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser.ParseCode  | Function |
+      | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser.ParseRepository | Function |
     And the Module node is linked to Package "/src/ast/Ast.PowerShell" via CONTAINS
+    And a DEPENDS_ON edge exists from the Module to the System.Management.Automation namespace
+      (external, so no graph edge — only internal DEPENDS_ON edges are stored)
 
   Scenario: 1.5 — Repository with no parseable source files
     Given a test directory containing only:
@@ -166,7 +174,7 @@ Feature: Call-Chain Layer — Call Graph Extraction
     Given this call chain exists in the src/ast/ codebase:
       | caller_file                                    | caller_method                           | callee_method                                      |
       | src/ast/Ast.Core/RepositoryProcessor.cs        | RepositoryProcessor.Process             | CSharpHyperedgeExtractor.Extract (via CSharpExtractor delegate) |
-      | src/ast/Ast.Csharp/CSharpHyperedgeExtractor.cs | CSharpHyperedgeExtractor.ExtractNode    | CSharpHyperedgeExtractor.ExtractMethodDefinition   |
+      | src/ast/Ast.Csharp/CSharpHyperedgeExtractor.cs | CSharpHyperedgeExtractor.Extract        | CSharpHyperedgeExtractor.ExtractMethodDefinition   |
     When the retrieval engine resolves the call chain from RepositoryProcessor.Process with depth 2
     Then the TraversalResult.Paths contains at least one path of length 2
     And each intermediate node carries its FilePath and Metadata["QualifiedName"]
@@ -193,12 +201,20 @@ Feature: Call-Chain Layer — Call Graph Extraction
     And Metadata["SemanticRelation"] = "IMPLEMENTS"
 
   Scenario: 2.5 — Cross-language call edges (C# ↔ PowerShell)
-    Given a C# method invokes a PowerShell script via CrossLanguageMethodCall
-    When the call-chain analyzer processes both files
+    Given a PowerShell script at "scripts/deploy.ps1" contains:
+      """
+      $processor = [Ast.Core.RepositoryProcessor]::new($repoPath)
+      $processor.Process()
+      """
+    And the C# method RepositoryProcessor.Process exists at
+      "src/ast/Ast.Core/RepositoryProcessor.cs"
+    When the call-chain analyzer processes both files via
+      RepositoryProcessor.ExtractCrossLanguageReferences
     Then a CALLS edge is created with:
-      | SemanticRelation | Metadata.OriginalEdgeType | Languages         |
-      | CALLS            | CrossLanguageMethodCall   | ["C#","PowerShell"] |
+      | SemanticRelation | Metadata.OriginalEdgeType | Roles.caller                        | Roles.callee                                                            |
+      | CALLS            | CrossLanguageMethodCall   | /scripts/deploy.ps1::invoke_Process | /src/ast/Ast.Core/RepositoryProcessor.cs::RepositoryProcessor.Process   |
     And the edge's IsCrossLanguage property returns true
+      (per Hyperedge.IsCrossLanguage — Languages.Distinct().Count() > 1)
 
   Scenario: 2.6 — Recursive call does not cause infinite expansion
     Given a function calls itself recursively
@@ -331,7 +347,7 @@ Feature: Expertise Layer — Agent Learning and Write-Back
     Then an Insight node is created linked to the CodeIntelligence package
 
   Scenario: 4.5 — Duplicate expertise triggers DERIVED_FROM edge
-    Given an existing Pitfall node "expertise:pitfall:aaa11111" with Title
+    Given an existing Pitfall node "expertise:pitfall:a1a11111" with Title
       "Metadata access may throw KeyNotFoundException"
     And it applies to "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
     When the agent records a new Pitfall with Title
@@ -339,7 +355,7 @@ Feature: Expertise Layer — Agent Learning and Write-Back
     And the cosine similarity between old and new expertise > SimilarityThreshold (0.85)
     Then a DERIVED_FROM edge is created:
       | SemanticRelation | Roles.derived                | Roles.source                 |
-      | DERIVED_FROM     | expertise:pitfall:<new_hash> | expertise:pitfall:aaa11111   |
+      | DERIVED_FROM     | expertise:pitfall:<new_hash> | expertise:pitfall:a1a11111   |
     And a consolidation is scheduled
 
   Scenario: 4.6 — Expertise with invalid AppliesTo target is rejected
@@ -581,17 +597,17 @@ Feature: Evolution Engine — Consolidation and Decay
 
   Scenario: 8.1 — Consolidation merges overlapping expertise via SUPERSEDES
     Given 3 Pitfall nodes about "null handling in Metadata access":
-      | Id                        | Confidence | SourceAgent          |
-      | expertise:pitfall:aaa111  | 0.8        | copilot-session-10   |
-      | expertise:pitfall:bbb222  | 0.9        | copilot-session-15   |
-      | expertise:pitfall:ccc333  | 1.0        | copilot-session-20   |
+      | Id                         | Confidence | SourceAgent          |
+      | expertise:pitfall:aa11bb22 | 0.8        | copilot-session-10   |
+      | expertise:pitfall:cc33dd44 | 0.9        | copilot-session-15   |
+      | expertise:pitfall:ee55ff66 | 1.0        | copilot-session-20   |
     When IEvolutionEngine.ConsolidateAsync runs for scope "/src/ast/Ast.Core"
     Then 1 merged expertise node is produced
     And SUPERSEDES edges are created:
-      | SemanticRelation | Roles.newer                   | Roles.older                  |
-      | SUPERSEDES       | expertise:pitfall:<merged>    | expertise:pitfall:aaa111     |
-      | SUPERSEDES       | expertise:pitfall:<merged>    | expertise:pitfall:bbb222     |
-      | SUPERSEDES       | expertise:pitfall:<merged>    | expertise:pitfall:ccc333     |
+      | SemanticRelation | Roles.newer                   | Roles.older                   |
+      | SUPERSEDES       | expertise:pitfall:<merged>    | expertise:pitfall:aa11bb22    |
+      | SUPERSEDES       | expertise:pitfall:<merged>    | expertise:pitfall:cc33dd44    |
+      | SUPERSEDES       | expertise:pitfall:<merged>    | expertise:pitfall:ee55ff66    |
     And the ConsolidationReport shows:
       | field       | value |
       | Merged      | 3     |
