@@ -46,7 +46,7 @@ Feature: Structural Layer — Repository Structure Graph Construction
 
   Scenario: 1.1 — Ingest src/ast/ and produce structural layer graph
     When the extraction pipeline processes the repository root
-    Then the graph contains Package nodes for each .csproj:
+    Then the graph contains Package nodes for each non-test .csproj, including:
       | node_id               | NodeType | Metadata.MemoryLayer |
       | /src/ast/Ast.Core      | Package  | structural           |
       | /src/ast/Ast.Csharp    | Package  | structural           |
@@ -56,6 +56,7 @@ Feature: Structural Layer — Repository Structure Graph Construction
       | /src/ast/Ast.Query     | Package  | structural           |
       | /src/ast/Ast.VectorDb  | Package  | structural           |
       | /src/ast/Ast.Lsp       | Package  | structural           |
+      | /src/ast/Ast.Cli       | Package  | structural           |
       | /src/ast/CodeIntelligence | Package | structural        |
     And the repo root node has Id "/" and NodeType "Repo"
     And each Package node is connected to "/" via a CONTAINS edge:
@@ -201,18 +202,25 @@ Feature: Call-Chain Layer — Call Graph Extraction
     And Metadata["SemanticRelation"] = "IMPLEMENTS"
 
   Scenario: 2.5 — Cross-language call edges (C# ↔ PowerShell)
-    Given a PowerShell script at "scripts/deploy.ps1" contains:
+    Given a PowerShell script at "scripts/dev.ps1" contains a C# type reference:
       """
       $processor = [Ast.Core.RepositoryProcessor]::new($repoPath)
       $processor.Process()
       """
     And the C# method RepositoryProcessor.Process exists at
       "src/ast/Ast.Core/RepositoryProcessor.cs"
-    When the call-chain analyzer processes both files via
-      RepositoryProcessor.ExtractCrossLanguageReferences
-    Then a CALLS edge is created with:
-      | SemanticRelation | Metadata.OriginalEdgeType | Roles.caller                        | Roles.callee                                                            |
-      | CALLS            | CrossLanguageMethodCall   | /scripts/deploy.ps1::invoke_Process | /src/ast/Ast.Core/RepositoryProcessor.cs::RepositoryProcessor.Process   |
+    When RepositoryProcessor.Process is called with the full repo
+      (cross-language references are extracted internally during processing)
+    Then a CrossLanguageMethodCall edge is created between the PS reference node
+      and the C# RepositoryProcessor.Process node
+    And the PS reference node has:
+      | field    | value                   |
+      | Id       | cross_<md5hash12>       |
+      | NodeType | method_call             |
+      | Language | powershell              |
+      | FilePath | scripts/dev.ps1         |
+    And the edge has Metadata["SemanticRelation"] = "CALLS"
+    And the edge has Metadata["OriginalEdgeType"] = "CrossLanguageMethodCall"
     And the edge's IsCrossLanguage property returns true
       (per Hyperedge.IsCrossLanguage — Languages.Distinct().Count() > 1)
 
@@ -858,6 +866,7 @@ Feature: Backward Compatibility — Existing Tests Unbroken
       | Ast.GraphDb.UnitTests            |
       | Ast.Query.UnitTests              |
       | Ast.VectorDb.UnitTests           |
+      | Ast.Lsp.UnitTests                |
       | CodeIntelligence.UnitTests       |
     Then all tests pass with 0 failures
     And the total test count matches or exceeds the pre-memory-layer baseline
