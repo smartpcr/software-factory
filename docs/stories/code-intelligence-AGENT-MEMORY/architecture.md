@@ -17,7 +17,25 @@ sessions accumulate institutional knowledge — patterns discovered, pitfalls
 flagged, architectural context mapped — so that every subsequent session starts
 with richer understanding than the one before.
 
-### 1.2 Scope
+### 1.2 Relationship to Existing Infrastructure
+
+This system builds on top of the existing **Code Intelligence** stack in
+`src/ast/`, which already provides:
+
+| Existing project | Capability | Reuse strategy |
+|---|---|---|
+| **Ast.Core** (`HypergraphNode`, `Hyperedge`, `HyperedgeType`) | AST node/edge models, repository processor | Extend models with version-range and annotation fields; wrap `RepositoryProcessor` as one extraction adapter. |
+| **Ast.GraphDb** (`IGraphStore`, `Neo4jGraphStore`) | Graph persistence with Neo4j backend | Extend `IGraphStore` with temporal query methods and layer-aware traversal; add SQLite adapter for local mode. |
+| **Ast.Embedding** (`IEmbeddingGenerator`, `CodeEmbeddingService`) | Vector embedding generation | Reuse directly for Semantic layer embeddings; extend `HypergraphNode.GetEnhancedEmbeddingText()` for richer input. |
+| **Ast.Query** (`ICodeQuery`, `HybridQueryService`) | Fluent graph + vector search | Extend with memory-aware retrieval modes (EXPERTISE_RECALL, HYBRID); add token-budgeted context assembly. |
+| **Ast.VectorDb** | Qdrant-based ANN index | Reuse for Semantic layer vector search; add SQLite-vss adapter for local mode. |
+| **Ast.Lsp** | Language Server Protocol integration | Optional enrichment — provides type-resolved call edges when an LSP is running. |
+| **CodeIntelligence** | Analyzers, detectors, relationship graph builder | Consume its `RelationshipGraphBuilder` output as a source of call-chain and structural edges. |
+
+See the [Code Intelligence Master Architecture](../../CODE_INTELLIGENCE_ARCHITECTURE.md)
+for the full existing system design.
+
+### 1.3 Scope
 
 | In scope | Out of scope |
 |---|---|
@@ -26,6 +44,26 @@ with richer understanding than the one before.
 | Context retrieval for agent prompts | User authentication and billing |
 | Expertise write-back and consolidation | Runtime / dynamic analysis |
 | Incremental updates on commit | Multi-repo federated graphs |
+
+### 1.4 Sibling Documents
+
+This architecture document is part of a four-document planning set. Each
+document owns a distinct concern; shared concepts are referenced by name.
+
+| Document | Owns |
+|---|---|
+| **architecture.md** (this file) | Components, data model, interfaces, sequence flows |
+| [tech-spec.md](tech-spec.md) | Problem statement, scope/non-goals, hard constraints, risks, success criteria |
+| [implementation-plan.md](implementation-plan.md) | Phased work items, deliverables, dependencies, evaluation harness |
+| [e2e-scenarios.md](e2e-scenarios.md) | BDD Gherkin scenarios for each feature |
+
+**Layer naming alignment:** The tech-spec uses four *trust-separated* layer
+names (Fact, Derived, Interaction, Temporal). This architecture uses four
+*purpose-separated* layer names (Structural, Call-Chain, Semantic, Expertise).
+The mapping: Fact ≈ Structural + Call-Chain; Derived ≈ Semantic; Interaction ≈
+Expertise; Temporal is an orthogonal concern (version ranges on all layers).
+Both views are valid projections of the same graph; the implementation uses a
+single `layer` tag per node/edge so either lens can be applied at query time.
 
 ---
 
@@ -55,7 +93,28 @@ architecture.
 
 ---
 
-## 2. Components
+## 3. Components
+
+### 3.0 Integration Map — New vs. Existing Projects
+
+The agent memory system is delivered as a mix of new projects and extensions to
+existing ones. The `src/ast/` directory is the home for all code intelligence
+work.
+
+| Component (architecture) | Project | Status | Notes |
+|---|---|---|---|
+| Extraction Pipeline — Language Parser | `Ast.Core` / `Ast.Csharp` / `Ast.PowerShell` | **Existing** — extend | Add `version_range` to `HypergraphNode`; wrap parsers behind a unified `ILanguageParser` interface. |
+| Extraction Pipeline — Structure Builder | New: `Ast.Memory.Extraction` | **New** | Consumes `HypergraphNode` stream, builds Structural-layer containment hierarchy. |
+| Extraction Pipeline — Call-Chain Analyzer | New: `Ast.Memory.Extraction` | **New** | Reads `Hyperedge` of type `MethodInvocation`, `ConstructorInvocation`, etc., emits typed CALLS/OVERRIDES edges. |
+| Extraction Pipeline — Semantic Indexer | `Ast.Embedding` / `CodeEmbeddingService` | **Existing** — reuse | Produces dense vectors via `IEmbeddingGenerator`; attaches to nodes. |
+| Extraction Pipeline — Fact Normalizer | New: `Ast.Memory.Extraction` | **New** | Dedup, stable ID assignment, content hashing, version-range stamping. |
+| Graph Store | `Ast.GraphDb` (`IGraphStore`, `Neo4jGraphStore`) | **Existing** — extend | Add `ApplyDiffAsync`, `TraverseAsync`, temporal range queries. Add `SqliteGraphStore` for local mode. |
+| Vector Index | `Ast.VectorDb` | **Existing** — reuse | Qdrant for team mode; add in-process HNSW for local mode. |
+| Retrieval Engine | `Ast.Query` (`ICodeQuery`, `HybridQueryService`) | **Existing** — extend | Add retrieval modes (STRUCTURAL_DRILL, CALL_TRACE, EXPERTISE_RECALL, HYBRID), Budget Controller, Ranker. |
+| Context Assembler | New: `Ast.Memory.Context` | **New** | Markdown context-block formatter with hierarchy compression and dedup. |
+| Evolution Engine | New: `Ast.Memory.Evolution` | **New** | Expertise write-back, LLM-powered consolidation, confidence decay. |
+| Incremental Sync | New: `Ast.Memory.Sync` | **New** | File-system watcher + git-diff driver, triggers extraction pipeline. |
+| Agent API / MCP | New: `Ast.Memory.Api` | **New** | Exposes retrieve + write-back as MCP tool or gRPC/HTTP service. |
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -84,7 +143,7 @@ architecture.
     └─────────┘                              └─────────────┘
 ```
 
-### 2.1 Extraction Pipeline
+### 3.1 Extraction Pipeline
 
 **Responsibility:** Parse source code into typed graph nodes and edges across
 the four graph layers.
@@ -97,13 +156,18 @@ the four graph layers.
 | **Semantic Indexer** | Docstrings, comments, symbol names | Semantic-layer embedding vectors attached to nodes | Produces dense vector embeddings (e.g., code-embedding model) for similarity retrieval. |
 | **Fact Normalizer** | Raw nodes/edges from above | Canonical graph facts with `version_range` and `content_hash` | De-duplicates, assigns stable IDs, attaches commit metadata. |
 
-**Key design choice — tree-sitter first:** Tree-sitter provides
-language-agnostic AST parsing with sub-second latency per file and works
-offline. The LSP adapter is optional and additive — it enriches the graph
-with type-resolved edges when a language server is running. The pipeline must
-never block on an LSP.
+**Key design choice — existing parsers first:** The existing `Ast.Core`
+`RepositoryProcessor` and `Ast.Csharp` / `Ast.PowerShell` parsers already
+extract `HypergraphNode` and `Hyperedge` records with `HyperedgeType` values
+covering `MethodInvocation`, `ConstructorInvocation`, `UsingDirective`,
+`Implements`, `Extends`, and 30+ other edge types. The Extraction Pipeline
+wraps these as its primary adapter. Tree-sitter adapters can be added for
+languages not yet covered (TypeScript, Python, Go) without changing the core
+pipeline. The LSP adapter (via `Ast.Lsp`) is optional and additive — it
+enriches the graph with type-resolved edges when a language server is running.
+The pipeline must never block on an LSP.
 
-### 2.2 Graph Store
+### 3.2 Graph Store
 
 **Responsibility:** Persist the four graph layers, serve traversal and
 pattern queries, manage versioned snapshots.
@@ -121,12 +185,14 @@ same node ID namespace so cross-layer joins are natural.
 | **Semantic** | `SemanticCluster`, `Topic` | `SIMILAR_TO`, `BELONGS_TO_CLUSTER` | Grouping by embedding similarity. Enables "find all code related to X" queries. |
 | **Expertise** | `Pattern`, `Pitfall`, `Preference`, `Insight` | `APPLIES_TO`, `SUPERSEDES`, `DERIVED_FROM` | Agent-authored knowledge. Grows over time through the Evolution Engine. |
 
-**Storage backend:** The reference implementation uses a labeled property
-graph database (e.g., Neo4j / Memgraph) for topology queries and a separate
-vector index (e.g., pgvector or Qdrant) for embedding search. A lightweight
-SQLite + in-memory adjacency list mode is provided for local / CI use.
+**Storage backend:** The existing `Neo4jGraphStore` (in `Ast.GraphDb`) handles
+the team/CI deployment. For local/CI use, a new `SqliteGraphStore` will
+implement `IMemoryGraphStore` using SQLite + recursive CTEs for graph traversal.
+The existing `Ast.VectorDb` Qdrant integration handles vector search in team
+mode; an in-process HNSW index (via `sqlite-vss` or `usearch`) is provided for
+local mode.
 
-### 2.3 Retrieval Engine
+### 3.3 Retrieval Engine
 
 **Responsibility:** Accept a natural-language or structured query from the
 agent, plan the retrieval strategy, traverse the graph, and return ranked
@@ -150,7 +216,7 @@ memory fragments.
 | `EXPERTISE_RECALL` | Pattern/pitfall lookup filtered by `APPLIES_TO` scope | "Known pitfalls for the payments module?" |
 | `HYBRID` | Fan-out across ≥2 modes, merge via Ranker | "Explain the authentication flow and flag any known issues" |
 
-### 2.4 Context Assembler
+### 3.4 Context Assembler
 
 **Responsibility:** Transform ranked memory fragments into a structured
 prompt section ready for the consuming LLM.
@@ -165,7 +231,7 @@ The assembler applies three transformations:
    `## Structure`, `## Call Graph`, `## Related Code`, `## Known Expertise`.
    The agent system prompt specifies which sections to include.
 
-### 2.5 Evolution Engine
+### 3.5 Evolution Engine
 
 **Responsibility:** Accept agent-authored learnings and merge them into the
 Expertise layer, consolidating, de-duplicating, and versioning knowledge
@@ -178,7 +244,7 @@ over time.
 | **Decay** | On every retrieval. | Expertise nodes whose `APPLIES_TO` targets have been deleted or substantially rewritten have their confidence scores reduced. Nodes below a threshold are archived (soft-deleted). |
 | **Community Summarization** | On structural change exceeding a threshold. | Inspired by GraphRAG community summaries. Detects tightly coupled clusters in the structural + call-chain layers and generates or updates a prose summary stored as a `Topic` node in the Semantic layer. |
 
-### 2.6 Incremental Sync
+### 3.6 Incremental Sync
 
 **Responsibility:** Keep the graph current with the repository without
 full re-extraction.
@@ -197,9 +263,13 @@ in < 2 seconds for repositories up to 500 K LOC.
 
 ---
 
-## 3. Data Model
+## 4. Data Model
 
-### 3.1 Core Entities
+### 4.1 Core Entities
+
+The data model extends the existing `HypergraphNode` and `Hyperedge` from
+`Ast.Core` with versioning, annotation, and layer-tagging fields. The
+extensions are additive — existing node/edge shapes remain valid.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -249,7 +319,7 @@ RelationType enum:
   — Expertise:  APPLIES_TO | SUPERSEDES | DERIVED_FROM
 ```
 
-### 3.2 Edge Property Schemas
+### 4.2 Edge Property Schemas
 
 Each `RelationType` defines the shape of its `properties` JSON:
 
@@ -261,7 +331,7 @@ Each `RelationType` defines the shape of its `properties` JSON:
 | `SUPERSEDES` | `{ reason: string, superseded_at: timestamp }` | `{ reason: "Merged duplicate pattern", superseded_at: "2026-05-01T..." }` |
 | `SIMILAR_TO` | `{ cosine_sim: float }` | `{ cosine_sim: 0.92 }` |
 
-### 3.3 Expertise Node Schema
+### 4.3 Expertise Node Schema
 
 Expertise nodes carry richer payloads than code-derived nodes:
 
@@ -283,7 +353,7 @@ Citation {
 }
 ```
 
-### 3.4 Version Snapshot
+### 4.4 Version Snapshot
 
 A `Snapshot` is a logical point-in-time view of the graph, keyed by commit:
 
@@ -303,187 +373,278 @@ snapshot view via range filtering.
 
 ---
 
-## 4. Interfaces
+## 5. Interfaces
 
-### 4.1 Extraction Pipeline Interface
+Interfaces are defined in C# to match the repository's .NET 8.0 stack. Each
+interface maps to its owning project in `src/ast/`.
 
-```typescript
-interface ExtractionPipeline {
-  /**
-   * Full extraction for an entire repository.
-   * Returns a stream of GraphFact (node or edge) objects.
-   */
-  extractAll(repoRoot: string, options: ExtractionOptions): AsyncIterable<GraphFact>;
+### 5.1 Extraction Pipeline Interface
 
-  /**
-   * Incremental extraction for changed files since a base commit.
-   * Returns a GraphDiff: inserts, updates, and tombstones.
-   */
-  extractIncremental(
-    repoRoot: string,
-    baseCommit: string,
-    headCommit: string,
-    changedFiles: string[]
-  ): Promise<GraphDiff>;
+**Project:** `Ast.Memory.Extraction`
+
+```csharp
+/// <summary>
+/// Drives full and incremental extraction of graph facts from source code.
+/// Wraps existing Ast.Core RepositoryProcessor and language-specific parsers.
+/// </summary>
+public interface IExtractionPipeline
+{
+    /// <summary>
+    /// Full extraction for an entire repository.
+    /// Returns an async stream of graph facts (nodes and edges).
+    /// </summary>
+    IAsyncEnumerable<GraphFact> ExtractAllAsync(
+        string repoRoot,
+        ExtractionOptions options,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Incremental extraction for changed files since a base commit.
+    /// Returns a diff: inserts, updates, and tombstones.
+    /// </summary>
+    Task<GraphDiff> ExtractIncrementalAsync(
+        string repoRoot,
+        string baseCommit,
+        string headCommit,
+        IReadOnlyList<string> changedFiles,
+        CancellationToken cancellationToken = default);
 }
 
-interface ExtractionOptions {
-  languages: LanguageId[];       // which languages to parse
-  enableLSP: boolean;            // enrich with type-resolved edges
-  embeddingModel: string;        // model ID for semantic vectors
-  maxFileSize: number;           // skip files larger than this (bytes)
+public class ExtractionOptions
+{
+    public required IReadOnlyList<string> Languages { get; init; }
+    public bool EnableLsp { get; init; }
+    public string EmbeddingModel { get; init; } = "default";
+    public long MaxFileSize { get; init; } = 1_048_576; // 1 MB
 }
 
-type GraphFact = NodeFact | EdgeFact;
+/// <summary>
+/// A single node or edge record produced by extraction.
+/// Wraps the existing HypergraphNode/Hyperedge with version metadata.
+/// </summary>
+public abstract record GraphFact(Guid Id, string ContentHash, VersionRange VersionRange);
+public record NodeFact(Guid Id, string ContentHash, VersionRange VersionRange, HypergraphNode Node)
+    : GraphFact(Id, ContentHash, VersionRange);
+public record EdgeFact(Guid Id, string ContentHash, VersionRange VersionRange, Hyperedge Edge)
+    : GraphFact(Id, ContentHash, VersionRange);
 
-interface GraphDiff {
-  inserts: GraphFact[];
-  updates: GraphFact[];          // matched by id, carries new fields
-  tombstones: UUID[];            // node/edge IDs to close version_range
+public record GraphDiff(
+    IReadOnlyList<GraphFact> Inserts,
+    IReadOnlyList<GraphFact> Updates,
+    IReadOnlyList<Guid> Tombstones);
+
+public record VersionRange(string Since, string? Until);
+```
+
+### 5.2 Graph Store Interface (Extended)
+
+**Project:** `Ast.GraphDb` — extends existing `IGraphStore`
+
+```csharp
+/// <summary>
+/// Memory-aware extensions to the existing IGraphStore.
+/// The base IGraphStore already provides CreateNodeAsync, GetNodeAsync,
+/// GetEdgesForNodeAsync, FindPathsAsync, GetCallersAsync, etc.
+/// </summary>
+public interface IMemoryGraphStore : IGraphStore
+{
+    /// <summary>
+    /// Apply a batch of facts atomically (idempotent via content_hash).
+    /// </summary>
+    Task<Snapshot> ApplyDiffAsync(
+        GraphDiff diff,
+        string commitSha,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Traverse from a starting node with a query plan.
+    /// </summary>
+    Task<TraversalResult> TraverseAsync(
+        string startNodeId,
+        TraversalPlan plan,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// ANN vector search on the Semantic layer.
+    /// Delegates to Ast.VectorDb under the hood.
+    /// </summary>
+    Task<IReadOnlyList<ScoredNode>> VectorSearchAsync(
+        float[] queryVector,
+        int topK,
+        NodeFilter? filter = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Read a node at a specific historical snapshot.
+    /// </summary>
+    Task<HypergraphNode?> GetNodeAtCommitAsync(
+        string nodeId,
+        string commitSha,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Find nodes by qualified name prefix (autocomplete).
+    /// </summary>
+    Task<IReadOnlyList<HypergraphNode>> FindByNameAsync(
+        string prefix,
+        IReadOnlyList<string>? kinds = null,
+        int limit = 20,
+        CancellationToken cancellationToken = default);
+}
+
+public class TraversalPlan
+{
+    public required string Direction { get; init; } // "outbound" | "inbound" | "both"
+    public required IReadOnlyList<HyperedgeType> EdgeTypes { get; init; }
+    public int MaxDepth { get; init; } = 3;
+    public NodeFilter? Filter { get; init; }
+    public int Limit { get; init; } = 100;
+}
+
+public class TraversalResult
+{
+    public required IReadOnlyList<HypergraphNode> Nodes { get; init; }
+    public required IReadOnlyList<Hyperedge> Edges { get; init; }
+    public required IReadOnlyList<IReadOnlyList<string>> Paths { get; init; }
 }
 ```
 
-### 4.2 Graph Store Interface
+### 5.3 Retrieval Engine Interface
 
-```typescript
-interface GraphStore {
-  /** Apply a batch of facts (idempotent via content_hash). */
-  applyDiff(diff: GraphDiff, commitSha: string): Promise<Snapshot>;
+**Project:** `Ast.Query` — extends existing `ICodeQuery` / `HybridQueryService`
 
-  /** Traverse from a starting node with a query plan. */
-  traverse(start: NodeID, plan: TraversalPlan): Promise<TraversalResult>;
-
-  /** ANN vector search on the Semantic layer. */
-  vectorSearch(query: float[], topK: number, filter?: NodeFilter): Promise<ScoredNode[]>;
-
-  /** Read a node by ID, optionally at a specific snapshot. */
-  getNode(id: NodeID, atCommit?: string): Promise<Node | null>;
-
-  /** Find nodes by qualified name prefix (autocomplete). */
-  findByName(prefix: string, kinds?: NodeKind[], limit?: number): Promise<Node[]>;
-
-  /** Get community / cluster summary for a subgraph. */
-  getClusterSummary(clusterId: NodeID): Promise<string>;
+```csharp
+/// <summary>
+/// Primary entry-point for agents. Extends the existing HybridQueryService
+/// with memory-aware retrieval modes and token budgeting.
+/// </summary>
+public interface IMemoryRetrievalEngine
+{
+    /// <summary>
+    /// Retrieve context for an agent task.
+    /// Returns a formatted context block ready for prompt insertion.
+    /// </summary>
+    Task<RetrievalResult> RetrieveAsync(
+        RetrievalQuery query,
+        CancellationToken cancellationToken = default);
 }
 
-interface TraversalPlan {
-  direction: "outbound" | "inbound" | "both";
-  edgeTypes: RelationType[];
-  maxDepth: number;
-  filters?: NodeFilter;
-  limit?: number;
+public class RetrievalQuery
+{
+    public required string Text { get; init; }
+    public string? Scope { get; init; }               // qualified-name prefix
+    public RetrievalMode? Mode { get; init; }          // override auto-detected mode
+    public int TokenBudget { get; init; } = 8000;
+    public bool IncludeExpertise { get; init; } = true;
+    public string? AtCommit { get; init; }             // optional snapshot pin
 }
 
-interface TraversalResult {
-  nodes: Node[];
-  edges: Edge[];
-  paths: NodeID[][];            // discovered traversal paths
-}
-```
-
-### 4.3 Retrieval Engine Interface
-
-```typescript
-interface RetrievalEngine {
-  /**
-   * Primary entry-point for agents.
-   * Accepts a query (natural-language or structured) and a token budget.
-   * Returns assembled context ready for prompt insertion.
-   */
-  retrieve(query: RetrievalQuery): Promise<RetrievalResult>;
+public enum RetrievalMode
+{
+    StructuralDrill,
+    CallTrace,
+    SemanticSearch,
+    ExpertiseRecall,
+    Hybrid
 }
 
-interface RetrievalQuery {
-  text: string;                         // natural-language question
-  scope?: string;                       // qualified-name prefix to scope search
-  mode?: RetrievalMode;                 // override auto-detected mode
-  tokenBudget: number;                  // max tokens in the response
-  includeExpertise: boolean;            // whether to include expertise layer
-  atCommit?: string;                    // optional snapshot pinning
-}
+public class RetrievalResult
+{
+    /// <summary>Markdown-formatted context block for prompt insertion.</summary>
+    public required string ContextBlock { get; init; }
 
-type RetrievalMode =
-  | "STRUCTURAL_DRILL"
-  | "CALL_TRACE"
-  | "SEMANTIC_SEARCH"
-  | "EXPERTISE_RECALL"
-  | "HYBRID";
+    /// <summary>Token count of ContextBlock.</summary>
+    public required int TokenCount { get; init; }
 
-interface RetrievalResult {
-  /** Markdown-formatted context block for prompt insertion. */
-  contextBlock: string;
+    /// <summary>Provenance: which nodes contributed.</summary>
+    public required IReadOnlyList<Citation> Citations { get; init; }
 
-  /** Token count of contextBlock. */
-  tokenCount: number;
-
-  /** Provenance: which nodes contributed, for debugging / feedback. */
-  citations: Citation[];
-
-  /** The retrieval mode that was actually used. */
-  resolvedMode: RetrievalMode;
+    /// <summary>The retrieval mode actually used.</summary>
+    public required RetrievalMode ResolvedMode { get; init; }
 }
 ```
 
-### 4.4 Evolution Engine Interface
+### 5.4 Evolution Engine Interface
 
-```typescript
-interface EvolutionEngine {
-  /** Agent writes back a learning. */
-  recordExpertise(entry: ExpertiseEntry): Promise<NodeID>;
+**Project:** `Ast.Memory.Evolution`
 
-  /** Trigger consolidation pass over a scope (package / module). */
-  consolidate(scope: string): Promise<ConsolidationReport>;
+```csharp
+/// <summary>
+/// Manages agent-authored expertise: write-back, consolidation, and decay.
+/// </summary>
+public interface IEvolutionEngine
+{
+    /// <summary>Agent writes back a learning.</summary>
+    Task<Guid> RecordExpertiseAsync(
+        ExpertiseEntry entry,
+        CancellationToken cancellationToken = default);
 
-  /** Run decay pass: reduce confidence of expertise whose targets changed. */
-  decayStaleExpertise(headCommit: string): Promise<number>;  // count of decayed nodes
+    /// <summary>Trigger consolidation over a scope (package / module).</summary>
+    Task<ConsolidationReport> ConsolidateAsync(
+        string scope,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Run decay pass: reduce confidence of expertise whose targets changed.</summary>
+    Task<int> DecayStaleExpertiseAsync(
+        string headCommit,
+        CancellationToken cancellationToken = default);
 }
 
-interface ExpertiseEntry {
-  kind: "pattern" | "pitfall" | "preference" | "insight";
-  title: string;
-  body: string;
-  appliesTo: NodeID[];           // structural / call-chain nodes this applies to
-  scope: "exact" | "subtree";
-  evidence: Citation[];
-  sourceAgent: string;
+public class ExpertiseEntry
+{
+    public required string Kind { get; init; }        // "pattern" | "pitfall" | "preference" | "insight"
+    public required string Title { get; init; }
+    public required string Body { get; init; }
+    public required IReadOnlyList<string> AppliesTo { get; init; }  // node IDs
+    public string Scope { get; init; } = "exact";     // "exact" | "subtree"
+    public IReadOnlyList<Citation> Evidence { get; init; } = [];
+    public required string SourceAgent { get; init; }
 }
 
-interface ConsolidationReport {
-  merged: number;
-  superseded: number;
-  retracted: number;
-  newTopics: string[];           // community summaries that were created/updated
+public class ConsolidationReport
+{
+    public int Merged { get; init; }
+    public int Superseded { get; init; }
+    public int Retracted { get; init; }
+    public IReadOnlyList<string> NewTopics { get; init; } = [];
 }
 ```
 
-### 4.5 Incremental Sync Interface
+### 5.5 Incremental Sync Interface
 
-```typescript
-interface IncrementalSync {
-  /** Start watching a repo for changes (file-save or commit). */
-  watch(repoRoot: string, options: WatchOptions): void;
+**Project:** `Ast.Memory.Sync`
 
-  /** Stop watching. */
-  unwatch(repoRoot: string): void;
+```csharp
+/// <summary>
+/// Keeps the memory graph current with repository changes.
+/// </summary>
+public interface IIncrementalSync
+{
+    /// <summary>Start watching a repo for changes (file-save or commit).</summary>
+    void Watch(string repoRoot, WatchOptions options);
 
-  /** Manual trigger: sync to a specific commit. */
-  syncToCommit(repoRoot: string, commitSha: string): Promise<Snapshot>;
+    /// <summary>Stop watching.</summary>
+    void Unwatch(string repoRoot);
+
+    /// <summary>Manual trigger: sync to a specific commit.</summary>
+    Task<Snapshot> SyncToCommitAsync(
+        string repoRoot,
+        string commitSha,
+        CancellationToken cancellationToken = default);
 }
 
-interface WatchOptions {
-  /** Debounce interval for file-save events (ms). Default: 1000. */
-  debounceMs: number;
-
-  /** Also run Evolution Engine decay on each sync. Default: true. */
-  autoDecay: boolean;
+public class WatchOptions
+{
+    public int DebounceMs { get; init; } = 1000;
+    public bool AutoDecay { get; init; } = true;
 }
 ```
 
 ---
 
-## 5. End-to-End Sequence Flows
+## 6. End-to-End Sequence Flows
 
-### 5.1 Initial Repository Onboarding
+### 6.1 Initial Repository Onboarding
 
 ```
 Actor: Developer triggers "onboard repo" command.
@@ -510,7 +671,7 @@ Actor: Developer triggers "onboard repo" command.
 Result: Full graph available; Snapshot created; community summaries populated.
 ```
 
-### 5.2 Incremental Sync on Commit
+### 6.2 Incremental Sync on Commit
 
 ```
 Trigger: Git post-commit hook or file-system watcher detects changes.
@@ -541,7 +702,7 @@ Trigger: Git post-commit hook or file-system watcher detects changes.
 Result: Graph reflects new commit; stale expertise decayed; summaries refreshed.
 ```
 
-### 5.3 Agent Retrieves Context for a Coding Task
+### 6.3 Agent Retrieves Context for a Coding Task
 
 ```
 Actor: Coding agent needs context to implement a change in module "payments.checkout".
@@ -608,7 +769,7 @@ Actor: Coding agent needs context to implement a change in module "payments.chec
 Result: Agent inserts contextBlock into its system prompt and proceeds with the task.
 ```
 
-### 5.4 Agent Writes Back Expertise
+### 6.4 Agent Writes Back Expertise
 
 ```
 Actor: Agent completes a task and records a learning.
@@ -645,7 +806,7 @@ Result: Expertise graph grows by one node; future retrievals for checkout
         code will surface this pitfall.
 ```
 
-### 5.5 Cross-Session Learning (Agent Gets Smarter)
+### 6.5 Cross-Session Learning (Agent Gets Smarter)
 
 ```
 Timeline: Sessions S1 through Sn interact with the same repo over weeks.
@@ -685,7 +846,7 @@ Result: The system accumulates expertise that compounds across sessions.
 
 ---
 
-## 6. Deployment Topology
+## 7. Deployment Topology
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -709,12 +870,13 @@ Result: The system accumulates expertise that compounds across sessions.
 
 ---
 
-## 7. Key Design Decisions & Trade-offs
+## 8. Key Design Decisions & Trade-offs
 
 | Decision | Rationale | Trade-off |
 |---|---|---|
+| **Extend existing `src/ast/` stack rather than greenfield** | The Ast.Core, Ast.GraphDb, Ast.Embedding, and Ast.Query projects already provide 437+ tested capabilities for AST extraction, graph storage, embeddings, and querying. Building on top avoids redoing that work. | Couples memory system to existing models (`HypergraphNode`, `Hyperedge`); may need adapters if those models change. |
 | **Four separate graph layers sharing a node namespace** | Avoids the entanglement problem identified by MAGMA. Each layer can be queried, indexed, and evolved independently. | Cross-layer queries require joins; slight overhead vs. a single unified graph. |
-| **Tree-sitter as primary parser, LSP as optional enrichment** | Tree-sitter is fast, offline, and supports 100+ languages. Guarantees the pipeline always works, even without a running language server. | Loses type-resolved call edges for dynamic languages when LSP is unavailable. |
+| **Existing Ast.Csharp/PowerShell parsers as primary, tree-sitter for new languages** | Existing parsers are battle-tested with 166+ tests. Tree-sitter adds breadth for TypeScript, Python, Go without rewriting C#/PowerShell extraction. | Two parser stacks to maintain; unified `ILanguageParser` interface mitigates this. |
 | **Version ranges on nodes/edges instead of full graph snapshots** | Space-efficient: O(changed entities) per commit instead of O(total graph). Enables time-travel queries. | Point-in-time reconstruction requires range filtering, which adds query complexity. |
 | **LLM-powered consolidation in the Evolution Engine** | Semantic merge of expertise nodes is inherently a natural-language task. Rules-based merging misses nuance. | Adds LLM cost; consolidation is batched and async to amortize. |
 | **Token-budget-aware retrieval with hierarchical fallback** | Agents have finite context windows. The system must be useful even at small budgets (2K tokens). | Summaries lose detail. The system compensates by providing citations so the agent can drill down. |
@@ -722,7 +884,7 @@ Result: The system accumulates expertise that compounds across sessions.
 
 ---
 
-## 8. Appendix: Glossary
+## 9. Appendix: Glossary
 
 | Term | Definition |
 |---|---|
