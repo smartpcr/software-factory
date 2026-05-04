@@ -33,8 +33,11 @@
 ## Feature 1: Structural Layer — Repository Structure Graph Construction
 
 Extracts the top-down containment hierarchy from the repository into the
-Structural layer: Repo → Package → Module → Class → Function, connected by
-`CONTAINS` and `DEPENDS_ON` edges (per `architecture.md` §2.2).
+Structural layer: Repo → Workspace → Package → Module → Class → Function,
+connected by `CONTAINS` and `DEPENDS_ON` edges (per `architecture.md` §2.1,
+§2.2). The `Workspace` level is present only in monorepo layouts; in
+single-workspace repos like this one it is absent and the Repo root contains
+Packages directly.
 
 ```gherkin
 Feature: Structural Layer — Repository Structure Graph Construction
@@ -46,23 +49,26 @@ Feature: Structural Layer — Repository Structure Graph Construction
 
   Scenario: 1.1 — Ingest src/ast/ and produce structural layer graph
     When the extraction pipeline processes the repository root
-    Then the graph contains Package nodes for each non-test .csproj, including:
-      | node_id               | NodeType | Metadata.MemoryLayer |
-      | /src/ast/Ast.Core      | Package  | structural           |
-      | /src/ast/Ast.Csharp    | Package  | structural           |
-      | /src/ast/Ast.PowerShell | Package | structural           |
-      | /src/ast/Ast.Embedding | Package  | structural           |
-      | /src/ast/Ast.GraphDb   | Package  | structural           |
-      | /src/ast/Ast.Query     | Package  | structural           |
-      | /src/ast/Ast.VectorDb  | Package  | structural           |
-      | /src/ast/Ast.Lsp       | Package  | structural           |
-      | /src/ast/Ast.Cli       | Package  | structural           |
-      | /src/ast/CodeIntelligence | Package | structural        |
-    And the repo root node has Id "/" and NodeType "Repo"
+    Then the graph contains a Repo root node with Id "/" and NodeType "Repo"
+    # Workspace nodes are absent because this repo is a single-workspace layout
+    # (architecture.md §4.2: "absent in single-package repos")
+    And no Workspace nodes exist in the graph
+    And Package nodes exist for each non-test .csproj, including:
+      | node_id                   | NodeType | Metadata.MemoryLayer |
+      | /src/ast/Ast.Core         | Package  | structural           |
+      | /src/ast/Ast.Csharp       | Package  | structural           |
+      | /src/ast/Ast.PowerShell   | Package  | structural           |
+      | /src/ast/Ast.Embedding    | Package  | structural           |
+      | /src/ast/Ast.GraphDb      | Package  | structural           |
+      | /src/ast/Ast.Query        | Package  | structural           |
+      | /src/ast/Ast.VectorDb     | Package  | structural           |
+      | /src/ast/Ast.Lsp          | Package  | structural           |
+      | /src/ast/Ast.Cli          | Package  | structural           |
+      | /src/ast/CodeIntelligence | Package  | structural           |
     And each Package node is connected to "/" via a CONTAINS edge:
-      | edge SemanticRelation | Roles.parent | Roles.child           |
-      | CONTAINS              | /            | /src/ast/Ast.Core      |
-      | CONTAINS              | /            | /src/ast/Ast.Csharp    |
+      | edge SemanticRelation | Roles.parent | Roles.child             |
+      | CONTAINS              | /            | /src/ast/Ast.Core       |
+      | CONTAINS              | /            | /src/ast/Ast.Csharp     |
     And every node carries VersionRange with SinceIndex = 1 and UntilIndex = null
     And every edge carries Metadata["SemanticRelation"] matching its canonical name
 
@@ -91,11 +97,15 @@ Feature: Structural Layer — Repository Structure Graph Construction
       using Microsoft.CodeAnalysis.CSharp;
       """
     When the extraction pipeline processes the file
-    Then a DEPENDS_ON edge is created:
+    Then a DEPENDS_ON edge is created for the in-repo import:
       | SemanticRelation | Roles.importer                              | Roles.imported         |
       | DEPENDS_ON       | /src/ast/Ast.Csharp/CSharpHyperedgeExtractor.cs | /src/ast/Ast.Core  |
-    And external imports ("Microsoft.CodeAnalysis") do not produce graph edges
-      because external dependencies are out of scope (tech-spec §3 O2)
+    # External imports produce External boundary stub nodes (architecture.md §4.2, §4.4)
+    And an External boundary node is created:
+      | node_id                                  | NodeType | Metadata.MemoryLayer |
+      | ext:Microsoft.CodeAnalysis:SyntaxTree    | External | call_chain           |
+    And the External node has no ContentHash, no VersionRange, and no Embedding
+    And a DEPENDS_ON edge connects the module to the External boundary node
 
   Scenario: 1.4 — C# source extraction in Ast.PowerShell package
     Given the file "src/ast/Ast.PowerShell/PowerShellAstParser.cs" exists
@@ -109,21 +119,36 @@ Feature: Structural Layer — Repository Structure Graph Construction
       | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser.ParseCode  | Function |
       | /src/ast/Ast.PowerShell/PowerShellAstParser.cs::PowerShellAstParser.ParseRepository | Function |
     And the Module node is linked to Package "/src/ast/Ast.PowerShell" via CONTAINS
-    And no DEPENDS_ON edge is created for System.Management.Automation
-      because external dependencies are out of scope (tech-spec §3 O2)
+    # External dependency System.Management.Automation produces an External stub node
+    And an External boundary node "ext:System.Management.Automation:*" is created
+    And the External node has NodeType "External" and no embedding
 
-  Scenario: 1.5 — Repository with no parseable source files
+  Scenario: 1.5 — Monorepo layout produces Workspace nodes
+    Given a monorepo with this directory structure:
+      | path                        | marker_file      |
+      | /packages/frontend          | package.json     |
+      | /packages/backend           | backend.csproj   |
+    When the extraction pipeline processes the repository root
+    Then the graph contains Workspace nodes:
+      | node_id              | NodeType  | Metadata.MemoryLayer |
+      | /packages/frontend   | Workspace | structural           |
+      | /packages/backend    | Workspace | structural           |
+    And the Repo root "/" contains each Workspace via CONTAINS edges
+    And each Workspace contains its Package nodes via CONTAINS edges
+    # Hierarchy: Repo → Workspace → Package → Module → Class → Function
+
+  Scenario: 1.6 — Repository with no parseable source files
     Given a test directory containing only:
       | path           |
       | README.md      |
       | LICENSE        |
     When the extraction pipeline processes the directory
     Then the graph contains only the Repo root node "/"
-    And no Module or Class nodes are created
+    And no Workspace, Package, Module, or Class nodes are created
     And a diagnostic is emitted with severity "warning" and message containing
       "No parseable source files detected"
 
-  Scenario: 1.6 — Partial parse failure produces partial graph
+  Scenario: 1.7 — Partial parse failure produces partial graph
     Given a repository with 20 C# source files
     And 2 files contain syntax errors that prevent Roslyn AST construction
     When the extraction pipeline processes the repository
@@ -135,13 +160,13 @@ Feature: Structural Layer — Repository Structure Graph Construction
       | Nodes         | >= 20 |
     And a diagnostic summary reports 2 files with ParseStatus "failed"
 
-  Scenario: 1.7 — HyperedgeType enum values map to CONTAINS edges
+  Scenario: 1.8 — HyperedgeType enum values map to CONTAINS edges
     Given the extraction pipeline encounters a ClassDefinition HyperedgeType
     When the edge is stored in the structural layer
     Then the edge's Metadata["SemanticRelation"] is set to "CONTAINS"
     And the edge's Metadata["OriginalEdgeType"] is set to "ClassDefinition"
     And the edge's EdgeType is the original HyperedgeType (not MemoryRelation)
-      because code-derived edges preserve their original HyperedgeType
+    # Code-derived edges preserve their original HyperedgeType (architecture.md §4.6)
 ```
 
 ---
@@ -202,7 +227,8 @@ Feature: Call-Chain Layer — Call Graph Extraction
     And Metadata["SemanticRelation"] = "IMPLEMENTS"
 
   Scenario: 2.5 — Cross-language call edges (C# ↔ PowerShell)
-    Given a test fixture PowerShell script at "tests/fixtures/invoke-processor.ps1" containing:
+    Given a PowerShell source file "scripts/dev.ps1" exists in the repository
+    And the file contains a line invoking a C# type:
       """
       $processor = [Ast.Core.RepositoryProcessor]::new($repoPath)
       $processor.Process()
@@ -211,12 +237,12 @@ Feature: Call-Chain Layer — Call Graph Extraction
       "src/ast/Ast.Core/RepositoryProcessor.cs" with method Process
     When the extraction pipeline processes both files
     Then a CrossLanguageMethodCall edge is created:
-      | SemanticRelation | Roles.caller                                                                | Roles.callee                                                                  |
-      | CALLS            | /tests/fixtures/invoke-processor.ps1::<ScriptBlock>.Process                  | /src/ast/Ast.Core/RepositoryProcessor.cs::RepositoryProcessor.Process         |
+      | SemanticRelation | Roles.caller                                         | Roles.callee                                                          |
+      | CALLS            | /scripts/dev.ps1::<ScriptBlock>.Process               | /src/ast/Ast.Core/RepositoryProcessor.cs::RepositoryProcessor.Process |
     And the caller node has Language = "PowerShell" and the callee has Language = "C#"
     And the edge has Metadata["OriginalEdgeType"] = "CrossLanguageMethodCall"
     And the edge's IsCrossLanguage property returns true
-      (per Hyperedge.IsCrossLanguage at HypergraphModels.cs line 210: Languages.Distinct().Count() > 1)
+    # Per Hyperedge.IsCrossLanguage: Languages.Distinct().Count() > 1
     And the edge's Languages list contains both "PowerShell" and "C#"
 
   Scenario: 2.6 — Recursive call does not cause infinite expansion
@@ -226,12 +252,18 @@ Feature: Call-Chain Layer — Call Graph Extraction
       with the same node ID in both Roles.caller and Roles.callee
     And the analyzer terminates without stack overflow
 
-  Scenario: 2.7 — External dependency calls stop at boundary
+  Scenario: 2.7 — External dependency calls create External boundary nodes
     Given CodeEmbeddingService calls methods from Microsoft.Extensions.Logging.ILogger
     When the call-chain analyzer processes the file
-    Then no CALLS edge is created to external-package symbols
-      because external dependencies are out of scope (tech-spec §3 O2)
-    And a diagnostic notes the external reference was skipped
+    Then an External boundary node is created:
+      | node_id                                                   | NodeType | Metadata.MemoryLayer |
+      | ext:Microsoft.Extensions.Logging:ILogger.LogInformation   | External | call_chain           |
+    And a CALLS edge connects the caller to the External node:
+      | SemanticRelation | Roles.caller                                                           | Roles.callee                                                    |
+      | CALLS            | /src/ast/Ast.Embedding/CodeEmbeddingService.cs::CodeEmbeddingService.GenerateNodeEmbeddingsAsync | ext:Microsoft.Extensions.Logging:ILogger.LogInformation |
+    # External boundary nodes are stubs: no embedding, no VersionRange (architecture.md §4.4)
+    And the External node has no ContentHash and no VersionRange
+    And the External node is never extracted or embedded
 ```
 
 ---
@@ -275,7 +307,7 @@ Feature: Semantic Layer — Embedding and Similarity
     When the agent calls VectorSearchAsync with query "extract hypergraph from C# code" and topK = 5
     Then the result contains at most 5 ScoredNode entries
     And the top result is likely a node from "src/ast/Ast.Csharp/CSharpHyperedgeExtractor.cs"
-      because its embedding text contains "extract" and "hyperedge" terms
+    # Its embedding text contains "extract" and "hyperedge" terms
     And each ScoredNode has a Score between 0.0 and 1.0
 
   Scenario: 3.5 — Embedding model version tracked per node
@@ -710,8 +742,7 @@ Feature: Cross-Session Learning — Memory Compounds Over Time
     When the Evolution Engine has run consolidation after session 10
     Then at least 5 expertise nodes with Confidence > 0.7 exist
     And ExpertiseRecall retrieval surfaces them ranked by Confidence
-    This matches the success criterion in tech-spec §10:
-      "After 10 agent sessions, ≥ 5 expertise nodes with confidence > 0.7"
+    # Success criterion from tech-spec §10: "After 10 agent sessions, ≥ 5 expertise nodes with confidence > 0.7"
 ```
 
 ---
@@ -901,16 +932,16 @@ Feature: Performance and Storage — Non-Functional Requirements
 
   Scenario: 12.5 — Retrieval uses pre-computed embeddings only
     When a retrieval query executes
-    Then no calls to IEmbeddingGenerator occur during retrieval
-      (embeddings are pre-computed at extraction and write-back time per tech-spec HC5)
-    Except for the query text itself, which is embedded once to compare against stored vectors
+    Then no calls to IEmbeddingGenerator occur for code-node embeddings during retrieval
+    # Embeddings are pre-computed at extraction and write-back time (tech-spec HC5)
+    # The query text itself is embedded via one local Ollama call to compare against stored vectors
 
   Scenario: 12.6 — Audit trail completeness
     Given a sequence of operations: onboard, sync, record expertise, consolidate
     When the audit_log table is queried
     Then all 4 operations appear in chronological order
     And each entry has session_id, timestamp, operation type, and detail JSON
-    Per tech-spec HC7
+    # Per tech-spec HC7
 ```
 
 ---
@@ -935,7 +966,7 @@ Feature: Graph Schema Integrity — Edge and Metadata Validation
     Given a CALLS edge between two function nodes
     Then the edge has exactly 2 entries in NodeIds
     And Roles maps each NodeId to its semantic role ("caller", "callee")
-    Per architecture.md §4.6: hyperedge with 2 NodeIds for binary relationships
+    # Per architecture.md §4.6: hyperedge with 2 NodeIds for binary relationships
 
   Scenario: 13.3 — Memory-only edges use HyperedgeType.MemoryRelation
     Given a SIMILAR_TO edge in the semantic layer
@@ -967,5 +998,5 @@ Feature: Graph Schema Integrity — Edge and Metadata Validation
     And the Class node ID is "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
     And the Function node ID is "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEmbeddingText"
     And the repo root node ID is "/"
-    Per architecture.md §4.4
+    # Per architecture.md §4.4
 ```
