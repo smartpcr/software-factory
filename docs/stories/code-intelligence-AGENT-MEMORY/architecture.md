@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 28
+> **Status:** Iteration 29
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -15,7 +15,7 @@
 > | Document | Owns | Current state |
 > |---|---|---|
 > | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Currently at iteration 23. Aligned on structural/naming points. Sixteen alignment items (A1–A16) tracked in §8.1, all resolved. A13–A16 added in iteration 28 (node-ID format, `LastTouched` type, `MemoryNode.Version` nullability, expertise hash input). |
-> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Currently at latest iteration. Contains 31 naming/data-model divergences from canonical vocabulary — all catalogued in §8.2 below with canonical resolutions. `architecture.md` governs on all conflicts. |
+> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Currently at latest iteration. Contains 32 naming/data-model divergences from canonical vocabulary — all catalogued in §8.2 below with canonical resolutions. `architecture.md` governs on all conflicts. |
 > | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Currently at latest iteration. Contains 10 divergences catalogued in §8.3 below — all semantically correct or out-of-scope. |
 
 ---
@@ -1316,7 +1316,7 @@ both long-resolved items and newly identified divergences.
 
 ### 8.2 Alignment with `implementation-plan.md` (Current Iteration)
 
-The implementation-plan contains **31 naming, data-model, and numeric
+The implementation-plan contains **32 naming, data-model, and numeric
 divergences** from canonical vocabulary defined in this document. **These are
 documentation debt in the implementation-plan, not unresolved conflicts.** This
 document governs on all points (per the implementation-plan's own header, which
@@ -1336,7 +1336,7 @@ conflicts S-3, S-4) are catalogued below.
 | N-3 | Separate `IExpertiseStore` | Merged into **`IEvolutionEngine`** | §2.3, §5.3 |
 | N-4 | `AgentMemoryService` composes `IExpertiseStore` | Compose **`IEvolutionEngine`** | §5.3 |
 
-#### 8.2.2 Data Model Conflicts (5 items)
+#### 8.2.2 Data Model Conflicts (6 items)
 
 | # | impl-plan says | Canonical (this doc) | Governing § |
 |---|---|---|---|
@@ -1345,12 +1345,13 @@ conflicts S-3, S-4) are catalogued below.
 | D-3 | `PatternType` enum | **`ExpertiseKind`** enum | §2.3, §4.2 |
 | D-4 | Separate `Annotation.cs` entity | **No separate class** — `Metadata` keys + `AnnotationKeyRegistry` | §4.5 |
 | D-5 | `ExpertiseEntry` with single `Content` field | **`Title` + `Body`** (two fields), plus `Scope` ("exact"\|"subtree") and `Evidence` (list of `Citation`) | §4.2 |
+| D-6 | `MemoryNode` with non-nullable `VersionRange Version` (Stage 1.1) | **`VersionRange? Version`** (nullable) — External boundary nodes are timeless and have no `VersionRange` (§4.3). `MemoryNode.Version` must be `VersionRange?` to accommodate wrapping External nodes. Test scenarios using `memoryNode.Version.SinceIndex` must guard for null. | §4.1, §4.3 (A15) |
 
 #### 8.2.3 ID Format Conflicts (2 items)
 
 | # | impl-plan says | Canonical (this doc) | Governing § |
 |---|---|---|---|
-| I-1 | `{repo}:{language}:{fqn}:{hash_short}` | **`"{filePath}::{qualifiedName}"`** (path-based) | §4.2 |
+| I-1 | `{repo}:{language}:{fqn}:{hash_short}` | **`"/{relativePath}::{qualifiedName}"`** (path-based, leading `/` for all in-repo nodes) | §4.2 |
 | I-2 | `IdReconciliationTable` with `ID_MAPS_TO` Neo4j edges | ID format per §4.2; backing is implementation choice | §4.2 |
 
 #### 8.2.4 Edge Name Conflicts (4 items)
@@ -1403,7 +1404,7 @@ behaviors match the architecture.
 | E2E-3 | `polymorphic` edge presentation | 2.x | Maps to `CALLS` with `Confidence=0.7` — consistent with §2.2. |
 | E2E-4 | `recursive` edge presentation | 2.x | Maps to `CALLS` with self-referencing `NodeIds` — consistent with §2.2. |
 | E2E-5 | `service_call` for cross-service RPC | 2.7 | Out of scope per tech-spec O1. Recommend tagging scenario `@deferred`. |
-| E2E-6 | Unqualified symbol IDs (e.g., `AuthService.login`) | Various | Shorthand for canonical `"{filePath}::{qualifiedName}"` per §4.2. |
+| E2E-6 | Unqualified symbol IDs (e.g., `AuthService.login`) | Various | Shorthand for canonical `"/{relativePath}::{qualifiedName}"` per §4.2. |
 | E2E-7 | `ext::` prefix for boundary nodes | 2.4 | Canonical format: `"ext:{package}:{qualifiedName}"` per §4.2. |
 | E2E-8 | Cross-repo memory transfer | 6.4 | Out of scope per tech-spec O2. Recommend tagging `@deferred`. |
 | E2E-9 | Concurrent write conflict errors | 3.4 | Architecture specifies serialized writes (§3.7). Scenario should test write serialization, not optimistic-concurrency errors. |
@@ -1411,6 +1412,6 @@ behaviors match the architecture.
 
 ### 8.4 Net Assessment
 
-- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Sixteen alignment items (A1–A16) tracked, all resolved. A13–A16 (added in iteration 28) fix four consistency gaps: node-ID leading-slash format, `LastTouched` metadata type, `MemoryNode.Version` nullability for External nodes, and expertise hash input formula. Tech-spec §12.2 confirms "No remaining conflicts." Tech-spec's own header references architecture.md at "iteration 25" — this is stale metadata in the tech-spec (architecture is now at iteration 28); the alignment conclusions (A1–A16) remain valid.
-- **implementation-plan ↔ architecture:** 31 naming/numeric/method-signature divergences, all with stated canonical resolutions. These are documentation debt in the implementation-plan, not unresolved design conflicts. The implementation-plan's own header defers to this document on all conflicts. Implementers who follow the canonical values from this document will produce correct code.
+- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Sixteen alignment items (A1–A16) tracked, all resolved. A13–A16 (added in iteration 28) fix four consistency gaps: node-ID leading-slash format, `LastTouched` metadata type, `MemoryNode.Version` nullability for External nodes, and expertise hash input formula. Tech-spec §12.2 confirms "No remaining conflicts." Tech-spec's own header references architecture.md at "iteration 25" — this is stale metadata in the tech-spec (architecture is now at iteration 29); the alignment conclusions (A1–A16) remain valid. Tech-spec §7.1 line 173 still shows ID format without leading `/` (e.g., `src/ast/...` instead of `/src/ast/...`) and line 171 still uses `SHA-256(Content + TargetNodeId)` instead of `SHA-256(Title + Body + TargetNodeId)` — both are stale shorthand governed by A13 and A16 respectively. Tech-spec §8.4 uses column names `valid_from_idx`/`valid_until_idx` in its schema sketch while architecture §4.4 uses `since_index`/`until_index`; architecture governs (tech-spec §8.4 is a quick-reference, not normative).
+- **implementation-plan ↔ architecture:** 32 naming/numeric/method-signature divergences, all with stated canonical resolutions. D-6 (added in iteration 29) catalogues the `MemoryNode.VersionRange` nullability gap: impl-plan Stage 1.1 declares `VersionRange Version` (non-nullable), but canonical is `VersionRange? Version` (nullable for External nodes, per §4.1 and A15). These are documentation debt in the implementation-plan, not unresolved design conflicts. The implementation-plan's own header defers to this document on all conflicts. Implementers who follow the canonical values from this document will produce correct code.
 - **e2e-scenarios ↔ architecture:** 10 divergences, all semantically correct or out-of-scope. Two scenarios (E2E-5, E2E-8) exercise out-of-scope features and should be tagged `@deferred`. E2E-6 (unqualified IDs) and E2E-7 (`ext::` prefix) are presentation shorthand; canonical formats are in §4.2. Node ID format with leading `/` is now explicitly specified in both this document (§4.2) and e2e-scenarios — no remaining inconsistency.
