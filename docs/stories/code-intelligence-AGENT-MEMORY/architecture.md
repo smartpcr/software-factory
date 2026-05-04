@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 10
+> **Status:** Iteration 11
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, and interface signatures.
@@ -13,8 +13,8 @@
 > Implementation-plan owns phased work items. E2e-scenarios owns Gherkin acceptance tests.
 >
 > **§10 Cross-Document Alignment** lists every known conflict with
-> implementation-plan.md and states the canonical resolution.
-> Implementers MUST consult §10 when following implementation-plan.md.
+> all sibling documents and states the canonical resolution.
+> Implementers MUST consult §10 when following any sibling document.
 
 ---
 
@@ -744,6 +744,180 @@ public class WatchOptions
 }
 ```
 
+### 5.6 Agent API / MCP Tool Interface
+
+**Project:** `Ast.Memory/Mcp` + `Ast.Cli`  
+**Responsibility:** Expose the memory graph to external agents via the
+[Model Context Protocol](https://modelcontextprotocol.io) (MCP) tool surface.
+Agent interaction is **purely programmatic** — typed function calls, no query
+DSL (per operator decision D2 in tech-spec.md §11).
+
+The MCP layer is a thin adapter: it deserializes MCP tool-call JSON into typed
+requests, delegates to the internal C# interfaces (`IMemoryRetrievalEngine`,
+`IEvolutionEngine`, `IIncrementalSync`), and serializes results back to MCP
+tool-result JSON. No business logic lives in the MCP layer.
+
+#### 5.6.1 MCP Tool Definitions
+
+Five tools are registered via `ServiceCollectionExtensions.AddMemoryMcpTools()`.
+Each tool maps 1:1 to an internal interface method.
+
+| MCP Tool Name | Internal Method | Description |
+|---|---|---|
+| `memory_query` | `IMemoryRetrievalEngine.RetrieveAsync` | Retrieve token-budgeted context for a task description |
+| `memory_call_chain` | `IMemoryGraphStore.TraverseAsync` | Trace callers/callees of a symbol to a given depth |
+| `memory_find_similar` | `IMemoryGraphStore.VectorSearchAsync` | Find semantically similar code nodes |
+| `memory_annotate` | `IEvolutionEngine.RecordExpertiseAsync` | Write an expertise entry (pattern/pitfall/preference/insight) |
+| `memory_status` | `IIncrementalSync.SyncToCommitAsync` | Check graph status and trigger sync if needed |
+
+#### 5.6.2 MCP Tool Schemas
+
+```json
+{
+  "name": "memory_query",
+  "description": "Retrieve ranked, token-budgeted context from the agent memory graph.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query":          { "type": "string",  "description": "Natural-language task description or symbol name." },
+      "scope":          { "type": "string",  "description": "Optional qualified-name prefix to limit traversal (e.g., 'src/payments')." },
+      "mode":           { "type": "string",  "enum": ["structural_drill","call_trace","semantic_search","expertise_recall","hybrid"],
+                          "description": "Retrieval mode. Default: hybrid." },
+      "tokenBudget":    { "type": "integer", "description": "Max tokens in result. Default: 8000, ceiling: 32000." },
+      "includeExpertise": { "type": "boolean", "description": "Include expertise nodes. Default: true." },
+      "atCommit":       { "type": "string",  "description": "Optional commit SHA for point-in-time query." }
+    },
+    "required": ["query"]
+  }
+}
+```
+
+```json
+{
+  "name": "memory_call_chain",
+  "description": "Trace the call chain (callers or callees) of a symbol.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "symbol":    { "type": "string",  "description": "Node ID or qualified name of the target symbol." },
+      "direction": { "type": "string",  "enum": ["outbound","inbound","both"], "description": "Traversal direction. Default: both." },
+      "depth":     { "type": "integer", "description": "Max traversal depth. Default: 3, max: 10." }
+    },
+    "required": ["symbol"]
+  }
+}
+```
+
+```json
+{
+  "name": "memory_find_similar",
+  "description": "Find code nodes semantically similar to a query or existing node.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": { "type": "string",  "description": "Text query or node ID to find similar nodes for." },
+      "topK":  { "type": "integer", "description": "Number of results. Default: 10, max: 50." },
+      "kinds": { "type": "array", "items": { "type": "string" }, "description": "Filter by node kinds (e.g., ['Function','Class'])." }
+    },
+    "required": ["query"]
+  }
+}
+```
+
+```json
+{
+  "name": "memory_annotate",
+  "description": "Record an expertise entry (pattern, pitfall, preference, or insight) in the memory graph.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "kind":       { "type": "string",  "enum": ["pattern","pitfall","preference","insight"] },
+      "title":      { "type": "string",  "description": "Short title for the expertise entry." },
+      "body":       { "type": "string",  "description": "Detailed description of the learning." },
+      "appliesTo":  { "type": "array",   "items": { "type": "string" }, "description": "Node IDs this expertise applies to." },
+      "scope":      { "type": "string",  "enum": ["exact","subtree"], "description": "Scope of applicability. Default: exact." },
+      "evidence":   { "type": "array",   "items": {
+        "type": "object",
+        "properties": {
+          "nodeId":    { "type": "string" },
+          "commitSha": { "type": "string" },
+          "snippet":   { "type": "string" }
+        }
+      }, "description": "Optional evidence citations." }
+    },
+    "required": ["kind","title","body","appliesTo"]
+  }
+}
+```
+
+```json
+{
+  "name": "memory_status",
+  "description": "Check memory graph status for a repository and optionally trigger sync.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "repoRoot":   { "type": "string",  "description": "Path to the repository root." },
+      "syncToHead": { "type": "boolean", "description": "If true, sync graph to HEAD before returning status. Default: false." }
+    },
+    "required": ["repoRoot"]
+  }
+}
+```
+
+#### 5.6.3 MCP Response Format
+
+All tools return standard MCP tool-result JSON. The `memory_query` response
+wraps a `RetrievalResult` (§5.3):
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "## Structure\npayments/checkout/\n├── CheckoutService ...\n\n## Call Graph\n...\n\n## Known Expertise\n⚠ PITFALL: ..."
+    }
+  ],
+  "metadata": {
+    "tokenCount": 6420,
+    "resolvedMode": "hybrid",
+    "citationCount": 12,
+    "graphCommit": "abc123"
+  }
+}
+```
+
+#### 5.6.4 Internal Class Layout
+
+```
+Ast.Memory/
+  Mcp/
+    MemoryMcpToolRegistration.cs   ← registers 5 tools with MCP discovery
+    MemoryMcpHandler.cs            ← dispatches MCP JSON → internal interfaces
+    McpSchemas.cs                  ← JSON schema constants for tool definitions
+```
+
+`MemoryMcpHandler` composes `IMemoryRetrievalEngine`, `IEvolutionEngine`, and
+`IMemoryGraphStore` via constructor injection. It does NOT contain business
+logic — only JSON deserialization, delegation, and response formatting.
+
+#### 5.6.5 CLI Commands (non-MCP)
+
+For developer workflows that don't use MCP, the same functionality is exposed
+via CLI commands in `Ast.Cli`:
+
+| CLI Command | Maps to |
+|---|---|
+| `ast memory onboard <repo-root>` | Full extraction + initial sync |
+| `ast memory sync [--base-commit <sha>]` | Incremental sync |
+| `ast memory query <text> [--budget <tokens>]` | `IMemoryRetrievalEngine.RetrieveAsync` |
+| `ast memory callers <symbol> [--depth N]` | `IMemoryGraphStore.TraverseAsync` (inbound) |
+| `ast memory callees <symbol> [--depth N]` | `IMemoryGraphStore.TraverseAsync` (outbound) |
+| `ast memory annotate --kind <k> --title <t> --body <b> --applies-to <ids>` | `IEvolutionEngine.RecordExpertiseAsync` |
+| `ast memory evolve [--scope <prefix>]` | `IEvolutionEngine.ConsolidateAsync` |
+| `ast memory reindex [--reembed]` | Full re-extraction with optional re-embedding |
+| `ast memory status` | Graph stats, last sync commit, node/edge counts |
+
 ---
 
 ## 6. End-to-End Sequence Flows
@@ -917,6 +1091,80 @@ S8: New session gets consolidated, high-confidence expertise.
     Higher-quality completions — memory compounded across sessions.
 ```
 
+### 6.6 MCP Tool Invocation (External Agent)
+
+```
+Actor: An MCP-compatible agent (e.g., Copilot, Cursor) invokes memory_query.
+
+1. Agent sends MCP tool call:
+   {
+     "name": "memory_query",
+     "arguments": {
+       "query": "How does checkout work? Any known pitfalls?",
+       "scope": "payments.checkout",
+       "tokenBudget": 8000,
+       "includeExpertise": true
+     }
+   }
+
+2. MemoryMcpHandler receives the call:
+   ├─ 2a. Deserialize JSON → RetrievalQuery (§5.3)
+   ├─ 2b. Validate tokenBudget ≤ TokenBudgetCeiling (32K)
+   └─ 2c. Delegate to IMemoryRetrievalEngine.RetrieveAsync(query)
+
+3. RetrievalEngine executes (same as §6.3 steps 2–7):
+   ├─ Query Planner → mode = Hybrid
+   ├─ Parallel fan-out: structural + call-chain + expertise + vector search
+   ├─ Ranker merges results using 5-signal scoring model
+   ├─ Budget Controller enforces 8K token limit
+   └─ Context Assembler formats Markdown
+
+4. MemoryMcpHandler serializes RetrievalResult → MCP tool-result JSON:
+   {
+     "content": [{ "type": "text", "text": "## Structure\n..." }],
+     "metadata": { "tokenCount": 6420, "resolvedMode": "hybrid", ... }
+   }
+
+5. Agent receives context block and incorporates it into its LLM prompt.
+
+Result: Agent has structurally-aware, expertise-enriched context
+without needing to re-discover the codebase.
+```
+
+### 6.7 MCP Expertise Write-Back (External Agent)
+
+```
+Actor: Agent records a learning via memory_annotate tool.
+
+1. Agent sends MCP tool call:
+   {
+     "name": "memory_annotate",
+     "arguments": {
+       "kind": "pitfall",
+       "title": "Race condition in concurrent checkout",
+       "body": "Two concurrent requests can double-reserve inventory.",
+       "appliesTo": ["/src/payments/checkout::CheckoutService.process"],
+       "scope": "exact"
+     }
+   }
+
+2. MemoryMcpHandler:
+   ├─ 2a. Deserialize JSON → ExpertiseEntry (§5.4)
+   ├─ 2b. Inject SourceAgent from MCP session context
+   └─ 2c. Delegate to IEvolutionEngine.RecordExpertiseAsync(entry)
+
+3. Evolution Engine executes (same as §6.4 steps 2a–2e).
+
+4. MemoryMcpHandler returns MCP result:
+   {
+     "content": [{ "type": "text", "text": "Expertise recorded: expertise:pitfall:a1b2c3d4" }],
+     "metadata": { "expertiseId": "expertise:pitfall:a1b2c3d4" }
+   }
+
+Result: Future agents querying checkout code will see this pitfall
+in their ## Known Expertise section.
+```
+
 ---
 
 ## 7. Deployment Topology
@@ -973,18 +1221,34 @@ S8: New session gets consolidated, high-confidence expertise.
 
 ---
 
-## 10. Cross-Document Alignment with implementation-plan.md
+## 10. Cross-Document Alignment
 
-The following table lists **every known conflict** between this architecture
-document and `implementation-plan.md`. Each row states what
-`implementation-plan.md` says, what the canonical resolution is (per this
-document), and the section that governs.
+This section lists **every known conflict** between this architecture document
+and the three sibling documents. Each row states what the sibling says, what
+the canonical resolution is (per this document), and the governing section.
 
-Implementers following `implementation-plan.md` **MUST** apply these
-corrections. Future iterations of `implementation-plan.md` should incorporate
-these fixes.
+When any sibling document and this architecture disagree, **this document
+governs** (see document header).
 
-### 10.1 Naming & Type Conflicts
+### 10.0 Alignment with tech-spec.md
+
+All previously-pending conflicts between this document and `tech-spec.md` are
+**resolved** as of tech-spec.md iteration 5. `tech-spec.md` §12.2 confirms
+alignment on: embedding model (D1), cross-branch visibility (D3), decay
+formula (D5), composition wrappers (HC8), `HyperedgeType` enum count (44),
+`GetEnhancedEmbeddingText()` source-code surface area (R7), and token budget
+defaults (HC1). No remaining conflicts.
+
+`tech-spec.md` §11 D2 specifies "purely programmatic" agent interaction via
+typed function calls — this architecture fulfills that requirement via the MCP
+tool surface defined in §5.6, which maps 1:1 to internal C# interfaces.
+
+### 10.1 Alignment with implementation-plan.md
+
+Implementers following `implementation-plan.md` **MUST** apply the corrections
+below. Future iterations of `implementation-plan.md` should incorporate these.
+
+#### 10.1.1 Naming & Type Conflicts
 
 | # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
 |---|---|---|---|
@@ -993,7 +1257,7 @@ these fixes.
 | N-3 | Stage 1.2 creates separate `IExpertiseStore.cs` | No separate interface. Expertise write/read methods are part of **`IEvolutionEngine`** (§5.4). `IExpertiseStore` is retired (§2.3). | §2.3, §5.4 |
 | N-4 | Stage 5.2 mentions `AgentMemoryService` composing `IExpertiseStore` | Compose `IEvolutionEngine` instead — it subsumes the expertise store role. | §5.4 |
 
-### 10.2 Data Model Conflicts
+#### 10.1.2 Data Model Conflicts
 
 | # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
 |---|---|---|---|
@@ -1002,14 +1266,14 @@ these fixes.
 | D-3 | Stage 1.1: `ExpertiseNote` has `PatternType` enum (Pattern, Pitfall, Preference, Insight) | Enum is named **`ExpertiseKind`** and lives in `Enums.cs`. Values are the same. The class name is `ExpertiseEntry`, field name is `Kind`. | §2.3, §5.4 |
 | D-4 | Stage 1.1: `Annotation.cs` with `NodeId`, `Key`, `ValueJson`, `SessionId`, `ValidFrom`, `ValidUntil` | Annotations are not separate entity classes. They are stored as key/value pairs in `HypergraphNode.Metadata`, governed by `AnnotationKeyRegistry`. Agent extension keys use `ext:` prefix. | §4.5 |
 
-### 10.3 ID Format Conflicts
+#### 10.1.3 ID Format Conflicts
 
 | # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
 |---|---|---|---|
 | I-1 | Stage 2.1: canonical IDs use `{repo}:{language}:{fqn}:{hash_short}` format | Canonical IDs use **path-based format**: `"{filePath}::{qualifiedName}"` for symbols, `"{relativePath}"` for files/dirs, `"expertise:{kind}:{hash8}"` for expertise nodes. No `{repo}:` or `{language}:` prefix. No `{hash_short}` suffix. | §4.4 |
 | I-2 | Stage 2.1: `IdReconciliationTable.cs` backed by `ID_MAPS_TO` edges in Neo4j | ID reconciliation uses the same storage mechanism but edge names and backing can be implementation-plan's choice (file-scope detail). ID *format* must follow §4.4. | §4.4 |
 
-### 10.4 Edge Name Conflicts
+#### 10.1.4 Edge Name Conflicts
 
 | # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
 |---|---|---|---|
@@ -1018,7 +1282,7 @@ these fixes.
 | E-3 | Stage 2.2: emits `IMPORTS` edges | Canonical name is **`DEPENDS_ON`**. `IMPORTS` is retired (§2.3). | §2.2, §2.3 |
 | E-4 | Stage 4.2: `DependencyInvalidator` walks `IMPORTS` and `CALLS` edges | Walk **`DEPENDS_ON`** and `CALLS` edges (same logic, correct name). | §2.2, §2.3 |
 
-### 10.5 Numeric / Threshold Conflicts
+#### 10.1.5 Numeric / Threshold Conflicts
 
 | # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
 |---|---|---|---|
@@ -1028,14 +1292,14 @@ these fixes.
 | T-4 | Stage 6.3: decay half-life = 60 days | Canonical half-life: **`DecayHalfLifeDays = 1095`** (3 years). 60 days is far too aggressive — would decay valid insights before they compound. | §2.4 |
 | T-5 | Stage 6.3: decay formula `e^(-λ × days)` (exponential) | Canonical formula: **`2^(−age_days / DecayHalfLifeDays) × centrality_boost`** (base-2 exponential with centrality modifier). See §3.5. | §3.5 |
 
-### 10.6 Storage Interface Conflicts
+#### 10.1.6 Storage Interface Conflicts
 
 | # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
 |---|---|---|---|
 | S-1 | Stage 1.2: `IMemoryStore` has `UpsertAnnotationAsync`, `GetAnnotationsAsync`, `WriteAuditEntryAsync`, `GetAuditLogAsync`, `TombstoneNodeAsync`, `GetNodeAtVersionAsync` | The canonical interface is **`IMemoryGraphStore`** (§5.2). It exposes `ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, `FindByNameAsync`, `RebuildVectorIndexAsync`, `ResolveCommitIndexAsync`, `RegisterCommitAsync`. Annotations are Metadata-based, not separate CRUD. Audit is an internal implementation detail, not on the public interface. | §5.2 |
 | S-2 | Stage 1.3: `Neo4jMemoryStore` with annotation CRUD and temporal Cypher | Implement **`IMemoryGraphStore`** interface from §5.2. Temporal filtering uses `VersionRange` with `SinceIndex`/`UntilIndex` fields, queried via `GetNodeAtCommitAsync`. | §4.3, §5.2 |
 
-### 10.7 Summary of Required Changes to implementation-plan.md
+#### 10.1.7 Summary of Required Changes to implementation-plan.md
 
 When `implementation-plan.md` is next updated, these changes should be applied:
 
@@ -1049,3 +1313,36 @@ When `implementation-plan.md` is next updated, these changes should be applied:
 8. **Fix** `MaxTokens` default from 32K to 8,000.
 9. **Fix** decay half-life from 60 days to 1,095 days and formula to base-2.
 10. **Align** `IMemoryGraphStore` method signatures to §5.2.
+11. **Add** MCP tool definitions matching §5.6 — implementation-plan Stage 5.2
+    mentions `MemoryMcpTool.cs` and `MemoryMcpHandler.cs` but does not specify
+    tool names or schemas. Canonical tool definitions are in §5.6.1–5.6.2.
+
+### 10.2 Alignment with e2e-scenarios.md
+
+The e2e-scenarios document uses presentation-friendly names that diverge from
+canonical vocabulary. These are acceptable in Gherkin scenarios (which test
+behavior, not internal names) but implementers must map them correctly.
+
+| # | e2e-scenarios.md says | Canonical equivalent (this doc) | Notes |
+|---|---|---|---|
+| E2E-1 | Scenario 4.1 uses `called_by` as an edge label in result tables | `called_by` is a **reverse traversal** of `CALLS`, not a stored edge (§2.3). Scenario is behaviorally correct — the retrieval engine returns 1-hop callers via reverse `CALLS` traversal. No stored `CALLED_BY` edge needed. | Scenario OK; implementation uses reverse traversal. |
+| E2E-2 | Scenario 2.1 uses `direct_call` as `edge_type` | Canonical edge name is **`CALLS`** with `Confidence = 1.0` (§2.2). `direct_call` is a presentation alias. | Implementers emit `CALLS` edges. |
+| E2E-3 | Scenario 2.3 uses `polymorphic` as `edge_type` | Canonical edge is **`CALLS`** with `Confidence = 0.5` (§2.2, §3.1 Call-Chain Analyzer). The `polymorphic` label maps to a `CALLS` edge with reduced confidence and `Metadata["IsPolymorphic"] = true`. | Implementers emit `CALLS` edges. |
+| E2E-4 | Scenario 2.5 uses `recursive` as `edge_type` | Canonical: a self-referencing **`CALLS`** edge (same node in both `caller` and `callee` roles). | Implementers emit `CALLS` edge. |
+| E2E-5 | Scenario 2.7 uses `service_call` as `edge_type` | Cross-service RPC is **out of scope** for MVP (tech-spec §3 O1 — runtime/dynamic tracing excluded). If implemented later, it would be a `CALLS` edge with `Metadata["CrossService"] = true` and `Protocol` metadata. | Deferred per O1. |
+| E2E-6 | Scenario 1.2/2.4/4.1 uses unqualified symbol IDs like `AuthService.login` | Canonical node IDs use **path-based format** `"{filePath}::{qualifiedName}"` (§4.4), e.g., `/src/auth/login::AuthService.login`. Scenario table entries are abbreviations for readability. | Implementers use full path-based IDs. |
+| E2E-7 | Scenario 2.4 uses `ext::` prefix for boundary nodes | Canonical format for external/boundary nodes is not yet defined (external dependencies are out-of-repo). Recommended: `"ext:{package}:{qualifiedName}"` (e.g., `"ext:@aws-sdk/client-kms:KMS.encrypt"`). | Aligns with §4.4 ID philosophy. |
+| E2E-8 | Scenario 6.4 describes cross-repo memory transfer | **Out of scope** per tech-spec §3 O2 (multi-repository federation excluded). This scenario is aspirational and should be tagged `@deferred`. | No conflict — future work. |
+| E2E-9 | Scenario 3.4 describes conflict errors on concurrent writes | Architecture specifies **SQLite WAL mode** for local (concurrent reads, serialized writes via in-process mutex) and **Neo4j** for team mode (native concurrency). No "conflict error" is raised — writes are serialized. Scenario should be adjusted to test write serialization, not optimistic-concurrency conflicts. | Scenario needs update. |
+
+### 10.3 Alignment with tech-spec.md
+
+All conflicts resolved as of tech-spec.md iteration 5 (see §10.0 above).
+Tech-spec.md §12.2–12.3 contains its own alignment tables that cross-reference
+this document. The single remaining coordination item is:
+
+| # | Item | Status |
+|---|---|---|
+| TS-1 | tech-spec.md §12.3 lists 12 implementation-plan conflicts (IP1–IP12) | ✅ Consistent — same conflicts listed here in §10.1. Both documents agree on canonical resolutions. |
+| TS-2 | tech-spec.md §11 D2 specifies "purely programmatic" agent API | ✅ Fulfilled by §5.6 MCP tool definitions (5 typed tools, no query DSL). |
+| TS-3 | tech-spec.md §11 D1 specifies general-purpose embedding model | ✅ Fulfilled by §4.7 (all nodes use same general-purpose model). |
