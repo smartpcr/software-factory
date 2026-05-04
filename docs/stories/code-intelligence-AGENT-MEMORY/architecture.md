@@ -118,17 +118,21 @@ parsers but is never used as a filter in the memory layer.
 #### Retired names
 
 The following names appeared in earlier iterations or appear in sibling
-documents. They are replaced by the canonical names above:
+documents. They are replaced by the canonical names above. **Implementers must
+use the canonical name, not the retired name.**
 
-| Retired name | Canonical replacement | Notes |
-|---|---|---|
-| `IMPORTS` | `DEPENDS_ON` | |
-| `RE_EXPORTS` | `DEPENDS_ON` | |
-| `CALLED_BY` | Reverse traversal of `CALLS` | Not a stored edge |
-| `INHERITS` | `EXTENDS` | |
-| `INSTANTIATES` | `CALLS` (with `ConstructorInvocation` original type) | |
-| `OVERRIDES` | `EXTENDS` (override is an inheritance variant) | |
-| Fact / Derived / Interaction / Temporal layers | Structural / Call-Chain / Semantic / Expertise | Temporal versioning is orthogonal, not a layer |
+| Retired name | Canonical replacement | Where the retired name appears | Notes |
+|---|---|---|---|
+| `IMPORTS` | `DEPENDS_ON` | `implementation-plan.md` Stage 2.2 | |
+| `RE_EXPORTS` | `DEPENDS_ON` | (no current occurrence) | |
+| `CALLED_BY` | Reverse traversal of `CALLS` | `implementation-plan.md` Stage 2.2 | Not a stored edge — use reverse traversal direction in `TraversalPlan` |
+| `INHERITS` | `EXTENDS` | `implementation-plan.md` Stage 2.2, test scenarios | |
+| `INSTANTIATES` | `CALLS` (with `ConstructorInvocation` original type) | (no current occurrence) | |
+| `OVERRIDES` | `EXTENDS` (override is an inheritance variant) | (no current occurrence) | |
+| Fact / Derived / Interaction / Temporal layers | Structural / Call-Chain / Semantic / Expertise | (no current occurrence) | Temporal versioning is orthogonal, not a layer |
+| `ExpertiseNote` | `ExpertiseEntry` | `implementation-plan.md` Stage 1.1 | Class renamed for clarity |
+| `IMemoryStore` | `IMemoryGraphStore` | `implementation-plan.md` Stage 1.2 | Interface renamed |
+| `IExpertiseStore` | `IEvolutionEngine` | `implementation-plan.md` Stage 1.2 | Merged into Evolution Engine |
 
 ### 1.6 Temporal Model
 
@@ -154,13 +158,23 @@ CREATE TABLE commits (
 CREATE INDEX idx_commits_index ON commits(commit_index);
 ```
 
-Point-in-time queries:
+Point-in-time queries use integer indices:
 `WHERE valid_from_idx <= $target_idx AND (valid_until_idx IS NULL OR valid_until_idx > $target_idx)`.
 
-The tech-spec (§7.4) uses `valid_from` / `valid_until` ISO-8601 timestamps.
-In the canonical model, those columns store the integer `commit_index`, not
-timestamps. The wall-clock timestamp is available via a join to the `commits`
-table.
+**Reconciliation with tech-spec §7.4:** The tech-spec describes `valid_from` /
+`valid_until` as ISO-8601 timestamps for conceptual clarity. In the physical
+storage model defined here, those columns store **integer `commit_index`
+values**, not timestamps. The wall-clock timestamp for any commit is available
+via a join to the `commits` table above. The `VersionRange` record (§4.1)
+bridges both representations: it carries the commit SHA strings (`Since`,
+`Until`) for provenance display and the integer indices (`SinceIndex`,
+`UntilIndex`) for efficient range queries.
+
+**Reconciliation with implementation-plan Stage 1.1:** The implementation plan
+describes `VersionRange` as "since/until commit SHA". In the canonical model,
+`VersionRange` carries **both** the SHA and the integer index. The SHA alone
+is insufficient for range queries; the index is required. See §4.1 for the
+full `VersionRange` record shape.
 
 ### 1.7 Model Extension Strategy
 
@@ -171,6 +185,16 @@ are added to the base classes. `MemoryNode` / `MemoryEdge` are convenience
 provide strongly-typed accessors for memory Metadata keys. All inter-component
 interfaces accept and return the base `HypergraphNode` / `Hyperedge` types to
 avoid breaking existing parsers and their 437+ tests.
+
+**Reconciliation with implementation-plan Stage 1.1:** The implementation plan
+says `MemoryNode.cs` "extending `HypergraphNode`" and `MemoryEdge.cs`
+"extending `Hyperedge`" — this wording implies C# class inheritance. **That is
+incorrect.** The canonical strategy is **composition**: `MemoryNode` contains
+a `HypergraphNode Inner { get; }` property and delegates to it. It does NOT
+use `: HypergraphNode` inheritance. This ensures that code accepting
+`HypergraphNode` parameters continues to work without casting. The
+implementation plan should be updated to say "wrapping" or "composing" instead
+of "extending".
 
 ---
 
@@ -1351,24 +1375,49 @@ Result: The system accumulates expertise that compounds across sessions.
 ## 9. Cross-Document Alignment Summary
 
 This document is the **canonical authority** for all naming, data model, and
-interface decisions. The table below lists topics where sibling documents may
-use different terminology. In every case, the name defined in this document
-governs the implementation.
+interface decisions. The tables below list (a) the canonical terms, and (b)
+every known contradiction in sibling documents with the resolution.
 
-| Topic | This doc says | Where defined |
+### 9.1 Canonical Terms (source of truth)
+
+| Topic | Canonical value | Defined in |
 |---|---|---|
 | Layer names | Structural, Call-Chain, Semantic, Expertise | §1.5 |
-| Edge names (code-derived) | CONTAINS, DEPENDS_ON, CALLS, EXTENDS, IMPLEMENTS, REFERENCES | §1.5 |
-| Edge names (memory-only) | SIMILAR_TO, BELONGS_TO_CLUSTER, APPLIES_TO, SUPERSEDES, DERIVED_FROM | §1.5, §4.6 |
-| Retired edge names | IMPORTS → DEPENDS_ON; CALLED_BY → reverse CALLS; INHERITS → EXTENDS | §1.5 |
-| Node ID format | Path-based strings: `"{filePath}::{qualifiedName}"` | §4.1 |
-| ID type | `string` everywhere — no GUIDs/UUIDs/ints | §4.1 |
-| Temporal model | Dual-axis: commit SHA + monotonic integer `commit_index`; wall-clock `LastTouched` | §1.6 |
-| Model extension | Composition wrappers, not C# inheritance | §1.7 |
-| Memory-only edge representation | `HyperedgeType.MemoryRelation` enum value + `SemanticRelation` metadata | §4.6 |
-| Embedding lifecycle | Three-phase: extraction, write-back, consolidation | §4.4 |
-| Retrieval scoring | 5-term model with configurable weights | §6.3 |
-| Edge filtering | `TraversalPlan.SemanticRelations` is the sole filter; `EdgeTypes` is deprecated | §5.2 |
+| Edge names (code-derived) | `CONTAINS`, `DEPENDS_ON`, `CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES` | §1.5 |
+| Edge names (memory-only) | `SIMILAR_TO`, `BELONGS_TO_CLUSTER`, `APPLIES_TO`, `SUPERSEDES`, `DERIVED_FROM` | §1.5, §4.6 |
+| Retired edge names | `IMPORTS` → `DEPENDS_ON`; `CALLED_BY` → reverse traversal of `CALLS`; `INHERITS` → `EXTENDS`; `INSTANTIATES` → `CALLS`; `OVERRIDES` → `EXTENDS` | §1.5 |
+| Node ID format | Path-based `string`: `"{filePath}::{qualifiedName}"` for symbols, `"{filePath}"` for files, `"/"` for repo root | §4.1 |
+| ID type | `string` everywhere — no GUIDs, UUIDs, or integer IDs | §4.1 |
+| Temporal model | Dual-axis: (1) commit SHA + monotonic `commit_index` integer for range queries, (2) wall-clock `LastTouched` ISO-8601 for informational display | §1.6 |
+| VersionRange fields | `Since: string` (commit SHA), `SinceIndex: int`, `Until: string?`, `UntilIndex: int?` — range queries use the integer indices | §1.6, §4.1 |
+| Model extension strategy | `MemoryNode` / `MemoryEdge` **compose** (wrap) `HypergraphNode` / `Hyperedge` — they do NOT inherit from the base types | §1.7 |
+| Memory-only edge enum | Single additive value `HyperedgeType.MemoryRelation`; specific relation in `Metadata["SemanticRelation"]` | §4.6 |
+| Edge filtering | `TraversalPlan.SemanticRelations` (string list) is the **sole** filter; `TraversalPlan.EdgeTypes` is deprecated | §5.2 |
+| Expertise model class | `ExpertiseEntry` (for write-back input); expertise nodes are `HypergraphNode` with `NodeType` ∈ {`"Pattern"`, `"Pitfall"`, `"Preference"`, `"Insight"`} | §4.3, §5.4 |
+| Retrieval scoring | 5-term weighted model: structural proximity, semantic similarity, centrality, recency, expertise confidence | §3.3, §6.3 |
+| Embedding lifecycle | Three triggers: extraction time, write-back time, consolidation time | §4.4 |
+
+### 9.2 Known Contradictions in Sibling Documents
+
+The following table enumerates every known discrepancy between this document
+and the three sibling documents. **The resolution column is binding — the
+sibling document should be updated to match in its next iteration.**
+
+| # | Sibling doc | Section | What it says | What this doc says | Resolution |
+|---|---|---|---|---|---|
+| C1 | `implementation-plan.md` | Stage 1.1 | `MemoryNode.cs` "extending `HypergraphNode`" / `MemoryEdge.cs` "extending `Hyperedge`" — implies C# class inheritance | §1.7: `MemoryNode` and `MemoryEdge` **compose** (not inherit from) the base types | **Use composition.** `MemoryNode` wraps a `HypergraphNode` field and provides typed Metadata accessors. No class inheritance. |
+| C2 | `implementation-plan.md` | Stage 1.1 | Model class named `ExpertiseNote.cs` with field `Summary` | §4.3, §5.4: The write-back input type is `ExpertiseEntry` with fields `Title` and `Body` | **Use `ExpertiseEntry`** with `Title` (short label) and `Body` (detailed Markdown). The name `ExpertiseNote` is retired. |
+| C3 | `implementation-plan.md` | Stage 1.1 | `Annotation.cs` with `ValidFrom` / `ValidUntil` temporal fields (unspecified type) | §1.6, §4.1: `VersionRange { Since, SinceIndex, Until, UntilIndex }` — integers for queries, SHAs for provenance | **Use `VersionRange`.** `ValidFrom`/`ValidUntil` column names in SQL map to `SinceIndex`/`UntilIndex` integers. |
+| C4 | `implementation-plan.md` | Stage 2.1 | Canonical ID format `{repo}:{language}:{fqn}:{hash_short}` | §4.1: ID format `"{filePath}::{qualifiedName}"` — no repo prefix, no language, no hash | **Use path-based `"{filePath}::{qualifiedName}"`.** This aligns with e2e-scenarios node IDs and `HypergraphNode.Id` convention. |
+| C5 | `implementation-plan.md` | Stage 2.2 | Uses edge names `CALLED_BY`, `INHERITS`, `IMPORTS` | §1.5 retired names: `CALLED_BY` → reverse `CALLS`; `INHERITS` → `EXTENDS`; `IMPORTS` → `DEPENDS_ON` | **Use canonical names only.** `CALLED_BY` is a reverse traversal, not a stored edge. `INHERITS` → `EXTENDS`. `IMPORTS` → `DEPENDS_ON`. |
+| C6 | `implementation-plan.md` | Stage 2.2, test scenario | "Then an INHERITS edge exists between the two class nodes" | §1.5: `INHERITS` is retired → `EXTENDS` | **Test should assert `EXTENDS` edge.** |
+| C7 | `tech-spec.md` | §7.4 | `valid_from` / `valid_until` are ISO-8601 timestamps; point-in-time queries filter `valid_from <= t` | §1.6: `valid_from_idx` / `valid_until_idx` are monotonic integers (`commit_index`); point-in-time queries filter `valid_from_idx <= $target_idx`. Wall-clock is in the `commits` table. | **Use integer `commit_index` for range queries.** Tech-spec §7.4 describes the conceptual model; the storage columns are integers. ISO-8601 timestamps are available via join to the `commits` table. |
+| C8 | `tech-spec.md` | §7.3 | Annotations as a flat JSONB property bag on nodes (keys: `known_issues`, `complexity_score`, etc.) | §4.1, §4.3: Annotations are stored in `Metadata` dictionary on `HypergraphNode`; expertise facts are separate `HypergraphNode` instances in the Expertise layer | **Both are correct at different levels.** Simple annotations (complexity, access_count) go in `Metadata`. Structured expertise (patterns, pitfalls) are first-class Expertise-layer nodes linked via `APPLIES_TO`. |
+| C9 | `tech-spec.md` | §6 diagram | Shows "Annotation Writer" as a separate component | §3.5: Annotation write-back is handled by the Evolution Engine's `RecordExpertiseAsync` | **Evolution Engine owns write-back.** "Annotation Writer" is not a separate component; it is the write-back path within `IEvolutionEngine`. |
+| C10 | `e2e-scenarios.md` | Scenario 1.1 | Node IDs use bare paths: `/src/auth/login`, `/src/auth` | §4.1: Symbol nodes use `"{filePath}::{qualifiedName}"`; file/directory nodes use `"{filePath}"` | **Compatible.** E2e-scenarios show file/directory nodes (no `::` needed). Symbol nodes (Scenario 1.2) correctly use `::` syntax. |
+| C11 | `e2e-scenarios.md` | Scenario 2.1 | Edge type column uses `direct_call`, `polymorphic`, `recursive`, `service_call` | §1.5: Canonical edge names are `CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES` — subtypes go in `Metadata` | **The `edge_type` column in e2e Gherkin tables represents the `Metadata` subtype, not the canonical `SemanticRelation`.** The stored `SemanticRelation` is `CALLS` for all of these; the subtype (`direct_call`, `polymorphic`, etc.) belongs in `Metadata["CallKind"]`. |
+| C12 | `implementation-plan.md` | Stage 1.2 | Interface named `IMemoryStore` extending `IGraphStore` with methods `UpsertAnnotationAsync`, `TombstoneNodeAsync`, `GetNodeAtVersionAsync` | §5.2: Interface named `IMemoryGraphStore` extending `IGraphStore` with methods `ApplyDiffAsync`, `TraverseAsync`, `GetNodeAtCommitAsync` | **Use `IMemoryGraphStore`** with the method signatures from §5.2. The name `IMemoryStore` is retired. |
+| C13 | `implementation-plan.md` | Stage 1.2 | Separate `IExpertiseStore` interface | §5.2, §5.4: Expertise operations are on `IEvolutionEngine`, not a separate store interface | **No separate `IExpertiseStore`.** Expertise write/read goes through `IEvolutionEngine` which delegates to `IMemoryGraphStore` internally. |
 
 ---
 
