@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 11
+> **Status:** Iteration 12
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, and interface signatures.
@@ -45,18 +45,18 @@ and VCS history.
 ### 1.2 Existing Infrastructure (`src/ast/`)
 
 The system extends the Code Intelligence stack in `src/ast/` (24 projects,
-437+ tests). No existing class signatures are modified.
+970+ tests across 13 test projects). No existing class signatures are modified.
 
-| Project | Key types | Reuse strategy |
+| Project | Key types (with source paths) | Reuse strategy |
 |---|---|---|
-| **Ast.Core** | `HypergraphNode`, `Hyperedge`, `HyperedgeType` (44 enum values) | Extend via `Metadata` dict; add one enum value `MemoryRelation`. |
-| **Ast.GraphDb** | `IGraphStore`, `Neo4jGraphStore` | Add `IMemoryGraphStore` sub-interface; add `SqliteGraphStore`. |
-| **Ast.Embedding** | `IEmbeddingGenerator` (`GenerateEmbeddingAsync`, `GenerateBatchEmbeddingsAsync`) | Reuse directly for all embedding work. |
-| **Ast.Query** | `ICodeQuery`, `HybridQueryService` | Extend with memory-aware retrieval and token budgeting. |
-| **Ast.VectorDb** | `IVectorStore`, `QdrantVectorStore` | Reuse for team mode; add in-process HNSW for local mode. |
-| **Ast.Lsp** | LSP integration | Optional enrichment — pipeline never blocks on LSP. |
-| **CodeIntelligence** | 28 analyzers, `RelationshipGraphBuilder` | Consume as call-chain / structural edge source. |
-| **Ast.Cli** | CLI host | Extend with MCP tools for retrieve + write-back. |
+| **Ast.Core** | `HypergraphNode`, `Hyperedge`, `HyperedgeType` (44 enum values) — `src/ast/Ast.Core/HypergraphModels.cs`; `RepositoryProcessor` — `src/ast/Ast.Core/RepositoryProcessor.cs` | Extend via `Metadata` dict; add one enum value `MemoryRelation`. |
+| **Ast.GraphDb** | `IGraphStore` — `src/ast/Ast.GraphDb/IGraphStore.cs`; `Neo4jGraphStore` — `src/ast/Ast.GraphDb/Neo4jGraphStore.cs`; `NodeFilter`, `GraphPath`, `NodeWithDepth` — `src/ast/Ast.GraphDb/GraphModels.cs` | Add `IMemoryGraphStore` sub-interface; add `SqliteGraphStore`. |
+| **Ast.Embedding** | `IEmbeddingGenerator` — `src/ast/Ast.Embedding/IEmbeddingGenerator.cs`; `CodeEmbeddingService` — `src/ast/Ast.Embedding/CodeEmbeddingService.cs`; `EnrichedEmbeddingPipeline` — `src/ast/Ast.Embedding/EnrichedEmbeddingPipeline.cs`; `EmbeddingGeneratorOptions` (default model: `"nomic-embed-text"`) — `src/ast/Ast.Embedding/EmbeddingModels.cs` | Reuse directly for all embedding work. |
+| **Ast.Query** | `ICodeQuery` — `src/ast/Ast.Query/ICodeQuery.cs`; `HybridQueryService` — `src/ast/Ast.Query/HybridQueryService.cs`; `ScoredNode` — `src/ast/Ast.Query/QueryModels.cs` | Extend with memory-aware retrieval and token budgeting. |
+| **Ast.VectorDb** | `IVectorStore` — `src/ast/Ast.VectorDb/IVectorStore.cs`; `QdrantVectorStore` — `src/ast/Ast.VectorDb/QdrantVectorStore.cs` | Reuse for team mode; add in-process HNSW for local mode. |
+| **Ast.Lsp** | LSP integration — `src/ast/Ast.Lsp/` | Optional enrichment — pipeline never blocks on LSP. |
+| **CodeIntelligence** | 27 analyzers in `src/ast/CodeIntelligence/Analyzers/`, 4 detectors in `src/ast/CodeIntelligence/Detectors/`, `RelationshipGraphBuilder` — `src/ast/CodeIntelligence/Graph/RelationshipGraphBuilder.cs` | Consume as call-chain / structural edge source. |
+| **Ast.Cli** | CLI host — `src/ast/Ast.Cli/` | Extend with MCP tools for retrieve + write-back. |
 
 ### 1.3 Research Foundations
 
@@ -219,28 +219,32 @@ src/ast/
 
 | Sub-component | Input | Output |
 |---|---|---|
-| **Language Parser** (existing `Ast.Csharp`, `Ast.PowerShell`) | Source files | `HypergraphNode` + `Hyperedge` with `HyperedgeType` values |
+| **Language Parser** (existing `Ast.Csharp/CsharpAstParser.cs`, `Ast.PowerShell/PowerShellAstParser.cs`) | Source files | `HypergraphNode` + `Hyperedge` with `HyperedgeType` values |
 | **Structure Builder** | Parser output | Structural-layer hierarchy: `CONTAINS` + `DEPENDS_ON` edges |
 | **Call-Chain Analyzer** | Parser output + resolved types | Call-chain-layer edges: `CALLS` / `EXTENDS` / `IMPLEMENTS` / `REFERENCES` |
-| **Semantic Indexer** | Symbol names, docstrings, signatures | `Metadata["Embedding"]` vectors via `IEmbeddingGenerator`; `SIMILAR_TO` edges above `SimilarityThreshold` |
+| **Semantic Indexer** | Symbol names, docstrings, signatures | `Metadata["Embedding"]` vectors via `IEmbeddingGenerator` (§1.2); `SIMILAR_TO` edges above `SimilarityThreshold` |
 | **Fact Normalizer** | All raw facts | Stable path-based IDs, `VersionRange` stamps, `ContentHash`, deduplication |
 
 **Key design:** Existing `Ast.Core` parsers are the primary extraction
-adapters. Tree-sitter adapters for TypeScript, Python, Go are additive —
-no schema changes needed.
+adapters. `RepositoryProcessor` (in `src/ast/Ast.Core/RepositoryProcessor.cs`)
+orchestrates file discovery and dispatches to language-specific parsers.
+Tree-sitter adapters for TypeScript, Python, Go are additive — no schema
+changes needed.
 
 ### 3.2 Graph Store
 
-**Project:** `Ast.GraphDb` (interface) + `Ast.Memory/Storage` (SQLite impl)  
+**Project:** `Ast.GraphDb` (interface at `src/ast/Ast.GraphDb/IGraphStore.cs`) + `Ast.Memory/Storage` (SQLite impl)  
 **Responsibility:** Persist the four graph layers, serve traversal queries,
 manage versioned snapshots.
 
 | Deployment | Graph backend | Vector backend |
 |---|---|---|
 | Local / CI | SQLite + FTS5 + recursive CTEs | sqlite-vss or in-process HNSW (usearch) |
-| Team / Cloud | Neo4j (`Neo4jGraphStore`) | Qdrant (`QdrantVectorStore`) |
+| Team / Cloud | Neo4j (`src/ast/Ast.GraphDb/Neo4jGraphStore.cs`) | Qdrant (`src/ast/Ast.VectorDb/QdrantVectorStore.cs`) |
 
-Backend selection is via DI; all backends implement `IMemoryGraphStore` (§5.2).
+Backend selection is via DI (see existing `src/ast/Ast.GraphDb/ServiceCollectionExtensions.cs`
+and `src/ast/Ast.VectorDb/ServiceCollectionExtensions.cs`); all backends
+implement `IMemoryGraphStore` (§5.2).
 
 ### 3.3 Retrieval Engine
 
@@ -252,7 +256,7 @@ and return memory fragments.
 |---|---|
 | **Query Planner** | Classifies query intent → selects retrieval mode(s) and graph layers. |
 | **Graph Traverser** | Depth-limited BFS / DFS on selected layers. |
-| **Vector Searcher** | ANN search over embeddings via `IVectorStore`. |
+| **Vector Searcher** | ANN search over embeddings via `IVectorStore` (`src/ast/Ast.VectorDb/IVectorStore.cs`). |
 | **Ranker** | Merges results using the 5-signal scoring model (§2.4). |
 | **Budget Controller** | Enforces token budget; substitutes parent summaries when children exceed budget (HiAgent pattern). |
 
@@ -325,12 +329,38 @@ The memory layer extends `HypergraphNode` and `Hyperedge` **non-breakingly**
 via their existing `Metadata: Dictionary<string, object?>` dictionaries.
 No properties are added to the base classes.
 
+**Existing `HypergraphNode` properties** (from `src/ast/Ast.Core/HypergraphModels.cs` lines 74–86):
+
+| Property | Type | Description |
+|---|---|---|
+| `Id` | `string` (required) | Unique node identifier |
+| `Name` | `string` (required) | Display name |
+| `NodeType` | `string` (required) | Kind: `"Class"`, `"Function"`, etc. |
+| `Language` | `string` (required) | `"C#"`, `"PowerShell"`, etc. |
+| `FilePath` | `string` (required) | Source file path |
+| `Scope` | `string` | Containing scope |
+| `LineStart` / `LineEnd` | `int` | Source location |
+| `Modifiers` | `List<string>` | `["public", "async"]`, etc. |
+| `Metadata` | `Dictionary<string, object?>` | **Extension point** — memory uses this |
+
+**Existing `Hyperedge` properties** (from `src/ast/Ast.Core/HypergraphModels.cs` lines 199–207):
+
+| Property | Type | Description |
+|---|---|---|
+| `Id` | `string` (required) | Unique edge identifier |
+| `EdgeType` | `HyperedgeType` (required) | One of 44 enum values (or new `MemoryRelation`) |
+| `NodeIds` | `List<string>` (required) | Participating node IDs (≥ 2) |
+| `Roles` | `Dictionary<string, string>` (required) | Maps node ID → semantic role |
+| `Languages` | `List<string>` | Languages of participating nodes |
+| `Weight` | `double` | Default 1.0 |
+| `Metadata` | `Dictionary<string, object?>` | **Extension point** — memory uses this |
+
 `MemoryNode` and `MemoryEdge` are **composition wrappers** — they contain a
 base-type instance as an `Inner` property and provide strongly-typed accessors
 for memory Metadata keys. They do **not** use C# class inheritance
 (`: HypergraphNode`). All inter-component interfaces accept/return the base
 types (`HypergraphNode`, `Hyperedge`) to preserve backward compatibility with
-437+ existing tests.
+970+ existing tests.
 
 ```csharp
 // Composition — NOT inheritance
@@ -436,7 +466,7 @@ registry with typed schemas. Agent extension keys use `ext:` prefix.
 | `ContentHash` | `string` | SHA-256 of source span |
 | `LastTouched` | `string` (ISO-8601) | Wall-clock of last extraction (informational) |
 | `Embedding` | `float[]` | Dense vector from `IEmbeddingGenerator` |
-| `EmbeddingModel` | `string` | Model identifier (e.g., `text-embedding-3-small`) |
+| `EmbeddingModel` | `string` | Model identifier (e.g., `nomic-embed-text`) |
 | `Summary` | `string` | LLM-generated one-liner |
 | `QualifiedName` | `string` | Fully-qualified name |
 
@@ -508,7 +538,9 @@ Hyperedge {
 ### 4.7 Embedding Lifecycle
 
 All nodes use the same general-purpose text-embedding model (configured in
-`ExtractionOptions.EmbeddingModel`, default: `text-embedding-3-small`).
+`ExtractionOptions.EmbeddingModel`; default: `"nomic-embed-text"` — consistent
+with the existing `EmbeddingGeneratorOptions.ModelName` default at
+`src/ast/Ast.Embedding/EmbeddingModels.cs` line 119).
 
 | Node origin | When embedded | Input text |
 |---|---|---|
@@ -570,7 +602,7 @@ public class ExtractionOptions
 {
     public required IReadOnlyList<string> Languages { get; init; }
     public bool EnableLsp { get; init; }
-    public string EmbeddingModel { get; init; } = "text-embedding-3-small";
+    public string EmbeddingModel { get; init; } = "nomic-embed-text";
     public long MaxFileSize { get; init; } = 1_048_576;
 }
 
@@ -1191,7 +1223,7 @@ in their ## Known Expertise section.
 
 | Decision | Rationale | Trade-off |
 |---|---|---|
-| Extend `src/ast/` stack, not greenfield | 437+ tests, proven models | Coupled to `HypergraphNode`/`Hyperedge` |
+| Extend `src/ast/` stack, not greenfield | 970+ tests, proven models | Coupled to `HypergraphNode`/`Hyperedge` |
 | Single `Ast.Memory` project with namespaces | Follows repo convention; avoids project sprawl | Larger compilation unit |
 | Non-breaking extension via `Metadata` dict | Preserves all existing tests | String-typed keys; mitigated by `MemoryMetadataKeys` constants |
 | `HyperedgeType.MemoryRelation` + `SemanticRelation` metadata | One enum value; string identifies specific relation | Not compile-time checked; validated at write time |
@@ -1292,14 +1324,20 @@ below. Future iterations of `implementation-plan.md` should incorporate these.
 | T-4 | Stage 6.3: decay half-life = 60 days | Canonical half-life: **`DecayHalfLifeDays = 1095`** (3 years). 60 days is far too aggressive — would decay valid insights before they compound. | §2.4 |
 | T-5 | Stage 6.3: decay formula `e^(-λ × days)` (exponential) | Canonical formula: **`2^(−age_days / DecayHalfLifeDays) × centrality_boost`** (base-2 exponential with centrality modifier). See §3.5. | §3.5 |
 
-#### 10.1.6 Storage Interface Conflicts
+#### 10.1.6 Embedding Model Conflict
+
+| # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
+|---|---|---|---|
+| M-1 | No explicit embedding model specified; defers to tech-spec | Canonical default model is **`"nomic-embed-text"`** — matching the existing `EmbeddingGeneratorOptions.ModelName` default in `src/ast/Ast.Embedding/EmbeddingModels.cs` line 119. Prior iterations of this document incorrectly specified `text-embedding-3-small`; this is now corrected. | §4.7 |
+
+#### 10.1.7 Storage Interface Conflicts
 
 | # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
 |---|---|---|---|
 | S-1 | Stage 1.2: `IMemoryStore` has `UpsertAnnotationAsync`, `GetAnnotationsAsync`, `WriteAuditEntryAsync`, `GetAuditLogAsync`, `TombstoneNodeAsync`, `GetNodeAtVersionAsync` | The canonical interface is **`IMemoryGraphStore`** (§5.2). It exposes `ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, `FindByNameAsync`, `RebuildVectorIndexAsync`, `ResolveCommitIndexAsync`, `RegisterCommitAsync`. Annotations are Metadata-based, not separate CRUD. Audit is an internal implementation detail, not on the public interface. | §5.2 |
 | S-2 | Stage 1.3: `Neo4jMemoryStore` with annotation CRUD and temporal Cypher | Implement **`IMemoryGraphStore`** interface from §5.2. Temporal filtering uses `VersionRange` with `SinceIndex`/`UntilIndex` fields, queried via `GetNodeAtCommitAsync`. | §4.3, §5.2 |
 
-#### 10.1.7 Summary of Required Changes to implementation-plan.md
+#### 10.1.8 Summary of Required Changes to implementation-plan.md
 
 When `implementation-plan.md` is next updated, these changes should be applied:
 
@@ -1316,6 +1354,9 @@ When `implementation-plan.md` is next updated, these changes should be applied:
 11. **Add** MCP tool definitions matching §5.6 — implementation-plan Stage 5.2
     mentions `MemoryMcpTool.cs` and `MemoryMcpHandler.cs` but does not specify
     tool names or schemas. Canonical tool definitions are in §5.6.1–5.6.2.
+12. **Use** `"nomic-embed-text"` as the default embedding model, consistent
+    with the existing `EmbeddingGeneratorOptions.ModelName` default in
+    `src/ast/Ast.Embedding/EmbeddingModels.cs`.
 
 ### 10.2 Alignment with e2e-scenarios.md
 
@@ -1339,10 +1380,11 @@ behavior, not internal names) but implementers must map them correctly.
 
 All conflicts resolved as of tech-spec.md iteration 5 (see §10.0 above).
 Tech-spec.md §12.2–12.3 contains its own alignment tables that cross-reference
-this document. The single remaining coordination item is:
+this document. Coordination items:
 
 | # | Item | Status |
 |---|---|---|
 | TS-1 | tech-spec.md §12.3 lists 12 implementation-plan conflicts (IP1–IP12) | ✅ Consistent — same conflicts listed here in §10.1. Both documents agree on canonical resolutions. |
 | TS-2 | tech-spec.md §11 D2 specifies "purely programmatic" agent API | ✅ Fulfilled by §5.6 MCP tool definitions (5 typed tools, no query DSL). |
 | TS-3 | tech-spec.md §11 D1 specifies general-purpose embedding model | ✅ Fulfilled by §4.7 (all nodes use same general-purpose model). |
+| TS-4 | tech-spec.md §12.2 noted `ExtractionOptions.EmbeddingModel` defaults to `"text-embedding-3-small"` in architecture.md | ✅ **Fixed in iteration 12.** Architecture.md §4.7 and §5.1 now default to `"nomic-embed-text"` — matching the actual codebase defaults in `EmbeddingGeneratorOptions.ModelName` (`src/ast/Ast.Embedding/EmbeddingModels.cs:119`) and `EmbeddingConfiguration.ModelName` (`src/ast/Ast.Core/AstConfiguration.cs:96`). Both are general-purpose per D1. |
