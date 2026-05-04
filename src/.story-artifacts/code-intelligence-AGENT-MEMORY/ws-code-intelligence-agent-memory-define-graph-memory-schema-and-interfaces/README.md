@@ -176,3 +176,16 @@ python gen_schema.py
 
 The generated `json-schema/graph-memory.schema.json` is the canonical schema contract.
 C# types, TypeScript interfaces, and tests validate parity against this document.
+
+## Neo4j Persistence Mapping
+
+See [neo4j-mapping.md](neo4j-mapping.md) for the canonical mapping between
+graph memory schema types and Neo4j labels/relationship types. Downstream
+implementations targeting Neo4j **must** follow this mapping.
+
+## Extension Keys
+
+All `extensions` dictionaries use restricted keys: every key must start with
+`x-` (e.g. `x-myTool`, `x-neo4j`). This is enforced by JSON Schema
+(`propertyNames.pattern: "^x-"`), the C# `GraphValidator`, and documented
+in the TypeScript interfaces.
