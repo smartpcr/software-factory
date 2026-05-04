@@ -20,8 +20,10 @@
 > - **Memory-only edges:** `SIMILAR_TO`, `BELONGS_TO_CLUSTER`, `APPLIES_TO`, `SUPERSEDES`, `DERIVED_FROM`
 > - **Retired names (do NOT use):** `CALLED_BY` → reverse traversal of `CALLS`; `IMPORTS` → `DEPENDS_ON`; `INHERITS` → `EXTENDS`; `ExpertiseNote` → `ExpertiseEntry`; `IMemoryStore` → `IMemoryGraphStore`; single `Content` field on ExpertiseEntry → separate `Title` + `Body` fields
 > - **Node ID format:** `"{filePath}::{qualifiedName}"` for symbols, `"{relativePath}"` for files, `"/"` for repo root, `"expertise:{kind}:{hash8}"` for expertise nodes (hash8 = first 8 chars of SHA-256(Title + Body + TargetNodeId))
-> - **ExpertiseEntry fields:** `Id`, `Kind` (Pattern|Pitfall|Preference|Insight), `Title` (headline), `Body` (detailed description), `TargetNodeId`, `Scope` ("exact"|"subtree"), `Confidence` (0.0–1.0), `SourceAgent`, `Evidence` (optional citations); embedding computed from `Title + " " + Body`
+> - **ExpertiseEntry fields:** `Id`, `Kind` (Pattern|Pitfall|Preference|Insight), `Title` (headline), `Body` (detailed description), `TargetNodeId`, `Scope` ("exact"|"subtree"), `Confidence` (0.0–1.0), `Archived` (bool, default false), `SourceAgent`, `Evidence` (optional citations), `Embedding` (float[]? from Title + " " + Body), `ContentHash` (SHA-256 of Title + Body — for dedup); note: ExpertiseEntry is NOT a HypergraphNode — it has its own table, not a Metadata dict
 > - **RecordExpertiseAsync signature:** `(targetNodeId, kind, title, body, sourceAgent, scope?, evidence?)` — per architecture.md §5.3
+> - **RestoreArchivedExpertiseAsync signature:** `(expertiseId, restoredConfidence = 0.5)` — per architecture.md §5.3
+> - **ArchiveExpertiseAsync:** on `IMemoryGraphStore` — sets `archived = true`, called by DecayService when Confidence < ArchiveConfidenceFloor (0.1)
 > - **Scoring weights:** structural 0.30, semantic 0.25, centrality 0.20, recency 0.15, expertise 0.10
 > - **Token budget:** default 8,000; ceiling 32,000
 > - **Temporal model:** `commit_index` integers (not timestamps); `VersionRange(Since, SinceIndex, Until?, UntilIndex?)`
@@ -426,11 +428,18 @@ Feature: Expertise Layer — Agent Learning and Write-Back
     And no ExpertiseEntry is created
     And no audit_log entry is written
 
-  Scenario: 4.7 — Expertise with ext: extension metadata key
-    When the agent records expertise with Metadata key "ext:team" = "payments"
-    Then the key is stored in the expertise node's Metadata
-    And a validation warning is surfaced for the non-registry "ext:" key
-    And the expertise node is still created successfully
+  Scenario: 4.7 — Restore an archived expertise entry
+    Given an ExpertiseEntry "expertise:pitfall:ab12cd34" with Archived = true
+      and Confidence = 0.05 (below ArchiveConfidenceFloor 0.1)
+      targeting "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode"
+    When the agent calls IEvolutionEngine.RestoreArchivedExpertiseAsync with:
+      | field              | value                        |
+      | expertiseId        | expertise:pitfall:ab12cd34   |
+      | restoredConfidence | 0.5                          |
+    Then the ExpertiseEntry has Archived = false and Confidence = 0.5
+    And subsequent GetExpertiseForNodeAsync for HypergraphNode returns it
+    And an audit_log entry records operation "restore_expertise"
+    # Per architecture.md §5.3: RestoreArchivedExpertiseAsync(expertiseId, restoredConfidence = 0.5)
 ```
 
 ---
@@ -1094,8 +1103,8 @@ Feature: Graph Schema Integrity — Edge and Metadata Validation
     And Metadata["SemanticRelation"] = "CALLS"
     And Metadata["OriginalEdgeType"] = "MethodInvocation"
 
-  Scenario: 13.5 — AnnotationKeyRegistry validates well-known keys
-    Given a node with Metadata keys:
+  Scenario: 13.5 — AnnotationKeyRegistry validates well-known Metadata keys on code nodes
+    Given a HypergraphNode with Metadata keys:
       | key          | valid |
       | MemoryLayer  | yes   |
       | ContentHash  | yes   |
@@ -1105,6 +1114,8 @@ Feature: Graph Schema Integrity — Edge and Metadata Validation
     Then "badkey" raises a validation error
     And "ext:custom" is stored but surfaced with a warning
     And "MemoryLayer" and "ContentHash" pass validation
+    # AnnotationKeyRegistry governs HypergraphNode/Hyperedge Metadata keys (architecture.md §4.5).
+    # ExpertiseEntry has its own typed fields — not a Metadata dictionary.
 
   Scenario: 13.6 — Node ID format follows canonical convention
     Given nodes extracted from "src/ast/Ast.Core/HypergraphModels.cs"
