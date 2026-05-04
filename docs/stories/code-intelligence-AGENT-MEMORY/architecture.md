@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 25
+> **Status:** Iteration 26
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -14,9 +14,9 @@
 >
 > | Document | Owns | Current state |
 > |---|---|---|
-> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Iteration 15+. Aligned on structural/naming points. Three alignment items (A9–A11) for ExpertiseEntry fields, entity classification, and External node Metadata — all resolved. Iteration 25 adds A12 (temporal-model External-node carve-out) — resolved. |
-> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Iteration 15+. Contains 28 naming/data-model divergences from canonical vocabulary — all catalogued in §8.2 below with canonical resolutions. `architecture.md` governs on all conflicts. Iteration 25 adds S-6 (missing `RetireEdgeAsync`), S-7 (missing `ArchiveExpertiseAsync`), S-8 (missing expertise `archived` column). |
-> | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Iteration 15+. Contains 10 divergences catalogued in §8.3 below — all semantically correct or out-of-scope. |
+> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Currently at iteration 22. Aligned on structural/naming points. Twelve alignment items (A1–A12) tracked in §8.1, all resolved. |
+> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Currently at latest iteration. Contains 31 naming/data-model divergences from canonical vocabulary — all catalogued in §8.2 below with canonical resolutions. `architecture.md` governs on all conflicts. |
+> | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Currently at latest iteration. Contains 10 divergences catalogued in §8.3 below — all semantically correct or out-of-scope. |
 
 ---
 
@@ -596,6 +596,12 @@ nodes** (§4.2), which represent out-of-repo dependencies and are timeless
 nodes are never retired by incremental sync; they are garbage-collected only
 during full re-extraction when no edge references them.
 
+**Edges to/from External nodes** are versioned normally — they carry
+`VersionRange` from the in-repo endpoint's perspective. The edge's
+`since_index` tracks when the reference was first observed, and
+`until_index` is set by `RetireEdgeAsync` when incremental sync detects
+the reference has been removed. Only the External node itself is timeless.
+
 ```csharp
 public record VersionRange(
     string Since,        // Commit SHA when introduced
@@ -605,13 +611,21 @@ public record VersionRange(
 );
 ```
 
-**Axis 1 — Commit index (primary).** All point-in-time queries use integer
-comparison. External nodes (which lack `VersionRange`) are always included —
-they are boundary stubs, not versioned entities:
+**Axis 1 — Commit index (primary).** All point-in-time node queries use
+integer comparison. External nodes (which lack `VersionRange`) are always
+included — they are boundary stubs, not versioned entities:
 
 ```sql
-WHERE (since_index IS NULL /* External nodes */
+-- Node temporal filter (External nodes have NULL since_index)
+WHERE (since_index IS NULL /* External boundary nodes — always included */
        OR (since_index <= @target AND (until_index IS NULL OR until_index > @target)))
+```
+
+Edge temporal queries use a simpler filter since all edges carry `VersionRange`:
+
+```sql
+-- Edge temporal filter (all edges are versioned)
+WHERE since_index <= @target AND (until_index IS NULL OR until_index > @target)
 ```
 
 **Axis 2 — Wall-clock timestamp (secondary).** Available via join to the
@@ -652,7 +666,7 @@ CREATE TABLE edges (
     metadata        TEXT NOT NULL,        -- JSON
     semantic_rel    TEXT NOT NULL,        -- denormalized from metadata
     memory_layer    TEXT NOT NULL,        -- denormalized from metadata
-    since_index     INT,                  -- NULL for edges to/from External nodes
+    since_index     INT NOT NULL,         -- commit index when edge was introduced
     until_index     INT                   -- set by RetireEdgeAsync
 );
 
@@ -1273,7 +1287,7 @@ This section tracks known discrepancies with sibling documents. All three
 siblings now exist and have been read for this iteration. Each entry is either
 resolved (with the canonical answer) or flagged for the next iteration.
 
-### 8.1 Alignment with `tech-spec.md` (Iteration 24)
+### 8.1 Alignment with `tech-spec.md` (Iteration 22)
 
 Most conflicts between this document and `tech-spec.md` are **resolved**.
 Tech-spec §12.2 confirms general alignment. The following table includes
@@ -1289,12 +1303,12 @@ both long-resolved items and newly identified divergences.
 | A6 | Scoring weights | Aligned: tech-spec §8.3 uses the canonical 5-signal weighted model (0.30/0.25/0.20/0.15/0.10) from §2.4 of this doc. |
 | A7 | Composition wrappers | Aligned: tech-spec HC8, §4 confirm `MemoryNode`/`MemoryEdge` use composition (`Inner` property), not inheritance, matching §4.1 of this doc. |
 | A8 | Token budget | Aligned: tech-spec HC1 clarifies 32K ceiling, 8K default — matching §2.4 of this doc. |
-| A9 | ExpertiseEntry field names | **Resolved in iteration 24.** Tech-spec §7.1 uses `title`, `body`, `source_session`. This document (§4.2) now uses `Title`, `Body`, `SourceAgent` (with `Scope` and `Evidence`). The field name difference (`source_session` vs `SourceAgent`) is documentation shorthand in tech-spec — both refer to the agent session identifier. `SourceAgent` is canonical. |
+| A9 | ExpertiseEntry field names | **Resolved.** Tech-spec §7.1 uses `title`, `body`, `source_session`. This document (§4.2) uses `Title`, `Body`, `SourceAgent` (with `Scope` and `Evidence`). The field name difference (`source_session` vs `SourceAgent`) is documentation shorthand in tech-spec — both refer to the agent session identifier. `SourceAgent` is canonical. |
 | A10 | ExpertiseEntry entity vs node type | **Resolved.** Tech-spec §7.1 lists `ExpertiseEntry` under "Node Types" for schema reference convenience. Canonically, `ExpertiseEntry` is **not** a `HypergraphNode` — it is a first-class entity stored in its own `expertise` table (§4.2, §4.4) and linked to code nodes via `APPLIES_TO` edges. Tech-spec's presentation is a summary shorthand, not a contradiction. |
-| A11 | External node Metadata keys | **Resolved in iteration 24.** Tech-spec §7.1 lists External nodes with `package`, `fqn` properties. This document (§4.2) now explicitly specifies `Metadata["Package"]` and `Metadata["QualifiedName"]` keys for External nodes, resolving the implicit-vs-explicit gap. |
-| A12 | Temporal-model External-node carve-out | **Resolved in iteration 25.** Tech-spec S4 says "every node and edge carries a `VersionRange`" but External nodes are timeless (no VCS presence). This document (§4.3) now explicitly states External boundary nodes are exempt from `VersionRange`; temporal queries include them via `WHERE since_index IS NULL` (External) or range-match (versioned). The SQLite schema (§4.4) makes `since_sha` and `since_index` nullable. |
+| A11 | External node Metadata keys | **Resolved.** Tech-spec §7.1 lists External nodes with `package`, `fqn` properties. This document (§4.2) explicitly specifies `Metadata["Package"]` and `Metadata["QualifiedName"]` keys for External nodes. |
+| A12 | Temporal-model External-node carve-out | **Resolved.** Tech-spec S4 says "every node and edge carries a `VersionRange`" but External boundary nodes are timeless (no VCS presence). This document (§4.3) explicitly states: External boundary nodes are exempt from `VersionRange`; edges to/from External nodes are versioned normally from the in-repo endpoint's perspective. Temporal queries include External nodes via `WHERE since_index IS NULL` (External) or range-match (versioned). The SQLite schema (§4.4) makes `since_sha` and `since_index` nullable on the `nodes` table only. |
 
-### 8.2 Alignment with `implementation-plan.md` (Iteration 24)
+### 8.2 Alignment with `implementation-plan.md` (Current Iteration)
 
 The implementation-plan contains **31 naming, data-model, and numeric
 divergences** from canonical vocabulary defined in this document. **These are
@@ -1369,7 +1383,7 @@ conflicts S-3, S-4) are catalogued below.
 | P-2 | `Neo4jMemoryStore.cs` | **`Neo4jMemoryGraphStore`** in `Ast.Memory/Storage/`, **composing** existing `Neo4jGraphStore` | §3.2 |
 | P-3 | MCP files in `Ast.Cli` | MCP tools in **`Ast.Memory/Mcp/`**; CLI commands in `Ast.Memory/Cli/`. Only additive `config.AddBranch("memory", ...)` in `Ast.Cli`. | §3.8 |
 
-### 8.3 Alignment with `e2e-scenarios.md` (Iteration 24)
+### 8.3 Alignment with `e2e-scenarios.md` (Current Iteration)
 
 The e2e-scenarios document covers **13 features with 82 Gherkin scenarios**.
 It contains 10 divergences from canonical vocabulary, all either presentation
@@ -1391,6 +1405,6 @@ behaviors match the architecture.
 
 ### 8.4 Net Assessment
 
-- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Twelve alignment items (A1–A12) tracked, all resolved. A12 (iteration 25) resolves the temporal-model carve-out for External boundary nodes. No remaining conflicts.
-- **implementation-plan ↔ architecture:** 31 naming/numeric/method-signature divergences (28 existing + 3 new: `RetireEdgeAsync`, `ArchiveExpertiseAsync`, expertise `archived` column), all with stated canonical resolutions. These are documentation debt in the implementation-plan. The implementation-plan's own header defers to this document on all conflicts. Implementers who follow the canonical values from this document will produce correct code.
-- **e2e-scenarios ↔ architecture:** 10 divergences (9 existing + 1 expertise parameter format), all semantically correct or out-of-scope. Two scenarios (E2E-5, E2E-8) exercise out-of-scope features and should be tagged `@deferred`.
+- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Twelve alignment items (A1–A12) tracked, all resolved. A12 resolves the temporal-model carve-out: External boundary nodes are timeless (no `VersionRange`), but edges to/from External nodes are versioned normally from the in-repo endpoint's perspective. No remaining conflicts.
+- **implementation-plan ↔ architecture:** 31 naming/numeric/method-signature divergences, all with stated canonical resolutions. These are documentation debt in the implementation-plan, not unresolved design conflicts. The implementation-plan's own header defers to this document on all conflicts. Implementers who follow the canonical values from this document will produce correct code.
+- **e2e-scenarios ↔ architecture:** 10 divergences, all semantically correct or out-of-scope. Two scenarios (E2E-5, E2E-8) exercise out-of-scope features and should be tagged `@deferred`.
