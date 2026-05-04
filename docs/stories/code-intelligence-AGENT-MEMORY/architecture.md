@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 34
+> **Status:** Iteration 35
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -14,7 +14,7 @@
 >
 > | Document | Owns | Current state |
 > |---|---|---|
-> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | At iteration 23. Aligned on structural/naming points. Sixteen alignment items (A1–A16) tracked in §8.1, all resolved. A13–A16 added in iteration 28 (node-ID format, `LastTouched` type, `MemoryNode.Version` nullability, expertise hash input). Tech-spec's own header references architecture at "iteration 25" — this is stale header metadata; the alignment conclusions remain valid. |
+> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | At iteration 23. Aligned on structural/naming points. Seventeen alignment items (A1–A17) tracked in §8.1, all resolved. A13–A16 added in iteration 28 (node-ID format, `LastTouched` type, `MemoryNode.Version` nullability, expertise hash input). A17 added in iteration 35 (`SemanticCluster` → `Topic` resolution). Tech-spec's own header references architecture at "iteration 25" — this is stale header metadata; the alignment conclusions remain valid. |
 > | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Fully aligned with canonical vocabulary — uses correct names (`IMemoryGraphStore`, `ExpertiseEntry`, composition wrappers, `VersionRange?`, correct method signatures), correctly specifies both hash formulas (ContentHash and Id hash8). One minor presentational gap catalogued in §8.2 below. `architecture.md` governs on all conflicts. |
 > | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | All 10 previously-catalogued divergences (E2E-1 through E2E-10) have been resolved in its current iteration — see §8.3 for historical record. |
 
@@ -178,6 +178,7 @@ compatibility but is never used as a retrieval filter.
 | `IMemoryStore` | `IMemoryGraphStore` | Interface renamed |
 | `IExpertiseStore` | Part of `IEvolutionEngine` | Merged |
 | `PatternType` | `ExpertiseKind` | Enum renamed |
+| `SemanticCluster` | `Topic` (NodeType `"Topic"`) | Community-detected clusters use `Topic` nodes (§4.2); tech-spec's `SemanticCluster` is subsumed (A17) |
 | `IAgentMemoryApi` | `IMemoryRetrievalEngine` + `IEvolutionEngine` | Split into purpose-specific interfaces |
 
 ### 2.4 Constants & Thresholds (Single Source of Truth)
@@ -732,7 +733,7 @@ CREATE INDEX idx_audit_session ON audit_log(session_id);
 | `UntilCommit` | `string?` | In-repo nodes and all edges. **Not** on External boundary nodes. | Temporal Model / Incremental Sync |
 | `UntilIndex` | `int?` | In-repo nodes and all edges. **Not** on External boundary nodes. | Temporal Model / Incremental Sync |
 | `Summary` | `string` | Semantic (Topic nodes) | Evolution Engine |
-| `MemberCount` | `int` | Semantic (Topic, SemanticCluster nodes) | Evolution Engine |
+| `MemberCount` | `int` | Semantic (Topic nodes only — see §4.2; `SemanticCluster` is a retired tech-spec term, see A17 in §8.1) | Evolution Engine |
 | `SimilarityScore` | `double` | Semantic (`SIMILAR_TO` edges) | Semantic Indexer |
 | `OriginalEdgeType` | `string` | Code-derived edges | Extraction Pipeline |
 | `Confidence` | `double` | Call-Chain edges, Expertise edges | Extraction Pipeline / Evolution Engine |
@@ -1302,7 +1303,8 @@ resolved (with the canonical answer) or flagged for the next iteration.
 
 Most conflicts between this document and `tech-spec.md` are **resolved**.
 Tech-spec §12.2 confirms general alignment. The following table includes
-both long-resolved items and newly identified divergences.
+both long-resolved items and newly identified divergences. Seventeen items
+tracked (A1–A17), all resolved.
 
 | # | Topic | Resolution |
 |---|---|---|
@@ -1322,6 +1324,7 @@ both long-resolved items and newly identified divergences.
 | A14 | `LastTouched` metadata type | **Resolved (iteration 28).** Architecture §4.5 previously typed `LastTouched` as `int`. Tech-spec §7.3 types it as `string (ISO-8601)` with description "Wall-clock time of last extraction (informational)." Architecture §4.5 now types it as `string` (ISO-8601), matching the tech-spec. Wall-clock timestamps are informational and not used for graph filtering (§4.3). |
 | A15 | `MemoryNode.Version` nullability | **Resolved (iteration 28).** Architecture §4.1 previously declared `VersionRange Version { get; }` (non-nullable) on `MemoryNode`. Since External boundary nodes are timeless (§4.3, §4.2), `MemoryNode.Version` is now `VersionRange? Version` (nullable) to accommodate External nodes wrapped as `MemoryNode`. |
 | A16 | Expertise hash input in tech-spec | **Resolved (iteration 28).** Tech-spec §7.1 uses `SHA-256(Content + TargetNodeId)` for the expertise-entry `hash8`. Architecture §4.2 canonically specifies `SHA-256(Title + Body + TargetNodeId)` (reflecting the `Title`/`Body` split per tech-spec D5). Architecture governs; tech-spec's `Content` is stale shorthand for `Title + Body`. |
+| A17 | `SemanticCluster` node type in tech-spec | **Resolved (iteration 35).** Tech-spec §7.1 line 169 lists `SemanticCluster` as a separate Semantic-layer node type with `centroid_embedding` and `member_count`. Architecture §4.2 defines only `Topic` nodes for community-detected clusters (with `Summary` and `MemberCount` metadata). `DetectCommunitiesAsync()` (§3.5) produces `BELONGS_TO_CLUSTER` edges pointing to `Topic` nodes — there is no separate `SemanticCluster` entity. Architecture governs: the canonical Semantic-layer node type is `Topic` (`NodeType = "Topic"`). Tech-spec's `SemanticCluster` is a retired concept subsumed by `Topic`. §4.5 `MemberCount` key now references Topic nodes only. |
 
 ### 8.2 Alignment with `implementation-plan.md` (Current Iteration)
 
@@ -1400,6 +1403,6 @@ transfer) have been removed or replaced with in-scope content.
 
 ### 8.4 Net Assessment
 
-- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Sixteen alignment items (A1–A16) tracked, all resolved. Tech-spec §12.2 confirms "No remaining conflicts." Tech-spec's own header references architecture.md at "iteration 25" — this is stale iteration metadata in the tech-spec's header; the alignment conclusions (A1–A16) remain valid and the tech-spec (iteration 23) has not changed since. Four stale presentation items remain in the tech-spec (not conflicts — this document governs): (1) §7.1 line 173 shows ID format without leading `/` (governed by A13); (2) §7.1 line 171 uses `SHA-256(Content + TargetNodeId)` instead of `SHA-256(Title + Body + TargetNodeId)` (governed by A16); (3) §8.4 uses column names `valid_from_idx`/`valid_until_idx` while architecture §4.4 uses `since_index`/`until_index` (architecture governs — tech-spec §8.4 is a quick-reference, not normative); (4) tech-spec header line 9 still describes implementation-plan as "Contains 31 naming/data-model divergences" — this is stale because those divergences have been corrected in the implementation-plan's current iteration (see §8.2 above).
+- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Seventeen alignment items (A1–A17) tracked, all resolved. Tech-spec §12.2 confirms "No remaining conflicts." Tech-spec's own header references architecture.md at "iteration 25" — this is stale iteration metadata in the tech-spec's header; the alignment conclusions (A1–A17) remain valid and the tech-spec (iteration 23) has not changed since. Five stale presentation items remain in the tech-spec (not conflicts — this document governs): (1) §7.1 line 173 shows ID format without leading `/` (governed by A13); (2) §7.1 line 171 uses `SHA-256(Content + TargetNodeId)` instead of `SHA-256(Title + Body + TargetNodeId)` (governed by A16); (3) §8.4 uses column names `valid_from_idx`/`valid_until_idx` while architecture §4.4 uses `since_index`/`until_index` (architecture governs — tech-spec §8.4 is a quick-reference, not normative); (4) tech-spec header line 9 still describes implementation-plan as "Contains 31 naming/data-model divergences" — this is stale because those divergences have been corrected in the implementation-plan's current iteration (see §8.2 above); (5) §7.1 line 169 lists `SemanticCluster` as a separate node type — architecture §4.2 defines only `Topic` nodes for community-detected clusters; `SemanticCluster` is subsumed by `Topic` (governed by A17).
 - **implementation-plan ↔ architecture:** Fully aligned on vocabulary, composition model, interface signatures, scoring weights, constants, node-ID format, and project placement. The implementation-plan correctly specifies both the `ContentHash` formula (SHA-256 of Title+Body for dedup) and the `Id` hash8 formula (SHA-256 of Title+Body+TargetNodeId for uniqueness) in its model definitions and test scenarios. One minor presentational gap remains (R-1 in §8.2: `MemoryEdge.Version` non-nullable annotation), not affecting correctness. The implementation-plan's own header defers to this document on all conflicts.
 - **e2e-scenarios ↔ architecture:** All 10 previously-catalogued divergences (E2E-1 through E2E-10) are now **resolved** in the current iteration of e2e-scenarios.md. The e2e-scenarios document uses canonical vocabulary throughout: correct edge names, qualified node IDs with leading `/`, single-colon `ext:` prefix, separate `Title`/`Body` parameters, and in-scope-only scenario content. The e2e-scenarios header (lines 17–23) confirms this alignment and notes that prior architecture.md divergence catalogs were stale — this section has been updated accordingly. No remaining divergences exist between this document and e2e-scenarios.md.
