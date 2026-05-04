@@ -14,7 +14,7 @@
 > When this document and `architecture.md` disagree on naming or thresholds,
 > `architecture.md` governs. This document owns Gherkin acceptance scenarios.
 >
-> **Canonical vocabulary quick-reference** (from `architecture.md` §2):
+> **Canonical vocabulary quick-reference** (from `architecture.md` §2, §5):
 > - **Layers:** `structural`, `call_chain`, `semantic`, `expertise`
 > - **Code-derived edges:** `CONTAINS`, `DEPENDS_ON`, `CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES`
 > - **Memory-only edges:** `SIMILAR_TO`, `BELONGS_TO_CLUSTER`, `APPLIES_TO`, `SUPERSEDES`, `DERIVED_FROM`
@@ -23,6 +23,8 @@
 > - **Scoring weights:** structural 0.30, semantic 0.25, centrality 0.20, recency 0.15, expertise 0.10
 > - **Token budget:** default 8,000; ceiling 32,000
 > - **Temporal model:** `commit_index` integers (not timestamps); `VersionRange(Since, SinceIndex, Until?, UntilIndex?)`
+> - **API types:** `RetrievalRequest` (QueryText, SeedNodeIds, Mode, TokenBudget, AtCommitIndex, Weights); `RetrievalResult` (Nodes, ContextMarkdown, TokensUsed, ModesExecuted, Diagnostics); `ScoredMemoryNode` (Node, CompositeScore, StructuralScore, SemanticScore, CentralityScore, RecencyScore, ExpertiseScore); `SyncResult` (FilesChanged, NodesAdded, NodesRetired, EdgesAdded, EdgesRetired, ExpertiseDecayed, Duration); `MemoryGraphStatistics` (from `GetMemoryStatisticsAsync`)
+> - **MCP tools:** `memory_query`, `memory_status`, `memory_record_expertise`, `memory_sync`, `memory_consolidate`
 >
 > **Fixture repository:** All scenarios use the actual `src/ast/` subtree of this
 > repository as the fixture, unless explicitly noted. MVP languages are **C#** and
@@ -159,9 +161,10 @@ Feature: Structural Layer — Repository Structure Graph Construction
     Then the graph contains Module nodes for all 20 files
     And the 2 failed files have Metadata["ParseStatus"] = "failed"
     And the 18 successful files have Class and Function children
-    And the Snapshot.Stats reports:
+    And the ExtractionResult reports:
       | field         | value |
-      | Nodes         | >= 20 |
+      | NodesCreated  | >= 20 |
+      | Errors        | length = 2 |
     And a diagnostic summary reports 2 files with ParseStatus "failed"
 
   Scenario: 1.8 — HyperedgeType enum values map to CONTAINS edges
@@ -206,7 +209,7 @@ Feature: Call-Chain Layer — Call Graph Extraction
       | src/ast/Ast.Core/RepositoryProcessor.cs        | RepositoryProcessor.Process             | CSharpHyperedgeExtractor.Extract (via CSharpExtractor delegate) |
       | src/ast/Ast.Csharp/CSharpHyperedgeExtractor.cs | CSharpHyperedgeExtractor.Extract        | CSharpHyperedgeExtractor.ExtractMethodDefinition   |
     When the retrieval engine resolves the call chain from RepositoryProcessor.Process with depth 2
-    Then the TraversalResult.Paths contains at least one path of length 2
+    Then the result contains at least one GraphPath of length 2
     And each intermediate node carries its FilePath and Metadata["QualifiedName"]
 
   Scenario: 2.3 — Polymorphic call produces CALLS edges with reduced confidence
@@ -309,11 +312,11 @@ Feature: Semantic Layer — Embedding and Similarity
 
   Scenario: 3.4 — Vector search returns ranked results
     Given the vector index has been built for all code nodes
-    When the agent calls VectorSearchAsync with query "extract hypergraph from C# code" and topK = 5
-    Then the result contains at most 5 ScoredNode entries
+    When the agent calls IVectorStore.SearchAsync with query embedding for "extract hypergraph from C# code" and topK = 5
+    Then the result contains at most 5 VectorSearchResult entries
     And the top result is likely a node from "src/ast/Ast.Csharp/CSharpHyperedgeExtractor.cs"
     # Its embedding text contains "extract" and "hyperedge" terms
-    And each ScoredNode has a Score between 0.0 and 1.0
+    And each VectorSearchResult has a Score between 0.0 and 1.0
 
   Scenario: 3.5 — Embedding model version tracked per node
     Given a node was embedded with model "nomic-embed-text"
@@ -446,8 +449,8 @@ Feature: Temporal Versioning — Point-in-Time Queries
     When the method is deleted in commit "bbb2222" (commit_index 2)
     Then the node's VersionRange.Until = "bbb2222" and UntilIndex = 2
     And the node is NOT physically deleted from the store
-    And GetNodeAtCommitAsync(nodeId, "aaa1111") returns the node
-    And GetNodeAtCommitAsync(nodeId, "ccc3333") returns null
+    And querying the node via GetNodesByLayerAsync at atCommitIndex = 1 returns it
+    And querying the node via GetNodesByLayerAsync at atCommitIndex = 3 does not return it
 
   Scenario: 5.3 — Point-in-time query filters by commit_index range
     Given 3 nodes exist:
@@ -465,11 +468,15 @@ Feature: Temporal Versioning — Point-in-Time Queries
     Then the CALLS edge also receives UntilIndex = 3
     And future queries at commit_index >= 3 do not see the edge
 
-  Scenario: 5.5 — Snapshot created after each sync
+  Scenario: 5.5 — SyncResult created after each incremental sync
     When IIncrementalSync.ApplyDiffAsync processes commit "ccc3333"
-    Then a Snapshot record is created with:
-      | CommitSha | CommitIndex | Stats.Nodes | Stats.Edges |
-      | ccc3333   | 3           | > 0         | > 0         |
+    Then the SyncResult contains:
+      | field         | assertion |
+      | FilesChanged  | > 0       |
+      | NodesAdded    | > 0       |
+      | EdgesAdded    | > 0       |
+      | Duration      | > 0       |
+    # SyncResult is the return type of ApplyDiffAsync (architecture.md §5.4)
 ```
 
 ---
@@ -491,53 +498,53 @@ Feature: Hybrid Retrieval — Context Construction
   Scenario: 6.1 — Hybrid retrieval with default token budget
     When the agent calls IMemoryRetrievalEngine.RetrieveAsync with:
       | field          | value                                              |
-      | Text           | How does C# code extraction work in the AST stack? |
+      | QueryText      | How does C# code extraction work in the AST stack? |
       | TokenBudget    | 8000                                               |
-      | IncludeExpertise | true                                             |
+      | Mode           | Hybrid                                             |
     Then the RetrievalResult contains:
-      | field         | assertion                                |
-      | ContextBlock  | contains "## Structure"                  |
-      | ContextBlock  | contains "## Call Graph"                 |
-      | ContextBlock  | contains "## Related Code"               |
-      | ContextBlock  | contains "## Known Expertise"            |
-      | TokenCount    | <= 8000                                  |
-      | ResolvedMode  | Hybrid                                   |
-      | Citations     | length > 0                               |
-    And citations reference nodes from Ast.Csharp and Ast.Core packages
+      | field            | assertion                                |
+      | ContextMarkdown  | contains "## Structure"                  |
+      | ContextMarkdown  | contains "## Call Graph"                 |
+      | ContextMarkdown  | contains "## Related Code"               |
+      | ContextMarkdown  | contains "## Known Expertise"            |
+      | TokensUsed       | <= 8000                                  |
+      | ModesExecuted    | contains Hybrid                          |
+      | Nodes            | length > 0                               |
+    And Nodes reference ScoredMemoryNode entries from Ast.Csharp and Ast.Core packages
 
   Scenario: 6.2 — StructuralDrill retrieval mode
     When the agent calls RetrieveAsync with Mode = StructuralDrill and
-      Scope = "/src/ast/Ast.Core"
-    Then the ContextBlock lists the containment hierarchy of Ast.Core:
+      SeedNodeIds = ["/src/ast/Ast.Core"]
+    Then the ContextMarkdown lists the containment hierarchy of Ast.Core:
       Package → Module files → Class → Function
     And only CONTAINS and DEPENDS_ON edges are traversed
-    And the ResolvedMode = StructuralDrill
+    And ModesExecuted contains StructuralDrill
 
   Scenario: 6.3 — CallTrace retrieval mode
     When the agent calls RetrieveAsync with Mode = CallTrace and
-      Text = "RepositoryProcessor.Process"
-    Then the ContextBlock includes callers and callees of RepositoryProcessor.Process
+      QueryText = "RepositoryProcessor.Process"
+    Then the ContextMarkdown includes callers and callees of RepositoryProcessor.Process
     And the traversal follows CALLS edges up to MaxDepth 3
-    And the ResolvedMode = CallTrace
+    And ModesExecuted contains CallTrace
 
   Scenario: 6.4 — ExpertiseRecall retrieval mode
     Given a Pitfall expertise node applies to HypergraphNode
     When the agent calls RetrieveAsync with Mode = ExpertiseRecall and
-      Scope = "/src/ast/Ast.Core"
-    Then the ContextBlock's "## Known Expertise" section contains the Pitfall
+      SeedNodeIds = ["/src/ast/Ast.Core"]
+    Then the ContextMarkdown's "## Known Expertise" section contains the Pitfall
     And the expertise entry shows its Confidence value
-    And the ResolvedMode = ExpertiseRecall
+    And ModesExecuted contains ExpertiseRecall
 
   Scenario: 6.5 — Token budget enforced with hierarchy compression
     When the agent calls RetrieveAsync with TokenBudget = 500
-    Then the RetrievalResult.TokenCount <= 500
+    Then the RetrievalResult.TokensUsed <= 500
     And parent summaries replace child details (HiAgent pattern)
-    And the ContextBlock still has the four standard sections
+    And the ContextMarkdown still has the four standard sections
 
   Scenario: 6.6 — Token budget above ceiling is clamped
     When the agent calls RetrieveAsync with TokenBudget = 50000
     Then the effective budget is clamped to TokenBudgetCeiling = 32000
-    And the RetrievalResult.TokenCount <= 32000
+    And the RetrievalResult.TokensUsed <= 32000
 
   Scenario: 6.7 — Scoring weights applied during ranking
     When the ranker computes the fused score for a candidate node
@@ -556,13 +563,13 @@ Feature: Hybrid Retrieval — Context Construction
   Scenario: 6.8 — Deduplication: same code span from multiple paths emitted once
     Given a node is reachable via both CALLS and SIMILAR_TO paths
     When the context assembler formats the result
-    Then the node's code snippet appears exactly once in the ContextBlock
-    And the citation list includes both paths
+    Then the node's code snippet appears exactly once in the ContextMarkdown
+    And the Nodes list includes the node only once despite multiple reach paths
 
-  Scenario: 6.9 — Query with AtCommit returns historical state
-    When the agent calls RetrieveAsync with AtCommit = "aaa1111"
-    Then the retrieval engine uses commit_index corresponding to "aaa1111"
-    And only nodes/edges with SinceIndex <= that index and (UntilIndex is null OR UntilIndex > that index) are included
+  Scenario: 6.9 — Query with AtCommitIndex returns historical state
+    When the agent calls RetrieveAsync with AtCommitIndex = 1 (matching "aaa1111")
+    Then the retrieval engine filters using commit_index 1
+    And only nodes/edges with SinceIndex <= 1 and (UntilIndex is null OR UntilIndex > 1) are included
 ```
 
 ---
@@ -587,7 +594,7 @@ Feature: Incremental Sync — Keeping the Graph Current
     Then only RepositoryProcessor.cs is re-extracted (not the full repo)
     And modified nodes get new VersionRange.Since = "ddd4444", SinceIndex = 6
     And the old versions of those nodes get UntilIndex = 6
-    And a new Snapshot is created with CommitIndex = 6
+    And the SyncResult reports NodesAdded > 0 and NodesRetired > 0
     And the sync completes in < 2 seconds
 
   Scenario: 7.2 — Method signature change marks downstream CALLS edges as Stale
@@ -783,17 +790,17 @@ Feature: MCP Tool Interface — External Agent Integration
       {
         "name": "memory_query",
         "arguments": {
-          "query": "How does hypergraph extraction work?",
-          "scope": "src/ast/Ast.Csharp",
+          "queryText": "How does hypergraph extraction work?",
+          "seedNodeIds": ["/src/ast/Ast.Csharp"],
           "tokenBudget": 4000,
-          "includeExpertise": true
+          "mode": "Hybrid"
         }
       }
       """
     Then the MCP response has content[0].type = "text"
     And content[0].text contains "## Structure" and "## Call Graph"
-    And metadata.tokenCount <= 4000
-    And metadata.resolvedMode = "hybrid"
+    And metadata.tokensUsed <= 4000
+    And metadata.modesExecuted contains "Hybrid"
 
   Scenario: 10.2 — memory_query with CallTrace mode traces callers/callees
     # memory_query supports all RetrievalMode values via the "mode" argument
@@ -802,7 +809,7 @@ Feature: MCP Tool Interface — External Agent Integration
       {
         "name": "memory_query",
         "arguments": {
-          "query": "/src/ast/Ast.Embedding/CodeEmbeddingService.cs::CodeEmbeddingService.GenerateNodeEmbeddingsAsync",
+          "queryText": "/src/ast/Ast.Embedding/CodeEmbeddingService.cs::CodeEmbeddingService.GenerateNodeEmbeddingsAsync",
           "mode": "CallTrace",
           "tokenBudget": 4000
         }
@@ -810,7 +817,7 @@ Feature: MCP Tool Interface — External Agent Integration
       """
     Then the response content includes the "## Call Graph" section
     And the call graph lists callees of GenerateNodeEmbeddingsAsync
-    And metadata.resolvedMode = "CallTrace"
+    And metadata.modesExecuted contains "CallTrace"
 
   Scenario: 10.3 — memory_query with SemanticSearch mode returns similar nodes
     When an MCP client sends:
@@ -818,7 +825,7 @@ Feature: MCP Tool Interface — External Agent Integration
       {
         "name": "memory_query",
         "arguments": {
-          "query": "parse C# abstract syntax tree",
+          "queryText": "parse C# abstract syntax tree",
           "mode": "SemanticSearch",
           "tokenBudget": 4000
         }
@@ -826,7 +833,7 @@ Feature: MCP Tool Interface — External Agent Integration
       """
     Then the response content includes the "## Related Code" section
     And results are ranked by semantic similarity
-    And metadata.resolvedMode = "SemanticSearch"
+    And metadata.modesExecuted contains "SemanticSearch"
 
   Scenario: 10.4 — memory_record_expertise writes expertise and returns ID
     When an MCP client sends:
@@ -854,13 +861,14 @@ Feature: MCP Tool Interface — External Agent Integration
       }
       """
     Then the response includes:
-      | field             | assertion      |
-      | nodeCount         | > 0            |
-      | edgeCount         | > 0            |
-      | expertiseCount    | >= 0           |
-      | lastSyncCommit    | non-null       |
-      | commitIndex       | > 0            |
+      | field               | assertion      |
+      | nodeCount           | > 0            |
+      | edgeCount           | > 0            |
+      | expertiseCount      | >= 0           |
+      | lastSyncCommitSha   | non-null       |
+      | lastSyncCommitIndex | > 0            |
     And counts are segmented by MemoryLayer (structural, call_chain, semantic, expertise)
+    # Response maps to MemoryGraphStatistics returned by IMemoryGraphStore.GetMemoryStatisticsAsync()
 
   Scenario: 10.6 — memory_sync triggers incremental graph update
     When an MCP client sends:
@@ -874,8 +882,16 @@ Feature: MCP Tool Interface — External Agent Integration
         }
       }
       """
-    Then the response reports filesChanged, nodesAdded, nodesRetired,
-      edgesAdded, edgesRetired, and duration
+    Then the response reports:
+      | field           | type |
+      | filesChanged    | int  |
+      | nodesAdded      | int  |
+      | nodesRetired    | int  |
+      | edgesAdded      | int  |
+      | edgesRetired    | int  |
+      | expertiseDecayed| int  |
+      | duration        | timespan |
+    # Response maps to SyncResult returned by IIncrementalSync.ApplyDiffAsync()
     And only files changed between the two commits are re-extracted
 
   Scenario: 10.7 — memory_consolidate merges overlapping expertise
@@ -892,7 +908,7 @@ Feature: MCP Tool Interface — External Agent Integration
   Scenario: 10.8 — memory_query with tokenBudget exceeding ceiling
     When an MCP client sends memory_query with tokenBudget = 50000
     Then the effective budget is clamped to TokenBudgetCeiling = 32000
-    And metadata.tokenCount <= 32000
+    And metadata.tokensUsed <= 32000
 
   Scenario: 10.9 — memory_record_expertise with missing required field
     When an MCP client sends memory_record_expertise without "kind" field
