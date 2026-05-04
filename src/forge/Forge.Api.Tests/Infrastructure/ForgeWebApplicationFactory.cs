@@ -50,14 +50,16 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
         // way they raced on the old per-test FORGE_DB_PATH value. Program.cs
         // refuses to open the prod DB path when this flag is set.
         Environment.SetEnvironmentVariable("FORGE_TEST_GUARDRAIL", "1");
-        // Copy production DB to the per-instance temp path so the test
-        // starts with realistic schema and seed data. If the prod DB
-        // doesn't exist (CI / fresh clone), the empty temp file will get
-        // its schema from EnsureCreatedAsync during Program.cs startup.
-        if (File.Exists(ProdDbDefault))
-        {
-            File.Copy(ProdDbDefault, this.dbPath, overwrite: true);
-        }
+        // Each test gets an EMPTY temp DB — Program.cs's EnsureCreatedAsync
+        // builds the schema and ForgeSeed.EnsureCrewCatalogAsync seeds the
+        // canonical crews+agents on boot. Tests that need other reference
+        // rows (products, repos, work items) seed them explicitly.
+        //
+        // We deliberately do NOT copy the prod DB here. Doing so caused
+        // ~184 UNIQUE-constraint failures: tests that seed `WI-1035`,
+        // a repo with the same RemoteUrl, etc. collided with rows that
+        // already exist in the operator's prod data. "Realistic seed data"
+        // is not worth the cross-test fragility.
     }
 
     /// <summary>
@@ -159,6 +161,7 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
             services.Add(artifactDesc);
             services.Add(gitDesc);
             services.Add(provDesc);
+
         });
     }
 
@@ -172,4 +175,6 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
             catch (IOException) { /* file lock — best effort */ }
         }
     }
+
 }
+

@@ -1,4 +1,5 @@
-import type { StorySpawnArtifacts, StorySpawnDetail, StorySpawnWorkstreamSummary } from '@/api/forgeApi';
+import { useEffect, useState } from 'react';
+import { forgeApi, type StorySpawnArtifacts, type StorySpawnDetail, type StorySpawnWorkstreamSummary } from '@/api/forgeApi';
 import type { SwarmMode } from './SwarmPipelineStrip';
 
 export type SelectionKind = 'overview' | 'phase' | 'doc' | 'gate';
@@ -202,6 +203,7 @@ function DesignMaster({ detail, artifacts, selection, onSelect, collapsed, onTog
   const planMerged = !!artifacts?.plan.pr && detail.spawn.phase !== 'plan';
   const planOpen   = !!artifacts?.plan.pr && detail.spawn.phase === 'plan';
   const decomposed = !!detail.spawn.decompositionJson;
+  const docStats = useDocStats(detail.spawn.storyId, PLAN_DOCS.map((d) => d.key));
 
   return (
     <section className="panel">
@@ -215,6 +217,7 @@ function DesignMaster({ detail, artifacts, selection, onSelect, collapsed, onTog
           {PLAN_DOCS.map((doc) => {
             const status = planMerged ? 'merged' : planOpen ? 'review' : 'draft';
             const id = `doc:${doc.key}`;
+            const stats = docStats[doc.key];
             return (
               <div
                 key={doc.key}
@@ -228,6 +231,19 @@ function DesignMaster({ detail, artifacts, selection, onSelect, collapsed, onTog
                   <span>branch · <b>{artifacts?.plan.branch ?? '—'}</b></span>
                 </div>
                 <div className="doc-status">{status}</div>
+                {stats && (stats.iter > 0 || stats.score != null) && (
+                  <div className="doc-iter-badges">
+                    <span className="doc-iter-badge">ITER {stats.iter}</span>
+                    {stats.score != null && (
+                      <span className={`doc-iter-badge score ${verdictTone(stats.verdict)}`}>
+                        {stats.score}
+                      </span>
+                    )}
+                    {stats.cost > 0 && (
+                      <span className="doc-iter-badge cost">${stats.cost.toFixed(2)}</span>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -331,4 +347,51 @@ function shortId(id: string): string {
   // ws-foo-bar-baz-very-long  →  …baz-very-long
   if (id.length <= 14) return id.toUpperCase();
   return ('…' + id.slice(-13)).toUpperCase();
+}
+
+interface DocStats {
+  iter: number;
+  score: number | null;
+  verdict: string;
+  cost: number;
+}
+
+/**
+ * Polls the per-doc iteration endpoint for each known plan-doc key. The
+ * 12s cadence is slower than the DocumentPane's own poll because the master
+ * panel is "always visible" — we don't need sub-10s freshness for a badge.
+ */
+function useDocStats(storyId: string, keys: string[]): Record<string, DocStats | null> {
+  const [stats, setStats] = useState<Record<string, DocStats | null>>({});
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const results = await Promise.all(keys.map((k) => forgeApi.getStoryArtifactIterations(storyId, k)));
+        if (cancelled) return;
+        const next: Record<string, DocStats | null> = {};
+        results.forEach((r, i) => {
+          const last = r.iterations[r.iterations.length - 1];
+          next[keys[i]] = last
+            ? { iter: r.iterations.length, score: last.score, verdict: last.verdict, cost: r.totalCostUsd }
+            : { iter: 0, score: null, verdict: '', cost: r.totalCostUsd };
+        });
+        setStats(next);
+      } catch {
+        // silent
+      }
+    }
+    void load();
+    const id = setInterval(() => { void load(); }, 12_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [storyId, keys.join('|')]);
+  return stats;
+}
+
+function verdictTone(verdict: string): 'pass' | 'iterate' | 'reject' | 'neutral' {
+  const v = (verdict || '').toLowerCase();
+  if (v.startsWith('pass')) return 'pass';
+  if (v.startsWith('reject') || v.startsWith('stalled')) return 'reject';
+  if (!v) return 'neutral';
+  return 'iterate';
 }

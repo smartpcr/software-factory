@@ -110,7 +110,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // Resume case — a previous tick's architect already wrote this file
         // (typical when commit/push failed and the orchestrator re-ticks).
         // Skip re-invoking the LLM so we don't burn tokens regenerating
-        // identical content on every retry.
+        // identical content on every retry. To force a fresh run, wipe the
+        // workspace (E:\forge\storyworkspaces\{spawn-id}\plan-{name}\).
         if (File.Exists(diskPath))
         {
             var existing = await File.ReadAllTextAsync(diskPath, ct);
@@ -123,7 +124,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             }
         }
 
-        var prompt = $$"""
+        // Per-doc workItemId so each plan file gets its own deliverables stream
+        // (agent assignment, iter count, score, gen+eval summaries) keyed
+        // independently. Deliverables.WorkItemId is just a string — no
+        // work_items row required. UI looks up via the same id.
+        var docWorkItemId = $"plan-doc:{spawn.Id}:{spec.FileName}";
+
+        var generatorPrompt = $$"""
             You are the Architect agent for Forge story `{{spawn.StoryId}}`.
 
             ## Story title
@@ -147,11 +154,65 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ## How to deliver
             Use your filesystem tools to write a SINGLE file named
             `{{spec.FileName}}` at the root of your working directory. Do NOT
-            create subdirectories. Do NOT write any other files. Reply
-            `DONE` when finished and stop.
+            create subdirectories. Do NOT write any other files.
+
+            End your reply with a `## Iteration Summary` section that lists
+            (a) what you wrote, (b) which parts of the story description it
+            addresses, and (c) any open questions. The orchestrator extracts
+            this section into the per-iteration UI summary.
+
+            Reply `DONE` after the summary and stop.
             """;
 
-        await this.InvokeAsync("Architect", spawn.Id, $"plan:{spec.FileName}", prompt, workspace, budget, ct);
+        var evaluatorPrompt = $$"""
+            You are the Architect-reviewer scoring another architect's draft of
+            `{{spec.FileName}}` for story `{{spawn.StoryId}}`.
+
+            ## Story title
+            {{story.Title}}
+
+            ## Story description (operator-authored prompt)
+            {{NonEmpty(spawn.StoryDescription, story.DescriptionMd)}}
+
+            ## File brief
+            {{spec.Brief}}
+
+            ## Your job
+            Read the draft at `{{spec.FileName}}` in your working directory
+            using your read-only tools (view / ls / grep). Do NOT modify
+            the file. Score on:
+            - Anchored to the story description (every section grounded in
+              specifics from the operator's prompt — references, constraints,
+              terminology — not generic boilerplate).
+            - Production-quality markdown (no placeholders, no outline-only
+              sections, no "TODO" markers).
+            - Coverage of the file's stated brief.
+            - Internal consistency (no contradictions between sections).
+
+            Reply with three short sections in this order:
+            1. **What improved this iteration** — one bullet list.
+            2. **What still needs work** — one bullet list (be specific:
+               cite section names + sentences).
+            3. **Why this score** — two sentences max.
+
+            End with a fenced JSON block:
+            ```json
+            { "score": <0-100>, "verdict": "<pass|iterate|reject>", "notes": "<one-line gist>" }
+            ```
+            score >= 90 = pass, 70-89 = iterate (be specific in §2),
+            < 70 = reject.
+            """;
+
+        await this.RunGenEvalLoopAsync(
+            team: "Architect",
+            workItemId: docWorkItemId,
+            phaseTag: $"plan:{spec.FileName}",
+            generatorPrompt: generatorPrompt,
+            evaluatorPrompt: evaluatorPrompt,
+            workspace: workspace,
+            budget: budget,
+            storyPoints: spawn.StoryPoints,
+            ct: ct);
 
         if (!File.Exists(diskPath))
         {

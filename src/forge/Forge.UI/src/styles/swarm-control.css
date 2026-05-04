@@ -1445,3 +1445,177 @@
   .swarm-ctrl .doc-pane { grid-template-columns: 1fr; }
   .swarm-ctrl .doc-toc { display: none; }
 }
+
+/* ── Doc-card iter / score / cost badges (DesignMaster left rail) ────── */
+
+.swarm-ctrl .doc-iter-badges {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.swarm-ctrl .doc-iter-badge {
+  font-family: var(--sc-font-display);
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  padding: 2px 6px;
+  border: 1px solid var(--sc-border-2);
+  background: var(--sc-bg-2);
+  color: var(--sc-text-dim);
+  text-transform: uppercase;
+}
+.swarm-ctrl .doc-iter-badge.score.pass    { color: var(--sc-green);   border-color: var(--sc-green-d); }
+.swarm-ctrl .doc-iter-badge.score.iterate { color: var(--sc-amber);   border-color: var(--sc-amber-d); }
+.swarm-ctrl .doc-iter-badge.score.reject  { color: var(--sc-red);     border-color: var(--sc-red-d); }
+.swarm-ctrl .doc-iter-badge.score.neutral { color: var(--sc-text-dim); }
+.swarm-ctrl .doc-iter-badge.cost          { color: var(--sc-cyan); border-color: var(--sc-cyan-d); }
+
+/* Variant for badges INSIDE the document body header (DocumentPane) */
+.swarm-ctrl .doc-badge.doc-badge--pass    { color: var(--sc-green); border-color: var(--sc-green-d); }
+.swarm-ctrl .doc-badge.doc-badge--iterate { color: var(--sc-amber); border-color: var(--sc-amber-d); }
+.swarm-ctrl .doc-badge.doc-badge--reject  { color: var(--sc-red);   border-color: var(--sc-red-d); }
+
+/* Lists inside doc body */
+.swarm-ctrl .doc-list { padding-left: 22px; margin: 0 0 12px; }
+.swarm-ctrl .doc-list li {
+  font-family: var(--sc-font-mono);
+  font-size: 12px;
+  color: var(--sc-text);
+  margin-bottom: 4px;
+  line-height: 1.55;
+}
+.swarm-ctrl .doc-list code {
+  font-family: var(--sc-font-mono);
+  font-size: 11px;
+  color: var(--sc-amber);
+  background: var(--sc-surface-2);
+  padding: 1px 4px;
+  border: 1px solid var(--sc-border-2);
+}
+
+/* ── Doc Conversation pane (per-iter generator + evaluator history) ───── */
+
+.swarm-ctrl .doc-conv {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+  min-height: 0;
+}
+.swarm-ctrl .doc-conv-hd {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--sc-border);
+  background: var(--sc-surface-2);
+  font-family: var(--sc-font-display);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--sc-text-dim);
+  text-transform: uppercase;
+}
+.swarm-ctrl .doc-conv-hd b { color: var(--sc-amber); }
+.swarm-ctrl .doc-conv-body {
+  overflow-y: auto;
+  min-height: 0;
+  padding: 14px 18px 24px;
+  display: grid;
+  gap: 14px;
+}
+.swarm-ctrl .doc-conv-iter {
+  border: 1px solid var(--sc-border);
+  background: var(--sc-bg-2);
+  position: relative;
+  padding: 10px 12px 12px;
+}
+.swarm-ctrl .doc-conv-iter::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 2px;
+  background: var(--sc-cyan);
+}
+.swarm-ctrl .doc-conv-iter.pass::before    { background: var(--sc-green); }
+.swarm-ctrl .doc-conv-iter.iterate::before { background: var(--sc-amber); }
+.swarm-ctrl .doc-conv-iter.reject::before  { background: var(--sc-red); }
+
+.swarm-ctrl .doc-conv-iter-hd {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-family: var(--sc-font-display);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--sc-text-dim);
+  text-transform: uppercase;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--sc-border-2);
+}
+.swarm-ctrl .doc-conv-iter-score {
+  padding: 2px 8px;
+  border: 1px solid var(--sc-border-2);
+  background: var(--sc-surface);
+  color: var(--sc-text);
+}
+.swarm-ctrl .doc-conv-iter-score.pass    { color: var(--sc-green); border-color: var(--sc-green-d); }
+.swarm-ctrl .doc-conv-iter-score.iterate { color: var(--sc-amber); border-color: var(--sc-amber-d); }
+.swarm-ctrl .doc-conv-iter-score.reject  { color: var(--sc-red);   border-color: var(--sc-red-d); }
+.swarm-ctrl .doc-conv-iter-verdict.pass    { color: var(--sc-green); }
+.swarm-ctrl .doc-conv-iter-verdict.iterate { color: var(--sc-amber); }
+.swarm-ctrl .doc-conv-iter-verdict.reject  { color: var(--sc-red); }
+.swarm-ctrl .doc-conv-iter-agents {
+  flex: 1;
+  font-family: var(--sc-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--sc-text);
+  text-transform: none;
+}
+.swarm-ctrl .doc-conv-iter-agents b { color: var(--sc-amber); font-weight: 600; }
+.swarm-ctrl .doc-conv-iter-cost {
+  color: var(--sc-cyan);
+  font-family: var(--sc-font-mono);
+  font-size: 10px;
+}
+.swarm-ctrl .doc-conv-iter-when {
+  color: var(--sc-muted);
+  font-family: var(--sc-font-mono);
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.swarm-ctrl .doc-conv-iter-section {
+  margin: 8px 0 0;
+}
+.swarm-ctrl .doc-conv-iter-section-lbl {
+  font-family: var(--sc-font-display);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: var(--sc-text-dim);
+  margin-bottom: 4px;
+}
+.swarm-ctrl .doc-conv-iter-section[data-role="generator"] .doc-conv-iter-section-lbl { color: var(--sc-amber); }
+.swarm-ctrl .doc-conv-iter-section[data-role="evaluator"] .doc-conv-iter-section-lbl { color: var(--sc-cyan); }
+.swarm-ctrl .doc-conv-iter-section[data-role="judge"] .doc-conv-iter-section-lbl     { color: var(--sc-magenta); }
+.swarm-ctrl .doc-conv-iter-section-body {
+  padding: 8px 10px;
+  background: var(--sc-surface);
+  border: 1px solid var(--sc-border);
+  font-family: var(--sc-font-mono);
+  font-size: 11px;
+  color: var(--sc-text);
+  line-height: 1.5;
+}
+.swarm-ctrl .doc-conv-md {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}

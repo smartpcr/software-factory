@@ -3,6 +3,7 @@ import type {
   AgentLevelHistoryEntry,
   Card,
   ColumnId,
+  CostSummary,
   Crew,
   CrewHistoryEntry,
   CrewPayroll,
@@ -809,6 +810,50 @@ export const forgeApi = {
       `/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts`);
   },
 
+  /** GET /api/stories/{storyId}/spawn/artifacts/{key} — markdown body for one
+   *  plan artifact (architecture | tech-spec | implementation-plan | e2e-scenarios)
+   *  or the raw decomposition JSON. Falls back to the plan branch via git when
+   *  the file isn't on main yet. */
+  async getStoryArtifactContent(storyId: string, key: string): Promise<{
+    key: string;
+    path: string | null;
+    content: string;
+    lastModifiedAt: string | null;
+    exists: boolean;
+    source?: string | null;
+  }> {
+    return fetchJson(
+      `/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}`);
+  },
+
+  /** GET /api/stories/{storyId}/spawn/artifacts/{key}/iterations — per-iteration
+   *  generator + evaluator history for one plan artifact. Empty for
+   *  `decomposition`. */
+  async getStoryArtifactIterations(storyId: string, key: string): Promise<{
+    key: string;
+    workItemId: string | null;
+    iterations: Array<{
+      id: number;
+      iter: number;
+      score: number;
+      verdict: string;
+      generatorAgentId: string;
+      evaluatorAgentId: string;
+      generatorSummary: string;
+      notes: string;
+      genCostUsd: number;
+      evalCostUsd: number;
+      judgeAgentId: string | null;
+      judgeScore: number | null;
+      judgeNotes: string | null;
+      createdAt: string;
+    }>;
+    totalCostUsd: number;
+  }> {
+    return fetchJson(
+      `/api/stories/${encodeURIComponent(storyId)}/spawn/artifacts/${encodeURIComponent(key)}/iterations`);
+  },
+
   /** GET /api/prs. */
   async getPrs(): Promise<Pr[]> {
     if (useLocalSeed()) return sampleState.prs;
@@ -1260,6 +1305,12 @@ export const forgeApi = {
   /** GET /api/crews/salary/today — Phase 11.9 TopBar chip total. */
   async getSalaryTodayTotal(): Promise<SalaryTodaySummary> {
     return fetchJson<SalaryTodaySummary>('/api/crews/salary/today');
+  },
+
+  /** GET /api/cost/summary — Phase 11 `/cost` dashboard rollup. */
+  async getCostSummary(days?: number): Promise<CostSummary> {
+    const qs = days ? `?days=${days}` : '';
+    return fetchJson<CostSummary>(`/api/cost/summary${qs}`);
   },
 
   // ----- Phase 8 — products & repos --------------------------------------

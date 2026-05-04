@@ -733,6 +733,44 @@ export interface PayrollTodaySummary {
   crewCount: number;
 }
 
+/**
+ * Phase 11 — `/cost` dashboard rollup. Aggregates the last `days` (default 7)
+ * of `agent_usage` rows by day × epic × agent so the cost view can render
+ * the header stats, daily-stack chart, per-agent burn table, and today-vs-cap
+ * gauge from a single request.
+ */
+export interface CostSummary {
+  todayUsd: number;
+  week7dUsd: number;
+  dailyCapUsd: number;
+  todayIndex: number;
+  days: CostDailyPoint[];
+  epics: CostByEpic[];
+  agents: AgentBurn[];
+}
+
+export interface CostDailyPoint {
+  date: string;
+  label: string;
+  totalUsd: number;
+  byEpic: Record<string, number>;
+}
+
+export interface CostByEpic {
+  epicId: string;
+  total7dUsd: number;
+}
+
+export interface AgentBurn {
+  id: string;
+  name: string;
+  role: string;
+  cost24hUsd: number;
+  cost7dUsd: number;
+  tokens: number;
+  spark: number[];
+}
+
 // ─── Phase 15 — sprint & area path management ──────────────────────────────
 //
 // Iteration / area paths / saved prefixes are bound to a product (Q15.1, Q15.2).

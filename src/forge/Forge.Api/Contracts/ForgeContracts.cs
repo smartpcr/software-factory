@@ -601,6 +601,53 @@ public sealed record SalaryTodaySummary(decimal TotalUsd, int ActiveAgents);
 /// </summary>
 public sealed record PayrollTodaySummary(decimal TotalUsd, int CrewCount);
 
+// -- Phase 11 — Cost dashboard payload (CostView) ------------------------
+
+/// <summary>
+/// Aggregated cost rollup for the <c>/cost</c> page. One round-trip serves
+/// all four panels: header stats, daily spend-by-epic stack, per-agent
+/// burn table, and the today-vs-cap gauge. Sourced from
+/// <see cref="AgentUsageRow"/> joined to cards (for epic) and agents
+/// (for name / role); cap is summed from <see cref="CrewRow.DailyBudgetUsd"/>.
+/// </summary>
+public sealed record CostSummary(
+    decimal TodayUsd,
+    decimal Week7dUsd,
+    decimal DailyCapUsd,
+    int TodayIndex,
+    IReadOnlyList<CostDailyPoint> Days,
+    IReadOnlyList<CostByEpic> Epics,
+    IReadOnlyList<AgentBurn> Agents);
+
+/// <summary>
+/// One daily bucket inside <see cref="CostSummary.Days"/>. <see cref="ByEpic"/>
+/// keys are <see cref="EpicRow.Id"/> values plus the literal
+/// <c>"unassigned"</c> bucket for usage rows whose <c>TaskId</c> doesn't
+/// resolve to a known card.
+/// </summary>
+public sealed record CostDailyPoint(
+    string Date,
+    string Label,
+    decimal TotalUsd,
+    IReadOnlyDictionary<string, decimal> ByEpic);
+
+/// <summary>7d total spend grouped by epic, sorted descending.</summary>
+public sealed record CostByEpic(string EpicId, decimal Total7dUsd);
+
+/// <summary>
+/// Per-agent burn entry for the cost table. <see cref="Spark"/> is 7 daily
+/// totals (oldest first → today) so the inline sparkline can render with
+/// no extra round-trip.
+/// </summary>
+public sealed record AgentBurn(
+    string Id,
+    string Name,
+    string Role,
+    decimal Cost24hUsd,
+    decimal Cost7dUsd,
+    long Tokens,
+    IReadOnlyList<decimal> Spark);
+
 // -- Phase 12 — Work Item Tracking ---------------------------------------
 
 /// <summary>

@@ -3,6 +3,7 @@ import type { StorySpawnArtifacts, StorySpawnDetail } from '@/api/forgeApi';
 import type { SwarmMode } from './SwarmPipelineStrip';
 import type { Selection } from './SwarmMasterPanel';
 import { DocumentPane } from './DocumentPane';
+import { DocConversationPane } from './DocConversationPane';
 
 export type DetailTab =
   | 'overview' | 'conv' | 'arch' | 'pr' | 'qa' | 'trace'
@@ -69,6 +70,7 @@ export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTa
         <div className={`tab-pane${tab === 'document' ? ' active' : ''}`}>
           {tab === 'document' && selection.kind === 'doc' && selection.id && (
             <DocumentPane
+              storyId={detail.spawn.storyId}
               docId={selection.id}
               planPr={artifacts?.plan.pr ?? null}
               planBranch={artifacts?.plan.branch ?? null}
@@ -76,10 +78,17 @@ export function SwarmDetailPanel({ mode, detail, artifacts, selection, tab, onTa
           )}
         </div>
         <div className={`tab-pane${tab === 'conv' ? ' active' : ''}`}>
-          {tab === 'conv' && <Placeholder
-            label="conversation tab"
-            sub="paired-agent transcript with iteration history, score-bumps, and live tail. Wired to /api/work-items/:id/transcript once a workstream is selected."
-          />}
+          {tab === 'conv' && selection.kind === 'doc' && selection.id ? (
+            <DocConversationPane
+              storyId={detail.spawn.storyId}
+              docId={selection.id}
+            />
+          ) : tab === 'conv' && (
+            <Placeholder
+              label="conversation tab"
+              sub="paired-agent transcript with iteration history, score-bumps, and live tail. Wired to /api/work-items/:id/transcript once a workstream is selected."
+            />
+          )}
         </div>
         <div className={`tab-pane${tab === 'arch' ? ' active' : ''}`}>
           {tab === 'arch' && <Placeholder

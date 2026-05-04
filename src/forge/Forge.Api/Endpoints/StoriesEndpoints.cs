@@ -72,6 +72,7 @@ public static class StoriesEndpoints
         grp.MapPost("/{storyId}/spawn/decompose/approve", ApproveDecomposition).WithName("ApproveStoryDecomposition");
         grp.MapGet("/{storyId}/spawn/artifacts", GetArtifacts).WithName("GetStoryArtifacts");
         grp.MapGet("/{storyId}/spawn/artifacts/{key}", GetArtifactContent).WithName("GetStoryArtifactContent");
+        grp.MapGet("/{storyId}/spawn/artifacts/{key}/iterations", GetArtifactIterations).WithName("GetStoryArtifactIterations");
 
         return app;
     }
@@ -802,31 +803,160 @@ public static class StoriesEndpoints
         var repoRoot = ForgeSeed.FindRepoRoot();
         var fullPath = Path.Combine(repoRoot, relPath.Replace('/', Path.DirectorySeparatorChar));
 
-        if (!File.Exists(fullPath))
+        if (File.Exists(fullPath))
         {
-            // File hasn't been produced yet (plan phase not complete or PR
-            // not merged to main). Return 200 + exists=false so the UI can
-            // render an empty-state without distinguishing 404 from "still
-            // generating".
+            var content = await File.ReadAllTextAsync(fullPath);
+            var lastModified = File.GetLastWriteTimeUtc(fullPath).ToString("O");
             return Results.Ok(new
             {
                 key,
                 path = relPath,
-                content = string.Empty,
-                lastModifiedAt = (string?)null,
-                exists = false,
+                content,
+                lastModifiedAt = lastModified,
+                exists = true,
+                source = "main",
             });
         }
 
-        var content = await File.ReadAllTextAsync(fullPath);
-        var lastModified = File.GetLastWriteTimeUtc(fullPath).ToString("O");
+        // File isn't on main yet — check the plan branch (architect crew has
+        // committed but PR not merged). git show returns the file as it
+        // exists on the branch tip without mutating the working tree.
+        if (!string.IsNullOrEmpty(spawn.PlanBranch))
+        {
+            var fromBranch = await TryGitShowAsync(repoRoot, spawn.PlanBranch!, relPath);
+            if (fromBranch is not null)
+            {
+                return Results.Ok(new
+                {
+                    key,
+                    path = relPath,
+                    content = fromBranch,
+                    lastModifiedAt = (string?)null,
+                    exists = true,
+                    source = $"branch:{spawn.PlanBranch}",
+                });
+            }
+        }
+
+        // Not on main, not on plan branch — plan hasn't produced this file
+        // yet. Return exists=false so the UI can render an empty state.
         return Results.Ok(new
         {
             key,
             path = relPath,
-            content,
-            lastModifiedAt = lastModified,
-            exists = true,
+            content = string.Empty,
+            lastModifiedAt = (string?)null,
+            exists = false,
+            source = (string?)null,
+        });
+    }
+
+    /// <summary>
+    /// `git show {branch}:{path}` against the operator's local clone. Tries
+    /// the local branch first, then <c>origin/{branch}</c> — the orchestrator
+    /// commits + pushes to origin without checking the branch out locally,
+    /// so the local-only ref usually doesn't exist. Returns null when neither
+    /// ref resolves the path (treated as "not produced yet" by callers).
+    /// </summary>
+    private static async Task<string?> TryGitShowAsync(string repoRoot, string branch, string relPath)
+    {
+        return await TryGitShowOneAsync(repoRoot, branch, relPath)
+            ?? await TryGitShowOneAsync(repoRoot, $"origin/{branch}", relPath);
+    }
+
+    private static async Task<string?> TryGitShowOneAsync(string repoRoot, string refSpec, string relPath)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "git",
+                WorkingDirectory = repoRoot,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            psi.ArgumentList.Add("show");
+            psi.ArgumentList.Add($"{refSpec}:{relPath}");
+            using var p = System.Diagnostics.Process.Start(psi);
+            if (p is null) return null;
+            var stdout = await p.StandardOutput.ReadToEndAsync();
+            await p.WaitForExitAsync();
+            return p.ExitCode == 0 ? stdout : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Per-doc iteration history. Each plan file's gen↔eval loop writes one
+    /// <see cref="DeliverableRow"/> per iteration keyed on the synthetic
+    /// workItemId <c>plan-doc:{spawn.Id}:{filename}</c> (matches the convention
+    /// in <see cref="Forge.Api.Services.Stories.CrewStoryArtifactStrategy.ProducePlanFileAsync"/>).
+    /// Decomposition has no per-doc iterations — returns empty.
+    /// </summary>
+    private static async Task<IResult> GetArtifactIterations(string storyId, string key, ForgeDbContext db)
+    {
+        var spawn = await db.StorySpawns.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.StoryId == storyId);
+        if (spawn is null) return Results.Problem(title: $"No spawn for story {storyId}", statusCode: 404);
+
+        if (string.Equals(key, "decomposition", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Ok(new
+            {
+                key,
+                workItemId = (string?)null,
+                iterations = Array.Empty<object>(),
+                totalCostUsd = 0.0,
+            });
+        }
+
+        var fileName = $"{key.ToLowerInvariant()}.md";
+        var workItemId = $"plan-doc:{spawn.Id}:{fileName}";
+
+        // SQLite can't ORDER BY DateTimeOffset directly. Order by Iter on the
+        // server (cheap index hit) and then re-sort by CreatedAt on the client
+        // for the rare same-iter tiebreak case.
+        var rows = (await db.Deliverables.AsNoTracking()
+            .Where(d => d.WorkItemId == workItemId)
+            .OrderBy(d => d.Iter)
+            .ToListAsync())
+            .OrderBy(d => d.Iter)
+            .ThenBy(d => d.CreatedAt)
+            .ToList();
+
+        var totalCost = await db.AgentUsage.AsNoTracking()
+            .Where(u => u.TaskId == workItemId)
+            .SumAsync(u => (double?)u.CostUsd) ?? 0.0;
+
+        var iterations = rows.Select(d => new
+        {
+            id = d.Id,
+            iter = d.Iter,
+            score = d.Score,
+            verdict = d.Verdict,
+            generatorAgentId = d.GeneratorAgentId,
+            evaluatorAgentId = d.EvaluatorAgentId,
+            generatorSummary = d.GeneratorSummary,
+            notes = d.Notes,
+            genCostUsd = d.GenCostUsd,
+            evalCostUsd = d.EvalCostUsd,
+            judgeAgentId = d.JudgeAgentId,
+            judgeScore = d.JudgeScore,
+            judgeNotes = d.JudgeNotes,
+            createdAt = d.CreatedAt.ToString("O"),
+        });
+
+        return Results.Ok(new
+        {
+            key,
+            workItemId,
+            iterations,
+            totalCostUsd = totalCost,
         });
     }
 

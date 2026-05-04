@@ -541,6 +541,8 @@ app.MapAgentAssignmentsEndpoints();
 app.MapPrCommentsEndpoints();
 // forge_implementation.md Phase 27 — builds REST surface.
 app.MapBuildsEndpoints();
+// Phase 11 — /cost dashboard rollup.
+app.MapCostEndpoints();
 
 app.MapHub<ForgeHub>("/hubs/forge");
 
