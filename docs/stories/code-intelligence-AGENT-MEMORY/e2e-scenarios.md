@@ -462,7 +462,7 @@ Feature: Temporal Versioning — Point-in-Time Queries
     And future queries at commit_index >= 3 do not see the edge
 
   Scenario: 5.5 — Snapshot created after each sync
-    When IncrementalSync.SyncToCommitAsync processes commit "ccc3333"
+    When IIncrementalSync.ApplyDiffAsync processes commit "ccc3333"
     Then a Snapshot record is created with:
       | CommitSha | CommitIndex | Stats.Nodes | Stats.Edges |
       | ccc3333   | 3           | > 0         | > 0         |
@@ -579,7 +579,7 @@ Feature: Incremental Sync — Keeping the Graph Current
   Scenario: 7.1 — Single-file change triggers incremental re-extraction
     Given the developer modifies "src/ast/Ast.Core/RepositoryProcessor.cs"
     And commits the change as commit "ddd4444" (commit_index 6)
-    When IncrementalSync.SyncToCommitAsync processes "ddd4444"
+    When IIncrementalSync.ApplyDiffAsync processes "ddd4444"
     Then only RepositoryProcessor.cs is re-extracted (not the full repo)
     And modified nodes get new VersionRange.Since = "ddd4444", SinceIndex = 6
     And the old versions of those nodes get UntilIndex = 6
@@ -754,18 +754,26 @@ Feature: Cross-Session Learning — Memory Compounds Over Time
 
 ## Feature 10: MCP Tool Interface — External Agent Integration
 
-Agents interact with the memory graph via 5 MCP tools: `memory_query`,
-`memory_call_chain`, `memory_find_similar`, `memory_annotate`, `memory_status`
-(per `architecture.md` §5.6).
+Agents interact with the memory graph via 5 MCP tools defined in
+`architecture.md` §3.8: `memory_query`, `memory_status`,
+`memory_record_expertise`, `memory_sync`, `memory_consolidate`.
+All tool handler logic lives in `Ast.Memory/Mcp/`; `Ast.Cli` only adds
+a `config.AddBranch("memory", ...)` route.
 
 ```gherkin
 Feature: MCP Tool Interface — External Agent Integration
 
   Background:
     Given the memory graph is populated for "src/ast/"
-    And the MCP server is running with 5 registered tools
+    And the MCP server is running with 5 registered tools:
+      | tool_name                | maps_to                                    |
+      | memory_query             | IMemoryRetrievalEngine.RetrieveAsync()      |
+      | memory_status            | IMemoryGraphStore.GetMemoryStatisticsAsync() |
+      | memory_record_expertise  | IEvolutionEngine.RecordExpertiseAsync()     |
+      | memory_sync              | IIncrementalSync.ApplyDiffAsync()           |
+      | memory_consolidate       | IEvolutionEngine.ConsolidateAsync()         |
 
-  Scenario: 10.1 — memory_query returns token-budgeted context
+  Scenario: 10.1 — memory_query returns token-budgeted context (Hybrid mode)
     When an MCP client sends:
       """json
       {
@@ -783,75 +791,114 @@ Feature: MCP Tool Interface — External Agent Integration
     And metadata.tokenCount <= 4000
     And metadata.resolvedMode = "hybrid"
 
-  Scenario: 10.2 — memory_call_chain traces callers/callees
+  Scenario: 10.2 — memory_query with CallTrace mode traces callers/callees
+    # memory_query supports all RetrievalMode values via the "mode" argument
     When an MCP client sends:
       """json
       {
-        "name": "memory_call_chain",
+        "name": "memory_query",
         "arguments": {
-          "symbol": "/src/ast/Ast.Embedding/CodeEmbeddingService.cs::CodeEmbeddingService.GenerateNodeEmbeddingsAsync",
-          "direction": "outbound",
-          "depth": 2
+          "query": "/src/ast/Ast.Embedding/CodeEmbeddingService.cs::CodeEmbeddingService.GenerateNodeEmbeddingsAsync",
+          "mode": "CallTrace",
+          "tokenBudget": 4000
         }
       }
       """
-    Then the response lists callees at depth 1 and depth 2
-    And each callee entry includes its node ID and qualified name
+    Then the response content includes the "## Call Graph" section
+    And the call graph lists callees of GenerateNodeEmbeddingsAsync
+    And metadata.resolvedMode = "CallTrace"
 
-  Scenario: 10.3 — memory_find_similar returns ranked similar nodes
+  Scenario: 10.3 — memory_query with SemanticSearch mode returns similar nodes
     When an MCP client sends:
       """json
       {
-        "name": "memory_find_similar",
+        "name": "memory_query",
         "arguments": {
           "query": "parse C# abstract syntax tree",
-          "topK": 5,
-          "kinds": ["Function", "Class"]
+          "mode": "SemanticSearch",
+          "tokenBudget": 4000
         }
       }
       """
-    Then the response contains at most 5 entries
-    And each entry has a similarity score between 0.0 and 1.0
+    Then the response content includes the "## Related Code" section
+    And results are ranked by semantic similarity
+    And metadata.resolvedMode = "SemanticSearch"
 
-  Scenario: 10.4 — memory_annotate writes expertise and returns ID
+  Scenario: 10.4 — memory_record_expertise writes expertise and returns ID
     When an MCP client sends:
       """json
       {
-        "name": "memory_annotate",
+        "name": "memory_record_expertise",
         "arguments": {
+          "targetNodeId": "/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEnhancedEmbeddingText",
           "kind": "pitfall",
-          "title": "GetEnhancedEmbeddingText may include secrets in SourceCode metadata",
-          "body": "When LSP enrichment is enabled, up to 2000 chars of source code appear in embedding input. This may leak secrets if not filtered.",
-          "appliesTo": ["/src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode.GetEnhancedEmbeddingText"],
-          "scope": "exact"
+          "content": "When LSP enrichment is enabled, up to 2000 chars of source code appear in embedding input via Metadata[SourceCode] (line 175). This may leak secrets if not filtered.",
+          "sourceAgent": "copilot-session-99"
         }
       }
       """
     Then the response metadata.expertiseId matches pattern "expertise:pitfall:<hash8>"
     And the expertise node is retrievable via ExpertiseRecall
+    And an audit_log entry records the operation
 
   Scenario: 10.5 — memory_status returns graph statistics
     When an MCP client sends:
       """json
       {
         "name": "memory_status",
+        "arguments": {}
+      }
+      """
+    Then the response includes:
+      | field             | assertion      |
+      | nodeCount         | > 0            |
+      | edgeCount         | > 0            |
+      | expertiseCount    | >= 0           |
+      | lastSyncCommit    | non-null       |
+      | commitIndex       | > 0            |
+    And counts are segmented by MemoryLayer (structural, call_chain, semantic, expertise)
+
+  Scenario: 10.6 — memory_sync triggers incremental graph update
+    When an MCP client sends:
+      """json
+      {
+        "name": "memory_sync",
         "arguments": {
           "repoRoot": "src/ast/",
-          "syncToHead": false
+          "fromCommit": "aaa1111",
+          "toCommit": "bbb2222"
         }
       }
       """
-    Then the response includes node count, edge count, expertise count,
-      last sync commit SHA, and commit_index
+    Then the response reports filesChanged, nodesAdded, nodesRetired,
+      edgesAdded, edgesRetired, and duration
+    And only files changed between the two commits are re-extracted
 
-  Scenario: 10.6 — memory_query with tokenBudget exceeding ceiling
+  Scenario: 10.7 — memory_consolidate merges overlapping expertise
+    When an MCP client sends:
+      """json
+      {
+        "name": "memory_consolidate",
+        "arguments": {}
+      }
+      """
+    Then the response reports merged count and superseded count
+    And SUPERSEDES edges are created for merged entries
+
+  Scenario: 10.8 — memory_query with tokenBudget exceeding ceiling
     When an MCP client sends memory_query with tokenBudget = 50000
-    Then the effective budget is clamped to 32000
+    Then the effective budget is clamped to TokenBudgetCeiling = 32000
     And metadata.tokenCount <= 32000
 
-  Scenario: 10.7 — memory_annotate with missing required field
-    When an MCP client sends memory_annotate without "kind" field
+  Scenario: 10.9 — memory_record_expertise with missing required field
+    When an MCP client sends memory_record_expertise without "kind" field
     Then the MCP response is an error with a validation message
+    And no expertise node is created
+
+  Scenario: 10.10 — memory_record_expertise with nonexistent target node
+    When an MCP client sends memory_record_expertise with
+      targetNodeId = "/nonexistent/path::Foo"
+    Then the MCP response is an error indicating the target node does not exist
     And no expertise node is created
 ```
 
