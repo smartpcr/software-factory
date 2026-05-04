@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 44
+> **Status:** Iteration 45
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -14,9 +14,9 @@
 >
 > | Document | Owns | Alignment status |
 > |---|---|---|
-> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | At iteration 23. Contains stale wording in 10 locations (§8.1 inventory). Architecture governs on all — no unresolved conflicts. |
-> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Uses canonical vocabulary; defers to this doc on conflicts. Three notation-level clarifications documented in §8.2 — including R-2 (`UpsertEdgeAsync` omitted from impl-plan's 12-method count; canonical count is 13 — see §8.2 for full method list). Architecture governs on all — no unresolved conflicts. |
-> | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Fully aligned. All 10 previously-catalogued items corrected in current iteration. |
+> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Last updated iteration 23. Contains stale wording in 10 locations (§8.1). Architecture governs on all naming/data-model conflicts. |
+> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Defers to this doc on conflicts. **Active divergence:** Stage 1.2 (line 49, 55) lists 12 `IMemoryGraphStore` methods, omitting `UpsertEdgeAsync`; the canonical interface has 13 methods (§5.1). This must be corrected in the impl-plan's next iteration. See §8.2 for details. |
+> | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | Fully aligned. Uses canonical vocabulary throughout. |
 
 ---
 
@@ -78,13 +78,14 @@ The interaction model is:
 
 ### 1.3 Existing Infrastructure (`src/ast/`)
 
-The system builds on the Code Intelligence stack in `src/ast/` (24 `.csproj`
-projects total — 11 production, 13 test — verified via directory listing).
+The system builds on the Code Intelligence stack in `src/ast/` (26 `.csproj`
+projects total — 12 production, 14 test — verified via directory listing).
 **Two existing projects receive additive-only changes:**
 
 1. **`Ast.Core`** (`src/ast/Ast.Core/HypergraphModels.cs`) — one new enum
    value `HyperedgeType.MemoryRelation` appended to the existing 44-value
-   `HyperedgeType` enum (lines 12–69).
+   `HyperedgeType` enum (lines 12–69 of `HypergraphModels.cs`), bringing the
+   total to 45.
 2. **`Ast.Cli`** (`src/ast/Ast.Cli/Program.cs`) — additive
    `config.AddBranch("memory", ...)` block appended after the existing 7
    `config.AddCommand<T>()` registrations (lines 17–41). A project reference
@@ -96,7 +97,8 @@ dependencies, never mutated beyond the two additive changes above.
 
 | Existing project | Key types (verified source paths) | How memory layer uses it |
 |---|---|---|
-| **Ast.Core** | `HypergraphNode`, `Hyperedge`, `HyperedgeType` (44 values) — `HypergraphModels.cs`; `RepositoryProcessor` — `RepositoryProcessor.cs` | Reference types via `Metadata` dict. One additive enum value `MemoryRelation`. |
+| **Ast.Core** | `HypergraphNode`, `Hyperedge`, `HyperedgeType` (44 enum values, lines 12–69 of `HypergraphModels.cs`) — `HypergraphModels.cs`; `RepositoryProcessor` — `RepositoryProcessor.cs` | Reference types via `Metadata` dict. One additive enum value `MemoryRelation` (bringing total to 45). |
+| **AgentMemory** | `IAgentMemoryStore`, `Episode`, `ExpertiseRecord`, `MemoryEdge`, `MemoryTier`, `MemoryEdgeType` (11 values), `ExpertiseCategory` (11 values) — `AgentMemory.csproj` (references `Ast.Core`) | **Existing prototype.** Contains episode-based memory model with file-based and in-memory stores. `Ast.Memory` supersedes this project by extending the graph-based model with four-layer structure, temporal versioning, and hybrid retrieval. `AgentMemory` remains for backward compatibility until migrated; `Ast.Memory` does not depend on it. |
 | **Ast.GraphDb** | `IGraphStore : IAsyncDisposable, IDisposable` — `IGraphStore.cs`; `Neo4jGraphStore` — `Neo4jGraphStore.cs`; `NodeFilter`, `GraphPath`, `NodeWithDepth` — `GraphModels.cs` | `Ast.Memory` defines `IMemoryGraphStore` extending `IGraphStore` in its own project. Zero files in `Ast.GraphDb/` modified. |
 | **Ast.Embedding** | `IEmbeddingGenerator : IDisposable` — `IEmbeddingGenerator.cs`; `CodeEmbeddingService` — `CodeEmbeddingService.cs`; `EmbeddingGeneratorOptions.ModelName` defaults to `"nomic-embed-text"` — `EmbeddingModels.cs` | Reuse directly. `Ast.Memory` calls `GenerateBatchEmbeddingsAsync()`. |
 | **Ast.Query** | `ICodeQuery` — `ICodeQuery.cs`; `HybridQueryService` — `HybridQueryService.cs`; `ScoredNode` — `QueryModels.cs` | Reference only. `Ast.Memory` defines `IMemoryRetrievalEngine` that internally composes `ICodeQuery`. |
@@ -1485,69 +1487,108 @@ services.AddMemoryGraph(options => {
 
 ## 8. Cross-Document Alignment
 
-This section records governance decisions where sibling documents use
-different wording or notation. **All items are resolved by governance:**
-this document (`architecture.md`) is the canonical authority for component
-boundaries, data model, edge/layer naming, ID format, interface signatures,
-and concurrency semantics. Sibling documents explicitly defer to this
-document on all conflicts (see their respective headers). Items listed
-here are for traceability — they do not represent open disagreements.
+This section documents the relationship between this document and its
+siblings. This document (`architecture.md`) is the **sole canonical
+authority** for component boundaries, data model, edge/layer naming, ID
+format, interface signatures, constants, and concurrency semantics. When
+sibling documents disagree, this document governs — immediately and
+without requiring the sibling document to be updated first.
 
-### 8.1 Governance over `tech-spec.md` (Iteration 23)
+### 8.1 `tech-spec.md`
 
-Tech-spec.md has not been updated since iteration 23. Seventeen alignment
-items (A1–A17) were adjudicated in prior iterations; all are resolved.
-The canonical answers are defined in the body of this document (§2–§7).
-Ten stale-wording locations in tech-spec are inventoried below for
-implementors who cross-reference both documents:
+Tech-spec.md was last updated at iteration 23. It contains ten locations
+where wording diverges from the canonical definitions in this document
+(e.g., `SemanticCluster` vs `Topic`, `valid_from_idx` vs `since_index`,
+centrality as output multiplier vs exponent-denominator modifier). None
+of these represent open disagreements — implementors follow this
+document's definitions (§2–§7) for all naming, schema, and formula
+details. Key canonical corrections:
 
-| # | Tech-spec location | Stale wording | Canonical definition (this doc) |
-|---|---|---|---|
-| TS-1 | §7.1 line 169 | Lists `SemanticCluster` as a separate node type | Only `Topic` nodes exist (§4.2); `SemanticCluster` is retired (§2.3) |
-| TS-2 | §7.1 line 171 | `SHA-256(Content + TargetNodeId)`; `source_session` | Hash is `SHA-256(Title + Body + TargetNodeId)` (§4.2); field is `SourceAgent` |
-| TS-3 | §7.1 line 173 | ID without leading `/` (e.g., `src/ast/...`) | Format is `"/{relativePath}::{qualifiedName}"` — leading `/` always present (§4.2) |
-| TS-4 | §8.4 lines 258–260 | Column names `valid_from_idx` / `valid_until_idx` | Column names are `since_index` / `until_index` (§4.4) |
-| TS-5 | Header line 9 | "Contains 31 naming/data-model divergences" | Implementation-plan has been aligned; the count is stale |
-| TS-6 | §7.1 line 168 | External nodes with `package`, `fqn` properties | Canonical keys: `Metadata["Package"]`, `Metadata["QualifiedName"]` (§4.5) |
-| TS-7 | §8.4 line 289 | Decay trigger "On every retrieval" | Decay is periodic/on-demand via `DecayStaleExpertiseAsync` (§3.5); event-driven decay at sync time |
-| TS-8 | §8.2 line 258 | `commits` table uses `parent_sha` column | Canonical schema uses `author` column (§4.4) |
-| TS-9 | §8.4 line 289 | Decay formula with centrality as output multiplier | Centrality extends the half-life in the exponent denominator (§3.5) |
-| TS-10 | §11, D5 line 337 | `initial_confidence × 2^(…) × centrality_boost` | Uses `event_adjusted_confidence`; centrality modifies the half-life, not the output (§3.5) |
+- **Node type:** Only `Topic` nodes exist for community clusters (§4.2);
+  tech-spec's `SemanticCluster` is retired (§2.3).
+- **ExpertiseEntry hash:** `SHA-256(Title + Body + TargetNodeId)` (§4.2),
+  not `SHA-256(Content + TargetNodeId)`; field is `SourceAgent`, not
+  `source_session`.
+- **Temporal columns:** `since_index` / `until_index` (§4.4), not
+  `valid_from_idx` / `valid_until_idx`.
+- **Decay formula:** Centrality modifies the half-life in the exponent
+  denominator (§3.5): `final = event_adjusted_confidence × 2^(−age_days /
+  (DecayHalfLifeDays × centrality_boost))`. Centrality is **not** an
+  output multiplier.
 
-The remaining seven alignment topics (multi-agent scope, Ast.Cli modification,
-embedding model, edge filtering, temporal model, scoring weights, composition
-wrappers, token budget) are fully agreed — tech-spec wording matches the
-canonical definitions in §1.2, §1.3, §2.2, §2.4, §4.1, and §4.3.
+### 8.2 `implementation-plan.md`
 
-### 8.2 Governance over `implementation-plan.md` (Current Iteration)
+The implementation-plan defers to this document on all naming/data-model
+conflicts (its header explicitly states: "when literal names or values
+here conflict with `architecture.md`, follow `architecture.md`").
 
-The implementation-plan uses canonical vocabulary and defers to this
-document on all conflicts (its header states: "when literal names or values
-here conflict with `architecture.md`, follow `architecture.md`"). Three
-notation-level items where the implementation-plan's wording differs from
-the canonical definition are resolved by governance:
+**Active divergence requiring correction in the next impl-plan iteration:**
 
-| # | Topic | impl-plan wording | Canonical definition (this doc) | Status |
-|---|---|---|---|---|
-| R-1 | `MemoryEdge.Version` nullability | Listed as `VersionRange Version` without explicit non-nullable annotation | `VersionRange Version` is non-nullable — all edges carry versioning (§4.1, §4.3) | **Resolved.** Correct behavior; annotation is presentational. |
-| R-2 | `UpsertEdgeAsync` method | Stage 1.2 test scenario (line 55) says "declares all 12 methods" and lists them without `UpsertEdgeAsync`. Stage 2.1 (line 126) says "inherited `IGraphStore` edge-creation methods" instead of calling `UpsertEdgeAsync`. | **Canonical interface has 13 methods** (§5.1): `GetNodesByLayerAsync`, `GetEdgesBySemanticRelationAsync`, `UpsertNodeAsync`, **`UpsertEdgeAsync`**, `RetireNodeAsync`, `RetireEdgeAsync`, `UpdateEdgeMetadataAsync`, `GetExpertiseForNodeAsync`, `UpsertExpertiseAsync`, `ArchiveExpertiseAsync`, `GetArchivedExpertiseAsync`, `GetMemoryStatisticsAsync`, `LogAuditAsync`. The impl-plan's "12 methods" count is stale — `UpsertEdgeAsync(Hyperedge, VersionRange, CancellationToken)` is required. All edge-writing code paths must use `UpsertEdgeAsync` (not `IGraphStore.CreateEdgesAsync()`) to set `since_index`, `until_index`, `semantic_rel`, and `memory_layer` denormalized columns. | **Resolved by governance.** Implementations follow §5.1. |
-| R-3 | Decay formula notation | Stage 5.3 line 318: `decayed_confidence = current_confidence × 2^(−age_days / DecayHalfLifeDays) × centrality_boost` — this puts `centrality_boost` (range 1.0–1.5) as an **output multiplier**, which would **incorrectly increase** confidence above `current_confidence`. | **Canonical formula** (§3.5): `final = event_adjusted_confidence × 2^(−age_days / (DecayHalfLifeDays × centrality_boost))` — centrality extends the half-life in the **exponent denominator**, producing a `time_factor ≤ 1.0` that can only decrease confidence. The impl-plan formula is algebraically wrong; implementors must follow §3.5. | **Resolved by governance.** Implementations follow §3.5. |
+The impl-plan's Stage 1.2 (line 49) lists 12 methods for
+`IMemoryGraphStore` and its test scenario (line 55) says "declares all
+12 methods." **The canonical `IMemoryGraphStore` interface declares 13
+methods** (§5.1). The missing method is:
 
-Previously-catalogued naming/composition/schema conflicts have all been
-corrected in the implementation-plan: `ExpertiseEntry` (not `ExpertiseNote`),
-`IMemoryGraphStore` (not `IMemoryStore`), composition wrappers (not
-inheritance), `Title` + `Body` fields (not single `Content`), canonical
-scoring weights, node ID format with leading `/`, and `archived` column
-in the `expertise` table.
+```csharp
+Task UpsertEdgeAsync(Hyperedge edge, VersionRange version, CancellationToken ct = default);
+```
 
-### 8.3 Governance over `e2e-scenarios.md` (Current Iteration)
+The complete canonical method list (13 methods):
 
-Fully aligned. All 10 previously-catalogued items (E2E-1 through E2E-10)
-have been corrected. The e2e-scenarios document uses canonical vocabulary
-throughout: correct edge names, qualified node IDs, single-colon `ext:`
-prefix, separate `Title`/`Body` fields, and correct scenario descriptions.
+1. `GetNodesByLayerAsync`
+2. `GetEdgesBySemanticRelationAsync`
+3. `UpsertNodeAsync`
+4. **`UpsertEdgeAsync`** ← omitted from impl-plan
+5. `RetireNodeAsync`
+6. `RetireEdgeAsync`
+7. `UpdateEdgeMetadataAsync`
+8. `GetExpertiseForNodeAsync`
+9. `UpsertExpertiseAsync`
+10. `ArchiveExpertiseAsync`
+11. `GetArchivedExpertiseAsync`
+12. `GetMemoryStatisticsAsync`
+13. `LogAuditAsync`
 
-### 8.4 Governance Rule
+All edge-writing code paths (StructureBuilder, CallChainAnalyzer,
+SemanticIndexer, EvolutionEngine) must use `UpsertEdgeAsync` — not
+`IGraphStore.CreateEdgesAsync()` — to set `since_index`, `until_index`,
+`semantic_rel`, and `memory_layer` denormalized columns on the `edges`
+table (§4.4).
+
+Additionally, the impl-plan's Stage 5.3 uses an incorrect decay formula
+(`current_confidence × 2^(…) × centrality_boost`) that places
+`centrality_boost` as an output multiplier, which would incorrectly
+increase confidence. The canonical formula (§3.5) places centrality in
+the exponent denominator: `final = event_adjusted_confidence ×
+2^(−age_days / (DecayHalfLifeDays × centrality_boost))`.
+
+Other naming/schema items (composition wrappers, `ExpertiseEntry` naming,
+`Title`+`Body` fields, node ID format, `archived` column) have been
+corrected in the implementation-plan.
+
+### 8.3 `e2e-scenarios.md`
+
+Fully aligned. The e2e-scenarios document uses canonical vocabulary
+throughout: correct edge names, qualified node IDs with leading `/`,
+single-colon `ext:` prefix, separate `Title`/`Body` fields, and correct
+scenario descriptions for all 13 features (82 scenarios).
+
+### 8.4 Existing `AgentMemory` Project
+
+The repository already contains an `AgentMemory` project
+(`src/ast/AgentMemory/`) with an episode-based memory model
+(`IAgentMemoryStore`, `Episode`, `ExpertiseRecord`, `MemoryEdge`,
+`MemoryTier`). This prototype uses a different data model (episodes +
+tiered expertise) from the graph-based model defined in this document.
+
+**Relationship:** `Ast.Memory` supersedes `AgentMemory` by extending the
+model with four-layer graph structure, temporal versioning, hybrid
+retrieval, and evolution. `Ast.Memory` does **not** depend on
+`AgentMemory`. The `AgentMemory` project remains in the codebase for
+backward compatibility; migration of its concepts into `Ast.Memory` is
+out of scope for this story.
+
+### 8.5 Governance Rule
 
 This document (`architecture.md`) is the **sole canonical authority** for
 all naming, data-model, edge taxonomy, ID format, interface signatures,
