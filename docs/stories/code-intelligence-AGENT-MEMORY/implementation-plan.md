@@ -30,7 +30,7 @@
 - [ ] Create directory structure: `Interfaces/`, `Models/`, `Extraction/`, `Retrieval/`, `Context/`, `Evolution/`, `Sync/`, `Storage/`, `Schema/`, `Mcp/`, `Cli/` (per architecture.md §3.0)
 - [ ] Create `src/ast/Ast.Memory/Models/Enums.cs` with enums: `ExpertiseKind` (`Pattern`, `Pitfall`, `Preference`, `Insight`), `RetrievalMode` (`StructuralDrill`, `CallTrace`, `SemanticSearch`, `ExpertiseRecall`, `Hybrid`), `MemoryBackend` (`Sqlite`, `Neo4j`) — per architecture.md §2.1, §5.3
 - [ ] Create `src/ast/Ast.Memory/Models/VersionRange.cs` as `record VersionRange(string Since, int SinceIndex, string? Until, int? UntilIndex)` per architecture.md §4.3
-- [ ] Create `src/ast/Ast.Memory/Models/MemoryNode.cs` as composition wrapper containing `HypergraphNode Inner { get; }` (NOT inheritance) with strongly-typed accessors: `MemoryLayer` → `Inner.Metadata["MemoryLayer"]`, `NodeKind` → `Inner.NodeType`, `ContentHash` → `Inner.Metadata["ContentHash"]`, plus `VersionRange Version` property — per architecture.md §4.1
+- [ ] Create `src/ast/Ast.Memory/Models/MemoryNode.cs` as composition wrapper containing `HypergraphNode Inner { get; }` (NOT inheritance) with strongly-typed accessors: `MemoryLayer` → `Inner.Metadata["MemoryLayer"]`, `NodeKind` → `Inner.NodeType`, `ContentHash` → `Inner.Metadata["ContentHash"]`, plus `VersionRange? Version` property (nullable — null for External boundary nodes which are timeless per architecture.md §4.1, §4.3)
 - [ ] Create `src/ast/Ast.Memory/Models/MemoryEdge.cs` as composition wrapper containing `Hyperedge Inner { get; }` (NOT inheritance) with strongly-typed accessors: `SemanticRelation` → `Inner.Metadata["SemanticRelation"]`, `MemoryLayer` → `Inner.Metadata["MemoryLayer"]`, plus `VersionRange Version` property — per architecture.md §4.1
 - [ ] Create `src/ast/Ast.Memory/Models/ExpertiseEntry.cs` with fields: `Id` (format `"expertise:{kind}:{hash8}"`), `Kind` (`ExpertiseKind`), `Title` (headline), `Body` (detailed description), `TargetNodeId`, `Scope` (`"exact"`|`"subtree"`, default `"exact"`), `Confidence` (0.0–1.0, default 1.0), `Archived` (bool, default false), `SourceAgent`, `Evidence` (`IReadOnlyList<Citation>`), `Embedding` (`float[]?`), `ContentHash` (SHA-256 of Title+Body), `CreatedAt`, `UpdatedAt` — per architecture.md §4.2
 - [ ] Create `src/ast/Ast.Memory/Models/Citation.cs` as `record Citation(string NodeId, string? CommitSha, string? Snippet)` — per architecture.md §4.2
@@ -38,7 +38,7 @@
 - [ ] Add `HyperedgeType.MemoryRelation` enum value to `src/ast/Ast.Core/HypergraphModels.cs` — the sole modification to any existing project (architecture.md §4.6)
 
 #### Test Scenarios
-- [ ] Scenario: MemoryNode composition — Given a `HypergraphNode` with `Metadata["MemoryLayer"]="structural"` and temporal metadata `SinceCommit="abc123"`, `SinceIndex=42`, When wrapped in a `MemoryNode`, Then `memoryNode.Inner` is the original node, `memoryNode.MemoryLayer` returns `"structural"`, and `memoryNode.Version.SinceIndex` returns `42`
+- [ ] Scenario: MemoryNode composition — Given a `HypergraphNode` with `Metadata["MemoryLayer"]="structural"` and temporal metadata `SinceCommit="abc123"`, `SinceIndex=42`, When wrapped in a `MemoryNode`, Then `memoryNode.Inner` is the original node, `memoryNode.MemoryLayer` returns `"structural"`, and `memoryNode.Version?.SinceIndex` returns `42`; Given an External boundary node with no temporal metadata, When wrapped in a `MemoryNode`, Then `memoryNode.Version` is `null`
 - [ ] Scenario: MemoryEdge composition — Given a `Hyperedge` with `EdgeType=HyperedgeType.MemoryRelation` and `Metadata["SemanticRelation"]="APPLIES_TO"`, When wrapped in a `MemoryEdge`, Then `memoryEdge.Inner` is the original edge and `memoryEdge.SemanticRelation` returns `"APPLIES_TO"`
 - [ ] Scenario: ExpertiseEntry ID generation — Given `Title="Fragile null-handling"`, `Body="processRefund assumes non-null"`, `TargetNodeId="/src/Services/PaymentService.cs::PaymentService.processRefund"`, When `ExpertiseEntry` is created with `Kind=Pitfall`, Then `Id` equals `"expertise:pitfall:{first 8 chars of SHA-256(Title+Body+TargetNodeId)}"`
 - [ ] Scenario: MemoryRelation enum addition — Given the updated `Ast.Core` with `HyperedgeType.MemoryRelation`, When all existing `Ast.Core.UnitTests` are run, Then zero tests regress (additive-only change)
@@ -175,8 +175,9 @@
 - [ ] Create `src/ast/Ast.Memory/Retrieval/QueryPlanner.cs` — selects `RetrievalMode` values based on query shape: free-text → `Hybrid`; node-ID seed only → `StructuralDrill` + `CallTrace`; explicit mode in `RetrievalRequest.Mode` overrides automatic selection (architecture.md §3.3)
 - [ ] Create `src/ast/Ast.Memory/Interfaces/IMemoryRetrievalEngine.cs` with single method `RetrieveAsync(RetrievalRequest, CancellationToken) → RetrievalResult` per architecture.md §5.2
 - [ ] Create `src/ast/Ast.Memory/Models/RetrievalRequest.cs` with fields: `QueryText`, `SeedNodeIds`, `Mode` (default `Hybrid`), `TokenBudget` (default 8000, clamped to `[1, TokenBudgetCeiling]`), `AtCommitIndex`, `Weights` (`ScoringWeights?`) — per architecture.md §5.2
-- [ ] Create `src/ast/Ast.Memory/Models/RetrievalResult.cs` with fields: `Nodes` (`IReadOnlyList<ScoredMemoryNode>`), `ContextMarkdown`, `TokensUsed`, `ModesExecuted`, `Diagnostics` — per architecture.md §5.2
+- [ ] Create `src/ast/Ast.Memory/Models/RetrievalResult.cs` with fields: `Nodes` (`IReadOnlyList<ScoredMemoryNode>`), `ContextMarkdown` (string), `TokensUsed` (int), `ModesExecuted` (`IReadOnlyList<RetrievalMode>`), `Diagnostics` (`RetrievalDiagnostics?` — per-mode candidate counts and timing) — per architecture.md §5.2
 - [ ] Create `src/ast/Ast.Memory/Models/ScoredMemoryNode.cs` with `Node` (`MemoryNode`), `CompositeScore`, `StructuralScore`, `SemanticScore`, `CentralityScore`, `RecencyScore`, `ExpertiseScore` — per architecture.md §5.2
+- [ ] Create `src/ast/Ast.Memory/Models/RetrievalDiagnostics.cs` with per-mode candidate counts and timing information — per architecture.md §5.2
 
 #### Test Scenarios
 - [ ] Scenario: Hybrid mode selection — Given a `RetrievalRequest` with `QueryText="payment processing"` and no `SeedNodeIds`, When `QueryPlanner.PlanQuery` is called, Then selected modes include `SemanticSearch` and at least one of `StructuralDrill`/`CallTrace`
@@ -280,7 +281,8 @@
 ### Stage 5.1: Expertise Write-Back
 
 #### Implementation Steps
-- [ ] Create `src/ast/Ast.Memory/Interfaces/IEvolutionEngine.cs` per architecture.md §5.3 with methods: `RecordExpertiseAsync(targetNodeId, ExpertiseKind kind, string title, string body, string sourceAgent, string scope = "exact", IReadOnlyList<Citation>? evidence = null, CancellationToken)`, `ConsolidateAsync(CancellationToken)`, `DecayStaleExpertiseAsync(CancellationToken)`, `RestoreArchivedExpertiseAsync(string expertiseId, double restoredConfidence = 0.5, CancellationToken)`, `DetectCommunitiesAsync(CancellationToken)`
+- [ ] Create `src/ast/Ast.Memory/Interfaces/IEvolutionEngine.cs` per architecture.md §5.3 with methods: `RecordExpertiseAsync(targetNodeId, ExpertiseKind kind, string title, string body, string sourceAgent, string scope = "exact", IReadOnlyList<Citation>? evidence = null, CancellationToken) → Task<ExpertiseEntry>`, `ConsolidateAsync(CancellationToken) → Task<ConsolidationResult>`, `DecayStaleExpertiseAsync(CancellationToken) → Task<DecayResult>`, `RestoreArchivedExpertiseAsync(string expertiseId, double restoredConfidence = 0.5, CancellationToken) → Task<ExpertiseEntry>`, `DetectCommunitiesAsync(CancellationToken) → Task<CommunityResult>`
+- [ ] Create `src/ast/Ast.Memory/Models/EvolutionResults.cs` with result types: `ConsolidationResult` (MergedCount, SupersededCount), `DecayResult` (DecayedCount, ArchivedCount), `CommunityResult` (CommunitiesDetected, TopicNodesCreated) — per architecture.md §5.3
 - [ ] Create `src/ast/Ast.Memory/Evolution/EvolutionEngine.cs` implementing `IEvolutionEngine`; `RecordExpertiseAsync` validates target node exists, generates ID as `"expertise:{kind}:{hash8}"` (hash8 = first 8 chars of SHA-256(Title+Body+TargetNodeId)), embeds `Title + " " + Body` via `IEmbeddingGenerator`, creates `APPLIES_TO` edge with `HyperedgeType.MemoryRelation` and roles `expertise`/`target`, persists via `IMemoryGraphStore.UpsertExpertiseAsync` (architecture.md §6.3)
 - [ ] Log all write-back operations via `IMemoryGraphStore.LogAuditAsync`
 
@@ -316,7 +318,7 @@
 ### Stage 5.4: Community Detection
 
 #### Implementation Steps
-- [ ] Implement `EvolutionEngine.DetectCommunitiesAsync()` — Louvain algorithm over `CALLS`/`SIMILAR_TO` edges; creates `BELONGS_TO_CLUSTER` edges with roles `member`/`cluster` and `Topic` summary nodes (NodeType=`"Topic"`, `Metadata["MemoryLayer"]="semantic"`, `Metadata["Summary"]`, `Metadata["MemberCount"]`) in the Semantic layer (architecture.md §3.5)
+- [ ] Implement `EvolutionEngine.DetectCommunitiesAsync()` — Louvain algorithm over `CALLS`/`SIMILAR_TO` edges; creates `BELONGS_TO_CLUSTER` edges with roles `member`/`cluster` and `Topic` summary nodes (Id=`"topic:{hash8}"`, NodeType=`"Topic"`, `Metadata["MemoryLayer"]="semantic"`, `Metadata["Summary"]`, `Metadata["MemberCount"]`) in the Semantic layer (architecture.md §3.5, §4.2)
 - [ ] Topic summaries generated via configurable LLM (default: local Qwen 3.6)
 
 #### Test Scenarios
