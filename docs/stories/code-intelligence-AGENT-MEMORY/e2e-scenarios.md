@@ -14,13 +14,16 @@
 > When this document and `architecture.md` disagree on naming or thresholds,
 > `architecture.md` governs. This document owns Gherkin acceptance scenarios.
 >
-> **Sibling-doc divergence status:** The 10 divergence items catalogued in
-> `architecture.md` §8.3 (E2E-1 through E2E-10) and mirrored in `tech-spec.md`
-> §12.6 are **all resolved** in the current iteration of this document. Those
-> items reference older iterations that used non-canonical edge names,
-> unqualified symbol IDs, `ext::` prefix, single `content` field, and
-> out-of-scope scenarios — all corrected. The sibling docs' catalogs are stale
-> metadata that will be cleaned up in their next iterations.
+> **Sibling-doc divergence status:** This document addresses all 10
+> divergence items catalogued in `architecture.md` §8.3 (E2E-1 through
+> E2E-10) and mirrored in `tech-spec.md` §12.6. The corrections are:
+> E2E-1/2/3/4 (presentation aliases) replaced with canonical `CALLS` edges;
+> E2E-5/8 (out-of-scope scenarios) removed; E2E-6 (unqualified IDs) replaced
+> with canonical `"/{relativePath}::{qualifiedName}"` format; E2E-7 (`ext::`
+> double-colon) corrected to single-colon `ext:` prefix; E2E-9 (conflict errors)
+> rewritten as write-serialization test; E2E-10 (single `content` field)
+> split into separate `Title` and `Body` parameters per `architecture.md` §5.3.
+> Architecture.md §8.4 confirms all 10 items are resolved.
 >
 > **Canonical vocabulary quick-reference** (from `architecture.md` §2, §5):
 > - **Layers:** `structural`, `call_chain`, `semantic`, `expertise`
@@ -469,6 +472,24 @@ Feature: Expertise Layer — Agent Learning and Write-Back
     And subsequent GetExpertiseForNodeAsync for HypergraphNode returns it
     And an audit_log entry records operation "restore_expertise"
     # Per architecture.md §5.3: RestoreArchivedExpertiseAsync(expertiseId, restoredConfidence = 0.5)
+
+  Scenario: 4.7 — Expertise with scope "subtree" applies to all structural children
+    When the agent calls RecordExpertiseAsync with:
+      | field        | value                                                                  |
+      | TargetNodeId | /src/ast/Ast.Core                                                      |
+      | Kind         | Preference                                                             |
+      | Title        | Use this. qualifier for all instance members                           |
+      | Body         | Per .editorconfig, all C# instance members in Ast.Core must use this. qualifier |
+      | SourceAgent  | copilot-session-42                                                     |
+      | Scope        | subtree                                                                |
+    Then the ExpertiseEntry is created with Scope = "subtree" and Confidence = 1.0
+    And the APPLIES_TO edge targets "/src/ast/Ast.Core"
+    When ExpertiseRecall retrieves expertise for any child of /src/ast/Ast.Core:
+      e.g., /src/ast/Ast.Core/HypergraphModels.cs::HypergraphNode
+    Then the subtree-scoped Preference is included in the results
+    # Scope "subtree" means the expertise applies to the target node AND all
+    # its structural children (architecture.md §4.2). Scope "exact" (the default)
+    # means it applies only to the target node itself.
 ```
 
 ---
@@ -542,16 +563,6 @@ Feature: Temporal Versioning — Point-in-Time Queries
     # when the in-repo reference was first/last seen (architecture.md §4.3)
     And edges pointing to the External node carry their own VersionRange
     And those edges ARE filtered by commit_index normally
-
-  Scenario: 5.6 — SyncResult created after each incremental sync
-    When IIncrementalSync.ApplyDiffAsync processes commit "ccc3333"
-    Then the SyncResult contains:
-      | field         | assertion |
-      | FilesChanged  | > 0       |
-      | NodesAdded    | > 0       |
-      | EdgesAdded    | > 0       |
-      | Duration      | > 0       |
-    # SyncResult is the return type of ApplyDiffAsync (architecture.md §5.4)
 ```
 
 ---
@@ -1175,13 +1186,14 @@ Feature: Graph Schema Integrity — Edge and Metadata Validation
       | key          | valid |
       | MemoryLayer  | yes   |
       | ContentHash  | yes   |
-      | ext:custom   | yes (with warning) |
-      | badkey       | no    |
+      | ext:custom   | yes   |
+      | badkey       | warning |
     When the node is validated against AnnotationKeyRegistry
-    Then "badkey" raises a validation error
-    And "ext:custom" is stored but surfaced with a warning
-    And "MemoryLayer" and "ContentHash" pass validation
-    # AnnotationKeyRegistry governs HypergraphNode/Hyperedge Metadata keys (architecture.md §4.5).
+    Then "MemoryLayer" and "ContentHash" pass validation (registered keys)
+    And "ext:custom" is stored with no warning (ext: prefix is the allowed extension mechanism)
+    And "badkey" produces a validation warning (unregistered key without ext: prefix)
+    # Per architecture.md §4.5: Agent-authored extension keys use the ext: prefix.
+    # Keys without ext: prefix that are not in the registry produce a validation warning.
     # ExpertiseEntry has its own typed fields — not a Metadata dictionary.
 
   Scenario: 13.6 — Node ID format follows canonical convention
