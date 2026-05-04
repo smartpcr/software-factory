@@ -2,19 +2,21 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 12
+> **Status:** Iteration 13
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, and interface signatures.
 > When sibling documents ([tech-spec.md](tech-spec.md),
 > [implementation-plan.md](implementation-plan.md),
 > [e2e-scenarios.md](e2e-scenarios.md)) differ, this document governs.
-> Tech-spec owns problem statement, constraints, risks, and success criteria.
-> Implementation-plan owns phased work items. E2e-scenarios owns Gherkin acceptance tests.
 >
-> **§10 Cross-Document Alignment** lists every known conflict with
-> all sibling documents and states the canonical resolution.
-> Implementers MUST consult §10 when following any sibling document.
+> **Ownership boundaries:**
+> - **This document** — component diagram, data model, interfaces, sequence flows, naming vocabulary.
+> - **tech-spec.md** — problem statement, constraints, risks, success criteria, operator decisions.
+> - **implementation-plan.md** — phased work items, deliverables, evaluation fixtures.
+> - **e2e-scenarios.md** — Gherkin acceptance scenarios.
+>
+> §10 lists every known cross-document conflict and states the canonical resolution.
 
 ---
 
@@ -44,19 +46,22 @@ and VCS history.
 
 ### 1.2 Existing Infrastructure (`src/ast/`)
 
-The system extends the Code Intelligence stack in `src/ast/` (24 projects,
-970+ tests across 13 test projects). No existing class signatures are modified.
+The system builds on the Code Intelligence stack in `src/ast/` (24 `.csproj`
+projects, 13 of which are test projects). **No existing project is modified**
+except for one additive enum value (`HyperedgeType.MemoryRelation`) in
+`Ast.Core`. All new code ships as `Ast.Memory` (+ test projects). Existing
+projects are **referenced** (as NuGet/project dependencies), never mutated.
 
-| Project | Key types (with source paths) | Reuse strategy |
+| Existing project | Key types (verified source paths) | How memory layer uses it |
 |---|---|---|
-| **Ast.Core** | `HypergraphNode`, `Hyperedge`, `HyperedgeType` (44 enum values) — `src/ast/Ast.Core/HypergraphModels.cs`; `RepositoryProcessor` — `src/ast/Ast.Core/RepositoryProcessor.cs` | Extend via `Metadata` dict; add one enum value `MemoryRelation`. |
-| **Ast.GraphDb** | `IGraphStore` — `src/ast/Ast.GraphDb/IGraphStore.cs`; `Neo4jGraphStore` — `src/ast/Ast.GraphDb/Neo4jGraphStore.cs`; `NodeFilter`, `GraphPath`, `NodeWithDepth` — `src/ast/Ast.GraphDb/GraphModels.cs` | Add `IMemoryGraphStore` sub-interface; add `SqliteGraphStore`. |
-| **Ast.Embedding** | `IEmbeddingGenerator` — `src/ast/Ast.Embedding/IEmbeddingGenerator.cs`; `CodeEmbeddingService` — `src/ast/Ast.Embedding/CodeEmbeddingService.cs`; `EnrichedEmbeddingPipeline` — `src/ast/Ast.Embedding/EnrichedEmbeddingPipeline.cs`; `EmbeddingGeneratorOptions` (default model: `"nomic-embed-text"`) — `src/ast/Ast.Embedding/EmbeddingModels.cs` | Reuse directly for all embedding work. |
-| **Ast.Query** | `ICodeQuery` — `src/ast/Ast.Query/ICodeQuery.cs`; `HybridQueryService` — `src/ast/Ast.Query/HybridQueryService.cs`; `ScoredNode` — `src/ast/Ast.Query/QueryModels.cs` | Extend with memory-aware retrieval and token budgeting. |
-| **Ast.VectorDb** | `IVectorStore` — `src/ast/Ast.VectorDb/IVectorStore.cs`; `QdrantVectorStore` — `src/ast/Ast.VectorDb/QdrantVectorStore.cs` | Reuse for team mode; add in-process HNSW for local mode. |
-| **Ast.Lsp** | LSP integration — `src/ast/Ast.Lsp/` | Optional enrichment — pipeline never blocks on LSP. |
-| **CodeIntelligence** | 27 analyzers in `src/ast/CodeIntelligence/Analyzers/`, 4 detectors in `src/ast/CodeIntelligence/Detectors/`, `RelationshipGraphBuilder` — `src/ast/CodeIntelligence/Graph/RelationshipGraphBuilder.cs` | Consume as call-chain / structural edge source. |
-| **Ast.Cli** | CLI host — `src/ast/Ast.Cli/` | Extend with MCP tools for retrieve + write-back. |
+| **Ast.Core** | `HypergraphNode`, `Hyperedge`, `HyperedgeType` (44 enum values) — `src/ast/Ast.Core/HypergraphModels.cs`; `RepositoryProcessor` — `src/ast/Ast.Core/RepositoryProcessor.cs` | Reference types via `Metadata` dict for extension. One additive enum value `MemoryRelation` (the **sole** change to any existing project). |
+| **Ast.GraphDb** | `IGraphStore` — `src/ast/Ast.GraphDb/IGraphStore.cs`; `Neo4jGraphStore` — `src/ast/Ast.GraphDb/Neo4jGraphStore.cs`; `NodeFilter`, `GraphPath`, `NodeWithDepth` — `src/ast/Ast.GraphDb/GraphModels.cs` | `Ast.Memory` defines `IMemoryGraphStore` (in its own project) which extends `IGraphStore`. No files in `Ast.GraphDb/` are modified. |
+| **Ast.Embedding** | `IEmbeddingGenerator` — `src/ast/Ast.Embedding/IEmbeddingGenerator.cs`; `CodeEmbeddingService` — `src/ast/Ast.Embedding/CodeEmbeddingService.cs`; `EmbeddingGeneratorOptions` (default model: `"nomic-embed-text"`) — `src/ast/Ast.Embedding/EmbeddingModels.cs:119` | Reuse directly — no modifications. `Ast.Memory` calls `IEmbeddingGenerator.GenerateBatchEmbeddingsAsync()`. |
+| **Ast.Query** | `ICodeQuery` — `src/ast/Ast.Query/ICodeQuery.cs`; `HybridQueryService` — `src/ast/Ast.Query/HybridQueryService.cs`; `ScoredNode` — `src/ast/Ast.Query/QueryModels.cs` | Reference only — no modifications. `Ast.Memory` defines its own `IMemoryRetrievalEngine` that internally composes `ICodeQuery` when needed. |
+| **Ast.VectorDb** | `IVectorStore` — `src/ast/Ast.VectorDb/IVectorStore.cs`; `QdrantVectorStore` — `src/ast/Ast.VectorDb/QdrantVectorStore.cs` | Reference only — no modifications. Reuse for team mode; `Ast.Memory` adds in-process HNSW adapter for local mode. |
+| **Ast.Lsp** | LSP integration — `src/ast/Ast.Lsp/` | Optional enrichment — pipeline never blocks on LSP. No modifications. |
+| **CodeIntelligence** | 27 analyzers in `src/ast/CodeIntelligence/Analyzers/`, 4 detectors in `src/ast/CodeIntelligence/Detectors/`, `RelationshipGraphBuilder` — `src/ast/CodeIntelligence/Graph/RelationshipGraphBuilder.cs` | Consume as call-chain / structural edge source. No modifications. |
+| **Ast.Cli** | CLI host — `src/ast/Ast.Cli/` | Reference only — no modifications. Memory CLI commands and MCP tools are registered via `Ast.Memory`'s `ServiceCollectionExtensions` and discovered at runtime by `Ast.Cli`'s existing DI host. |
 
 ### 1.3 Research Foundations
 
@@ -165,22 +170,33 @@ documents. Implementations read these from `MemoryOptions` configuration.
 
 All new code ships as **one new project** (`Ast.Memory`) plus test projects,
 following the `src/ast/Ast.<Name>` convention. Internal namespaces provide
-logical separation.
+logical separation. **No files in existing projects are created or modified**
+except the single `HyperedgeType.MemoryRelation` enum addition in `Ast.Core`.
+
+All new interfaces (`IMemoryGraphStore`, `IMemoryRetrievalEngine`,
+`IEvolutionEngine`, `IExtractionPipeline`, `IIncrementalSync`) are defined
+**within** `Ast.Memory`. They reference types from existing projects
+(`HypergraphNode`, `Hyperedge`, `IGraphStore`, `IEmbeddingGenerator`,
+`IVectorStore`) via project references but never alter those projects.
 
 ```
 src/ast/
-  Ast.Memory/                     ← NEW
-    Ast.Memory.csproj             ← refs: Ast.Core, Ast.GraphDb, Ast.Embedding
+  Ast.Memory/                     ← NEW project
+    Ast.Memory.csproj             ← refs: Ast.Core, Ast.GraphDb, Ast.Embedding, Ast.VectorDb, Ast.Query
+    Interfaces/                   ← IMemoryGraphStore, IMemoryRetrievalEngine, IEvolutionEngine, IExtractionPipeline, IIncrementalSync
     Models/                       ← MemoryNode, MemoryEdge, ExpertiseEntry, Enums, MemoryMetadataKeys
     Extraction/                   ← StructureBuilder, CallChainAnalyzer, SemanticIndexer, FactNormalizer
     Context/                      ← ContextAssembler, BudgetController
     Evolution/                    ← EvolutionEngine, ConsolidationService, DecayService
     Retrieval/                    ← MemoryRetrievalEngine, QueryPlanner, Ranker, ScoringWeights
     Sync/                         ← IncrementalSync, GitDiffDriver
-    Storage/                      ← IMemoryGraphStore (also in Ast.GraphDb), SqliteGraphStore
+    Storage/                      ← SqliteGraphStore (implements IMemoryGraphStore)
+    Schema/                       ← AnnotationKeyRegistry
+    Mcp/                          ← MemoryMcpToolRegistration, MemoryMcpHandler, McpSchemas
+    ServiceCollectionExtensions.cs
   Ast.Memory.UnitTests/           ← NEW
   Ast.Memory.IntegrationTests/    ← NEW
-  (existing projects unchanged)
+  (all existing projects unchanged — only Ast.Core gains one additive enum value)
 ```
 
 ### 3.0.1 Component Diagram
@@ -233,24 +249,32 @@ changes needed.
 
 ### 3.2 Graph Store
 
-**Project:** `Ast.GraphDb` (interface at `src/ast/Ast.GraphDb/IGraphStore.cs`) + `Ast.Memory/Storage` (SQLite impl)  
+**Project:** `Ast.Memory` (interface `IMemoryGraphStore` in `Ast.Memory/Interfaces/`, implementations in `Ast.Memory/Storage/`)  
 **Responsibility:** Persist the four graph layers, serve traversal queries,
 manage versioned snapshots.
 
+`IMemoryGraphStore` extends `IGraphStore` (from `Ast.GraphDb`) with temporal,
+vector, and diff-based operations. It is defined **in `Ast.Memory`**, not in
+`Ast.GraphDb` — no existing project is modified.
+
 | Deployment | Graph backend | Vector backend |
 |---|---|---|
-| Local / CI | SQLite + FTS5 + recursive CTEs | sqlite-vss or in-process HNSW (usearch) |
-| Team / Cloud | Neo4j (`src/ast/Ast.GraphDb/Neo4jGraphStore.cs`) | Qdrant (`src/ast/Ast.VectorDb/QdrantVectorStore.cs`) |
+| Local / CI | `SqliteGraphStore` (new, in `Ast.Memory/Storage/`) — SQLite + FTS5 + recursive CTEs | sqlite-vss or in-process HNSW (usearch) — adapter in `Ast.Memory/Storage/` |
+| Team / Cloud | `Neo4jMemoryGraphStore` (new, in `Ast.Memory/Storage/`) — wraps existing `Neo4jGraphStore` from `src/ast/Ast.GraphDb/Neo4jGraphStore.cs` via composition | Existing `QdrantVectorStore` from `src/ast/Ast.VectorDb/QdrantVectorStore.cs` — used directly via `IVectorStore` reference |
 
-Backend selection is via DI (see existing `src/ast/Ast.GraphDb/ServiceCollectionExtensions.cs`
-and `src/ast/Ast.VectorDb/ServiceCollectionExtensions.cs`); all backends
-implement `IMemoryGraphStore` (§5.2).
+Backend selection is via DI (existing `src/ast/Ast.GraphDb/ServiceCollectionExtensions.cs`
+and `src/ast/Ast.VectorDb/ServiceCollectionExtensions.cs` remain unchanged);
+the new `Ast.Memory/ServiceCollectionExtensions.cs` registers
+`IMemoryGraphStore` implementations and all memory-specific services.
+All backends implement `IMemoryGraphStore` (§5.2).
 
 ### 3.3 Retrieval Engine
 
-**Project:** `Ast.Query` (extended) + `Ast.Memory/Retrieval`  
+**Project:** `Ast.Memory/Retrieval` (all new code — no modifications to `Ast.Query`)  
 **Responsibility:** Accept a query, plan retrieval, traverse the graph, rank
-and return memory fragments.
+and return memory fragments. Internally composes `ICodeQuery` (from `Ast.Query`)
+and `IVectorStore` (from `Ast.VectorDb`) via constructor injection — those
+existing interfaces are consumed, not modified.
 
 | Sub-component | Role |
 |---|---|
@@ -622,7 +646,7 @@ public record VersionRange(string Since, int SinceIndex, string? Until, int? Unt
 
 ### 5.2 Memory Graph Store
 
-**Project:** `Ast.GraphDb` (interface) — extends existing `IGraphStore`
+**Project:** `Ast.Memory/Interfaces` — extends `IGraphStore` from `Ast.GraphDb` (referenced, not modified)
 
 ```csharp
 public interface IMemoryGraphStore : IGraphStore
@@ -679,7 +703,7 @@ public class TraversalResult
 
 ### 5.3 Retrieval Engine
 
-**Project:** `Ast.Query` (extended)
+**Project:** `Ast.Memory/Retrieval` (new — composes `ICodeQuery` from `Ast.Query` and `IVectorStore` from `Ast.VectorDb` via DI, does not modify either)
 
 ```csharp
 public interface IMemoryRetrievalEngine
@@ -778,7 +802,7 @@ public class WatchOptions
 
 ### 5.6 Agent API / MCP Tool Interface
 
-**Project:** `Ast.Memory/Mcp` + `Ast.Cli`  
+**Project:** `Ast.Memory/Mcp` (new code only; `Ast.Cli` loads memory commands at runtime via DI — no source modifications to `Ast.Cli`)  
 **Responsibility:** Expose the memory graph to external agents via the
 [Model Context Protocol](https://modelcontextprotocol.io) (MCP) tool surface.
 Agent interaction is **purely programmatic** — typed function calls, no query
@@ -927,6 +951,8 @@ Ast.Memory/
     MemoryMcpToolRegistration.cs   ← registers 5 tools with MCP discovery
     MemoryMcpHandler.cs            ← dispatches MCP JSON → internal interfaces
     McpSchemas.cs                  ← JSON schema constants for tool definitions
+  Cli/
+    MemoryCommandModule.cs         ← CLI commands loaded at runtime by Ast.Cli host
 ```
 
 `MemoryMcpHandler` composes `IMemoryRetrievalEngine`, `IEvolutionEngine`, and
@@ -936,7 +962,9 @@ logic — only JSON deserialization, delegation, and response formatting.
 #### 5.6.5 CLI Commands (non-MCP)
 
 For developer workflows that don't use MCP, the same functionality is exposed
-via CLI commands in `Ast.Cli`:
+via CLI commands. These are registered as DI-discovered command modules in
+`Ast.Memory/Cli/` and loaded at runtime by `Ast.Cli`'s existing host — **no
+source files in `Ast.Cli/` are modified**.
 
 | CLI Command | Maps to |
 |---|---|
@@ -1223,12 +1251,13 @@ in their ## Known Expertise section.
 
 | Decision | Rationale | Trade-off |
 |---|---|---|
-| Extend `src/ast/` stack, not greenfield | 970+ tests, proven models | Coupled to `HypergraphNode`/`Hyperedge` |
+| Extend `src/ast/` stack, not greenfield | Proven models, existing tests, established conventions | Coupled to `HypergraphNode`/`Hyperedge` |
+| **All new code in `Ast.Memory`** — no modifications to existing projects except one enum value | Preserves all existing tests unconditionally; eliminates coupling risk | `Ast.Memory` has project references to 5 existing projects |
 | Single `Ast.Memory` project with namespaces | Follows repo convention; avoids project sprawl | Larger compilation unit |
-| Non-breaking extension via `Metadata` dict | Preserves all existing tests | String-typed keys; mitigated by `MemoryMetadataKeys` constants |
+| Non-breaking extension via `Metadata` dict | Preserves all existing tests | String-typed keys; mitigated by `AnnotationKeyRegistry` constants |
 | `HyperedgeType.MemoryRelation` + `SemanticRelation` metadata | One enum value; string identifies specific relation | Not compile-time checked; validated at write time |
 | Four layers sharing node namespace | MAGMA: prevents signal entanglement | Cross-layer queries need joins |
-| Composition wrappers, not inheritance | `MemoryNode`/`MemoryEdge` compose base types | Extra indirection; no casting needed |
+| Composition wrappers, not inheritance | `MemoryNode`/`MemoryEdge` compose base types via `Inner` property | Extra indirection; no casting needed |
 | Dual-axis temporal (commit_index + wall-clock) | Commit SHAs not orderable; integers enable range queries | Requires `commits` table bookkeeping |
 | LLM-powered consolidation | Semantic merge needs NL reasoning | LLM cost; batched and async |
 | Token-budget-aware retrieval | Finite agent context windows | Summaries lose detail; citations enable drill-down |
@@ -1265,11 +1294,22 @@ governs** (see document header).
 ### 10.0 Alignment with tech-spec.md
 
 All previously-pending conflicts between this document and `tech-spec.md` are
-**resolved** as of tech-spec.md iteration 5. `tech-spec.md` §12.2 confirms
-alignment on: embedding model (D1), cross-branch visibility (D3), decay
-formula (D5), composition wrappers (HC8), `HyperedgeType` enum count (44),
-`GetEnhancedEmbeddingText()` source-code surface area (R7), and token budget
-defaults (HC1). No remaining conflicts.
+**resolved** as of tech-spec.md iteration 7. Confirmed aligned on:
+
+| Topic | tech-spec ref | This doc ref | Status |
+|---|---|---|---|
+| Embedding model = general-purpose | D1 (§11) | §4.7 | ✅ Aligned |
+| Cross-branch expertise visibility | D3 (§11) | §3.3 | ✅ Aligned |
+| Decay formula (base-2, 3-year half-life) | D5 (§11) | §3.5, §2.4 | ✅ Aligned |
+| Composition wrappers (not inheritance) | HC8 (§5) | §4.1 | ✅ Aligned |
+| `HyperedgeType` enum count = 44 | §1.1 | §1.2 | ✅ Aligned |
+| `GetEnhancedEmbeddingText()` includes `SourceCode` | R7 (§9) | §4.7 | ✅ Aligned |
+| Token budget: default 8K, ceiling 32K | HC1 (§5) | §2.4 | ✅ Aligned |
+| Purely programmatic agent API (no DSL) | D2 (§11) | §5.6 | ✅ Aligned |
+| Default embedding model = `"nomic-embed-text"` | §12.2, TS-4 | §4.7, §5.1 | ✅ Aligned (iteration 12 fix) |
+| Test count: tech-spec says "437" in some sections; this doc says "24 projects, 13 test projects" | tech-spec §1.1 | §1.2 | ✅ **Note:** tech-spec's "437" count dates from iteration 1 and may be stale. This doc references project structure (24 projects, 13 test projects) rather than a specific test count to avoid staleness. Both docs agree on the principle: zero regression on existing tests. |
+
+**No remaining conflicts** between this document and `tech-spec.md`.
 
 `tech-spec.md` §11 D2 specifies "purely programmatic" agent interaction via
 typed function calls — this architecture fulfills that requirement via the MCP
@@ -1337,7 +1377,15 @@ below. Future iterations of `implementation-plan.md` should incorporate these.
 | S-1 | Stage 1.2: `IMemoryStore` has `UpsertAnnotationAsync`, `GetAnnotationsAsync`, `WriteAuditEntryAsync`, `GetAuditLogAsync`, `TombstoneNodeAsync`, `GetNodeAtVersionAsync` | The canonical interface is **`IMemoryGraphStore`** (§5.2). It exposes `ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, `FindByNameAsync`, `RebuildVectorIndexAsync`, `ResolveCommitIndexAsync`, `RegisterCommitAsync`. Annotations are Metadata-based, not separate CRUD. Audit is an internal implementation detail, not on the public interface. | §5.2 |
 | S-2 | Stage 1.3: `Neo4jMemoryStore` with annotation CRUD and temporal Cypher | Implement **`IMemoryGraphStore`** interface from §5.2. Temporal filtering uses `VersionRange` with `SinceIndex`/`UntilIndex` fields, queried via `GetNodeAtCommitAsync`. | §4.3, §5.2 |
 
-#### 10.1.8 Summary of Required Changes to implementation-plan.md
+#### 10.1.8 Project Mutation Policy (NEW in Iteration 13)
+
+| # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
+|---|---|---|---|
+| P-1 | Stage 1.2 creates `IMemoryStore.cs` as `IMemoryGraphStore` — prior architecture iterations implied placement in `Ast.GraphDb` | `IMemoryGraphStore` is defined **in `Ast.Memory/Interfaces/`**, not in `Ast.GraphDb`. No files in `Ast.GraphDb` are created or modified. | §3.0, §3.2, §5.2 |
+| P-2 | Stage 1.3 creates `Neo4jMemoryStore.cs` | Implementation is `Neo4jMemoryGraphStore` in `Ast.Memory/Storage/`. It **composes** the existing `Neo4jGraphStore` from `Ast.GraphDb` — it does not modify it. | §3.2 |
+| P-3 | Stage 5.2 creates MCP files in `Ast.Cli` | MCP tools and CLI command modules are in `Ast.Memory/Mcp/` and `Ast.Memory/Cli/`. They are loaded by `Ast.Cli` at runtime via DI discovery — no source modifications to `Ast.Cli`. | §5.6 |
+
+#### 10.1.9 Summary of Required Changes to implementation-plan.md
 
 When `implementation-plan.md` is next updated, these changes should be applied:
 
@@ -1376,15 +1424,14 @@ behavior, not internal names) but implementers must map them correctly.
 | E2E-8 | Scenario 6.4 describes cross-repo memory transfer | **Out of scope** per tech-spec §3 O2 (multi-repository federation excluded). This scenario is aspirational and should be tagged `@deferred`. | No conflict — future work. |
 | E2E-9 | Scenario 3.4 describes conflict errors on concurrent writes | Architecture specifies **SQLite WAL mode** for local (concurrent reads, serialized writes via in-process mutex) and **Neo4j** for team mode (native concurrency). No "conflict error" is raised — writes are serialized. Scenario should be adjusted to test write serialization, not optimistic-concurrency conflicts. | Scenario needs update. |
 
-### 10.3 Alignment with tech-spec.md
+### 10.3 Alignment with tech-spec.md (Detail)
 
-All conflicts resolved as of tech-spec.md iteration 5 (see §10.0 above).
-Tech-spec.md §12.2–12.3 contains its own alignment tables that cross-reference
-this document. Coordination items:
+All conflicts resolved. See §10.0 for the complete alignment table.
 
 | # | Item | Status |
 |---|---|---|
-| TS-1 | tech-spec.md §12.3 lists 12 implementation-plan conflicts (IP1–IP12) | ✅ Consistent — same conflicts listed here in §10.1. Both documents agree on canonical resolutions. |
+| TS-1 | tech-spec.md §12.3 lists implementation-plan conflicts | ✅ Consistent — same conflicts listed here in §10.1. Both documents agree on canonical resolutions. |
 | TS-2 | tech-spec.md §11 D2 specifies "purely programmatic" agent API | ✅ Fulfilled by §5.6 MCP tool definitions (5 typed tools, no query DSL). |
 | TS-3 | tech-spec.md §11 D1 specifies general-purpose embedding model | ✅ Fulfilled by §4.7 (all nodes use same general-purpose model). |
-| TS-4 | tech-spec.md §12.2 noted `ExtractionOptions.EmbeddingModel` defaults to `"text-embedding-3-small"` in architecture.md | ✅ **Fixed in iteration 12.** Architecture.md §4.7 and §5.1 now default to `"nomic-embed-text"` — matching the actual codebase defaults in `EmbeddingGeneratorOptions.ModelName` (`src/ast/Ast.Embedding/EmbeddingModels.cs:119`) and `EmbeddingConfiguration.ModelName` (`src/ast/Ast.Core/AstConfiguration.cs:96`). Both are general-purpose per D1. |
+| TS-4 | `ExtractionOptions.EmbeddingModel` default | ✅ Both now specify `"nomic-embed-text"` — matching the actual codebase default in `EmbeddingGeneratorOptions.ModelName` (`src/ast/Ast.Embedding/EmbeddingModels.cs:119`). |
+| TS-5 | Project mutation policy | ✅ This doc (iteration 13) explicitly states: `IMemoryGraphStore` is defined in `Ast.Memory`, not `Ast.GraphDb`. Only change to an existing project is one additive enum value in `Ast.Core`. tech-spec HC8 is satisfied. |
