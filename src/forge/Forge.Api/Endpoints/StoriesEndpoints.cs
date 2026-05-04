@@ -280,12 +280,27 @@ public static class StoriesEndpoints
             .ToListAsync();
         var costByWsMap = costByWs.ToDictionary(x => x.TaskId, x => x.Cost, StringComparer.OrdinalIgnoreCase);
 
+        // Unanswered question counts per workstream — batch query, dedupe
+        // in memory to match the DeliverableLoop's CountUnansweredQuestionsAsync.
+        var allQuestions = await db.DeliverableQuestions.AsNoTracking()
+            .Where(q => wsIds.Contains(q.WorkItemId))
+            .ToListAsync();
+        var unansweredByWs = allQuestions
+            .GroupBy(q => q.WorkItemId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                g => g.Key,
+                g => g.GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
+                      .Select(eg => eg.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First())
+                      .Count(q => string.IsNullOrEmpty(q.Answer)),
+                StringComparer.OrdinalIgnoreCase);
+
         var wsByStatus = workstreams.Select(w =>
         {
             var wsAgents = StoriesJsonHelpers.Deserialize(w.AgentsJson);
             var wsDeliverables = deliverablesByWs.TryGetValue(w.Id, out var ds) ? ds : new List<DeliverableRow>();
             var latest = wsDeliverables.FirstOrDefault();
             var wsCost = costByWsMap.TryGetValue(w.Id, out var c) ? c : 0m;
+            var wsUnanswered = unansweredByWs.TryGetValue(w.Id, out var uq) ? uq : 0;
             return new
             {
                 id = w.Id,
@@ -307,6 +322,7 @@ public static class StoriesEndpoints
                 commits = w.Commits,
                 ahead = w.Ahead,
                 behind = w.Behind,
+                unansweredQuestionCount = wsUnanswered,
             };
         }).ToArray();
 

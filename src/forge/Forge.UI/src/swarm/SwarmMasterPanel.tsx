@@ -142,6 +142,7 @@ function PhaseCard({ ws, index, selected, onSelect }: PhaseCardProps) {
   const phaseCls = STATUS_TO_PHASE_CLASS[ws.status] ?? 'queued';
   const badgeCls = STATUS_TO_BADGE[ws.status] ?? 'blocked';
   const pct = STATUS_PROGRESS[ws.status] ?? 0;
+  const unanswered = ws.unansweredQuestionCount ?? 0;
 
   // Score / points / iter aren't yet wired into the workstream contract;
   // surface neutral placeholders until EX.1 / EX.2 / EX.3 land.
@@ -153,8 +154,28 @@ function PhaseCard({ ws, index, selected, onSelect }: PhaseCardProps) {
       <div className="phase-hd">
         <span className="phase-no">PHASE <b>{String(index + 1).padStart(2, '0')}</b></span>
         <span className="phase-title">{ws.name}</span>
-        <span className="score-pill">—</span>
+        <span className="score-pill">
+          {ws.latestScore != null ? ws.latestScore : '—'}
+        </span>
         <span className={`badge ${badgeCls}`}>{ws.status}</span>
+        {unanswered > 0 && (
+          <span
+            className="badge stalled"
+            style={{
+              marginLeft: 4,
+              background: 'rgba(244,71,71,0.15)',
+              color: '#f44747',
+              border: '1px solid rgba(244,71,71,0.3)',
+              fontSize: 10,
+              padding: '1px 6px',
+              borderRadius: 8,
+              fontWeight: 600,
+            }}
+            title={`${unanswered} unanswered question${unanswered === 1 ? '' : 's'} blocking pass`}
+          >
+            ⚠ {unanswered} Q
+          </span>
+        )}
       </div>
       <div className="phase-bd">
         <div className={`progress ${phaseCls === 'done' ? 'done' : phaseCls === 'review' ? 'review' : ''}`}>

@@ -95,6 +95,8 @@ export interface StorySpawnWorkstreamSummary {
   commits?: number;
   ahead?: number;
   behind?: number;
+  /** Unanswered open questions blocking pass — 0 when no questions exist. */
+  unansweredQuestionCount?: number;
 }
 
 export interface StorySpawnDetail {
