@@ -2,12 +2,12 @@
 
 **Story:** `code-intelligence:AGENT-MEMORY`  
 **Points:** 10  
-**Status:** DRAFT — Iteration 21  
+**Status:** DRAFT — Iteration 22  
 
 > **Companion documents** (written in parallel — referenced by name, not duplicated):
-> - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, ID format, and constants. Defines graph layers (§2.1), edge taxonomy (§2.2), retired names (§2.3), and constants/thresholds (§2.4). Currently at iteration 24. Its header table references tech-spec at "Iteration 15" — this is stale metadata; the alignment conclusions (A1–A8 in §8.1) remain valid.
-> - [`implementation-plan.md`](implementation-plan.md) — phased work items (6 phases), deliverables, evaluation harness. Contains 27 naming/data-model divergences from canonical vocabulary (catalogued in architecture.md §8.2, mirrored in §12.3 of this document); `architecture.md` governs on all conflicts.
-> - [`e2e-scenarios.md`](e2e-scenarios.md) — BDD Gherkin acceptance scenarios (13 features, 82 scenarios covering Structural Extraction, Call-Chain, Semantic, Expertise, Temporal Versioning, Hybrid Retrieval, Incremental Sync, Evolution, Cross-Session Learning, MCP Tool Interface, Backward Compatibility, Performance & Storage, and Graph Schema Integrity). Architecture.md §8.3 catalogues 9 presentation-level divergences, all semantically correct.
+> - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, ID format, and constants. Defines graph layers (§2.1), edge taxonomy (§2.2), retired names (§2.3), and constants/thresholds (§2.4). Currently at iteration 24. Its header table references tech-spec at "Iteration 15+" — this is stale metadata; the alignment conclusions (A1–A11 in §8.1) remain valid.
+> - [`implementation-plan.md`](implementation-plan.md) — phased work items (6 phases), deliverables, evaluation harness. Contains 28 naming/data-model divergences from canonical vocabulary (catalogued in architecture.md §8.2, mirrored in §12.3 of this document); `architecture.md` governs on all conflicts.
+> - [`e2e-scenarios.md`](e2e-scenarios.md) — BDD Gherkin acceptance scenarios (13 features, 82 scenarios covering Structural Extraction, Call-Chain, Semantic, Expertise, Temporal Versioning, Hybrid Retrieval, Incremental Sync, Evolution, Cross-Session Learning, MCP Tool Interface, Backward Compatibility, Performance & Storage, and Graph Schema Integrity). Architecture.md §8.3 catalogues 10 divergences, all semantically correct or out-of-scope.
 >
 > When this document and `architecture.md` disagree on naming, the architecture
 > document governs. This document owns the problem statement, scope/non-goals,
@@ -17,7 +17,7 @@
 
 ## 1. Problem Statement
 
-Coding agents today are stateless across sessions: every invocation starts from scratch, re-discovering repository topology, ownership boundaries, call chains, and architectural invariants through brute-force search. This wastes tokens, inflates latency, and — critically — prevents the agent from *learning*. An agent that has repeatedly diagnosed `ErrorHandlingAnalyzer.AnalyzeErrorHandling()` (`src/ast/CodeIntelligence/Analyzers/ErrorHandlingAnalyzer.cs`) as missing a catch-all case should know, without re-reading every file, that this analyzer has fragile exception logic and that its caller `RepositoryAnalysisService.AnalyzeRepositoryAsync()` (`src/ast/CodeIntelligence/Services/RepositoryAnalysisService.cs`) depends on non-null results from all analyzer methods.
+Coding agents today are stateless across sessions: every invocation starts from scratch, re-discovering repository topology, ownership boundaries, call chains, and architectural invariants through brute-force search. This wastes tokens, inflates latency, and — critically — prevents the agent from *learning*. An agent that has repeatedly diagnosed `ErrorHandlingAnalyzer.AnalyzeExceptions()` (`src/ast/CodeIntelligence/Analyzers/ErrorHandlingAnalyzer.cs`) as missing a catch-all case should know, without re-reading every file, that this analyzer has fragile exception logic and that its caller `RepositoryAnalysisService.AnalyzeRepositoryAsync()` (`src/ast/CodeIntelligence/Services/RepositoryAnalysisService.cs`) depends on non-null results from all analyzer methods.
 
 The goal is a **persistent, graph-structured agent memory** that:
 
@@ -375,11 +375,11 @@ All previously-pending conflicts between this document and `architecture.md` are
 
 ### 12.3 Alignment with `implementation-plan.md`
 
-The implementation-plan contains 27 naming, data-model, numeric, and project-mutation divergences from canonical vocabulary defined in `architecture.md` (catalogued in architecture.md §8.2). **These are not unresolved conflicts** — each has a defined canonical resolution, and `architecture.md` governs on all points (see this document's header).
+The implementation-plan contains 28 naming, data-model, numeric, and project-mutation divergences from canonical vocabulary defined in `architecture.md` (catalogued in architecture.md §8.2). **These are not unresolved conflicts** — each has a defined canonical resolution, and `architecture.md` governs on all points (see this document's header).
 
 > **Implementer directive:** When the implementation-plan's literal text (class names, interface names, edge names, scoring weights, ID formats, defaults) conflicts with `architecture.md`, **follow `architecture.md`**. The implementation-plan describes *work items and phasing*; the canonical vocabulary and values come from `architecture.md`. The conflicts listed below are documentation debt in the implementation-plan that will be corrected in its next iteration. They do not affect this tech-spec's correctness or completeness.
 
-The 27 items are catalogued in `architecture.md` §8.2 (the single source of truth for cross-document conflicts). This tech-spec mirrors them below in summarized form for implementer awareness. Each item's canonical value is stated inline; the architecture.md section number provides the governing reference.
+The 28 items are catalogued in `architecture.md` §8.2 (the single source of truth for cross-document conflicts). This tech-spec mirrors 25 of them below in summarized form for implementer awareness, plus 3 additional items (D-5, S-5, and the S-3/S-4 method-name conflicts) identified in architecture.md iteration 24. Each item's canonical value is stated inline; the architecture.md section number provides the governing reference.
 
 #### 12.3.1 Naming & Type Conflicts (4 items)
 
@@ -390,7 +390,7 @@ The 27 items are catalogued in `architecture.md` §8.2 (the single source of tru
 | N-3 | Separate `IExpertiseStore` (Stage 1.2) | Merged into **`IEvolutionEngine`** | arch §2.3, §5.3 |
 | N-4 | `AgentMemoryService` composes `IExpertiseStore` (Stage 5.1) | Compose **`IEvolutionEngine`** | arch §5.3 |
 
-#### 12.3.2 Data Model Conflicts (4 items)
+#### 12.3.2 Data Model Conflicts (5 items)
 
 | # | impl-plan says | Canonical value | Governing §|
 |---|------|----------------|-----|
@@ -398,6 +398,7 @@ The 27 items are catalogued in `architecture.md` §8.2 (the single source of tru
 | D-2 | `MemoryEdge` "extending `Hyperedge`" (inheritance) | **Composition wrapper** (`Hyperedge Inner { get; }`) | arch §4.1 |
 | D-3 | `PatternType` enum name | **`ExpertiseKind`** enum; class = `ExpertiseEntry`; field = `Kind` | arch §2.3, §4.2 |
 | D-4 | Separate `Annotation.cs` entity | **No separate class** — `Metadata` key/value pairs + `AnnotationKeyRegistry` | arch §4.5 |
+| D-5 | `ExpertiseEntry` with single `Content` field | **`Title` + `Body`** (two fields), plus `Scope` ("exact"\|"subtree") and `Evidence` (list of `Citation`) | arch §4.2 |
 
 #### 12.3.3 ID Format Conflicts (2 items)
 
@@ -433,7 +434,7 @@ The 27 items are catalogued in `architecture.md` §8.2 (the single source of tru
 
 > Matches existing `EmbeddingGeneratorOptions.ModelName` (`src/ast/Ast.Embedding/EmbeddingModels.cs:119`) and `EmbeddingConfiguration.ModelName` (`src/ast/Ast.Core/AstConfiguration.cs:96`).
 
-#### 12.3.7 Storage Interface (4 items)
+#### 12.3.7 Storage Interface (5 items)
 
 | # | impl-plan says | Canonical value | Governing §|
 |---|------|----------------|-----|
@@ -441,6 +442,7 @@ The 27 items are catalogued in `architecture.md` §8.2 (the single source of tru
 | S-2 | `Neo4jMemoryStore` with annotation CRUD | **`Neo4jMemoryGraphStore`** implementing `IMemoryGraphStore` | arch §3.2, §5.1 |
 | S-3 | `IMemoryGraphStore` with `ApplyDiffAsync(GraphDiff, ...)`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, `FindByNameAsync`, `RebuildVectorIndexAsync`, `ResolveCommitIndexAsync`, `RegisterCommitAsync` | Canonical methods per arch §5.1: `GetNodesByLayerAsync`, `GetEdgesBySemanticRelationAsync`, `UpsertNodeAsync`, `RetireNodeAsync`, `GetExpertiseForNodeAsync`, `UpsertExpertiseAsync`, `GetMemoryStatisticsAsync`, `LogAuditAsync`. Traversal uses inherited `IGraphStore` methods. Vector search goes through `IVectorStore` (separate DI dependency), not through graph store. | arch §5.1 |
 | S-4 | `ApplyDiffAsync` on `IMemoryGraphStore` | `ApplyDiffAsync` belongs to **`IIncrementalSync`** (different interface); it takes `(repoRoot, fromCommit, toCommit)` not `(GraphDiff, commitSha)` | arch §5.4 |
+| S-5 | `RecordExpertiseAsync(targetNodeId, kind, content, sourceAgent)` | Canonical: `RecordExpertiseAsync(targetNodeId, kind, title, body, sourceAgent, scope?, evidence?)` — separate `title`/`body` parameters, optional `scope` and `evidence` | arch §5.3 |
 
 #### 12.3.8 Project Mutation Policy (3 items)
 
@@ -452,7 +454,7 @@ The 27 items are catalogued in `architecture.md` §8.2 (the single source of tru
 
 #### 12.3.9 Net Assessment
 
-All 27 items have **stated canonical resolutions** in architecture.md §8.2. The implementation-plan describes valid *work items and phasing* that remain useful for project management — only the literal names, values, and data-model shapes need updating. Implementers who follow the canonical values from architecture.md will produce correct code. These divergences do not represent ambiguity in the tech-spec or architecture; they represent documentation debt in the implementation-plan.
+All 28 items have **stated canonical resolutions** in architecture.md §8.2. The implementation-plan describes valid *work items and phasing* that remain useful for project management — only the literal names, values, and data-model shapes need updating. Implementers who follow the canonical values from architecture.md will produce correct code. These divergences do not represent ambiguity in the tech-spec or architecture; they represent documentation debt in the implementation-plan.
 
 ### 12.4 Annotation Schema: Curated Registry (D4)
 
@@ -473,7 +475,7 @@ Expertise nodes are **globally visible** regardless of the current git branch. I
 
 ### 12.6 Alignment with `e2e-scenarios.md`
 
-The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 82 Gherkin scenarios** across Structural Extraction (Feature 1, 8 scenarios), Call-Chain (Feature 2, 7), Semantic (Feature 3, 5), Expertise (Feature 4, 7), Temporal Versioning (Feature 5, 5), Hybrid Retrieval (Feature 6, 9), Incremental Sync (Feature 7, 6), Evolution (Feature 8, 6), Cross-Session Learning (Feature 9, 3), MCP Tool Interface (Feature 10, 10), Backward Compatibility (Feature 11, 4), Performance & Storage (Feature 12, 6), and Graph Schema Integrity (Feature 13, 6). Architecture.md §8.3 documents 9 alignment items (E2E-1 through E2E-9) describing divergences between the e2e-scenarios and canonical vocabulary. Key points relevant to this tech-spec:
+The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 82 Gherkin scenarios** across Structural Extraction (Feature 1, 8 scenarios), Call-Chain (Feature 2, 7), Semantic (Feature 3, 5), Expertise (Feature 4, 7), Temporal Versioning (Feature 5, 5), Hybrid Retrieval (Feature 6, 9), Incremental Sync (Feature 7, 6), Evolution (Feature 8, 6), Cross-Session Learning (Feature 9, 3), MCP Tool Interface (Feature 10, 10), Backward Compatibility (Feature 11, 4), Performance & Storage (Feature 12, 6), and Graph Schema Integrity (Feature 13, 6). Architecture.md §8.3 documents 10 alignment items (E2E-1 through E2E-10) describing divergences between the e2e-scenarios and canonical vocabulary. Key points relevant to this tech-spec:
 
 - **E2E-1:** Scenario 4.1 uses `called_by` as a result-table label. This is a reverse traversal of `CALLS`, not a stored edge — consistent with this spec §7.2 and D2 (retired names). Scenario is behaviorally correct.
 - **E2E-2/3/4:** Scenarios use presentation aliases (`direct_call`, `polymorphic`, `recursive`) for edge types. All map to `CALLS` edges with varying `Confidence` values — consistent with §7.2.
@@ -482,6 +484,7 @@ The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 82
 - **E2E-7:** Scenario 2.4 uses `ext::` prefix for boundary nodes. Canonical format: `"ext:{package}:{qualifiedName}"` per `architecture.md` §4.2. Semantics: stub nodes, `NodeType = "External"`, no embedding, no `VersionRange`.
 - **E2E-8:** Scenario 6.4 describes cross-repo memory transfer — out of scope per this spec §3 O2. Should be tagged `@deferred`.
 - **E2E-9:** Scenario 3.4 describes conflict errors on concurrent writes. Architecture specifies SQLite WAL mode (serialized writes, no optimistic-concurrency errors) for local and Neo4j for team mode. The scenario should be adjusted to test write serialization, not conflict errors — consistent with R6 in this spec.
+- **E2E-10:** Scenarios 4.x and 6.x use a single `content` parameter in Gherkin steps for `RecordExpertiseAsync`. Canonical signature takes `title` and `body` as separate parameters (architecture.md §5.3). Gherkin steps should be split into `title` and `body` — consistent with D-5 in §12.3.2.
 
 **Features 10–13 alignment** (added in later e2e-scenarios iterations):
 
@@ -494,11 +497,11 @@ The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 82
 
 | # | Item | Status |
 |---|------|--------|
-| X-1 | Architecture.md §8.1 confirms tech-spec is fully aligned; §8.2 lists the same implementation-plan conflicts | ✅ **Resolved.** Architecture.md §8.1 (titled "Alignment with `tech-spec.md` (Iteration 15)") confirms "All conflicts between this document and `tech-spec.md` are resolved." The "(Iteration 15)" label in §8.1's heading and the header table (line 17) are stale metadata — tech-spec is now at iteration 21 — but the alignment conclusions (A1–A8) remain valid and accurate because no substantive changes have occurred to the aligned content since iteration 15. Architecture.md §8.2 lists 27 implementation-plan divergences; this tech-spec §12.3 mirrors all 27 with identical canonical resolutions. |
-| X-2 | All implementation-plan conflicts (§12.3) have canonical resolutions | ✅ **Resolved.** All 27 items have stated canonical values from architecture.md. §12.3 is reframed as documentation debt in the sibling document, not as unresolved conflicts in this tech-spec. Implementers follow architecture.md canonical values. |
+| X-1 | Architecture.md §8.1 confirms tech-spec is fully aligned; §8.2 lists the same implementation-plan conflicts | ✅ **Resolved.** Architecture.md §8.1 (titled "Alignment with `tech-spec.md` (Iteration 24)") confirms alignment with 11 items (A1–A11). The alignment conclusions remain valid. Architecture.md §8.2 lists 28 implementation-plan divergences; this tech-spec §12.3 mirrors all 28 with identical canonical resolutions. |
+| X-2 | All implementation-plan conflicts (§12.3) have canonical resolutions | ✅ **Resolved.** All 28 items have stated canonical values from architecture.md. §12.3 is reframed as documentation debt in the sibling document, not as unresolved conflicts in this tech-spec. Implementers follow architecture.md canonical values. |
 | X-3 | Architecture.md §8.1 confirms `ExtractionOptions.EmbeddingModel` default fixed to `"nomic-embed-text"` | ✅ **Resolved.** Tech-spec §12.2 and source-code model note updated to reflect this alignment. All three sources (codebase, architecture.md, tech-spec) now agree on `"nomic-embed-text"`. |
 | X-4 | Architecture.md §8.1 confirms project mutation policy alignment | ✅ **Resolved.** Two additive changes to existing projects: (1) `HyperedgeType.MemoryRelation` in `Ast.Core`, (2) `config.AddBranch("memory", ...)` in `Ast.Cli/Program.cs`. All new interfaces/implementations in `Ast.Memory`. Matches HC8. |
-| X-5 | Architecture.md §8.3 e2e scenario count | Architecture.md §8.3 (titled "Alignment with `e2e-scenarios.md` (Iteration 15+)") and its header table (line 19) both correctly report **82 scenarios** and **13 features**. The header table says "82 scenarios" (line 19), and §8.3 opens with "13 features with 82 Gherkin scenarios" (line 1272). Both match the actual e2e-scenarios.md content. ✅ **Consistent.** |
+| X-5 | Architecture.md §8.3 e2e scenario count and divergence count | Architecture.md §8.3 (titled "Alignment with `e2e-scenarios.md` (Iteration 24)") and its header table (line 19) both correctly report **82 scenarios**, **13 features**, and **10 divergences**. §8.3 body text (line 1374) says "13 features with 82 Gherkin scenarios" and "10 divergences". This tech-spec §12.6 matches: 13 features, 82 scenarios, 10 alignment items (E2E-1 through E2E-10). ✅ **Consistent.** |
 
 ---
 
@@ -520,4 +523,4 @@ The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 82
 
 ---
 
-*End of tech spec — Iteration 21. All open questions from Iteration 1 are resolved via operator decisions D1–D6. Iteration 21 fixes: (1) fixed `IMemoryGraphStore` contradictions — S-1 canonical value column now lists the correct canonical methods (`GetNodesByLayerAsync`, `UpsertNodeAsync`, etc.) instead of the stale non-canonical methods (`ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`); (2) fixed §12.5 reference to non-existent `IMemoryGraphStore.TraverseAsync` — replaced with correct inherited `IGraphStore` methods (`GetCallersAsync`, `GetCalleesAsync`, `FindPathsAsync`) plus `IMemoryGraphStore.GetNodesByLayerAsync`; (3) replaced invented problem-statement example (`PaymentService.processRefund()` / `OrderController`) with real repo anchor (`ErrorHandlingAnalyzer.AnalyzeErrorHandling()` / `RepositoryAnalysisService.AnalyzeRepositoryAsync()` from `src/ast/CodeIntelligence/`); (4) replaced invented ID example (`/src/auth/login::AuthService.validate`) with real repo anchor (`src/ast/CodeIntelligence/Services/RepositoryAnalysisService.cs::RepositoryAnalysisService.AnalyzeRepositoryAsync`); (5) updated architecture.md iteration reference from 23 to 24.*
+*End of tech spec — Iteration 22. All open questions from Iteration 1 are resolved via operator decisions D1–D6. Iteration 22 fixes: (1) fixed nonexistent source anchor `ErrorHandlingAnalyzer.AnalyzeErrorHandling()` → `ErrorHandlingAnalyzer.AnalyzeExceptions()` (verified at `src/ast/CodeIntelligence/Analyzers/ErrorHandlingAnalyzer.cs:50`); (2) updated implementation-plan divergence count from 27 to **28** (added D-5 `ExpertiseEntry Title+Body` and S-5 `RecordExpertiseAsync` signature — per architecture.md §8.2 iteration 24); (3) updated e2e-scenarios divergence count from 9 to **10** (added E2E-10 expertise `content` parameter split — per architecture.md §8.3 iteration 24); (4) updated §12.7 X-1/X-2 to reflect architecture.md §8.1 now titled "Iteration 24" with 11 alignment items A1–A11.*
