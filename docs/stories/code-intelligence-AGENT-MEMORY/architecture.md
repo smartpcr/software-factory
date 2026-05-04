@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 9
+> **Status:** Iteration 10
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, and interface signatures.
@@ -11,6 +11,10 @@
 > [e2e-scenarios.md](e2e-scenarios.md)) differ, this document governs.
 > Tech-spec owns problem statement, constraints, risks, and success criteria.
 > Implementation-plan owns phased work items. E2e-scenarios owns Gherkin acceptance tests.
+>
+> **§10 Cross-Document Alignment** lists every known conflict with
+> implementation-plan.md and states the canonical resolution.
+> Implementers MUST consult §10 when following implementation-plan.md.
 
 ---
 
@@ -966,3 +970,82 @@ S8: New session gets consolidated, high-confidence expertise.
 | **Context Block** | Markdown document from Context Assembler, ready for LLM prompt |
 | **SemanticRelation** | Canonical string in `Metadata["SemanticRelation"]` — primary edge filter |
 | **Memory-only Edge** | Edge with `HyperedgeType.MemoryRelation`; exists only in Semantic/Expertise layers |
+
+---
+
+## 10. Cross-Document Alignment with implementation-plan.md
+
+The following table lists **every known conflict** between this architecture
+document and `implementation-plan.md`. Each row states what
+`implementation-plan.md` says, what the canonical resolution is (per this
+document), and the section that governs.
+
+Implementers following `implementation-plan.md` **MUST** apply these
+corrections. Future iterations of `implementation-plan.md` should incorporate
+these fixes.
+
+### 10.1 Naming & Type Conflicts
+
+| # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
+|---|---|---|---|
+| N-1 | Stage 1.1 creates `ExpertiseNote.cs` | Class is named **`ExpertiseEntry`**. `ExpertiseNote` is retired (§2.3). | §2.3, §5.4 |
+| N-2 | Stage 1.2 creates `IMemoryStore.cs` | Interface is named **`IMemoryGraphStore`**, extending `IGraphStore`. `IMemoryStore` is retired (§2.3). | §2.3, §5.2 |
+| N-3 | Stage 1.2 creates separate `IExpertiseStore.cs` | No separate interface. Expertise write/read methods are part of **`IEvolutionEngine`** (§5.4). `IExpertiseStore` is retired (§2.3). | §2.3, §5.4 |
+| N-4 | Stage 5.2 mentions `AgentMemoryService` composing `IExpertiseStore` | Compose `IEvolutionEngine` instead — it subsumes the expertise store role. | §5.4 |
+
+### 10.2 Data Model Conflicts
+
+| # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
+|---|---|---|---|
+| D-1 | Stage 1.1: `MemoryNode.cs` "extending `HypergraphNode`" (C# inheritance) | `MemoryNode` is a **composition wrapper** with an `Inner: HypergraphNode` property. It does NOT inherit from `HypergraphNode`. | §4.1 |
+| D-2 | Stage 1.1: `MemoryEdge.cs` "extending `Hyperedge`" (C# inheritance) | `MemoryEdge` is a **composition wrapper** with an `Inner: Hyperedge` property. It does NOT inherit from `Hyperedge`. | §4.1 |
+| D-3 | Stage 1.1: `ExpertiseNote` has `PatternType` enum (Pattern, Pitfall, Preference, Insight) | Enum is named **`ExpertiseKind`** and lives in `Enums.cs`. Values are the same. The class name is `ExpertiseEntry`, field name is `Kind`. | §2.3, §5.4 |
+| D-4 | Stage 1.1: `Annotation.cs` with `NodeId`, `Key`, `ValueJson`, `SessionId`, `ValidFrom`, `ValidUntil` | Annotations are not separate entity classes. They are stored as key/value pairs in `HypergraphNode.Metadata`, governed by `AnnotationKeyRegistry`. Agent extension keys use `ext:` prefix. | §4.5 |
+
+### 10.3 ID Format Conflicts
+
+| # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
+|---|---|---|---|
+| I-1 | Stage 2.1: canonical IDs use `{repo}:{language}:{fqn}:{hash_short}` format | Canonical IDs use **path-based format**: `"{filePath}::{qualifiedName}"` for symbols, `"{relativePath}"` for files/dirs, `"expertise:{kind}:{hash8}"` for expertise nodes. No `{repo}:` or `{language}:` prefix. No `{hash_short}` suffix. | §4.4 |
+| I-2 | Stage 2.1: `IdReconciliationTable.cs` backed by `ID_MAPS_TO` edges in Neo4j | ID reconciliation uses the same storage mechanism but edge names and backing can be implementation-plan's choice (file-scope detail). ID *format* must follow §4.4. | §4.4 |
+
+### 10.4 Edge Name Conflicts
+
+| # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
+|---|---|---|---|
+| E-1 | Stage 2.2: emits `CALLED_BY` as a stored memory edge | **`CALLED_BY` is NOT a stored edge.** It is achieved via reverse traversal of `CALLS`. See retired-names table. | §2.3 |
+| E-2 | Stage 2.2: emits `INHERITS` edges | Canonical name is **`EXTENDS`**. `INHERITS` is retired (§2.3). | §2.2, §2.3 |
+| E-3 | Stage 2.2: emits `IMPORTS` edges | Canonical name is **`DEPENDS_ON`**. `IMPORTS` is retired (§2.3). | §2.2, §2.3 |
+| E-4 | Stage 4.2: `DependencyInvalidator` walks `IMPORTS` and `CALLS` edges | Walk **`DEPENDS_ON`** and `CALLS` edges (same logic, correct name). | §2.2, §2.3 |
+
+### 10.5 Numeric / Threshold Conflicts
+
+| # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
+|---|---|---|---|
+| T-1 | Stage 3.2 scoring weights: `semantic=0.3` | Canonical weight: **`semantic=0.25`**. Full set: structural=0.30, semantic=0.25, centrality=0.20, recency=0.15, expertise=0.10. | §2.4 |
+| T-2 | Stage 3.2 scoring weights: `centrality=0.15` | Canonical weight: **`centrality=0.20`**. | §2.4 |
+| T-3 | Stage 3.1: `MemoryQueryOptions.MaxTokens` default = 32K (32768) | The default token budget is **`8,000`** (`TokenBudgetDefault`). The 32K value is the **ceiling** (`TokenBudgetCeiling`), not the default. `MemoryQueryOptions.MaxTokens` should default to 8,000. | §2.4 |
+| T-4 | Stage 6.3: decay half-life = 60 days | Canonical half-life: **`DecayHalfLifeDays = 1095`** (3 years). 60 days is far too aggressive — would decay valid insights before they compound. | §2.4 |
+| T-5 | Stage 6.3: decay formula `e^(-λ × days)` (exponential) | Canonical formula: **`2^(−age_days / DecayHalfLifeDays) × centrality_boost`** (base-2 exponential with centrality modifier). See §3.5. | §3.5 |
+
+### 10.6 Storage Interface Conflicts
+
+| # | implementation-plan.md says | Canonical resolution (this doc) | Governing section |
+|---|---|---|---|
+| S-1 | Stage 1.2: `IMemoryStore` has `UpsertAnnotationAsync`, `GetAnnotationsAsync`, `WriteAuditEntryAsync`, `GetAuditLogAsync`, `TombstoneNodeAsync`, `GetNodeAtVersionAsync` | The canonical interface is **`IMemoryGraphStore`** (§5.2). It exposes `ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, `FindByNameAsync`, `RebuildVectorIndexAsync`, `ResolveCommitIndexAsync`, `RegisterCommitAsync`. Annotations are Metadata-based, not separate CRUD. Audit is an internal implementation detail, not on the public interface. | §5.2 |
+| S-2 | Stage 1.3: `Neo4jMemoryStore` with annotation CRUD and temporal Cypher | Implement **`IMemoryGraphStore`** interface from §5.2. Temporal filtering uses `VersionRange` with `SinceIndex`/`UntilIndex` fields, queried via `GetNodeAtCommitAsync`. | §4.3, §5.2 |
+
+### 10.7 Summary of Required Changes to implementation-plan.md
+
+When `implementation-plan.md` is next updated, these changes should be applied:
+
+1. **Rename** `ExpertiseNote` → `ExpertiseEntry`, `IMemoryStore` → `IMemoryGraphStore` throughout.
+2. **Remove** `IExpertiseStore.cs` — merge its methods into `IEvolutionEngine`.
+3. **Remove** `Annotation.cs` as a separate model — use `Metadata` dict with `AnnotationKeyRegistry`.
+4. **Change** `MemoryNode`/`MemoryEdge` from inheritance to composition wrappers.
+5. **Change** canonical ID format from `{repo}:{language}:{fqn}:{hash_short}` to `{filePath}::{qualifiedName}`.
+6. **Replace** retired edge names: `CALLED_BY` → reverse traversal, `INHERITS` → `EXTENDS`, `IMPORTS` → `DEPENDS_ON`.
+7. **Fix** scoring weights to match §2.4 table.
+8. **Fix** `MaxTokens` default from 32K to 8,000.
+9. **Fix** decay half-life from 60 days to 1,095 days and formula to base-2.
+10. **Align** `IMemoryGraphStore` method signatures to §5.2.
