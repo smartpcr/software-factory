@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 18
+> **Status:** Iteration 20
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -10,8 +10,13 @@
 > ([tech-spec.md](tech-spec.md), [implementation-plan.md](implementation-plan.md),
 > [e2e-scenarios.md](e2e-scenarios.md)) use different names, formats, or
 > thresholds, **this document governs**. Sibling documents own their
-> respective scopes (problem statement, work-item phasing, Gherkin
-> scenarios) and are not duplicated here.
+> respective scopes:
+>
+> | Document | Owns | Current state |
+> |---|---|---|
+> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | Iteration 15. Fully aligned — tech-spec §12.2 confirms no remaining conflicts with this doc. |
+> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Iteration 15+. Contains 25 naming/data-model divergences from canonical vocabulary — all catalogued in §8.2 below with canonical resolutions. `architecture.md` governs on all conflicts. |
+> | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 79 scenarios) | Iteration 15+. Contains 9 presentation-level divergences catalogued in §8.3 below — all semantically correct. |
 
 ---
 
@@ -1109,13 +1114,116 @@ services.AddMemoryGraph(options => {
 
 ## 8. Cross-Document Alignment Notes
 
-This section tracks known discrepancies with sibling documents. Each entry is
-either resolved (with the canonical answer) or flagged for the next iteration.
+This section tracks known discrepancies with sibling documents. All three
+siblings now exist and have been read for this iteration. Each entry is either
+resolved (with the canonical answer) or flagged for the next iteration.
 
-| # | Topic | This document says | Sibling says | Resolution |
-|---|---|---|---|---|
-| A1 | Multi-agent scope | Per-repo graph, shared via concurrent I/O (§1.2) | tech-spec O6 says "per-agent-instance" | Resolved: O6 excludes G-Memory-style protocols, not shared storage. §1.2 explains. |
-| A2 | Ast.Cli modification | Additive `config.AddBranch("memory", ...)` (§1.3) | tech-spec §1.1 agrees | Aligned. |
-| A3 | implementation-plan.md | This doc references implementation-plan.md for phasing | implementation-plan.md does not exist at this iteration | Expected: sibling may be written in a later iteration. No conflict. |
-| A4 | Embedding model | `nomic-embed-text` via existing `Ast.Embedding` (§1.3) | tech-spec HC5/D1 agrees | Aligned. |
-| A5 | Edge filtering | `Metadata["SemanticRelation"]` is sole filter (§2.2, §3.3) | e2e-scenarios uses matching vocabulary | Aligned. |
+### 8.1 Alignment with `tech-spec.md` (Iteration 15)
+
+All conflicts between this document and `tech-spec.md` are **resolved**.
+Tech-spec §12.2 confirms: "No remaining conflicts between this document and
+`architecture.md`."
+
+| # | Topic | Resolution |
+|---|---|---|
+| A1 | Multi-agent scope | Resolved: tech-spec O6 excludes G-Memory-style coordinated protocols, not shared storage. §1.2 of this doc explains the per-repo shared graph model. |
+| A2 | Ast.Cli modification | Aligned: tech-spec §1.1 agrees on additive `config.AddBranch("memory", ...)`. |
+| A3 | Embedding model | Aligned: tech-spec HC5, D1, §12.2 all confirm `nomic-embed-text` default. Matches codebase defaults in `EmbeddingGeneratorOptions.ModelName` and `EmbeddingConfiguration.ModelName`. |
+| A4 | Edge filtering | Aligned: tech-spec §7.2 uses `Metadata["SemanticRelation"]` as sole filter, matching §2.2 of this doc. |
+| A5 | Temporal model | Aligned: tech-spec §7.4 uses `commit_index` integers with `VersionRange`, matching §4.3 of this doc. |
+| A6 | Scoring weights | Aligned: tech-spec §8.3 uses the canonical 5-signal weighted model (0.30/0.25/0.20/0.15/0.10) from §2.4 of this doc. |
+| A7 | Composition wrappers | Aligned: tech-spec HC8, §4 confirm `MemoryNode`/`MemoryEdge` use composition (`Inner` property), not inheritance, matching §4.1 of this doc. |
+| A8 | Token budget | Aligned: tech-spec HC1 clarifies 32K ceiling, 8K default — matching §2.4 of this doc. |
+
+### 8.2 Alignment with `implementation-plan.md` (Iteration 15+)
+
+The implementation-plan contains **25 naming, data-model, and numeric
+divergences** from canonical vocabulary defined in this document. **These are
+documentation debt in the implementation-plan, not unresolved conflicts.** This
+document governs on all points (per the implementation-plan's own header, which
+states: "when literal names or values here conflict with `architecture.md`,
+follow `architecture.md`").
+
+Tech-spec §12.3 independently catalogues the same 25 items and confirms the
+canonical resolutions. Implementers who follow the canonical values from this
+document will produce correct code.
+
+#### 8.2.1 Naming & Type Conflicts (4 items)
+
+| # | impl-plan says | Canonical (this doc) | Governing § |
+|---|---|---|---|
+| N-1 | `ExpertiseNote` | **`ExpertiseEntry`** | §2.3, §4.2 |
+| N-2 | `IMemoryStore` | **`IMemoryGraphStore`** | §2.3, §5.1 |
+| N-3 | Separate `IExpertiseStore` | Merged into **`IEvolutionEngine`** | §2.3, §5.3 |
+| N-4 | `AgentMemoryService` composes `IExpertiseStore` | Compose **`IEvolutionEngine`** | §5.3 |
+
+#### 8.2.2 Data Model Conflicts (4 items)
+
+| # | impl-plan says | Canonical (this doc) | Governing § |
+|---|---|---|---|
+| D-1 | `MemoryNode` extends `HypergraphNode` (inheritance) | **Composition wrapper** (`HypergraphNode Inner { get; }`) | §4.1 |
+| D-2 | `MemoryEdge` extends `Hyperedge` (inheritance) | **Composition wrapper** (`Hyperedge Inner { get; }`) | §4.1 |
+| D-3 | `PatternType` enum | **`ExpertiseKind`** enum | §2.3, §4.2 |
+| D-4 | Separate `Annotation.cs` entity | **No separate class** — `Metadata` keys + `AnnotationKeyRegistry` | §4.5 |
+
+#### 8.2.3 ID Format Conflicts (2 items)
+
+| # | impl-plan says | Canonical (this doc) | Governing § |
+|---|---|---|---|
+| I-1 | `{repo}:{language}:{fqn}:{hash_short}` | **`"{filePath}::{qualifiedName}"`** (path-based) | §4.2 |
+| I-2 | `IdReconciliationTable` with `ID_MAPS_TO` Neo4j edges | ID format per §4.2; backing is implementation choice | §4.2 |
+
+#### 8.2.4 Edge Name Conflicts (4 items)
+
+| # | impl-plan says | Canonical (this doc) | Governing § |
+|---|---|---|---|
+| E-1 | `CALLED_BY` as stored edge | **Reverse traversal** of `CALLS`, not stored | §2.3 |
+| E-2 | `INHERITS` edge | **`EXTENDS`** | §2.2, §2.3 |
+| E-3 | `IMPORTS` edge | **`DEPENDS_ON`** | §2.2, §2.3 |
+| E-4 | `DependencyInvalidator` walks `IMPORTS` | Walk **`DEPENDS_ON`** | §2.2, §2.3 |
+
+#### 8.2.5 Numeric / Threshold Conflicts (5 items)
+
+| # | impl-plan says | Canonical (this doc) | Governing § |
+|---|---|---|---|
+| T-1 | `semantic=0.3` weight | **`semantic=0.25`** | §2.4 |
+| T-2 | `centrality=0.15` weight | **`centrality=0.20`** | §2.4 |
+| T-3 | `MaxTokens` default = 32768 | Default = **8,000**; ceiling = 32,000 | §2.4 |
+| T-4 | Decay half-life = 60 days | **`DecayHalfLifeDays = 1095`** (3 years) | §2.4 |
+| T-5 | Decay formula `e^(−λ×days)` | **`2^(−age/1095) × centrality_boost`** (base-2) | §3.5 |
+
+#### 8.2.6 Other Conflicts (6 items)
+
+| # | impl-plan says | Canonical (this doc) | Governing § |
+|---|---|---|---|
+| M-1 | No explicit embedding model | **`nomic-embed-text`** (768 dims) | §1.3 |
+| S-1 | `IMemoryStore` with annotation CRUD | **`IMemoryGraphStore`** with `GetNodesByLayerAsync`, `UpsertNodeAsync`, etc. | §5.1 |
+| S-2 | `Neo4jMemoryStore` | **`Neo4jMemoryGraphStore`** implementing `IMemoryGraphStore` | §3.2, §5.1 |
+| P-1 | `IMemoryStore.cs` in `Ast.GraphDb` | **`IMemoryGraphStore`** in `Ast.Memory/Interfaces/` — no files in `Ast.GraphDb` created/modified | §3.0, §5.1 |
+| P-2 | `Neo4jMemoryStore.cs` | **`Neo4jMemoryGraphStore`** in `Ast.Memory/Storage/`, **composing** existing `Neo4jGraphStore` | §3.2 |
+| P-3 | MCP files in `Ast.Cli` | MCP tools in **`Ast.Memory/Mcp/`**; CLI commands in `Ast.Memory/Cli/`. Only additive `config.AddBranch("memory", ...)` in `Ast.Cli`. | §3.8 |
+
+### 8.3 Alignment with `e2e-scenarios.md` (Iteration 15+)
+
+The e2e-scenarios document covers **13 features with 79 Gherkin scenarios**.
+It contains 9 presentation-level divergences from canonical vocabulary. All
+are semantically correct — the scenario behaviors match the architecture. The
+divergences are documentation shorthand, not true conflicts.
+
+| # | Topic | Scenario | Resolution |
+|---|---|---|---|
+| E2E-1 | `called_by` label in result table | 4.1 | Reverse traversal of `CALLS`, not a stored edge — consistent with §2.3. Scenario is behaviorally correct. |
+| E2E-2 | `direct_call` edge presentation | 2.x | Maps to `CALLS` with `Confidence=1.0` — consistent with §2.2. |
+| E2E-3 | `polymorphic` edge presentation | 2.x | Maps to `CALLS` with `Confidence=0.7` — consistent with §2.2. |
+| E2E-4 | `recursive` edge presentation | 2.x | Maps to `CALLS` with self-referencing `NodeIds` — consistent with §2.2. |
+| E2E-5 | `service_call` for cross-service RPC | 2.7 | Out of scope per tech-spec O1. Recommend tagging scenario `@deferred`. |
+| E2E-6 | Unqualified symbol IDs (e.g., `AuthService.login`) | Various | Shorthand for canonical `"{filePath}::{qualifiedName}"` per §4.2. |
+| E2E-7 | `ext::` prefix for boundary nodes | 2.4 | Canonical format: `"ext:{package}:{qualifiedName}"` per §4.2. |
+| E2E-8 | Cross-repo memory transfer | 6.4 | Out of scope per tech-spec O2. Recommend tagging `@deferred`. |
+| E2E-9 | Concurrent write conflict errors | 3.4 | Architecture specifies serialized writes (§3.7). Scenario should test write serialization, not optimistic-concurrency errors. |
+
+### 8.4 Net Assessment
+
+- **tech-spec ↔ architecture:** Fully aligned. Zero remaining conflicts.
+- **implementation-plan ↔ architecture:** 25 naming/numeric divergences, all with stated canonical resolutions. These are documentation debt in the implementation-plan. The implementation-plan's own header defers to this document on all conflicts.
+- **e2e-scenarios ↔ architecture:** 9 presentation-level divergences, all semantically correct. Two scenarios (E2E-5, E2E-8) exercise out-of-scope features and should be tagged `@deferred`.
