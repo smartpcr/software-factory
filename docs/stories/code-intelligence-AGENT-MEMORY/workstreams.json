@@ -6,7 +6,7 @@
     "contentHash": "1aec7450cd1e107c9f6c54e6feea2527563513b62c661faef1f37d68c0a31541",
     "workstreamId": "ws-code-intelligence-agent-memory-phase-memory-schema-and-storage-foundation-stage-project-scaffold-and-core-models",
     "branch": "ws/code-intelligence-AGENT-MEMORY/phase-memory-schema-and-storage-foundation-stage-project-scaffold-and-core-models",
-    "status": "planning"
+    "status": "active"
   },
   {
     "title": "IMemoryGraphStore Interface and Configuration",
