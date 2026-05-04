@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 35
+> **Status:** Iteration 36
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -14,9 +14,9 @@
 >
 > | Document | Owns | Current state |
 > |---|---|---|
-> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | At iteration 23. Aligned on structural/naming points. Seventeen alignment items (A1–A17) tracked in §8.1, all resolved. A13–A16 added in iteration 28 (node-ID format, `LastTouched` type, `MemoryNode.Version` nullability, expertise hash input). A17 added in iteration 35 (`SemanticCluster` → `Topic` resolution). Tech-spec's own header references architecture at "iteration 25" — this is stale header metadata; the alignment conclusions remain valid. |
-> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Fully aligned with canonical vocabulary — uses correct names (`IMemoryGraphStore`, `ExpertiseEntry`, composition wrappers, `VersionRange?`, correct method signatures), correctly specifies both hash formulas (ContentHash and Id hash8). One minor presentational gap catalogued in §8.2 below. `architecture.md` governs on all conflicts. |
-> | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | All 10 previously-catalogued divergences (E2E-1 through E2E-10) have been resolved in its current iteration — see §8.3 for historical record. |
+> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | At iteration 23 (not updated since). Seventeen alignment items (A1–A17) adjudicated in §8.1. Six stale text items inventoried in §8.4 (TS-S1 through TS-S6); architecture governs on all. |
+> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Fully aligned with canonical vocabulary. One minor presentational gap (R-1 in §8.2). |
+> | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | All 10 previously-catalogued divergences (E2E-1 through E2E-10) corrected in current iteration. No remaining divergences. |
 
 ---
 
@@ -768,6 +768,42 @@ This split ensures:
 - The retrieval engine uses `Metadata["SemanticRelation"]` uniformly for all
   edges, regardless of their `HyperedgeType`.
 
+### 4.7 Expertise Edge Storage Semantics
+
+Expertise-layer edges (`APPLIES_TO`, `SUPERSEDES`, `DERIVED_FROM`) use
+`HyperedgeType.MemoryRelation` and are stored in the `edges` table alongside
+all other edges. Their distinguishing characteristic is that one or both
+endpoint IDs in `node_ids` reference the `expertise` table rather than the
+`nodes` table. The ID format prefix determines the source table:
+
+| Edge | `node_ids[0]` (role) | `node_ids[1]` (role) | Source tables |
+|---|---|---|---|
+| `APPLIES_TO` | Expertise entry ID — `"expertise:{kind}:{hash8}"` (role: `expertise`) | Code node ID — `"/{path}::{name}"` (role: `target`) | `expertise` × `nodes` |
+| `SUPERSEDES` | Merged entry ID — `"expertise:{kind}:{hash8}"` (role: `newer`) | Original entry ID — `"expertise:{kind}:{hash8}"` (role: `older`) | `expertise` × `expertise` |
+| `DERIVED_FROM` | Derived entry ID — `"expertise:{kind}:{hash8}"` (role: `derived`) | Source entry ID — `"expertise:{kind}:{hash8}"` (role: `source`) | `expertise` × `expertise` |
+
+**Cross-table reference model:** The `edges` table does not enforce foreign-key
+constraints on `node_ids`. Referential integrity is maintained by the Evolution
+Engine's atomic workflows:
+
+- `RecordExpertiseAsync` creates the `ExpertiseEntry` row in `expertise` and the
+  `APPLIES_TO` edge in `edges` within the same serialized write (§3.7).
+- `ConsolidateAsync` creates the merged `ExpertiseEntry`, `SUPERSEDES` and
+  `DERIVED_FROM` edges, and archives the originals — all within a single
+  write-locked transaction.
+- `ArchiveExpertiseAsync` soft-deletes the expertise row (`archived = 1`) but
+  does **not** retire the `APPLIES_TO` edge. The edge remains in `edges` for
+  provenance; the Retrieval Engine filters out archived expertise by checking
+  `ExpertiseEntry.Archived` after following the edge, not by removing the edge
+  itself.
+
+**Retrieval path:** When the Ranker computes the `expertise` score signal for a
+code node, it follows `APPLIES_TO` edges *inbound* to that code node (where the
+code node appears as `node_ids[1]` with role `target`). For each edge, it looks
+up the `node_ids[0]` expertise ID in the `expertise` table and reads the
+`Confidence` value. The maximum `Confidence` across all non-archived
+`APPLIES_TO` edges becomes the node's expertise score (§2.4).
+
 ---
 
 ## 5. Interfaces
@@ -1301,30 +1337,31 @@ resolved (with the canonical answer) or flagged for the next iteration.
 
 ### 8.1 Alignment with `tech-spec.md` (Iteration 23)
 
-Most conflicts between this document and `tech-spec.md` are **resolved**.
-Tech-spec §12.2 confirms general alignment. The following table includes
-both long-resolved items and newly identified divergences. Seventeen items
-tracked (A1–A17), all resolved.
+Tech-spec.md is at iteration 23 and has not been updated since. This document
+governs on all naming, data-model, and schema conflicts. The following table
+tracks seventeen adjudicated items (A1–A17). "Adjudicated" means the canonical
+answer is defined here; the tech-spec text may still show stale wording on its
+side (inventoried in §8.4 "Stale text inventory").
 
-| # | Topic | Resolution |
-|---|---|---|
-| A1 | Multi-agent scope | Resolved: tech-spec O6 excludes G-Memory-style coordinated protocols, not shared storage. §1.2 of this doc explains the per-repo shared graph model. |
-| A2 | Ast.Cli modification | Aligned: tech-spec §1.1 agrees on additive `config.AddBranch("memory", ...)`. |
-| A3 | Embedding model | Aligned: tech-spec HC5, D1, §12.2 all confirm `nomic-embed-text` default. Matches codebase defaults in `EmbeddingGeneratorOptions.ModelName` and `EmbeddingConfiguration.ModelName`. |
-| A4 | Edge filtering | Aligned: tech-spec §7.2 uses `Metadata["SemanticRelation"]` as sole filter, matching §2.2 of this doc. |
-| A5 | Temporal model | Aligned: tech-spec §7.4 uses `commit_index` integers with `VersionRange`, matching §4.3 of this doc. |
-| A6 | Scoring weights | Aligned: tech-spec §8.3 uses the canonical 5-signal weighted model (0.30/0.25/0.20/0.15/0.10) from §2.4 of this doc. |
-| A7 | Composition wrappers | Aligned: tech-spec HC8, §4 confirm `MemoryNode`/`MemoryEdge` use composition (`Inner` property), not inheritance, matching §4.1 of this doc. |
-| A8 | Token budget | Aligned: tech-spec HC1 clarifies 32K ceiling, 8K default — matching §2.4 of this doc. |
-| A9 | ExpertiseEntry field names | **Resolved.** Tech-spec §7.1 uses `title`, `body`, `source_session`. This document (§4.2) uses `Title`, `Body`, `SourceAgent` (with `Scope` and `Evidence`). The field name difference (`source_session` vs `SourceAgent`) is documentation shorthand in tech-spec — both refer to the agent session identifier. `SourceAgent` is canonical. |
-| A10 | ExpertiseEntry entity vs node type | **Resolved.** Tech-spec §7.1 lists `ExpertiseEntry` under "Node Types" for schema reference convenience. Canonically, `ExpertiseEntry` is **not** a `HypergraphNode` — it is a first-class entity stored in its own `expertise` table (§4.2, §4.4) and linked to code nodes via `APPLIES_TO` edges. Tech-spec's presentation is a summary shorthand, not a contradiction. |
-| A11 | External node Metadata keys | **Resolved.** Tech-spec §7.1 lists External nodes with `package`, `fqn` properties. This document (§4.2) explicitly specifies `Metadata["Package"]` and `Metadata["QualifiedName"]` keys for External nodes. |
-| A12 | Temporal-model External-node carve-out | **Resolved.** Tech-spec S4 says "every node and edge carries a `VersionRange`" but External boundary nodes are timeless (no VCS presence). This document (§4.3) explicitly states: External boundary nodes are exempt from `VersionRange`; edges to/from External nodes are versioned normally from the in-repo endpoint's perspective. Temporal queries include External nodes via `WHERE since_index IS NULL` (External) or range-match (versioned). The SQLite schema (§4.4) makes `since_sha` and `since_index` nullable on the `nodes` table only. |
-| A13 | Node ID leading-slash format | **Resolved (iteration 28).** Architecture §4.2 previously showed `"{relativePath}::{qualifiedName}"` without leading `/`. E2e-scenarios (line 22) explicitly state "leading `/` always present" for in-repo nodes, and all Gherkin tables use `/src/ast/...` format. Tech-spec §7.1 also omits the leading `/` in its ID format summary (e.g., `src/ast/...` without `/`). Architecture §4.2 now reads `"/{relativePath}::{qualifiedName}"` with explicit leading `/`; this is canonical and governs over both tech-spec and e2e-scenarios. External and expertise node IDs do not start with `/`. |
-| A14 | `LastTouched` metadata type | **Resolved (iteration 28).** Architecture §4.5 previously typed `LastTouched` as `int`. Tech-spec §7.3 types it as `string (ISO-8601)` with description "Wall-clock time of last extraction (informational)." Architecture §4.5 now types it as `string` (ISO-8601), matching the tech-spec. Wall-clock timestamps are informational and not used for graph filtering (§4.3). |
-| A15 | `MemoryNode.Version` nullability | **Resolved (iteration 28).** Architecture §4.1 previously declared `VersionRange Version { get; }` (non-nullable) on `MemoryNode`. Since External boundary nodes are timeless (§4.3, §4.2), `MemoryNode.Version` is now `VersionRange? Version` (nullable) to accommodate External nodes wrapped as `MemoryNode`. |
-| A16 | Expertise hash input in tech-spec | **Resolved (iteration 28).** Tech-spec §7.1 uses `SHA-256(Content + TargetNodeId)` for the expertise-entry `hash8`. Architecture §4.2 canonically specifies `SHA-256(Title + Body + TargetNodeId)` (reflecting the `Title`/`Body` split per tech-spec D5). Architecture governs; tech-spec's `Content` is stale shorthand for `Title + Body`. |
-| A17 | `SemanticCluster` node type in tech-spec | **Resolved (iteration 35).** Tech-spec §7.1 line 169 lists `SemanticCluster` as a separate Semantic-layer node type with `centroid_embedding` and `member_count`. Architecture §4.2 defines only `Topic` nodes for community-detected clusters (with `Summary` and `MemberCount` metadata). `DetectCommunitiesAsync()` (§3.5) produces `BELONGS_TO_CLUSTER` edges pointing to `Topic` nodes — there is no separate `SemanticCluster` entity. Architecture governs: the canonical Semantic-layer node type is `Topic` (`NodeType = "Topic"`). Tech-spec's `SemanticCluster` is a retired concept subsumed by `Topic`. §4.5 `MemberCount` key now references Topic nodes only. |
+| # | Topic | Canonical answer (this doc) | Tech-spec state |
+|---|---|---|---|
+| A1 | Multi-agent scope | Per-repo shared graph, no G-Memory protocols (§1.2) | O6 agrees — aligned |
+| A2 | Ast.Cli modification | Additive `config.AddBranch("memory", ...)` only (§1.3) | §1.1 agrees — aligned |
+| A3 | Embedding model | `nomic-embed-text` default (§1.3, matches `EmbeddingGeneratorOptions.ModelName` in repo) | HC5, D1 agree — aligned |
+| A4 | Edge filtering | `Metadata["SemanticRelation"]` as sole filter (§2.2) | §7.2 agrees — aligned |
+| A5 | Temporal model | `commit_index` integers, not timestamps (§4.3) | §7.4 agrees — aligned |
+| A6 | Scoring weights | 0.30/0.25/0.20/0.15/0.10 (§2.4) | §8.3 agrees — aligned |
+| A7 | Composition wrappers | `MemoryNode.Inner` / `MemoryEdge.Inner` (§4.1) | HC8 agrees — aligned |
+| A8 | Token budget | 32K ceiling, 8K default (§2.4) | HC1 agrees — aligned |
+| A9 | ExpertiseEntry field names | `Title`, `Body`, `SourceAgent` (§4.2) | §7.1 line 171 still says `source_session` — **stale in tech-spec**; architecture governs |
+| A10 | ExpertiseEntry entity model | Not a `HypergraphNode`; own `expertise` table (§4.2, §4.4); linked via `APPLIES_TO` edges (§4.7) | §7.1 lists under "Node Types" header — **presentation shorthand** in tech-spec; architecture governs |
+| A11 | External node Metadata keys | `Metadata["Package"]` and `Metadata["QualifiedName"]` (§4.2) | §7.1 line 168 uses `package`, `fqn` — **abbreviated property names** in tech-spec; architecture governs |
+| A12 | External-node temporal carve-out | Timeless — no `VersionRange` (§4.3); edges to/from External nodes are versioned (§4.7) | S4 says "every node" carries `VersionRange` — **overbroad** in tech-spec; architecture governs |
+| A13 | Node ID leading slash | `"/{relativePath}::{qualifiedName}"` — leading `/` always present for in-repo nodes (§4.2) | §7.1 line 173 omits the leading `/` (e.g., `src/ast/...`) — **stale in tech-spec**; architecture governs |
+| A14 | `LastTouched` type | `string` (ISO-8601) — informational, not used for graph filtering (§4.5) | §7.3 agrees (`string (ISO-8601)`) — aligned |
+| A15 | `MemoryNode.Version` nullability | `VersionRange?` — nullable for External boundary nodes (§4.1) | HC8 agrees on composition — aligned |
+| A16 | Expertise hash input | `SHA-256(Title + Body + TargetNodeId)` for `hash8` in ID (§4.2) | §7.1 line 171 uses `SHA-256(Content + TargetNodeId)` — **stale single-field name** in tech-spec; architecture governs |
+| A17 | `SemanticCluster` vs `Topic` | Only `Topic` nodes exist (`NodeType = "Topic"`, §4.2); `SemanticCluster` is retired (§2.3) | §7.1 line 169 still lists `SemanticCluster` as a separate node type — **stale in tech-spec**; architecture governs |
 
 ### 8.2 Alignment with `implementation-plan.md` (Current Iteration)
 
@@ -1401,8 +1438,38 @@ transfer) have been removed or replaced with in-scope content.
 | E2E-9 | Concurrent write conflict errors | 3.4 | **Resolved.** Scenario 3.4 now covers SemanticSearch retrieval — no concurrent-write conflict scenario. |
 | E2E-10 | Expertise `content` parameter | 4.x, 6.x | **Resolved.** Scenarios use separate `Title` and `Body` parameters matching `RecordExpertiseAsync` signature in §5.3. |
 
-### 8.4 Net Assessment
+### 8.4 Net Assessment and Stale Text Inventory
 
-- **tech-spec ↔ architecture:** Aligned on all structural, naming, and data-model points. Seventeen alignment items (A1–A17) tracked, all resolved. Tech-spec §12.2 confirms "No remaining conflicts." Tech-spec's own header references architecture.md at "iteration 25" — this is stale iteration metadata in the tech-spec's header; the alignment conclusions (A1–A17) remain valid and the tech-spec (iteration 23) has not changed since. Five stale presentation items remain in the tech-spec (not conflicts — this document governs): (1) §7.1 line 173 shows ID format without leading `/` (governed by A13); (2) §7.1 line 171 uses `SHA-256(Content + TargetNodeId)` instead of `SHA-256(Title + Body + TargetNodeId)` (governed by A16); (3) §8.4 uses column names `valid_from_idx`/`valid_until_idx` while architecture §4.4 uses `since_index`/`until_index` (architecture governs — tech-spec §8.4 is a quick-reference, not normative); (4) tech-spec header line 9 still describes implementation-plan as "Contains 31 naming/data-model divergences" — this is stale because those divergences have been corrected in the implementation-plan's current iteration (see §8.2 above); (5) §7.1 line 169 lists `SemanticCluster` as a separate node type — architecture §4.2 defines only `Topic` nodes for community-detected clusters; `SemanticCluster` is subsumed by `Topic` (governed by A17).
-- **implementation-plan ↔ architecture:** Fully aligned on vocabulary, composition model, interface signatures, scoring weights, constants, node-ID format, and project placement. The implementation-plan correctly specifies both the `ContentHash` formula (SHA-256 of Title+Body for dedup) and the `Id` hash8 formula (SHA-256 of Title+Body+TargetNodeId for uniqueness) in its model definitions and test scenarios. One minor presentational gap remains (R-1 in §8.2: `MemoryEdge.Version` non-nullable annotation), not affecting correctness. The implementation-plan's own header defers to this document on all conflicts.
-- **e2e-scenarios ↔ architecture:** All 10 previously-catalogued divergences (E2E-1 through E2E-10) are now **resolved** in the current iteration of e2e-scenarios.md. The e2e-scenarios document uses canonical vocabulary throughout: correct edge names, qualified node IDs with leading `/`, single-colon `ext:` prefix, separate `Title`/`Body` parameters, and in-scope-only scenario content. The e2e-scenarios header (lines 17–23) confirms this alignment and notes that prior architecture.md divergence catalogs were stale — this section has been updated accordingly. No remaining divergences exist between this document and e2e-scenarios.md.
+**Governance rule:** This document (`architecture.md`) is the canonical
+authority. When sibling docs disagree, this document governs. Sibling docs
+are not required to be updated for governance to apply — the canonical answer
+here is definitive regardless of what the sibling's text says.
+
+#### Stale text remaining in `tech-spec.md` (iteration 23)
+
+The tech-spec has not been updated since iteration 23. The following items
+are stale text that contradicts the canonical definitions in this document.
+They are not blocking — architecture governs — but they are documented for
+traceability:
+
+| # | Tech-spec location | Stale text | Canonical (this doc) | Governing item |
+|---|---|---|---|---|
+| TS-S1 | §7.1 line 169 | Lists `SemanticCluster` as a separate Semantic-layer node type with `centroid_embedding`, `member_count` | Only `Topic` nodes exist (§4.2); `SemanticCluster` is retired (§2.3) | A17 |
+| TS-S2 | §7.1 line 171 | Uses `SHA-256(Content + TargetNodeId)` for expertise hash; uses `source_session` field name | Hash is `SHA-256(Title + Body + TargetNodeId)` (§4.2); field is `SourceAgent` (§4.2) | A9, A16 |
+| TS-S3 | §7.1 line 173 | ID format `"{filePath}::{qualifiedName}"` without leading `/` | Format is `"/{relativePath}::{qualifiedName}"` — leading `/` always present (§4.2) | A13 |
+| TS-S4 | §8.4 lines 258–260 | Column names `valid_from_idx` / `valid_until_idx` in SQLite schema | Column names are `since_index` / `until_index` (§4.4) | Architecture governs |
+| TS-S5 | Header line 9 | Describes implementation-plan as "Contains 31 naming/data-model divergences" | Implementation-plan has been aligned (§8.2); the "31 divergences" description is stale | Architecture governs |
+| TS-S6 | §7.1 line 168 | External nodes listed with `package`, `fqn` properties | Canonical keys are `Metadata["Package"]`, `Metadata["QualifiedName"]` (§4.2, §4.5) | A11 |
+
+#### Stale text remaining in `implementation-plan.md`
+
+One minor presentational gap (R-1 in §8.2): `MemoryEdge.Version` property
+listed without explicit non-nullable annotation. This is correct behavior
+(all edges carry versioning per §4.3) but could be more explicit. Not a
+conflict — architecture governs.
+
+#### Stale text remaining in `e2e-scenarios.md`
+
+None. All 10 previously-catalogued divergences (E2E-1 through E2E-10) have
+been corrected in the current iteration of `e2e-scenarios.md`. The document
+uses canonical vocabulary throughout.
