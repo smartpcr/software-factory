@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 13
+> **Status:** Iteration 14
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, and interface signatures.
@@ -47,21 +47,28 @@ and VCS history.
 ### 1.2 Existing Infrastructure (`src/ast/`)
 
 The system builds on the Code Intelligence stack in `src/ast/` (24 `.csproj`
-projects, 13 of which are test projects). **No existing project is modified**
-except for one additive enum value (`HyperedgeType.MemoryRelation`) in
-`Ast.Core`. All new code ships as `Ast.Memory` (+ test projects). Existing
-projects are **referenced** (as NuGet/project dependencies), never mutated.
+projects, 13 of which are test projects). **Two existing projects receive
+additive-only changes:**
+
+1. **`Ast.Core`** — one new enum value `HyperedgeType.MemoryRelation`.
+2. **`Ast.Cli`** — additive `config.AddBranch("memory", ...)` lines in
+   `Program.cs` to register memory sub-commands (Spectre.Console.Cli manual
+   registration — consistent with how the existing 7 commands are registered).
+
+All new code ships as `Ast.Memory` (+ test projects). Existing
+projects are **referenced** (as NuGet/project dependencies), never mutated
+beyond the two additive changes above.
 
 | Existing project | Key types (verified source paths) | How memory layer uses it |
 |---|---|---|
-| **Ast.Core** | `HypergraphNode`, `Hyperedge`, `HyperedgeType` (44 enum values) — `src/ast/Ast.Core/HypergraphModels.cs`; `RepositoryProcessor` — `src/ast/Ast.Core/RepositoryProcessor.cs` | Reference types via `Metadata` dict for extension. One additive enum value `MemoryRelation` (the **sole** change to any existing project). |
+| **Ast.Core** | `HypergraphNode`, `Hyperedge`, `HyperedgeType` (44 enum values) — `src/ast/Ast.Core/HypergraphModels.cs`; `RepositoryProcessor` — `src/ast/Ast.Core/RepositoryProcessor.cs` | Reference types via `Metadata` dict for extension. One additive enum value `MemoryRelation` (one of two additive changes to existing projects — see also `Ast.Cli` below). |
 | **Ast.GraphDb** | `IGraphStore` — `src/ast/Ast.GraphDb/IGraphStore.cs`; `Neo4jGraphStore` — `src/ast/Ast.GraphDb/Neo4jGraphStore.cs`; `NodeFilter`, `GraphPath`, `NodeWithDepth` — `src/ast/Ast.GraphDb/GraphModels.cs` | `Ast.Memory` defines `IMemoryGraphStore` (in its own project) which extends `IGraphStore`. No files in `Ast.GraphDb/` are modified. |
 | **Ast.Embedding** | `IEmbeddingGenerator` — `src/ast/Ast.Embedding/IEmbeddingGenerator.cs`; `CodeEmbeddingService` — `src/ast/Ast.Embedding/CodeEmbeddingService.cs`; `EmbeddingGeneratorOptions` (default model: `"nomic-embed-text"`) — `src/ast/Ast.Embedding/EmbeddingModels.cs:119` | Reuse directly — no modifications. `Ast.Memory` calls `IEmbeddingGenerator.GenerateBatchEmbeddingsAsync()`. |
 | **Ast.Query** | `ICodeQuery` — `src/ast/Ast.Query/ICodeQuery.cs`; `HybridQueryService` — `src/ast/Ast.Query/HybridQueryService.cs`; `ScoredNode` — `src/ast/Ast.Query/QueryModels.cs` | Reference only — no modifications. `Ast.Memory` defines its own `IMemoryRetrievalEngine` that internally composes `ICodeQuery` when needed. |
 | **Ast.VectorDb** | `IVectorStore` — `src/ast/Ast.VectorDb/IVectorStore.cs`; `QdrantVectorStore` — `src/ast/Ast.VectorDb/QdrantVectorStore.cs` | Reference only — no modifications. Reuse for team mode; `Ast.Memory` adds in-process HNSW adapter for local mode. |
 | **Ast.Lsp** | LSP integration — `src/ast/Ast.Lsp/` | Optional enrichment — pipeline never blocks on LSP. No modifications. |
 | **CodeIntelligence** | 27 analyzers in `src/ast/CodeIntelligence/Analyzers/`, 4 detectors in `src/ast/CodeIntelligence/Detectors/`, `RelationshipGraphBuilder` — `src/ast/CodeIntelligence/Graph/RelationshipGraphBuilder.cs` | Consume as call-chain / structural edge source. No modifications. |
-| **Ast.Cli** | CLI host — `src/ast/Ast.Cli/` | Reference only — no modifications. Memory CLI commands and MCP tools are registered via `Ast.Memory`'s `ServiceCollectionExtensions` and discovered at runtime by `Ast.Cli`'s existing DI host. |
+| **Ast.Cli** | CLI host — `src/ast/Ast.Cli/Program.cs` uses **Spectre.Console.Cli** with manual `config.AddCommand<T>()` registration (7 commands: parse, enrich, embed, index, query, pipeline, stats). | Additive change: new `config.AddBranch("memory", ...)` block added to `Program.cs` to register memory sub-commands. MCP tool registration and handler logic live in `Ast.Memory/Mcp/`. |
 
 ### 1.3 Research Foundations
 
@@ -170,8 +177,16 @@ documents. Implementations read these from `MemoryOptions` configuration.
 
 All new code ships as **one new project** (`Ast.Memory`) plus test projects,
 following the `src/ast/Ast.<Name>` convention. Internal namespaces provide
-logical separation. **No files in existing projects are created or modified**
-except the single `HyperedgeType.MemoryRelation` enum addition in `Ast.Core`.
+logical separation. **Two existing projects receive additive-only changes:**
+
+1. `Ast.Core` — one new enum value `HyperedgeType.MemoryRelation` in
+   `src/ast/Ast.Core/HypergraphModels.cs`.
+2. `Ast.Cli` — additive `config.AddBranch("memory", ...)` lines in
+   `src/ast/Ast.Cli/Program.cs` to register memory sub-commands. `Ast.Cli`
+   uses Spectre.Console.Cli with manual `config.AddCommand<T>()` registration
+   (7 existing commands: parse, enrich, embed, index, query, pipeline, stats).
+   The memory branch adds sub-commands under the `memory` prefix without
+   altering existing command registrations.
 
 All new interfaces (`IMemoryGraphStore`, `IMemoryRetrievalEngine`,
 `IEvolutionEngine`, `IExtractionPipeline`, `IIncrementalSync`) are defined
@@ -193,10 +208,13 @@ src/ast/
     Storage/                      ← SqliteGraphStore (implements IMemoryGraphStore)
     Schema/                       ← AnnotationKeyRegistry
     Mcp/                          ← MemoryMcpToolRegistration, MemoryMcpHandler, McpSchemas
+    Cli/                          ← MemoryOnboardCommand, MemorySyncCommand, etc. (Spectre.Console.Cli command classes)
     ServiceCollectionExtensions.cs
   Ast.Memory.UnitTests/           ← NEW
   Ast.Memory.IntegrationTests/    ← NEW
-  (all existing projects unchanged — only Ast.Core gains one additive enum value)
+  Ast.Core/                       ← ADDITIVE: one enum value HyperedgeType.MemoryRelation
+  Ast.Cli/                        ← ADDITIVE: config.AddBranch("memory", ...) in Program.cs + project ref to Ast.Memory
+  (all other existing projects unchanged)
 ```
 
 ### 3.0.1 Component Diagram
@@ -802,7 +820,7 @@ public class WatchOptions
 
 ### 5.6 Agent API / MCP Tool Interface
 
-**Project:** `Ast.Memory/Mcp` (new code only; `Ast.Cli` loads memory commands at runtime via DI — no source modifications to `Ast.Cli`)  
+**Project:** `Ast.Memory/Mcp` (new code only; `Ast.Cli/Program.cs` gets additive `config.AddBranch("memory", ...)` lines to register memory sub-commands via Spectre.Console.Cli's manual registration API — consistent with how the existing 7 commands are registered)  
 **Responsibility:** Expose the memory graph to external agents via the
 [Model Context Protocol](https://modelcontextprotocol.io) (MCP) tool surface.
 Agent interaction is **purely programmatic** — typed function calls, no query
@@ -816,15 +834,15 @@ tool-result JSON. No business logic lives in the MCP layer.
 #### 5.6.1 MCP Tool Definitions
 
 Five tools are registered via `ServiceCollectionExtensions.AddMemoryMcpTools()`.
-Each tool maps 1:1 to an internal interface method.
+Each tool maps to one or more internal interface methods.
 
-| MCP Tool Name | Internal Method | Description |
+| MCP Tool Name | Internal Method(s) | Description |
 |---|---|---|
 | `memory_query` | `IMemoryRetrievalEngine.RetrieveAsync` | Retrieve token-budgeted context for a task description |
 | `memory_call_chain` | `IMemoryGraphStore.TraverseAsync` | Trace callers/callees of a symbol to a given depth |
 | `memory_find_similar` | `IMemoryGraphStore.VectorSearchAsync` | Find semantically similar code nodes |
 | `memory_annotate` | `IEvolutionEngine.RecordExpertiseAsync` | Write an expertise entry (pattern/pitfall/preference/insight) |
-| `memory_status` | `IIncrementalSync.SyncToCommitAsync` | Check graph status and trigger sync if needed |
+| `memory_status` | `IMemoryGraphStore.FindByNameAsync` (stats) + conditionally `IIncrementalSync.SyncToCommitAsync` (when `syncToHead=true`) | Check graph status; optionally trigger sync |
 
 #### 5.6.2 MCP Tool Schemas
 
@@ -943,6 +961,27 @@ wraps a `RetrievalResult` (§5.3):
 }
 ```
 
+The `memory_status` response returns graph statistics and sync state:
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Graph synced to abc123 (commit_index 42). 1,240 nodes, 3,891 edges, 17 expertise nodes."
+    }
+  ],
+  "metadata": {
+    "lastCommit": "abc123",
+    "commitIndex": 42,
+    "nodeCount": 1240,
+    "edgeCount": 3891,
+    "expertiseNodeCount": 17,
+    "syncedToHead": true
+  }
+}
+```
+
 #### 5.6.4 Internal Class Layout
 
 ```
@@ -952,8 +991,30 @@ Ast.Memory/
     MemoryMcpHandler.cs            ← dispatches MCP JSON → internal interfaces
     McpSchemas.cs                  ← JSON schema constants for tool definitions
   Cli/
-    MemoryCommandModule.cs         ← CLI commands loaded at runtime by Ast.Cli host
+    MemoryCommandModule.cs         ← Spectre.Console.Cli command classes
 ```
+
+`Ast.Cli/Program.cs` receives additive lines to register the memory branch:
+
+```csharp
+// Additive — existing commands unchanged
+config.AddBranch("memory", memory =>
+{
+    memory.AddCommand<MemoryOnboardCommand>("onboard");
+    memory.AddCommand<MemorySyncCommand>("sync");
+    memory.AddCommand<MemoryQueryCommand>("query");
+    memory.AddCommand<MemoryCallersCommand>("callers");
+    memory.AddCommand<MemoryCalleesCommand>("callees");
+    memory.AddCommand<MemoryAnnotateCommand>("annotate");
+    memory.AddCommand<MemoryEvolveCommand>("evolve");
+    memory.AddCommand<MemoryReindexCommand>("reindex");
+    memory.AddCommand<MemoryStatusCommand>("status");
+});
+```
+
+This is consistent with Spectre.Console.Cli's manual registration pattern
+already used by all 7 existing commands. `Ast.Cli.csproj` gains a project
+reference to `Ast.Memory` — no other changes to the `Ast.Cli` project.
 
 `MemoryMcpHandler` composes `IMemoryRetrievalEngine`, `IEvolutionEngine`, and
 `IMemoryGraphStore` via constructor injection. It does NOT contain business
@@ -962,9 +1023,10 @@ logic — only JSON deserialization, delegation, and response formatting.
 #### 5.6.5 CLI Commands (non-MCP)
 
 For developer workflows that don't use MCP, the same functionality is exposed
-via CLI commands. These are registered as DI-discovered command modules in
-`Ast.Memory/Cli/` and loaded at runtime by `Ast.Cli`'s existing host — **no
-source files in `Ast.Cli/` are modified**.
+via CLI commands. Command classes live in `Ast.Memory/Cli/` and are registered
+in `Ast.Cli/Program.cs` via additive `config.AddBranch("memory", ...)` lines
+(see §5.6.4). This is a minimal, non-breaking change: existing command
+registrations are untouched; only the new memory branch is added.
 
 | CLI Command | Maps to |
 |---|---|
@@ -1252,7 +1314,7 @@ in their ## Known Expertise section.
 | Decision | Rationale | Trade-off |
 |---|---|---|
 | Extend `src/ast/` stack, not greenfield | Proven models, existing tests, established conventions | Coupled to `HypergraphNode`/`Hyperedge` |
-| **All new code in `Ast.Memory`** — no modifications to existing projects except one enum value | Preserves all existing tests unconditionally; eliminates coupling risk | `Ast.Memory` has project references to 5 existing projects |
+| **All new code in `Ast.Memory`** — two additive changes to existing projects (enum value in `Ast.Core`, command registration in `Ast.Cli`) | Preserves all existing tests unconditionally; eliminates coupling risk | `Ast.Memory` has project references to 5 existing projects; `Ast.Cli` gains a reference to `Ast.Memory` |
 | Single `Ast.Memory` project with namespaces | Follows repo convention; avoids project sprawl | Larger compilation unit |
 | Non-breaking extension via `Metadata` dict | Preserves all existing tests | String-typed keys; mitigated by `AnnotationKeyRegistry` constants |
 | `HyperedgeType.MemoryRelation` + `SemanticRelation` metadata | One enum value; string identifies specific relation | Not compile-time checked; validated at write time |
@@ -1383,7 +1445,7 @@ below. Future iterations of `implementation-plan.md` should incorporate these.
 |---|---|---|---|
 | P-1 | Stage 1.2 creates `IMemoryStore.cs` as `IMemoryGraphStore` — prior architecture iterations implied placement in `Ast.GraphDb` | `IMemoryGraphStore` is defined **in `Ast.Memory/Interfaces/`**, not in `Ast.GraphDb`. No files in `Ast.GraphDb` are created or modified. | §3.0, §3.2, §5.2 |
 | P-2 | Stage 1.3 creates `Neo4jMemoryStore.cs` | Implementation is `Neo4jMemoryGraphStore` in `Ast.Memory/Storage/`. It **composes** the existing `Neo4jGraphStore` from `Ast.GraphDb` — it does not modify it. | §3.2 |
-| P-3 | Stage 5.2 creates MCP files in `Ast.Cli` | MCP tools and CLI command modules are in `Ast.Memory/Mcp/` and `Ast.Memory/Cli/`. They are loaded by `Ast.Cli` at runtime via DI discovery — no source modifications to `Ast.Cli`. | §5.6 |
+| P-3 | Stage 5.2 creates MCP files in `Ast.Cli` | MCP tools and handler logic are in `Ast.Memory/Mcp/`. CLI command classes are in `Ast.Memory/Cli/`. `Ast.Cli/Program.cs` receives additive `config.AddBranch("memory", ...)` lines to register memory sub-commands via Spectre.Console.Cli's manual registration API (consistent with how existing commands are registered). `Ast.Cli.csproj` gains a project reference to `Ast.Memory`. No existing command registrations are modified. | §5.6, §5.6.4 |
 
 #### 10.1.9 Summary of Required Changes to implementation-plan.md
 
@@ -1405,6 +1467,10 @@ When `implementation-plan.md` is next updated, these changes should be applied:
 12. **Use** `"nomic-embed-text"` as the default embedding model, consistent
     with the existing `EmbeddingGeneratorOptions.ModelName` default in
     `src/ast/Ast.Embedding/EmbeddingModels.cs`.
+13. **Acknowledge** that `Ast.Cli/Program.cs` requires additive
+    `config.AddBranch("memory", ...)` lines for memory sub-command registration.
+    `Ast.Cli` uses Spectre.Console.Cli with manual `AddCommand` registration —
+    there is no DI-based command discovery.
 
 ### 10.2 Alignment with e2e-scenarios.md
 
@@ -1434,4 +1500,4 @@ All conflicts resolved. See §10.0 for the complete alignment table.
 | TS-2 | tech-spec.md §11 D2 specifies "purely programmatic" agent API | ✅ Fulfilled by §5.6 MCP tool definitions (5 typed tools, no query DSL). |
 | TS-3 | tech-spec.md §11 D1 specifies general-purpose embedding model | ✅ Fulfilled by §4.7 (all nodes use same general-purpose model). |
 | TS-4 | `ExtractionOptions.EmbeddingModel` default | ✅ Both now specify `"nomic-embed-text"` — matching the actual codebase default in `EmbeddingGeneratorOptions.ModelName` (`src/ast/Ast.Embedding/EmbeddingModels.cs:119`). |
-| TS-5 | Project mutation policy | ✅ This doc (iteration 13) explicitly states: `IMemoryGraphStore` is defined in `Ast.Memory`, not `Ast.GraphDb`. Only change to an existing project is one additive enum value in `Ast.Core`. tech-spec HC8 is satisfied. |
+| TS-5 | Project mutation policy | ✅ This doc (iteration 14) explicitly states: `IMemoryGraphStore` is defined in `Ast.Memory`, not `Ast.GraphDb`. Two additive changes to existing projects: (1) one enum value `HyperedgeType.MemoryRelation` in `Ast.Core`, (2) `config.AddBranch("memory", ...)` lines in `Ast.Cli/Program.cs` + project reference to `Ast.Memory` in `Ast.Cli.csproj`. No existing code is modified — only additive lines. tech-spec HC8 is satisfied. |
