@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 36
+> **Status:** Iteration 38
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -14,7 +14,7 @@
 >
 > | Document | Owns | Current state |
 > |---|---|---|
-> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | At iteration 23 (not updated since). Seventeen alignment items (A1–A17) adjudicated in §8.1. Six stale text items inventoried in §8.4 (TS-S1 through TS-S6); architecture governs on all. |
+> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | At iteration 23 (not updated since). Seventeen alignment items (A1–A17) adjudicated in §8.1. Nine stale text items inventoried in §8.4 (TS-S1 through TS-S9); architecture governs on all. |
 > | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Fully aligned with canonical vocabulary. One minor presentational gap (R-1 in §8.2). |
 > | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | All 10 previously-catalogued divergences (E2E-1 through E2E-10) corrected in current iteration. No remaining divergences. |
 
@@ -135,6 +135,29 @@ All planning documents in this story use these definitions.
 Temporal versioning is **orthogonal** — it applies to nodes/edges on every
 layer via `VersionRange` (§4.3). It is not a separate layer.
 
+#### Node-Layer Assignment Rules
+
+Every `HypergraphNode` in the memory graph carries exactly one
+`Metadata["MemoryLayer"]` value — its **home layer**. The home layer
+identifies which pipeline stage created the node and is responsible for its
+lifecycle. However, a node may participate as an endpoint of edges on
+**other** layers. The home-layer assignment rules:
+
+| Node type(s) | Home layer | Created by | Cross-layer edge participation |
+|---|---|---|---|
+| `Repo`, `Workspace`, `Package`, `Module`, `Class`, `Interface`, `Function`, `Method`, `Property` | `structural` | `StructureBuilder` | Also appear as endpoints on `call_chain` edges (`CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES`) and `semantic` edges (`SIMILAR_TO`, `BELONGS_TO_CLUSTER`). |
+| `External` | `call_chain` | `StructureBuilder` (when processing imports to out-of-repo dependencies) | Also appear as endpoints on `structural` edges (`DEPENDS_ON`). |
+| `Topic` | `semantic` | `EvolutionEngine.DetectCommunitiesAsync()` | Only `BELONGS_TO_CLUSTER` edges (Semantic layer). |
+
+`ExpertiseEntry` nodes are **not** `HypergraphNode` instances (§4.2) and do
+not carry a `MemoryLayer` metadata key. Their edges (`APPLIES_TO`,
+`SUPERSEDES`, `DERIVED_FROM`) are tagged `MemoryLayer = "expertise"`.
+
+**Edges** carry their own `Metadata["MemoryLayer"]` which matches the layer
+from the edge taxonomy (§2.2). A `CALLS` edge between two `structural`-homed
+nodes still has `MemoryLayer = "call_chain"` on the edge, because the edge
+belongs to the Call-Chain layer.
+
 ### 2.2 Edge Taxonomy
 
 **Code-derived edges** — produced by the Extraction Pipeline. Each maps to
@@ -196,7 +219,7 @@ documents. Implementations read these from `MemoryOptions` configuration.
 | `TokenBudgetDefault` | 8,000 | Budget Controller | Per-query default token budget |
 | `TokenBudgetCeiling` | 32,000 | Budget Controller | Maximum allowed token budget |
 | `IncrementalSyncDebounceMs` | 1,000 | Incremental Sync | Debounce for file-system watcher |
-| `CentralityBoostFactor` | 0.5 | Evolution Engine (Decay) | Multiplied by normalized PageRank (range 0–1) and added to 1.0 to form `centrality_boost` (range 1.0–1.5) |
+| `CentralityBoostFactor` | 0.5 | Evolution Engine (Decay) | Multiplied by normalized PageRank (range 0–1) and added to 1.0 to form `centrality_boost` (range 1.0–1.5). Centrality boost extends the decay half-life: `effective_half_life = DecayHalfLifeDays × centrality_boost`. The time-based decay factor is then `2^(−age_days / effective_half_life)`, where `age_days = (DateTime.UtcNow − ExpertiseEntry.CreatedAt).TotalDays`. This means high-centrality nodes decay slower (longer half-life) and the time factor is always ≤ 1.0, so confidence never increases through decay. See §3.5 for full computation model and worked example. |
 
 **Scoring weights** (used by the Ranker, sum = 1.00):
 
@@ -360,7 +383,7 @@ summarization — the mechanisms by which the graph improves over sessions.
 |---|---|---|
 | **Write-back** | `EvolutionEngine.RecordExpertiseAsync()` | Creates `ExpertiseEntry` nodes (§4.2) linked to code nodes via `APPLIES_TO` edges. Each entry has a `Title` (headline), `Body` (detailed description), `Confidence` value (0.0–1.0), `ExpertiseKind` (`Pattern`, `Pitfall`, `Preference`, `Insight`), `Scope` (`"exact"` or `"subtree"`), optional `Evidence` citations, and `SourceAgent` provenance. |
 | **Consolidation** | `ConsolidationService` | LLM-powered merge of semantically similar expertise entries (cosine ≥ `SimilarityThreshold`). Creates `SUPERSEDES` edge from merged entry to originals. Acquires a write-level lock to prevent concurrent merges. |
-| **Decay** | `DecayService` | Two decay mechanisms applied **multiplicatively** (both reduce confidence; their effects compound): (a) **Event-driven** — triggered by `IncrementalSync` when a target code node's `ContentHash` changes. `StaleDecayFactor` (0.5) is applied on substantive code changes; `MinorDecayFactor` (0.9) on whitespace/comment-only changes. Applied immediately at sync time — each `ContentHash` change triggers exactly one event-driven decay. (b) **Time-based** — applied periodically (or on demand via `DecayStaleExpertiseAsync`): `decayed_confidence = current_confidence × 2^(−age_days / DecayHalfLifeDays) × centrality_boost`, where `centrality_boost = 1.0 + CentralityBoostFactor × normalized_pagerank` (range 1.0–1.5). Uses base-2 exponential so that `DecayHalfLifeDays` (1,095 = 3 years) is the exact half-life. `current_confidence` already reflects any prior event-driven decays. Entries below `ArchiveConfidenceFloor` (0.1) are soft-deleted via `IMemoryGraphStore.ArchiveExpertiseAsync` (sets `archived = 1` in storage, excluded from `GetExpertiseForNodeAsync` results). Archived entries can be restored via `IEvolutionEngine.RestoreArchivedExpertiseAsync` or inspected via `IMemoryGraphStore.GetArchivedExpertiseAsync`. |
+| **Decay** | `DecayService` | Two independent decay mechanisms. Their effects compose but are computed separately — event-driven decay modifies the stored `Confidence` immediately, and time-based decay is applied as an idempotent envelope on top. **(a) Event-driven decay** — triggered by `IncrementalSync` when a target code node's `ContentHash` changes. `StaleDecayFactor` (0.5) is applied on substantive code changes; `MinorDecayFactor` (0.9) on whitespace/comment-only changes. Applied immediately at sync time: `Confidence ← Confidence × factor`. Each `ContentHash` change triggers exactly one event-driven decay. The result is persisted to `ExpertiseEntry.Confidence` immediately. **(b) Time-based decay** — applied periodically (or on demand via `DecayStaleExpertiseAsync`). This is an **idempotent** computation: re-running it with the same inputs produces the same output (it overwrites, not multiplies). Definition of `age_days`: `age_days = (DateTime.UtcNow − ExpertiseEntry.CreatedAt).TotalDays` — always measured from the entry's creation date, not from the last decay run. Formula: `time_factor = 2^(−age_days / effective_half_life)`, where `effective_half_life = DecayHalfLifeDays × centrality_boost` and `centrality_boost = 1.0 + CentralityBoostFactor × normalized_pagerank` (range 1.0–1.5). The time factor is bounded [0.0, 1.0]: at `age_days = 0`, `time_factor = 1.0` (no reduction); at `age_days = effective_half_life`, `time_factor = 0.5`. **Combined formula:** `final_confidence = event_adjusted_confidence × time_factor`, where `event_adjusted_confidence` is the stored `Confidence` value (which already incorporates all prior event-driven decays). Because `time_factor ≤ 1.0`, the result never exceeds `event_adjusted_confidence`. Because event-driven decays only reduce the stored value, and time-based decay only applies a ≤ 1.0 multiplier on top, **confidence never increases** through decay. A node with `centrality_boost = 1.5` has an effective half-life of 1095 × 1.5 = 1642.5 days (high-centrality code retains expertise longer). **Worked example:** An expertise entry created 1095 days ago with `Confidence = 0.5` (reduced from 1.0 by one prior event-driven `StaleDecayFactor` application), targeting a node with `normalized_pagerank = 0.6`: `centrality_boost = 1.0 + 0.5 × 0.6 = 1.3`; `effective_half_life = 1095 × 1.3 = 1423.5 days`; `time_factor = 2^(−1095 / 1423.5) ≈ 0.58`; `final = 0.5 × 0.58 = 0.29`. Entries whose `final_confidence` drops below `ArchiveConfidenceFloor` (0.1) are soft-deleted via `IMemoryGraphStore.ArchiveExpertiseAsync` (sets `archived = 1` in storage, excluded from `GetExpertiseForNodeAsync` results). Archived entries can be restored via `IEvolutionEngine.RestoreArchivedExpertiseAsync` or inspected via `IMemoryGraphStore.GetArchivedExpertiseAsync`. |
 | **Community Detection** | `EvolutionEngine.DetectCommunitiesAsync()` | Louvain algorithm over `CALLS`/`SIMILAR_TO` edges → creates `BELONGS_TO_CLUSTER` edges and `Topic` summary nodes in the Semantic layer (GraphRAG pattern). |
 
 ### 3.6 Incremental Sync
@@ -374,17 +397,36 @@ summarization — the mechanisms by which the graph improves over sessions.
 
 On trigger:
 
-1. `GitDiffDriver` identifies added/modified/deleted files.
-2. For each batch of modified files: re-extract via
+1. `IncrementalSync` registers the new commit SHA and `commit_index` in the
+   `commits` table.
+2. `GitDiffDriver` identifies added/modified/deleted/renamed files via
+   `git diff --name-status` (status codes: `A` = added, `M` = modified,
+   `D` = deleted, `R` = renamed).
+3. For each batch of modified files (`M`): re-extract via
    `IExtractionPipeline.ExtractFilesAsync(repoRoot, changedPaths, ...)`,
    diff old vs. new nodes, upsert changes, set `UntilIndex` on removed
    nodes/edges.
-3. For deleted files: set `UntilIndex` on all nodes/edges rooted in that file
-   (via `RetireNodeAsync`, which cascades to edges; plus individual
-   `RetireEdgeAsync` for orphaned edges not caught by cascade).
-4. Propagate invalidation: mark downstream `CALLS` edges for re-validation
-   via `UpdateEdgeMetadataAsync(edgeId, { "Stale": true })`.
-5. Re-run `SemanticIndexer` on changed nodes only (incremental embedding).
+4. For renamed files (`R`): retire all nodes/edges at the old path (via
+   `RetireNodeAsync`), re-extract at the new path. This produces new node
+   IDs (since IDs embed the file path) with `SinceIndex` = current commit.
+5. For added files (`A`): extract via `ExtractFilesAsync` and upsert all
+   new nodes/edges with `SinceIndex` = current commit.
+6. For deleted files (`D`): set `UntilIndex` on all nodes/edges rooted in
+   that file (via `RetireNodeAsync`, which cascades to edges).
+7. Retire orphaned edges: for edges whose source or target node was retired
+   in steps 3–6 but the edge was not caught by `RetireNodeAsync`'s cascade
+   (e.g., a `CALLS` edge where only the callee was in a deleted file),
+   call `RetireEdgeAsync` individually.
+8. Propagate invalidation: mark downstream `CALLS` edges for re-validation
+   via `UpdateEdgeMetadataAsync(edgeId, { "Stale": true })` — this applies
+   to `CALLS` edges whose caller or callee signature changed.
+9. Re-run `SemanticIndexer` on changed nodes only: re-compute embeddings,
+   then recalculate `SIMILAR_TO` edges. Old `SIMILAR_TO` edges that
+   referenced retired or re-embedded nodes are retired via `RetireEdgeAsync`;
+   new `SIMILAR_TO` edges are created where cosine ≥ `SimilarityThreshold`.
+10. Trigger event-driven expertise decay for expertise entries targeting
+    changed code nodes (`StaleDecayFactor` or `MinorDecayFactor` per §3.5).
+11. Log all mutations to the audit log via `LogAuditAsync`.
 
 ```csharp
 interface IIncrementalSync
@@ -485,7 +527,7 @@ public class MemoryEdge
 | `Language` | `string` | `HypergraphNode.Language` | `"C#"`, `"PowerShell"` |
 | `FilePath` | `string` | `HypergraphNode.FilePath` | Relative path from repo root |
 | `LineStart` / `LineEnd` | `int` | `HypergraphNode.LineStart/LineEnd` | Source location |
-| `Metadata["MemoryLayer"]` | `string` | Memory wrapper | `"structural"` or `"call_chain"` |
+| `Metadata["MemoryLayer"]` | `string` | Memory wrapper | Always `"structural"` for in-repo code nodes (home layer — see §2.1 Node-Layer Assignment Rules). These nodes also participate in `call_chain` and `semantic` edges. |
 | `Metadata["ContentHash"]` | `string` | Extraction pipeline | SHA-256 of source text — used for decay detection |
 | `Metadata["SinceCommit"]` | `string` | Temporal model | Commit SHA when node was introduced |
 | `Metadata["SinceIndex"]` | `int` | Temporal model | Monotonic commit index when introduced |
@@ -725,7 +767,7 @@ CREATE INDEX idx_audit_session ON audit_log(session_id);
 
 | Key | Type | Layer / Scope | Owner |
 |---|---|---|---|
-| `MemoryLayer` | `string` | All nodes and edges | Extraction Pipeline |
+| `MemoryLayer` | `string` | All nodes and edges | Extraction Pipeline | Node home layer (§2.1 Node-Layer Assignment Rules): `"structural"` for in-repo code nodes, `"call_chain"` for External boundary nodes, `"semantic"` for Topic nodes. Edge layer per §2.2 edge taxonomy. |
 | `SemanticRelation` | `string` | All edges | Extraction Pipeline / Evolution Engine |
 | `ContentHash` | `string` | In-repo nodes only (Structural, Call-Chain). **Not** on External boundary nodes. | Extraction Pipeline |
 | `SinceCommit` | `string` | In-repo nodes and all edges. **Not** on External boundary nodes (§4.3). | Temporal Model |
@@ -824,6 +866,12 @@ using Ast.GraphDb;
 public interface IMemoryGraphStore : IGraphStore
 {
     /// Query nodes filtered by layer and temporal range.
+    /// Filters by the node's **home layer** (Metadata["MemoryLayer"]) — see §2.1
+    /// Node-Layer Assignment Rules. A node with home layer "structural" that
+    /// participates as an endpoint on a "call_chain" edge will NOT be returned
+    /// by GetNodesByLayerAsync("call_chain"). To find nodes participating in
+    /// call-chain edges, query edges via GetEdgesBySemanticRelationAsync and
+    /// then resolve endpoint node IDs.
     Task<IReadOnlyList<HypergraphNode>> GetNodesByLayerAsync(
         string memoryLayer,
         int? atCommitIndex = null,
@@ -1229,41 +1277,68 @@ Agent                  MCP/CLI              EvolutionEngine       IMemoryGraphSt
 ### 6.4 Incremental Sync (Git Commit)
 
 ```
-Git hook / Watcher      IncrementalSync         GitDiffDriver      ExtractionPipeline    IMemoryGraphStore     DecayService
-  │                          │                       │                    │                    │                    │
-  │  ApplyDiffAsync          │                       │                    │                    │                    │
-  │  (repo, from, to)        │                       │                    │                    │                    │
-  │─────────────────────────▶│                       │                    │                    │                    │
-  │                          │  git diff --name-     │                    │                    │                    │
-  │                          │  status from..to      │                    │                    │                    │
-  │                          │──────────────────────▶│                    │                    │                    │
-  │                          │  [(status, path)]     │                    │                    │                    │
-  │                          │◀──────────────────────│                    │                    │                    │
-  │                          │                       │                    │                    │                    │
-  │                          │  ── per batch of modified files ──         │                    │                    │
-  │                          │  ExtractFilesAsync(repo, paths)            │                    │                    │                    │
-  │                          │──────────────────────────────────────────▶│                    │                    │
-  │                          │  new nodes/edges      │                    │                    │                    │
-  │                          │◀──────────────────────────────────────────│                    │                    │
-  │                          │                       │                    │                    │                    │
-  │                          │  Diff old vs new      │                    │                    │                    │
-  │                          │  UpsertNodeAsync (added/changed)          │                    │                    │
-  │                          │  RetireNodeAsync (removed)                │                    │                    │
-  │                          │──────────────────────────────────────────────────────────────▶│                    │
-  │                          │                       │                    │                    │                    │
-  │                          │  ── per deleted file ──                   │                    │                    │
-  │                          │  RetireNodeAsync(file nodes, untilIndex)  │                    │                    │
-  │                          │──────────────────────────────────────────────────────────────▶│                    │
-  │                          │                       │                    │                    │                    │
-  │                          │  Decay expertise targeting changed nodes  │                    │                    │
-  │                          │─────────────────────────────────────────────────────────────────────────────────────▶│
-  │                          │  DecayResult           │                    │                    │                    │
-  │                          │◀─────────────────────────────────────────────────────────────────────────────────────│
-  │                          │                       │                    │                    │                    │
-  │                          │  LogAuditAsync(...)   │                    │                    │                    │
-  │                          │──────────────────────────────────────────────────────────────▶│                    │
-  │  SyncResult              │                       │                    │                    │                    │
-  │◀─────────────────────────│                       │                    │                    │                    │
+Git hook / Watcher      IncrementalSync         GitDiffDriver      ExtractionPipeline    IMemoryGraphStore     SemanticIndexer   DecayService
+  │                          │                       │                    │                    │                    │                │
+  │  ApplyDiffAsync          │                       │                    │                    │                    │                │
+  │  (repo, from, to)        │                       │                    │                    │                    │                │
+  │─────────────────────────▶│                       │                    │                    │                    │                │
+  │                          │                       │                    │                    │                    │                │
+  │                          │  ── Step 1: Register commit ──            │                    │                    │                │
+  │                          │  Insert into commits table (sha, index, timestamp, author)     │                    │                │
+  │                          │──────────────────────────────────────────────────────────────▶│                    │                │
+  │                          │                       │                    │                    │                    │                │
+  │                          │  ── Step 2: Identify changes ──           │                    │                    │                │
+  │                          │  git diff --name-     │                    │                    │                    │                │
+  │                          │  status from..to      │                    │                    │                    │                │
+  │                          │──────────────────────▶│                    │                    │                    │                │
+  │                          │  [(status, path)]     │                    │                    │                    │                │
+  │                          │  (A/M/D/R per file)   │                    │                    │                    │                │
+  │                          │◀──────────────────────│                    │                    │                    │                │
+  │                          │                       │                    │                    │                    │                │
+  │                          │  ── Steps 3-5: Re-extract A/M/R files ──  │                    │                    │                │
+  │                          │  ExtractFilesAsync(repo, modifiedPaths)    │                    │                    │                │
+  │                          │──────────────────────────────────────────▶│                    │                    │                │
+  │                          │  new nodes/edges      │                    │                    │                    │                │
+  │                          │◀──────────────────────────────────────────│                    │                    │                │
+  │                          │                       │                    │                    │                    │                │
+  │                          │  Diff old vs new      │                    │                    │                    │                │
+  │                          │  UpsertNodeAsync (added/changed)          │                    │                    │                │
+  │                          │  RetireNodeAsync (removed/renamed-old-path)│                    │                    │                │
+  │                          │──────────────────────────────────────────────────────────────▶│                    │                │
+  │                          │                       │                    │                    │                    │                │
+  │                          │  ── Step 6: Handle deleted files ──       │                    │                    │                │
+  │                          │  RetireNodeAsync(file nodes, untilIndex)  │                    │                    │                │
+  │                          │──────────────────────────────────────────────────────────────▶│                    │                │
+  │                          │                       │                    │                    │                    │                │
+  │                          │  ── Step 7: Retire orphaned edges ──      │                    │                    │                │
+  │                          │  RetireEdgeAsync(orphanedEdgeId, untilIndex) per edge          │                    │                │
+  │                          │  whose source/target was retired but edge was not cascaded     │                    │                │
+  │                          │──────────────────────────────────────────────────────────────▶│                    │                │
+  │                          │                       │                    │                    │                    │                │
+  │                          │  ── Step 8: Mark downstream edges stale ──│                    │                    │                │
+  │                          │  UpdateEdgeMetadataAsync(edgeId, {Stale:true}) per CALLS edge  │                    │                │
+  │                          │  whose caller/callee signature changed    │                    │                    │                │
+  │                          │──────────────────────────────────────────────────────────────▶│                    │                │
+  │                          │                       │                    │                    │                    │                │
+  │                          │  ── Step 9: Re-embed changed nodes ──     │                    │                    │                │
+  │                          │  SemanticIndexer.IndexAsync(changedNodes) │                    │                    │                │
+  │                          │  (re-embeds + retires old SIMILAR_TO      │                    │                    │                │
+  │                          │   + creates new SIMILAR_TO edges)         │                    │                    │                │
+  │                          │──────────────────────────────────────────────────────────────────────────────────▶│                │
+  │                          │  updated embeddings + SIMILAR_TO edges    │                    │                    │                │
+  │                          │◀──────────────────────────────────────────────────────────────────────────────────│                │
+  │                          │                       │                    │                    │                    │                │
+  │                          │  ── Step 10: Decay expertise ──           │                    │                    │                │
+  │                          │  Decay expertise targeting changed nodes  │                    │                    │                │
+  │                          │─────────────────────────────────────────────────────────────────────────────────────────────────────▶│
+  │                          │  DecayResult           │                    │                    │                    │                │
+  │                          │◀─────────────────────────────────────────────────────────────────────────────────────────────────────│
+  │                          │                       │                    │                    │                    │                │
+  │                          │  ── Step 11: Audit log ──                 │                    │                    │                │
+  │                          │  LogAuditAsync(...)   │                    │                    │                    │                │
+  │                          │──────────────────────────────────────────────────────────────▶│                    │                │
+  │  SyncResult              │                       │                    │                    │                    │                │
+  │◀─────────────────────────│                       │                    │                    │                    │                │
 ```
 
 ### 6.5 Cross-Session Learning (Expertise Lifecycle)
@@ -1460,6 +1535,10 @@ traceability:
 | TS-S4 | §8.4 lines 258–260 | Column names `valid_from_idx` / `valid_until_idx` in SQLite schema | Column names are `since_index` / `until_index` (§4.4) | Architecture governs |
 | TS-S5 | Header line 9 | Describes implementation-plan as "Contains 31 naming/data-model divergences" | Implementation-plan has been aligned (§8.2); the "31 divergences" description is stale | Architecture governs |
 | TS-S6 | §7.1 line 168 | External nodes listed with `package`, `fqn` properties | Canonical keys are `Metadata["Package"]`, `Metadata["QualifiedName"]` (§4.2, §4.5) | A11 |
+| TS-S7 | §8.4 line 289 | Decay trigger listed as "On every retrieval" | Decay is a periodic / on-demand operation via `DecayStaleExpertiseAsync` (§3.5, §5.3); event-driven decay runs at sync time, not retrieval time | Architecture governs |
+| TS-S8 | §8.2 line 258 | `commits` table uses `parent_sha` column | Canonical schema uses `author` column (§4.4); `parent_sha` is not tracked | Architecture governs |
+| TS-S9 | §8.4 line 289 | Decay formula: `confidence × 2^(−age_days / 1095) × (1.0 + 0.5 × normalized_pagerank)` — centrality multiplies the output | Canonical formula: `final = event_adjusted_confidence × 2^(−age_days / (DecayHalfLifeDays × centrality_boost))` — centrality extends the half-life; `age_days` = days since `CreatedAt`; time-based decay is idempotent (§3.5 worked example) | Architecture governs |
+| TS-S10 | §11, D5 line 337 | Decay formula: `initial_confidence × 2^(…) × centrality_boost` — uses `initial_confidence` and centrality as output multiplier | Canonical uses `event_adjusted_confidence` (stored `Confidence` reflecting prior event-driven decays) and centrality modifies the half-life, not the output (§3.5). D5 captures the operator's intent correctly (3-year half-life, centrality factor) but the formula notation is imprecise | Architecture governs |
 
 #### Stale text remaining in `implementation-plan.md`
 
