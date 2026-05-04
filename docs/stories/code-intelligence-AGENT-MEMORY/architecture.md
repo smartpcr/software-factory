@@ -200,3 +200,922 @@ documents. Implementations read these from `MemoryOptions` configuration.
 | `centrality` | 0.20 | Normalized fan-in from `CALLS` edges (PageRank-light) |
 | `recency` | 0.15 | `1.0 − (HEAD_idx − node_sinceIdx) / max_distance`, clamped [0,1] |
 | `expertise` | 0.10 | Max `Confidence` of any `APPLIES_TO` edge targeting the node; 0.0 when none |
+
+---
+
+## 3. Components
+
+All new code ships as **`Ast.Memory`** (`src/ast/Ast.Memory/`) with
+companion test projects `Ast.Memory.UnitTests` and
+`Ast.Memory.IntegrationTests`. The project layout:
+
+```
+src/ast/
+  Ast.Memory/
+    Ast.Memory.csproj
+    Interfaces/          ← IMemoryGraphStore, IMemoryRetrievalEngine,
+                            IEvolutionEngine, IExtractionPipeline, IIncrementalSync
+    Models/              ← MemoryNode, MemoryEdge, ExpertiseEntry, enums,
+                            MemoryMetadataKeys, VersionRange
+    Extraction/          ← StructureBuilder, CallChainAnalyzer,
+                            SemanticIndexer, FactNormalizer
+    Retrieval/           ← MemoryRetrievalEngine, QueryPlanner, Ranker,
+                            ScoringWeights
+    Context/             ← ContextAssembler, BudgetController
+    Evolution/           ← EvolutionEngine, ConsolidationService, DecayService
+    Sync/                ← IncrementalSync, GitDiffDriver
+    Storage/             ← SqliteGraphStore, Neo4jMemoryGraphStore
+    Schema/              ← AnnotationKeyRegistry
+    Mcp/                 ← MemoryMcpToolRegistration, MemoryMcpHandler
+    Cli/                 ← MemoryCommandModule
+    ServiceCollectionExtensions.cs
+  Ast.Memory.UnitTests/
+  Ast.Memory.IntegrationTests/
+```
+
+### 3.1 Extraction Pipeline
+
+**Responsibility:** Transform source code into the four-layer memory graph.
+
+| Sub-component | Class | Description |
+|---|---|---|
+| **Structure Builder** | `StructureBuilder` | Walks existing `HypergraphData` (produced by `Ast.Csharp` / `Ast.PowerShell` parsers) and emits Structural-layer nodes (Repo, Package, Module, Class, Function) with `CONTAINS` and `DEPENDS_ON` edges. |
+| **Call-Chain Analyzer** | `CallChainAnalyzer` | Reads `Hyperedge` entries of type `MethodInvocation`, `ConstructorInvocation`, `CmdletCall`, etc. and emits Call-Chain-layer edges (`CALLS`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES`). |
+| **Semantic Indexer** | `SemanticIndexer` | Batches nodes through `IEmbeddingGenerator.GenerateBatchEmbeddingsAsync()` (from existing `Ast.Embedding`), stores vectors, and creates `SIMILAR_TO` edges where cosine similarity ≥ `SimilarityThreshold` (0.85). |
+| **Fact Normalizer** | `FactNormalizer` | Deduplicates nodes across languages (e.g., a C# class and its PowerShell caller) and assigns canonical IDs. |
+
+**Dependency chain:** `StructureBuilder` → `CallChainAnalyzer` → `SemanticIndexer` (sequential — each stage requires the previous stage's nodes to exist).
+
+The pipeline exposes a single entry point:
+
+```csharp
+interface IExtractionPipeline
+{
+    Task<ExtractionResult> ExtractAsync(
+        string repoRoot,
+        ExtractionOptions options,
+        CancellationToken ct = default);
+}
+```
+
+### 3.2 Storage Layer
+
+**Responsibility:** Persist and query the four-layer graph and associated
+vector embeddings.
+
+| Implementation | Backing store | Use case |
+|---|---|---|
+| `SqliteGraphStore` | SQLite + FTS5 + sqlite-vss | Local / single-developer mode. Zero infrastructure. |
+| `Neo4jMemoryGraphStore` | Neo4j (via existing `Ast.GraphDb`) + Qdrant (via existing `Ast.VectorDb`) | Team / CI mode. Shared graph across developers. |
+
+Both implement `IMemoryGraphStore` (§5.1). Selection is via DI configuration
+in `ServiceCollectionExtensions.cs`.
+
+The storage layer also maintains:
+
+- **`commits` table** — maps commit SHAs to monotonic `commit_index` integers
+  and wall-clock timestamps. Used by the temporal model (§4.3).
+- **`audit_log` table** — records every mutation with agent-session-id,
+  timestamp, operation type, and detail JSON (HC7).
+
+### 3.3 Retrieval Engine
+
+**Responsibility:** Given a query (task description, file path, symbol name),
+return a ranked set of graph nodes within a token budget.
+
+The engine has three internal stages:
+
+1. **Query Planner** (`QueryPlanner`) — selects one or more `RetrievalMode`
+   values based on the query shape:
+   - `StructuralDrill` — BFS from a seed node along `CONTAINS`/`DEPENDS_ON`.
+   - `CallTrace` — forward/backward traversal along `CALLS`/`EXTENDS`/`IMPLEMENTS`.
+   - `SemanticSearch` — embed query text, ANN lookup in vector store.
+   - `ExpertiseRecall` — filter nodes by `APPLIES_TO` edges from Expertise layer.
+   - `Hybrid` — combine all four modes (default for free-text queries).
+
+2. **Ranker** (`Ranker`) — scores candidate nodes using the 5-signal weighted
+   model (§2.4). Produces a `List<ScoredMemoryNode>` sorted by descending
+   composite score.
+
+3. **Budget Controller** (`BudgetController`) — serializes ranked nodes into a
+   token-counted context window (default: 8,000 tokens; ceiling: 32,000).
+   When budget is tight, collapses child nodes into parent summaries
+   (HiAgent pattern). Deduplicates same code span reached via multiple paths.
+
+Edge filtering throughout retrieval uses `Metadata["SemanticRelation"]`
+exclusively (§2.2). The `HyperedgeType` enum is preserved for backward
+compatibility but is never used as a retrieval filter.
+
+### 3.4 Context Assembler
+
+**Responsibility:** Transform ranked nodes into deterministic Markdown output
+for the agent's prompt.
+
+Output sections (fixed order):
+
+```markdown
+## Structure
+<!-- Containment hierarchy of selected nodes -->
+
+## Call Graph
+<!-- Caller → callee chains relevant to the query -->
+
+## Related Code
+<!-- Semantically similar code snippets -->
+
+## Known Expertise
+<!-- Expertise nodes (patterns, pitfalls) that apply to selected code -->
+```
+
+The Context Assembler receives a `List<ScoredMemoryNode>` from the Retrieval
+Engine and the token budget from the Budget Controller. It never queries the
+graph directly — it formats what the Retrieval Engine provides.
+
+### 3.5 Evolution Engine
+
+**Responsibility:** Write-back, consolidation, decay, and community
+summarization — the mechanisms by which the graph improves over sessions.
+
+| Sub-component | Class | Description |
+|---|---|---|
+| **Write-back** | `EvolutionEngine.RecordExpertiseAsync()` | Creates `ExpertiseEntry` nodes (§4.2) linked to code nodes via `APPLIES_TO` edges. Each entry has a `Confidence` value (0.0–1.0), `ExpertiseKind` (`Pattern`, `Pitfall`, `Preference`, `Insight`), and `SourceAgent` provenance. |
+| **Consolidation** | `ConsolidationService` | LLM-powered merge of semantically similar expertise entries (cosine ≥ `SimilarityThreshold`). Creates `SUPERSEDES` edge from merged entry to originals. Acquires a write-level lock to prevent concurrent merges. |
+| **Decay** | `DecayService` | Two decay mechanisms: (a) **Event-driven** — `StaleDecayFactor` (0.5) applied when target code's `ContentHash` changes on a non-trivial edit; `MinorDecayFactor` (0.9) for whitespace/comment-only changes. (b) **Time-based** — exponential decay with `DecayHalfLifeDays` (1,095 days / 3 years). Entries below `ArchiveConfidenceFloor` (0.1) are soft-deleted. |
+| **Community Detection** | `EvolutionEngine.DetectCommunitiesAsync()` | Louvain algorithm over `CALLS`/`SIMILAR_TO` edges → creates `BELONGS_TO_CLUSTER` edges and `Topic` summary nodes in the Semantic layer (GraphRAG pattern). |
+
+### 3.6 Incremental Sync
+
+**Responsibility:** Keep the graph current without full re-extraction.
+
+| Trigger | Mechanism |
+|---|---|
+| `git pull` / commit | `GitDiffDriver` computes changed file set via `git diff --name-status` |
+| File save (IDE) | File-system watcher with `IncrementalSyncDebounceMs` (1,000 ms) debounce |
+
+On trigger:
+
+1. `GitDiffDriver` identifies added/modified/deleted files.
+2. For each modified file: re-extract via `IExtractionPipeline`, diff old vs.
+   new nodes, upsert changes, set `UntilIndex` on removed nodes/edges.
+3. For deleted files: set `UntilIndex` on all nodes/edges rooted in that file.
+4. Propagate invalidation: mark downstream `CALLS` edges for re-validation.
+5. Re-run `SemanticIndexer` on changed nodes only (incremental embedding).
+
+```csharp
+interface IIncrementalSync
+{
+    Task<SyncResult> ApplyDiffAsync(
+        string repoRoot,
+        string fromCommit,
+        string toCommit,
+        CancellationToken ct = default);
+}
+```
+
+### 3.7 Concurrency Model
+
+- **Shared-nothing reads.** Each `RetrieveAsync` call is stateless and
+  independent. Multiple concurrent calls are safe.
+- **Serialized writes.** All mutations (`ApplyDiffAsync`,
+  `RecordExpertiseAsync`, `DecayStaleExpertiseAsync`) are serialized via
+  in-process `SemaphoreSlim(1, 1)` (SQLite) or ACID transactions (Neo4j).
+- **Consolidation lock.** `ConsolidateAsync` acquires a write-level lock to
+  prevent concurrent merges.
+- **Indirect knowledge sharing.** Agents share knowledge indirectly: Agent A
+  writes; Agent B discovers on subsequent read. No inter-agent messaging.
+
+### 3.8 MCP Tool Interface
+
+The memory graph is exposed to external agents via MCP (Model Context Protocol)
+tools registered in `Ast.Memory/Mcp/`. The handler logic lives entirely in
+`Ast.Memory`; `Ast.Cli` only adds a `config.AddBranch("memory", ...)` route.
+
+| MCP Tool | Maps to | Description |
+|---|---|---|
+| `memory_query` | `IMemoryRetrievalEngine.RetrieveAsync()` | Hybrid context retrieval with configurable mode and budget |
+| `memory_status` | `IMemoryGraphStore.GetStatisticsAsync()` | Graph statistics (node/edge counts by layer) |
+| `memory_record_expertise` | `IEvolutionEngine.RecordExpertiseAsync()` | Write an expertise entry |
+| `memory_sync` | `IIncrementalSync.ApplyDiffAsync()` | Trigger incremental sync |
+| `memory_consolidate` | `IEvolutionEngine.ConsolidateAsync()` | Run consolidation (admin) |
+
+---
+
+## 4. Data Model
+
+### 4.1 Composition Wrappers
+
+The memory layer uses composition wrappers over the existing `Ast.Core` base
+types. This preserves backward compatibility with ~997 existing tests (HC8).
+
+```csharp
+/// Wraps HypergraphNode with strongly-typed memory accessors.
+/// Never inherits from HypergraphNode — contains it.
+public class MemoryNode
+{
+    public HypergraphNode Inner { get; }
+
+    // Strongly-typed accessors for Metadata keys
+    public string MemoryLayer
+        => (string)this.Inner.Metadata["MemoryLayer"];
+
+    public string NodeKind
+        => this.Inner.NodeType;  // "Repo","Package","Module","Class","Function","ExpertiseEntry","Topic"
+
+    public VersionRange Version { get; }
+
+    public string? ContentHash
+        => this.Inner.Metadata.TryGetValue("ContentHash", out var v)
+            ? (string?)v : null;
+}
+
+/// Wraps Hyperedge with strongly-typed memory accessors.
+public class MemoryEdge
+{
+    public Hyperedge Inner { get; }
+
+    public string SemanticRelation
+        => (string)this.Inner.Metadata["SemanticRelation"];
+        // One of: CONTAINS, DEPENDS_ON, CALLS, EXTENDS, IMPLEMENTS,
+        //         REFERENCES, SIMILAR_TO, BELONGS_TO_CLUSTER,
+        //         APPLIES_TO, SUPERSEDES, DERIVED_FROM
+
+    public string MemoryLayer
+        => (string)this.Inner.Metadata["MemoryLayer"];
+
+    public VersionRange Version { get; }
+}
+```
+
+### 4.2 Entity Catalog
+
+#### Code Nodes (Structural & Call-Chain layers)
+
+| Field | Type | Source | Description |
+|---|---|---|---|
+| `Id` | `string` | `HypergraphNode.Id` | Format: `"{relativePath}::{qualifiedName}"` for symbols; `"{relativePath}"` for files; `"/"` for repo root |
+| `Name` | `string` | `HypergraphNode.Name` | Short name of the symbol |
+| `NodeType` | `string` | `HypergraphNode.NodeType` | `"Repo"`, `"Package"`, `"Module"`, `"Class"`, `"Interface"`, `"Function"`, `"Method"`, `"Property"` |
+| `Language` | `string` | `HypergraphNode.Language` | `"C#"`, `"PowerShell"` |
+| `FilePath` | `string` | `HypergraphNode.FilePath` | Relative path from repo root |
+| `LineStart` / `LineEnd` | `int` | `HypergraphNode.LineStart/LineEnd` | Source location |
+| `Metadata["MemoryLayer"]` | `string` | Memory wrapper | `"structural"` or `"call_chain"` |
+| `Metadata["ContentHash"]` | `string` | Extraction pipeline | SHA-256 of source text — used for decay detection |
+| `Metadata["SinceCommit"]` | `string` | Temporal model | Commit SHA when node was introduced |
+| `Metadata["SinceIndex"]` | `int` | Temporal model | Monotonic commit index when introduced |
+| `Metadata["UntilCommit"]` | `string?` | Temporal model | Commit SHA when node was removed (null = still active) |
+| `Metadata["UntilIndex"]` | `int?` | Temporal model | Commit index when removed |
+
+#### Expertise Nodes (Expertise layer)
+
+```csharp
+public class ExpertiseEntry
+{
+    public required string Id { get; init; }
+    // Format: "expertise:{kind}:{hash8}" where hash8 = first 8 chars of
+    // SHA-256(Content + TargetNodeId)
+
+    public required ExpertiseKind Kind { get; init; }
+    // Pattern, Pitfall, Preference, Insight
+
+    public required string Content { get; init; }
+    // Free-text expertise description
+
+    public required string TargetNodeId { get; init; }
+    // Code node this expertise applies to
+
+    public double Confidence { get; set; } = 1.0;
+    // [0.0, 1.0] — decays over time and on code changes
+
+    public required string SourceAgent { get; init; }
+    // Agent session identifier for provenance
+
+    public float[]? Embedding { get; set; }
+    // Pre-computed embedding of Content
+
+    public string? ContentHash { get; set; }
+    // SHA-256 of Content — for deduplication
+
+    public DateTime CreatedAt { get; init; }
+    public DateTime? UpdatedAt { get; set; }
+}
+
+public enum ExpertiseKind
+{
+    Pattern,     // Reusable design pattern observed
+    Pitfall,     // Known bug-prone area or anti-pattern
+    Preference,  // Team/project convention
+    Insight      // General architectural observation
+}
+```
+
+#### Topic Nodes (Semantic layer)
+
+| Field | Type | Description |
+|---|---|---|
+| `Id` | `string` | `"topic:{hash8}"` |
+| `NodeType` | `string` | `"Topic"` |
+| `Metadata["MemoryLayer"]` | `string` | `"semantic"` |
+| `Metadata["Summary"]` | `string` | LLM-generated prose summary of the cluster |
+| `Metadata["MemberCount"]` | `int` | Number of nodes in the cluster |
+
+### 4.3 Temporal Model (Dual-Axis)
+
+Every node and edge carries a `VersionRange`:
+
+```csharp
+public record VersionRange(
+    string Since,        // Commit SHA when introduced
+    int SinceIndex,      // Monotonic commit index (integer, for range queries)
+    string? Until,       // Commit SHA when removed (null = still active)
+    int? UntilIndex      // Commit index when removed
+);
+```
+
+**Axis 1 — Commit index (primary).** All point-in-time queries use integer
+comparison:
+
+```sql
+WHERE since_index <= @target AND (until_index IS NULL OR until_index > @target)
+```
+
+**Axis 2 — Wall-clock timestamp (secondary).** Available via join to the
+`commits` table:
+
+```sql
+commits(sha TEXT PK, commit_index INT UNIQUE, timestamp DATETIME, author TEXT)
+```
+
+Wall-clock is used for time-based decay (`DecayHalfLifeDays`) and human-facing
+display, never for graph filtering.
+
+### 4.4 Storage Schema (SQLite mode)
+
+```sql
+-- Core graph tables
+CREATE TABLE nodes (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    node_type   TEXT NOT NULL,
+    language    TEXT NOT NULL,
+    file_path   TEXT NOT NULL,
+    line_start  INT,
+    line_end    INT,
+    metadata    TEXT NOT NULL,           -- JSON
+    since_sha   TEXT NOT NULL,
+    since_index INT NOT NULL,
+    until_sha   TEXT,
+    until_index INT,
+    content_hash TEXT
+);
+
+CREATE TABLE edges (
+    id              TEXT PRIMARY KEY,
+    edge_type       INT NOT NULL,        -- HyperedgeType enum value
+    node_ids        TEXT NOT NULL,        -- JSON array
+    roles           TEXT NOT NULL,        -- JSON object
+    metadata        TEXT NOT NULL,        -- JSON
+    semantic_rel    TEXT NOT NULL,        -- denormalized from metadata
+    memory_layer    TEXT NOT NULL,        -- denormalized from metadata
+    since_index     INT NOT NULL,
+    until_index     INT
+);
+
+CREATE TABLE expertise (
+    id              TEXT PRIMARY KEY,
+    kind            TEXT NOT NULL,        -- ExpertiseKind enum name
+    content         TEXT NOT NULL,
+    target_node_id  TEXT NOT NULL REFERENCES nodes(id),
+    confidence      REAL NOT NULL DEFAULT 1.0,
+    source_agent    TEXT NOT NULL,
+    embedding       BLOB,                -- float[] serialized
+    content_hash    TEXT,
+    created_at      DATETIME NOT NULL,
+    updated_at      DATETIME
+);
+
+CREATE TABLE commits (
+    sha          TEXT PRIMARY KEY,
+    commit_index INT NOT NULL UNIQUE,
+    timestamp    DATETIME NOT NULL,
+    author       TEXT
+);
+
+CREATE TABLE audit_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT NOT NULL,
+    timestamp   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    operation   TEXT NOT NULL,           -- 'create_node','update_edge','record_expertise',...
+    detail      TEXT NOT NULL            -- JSON
+);
+
+-- Indexes
+CREATE INDEX idx_nodes_layer ON nodes((json_extract(metadata, '$.MemoryLayer')));
+CREATE INDEX idx_nodes_type ON nodes(node_type);
+CREATE INDEX idx_nodes_file ON nodes(file_path);
+CREATE INDEX idx_nodes_since ON nodes(since_index);
+CREATE INDEX idx_edges_semantic ON edges(semantic_rel);
+CREATE INDEX idx_edges_layer ON edges(memory_layer);
+CREATE INDEX idx_expertise_target ON expertise(target_node_id);
+CREATE INDEX idx_expertise_kind ON expertise(kind);
+CREATE INDEX idx_audit_session ON audit_log(session_id);
+```
+
+### 4.5 Metadata Key Registry
+
+`AnnotationKeyRegistry` defines the well-known `Metadata` keys:
+
+| Key | Type | Layer | Owner |
+|---|---|---|---|
+| `MemoryLayer` | `string` | All | Extraction Pipeline |
+| `SemanticRelation` | `string` | All edges | Extraction Pipeline / Evolution Engine |
+| `ContentHash` | `string` | Structural, Call-Chain | Extraction Pipeline |
+| `SinceCommit` | `string` | All | Temporal Model |
+| `SinceIndex` | `int` | All | Temporal Model |
+| `UntilCommit` | `string?` | All | Temporal Model / Incremental Sync |
+| `UntilIndex` | `int?` | All | Temporal Model / Incremental Sync |
+| `Summary` | `string` | Semantic (Topic) | Evolution Engine |
+| `MemberCount` | `int` | Semantic (Topic) | Evolution Engine |
+| `SimilarityScore` | `double` | Semantic (`SIMILAR_TO` edges) | Semantic Indexer |
+
+Agent-authored extension keys use the `ext:` prefix (e.g., `ext:team-owner`).
+Keys without `ext:` prefix that are not in the registry produce a validation
+warning at write time.
+
+---
+
+## 5. Interfaces
+
+All interfaces live in `Ast.Memory/Interfaces/`.
+
+### 5.1 IMemoryGraphStore
+
+Extends the existing `IGraphStore` from `Ast.GraphDb` with memory-specific
+operations. Both `SqliteGraphStore` and `Neo4jMemoryGraphStore` implement this.
+
+```csharp
+namespace Ast.Memory.Interfaces;
+
+using Ast.Core;
+using Ast.GraphDb;
+
+public interface IMemoryGraphStore : IGraphStore
+{
+    /// Query nodes filtered by layer and temporal range.
+    Task<IReadOnlyList<HypergraphNode>> GetNodesByLayerAsync(
+        string memoryLayer,
+        int? atCommitIndex = null,
+        NodeFilter? filter = null,
+        int limit = 100,
+        CancellationToken ct = default);
+
+    /// Query edges filtered by SemanticRelation and layer.
+    Task<IReadOnlyList<Hyperedge>> GetEdgesBySemanticRelationAsync(
+        string semanticRelation,
+        string? memoryLayer = null,
+        int? atCommitIndex = null,
+        int limit = 100,
+        CancellationToken ct = default);
+
+    /// Upsert a node with temporal versioning.
+    Task UpsertNodeAsync(
+        HypergraphNode node,
+        VersionRange version,
+        CancellationToken ct = default);
+
+    /// Soft-delete: set UntilIndex on a node and its edges.
+    Task RetireNodeAsync(
+        string nodeId,
+        int untilCommitIndex,
+        CancellationToken ct = default);
+
+    /// Retrieve expertise entries for a target node.
+    Task<IReadOnlyList<ExpertiseEntry>> GetExpertiseForNodeAsync(
+        string targetNodeId,
+        double minConfidence = 0.0,
+        CancellationToken ct = default);
+
+    /// Store or update an expertise entry.
+    Task UpsertExpertiseAsync(
+        ExpertiseEntry entry,
+        CancellationToken ct = default);
+
+    /// Get graph statistics segmented by layer.
+    Task<MemoryGraphStatistics> GetMemoryStatisticsAsync(
+        CancellationToken ct = default);
+
+    /// Append to audit log.
+    Task LogAuditAsync(
+        string sessionId,
+        string operation,
+        object detail,
+        CancellationToken ct = default);
+}
+```
+
+### 5.2 IMemoryRetrievalEngine
+
+The primary query interface consumed by agents and the MCP tool handler.
+
+```csharp
+namespace Ast.Memory.Interfaces;
+
+public interface IMemoryRetrievalEngine
+{
+    /// Retrieve ranked context for a query within a token budget.
+    Task<RetrievalResult> RetrieveAsync(
+        RetrievalRequest request,
+        CancellationToken ct = default);
+}
+
+public class RetrievalRequest
+{
+    /// Free-text query (task description, question).
+    public string? QueryText { get; init; }
+
+    /// Seed node IDs for structural/call-chain traversal.
+    public IReadOnlyList<string>? SeedNodeIds { get; init; }
+
+    /// Retrieval mode. Default: Hybrid.
+    public RetrievalMode Mode { get; init; } = RetrievalMode.Hybrid;
+
+    /// Token budget (clamped to [1, TokenBudgetCeiling]).
+    public int TokenBudget { get; init; } = 8_000;
+
+    /// Optional: target commit index for point-in-time queries.
+    public int? AtCommitIndex { get; init; }
+
+    /// Optional: override scoring weights.
+    public ScoringWeights? Weights { get; init; }
+}
+
+public class RetrievalResult
+{
+    /// Ranked nodes with scores.
+    public required IReadOnlyList<ScoredMemoryNode> Nodes { get; init; }
+
+    /// Assembled context Markdown (ready for prompt injection).
+    public required string ContextMarkdown { get; init; }
+
+    /// Actual tokens used.
+    public int TokensUsed { get; init; }
+
+    /// Which retrieval modes were executed.
+    public IReadOnlyList<RetrievalMode> ModesExecuted { get; init; } = [];
+
+    /// Diagnostics: per-mode candidate counts, timing.
+    public RetrievalDiagnostics? Diagnostics { get; init; }
+}
+
+public class ScoredMemoryNode
+{
+    public required MemoryNode Node { get; init; }
+    public double CompositeScore { get; init; }
+    public double StructuralScore { get; init; }
+    public double SemanticScore { get; init; }
+    public double CentralityScore { get; init; }
+    public double RecencyScore { get; init; }
+    public double ExpertiseScore { get; init; }
+}
+```
+
+### 5.3 IEvolutionEngine
+
+```csharp
+namespace Ast.Memory.Interfaces;
+
+public interface IEvolutionEngine
+{
+    /// Record an expertise entry and link it to a target code node.
+    Task<ExpertiseEntry> RecordExpertiseAsync(
+        string targetNodeId,
+        ExpertiseKind kind,
+        string content,
+        string sourceAgent,
+        CancellationToken ct = default);
+
+    /// Consolidate similar expertise entries (LLM-powered merge).
+    /// Acquires write lock — only one consolidation at a time.
+    Task<ConsolidationResult> ConsolidateAsync(
+        CancellationToken ct = default);
+
+    /// Apply decay to stale expertise entries.
+    Task<DecayResult> DecayStaleExpertiseAsync(
+        CancellationToken ct = default);
+
+    /// Run community detection and generate Topic summaries.
+    Task<CommunityResult> DetectCommunitiesAsync(
+        CancellationToken ct = default);
+}
+
+public enum RetrievalMode
+{
+    StructuralDrill,
+    CallTrace,
+    SemanticSearch,
+    ExpertiseRecall,
+    Hybrid
+}
+```
+
+### 5.4 IExtractionPipeline & IIncrementalSync
+
+```csharp
+namespace Ast.Memory.Interfaces;
+
+public interface IExtractionPipeline
+{
+    /// Full extraction: parse repo → build all four layers.
+    Task<ExtractionResult> ExtractAsync(
+        string repoRoot,
+        ExtractionOptions options,
+        CancellationToken ct = default);
+}
+
+public class ExtractionOptions
+{
+    public IReadOnlyList<string> Languages { get; init; } = ["C#", "PowerShell"];
+    public string? CommitSha { get; init; }
+    public bool IncludeTestProjects { get; init; } = false;
+    public bool GenerateEmbeddings { get; init; } = true;
+}
+
+public class ExtractionResult
+{
+    public int NodesCreated { get; init; }
+    public int EdgesCreated { get; init; }
+    public int EmbeddingsGenerated { get; init; }
+    public TimeSpan Duration { get; init; }
+    public IReadOnlyList<string> Errors { get; init; } = [];
+}
+
+public interface IIncrementalSync
+{
+    /// Incremental update: diff commits → re-extract changed files.
+    Task<SyncResult> ApplyDiffAsync(
+        string repoRoot,
+        string fromCommit,
+        string toCommit,
+        CancellationToken ct = default);
+}
+
+public class SyncResult
+{
+    public int FilesChanged { get; init; }
+    public int NodesAdded { get; init; }
+    public int NodesRetired { get; init; }
+    public int EdgesAdded { get; init; }
+    public int EdgesRetired { get; init; }
+    public int ExpertiseDecayed { get; init; }
+    public TimeSpan Duration { get; init; }
+}
+```
+
+### 5.5 Dependency Graph (Project References)
+
+```
+Ast.Memory
+  ├── Ast.Core           (existing — HypergraphNode, Hyperedge, HyperedgeType)
+  ├── Ast.GraphDb         (existing — IGraphStore, NodeFilter, GraphPath)
+  ├── Ast.Embedding       (existing — IEmbeddingGenerator)
+  ├── Ast.VectorDb        (existing — IVectorStore)
+  ├── Ast.Query           (existing — ICodeQuery)
+  ├── Ast.Csharp          (existing — C# parser)
+  └── Ast.PowerShell      (existing — PowerShell parser)
+
+Ast.Memory.UnitTests
+  ├── Ast.Memory
+  └── Ast.Core
+
+Ast.Memory.IntegrationTests
+  ├── Ast.Memory
+  ├── Ast.GraphDb
+  ├── Ast.VectorDb
+  └── Ast.Embedding
+```
+
+---
+
+## 6. Sequence Flows
+
+### 6.1 Full Extraction (First-Time Indexing)
+
+```
+Agent/CLI                     ExtractionPipeline       Parsers            IMemoryGraphStore    IEmbeddingGenerator
+  │                                │                      │                    │                      │
+  │  ExtractAsync(repoRoot, opts)  │                      │                    │                      │
+  │──────────────────────────────▶│                      │                    │                      │
+  │                                │  Parse(repoRoot)     │                    │                      │
+  │                                │─────────────────────▶│                    │                      │
+  │                                │  HypergraphData      │                    │                      │
+  │                                │◀─────────────────────│                    │                      │
+  │                                │                      │                    │                      │
+  │                                │  ── StructureBuilder ──                   │                      │
+  │                                │  Build Repo/Pkg/Module/Class/Fn nodes     │                      │
+  │                                │  + CONTAINS, DEPENDS_ON edges             │                      │
+  │                                │  UpsertNodeAsync(node, version) ×N        │                      │
+  │                                │──────────────────────────────────────────▶│                      │
+  │                                │                      │                    │                      │
+  │                                │  ── CallChainAnalyzer ──                  │                      │
+  │                                │  Map MethodInvocation → CALLS edges       │                      │
+  │                                │  Map Extends/Implements edges             │                      │
+  │                                │  CreateEdgesAsync(edges)                  │                      │
+  │                                │──────────────────────────────────────────▶│                      │
+  │                                │                      │                    │                      │
+  │                                │  ── SemanticIndexer ──                    │                      │
+  │                                │  GenerateBatchEmbeddingsAsync(texts)      │                      │
+  │                                │──────────────────────────────────────────────────────────────────▶│
+  │                                │  float[][] embeddings                     │                      │
+  │                                │◀──────────────────────────────────────────────────────────────────│
+  │                                │  Store vectors + SIMILAR_TO edges         │                      │
+  │                                │──────────────────────────────────────────▶│                      │
+  │                                │                      │                    │                      │
+  │                                │  LogAuditAsync(...)   │                    │                      │
+  │                                │──────────────────────────────────────────▶│                      │
+  │  ExtractionResult              │                      │                    │                      │
+  │◀──────────────────────────────│                      │                    │                      │
+```
+
+### 6.2 Context Retrieval (Agent Query)
+
+```
+Agent                  MCP/CLI              RetrievalEngine        QueryPlanner     Ranker        BudgetController   ContextAssembler
+  │                      │                       │                     │              │                 │                  │
+  │  memory_query(req)   │                       │                     │              │                 │                  │
+  │─────────────────────▶│                       │                     │              │                 │                  │
+  │                      │  RetrieveAsync(req)   │                     │              │                 │                  │
+  │                      │──────────────────────▶│                     │              │                 │                  │
+  │                      │                       │  PlanQuery(req)     │              │                 │                  │
+  │                      │                       │───────────────────▶│              │                 │                  │
+  │                      │                       │  [modes]            │              │                 │                  │
+  │                      │                       │◀───────────────────│              │                 │                  │
+  │                      │                       │                     │              │                 │                  │
+  │                      │                       │  ── per mode ──     │              │                 │                  │
+  │                      │                       │  BFS / ANN / filter │              │                 │                  │
+  │                      │                       │  → candidate nodes  │              │                 │                  │
+  │                      │                       │                     │              │                 │                  │
+  │                      │                       │  Rank(candidates, weights)         │                 │                  │
+  │                      │                       │──────────────────────────────────▶│                 │                  │
+  │                      │                       │  List<ScoredMemoryNode>            │                 │                  │
+  │                      │                       │◀──────────────────────────────────│                 │                  │
+  │                      │                       │                     │              │                 │                  │
+  │                      │                       │  ApplyBudget(ranked, tokenBudget)  │                 │                  │
+  │                      │                       │─────────────────────────────────────────────────────▶│                  │
+  │                      │                       │  trimmed list                      │                 │                  │
+  │                      │                       │◀─────────────────────────────────────────────────────│                  │
+  │                      │                       │                     │              │                 │                  │
+  │                      │                       │  Assemble(trimmed)  │              │                 │                  │
+  │                      │                       │────────────────────────────────────────────────────────────────────────▶│
+  │                      │                       │  contextMarkdown    │              │                 │                  │
+  │                      │                       │◀────────────────────────────────────────────────────────────────────────│
+  │                      │  RetrievalResult      │                     │              │                 │                  │
+  │                      │◀──────────────────────│                     │              │                 │                  │
+  │  RetrievalResult     │                       │                     │              │                 │                  │
+  │◀─────────────────────│                       │                     │              │                 │                  │
+```
+
+### 6.3 Expertise Write-Back (Post-Session Learning)
+
+```
+Agent                  MCP/CLI              EvolutionEngine       IMemoryGraphStore   IEmbeddingGenerator
+  │                      │                       │                      │                     │
+  │  memory_record_      │                       │                      │                     │
+  │  expertise(node,     │                       │                      │                     │
+  │   kind, content)     │                       │                      │                     │
+  │─────────────────────▶│                       │                      │                     │
+  │                      │  RecordExpertiseAsync  │                      │                     │
+  │                      │──────────────────────▶│                      │                     │
+  │                      │                       │  Validate target     │                     │
+  │                      │                       │  GetNodeAsync(id)    │                     │
+  │                      │                       │─────────────────────▶│                     │
+  │                      │                       │  node (or null)      │                     │
+  │                      │                       │◀─────────────────────│                     │
+  │                      │                       │                      │                     │
+  │                      │                       │  Embed content       │                     │
+  │                      │                       │  GenerateEmbeddingAsync(content)            │
+  │                      │                       │───────────────────────────────────────────▶│
+  │                      │                       │  float[] embedding   │                     │
+  │                      │                       │◀───────────────────────────────────────────│
+  │                      │                       │                      │                     │
+  │                      │                       │  Build ExpertiseEntry│                     │
+  │                      │                       │  id = "expertise:{kind}:{hash8}"           │
+  │                      │                       │  Create APPLIES_TO edge                    │
+  │                      │                       │                      │                     │
+  │                      │                       │  UpsertExpertiseAsync(entry)                │
+  │                      │                       │─────────────────────▶│                     │
+  │                      │                       │  CreateEdgeAsync(APPLIES_TO)                │
+  │                      │                       │─────────────────────▶│                     │
+  │                      │                       │  LogAuditAsync(...)  │                     │
+  │                      │                       │─────────────────────▶│                     │
+  │                      │                       │                      │                     │
+  │                      │  ExpertiseEntry       │                      │                     │
+  │                      │◀──────────────────────│                      │                     │
+  │  ExpertiseEntry      │                       │                      │                     │
+  │◀─────────────────────│                       │                      │                     │
+```
+
+### 6.4 Incremental Sync (Git Commit)
+
+```
+Git hook / Watcher      IncrementalSync         GitDiffDriver      ExtractionPipeline    IMemoryGraphStore     DecayService
+  │                          │                       │                    │                    │                    │
+  │  ApplyDiffAsync          │                       │                    │                    │                    │
+  │  (repo, from, to)        │                       │                    │                    │                    │
+  │─────────────────────────▶│                       │                    │                    │                    │
+  │                          │  git diff --name-     │                    │                    │                    │
+  │                          │  status from..to      │                    │                    │                    │
+  │                          │──────────────────────▶│                    │                    │                    │
+  │                          │  [(status, path)]     │                    │                    │                    │
+  │                          │◀──────────────────────│                    │                    │                    │
+  │                          │                       │                    │                    │                    │
+  │                          │  ── per modified file ──                   │                    │                    │
+  │                          │  ExtractAsync(file)   │                    │                    │                    │
+  │                          │──────────────────────────────────────────▶│                    │                    │
+  │                          │  new nodes/edges      │                    │                    │                    │
+  │                          │◀──────────────────────────────────────────│                    │                    │
+  │                          │                       │                    │                    │                    │
+  │                          │  Diff old vs new      │                    │                    │                    │
+  │                          │  UpsertNodeAsync (added/changed)          │                    │                    │
+  │                          │  RetireNodeAsync (removed)                │                    │                    │
+  │                          │──────────────────────────────────────────────────────────────▶│                    │
+  │                          │                       │                    │                    │                    │
+  │                          │  ── per deleted file ──                   │                    │                    │
+  │                          │  RetireNodeAsync(file nodes, untilIndex)  │                    │                    │
+  │                          │──────────────────────────────────────────────────────────────▶│                    │
+  │                          │                       │                    │                    │                    │
+  │                          │  Decay expertise targeting changed nodes  │                    │                    │
+  │                          │─────────────────────────────────────────────────────────────────────────────────────▶│
+  │                          │  DecayResult           │                    │                    │                    │
+  │                          │◀─────────────────────────────────────────────────────────────────────────────────────│
+  │                          │                       │                    │                    │                    │
+  │                          │  LogAuditAsync(...)   │                    │                    │                    │
+  │                          │──────────────────────────────────────────────────────────────▶│                    │
+  │  SyncResult              │                       │                    │                    │                    │
+  │◀─────────────────────────│                       │                    │                    │                    │
+```
+
+### 6.5 Cross-Session Learning (Expertise Lifecycle)
+
+This is not a single API call but a multi-session lifecycle:
+
+1. **Session 1:** Agent fixes a null-dereference bug in `PaymentService.processRefund()`.
+   Agent calls `RecordExpertiseAsync` with `Kind=Pitfall`, content describing
+   the fragile null-handling and how callers in `OrderController` assume non-null.
+
+2. **Session 2:** A different agent (or the same agent in a new session) works
+   on `OrderController`. During context retrieval (`RetrieveAsync` with
+   `Mode=Hybrid`), the Ranker finds the Pitfall expertise node via the
+   `APPLIES_TO` edge. The expertise contributes to the `expertise` score signal
+   (weight 0.10), boosting `PaymentService.processRefund()` in the ranked
+   results. The Context Assembler includes it under `## Known Expertise`.
+
+3. **Between sessions:** `DecayService` runs. If `processRefund()`'s
+   `ContentHash` has changed since the expertise was written, the decay factor
+   (0.5 for substantive change, 0.9 for whitespace-only) is applied to the
+   expertise's `Confidence`. If `Confidence` drops below
+   `ArchiveConfidenceFloor` (0.1), the entry is soft-deleted.
+
+4. **Consolidation (periodic):** `ConsolidateAsync` finds two expertise entries
+   targeting `processRefund()` with cosine similarity ≥ 0.85. The LLM merges
+   them into a single entry. A `SUPERSEDES` edge links the merged entry to the
+   originals. A `DERIVED_FROM` edge links the merged entry to its sources.
+
+---
+
+## 7. Deployment Modes
+
+| Mode | Graph Store | Vector Store | Infrastructure | Use Case |
+|---|---|---|---|---|
+| **Local** | `SqliteGraphStore` (SQLite + FTS5 + sqlite-vss) | In-process HNSW (via sqlite-vss) | Zero — single file on disk | Solo developer, CI pipeline |
+| **Team** | `Neo4jMemoryGraphStore` (Neo4j via `Ast.GraphDb`) | Qdrant (via `Ast.VectorDb`) | `docker-compose.yml` (existing in `src/ast/`) | Shared team graph, server deployment |
+
+Backend selection is via DI configuration:
+
+```csharp
+// Local mode
+services.AddMemoryGraph(options => {
+    options.Backend = MemoryBackend.Sqlite;
+    options.SqlitePath = "~/.ast-memory/graph.db";
+});
+
+// Team mode
+services.AddMemoryGraph(options => {
+    options.Backend = MemoryBackend.Neo4j;
+    options.Neo4jUri = "bolt://localhost:7687";
+    options.QdrantEndpoint = "localhost:6334";
+});
+```
+
+---
+
+## 8. Cross-Document Alignment Notes
+
+This section tracks known discrepancies with sibling documents. Each entry is
+either resolved (with the canonical answer) or flagged for the next iteration.
+
+| # | Topic | This document says | Sibling says | Resolution |
+|---|---|---|---|---|
+| A1 | Multi-agent scope | Per-repo graph, shared via concurrent I/O (§1.2) | tech-spec O6 says "per-agent-instance" | Resolved: O6 excludes G-Memory-style protocols, not shared storage. §1.2 explains. |
+| A2 | Ast.Cli modification | Additive `config.AddBranch("memory", ...)` (§1.3) | tech-spec §1.1 agrees | Aligned. |
+| A3 | implementation-plan.md | This doc references implementation-plan.md for phasing | implementation-plan.md does not exist at this iteration | Expected: sibling may be written in a later iteration. No conflict. |
+| A4 | Embedding model | `nomic-embed-text` via existing `Ast.Embedding` (§1.3) | tech-spec HC5/D1 agrees | Aligned. |
+| A5 | Edge filtering | `Metadata["SemanticRelation"]` is sole filter (§2.2, §3.3) | e2e-scenarios uses matching vocabulary | Aligned. |
