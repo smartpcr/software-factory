@@ -14,8 +14,8 @@
 >
 > | Document | Owns | Current state |
 > |---|---|---|
-> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | At iteration 23 (not updated since). Seventeen alignment items (A1–A17) adjudicated in §8.1. Nine stale text items inventoried in §8.4 (TS-S1 through TS-S9); architecture governs on all. |
-> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Fully aligned with canonical vocabulary. One minor presentational gap (R-1 in §8.2). |
+> | [`tech-spec.md`](tech-spec.md) | Problem statement, scope/non-goals, hard constraints (HC1–HC11), risks, success criteria, resolved operator decisions (D1–D6) | At iteration 23 (not updated since). Seventeen alignment items (A1–A17) adjudicated in §8.1. Ten stale text items inventoried in §8.4 (TS-S1 through TS-S10); architecture governs on all. |
+> | [`implementation-plan.md`](implementation-plan.md) | Phased work items (6 phases), deliverables, evaluation harness | Fully aligned with canonical vocabulary. Two minor presentational gaps (R-1, R-2 in §8.2). |
 > | [`e2e-scenarios.md`](e2e-scenarios.md) | Gherkin acceptance scenarios (13 features, 82 scenarios) | All 10 previously-catalogued divergences (E2E-1 through E2E-10) corrected in current iteration. No remaining divergences. |
 
 ---
@@ -893,6 +893,17 @@ public interface IMemoryGraphStore : IGraphStore
         VersionRange version,
         CancellationToken ct = default);
 
+    /// Upsert an edge with temporal versioning.
+    /// Sets the edge's since_index / until_index columns from the
+    /// VersionRange and writes denormalized semantic_rel / memory_layer
+    /// columns from Metadata["SemanticRelation"] / Metadata["MemoryLayer"].
+    /// Code-derived edges retain their original HyperedgeType; memory-only
+    /// edges use HyperedgeType.MemoryRelation (§4.6).
+    Task UpsertEdgeAsync(
+        Hyperedge edge,
+        VersionRange version,
+        CancellationToken ct = default);
+
     /// Soft-delete: set UntilIndex on a node and its edges.
     Task RetireNodeAsync(
         string nodeId,
@@ -1173,12 +1184,13 @@ Agent/CLI                     ExtractionPipeline       Parsers            IMemor
   │                                │  Build Repo/Pkg/Module/Class/Fn nodes     │                      │
   │                                │  + CONTAINS, DEPENDS_ON edges             │                      │
   │                                │  UpsertNodeAsync(node, version) ×N        │                      │
+  │                                │  UpsertEdgeAsync(edge, version) ×E        │                      │
   │                                │──────────────────────────────────────────▶│                      │
   │                                │                      │                    │                      │
   │                                │  ── CallChainAnalyzer ──                  │                      │
   │                                │  Map MethodInvocation → CALLS edges       │                      │
   │                                │  Map Extends/Implements edges             │                      │
-  │                                │  CreateEdgesAsync(edges)                  │                      │
+  │                                │  UpsertEdgeAsync(edge, version) ×M        │                      │
   │                                │──────────────────────────────────────────▶│                      │
   │                                │                      │                    │                      │
   │                                │  ── SemanticIndexer ──                    │                      │
@@ -1186,7 +1198,7 @@ Agent/CLI                     ExtractionPipeline       Parsers            IMemor
   │                                │──────────────────────────────────────────────────────────────────▶│
   │                                │  float[][] embeddings                     │                      │
   │                                │◀──────────────────────────────────────────────────────────────────│
-  │                                │  Store vectors + SIMILAR_TO edges         │                      │
+  │                                │  UpsertNodeAsync(vectors) + UpsertEdgeAsync(SIMILAR_TO) │        │
   │                                │──────────────────────────────────────────▶│                      │
   │                                │                      │                    │                      │
   │                                │  LogAuditAsync(...)   │                    │                      │
@@ -1263,7 +1275,7 @@ Agent                  MCP/CLI              EvolutionEngine       IMemoryGraphSt
   │                      │                       │                      │                     │
   │                      │                       │  UpsertExpertiseAsync(entry)                │
   │                      │                       │─────────────────────▶│                     │
-  │                      │                       │  CreateEdgeAsync(APPLIES_TO)                │
+  │                      │                       │  UpsertEdgeAsync(APPLIES_TO, version)       │
   │                      │                       │─────────────────────▶│                     │
   │                      │                       │  LogAuditAsync(...)  │                     │
   │                      │                       │─────────────────────▶│                     │
@@ -1461,8 +1473,8 @@ iterations, have been corrected in the implementation-plan:
   with `Scope`, `Evidence`, `Archived`, `SourceAgent`.
 - **Method signatures:** `RecordExpertiseAsync(targetNodeId, kind, title,
   body, sourceAgent, scope?, evidence?)` matches §5.3.
-- **Interface methods:** `IMemoryGraphStore` declares all 12 methods per §5.1
-  (including `RetireEdgeAsync`, `ArchiveExpertiseAsync`,
+- **Interface methods:** `IMemoryGraphStore` declares all 13 methods per §5.1
+  (including `UpsertEdgeAsync`, `RetireEdgeAsync`, `ArchiveExpertiseAsync`,
   `GetArchivedExpertiseAsync`, `UpdateEdgeMetadataAsync`).
 - **Interface placement:** `ApplyDiffAsync` on `IIncrementalSync` with
   correct `(repoRoot, fromCommit, toCommit)` signature per §5.4.
@@ -1475,15 +1487,16 @@ iterations, have been corrected in the implementation-plan:
 - **Project placement:** MCP tools in `Ast.Memory/Mcp/`, CLI in
   `Ast.Memory/Cli/`, no files created in `Ast.GraphDb/`.
 
-**Remaining presentational gap (1 item):**
+**Remaining presentational gaps (2 items):**
 
-This is minor documentation shorthand in the implementation-plan that does
+These are minor documentation shorthand in the implementation-plan that do
 not affect correctness. The implementation-plan's header defers to this
 document on all conflicts.
 
 | # | impl-plan says | Canonical (this doc) | Governing § |
 |---|---|---|---|
 | R-1 | `MemoryEdge.Version` property listed as `VersionRange Version` without explicit non-nullable annotation | `VersionRange Version` is non-nullable (all edges carry versioning, per §4.3) — impl-plan is correct but could be more explicit | §4.1, §4.3 |
+| R-2 | `IMemoryGraphStore` listed with 12 methods; edge creation via inherited `IGraphStore` methods | Canonical: 13 methods — `UpsertEdgeAsync(Hyperedge, VersionRange, CancellationToken)` added for edge versioning parity with `UpsertNodeAsync` (§5.1). All edge creation/update flows must use this method to set `since_index`/`until_index` and denormalized columns. | §5.1 |
 
 ### 8.3 Alignment with `e2e-scenarios.md` (Current Iteration)
 
@@ -1542,10 +1555,18 @@ traceability:
 
 #### Stale text remaining in `implementation-plan.md`
 
-One minor presentational gap (R-1 in §8.2): `MemoryEdge.Version` property
-listed without explicit non-nullable annotation. This is correct behavior
-(all edges carry versioning per §4.3) but could be more explicit. Not a
-conflict — architecture governs.
+Two minor presentational gaps (R-1, R-2 in §8.2):
+
+- **R-1:** `MemoryEdge.Version` property listed without explicit non-nullable
+  annotation. Correct behavior (all edges carry versioning per §4.3) but
+  could be more explicit.
+- **R-2:** `IMemoryGraphStore` listed with 12 methods; edge creation shown
+  via inherited `IGraphStore` methods. Canonical interface has 13 methods —
+  `UpsertEdgeAsync(Hyperedge, VersionRange, CancellationToken)` was added
+  for edge versioning parity with `UpsertNodeAsync`. Implementation-plan
+  should update method count and edge-creation sequences accordingly.
+
+Neither is a conflict — architecture governs.
 
 #### Stale text remaining in `e2e-scenarios.md`
 
