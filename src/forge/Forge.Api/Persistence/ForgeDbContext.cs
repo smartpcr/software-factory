@@ -72,6 +72,9 @@ public class ForgeDbContext : DbContext
 
     public DbSet<DeliverableRow> Deliverables => this.Set<DeliverableRow>();
 
+    /// <summary>Phase 39 (Layer C) — open questions emitted by generators, answered by operator via wizard.</summary>
+    public DbSet<DeliverableQuestionRow> DeliverableQuestions => this.Set<DeliverableQuestionRow>();
+
     public DbSet<AgentLevelHistoryRow> AgentLevelHistory => this.Set<AgentLevelHistoryRow>();
 
     public DbSet<ProductIterationRow> ProductIterations => this.Set<ProductIterationRow>();
@@ -251,6 +254,11 @@ public class ForgeDbContext : DbContext
         mb.Entity<DeliverableRow>().HasIndex(x => new { x.CrewId, x.CreatedAt });
         mb.Entity<DeliverableRow>().HasIndex(x => new { x.GeneratorAgentId, x.CreatedAt });
         mb.Entity<DeliverableRow>().HasIndex(x => new { x.EvaluatorAgentId, x.CreatedAt });
+
+        // Phase 39 (Layer C) — open questions emitted by generators.
+        mb.Entity<DeliverableQuestionRow>().ToTable("deliverable_questions").HasKey(x => x.Id);
+        mb.Entity<DeliverableQuestionRow>().HasIndex(x => x.WorkItemId);
+        mb.Entity<DeliverableQuestionRow>().HasIndex(x => new { x.WorkItemId, x.ExternalId, x.Iter });
 
         // Phase 14.1 — agent_level_history (one row per promotion/demotion).
         mb.Entity<AgentLevelHistoryRow>().ToTable("agent_level_history").HasKey(x => x.Id);

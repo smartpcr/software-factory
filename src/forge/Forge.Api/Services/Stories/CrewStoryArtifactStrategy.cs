@@ -61,16 +61,9 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     public async Task<IReadOnlyDictionary<string, string>> ProducePlanArtifactsAsync(
         StorySpawnRow spawn, WorkItemRow story, bool forceResume = false, CancellationToken ct = default)
     {
-        // StoryPaths.Safe — story ids may contain `:` (e.g. "code-intelligence:AGENT-MEMORY")
-        // which is illegal in Windows file paths and crashes the commit
-        // step. Must match the orchestrator's gate-check encoding.
         var docDir = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}";
         var budget = BudgetForPhase(spawn.StoryPoints, "plan");
 
-        // Plan files are independent — fire 4 architect invocations in
-        // parallel (one per file). Wall-clock = max(per-file budget) instead
-        // of sum. Each agent writes into its own per-file workspace so the
-        // SDKs don't fight over a shared cwd.
         var specs = new (string FileName, string Brief, string RepoPath)[]
         {
             ("tech-spec.md",
@@ -80,14 +73,53 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
              "Components and their responsibilities, data model (entities + key fields), interfaces between components, end-to-end sequence flows for the primary scenarios.",
              $"{docDir}/architecture.md"),
             ("implementation-plan.md",
-             "Phased work breakdown an engineer can execute. Order phases so each builds on the previous; call out hard sequencing dependencies and parallel-safe items.",
+             """
+             This file is a LIVEDOC — it tracks implementation progress with checkboxes.
+             
+             Structure MUST follow this hierarchy:
+             
+             # Implementation Plan — {story title}
+             
+             ## Phase N: {phase name}
+             
+             ### Stage N.M: {stage name}
+             
+             #### Implementation Steps
+             - [ ] Step description (concrete, actionable — one PR-sized unit of work)
+             - [ ] Another step
+             
+             #### Test Scenarios
+             - [ ] Scenario: {name} — Given {context}, When {action}, Then {expected outcome}
+             - [ ] Scenario: {name} — ...
+             
+             Requirements:
+             - Order phases so each builds on the previous
+             - Call out hard sequencing dependencies and parallel-safe items
+             - Each step must be small enough for a single agent iteration
+             - Each test scenario must be verifiable (pass/fail, not subjective)
+             - Checkboxes will be checked off as work completes — this is the live progress tracker
+             - Include at least 2-3 test scenarios per stage
+             """,
              $"{docDir}/implementation-plan.md"),
             ("e2e-scenarios.md",
              "Gherkin-style feature scenarios (Feature / Scenario / Given-When-Then) covering happy paths and the edge cases QA will run.",
              $"{docDir}/e2e-scenarios.md"),
         };
 
-        var tasks = specs.Select(spec => this.ProducePlanFileAsync(spawn, story, spec, budget, forceResume, ct)).ToArray();
+        // ── Assign different generator agents per doc (round-robin) ────
+        // Load all available architect crew agents so each doc gets a
+        // distinct generator. This improves diversity — four agents writing
+        // in parallel each bring a different perspective, and the evaluator
+        // catches cross-doc inconsistencies via the sibling-doc context.
+        var generatorAgentIds = await this.LoadArchitectRosterAsync(specs.Length, ct);
+
+        var tasks = specs.Select((spec, idx) =>
+            this.ProducePlanFileAsync(
+                spawn, story, spec, budget, forceResume,
+                generatorAgentOverride: generatorAgentIds.Count > idx ? generatorAgentIds[idx] : null,
+                siblingSpecs: specs.Where((_, i) => i != idx).Select(s => s.FileName).ToArray(),
+                spawnId: spawn.Id,
+                ct)).ToArray();
         var results = await Task.WhenAll(tasks);
 
         var dict = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -98,23 +130,61 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         return dict;
     }
 
+    /// <summary>
+    /// Loads distinct architect crew agents for round-robin assignment.
+    /// Returns up to <paramref name="count"/> agent IDs from the day-shift
+    /// architect crew, excluding the evaluator default so gen ≠ eval.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> LoadArchitectRosterAsync(int count, CancellationToken ct)
+    {
+        using var scope = this.scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+
+        var crew = await db.Crews.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.Id == "crew-arch", ct);
+        if (crew is null) return Array.Empty<string>();
+
+        var evalAgentId = crew.DefaultEvaluatorAgentId;
+
+        // All agents in the architect day crew, excluding the evaluator
+        var agents = await db.Agents.AsNoTracking()
+            .Where(a => a.CrewId == "crew-arch")
+            .OrderBy(a => a.Sort)
+            .Select(a => a.Id)
+            .ToListAsync(ct);
+
+        // Exclude the evaluator so we don't accidentally pair gen=eval
+        if (!string.IsNullOrEmpty(evalAgentId))
+        {
+            agents = agents.Where(a => !string.Equals(a, evalAgentId, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
+        // Put the crew default generator first, then round-robin the rest
+        var defaultGen = crew.DefaultGeneratorAgentId;
+        if (!string.IsNullOrEmpty(defaultGen))
+        {
+            agents.Remove(defaultGen);
+            agents.Insert(0, defaultGen);
+        }
+
+        return agents.Take(count).ToList();
+    }
+
     private async Task<string> ProducePlanFileAsync(
         StorySpawnRow spawn, WorkItemRow story,
         (string FileName, string Brief, string RepoPath) spec,
-        TimeSpan budget, bool forceResume, CancellationToken ct)
+        TimeSpan budget, bool forceResume,
+        string? generatorAgentOverride,
+        string[] siblingSpecs,
+        string spawnId,
+        CancellationToken ct)
     {
         // Per-file workspace so 4 parallel SDKs don't share a cwd.
         var workspace = this.PrepareWorkspace(spawn.Id, $"plan-{Path.GetFileNameWithoutExtension(spec.FileName)}");
         var diskPath = Path.Combine(workspace, spec.FileName);
 
-        // Resume case — a previous tick's architect already wrote this file
-        // (typical when commit/push failed and the orchestrator re-ticks).
-        // Skip re-invoking the LLM so we don't burn tokens regenerating
-        // identical content on every retry. The forceResume flag (set when
-        // the operator explicitly clicked Retry/Resume after a non-pass
-        // verdict) bypasses this short-circuit so the gen↔eval loop
-        // re-iterates against the cached workspace contents instead of
-        // returning them unchanged.
+        // Resume case — a previous tick's architect already wrote this file.
+        // Skip re-invoking the LLM unless forceResume is set.
         if (!forceResume && File.Exists(diskPath))
         {
             var existing = await File.ReadAllTextAsync(diskPath, ct);
@@ -127,11 +197,62 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             }
         }
 
-        // Per-doc workItemId so each plan file gets its own deliverables stream
-        // (agent assignment, iter count, score, gen+eval summaries) keyed
-        // independently. Deliverables.WorkItemId is just a string — no
-        // work_items row required. UI looks up via the same id.
         var docWorkItemId = $"plan-doc:{spawn.Id}:{spec.FileName}";
+
+        // ── Cross-doc context ─────────────────────────────────────────
+        // Copy sibling doc files into this agent's workspace so it can
+        // read them with its filesystem tools. This gives full content
+        // access without bloating the prompt. Each sibling is placed in
+        // a `siblings/` subdirectory so the agent's own output file stays
+        // at the workspace root.
+        var siblingsDir = Path.Combine(workspace, "siblings");
+        Directory.CreateDirectory(siblingsDir);
+        var availableSiblings = new List<string>();
+        foreach (var sibling in siblingSpecs)
+        {
+            var sibWorkspace = this.PrepareWorkspace(spawnId, $"plan-{Path.GetFileNameWithoutExtension(sibling)}");
+            var sibPath = Path.Combine(sibWorkspace, sibling);
+            if (File.Exists(sibPath))
+            {
+                try
+                {
+                    var content = await File.ReadAllTextAsync(sibPath, ct);
+                    if (!string.IsNullOrWhiteSpace(content))
+                    {
+                        await File.WriteAllTextAsync(Path.Combine(siblingsDir, sibling), content, ct);
+                        availableSiblings.Add(sibling);
+                    }
+                }
+                catch
+                {
+                    // best-effort — sibling may not exist yet (parallel execution)
+                }
+            }
+        }
+
+        var crossDocSection = availableSiblings.Count > 0
+            ? $"""
+
+            ## Sibling documents (MUST READ before writing)
+            The following sibling plan docs have been placed in `siblings/`
+            in your working directory. You MUST read them with your
+            filesystem tools BEFORE writing your own file so you stay
+            consistent with terminology, components, and constraints:
+            {string.Join("\n", availableSiblings.Select(s => $"  - `siblings/{s}`"))}
+
+            Do NOT duplicate their content. Reference shared concepts by
+            name. If you spot an inconsistency, note it in your Iteration
+            Summary.
+            """
+            : """
+
+            ## Sibling documents
+            You are one of 4 architect agents producing plan docs in parallel.
+            The sibling docs (tech-spec.md, architecture.md, implementation-plan.md,
+            e2e-scenarios.md) are not available yet. Use consistent terminology
+            and components across all docs. If you make architectural decisions,
+            state them explicitly so sibling agents can align.
+            """;
 
         var generatorPrompt = $$"""
             You are the Architect agent for Forge story `{{spawn.StoryId}}`.
@@ -153,6 +274,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
 
             ### Brief for this file
             {{spec.Brief}}
+            {{crossDocSection}}
 
             ## How to deliver — CRITICAL
             You MUST invoke your filesystem write tool to save the file. The
@@ -176,6 +298,29 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             parts of the story description the file covers, (c) any open
             questions for the next iteration. The orchestrator extracts
             this into the per-iteration UI summary.
+
+            ## Open questions — structured (REQUIRED when you have any)
+            If the story description left ambiguity that you had to guess on,
+            do NOT just mention it in prose. Emit a fenced JSON block right
+            after `## Iteration Summary` so the operator can answer via the
+            wizard and the next iteration gets a definitive answer:
+
+            ```json open-questions
+            { "openQuestions": [
+                { "id": "<short-stable-slug>", "text": "<question>", "type": "choice", "choices": ["A","B","C"] },
+                { "id": "<other-slug>",        "text": "<question>", "type": "open"   }
+            ] }
+            ```
+
+            Rules:
+            - Use `type: "choice"` with explicit `choices` whenever you have
+              2-5 reasonable options the operator can pick from.
+            - Use `type: "open"` only when the answer is genuinely free-form.
+            - Re-emit the same `id` if a previous answer wasn't sufficient.
+            - Omit the block entirely when you have no questions.
+            - The evaluator WILL hold you below pass while any unanswered
+              question exists for this file — surfacing them is how you
+              unblock yourself, not a sign of weakness.
 
             Reply `DONE` after the summary and stop.
             """;
@@ -211,6 +356,14 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                cite section names + sentences).
             3. **Why this score** — two sentences max.
 
+            ## Open-questions hard gate
+            If the generator surfaced open questions in its
+            `## Open Questions` JSON block AND the operator hasn't answered
+            them yet, you MUST return verdict `iterate` regardless of doc
+            quality. The orchestrator will block pass anyway via the
+            server-side gate, but your verdict needs to match so the
+            iteration history reads correctly.
+
             End with a fenced JSON block:
             ```json
             { "score": <0-100>, "verdict": "<pass|iterate|reject>", "notes": "<one-line gist>" }
@@ -224,7 +377,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         // back to story.points/4 (consistent with EnsurePlanDocWorkItemsAsync)
         // when the row is missing (older spawns until Phase38Migration runs).
         var docPoints = await this.LookupWorkItemPointsAsync(
-            docWorkItemId, fallback: Math.Max(1, spawn.StoryPoints / 4), ct);
+            docWorkItemId, fallback: Math.Max(1, spawn.StoryPoints), ct);
 
         await this.RunGenEvalLoopAsync(
             team: "Architect",
@@ -235,6 +388,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             workspace: workspace,
             budget: budget,
             storyPoints: docPoints,
+            generatorAgentOverride: generatorAgentOverride,
             ct: ct);
 
         if (!File.Exists(diskPath))
@@ -243,6 +397,49 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
                 $"Architect did not produce '{spec.FileName}'. Workspace: {workspace}");
         }
         return await File.ReadAllTextAsync(diskPath, ct);
+    }
+
+    public async Task ResumeSingleArtifactAsync(
+        StorySpawnRow spawn, WorkItemRow story, string key, CancellationToken ct = default)
+    {
+        var docDir = $"docs/stories/{StoryPaths.Safe(spawn.StoryId)}";
+        var budget = BudgetForPhase(spawn.StoryPoints, "plan");
+
+        var specs = new Dictionary<string, (string FileName, string Brief, string RepoPath)>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["tech-spec"] = ("tech-spec.md",
+                "Problem statement, in/out-of-scope items, non-goals, hard constraints, identified risks.",
+                $"{docDir}/tech-spec.md"),
+            ["architecture"] = ("architecture.md",
+                "Components and their responsibilities, data model, interfaces, sequence flows.",
+                $"{docDir}/architecture.md"),
+            ["implementation-plan"] = ("implementation-plan.md",
+                """
+                LIVEDOC with checkboxes tracking progress. Structure: Phase → Stage → Implementation Steps (checkboxes) + Test Scenarios (checkboxes). Each step = one PR-sized unit. Each test = verifiable pass/fail.
+                """,
+                $"{docDir}/implementation-plan.md"),
+            ["e2e-scenarios"] = ("e2e-scenarios.md",
+                "Gherkin-style feature scenarios covering happy paths and edge cases.",
+                $"{docDir}/e2e-scenarios.md"),
+        };
+
+        if (!specs.TryGetValue(key, out var spec))
+        {
+            throw new InvalidOperationException($"Unknown artifact key '{key}'. Expected one of: {string.Join(", ", specs.Keys)}");
+        }
+
+        var siblingFileNames = specs.Values
+            .Where(s => !string.Equals(s.FileName, spec.FileName, StringComparison.OrdinalIgnoreCase))
+            .Select(s => s.FileName)
+            .ToArray();
+
+        // Use the crew default generator for single-doc resume
+        await this.ProducePlanFileAsync(
+            spawn, story, spec, budget, forceResume: true,
+            generatorAgentOverride: null,
+            siblingSpecs: siblingFileNames,
+            spawnId: spawn.Id,
+            ct);
     }
 
     public async Task<IReadOnlyList<DecompositionWorkstream>> ProduceDecompositionAsync(
@@ -348,6 +545,24 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             do not write outside the working directory. You may create
             subdirectories within the working directory if your implementation
             spans multiple files. Reply `DONE` when finished.
+
+            ## Open questions — structured (REQUIRED when you have any)
+            If the workstream brief left ambiguity that forced you to guess
+            (API shape, dependency choice, error-handling convention, naming),
+            emit a fenced JSON block before `DONE` so the operator can answer
+            via the wizard and the next iteration gets a definitive answer:
+
+            ```json open-questions
+            { "openQuestions": [
+                { "id": "<short-stable-slug>", "text": "<question>", "type": "choice", "choices": ["A","B","C"] },
+                { "id": "<other-slug>",        "text": "<question>", "type": "open"   }
+            ] }
+            ```
+
+            Use `type: "choice"` with explicit options whenever 2-5 sensible
+            answers exist; use `type: "open"` only for free-form. The
+            evaluator will hold you below pass while any unanswered question
+            exists for this workstream.
             """;
 
         var evaluatorPrompt = $$"""
@@ -373,6 +588,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             - Internal consistency with the story description and the merged
               planning artifacts on `main` (architecture.md / implementation-plan.md).
             - Obvious bugs, missing error paths, untested edge cases.
+
+            ## Open-questions hard gate
+            If the engineer surfaced open questions in their
+            `## Open Questions` JSON block AND the operator hasn't answered
+            them yet, you MUST score below pass and return verdict `iterate`.
+            Server-side gate enforces this regardless; your verdict needs to
+            match so the iteration history reads correctly.
 
             End with a fenced JSON block:
             ```json
@@ -612,10 +834,49 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private string PrepareWorkspace(string spawnId, string phaseTag)
     {
         var stateDir = ResolveStateDir(this.config);
-        var slug = SlugForFs(spawnId);
-        var path = Path.Combine(stateDir, "storyworkspaces", slug, phaseTag);
-        Directory.CreateDirectory(path);
-        return path;
+
+        // Check both slug conventions — older workspaces may use dashes
+        // (Slug) while newer code uses underscores (SlugForFs). Prefer the
+        // existing directory to avoid duplicating workspaces.
+        var slugUnderscore = SlugForFs(spawnId);
+        var slugDash = Slug(spawnId);
+        var pathUnderscore = Path.Combine(stateDir, "storyworkspaces", slugUnderscore, phaseTag);
+        var pathDash = Path.Combine(stateDir, "storyworkspaces", slugDash, phaseTag);
+
+        if (Directory.Exists(pathDash)) return pathDash;
+        if (Directory.Exists(pathUnderscore)) return pathUnderscore;
+
+        // Neither exists — create with the dash convention (matches existing data)
+        Directory.CreateDirectory(pathDash);
+        return pathDash;
+    }
+
+    public async Task<IReadOnlyDictionary<string, string>> ReadCachedWorkstreamFilesAsync(
+        StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default)
+    {
+        var workspace = this.PrepareWorkspace(spawn.Id, $"impl-{Slug(workstream.Id)}");
+        var repoPrefix = $"src/.story-artifacts/{StoryPaths.Safe(spawn.StoryId)}/{workstream.Id}";
+        var dict = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        if (!Directory.Exists(workspace)) return dict;
+
+        foreach (var file in Directory.EnumerateFiles(workspace, "*", SearchOption.AllDirectories))
+        {
+            // Skip siblings/ directory (cross-doc context copies)
+            if (file.Contains(Path.DirectorySeparatorChar + "siblings" + Path.DirectorySeparatorChar)) continue;
+            var rel = Path.GetRelativePath(workspace, file).Replace('\\', '/');
+            var content = await File.ReadAllTextAsync(file, ct);
+            if (!string.IsNullOrWhiteSpace(content))
+            {
+                dict[$"{repoPrefix}/{rel}"] = content;
+            }
+        }
+
+        this.logger?.LogInformation(
+            "Read {Count} cached files from workspace for workstream {WsId}.",
+            dict.Count, workstream.Id);
+
+        return dict;
     }
 
     private static string ResolveStateDir(IConfiguration config)
@@ -681,7 +942,8 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         string workspace,
         TimeSpan? budget,
         int storyPoints,
-        CancellationToken ct)
+        string? generatorAgentOverride = null,
+        CancellationToken ct = default)
     {
         var prefix = CrewIdPrefix(team);
         using var scope = this.scopeFactory.CreateScope();
@@ -692,6 +954,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             ?? await db.Crews.AsNoTracking().FirstOrDefaultAsync(c => c.Id.StartsWith(prefix), ct)
             ?? throw new InvalidOperationException(
                 $"No crew found for team '{team}' (looked for id '{prefix}' or prefix). Configure crews in DB.");
+
+        // When a generator override is specified, temporarily set it on
+        // the crew so ResolveAgentRunConfigAsync picks it up.
+        if (!string.IsNullOrEmpty(generatorAgentOverride))
+        {
+            crew.DefaultGeneratorAgentId = generatorAgentOverride;
+        }
 
         var (genAgentId, genContext, genBackendStr, genInvokeStr) = await this.ResolveAgentRunConfigAsync(
             db, crew, useEvaluatorRole: false, workspace, budget, ct);
@@ -720,6 +989,24 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             {
                 // Crew has no evaluator agent / model. Loop will auto-pass.
             }
+        }
+
+        // Pair-diversity gate (forge_implementation.md Phase 13e).
+        // The generator and evaluator MUST run on different models so the
+        // evaluator catches blind spots the generator's training distribution
+        // can't see. If both resolve to the same model, refuse to dispatch
+        // and surface the misconfiguration on the spawn — silent same-model
+        // pairs were producing pass-stamped subpar work that no second eye
+        // ever caught.
+        if (evalContext is not null
+            && !string.IsNullOrEmpty(genContext.Model)
+            && !string.IsNullOrEmpty(evalContext.Model)
+            && string.Equals(genContext.Model, evalContext.Model, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Pair-diversity rule violated: generator and evaluator both resolved to model '{genContext.Model}'. " +
+                $"Generator: agent={genAgentId} crew={crew.Id}. Evaluator: agent={evalAgentId} crew={evalCrewId}. " +
+                $"Set crew.{nameof(CrewRow.EvaluatorModel)} on the evaluator crew (or agent.{nameof(AgentRow.EvaluatorModel)} override) to a different model — typically gpt-5.5/sonnet against an opus generator.");
         }
 
         await this.taskChannel.EmitAsync(workItemId, "story.agent-prompt", new

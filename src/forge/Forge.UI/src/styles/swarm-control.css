@@ -1715,6 +1715,265 @@
 }
 .swarm-ctrl .doc-conv-pair-cost b { color: var(--sc-cyan); }
 
+/* Decomposition view — workstream cards rendered for `doc:decomposition`.
+ * Each card shows title / effort / timeline / description, plus collapsible
+ * acceptance criteria and deliverables. Dep arrows surface the parallel
+ * structure so the operator sees what the engineer crew will pick up first.
+ */
+.swarm-ctrl .decomp-view .doc-body { padding: 18px 22px 30px; }
+.swarm-ctrl .decomp-header { margin-bottom: 18px; }
+.swarm-ctrl .decomp-header__title {
+  font-family: var(--sc-font-display); font-size: 11px;
+  letter-spacing: 0.18em; color: var(--sc-amber);
+  text-transform: uppercase;
+}
+.swarm-ctrl .decomp-header__sub {
+  font-family: var(--sc-font-mono); font-size: 11px;
+  color: var(--sc-text-dim); margin-top: 4px;
+}
+.swarm-ctrl .decomp-list {
+  list-style: none; padding: 0; margin: 0;
+  display: grid; gap: 14px;
+}
+.swarm-ctrl .decomp-card {
+  background: var(--sc-surface);
+  border-left: 3px solid var(--sc-cyan-d);
+  padding: 14px 16px;
+  border-radius: 5px;
+  display: grid; gap: 10px;
+}
+.swarm-ctrl .decomp-card:hover { background: var(--sc-surface-2); }
+.swarm-ctrl .decomp-card__hd {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+.swarm-ctrl .decomp-card__no {
+  font-family: var(--sc-font-display); font-size: 9px;
+  letter-spacing: 0.18em; color: var(--sc-muted);
+}
+.swarm-ctrl .decomp-card__title {
+  font-family: var(--sc-font-mono); font-size: 13px;
+  color: var(--sc-text); font-weight: 600; flex: 1;
+}
+.swarm-ctrl .decomp-card__effort {
+  font-family: var(--sc-font-display); font-size: 9px;
+  letter-spacing: 0.16em; padding: 2px 8px;
+  border: 1px solid currentColor; text-transform: uppercase;
+}
+.swarm-ctrl .decomp-card__effort--xs       { color: var(--sc-text-dim); }
+.swarm-ctrl .decomp-card__effort--small    { color: var(--sc-green); }
+.swarm-ctrl .decomp-card__effort--medium   { color: var(--sc-cyan); }
+.swarm-ctrl .decomp-card__effort--large    { color: var(--sc-amber); }
+.swarm-ctrl .decomp-card__effort--unknown  { color: var(--sc-muted); }
+.swarm-ctrl .decomp-card__timeline {
+  font-family: var(--sc-font-mono); font-size: 10px;
+  color: var(--sc-text-dim);
+}
+.swarm-ctrl .decomp-card__desc {
+  margin: 0;
+  font-family: var(--sc-font-mono); font-size: 12px;
+  line-height: 1.5; color: var(--sc-text);
+}
+.swarm-ctrl .decomp-card__deps {
+  display: grid; gap: 4px;
+  font-family: var(--sc-font-mono); font-size: 11px;
+}
+.swarm-ctrl .decomp-card__dep-line {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.swarm-ctrl .decomp-card__dep-label {
+  font-family: var(--sc-font-display); font-size: 9px;
+  letter-spacing: 0.16em; color: var(--sc-text-dim);
+}
+.swarm-ctrl .decomp-card__dep-chip {
+  font-size: 11px; padding: 2px 8px;
+  border: 1px solid var(--sc-amber-d);
+  color: var(--sc-amber);
+  border-radius: 3px;
+}
+.swarm-ctrl .decomp-card__dep-chip--down {
+  border-color: var(--sc-cyan-d); color: var(--sc-cyan);
+}
+.swarm-ctrl .decomp-card__details {
+  font-family: var(--sc-font-mono); font-size: 11px;
+  color: var(--sc-text-dim);
+}
+.swarm-ctrl .decomp-card__details summary {
+  cursor: pointer; padding: 4px 0;
+  font-family: var(--sc-font-display); font-size: 9px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--sc-text-dim);
+}
+.swarm-ctrl .decomp-card__ac, .swarm-ctrl .decomp-card__deliv {
+  margin: 6px 0 0 18px; padding: 0;
+  display: grid; gap: 4px;
+}
+.swarm-ctrl .decomp-card__ac li { color: var(--sc-text); line-height: 1.45; }
+.swarm-ctrl .decomp-card__deliv li code {
+  font-family: var(--sc-font-mono); font-size: 11px;
+  background: var(--sc-bg-2); padding: 1px 5px;
+  color: var(--sc-amber);
+  border-radius: 2px;
+}
+
+/* Phase 39 (Layer C) — open-questions wizard. Sits between the prompts
+ * panel and the filter tab strip; surfaces structured questions the
+ * generator emitted in `## Open Questions` JSON blocks. Blocking when any
+ * question is unanswered (the verdict gate forces iterate until cleared).
+ */
+.swarm-ctrl .oq-wizard {
+  margin: 8px 18px 0;
+  border: 1px solid var(--sc-border-2);
+  background: var(--sc-surface);
+  border-radius: 5px;
+}
+.swarm-ctrl .oq-wizard--blocking {
+  border-color: var(--sc-amber-d);
+  background: rgba(255, 179, 71, 0.04);
+}
+.swarm-ctrl .oq-wizard__hd {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.swarm-ctrl .oq-wizard__chevron { color: var(--sc-text-dim); font-size: 11px; }
+.swarm-ctrl .oq-wizard__title {
+  font-family: var(--sc-font-display); font-size: 10px;
+  letter-spacing: 0.18em; color: var(--sc-text-dim);
+}
+.swarm-ctrl .oq-wizard--blocking .oq-wizard__title { color: var(--sc-amber); }
+.swarm-ctrl .oq-wizard__count {
+  margin-left: auto;
+  font-family: var(--sc-font-mono); font-size: 10px;
+  color: var(--sc-text-dim);
+}
+.swarm-ctrl .oq-wizard__count[data-blocking] {
+  color: var(--sc-amber); font-weight: 600;
+}
+.swarm-ctrl .oq-wizard__body {
+  padding: 0 14px 14px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.swarm-ctrl .oq-wizard__pending { display: grid; gap: 12px; margin-top: 4px; }
+.swarm-ctrl .oq-wizard__q {
+  border: 1px solid var(--sc-hairline);
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: var(--sc-bg-2);
+}
+.swarm-ctrl .oq-wizard__q-meta {
+  display: flex; gap: 10px;
+  font-family: var(--sc-font-display); font-size: 9px;
+  letter-spacing: 0.16em; color: var(--sc-muted);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.swarm-ctrl .oq-wizard__q-id { color: var(--sc-amber); }
+.swarm-ctrl .oq-wizard__q-text {
+  font-family: var(--sc-font-mono); font-size: 12px;
+  color: var(--sc-text); margin-bottom: 8px; line-height: 1.45;
+}
+.swarm-ctrl .oq-wizard__q-choices { display: grid; gap: 6px; }
+.swarm-ctrl .oq-wizard__q-choice {
+  display: flex; align-items: center; gap: 8px;
+  font-family: var(--sc-font-mono); font-size: 12px;
+  color: var(--sc-text);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 3px;
+}
+.swarm-ctrl .oq-wizard__q-choice:hover { background: var(--sc-surface-2); }
+.swarm-ctrl .oq-wizard__q-choice input[type="radio"] {
+  accent-color: var(--sc-amber);
+}
+.swarm-ctrl .oq-wizard__q-other-input {
+  flex: 1;
+  background: var(--sc-bg);
+  border: 1px solid var(--sc-border-2);
+  color: var(--sc-text);
+  padding: 4px 8px;
+  font-family: var(--sc-font-mono); font-size: 12px;
+}
+.swarm-ctrl .oq-wizard__q-textarea {
+  width: 100%;
+  background: var(--sc-bg);
+  border: 1px solid var(--sc-border-2);
+  color: var(--sc-text);
+  padding: 6px 8px;
+  font-family: var(--sc-font-mono); font-size: 12px;
+  resize: vertical;
+}
+.swarm-ctrl .oq-wizard__q-textarea:focus,
+.swarm-ctrl .oq-wizard__q-other-input:focus {
+  outline: none; border-color: var(--sc-amber);
+}
+.swarm-ctrl .oq-wizard__actions {
+  display: flex; justify-content: flex-end; gap: 8px;
+  margin-top: 8px;
+}
+.swarm-ctrl .oq-wizard__q-dismiss {
+  margin-left: auto;
+  font-family: var(--sc-font-display); font-size: 8px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid var(--sc-border-2);
+  color: var(--sc-text-dim);
+  cursor: pointer;
+}
+.swarm-ctrl .oq-wizard__q-dismiss:hover:not(:disabled) {
+  border-color: var(--sc-red);
+  color: var(--sc-red);
+}
+.swarm-ctrl .oq-wizard__q-dismiss:disabled { opacity: 0.5; cursor: default; }
+.swarm-ctrl .oq-wizard__dismiss-all {
+  font-family: var(--sc-font-display); font-size: 10px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  padding: 8px 14px;
+  background: transparent;
+  border: 1px solid var(--sc-border-2);
+  color: var(--sc-text-dim);
+  cursor: pointer;
+}
+.swarm-ctrl .oq-wizard__dismiss-all:hover:not(:disabled) {
+  border-color: var(--sc-red); color: var(--sc-red);
+}
+.swarm-ctrl .oq-wizard__dismiss-all:disabled { opacity: 0.5; cursor: default; }
+.swarm-ctrl .oq-wizard__submit {
+  font-family: var(--sc-font-display); font-size: 10px;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  padding: 8px 16px;
+  background: var(--sc-amber); color: var(--sc-bg);
+  border: 1px solid var(--sc-amber);
+  cursor: pointer;
+}
+.swarm-ctrl .oq-wizard__submit:hover:not(:disabled) {
+  background: var(--sc-bg); color: var(--sc-amber);
+}
+.swarm-ctrl .oq-wizard__submit:disabled { opacity: 0.5; cursor: default; }
+.swarm-ctrl .oq-wizard__answered {
+  margin-top: 12px;
+  font-family: var(--sc-font-mono); font-size: 11px;
+  color: var(--sc-text-dim);
+}
+.swarm-ctrl .oq-wizard__answered summary {
+  cursor: pointer;
+  font-family: var(--sc-font-display); letter-spacing: 0.16em;
+  font-size: 9px; text-transform: uppercase;
+  padding: 4px 0;
+}
+.swarm-ctrl .oq-wizard__answered-list { display: grid; gap: 8px; margin-top: 6px; }
+.swarm-ctrl .oq-wizard__answered-row {
+  padding: 6px 10px;
+  border-left: 2px solid var(--sc-green-d);
+  background: rgba(121, 224, 138, 0.04);
+}
+.swarm-ctrl .oq-wizard__q-answer {
+  color: var(--sc-green); font-style: italic;
+  margin-top: 4px;
+}
+
 /* Resume button on the conversation tab pair bar — re-fires the gen↔eval
  * loop (architect via /spawn/retry, engineer via /work-items/{id}/resume).
  * Disabled when the loop is currently live OR the work has fully shipped.

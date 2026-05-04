@@ -21,16 +21,19 @@ using Microsoft.EntityFrameworkCore;
 /// </summary>
 public sealed class LocalStoryProviderOps : IStoryProviderOps
 {
-    private readonly IServiceProvider services;
+    private readonly IServiceScopeFactory scopeFactory;
 
-    public LocalStoryProviderOps(IServiceProvider services)
+    public LocalStoryProviderOps(IServiceScopeFactory scopeFactory)
     {
-        this.services = services;
+        this.scopeFactory = scopeFactory;
     }
 
     private async Task<T> WithDbAsync<T>(Func<ForgeDbContext, IHubContext<ForgeHub>?, Task<T>> body, CancellationToken ct)
     {
-        using var scope = this.services.CreateScope();
+        // Use IServiceScopeFactory rather than IServiceProvider so the
+        // singleton can't end up holding a disposed request scope. The
+        // factory is itself a singleton tied to the root provider.
+        using var scope = this.scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
         var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
         return await body(db, hub);

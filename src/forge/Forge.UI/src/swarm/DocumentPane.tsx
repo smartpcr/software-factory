@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { forgeApi } from '@/api/forgeApi';
+import { DecompositionView } from './DecompositionView';
 
 interface Props {
   storyId: string;
@@ -48,7 +49,20 @@ interface ArtifactState {
   error: string | null;
 }
 
-export function DocumentPane({ storyId, docId, planPr, planBranch }: Props) {
+export function DocumentPane(props: Props) {
+  const key = props.docId.startsWith('doc:') ? props.docId.slice(4) : props.docId;
+  // Decomposition is structured workstream JSON, not markdown. Render a
+  // dedicated view so the operator sees parsed workstream cards (title /
+  // effort / deps / deliverables) instead of an empty "loading
+  // decomposition.md" or a raw JSON dump. Splitting into two top-level
+  // components keeps the hook order stable per instance.
+  if (key === 'decomposition') {
+    return <DecompositionView storyId={props.storyId} />;
+  }
+  return <MarkdownDocPane {...props} />;
+}
+
+function MarkdownDocPane({ storyId, docId, planPr, planBranch }: Props) {
   const key = useMemo(() => (docId.startsWith('doc:') ? docId.slice(4) : docId), [docId]);
   const [state, setState] = useState<ArtifactState>({
     loading: true, doc: null, iterations: [], totalCostUsd: 0, error: null,
@@ -128,14 +142,10 @@ export function DocumentPane({ storyId, docId, planPr, planBranch }: Props) {
   const empty = !doc?.exists || sections.length === 0;
 
   return (
-    <div className="doc-pane">
-      <aside className="doc-toc">
-        <div className="doc-toc-hd">▶ TABLE OF CONTENTS</div>
-        {empty ? (
-          <div style={{ padding: '0 14px', fontSize: 11, color: 'var(--sc-text-dim)' }}>
-            <em>no sections yet</em>
-          </div>
-        ) : (
+    <div className="doc-pane" style={empty ? { gridTemplateColumns: '1fr' } : undefined}>
+      {!empty && (
+        <aside className="doc-toc">
+          <div className="doc-toc-hd">▶ TABLE OF CONTENTS</div>
           <ul className="doc-toc-tree">
             {sections.map((s) => (
               <li
@@ -150,8 +160,8 @@ export function DocumentPane({ storyId, docId, planPr, planBranch }: Props) {
               </li>
             ))}
           </ul>
-        )}
-      </aside>
+        </aside>
+      )}
 
       <div className="doc-body" ref={bodyRef}>
         <div className="doc-body-hd">

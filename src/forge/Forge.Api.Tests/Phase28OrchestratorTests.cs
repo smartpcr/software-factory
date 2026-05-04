@@ -512,17 +512,21 @@ public class Phase28OrchestratorTests
             Assert.Equal("agent memory", spawn.StoryTitle);
 
             // The four planning artifacts should exist on the plan branch.
+            // The orchestrator sanitises the story id (`:` is illegal in a
+            // git ref / Windows path) via StoryPaths.Safe before computing
+            // the branch + commit dir, so test paths must be sanitised too.
+            var safeStoryId = StoryPaths.Safe(storyId);
             using var scope = f.Services.CreateScope();
             var git = scope.ServiceProvider.GetRequiredService<IStoryGitOps>();
             foreach (var p in new[]
             {
-                $"docs/stories/{storyId}/tech-spec.md",
-                $"docs/stories/{storyId}/architecture.md",
-                $"docs/stories/{storyId}/implementation-plan.md",
-                $"docs/stories/{storyId}/e2e-scenarios.md",
+                $"docs/stories/{safeStoryId}/tech-spec.md",
+                $"docs/stories/{safeStoryId}/architecture.md",
+                $"docs/stories/{safeStoryId}/implementation-plan.md",
+                $"docs/stories/{safeStoryId}/e2e-scenarios.md",
             })
             {
-                Assert.True(await git.FileExistsAsync(null, $"story/{storyId}/plan", p), $"missing {p}");
+                Assert.True(await git.FileExistsAsync(null, $"story/{safeStoryId}/plan", p), $"missing {p}");
             }
         }
         finally { f.Dispose(); }

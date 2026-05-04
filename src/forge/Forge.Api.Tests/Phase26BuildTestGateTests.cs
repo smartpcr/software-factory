@@ -58,8 +58,15 @@ public class Phase26BuildTestGateTests
     /// Polls GET /api/repos/{repoId}/validation-runs until the run with <paramref name="runId"/>
     /// reaches a terminal status (succeeded/failed/cancelled) or the timeout expires.
     /// </summary>
+    /// <summary>
+    /// Default timeout bumped 120s → 600s. The E2E ValidateBuild tests run a
+    /// real `dotnet restore` + `dotnet build` + `dotnet test` chain — on a
+    /// dev box with a cold NuGet cache and an antivirus on the worktree
+    /// path, restore alone can take 60-120s, leaving no headroom for the
+    /// build / test legs. 600s is enough for a full cold pipeline.
+    /// </summary>
     private static async Task<JsonElement> PollValidationRunAsync(
-        HttpClient client, string repoId, string runId, int timeoutSec = 120)
+        HttpClient client, string repoId, string runId, int timeoutSec = 600)
     {
         var deadline = DateTime.UtcNow.AddSeconds(timeoutSec);
         while (DateTime.UtcNow < deadline)

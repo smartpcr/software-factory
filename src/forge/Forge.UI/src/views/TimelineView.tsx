@@ -156,16 +156,14 @@ export function TimelineView() {
             </button>
           ))}
         </div>
-        <button
+        <select
           className="filter-select"
-          onClick={() => setLane(lane === 'workstream' ? 'epic' : 'workstream')}
+          value={lane}
+          onChange={(e) => setLane(e.target.value as 'workstream' | 'epic')}
         >
-          <span className="label">Lane</span>
-          <span>{lane === 'workstream' ? 'Workstream' : 'Epic'}</span>
-          <svg width="9" height="9" viewBox="0 0 9 9">
-            <path d="M2 3.5 L4.5 6 L7 3.5" stroke="currentColor" fill="none" strokeWidth="1.3" strokeLinecap="round" />
-          </svg>
-        </button>
+          <option value="workstream">Lane: Workstream</option>
+          <option value="epic">Lane: Epic</option>
+        </select>
         <div className="filter-search" style={{ marginLeft: 'auto' }}>
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ color: 'var(--text-tertiary)' }}>
             <circle cx="5.5" cy="5.5" r="3.5" stroke="currentColor" strokeWidth="1.3" />

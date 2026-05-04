@@ -824,6 +824,50 @@ public class DeliverableRow
 }
 
 /// <summary>
+/// Phase 39 (Layer C) — open questions extracted from a generator's
+/// `## Open Questions` JSON block. Operator answers them via the
+/// conversation-tab wizard; answers are prepended to the next iteration's
+/// user prompt and the evaluator's pass verdict is overridden to `iterate`
+/// while any rows for this work item have <see cref="Answer"/> = null.
+///
+/// One row per (workItemId, externalId, iter) — the architect can re-emit a
+/// question in a later iteration if the original answer wasn't sufficient,
+/// and we keep the history. The "what's still unanswered" query dedupes by
+/// externalId taking the most-recent row.
+/// </summary>
+public class DeliverableQuestionRow
+{
+    public long Id { get; set; }
+
+    /// <summary>Plain-text id from the generator's JSON block ("q1", "auth-method", etc.). Stable across iters.</summary>
+    public string ExternalId { get; set; } = string.Empty;
+
+    /// <summary>Workstream id or synthetic plan-doc id (matches <see cref="DeliverableRow.WorkItemId"/>).</summary>
+    public string WorkItemId { get; set; } = string.Empty;
+
+    /// <summary>Iteration that emitted this question (1-based, matches Deliverables.Iter).</summary>
+    public int Iter { get; set; }
+
+    /// <summary>Question text shown to the operator.</summary>
+    public string Text { get; set; } = string.Empty;
+
+    /// <summary>One of: <c>choice</c> (radio) | <c>open</c> (free-text).</summary>
+    public string Kind { get; set; } = "open";
+
+    /// <summary>JSON array of options when <see cref="Kind"/>=choice. Null/empty for open questions.</summary>
+    public string? ChoicesJson { get; set; }
+
+    /// <summary>Operator-supplied answer. Null = still unanswered (blocks pass verdict).</summary>
+    public string? Answer { get; set; }
+
+    public DateTimeOffset? AnsweredAt { get; set; }
+
+    public string? AnsweredBy { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
 /// Phase 14.1 — append-only level history. One row per promotion/demotion;
 /// the nightly <c>PromotionJob</c> writes here when it bumps an agent's
 /// level. Backfill on migration writes no rows (existing agents enter at

@@ -101,6 +101,13 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
         return Task.FromResult<IReadOnlyDictionary<string, string>>(dict);
     }
 
+    public Task ResumeSingleArtifactAsync(
+        StorySpawnRow spawn, WorkItemRow story, string key, CancellationToken ct = default)
+    {
+        // Deterministic strategy has no gen↔eval loop — resume is a no-op.
+        return Task.CompletedTask;
+    }
+
     public Task<IReadOnlyList<DecompositionWorkstream>> ProduceDecompositionAsync(
         StorySpawnRow spawn, WorkItemRow story, CancellationToken ct = default)
     {
@@ -147,6 +154,13 @@ public sealed class DeterministicStoryArtifactStrategy : IStoryArtifactStrategy
             .ToString();
         return Task.FromResult<IReadOnlyDictionary<string, string>>(
             new Dictionary<string, string>(StringComparer.Ordinal) { [path] = body });
+    }
+
+    public Task<IReadOnlyDictionary<string, string>> ReadCachedWorkstreamFilesAsync(
+        StorySpawnRow spawn, WorkstreamRow workstream, CancellationToken ct = default)
+    {
+        // Deterministic strategy has no workspace — return same content as ProduceWorkstreamChangesAsync.
+        return this.ProduceWorkstreamChangesAsync(spawn, workstream, ct);
     }
 
     public Task<IReadOnlyList<ReviewComment>> ProduceReviewCommentsAsync(

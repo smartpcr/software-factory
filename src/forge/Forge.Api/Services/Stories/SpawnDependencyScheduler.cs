@@ -62,9 +62,14 @@ public sealed class SpawnDependencyScheduler : BackgroundService
         using (var scope = this.services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+            // Include Done-phase spawns: when the QA pass advances the phase
+            // to "done", the WI/ProductStory closure work happens on the
+            // *next* drive (DriveDoneAsync). Filtering them out here would
+            // strand the spawn at done with the work item still active.
+            // DriveDoneAsync short-circuits once the WI state is already
+            // closed, so this remains effectively a one-shot per spawn.
             activeStoryIds = await db.StorySpawns
                 .AsNoTracking()
-                .Where(s => s.Phase != StorySpawnPhases.Done)
                 .Select(s => s.StoryId)
                 .ToListAsync(ct);
         }

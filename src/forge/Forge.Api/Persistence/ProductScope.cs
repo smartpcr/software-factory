@@ -58,7 +58,14 @@ public static class ProductScope
             return new ResolvedScope(AllScope, null);
         }
 
-        var productId = string.IsNullOrWhiteSpace(raw) ? ForgeSeed.DefaultProductId : raw;
+        // When no product header/query is sent, show all products instead
+        // of defaulting to a hardcoded product id.
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return new ResolvedScope(AllScope, null);
+        }
+
+        var productId = raw;
         var repoIds = await db.Repos.AsNoTracking()
             .Where(r => r.ProductId == productId)
             .Select(r => r.Id)

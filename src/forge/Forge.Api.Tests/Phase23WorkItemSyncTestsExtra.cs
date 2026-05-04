@@ -604,9 +604,12 @@ public class AgentReadyAuditExtraTests
         });
         await db.SaveChangesAsync();
 
+        // SQLite EF can't ORDER BY DateTimeOffset server-side
+        // (memory/feedback_sqlite_no_order_by_datetimeoffset.md). Sort by
+        // Id desc instead — the audit table's Id is monotonic.
         var audit = await db.Audit.AsNoTracking()
             .Where(a => a.User == "sync" && a.Path.Contains("auto-assigned-by-flag"))
-            .OrderByDescending(a => a.At)
+            .OrderByDescending(a => a.Id)
             .FirstAsync();
         Assert.Contains("WI-AR-1", audit.RequestBodySnippet ?? string.Empty);
         Assert.Contains("Engineering", audit.RequestBodySnippet ?? string.Empty);

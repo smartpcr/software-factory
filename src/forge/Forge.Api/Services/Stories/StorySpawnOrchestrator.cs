@@ -77,29 +77,23 @@ public sealed class StorySpawnOrchestrator
     /// </summary>
     public async Task DriveAsync(string storyId, bool forceResume, CancellationToken ct = default)
     {
-        // Loop bound is generous so dev-mode auto-progress can chain
-        // plan → decompose → implement → review → qa → done in one call.
-        // Each phase's drive method is idempotent so a re-tick is cheap.
-        var firstStep = true;
-        for (var safety = 0; safety < 32; safety++)
-        {
-            var advanced = false;
-            using (var scope = this.services.CreateScope())
-            {
-                var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
-                var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
-                var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId, ct);
-                if (spawn is null) return;
-
-                // forceResume only applies to the FIRST step of this drive
-                // (the failing step the operator intended to retry). Once
-                // we've successfully advanced past that step, downstream
-                // phases use the normal cache.
-                advanced = await this.RunOneStepAsync(db, hub, spawn, firstStep && forceResume, ct);
-            }
-            if (!advanced) return;
-            firstStep = false;
-        }
+        // Run a single step per call. Each phase method (DrivePlanAsync,
+        // DriveDecomposeAsync, ...) is internally idempotent and exits
+        // after its first applicable sub-step (open PR → merge → advance
+        // phase, etc.). Subsequent sub-steps land on the next call:
+        //   - SpawnDependencyScheduler ticks every 15 s in production,
+        //   - PATCH /spawn/phase advances the operator-driven gates,
+        //   - POST /spawn/decompose/approve unblocks `implement`,
+        //   - tests use TickAsync to advance the lifecycle deterministically.
+        // Removing the previous in-line tight loop also lets phase-level
+        // assertions in the test suite observe each intermediate state
+        // (e.g. spawn at "plan" with PR opened but not yet merged).
+        using var scope = this.services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ForgeDbContext>();
+        var hub = scope.ServiceProvider.GetService<IHubContext<ForgeHub>>();
+        var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId, ct);
+        if (spawn is null) return;
+        await this.RunOneStepAsync(db, hub, spawn, forceResume, ct);
     }
 
     /// <summary>
@@ -111,10 +105,11 @@ public sealed class StorySpawnOrchestrator
     {
         // The spawn may originate from either an upstream WorkItem (ADO Feature/Epic)
         // or a locally-authored ProductStory. When no WorkItem matches the spawn id,
-        // synthesize a transient WorkItemRow from the spawn fields so downstream
-        // strategy / provider calls can read title, description, and id uniformly.
-        // The synthesized row is detached — never added to the DbContext.
-        var story = await db.WorkItems.AsNoTracking().FirstOrDefaultAsync(w => w.Id == spawn.StoryId, ct);
+        // **persist** a fresh WorkItemRow so plan-doc / workstream child rows
+        // (Layer B inserts use ParentId=spawn.StoryId) have a real parent to
+        // resolve to. Without persistence the parent FK dangles and queries
+        // like "all work items for this story" miss the children.
+        var story = await db.WorkItems.FirstOrDefaultAsync(w => w.Id == spawn.StoryId, ct);
         if (story is null)
         {
             story = new WorkItemRow
@@ -131,6 +126,8 @@ public sealed class StorySpawnOrchestrator
                 CreatedAt = spawn.CreatedAt,
                 UpdatedAt = spawn.UpdatedAt,
             };
+            db.WorkItems.Add(story);
+            await db.SaveChangesAsync(ct);
         }
 
         var repo = spawn.RepoId is null
@@ -175,59 +172,66 @@ public sealed class StorySpawnOrchestrator
         StorySpawnRow spawn, WorkItemRow story, RepoRow? repo, bool forceResume, CancellationToken ct)
     {
         // Step 1 — PR doesn't exist yet: produce artifacts, commit, open PR.
-        if (string.IsNullOrEmpty(spawn.PlanPrId))
+        // Also re-enters when forceResume=true and PR exists: re-generate
+        // stalled/iterate docs, commit new content, push to existing PR.
+        if (string.IsNullOrEmpty(spawn.PlanPrId) || forceResume)
         {
             var planBranch = spawn.PlanBranch ?? $"story/{GitSafe(spawn.StoryId)}/plan";
             try
             {
                 await this.git.EnsureBranchAsync(repo, planBranch, "main", ct);
 
-                // Phase 38 (Layer B.1) — ensure each of the four plan docs has
-                // a real WorkItemRow before the architect crew dispatches.
-                // DeliverableLoop.PointsToMaxIter reads wi.Points to size each
-                // doc's iteration budget; without a row, the loop falls back
-                // to ScoringConstants.MaxIterations.
                 await EnsurePlanDocWorkItemsAsync(db, spawn, story, ct);
 
                 var artifacts = await this.strategy.ProducePlanArtifactsAsync(spawn, story, forceResume, ct);
                 await this.git.CommitFilesAsync(repo, planBranch, artifacts,
-                    $"plan: artifacts for story {GitSafe(spawn.StoryId)}", ct);
+                    forceResume
+                        ? $"plan: resume iteration for story {GitSafe(spawn.StoryId)}"
+                        : $"plan: artifacts for story {GitSafe(spawn.StoryId)}", ct);
 
-                var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
-                    Branch: planBranch,
-                    BaseBranch: "main",
-                    Title: $"[plan] {story.Title}",
-                    Body: $"Planning artifacts for story `{GitSafe(spawn.StoryId)}` produced by the architect crew.",
-                    Repo: repo,
-                    WorkItemId: story.Id,
-                    Workstream: null,
-                    Epic: spawn.StoryId), ct);
-
-                var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
-                spawnRow.PlanBranch = planBranch;
-                spawnRow.PlanPrId = prId;
-                spawnRow.UpdatedAt = DateTimeOffset.UtcNow;
-                await ClearLastErrorAsync(db, spawnRow, ct);
-                await db.SaveChangesAsync(ct);
-
-                // Kick off QA in parallel — the spec requires QA to start after the
-                // plan PR exists. The QA crew works on a separate qa branch; merging
-                // the plan PR is the gate that lets QA *commit* (handled inside
-                // DriveQaAsync via qa branch existence check).
-                if (string.IsNullOrEmpty(spawnRow.QaBranch))
+                // Open PR only if not yet opened
+                if (string.IsNullOrEmpty(spawn.PlanPrId))
                 {
-                    spawnRow.QaBranch = $"story/{GitSafe(spawn.StoryId)}/qa";
+                    var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
+                        Branch: planBranch,
+                        BaseBranch: "main",
+                        Title: $"[plan] {story.Title}",
+                        Body: $"Planning artifacts for story `{GitSafe(spawn.StoryId)}` produced by the architect crew.",
+                        Repo: repo,
+                        WorkItemId: story.Id,
+                        Workstream: null,
+                        Epic: spawn.StoryId), ct);
+
+                    var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
+                    spawnRow.PlanBranch = planBranch;
+                    spawnRow.PlanPrId = prId;
+                    spawnRow.UpdatedAt = DateTimeOffset.UtcNow;
+                    await ClearLastErrorAsync(db, spawnRow, ct);
                     await db.SaveChangesAsync(ct);
-                    await this.git.EnsureBranchAsync(repo, spawnRow.QaBranch, "main", ct);
+
+                    if (string.IsNullOrEmpty(spawnRow.QaBranch))
+                    {
+                        spawnRow.QaBranch = $"story/{GitSafe(spawn.StoryId)}/qa";
+                        await db.SaveChangesAsync(ct);
+                        await this.git.EnsureBranchAsync(repo, spawnRow.QaBranch, "main", ct);
+                    }
+
+                    await EmitChange(hub, "plan-pr-opened", spawnRow, ct);
+                }
+                else
+                {
+                    // PR already exists — just clear the error and notify
+                    var spawnRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
+                    spawnRow.UpdatedAt = DateTimeOffset.UtcNow;
+                    await ClearLastErrorAsync(db, spawnRow, ct);
+                    await db.SaveChangesAsync(ct);
+                    await EmitChange(hub, "plan-resumed", spawnRow, ct);
                 }
 
-                await EmitChange(hub, "plan-pr-opened", spawnRow, ct);
                 return true;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // Architect crew below pass / commit failure / PR-open failure.
-                // Persist + surface so the operator sees why the spawn halted.
                 this.logger?.LogError(ex,
                     "Plan artifact production failed for spawn {SpawnId} ({StoryId}).",
                     spawn.Id, spawn.StoryId);
@@ -377,8 +381,12 @@ public sealed class StorySpawnOrchestrator
     private static async Task EnsurePlanDocWorkItemsAsync(
         ForgeDbContext db, StorySpawnRow spawn, WorkItemRow story, CancellationToken ct)
     {
-        var docPoints = Math.Max(1, spawn.StoryPoints / 4);
-        var docIds = PlanDocFileNames.Select(f => $"plan-doc:{spawn.Id}:{f}").ToArray();
+        var docPoints = Math.Max(1, spawn.StoryPoints);
+        // List<string> rather than string[] — C# 12's implicit T[] → ReadOnlySpan<T>
+        // conversion makes the EF Core LINQ translator route Contains() through
+        // MemoryExtensions.Contains, which can't be compiled by the parameter
+        // extractor (ReadOnlySpan is a ref struct and violates TRet constraint).
+        var docIds = PlanDocFileNames.Select(f => $"plan-doc:{spawn.Id}:{f}").ToList();
 
         var existing = await db.WorkItems.AsNoTracking()
             .Where(w => docIds.Contains(w.Id))
@@ -394,6 +402,7 @@ public sealed class StorySpawnOrchestrator
             {
                 Id = id,
                 ParentId = spawn.StoryId,
+                FeatureRef = spawn.StoryId,
                 RepoId = spawn.RepoId,
                 Provider = "local",
                 ProviderRef = null,
@@ -504,6 +513,7 @@ public sealed class StorySpawnOrchestrator
                 {
                     Id = wsId,
                     ParentId = spawn.StoryId,
+                    FeatureRef = spawn.StoryId,
                     RepoId = spawn.RepoId,
                     Provider = "local",
                     ProviderRef = null,
@@ -512,7 +522,7 @@ public sealed class StorySpawnOrchestrator
                     State = "active",
                     Title = w.Title,
                     DescriptionMd = w.Description ?? string.Empty,
-                    Points = ParseEffortToPoints(w.EstimatedEffort, fallback: Math.Max(1, spawn.StoryPoints / Math.Max(1, ws.Count))),
+                    Points = Math.Max(1, spawn.StoryPoints),
                     Priority = "med",
                     CreatedAt = DateTimeOffset.UtcNow,
                     UpdatedAt = DateTimeOffset.UtcNow,
@@ -580,9 +590,37 @@ public sealed class StorySpawnOrchestrator
 
             // Branch + commit + PR.
             await this.git.EnsureBranchAsync(repo, w.Branch, "main", ct);
-            var files = await this.strategy.ProduceWorkstreamChangesAsync(spawn, w, ct);
-            await this.git.CommitFilesAsync(repo, w.Branch, files,
-                $"impl({w.Id}): {w.Name}", ct);
+
+            // Check if the gen/eval loop already passed for this workstream.
+            // If so, skip re-running the loop and use the cached workspace
+            // files. Without this check, DriveImplementAsync re-enters the
+            // full loop from scratch on every orchestrator tick because the
+            // DeliverableLoop resume logic skips "pass" verdicts.
+            var lastDel = (await db.Deliverables.AsNoTracking()
+                    .Where(d => d.WorkItemId == w.Id)
+                    .ToListAsync(ct))
+                .OrderByDescending(d => d.CreatedAt)
+                .FirstOrDefault();
+            IReadOnlyDictionary<string, string> files;
+            if (lastDel is not null && string.Equals(lastDel.Verdict, "pass", StringComparison.OrdinalIgnoreCase))
+            {
+                // Already passed — read files from the cached workspace
+                // instead of re-running the loop.
+                this.logger?.LogInformation(
+                    "Workstream {WsId} already passed (iter {Iter}, score {Score}). Skipping gen/eval, using cached workspace.",
+                    w.Id, lastDel.Iter, lastDel.Score);
+                files = await this.strategy.ReadCachedWorkstreamFilesAsync(spawn, w, ct);
+            }
+            else
+            {
+                files = await this.strategy.ProduceWorkstreamChangesAsync(spawn, w, ct);
+            }
+
+            if (files.Count > 0)
+            {
+                await this.git.CommitFilesAsync(repo, w.Branch, files,
+                    $"impl({w.Id}): {w.Name}", ct);
+            }
 
             var prId = await this.provider.OpenPrAsync(new StoryPrRequest(
                 Branch: w.Branch,

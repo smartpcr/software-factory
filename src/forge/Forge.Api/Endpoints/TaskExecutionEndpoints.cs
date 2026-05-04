@@ -8,9 +8,11 @@ namespace Forge.Api.Endpoints;
 
 using System.IO;
 using System.Text.Json;
+using Forge.Api.Auth;
 using Forge.Api.Contracts;
 using Forge.Api.Persistence;
 using Forge.Api.Realtime;
+using Forge.Api.Services.Stories;
 using Microsoft.AspNetCore.SignalR;
 using Forge.Api.Services;
 using Microsoft.AspNetCore.Http;
@@ -43,7 +45,218 @@ public static class TaskExecutionEndpoints
         grp.MapPatch("/{id}/execution", PatchExecution).WithName("PatchWorkItemExecution");
         grp.MapPost("/{id}/resume", Resume).WithName("ResumeWorkItem");
         grp.MapGet("/{id}/commits", GetCommits).WithName("GetWorkItemCommits");
+        // Phase 39 (Layer C) — open-questions wizard for the conversation tab.
+        grp.MapGet("/{id}/questions", GetQuestions).WithName("GetWorkItemQuestions");
+        grp.MapPost("/{id}/questions/answer", AnswerQuestions).WithName("AnswerWorkItemQuestions");
+        grp.MapPost("/{id}/questions/dismiss", DismissQuestions).WithName("DismissWorkItemQuestions");
         return app;
+    }
+
+    /// <summary>
+    /// Phase 39 (Layer C) — list every question ever emitted for a work
+    /// item, deduped by ExternalId taking the most-recent row. Powers the
+    /// conversation-tab wizard: unanswered rows become editable, answered
+    /// rows show the operator's prior answer for context.
+    ///
+    /// Self-healing: when no rows exist but this is a plan-doc workItemId
+    /// AND the doc has a `## Open Questions` markdown section in its
+    /// committed content, the endpoint parses it, persists the questions
+    /// (so the verdict gate sees them too), and returns them. This covers
+    /// the historical iterations that emitted questions in markdown
+    /// rather than the structured JSON block format Layer C now requires.
+    /// </summary>
+    private static async Task<IResult> GetQuestions(
+        string id,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var rows = await db.DeliverableQuestions.AsNoTracking()
+            .Where(q => q.WorkItemId == id)
+            .ToListAsync(ct);
+
+        if (rows.Count == 0)
+        {
+            // Self-heal: attempt to import questions from the doc's body
+            // markdown. Only fires for plan-doc:* ids (the synthetic id
+            // format we know how to resolve to a doc on disk / branch).
+            await TryImportQuestionsFromDocAsync(db, id, ct);
+            rows = await db.DeliverableQuestions.AsNoTracking()
+                .Where(q => q.WorkItemId == id)
+                .ToListAsync(ct);
+        }
+
+        var latestPerId = rows
+            .GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First())
+            .OrderBy(q => q.Iter).ThenBy(q => q.ExternalId)
+            .ToList();
+        var items = latestPerId.Select(q => new
+        {
+            id = q.Id,
+            externalId = q.ExternalId,
+            iter = q.Iter,
+            text = q.Text,
+            kind = q.Kind,
+            choices = string.IsNullOrEmpty(q.ChoicesJson)
+                ? Array.Empty<string>()
+                : JsonSerializer.Deserialize<string[]>(q.ChoicesJson) ?? Array.Empty<string>(),
+            answer = q.Answer,
+            answeredAt = q.AnsweredAt,
+            answeredBy = q.AnsweredBy,
+        }).ToList();
+        var unansweredCount = items.Count(i => string.IsNullOrEmpty(i.answer));
+        return Results.Ok(new { workItemId = id, items, unansweredCount });
+    }
+
+    /// <summary>
+    /// Phase 39.1 — for plan-doc workItemIds (format
+    /// <c>plan-doc:{spawnId}:{filename}</c>), read the doc's committed
+    /// markdown content and parse any <c>## Open Questions</c> section into
+    /// <see cref="DeliverableQuestionRow"/> rows. Idempotent: only fires
+    /// when the table has zero rows for this work item.
+    /// </summary>
+    private static async Task TryImportQuestionsFromDocAsync(
+        ForgeDbContext db, string workItemId, CancellationToken ct)
+    {
+        if (!workItemId.StartsWith("plan-doc:", StringComparison.Ordinal)) return;
+
+        // Format: plan-doc:{spawnId}:{filename}
+        var parts = workItemId.Split(':', 3);
+        if (parts.Length != 3) return;
+        var spawnId = parts[1];
+        var fileName = parts[2];
+
+        var spawn = await db.StorySpawns.AsNoTracking().FirstOrDefaultAsync(s => s.Id == spawnId, ct);
+        if (spawn is null) return;
+
+        // Path under the repo: docs/stories/{safeStoryId}/{file}.
+        var safeStoryId = StoryPaths.Safe(spawn.StoryId);
+        var relPath = $"docs/stories/{safeStoryId}/{fileName.ToLowerInvariant()}";
+        var repoRoot = Forge.Api.Persistence.ForgeSeed.FindRepoRoot();
+        var fullPath = Path.Combine(repoRoot, relPath.Replace('/', Path.DirectorySeparatorChar));
+
+        string? content = null;
+        if (File.Exists(fullPath))
+        {
+            try { content = await File.ReadAllTextAsync(fullPath, ct); } catch { /* best-effort */ }
+        }
+        if (string.IsNullOrWhiteSpace(content)) return;
+
+        var parsed = OpenQuestionsExtractor.Extract(content);
+        if (parsed.Count == 0) return;
+
+        // Use iter = 0 to mark these as imported-from-doc (vs emitted live).
+        // The deliverable_questions schema allows it; the wizard renders
+        // them the same as iter=N rows.
+        foreach (var q in parsed)
+        {
+            db.DeliverableQuestions.Add(new DeliverableQuestionRow
+            {
+                WorkItemId = workItemId,
+                ExternalId = q.ExternalId,
+                Iter = 0,
+                Text = q.Text,
+                Kind = q.Kind,
+                ChoicesJson = q.Choices is { Count: > 0 } ? JsonSerializer.Serialize(q.Choices) : null,
+                Answer = null,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+        }
+        await db.SaveChangesAsync(ct);
+    }
+
+    public sealed record AnswerQuestionsRequest(IReadOnlyList<AnswerEntry> Answers);
+    public sealed record AnswerEntry(string ExternalId, string Answer);
+    public sealed record DismissQuestionsRequest(IReadOnlyList<string> ExternalIds);
+
+    /// <summary>
+    /// Phase 39 (Layer C) — operator-dismiss path for legacy / unanswerable
+    /// questions. Sets Answer to a sentinel (`"(dismissed by operator)"`)
+    /// and AnsweredBy so the row stops blocking the verdict gate but the
+    /// audit trail still shows who decided to skip it. UI surfaces a small
+    /// "✕ dismiss" button next to each unanswered question.
+    /// </summary>
+    private static async Task<IResult> DismissQuestions(
+        HttpContext ctx,
+        string id,
+        [FromBody] DismissQuestionsRequest req,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+        if (req?.ExternalIds is null || req.ExternalIds.Count == 0)
+            return Results.Problem(title: "externalIds[] is required", statusCode: 400);
+
+        var actor = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u) ? u.ToString() : "operator";
+        var existing = await db.DeliverableQuestions
+            .Where(q => q.WorkItemId == id)
+            .ToListAsync(ct);
+        var byExtId = existing
+            .GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First(), StringComparer.OrdinalIgnoreCase);
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var extId in req.ExternalIds)
+        {
+            if (string.IsNullOrEmpty(extId)) continue;
+            if (!byExtId.TryGetValue(extId, out var latest)) continue;
+            latest.Answer = "(dismissed by operator)";
+            latest.AnsweredAt = now;
+            latest.AnsweredBy = actor;
+        }
+        await db.SaveChangesAsync(ct);
+
+        var unansweredCount = await DeliverableLoop.CountUnansweredQuestionsAsync(db, id, ct);
+        return Results.Ok(new { workItemId = id, unansweredCount });
+    }
+
+    /// <summary>
+    /// Phase 39 (Layer C) — record operator answers. We always insert a
+    /// fresh row (matching the iter of the most-recent emission for each
+    /// ExternalId) so the history reads "asked at iter N, answered at iter
+    /// N" cleanly. Returns the updated unanswered count so the UI can
+    /// re-render the wizard without an extra GET.
+    /// </summary>
+    private static async Task<IResult> AnswerQuestions(
+        HttpContext ctx,
+        string id,
+        [FromBody] AnswerQuestionsRequest req,
+        ForgeDbContext db,
+        CancellationToken ct)
+    {
+        var auth = ForgeUser.RequireWriter(ctx);
+        if (auth is not null) return auth;
+        if (req?.Answers is null || req.Answers.Count == 0)
+            return Results.Problem(title: "answers[] is required", statusCode: 400);
+
+        var actor = ctx.Request.Headers.TryGetValue("X-Forge-User", out var u) ? u.ToString() : "operator";
+        var existing = await db.DeliverableQuestions
+            .Where(q => q.WorkItemId == id)
+            .ToListAsync(ct);
+        var byExtId = existing
+            .GroupBy(q => q.ExternalId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(q => q.Iter).ThenByDescending(q => q.Id).First(), StringComparer.OrdinalIgnoreCase);
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var a in req.Answers)
+        {
+            if (string.IsNullOrEmpty(a.ExternalId)) continue;
+            if (!byExtId.TryGetValue(a.ExternalId, out var latest)) continue;
+            // Update the latest row in place so subsequent renders show the
+            // answer next to the question that surfaced it. If a future iter
+            // re-emits the same ExternalId with a fresh row, the operator
+            // will see the new (unanswered) row alongside the historical
+            // answer via the per-iter dedupe.
+            latest.Answer = a.Answer ?? string.Empty;
+            latest.AnsweredAt = now;
+            latest.AnsweredBy = actor;
+        }
+        await db.SaveChangesAsync(ct);
+
+        // Re-compute and return the updated unanswered count for the UI.
+        var unansweredCount = await DeliverableLoop.CountUnansweredQuestionsAsync(db, id, ct);
+        return Results.Ok(new { workItemId = id, unansweredCount });
     }
 
     private static async Task<IResult> GetExecution(

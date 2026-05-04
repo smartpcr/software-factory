@@ -12,6 +12,7 @@ import {
   SummaryView,
   PairSide,
 } from '@/views/conversation';
+import { OpenQuestionsWizard } from './OpenQuestionsWizard';
 
 interface Props {
   /** Workstream id (also the workItemId emitted on the task.{wid} channel by
@@ -219,6 +220,11 @@ export function WorkstreamConversationPane({ workstreamId }: Props) {
           </div>
         )}
       </section>
+
+      <OpenQuestionsWizard
+        workItemId={workstreamId}
+        onAnswered={(left) => { if (left === 0) void handleResume(); }}
+      />
 
       <nav className="live-exec__filters" role="tablist">
         {FILTERS.map((f) => (

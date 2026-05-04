@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -77,6 +78,10 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
         {
             ["Forge:Stories:OrchestratorEnabled"] = "true",
             ["Forge:Stories:AutoProgressGates"] = "false",
+            // appsettings.json sets this to false (production fire-and-forget).
+            // Tests assert PlanPrId is populated as soon as POST returns, so
+            // the drive must complete inline.
+            ["Forge:Stories:SpawnDriveInline"] = "true",
         });
 
     /// <summary>
@@ -89,6 +94,7 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
         {
             ["Forge:Stories:OrchestratorEnabled"] = "true",
             ["Forge:Stories:AutoProgressGates"] = "true",
+            ["Forge:Stories:SpawnDriveInline"] = "true",
         });
 
     /// <inheritdoc/>
@@ -182,15 +188,21 @@ public class ForgeWebApplicationFactory : WebApplicationFactory<Program>
 
         // Override real story-spawn DI bindings with test-friendly
         // implementations so tests don't hit real git, LLMs, or providers.
+        // Use RemoveAll + Add (rather than just Add) so the production
+        // descriptor is removed entirely. With both descriptors in the
+        // collection the resolver still picks the last one, but extra
+        // hosted-service eager-init and IEnumerable<T> consumers can end
+        // up constructing the production singleton with a stale scope —
+        // which manifested as ObjectDisposedException on the first
+        // OpenPrAsync call inside the orchestrator's plan phase.
         builder.ConfigureTestServices(services =>
         {
-            var artifactDesc = ServiceDescriptor.Singleton<IStoryArtifactStrategy, DeterministicStoryArtifactStrategy>();
-            var gitDesc = ServiceDescriptor.Singleton<IStoryGitOps, InMemoryStoryGitOps>();
-            var provDesc = ServiceDescriptor.Singleton<IStoryProviderOps, LocalStoryProviderOps>();
-            services.Add(artifactDesc);
-            services.Add(gitDesc);
-            services.Add(provDesc);
-
+            services.RemoveAll<IStoryArtifactStrategy>();
+            services.RemoveAll<IStoryGitOps>();
+            services.RemoveAll<IStoryProviderOps>();
+            services.AddSingleton<IStoryArtifactStrategy, DeterministicStoryArtifactStrategy>();
+            services.AddSingleton<IStoryGitOps, InMemoryStoryGitOps>();
+            services.AddSingleton<IStoryProviderOps, LocalStoryProviderOps>();
         });
     }
 
