@@ -1,133 +1,238 @@
-using Ast.Core;
-using Ast.Memory.Models;
-using Xunit;
+// -----------------------------------------------------------------------
+// <copyright file="MemoryNodeTests.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
 
 namespace Ast.Memory.Tests;
 
+using Ast.Core;
+using Ast.Memory.Models;
+
+[TestClass]
 public class MemoryNodeTests
 {
-    [Fact]
-    public void Inner_ReturnsOriginalNode()
+    [TestMethod]
+    public void MemoryNode_WithStructuralLayerAndTemporal_ExposesAllAccessors()
     {
-        var node = new HypergraphNode("n1", "Class", new Dictionary<string, string>
+        // Arrange: HypergraphNode with MemoryLayer="structural" and temporal metadata
+        var inner = new HypergraphNode
         {
-            [MemoryMetadataKeys.MemoryLayer] = "structural",
-            [MemoryMetadataKeys.ContentHash] = "abc",
-            [MemoryMetadataKeys.SinceCommit] = "abc123",
-            [MemoryMetadataKeys.SinceIndex] = "42"
-        });
+            Id = "node-1",
+            Name = "MyClass",
+            NodeType = "Class",
+            Language = "C#",
+            FilePath = "/src/MyClass.cs",
+            Metadata = new Dictionary<string, object?>
+            {
+                [MemoryMetadataKeys.MemoryLayer] = "structural",
+                [MemoryMetadataKeys.ContentHash] = "deadbeef",
+                [MemoryMetadataKeys.SinceCommit] = "abc123",
+                [MemoryMetadataKeys.SinceIndex] = 42,
+            },
+        };
 
-        var memoryNode = new MemoryNode(node);
+        // Act
+        var memoryNode = new MemoryNode(inner);
 
-        Assert.Same(node, memoryNode.Inner);
+        // Assert: Inner is the original node
+        memoryNode.Inner.Should().BeSameAs(inner);
+
+        // Assert: MemoryLayer returns "structural"
+        memoryNode.MemoryLayer.Should().Be("structural");
+
+        // Assert: NodeKind delegates to Inner.NodeType
+        memoryNode.NodeKind.Should().Be("Class");
+
+        // Assert: ContentHash delegates to metadata
+        memoryNode.ContentHash.Should().Be("deadbeef");
+
+        // Assert: Version is extracted with correct SinceIndex
+        memoryNode.Version.Should().NotBeNull();
+        memoryNode.Version!.Since.Should().Be("abc123");
+        memoryNode.Version!.SinceIndex.Should().Be(42);
+        memoryNode.Version!.Until.Should().BeNull();
+        memoryNode.Version!.UntilIndex.Should().BeNull();
     }
 
-    [Fact]
-    public void MemoryLayer_ReturnsFromMetadata()
+    [TestMethod]
+    public void MemoryNode_ExternalBoundaryNode_VersionIsNull()
     {
-        var node = new HypergraphNode("n1", "Class", new Dictionary<string, string>
+        // Arrange: An External boundary node with no temporal metadata (timeless)
+        var inner = new HypergraphNode
         {
-            [MemoryMetadataKeys.MemoryLayer] = "structural",
-            [MemoryMetadataKeys.ContentHash] = "abc",
-            [MemoryMetadataKeys.SinceCommit] = "abc123",
-            [MemoryMetadataKeys.SinceIndex] = "42"
-        });
+            Id = "ext-nuget-newtonsoft",
+            Name = "Newtonsoft.Json",
+            NodeType = "ExternalPackage",
+            Language = "C#",
+            FilePath = "",
+            Metadata = new Dictionary<string, object?>
+            {
+                [MemoryMetadataKeys.MemoryLayer] = "external",
+                [MemoryMetadataKeys.ContentHash] = "aabb1122",
+            },
+        };
 
-        var memoryNode = new MemoryNode(node);
+        // Act
+        var memoryNode = new MemoryNode(inner);
 
-        Assert.Equal("structural", memoryNode.MemoryLayer);
+        // Assert: Version is null for external boundary nodes
+        memoryNode.Version.Should().BeNull();
     }
 
-    [Fact]
-    public void NodeKind_ReturnsInnerNodeType()
+    [TestMethod]
+    public void MemoryNode_WithFullVersionRange_IncludesUntil()
     {
-        var node = new HypergraphNode("n1", "Class", new Dictionary<string, string>
+        var inner = new HypergraphNode
         {
-            [MemoryMetadataKeys.MemoryLayer] = "structural",
-            [MemoryMetadataKeys.ContentHash] = "hash",
-            [MemoryMetadataKeys.SinceCommit] = "abc123",
-            [MemoryMetadataKeys.SinceIndex] = "42"
-        });
+            Id = "node-2",
+            Name = "OldMethod",
+            NodeType = "Method",
+            Language = "C#",
+            FilePath = "/src/Old.cs",
+            Metadata = new Dictionary<string, object?>
+            {
+                [MemoryMetadataKeys.MemoryLayer] = "structural",
+                [MemoryMetadataKeys.ContentHash] = "cafebabe",
+                [MemoryMetadataKeys.SinceCommit] = "aaa111",
+                [MemoryMetadataKeys.SinceIndex] = 10,
+                [MemoryMetadataKeys.UntilCommit] = "bbb222",
+                [MemoryMetadataKeys.UntilIndex] = 20,
+            },
+        };
 
-        var memoryNode = new MemoryNode(node);
+        var memoryNode = new MemoryNode(inner);
 
-        Assert.Equal("Class", memoryNode.NodeKind);
+        memoryNode.Version.Should().NotBeNull();
+        memoryNode.Version!.Since.Should().Be("aaa111");
+        memoryNode.Version!.SinceIndex.Should().Be(10);
+        memoryNode.Version!.Until.Should().Be("bbb222");
+        memoryNode.Version!.UntilIndex.Should().Be(20);
     }
 
-    [Fact]
-    public void ContentHash_ReturnsFromMetadata()
+    [TestMethod]
+    public void MemoryNode_NullInner_ThrowsArgumentNullException()
     {
-        var node = new HypergraphNode("n1", "Class", new Dictionary<string, string>
-        {
-            [MemoryMetadataKeys.MemoryLayer] = "structural",
-            [MemoryMetadataKeys.ContentHash] = "sha256hash",
-            [MemoryMetadataKeys.SinceCommit] = "abc123",
-            [MemoryMetadataKeys.SinceIndex] = "42"
-        });
-
-        var memoryNode = new MemoryNode(node);
-
-        Assert.Equal("sha256hash", memoryNode.ContentHash);
+        var act = () => new MemoryNode(null!);
+        act.Should().Throw<ArgumentNullException>();
     }
 
-    [Fact]
-    public void Version_ExtractsFromTemporalMetadata()
+    [TestMethod]
+    public void MemoryNode_MissingMemoryLayerKey_ThrowsOnAccess()
     {
-        var node = new HypergraphNode("n1", "Class", new Dictionary<string, string>
+        var inner = new HypergraphNode
         {
-            [MemoryMetadataKeys.MemoryLayer] = "structural",
-            [MemoryMetadataKeys.ContentHash] = "hash",
-            [MemoryMetadataKeys.SinceCommit] = "abc123",
-            [MemoryMetadataKeys.SinceIndex] = "42"
-        });
+            Id = "node-3",
+            Name = "Test",
+            NodeType = "Class",
+            Language = "C#",
+            FilePath = "/src/Test.cs",
+            Metadata = new Dictionary<string, object?>
+            {
+                [MemoryMetadataKeys.ContentHash] = "hash",
+            },
+        };
 
-        var memoryNode = new MemoryNode(node);
-
-        Assert.NotNull(memoryNode.Version);
-        Assert.Equal("abc123", memoryNode.Version!.Since);
-        Assert.Equal(42, memoryNode.Version.SinceIndex);
-        Assert.Null(memoryNode.Version.Until);
-        Assert.Null(memoryNode.Version.UntilIndex);
+        var memoryNode = new MemoryNode(inner);
+        var act = () => memoryNode.MemoryLayer;
+        act.Should().Throw<KeyNotFoundException>();
     }
 
-    [Fact]
-    public void Version_IsNull_ForExternalBoundaryNode()
+    [TestMethod]
+    public void MemoryNode_SinceCommitWithoutSinceIndex_ThrowsInvalidOperation()
     {
-        // External boundary nodes have no temporal metadata — they are timeless
-        var node = new HypergraphNode("ext1", "External", new Dictionary<string, string>
+        var inner = new HypergraphNode
         {
-            [MemoryMetadataKeys.MemoryLayer] = "external",
-            [MemoryMetadataKeys.ContentHash] = "hash"
-        });
+            Id = "node-malformed-1",
+            Name = "Bad",
+            NodeType = "Class",
+            Language = "C#",
+            FilePath = "/src/Bad.cs",
+            Metadata = new Dictionary<string, object?>
+            {
+                [MemoryMetadataKeys.MemoryLayer] = "structural",
+                [MemoryMetadataKeys.ContentHash] = "hash",
+                [MemoryMetadataKeys.SinceCommit] = "abc123",
+                // SinceIndex deliberately missing
+            },
+        };
 
-        var memoryNode = new MemoryNode(node);
-
-        Assert.Null(memoryNode.Version);
+        var act = () => new MemoryNode(inner);
+        act.Should().Throw<InvalidOperationException>()
+            .Which.Message.Should().Contain("SinceIndex");
     }
 
-    [Fact]
-    public void Version_IncludesUntil_WhenClosed()
+    [TestMethod]
+    public void MemoryNode_SinceIndexWithoutSinceCommit_ThrowsInvalidOperation()
     {
-        var node = new HypergraphNode("n1", "Class", new Dictionary<string, string>
+        var inner = new HypergraphNode
         {
-            [MemoryMetadataKeys.MemoryLayer] = "structural",
-            [MemoryMetadataKeys.ContentHash] = "hash",
-            [MemoryMetadataKeys.SinceCommit] = "abc123",
-            [MemoryMetadataKeys.SinceIndex] = "10",
-            [MemoryMetadataKeys.UntilCommit] = "def456",
-            [MemoryMetadataKeys.UntilIndex] = "20"
-        });
+            Id = "node-malformed-2",
+            Name = "Bad",
+            NodeType = "Class",
+            Language = "C#",
+            FilePath = "/src/Bad.cs",
+            Metadata = new Dictionary<string, object?>
+            {
+                [MemoryMetadataKeys.MemoryLayer] = "structural",
+                [MemoryMetadataKeys.ContentHash] = "hash",
+                [MemoryMetadataKeys.SinceIndex] = 42,
+                // SinceCommit deliberately missing
+            },
+        };
 
-        var memoryNode = new MemoryNode(node);
-
-        Assert.NotNull(memoryNode.Version);
-        Assert.Equal("def456", memoryNode.Version!.Until);
-        Assert.Equal(20, memoryNode.Version.UntilIndex);
+        var act = () => new MemoryNode(inner);
+        act.Should().Throw<InvalidOperationException>()
+            .Which.Message.Should().Contain("SinceCommit");
     }
 
-    [Fact]
-    public void Constructor_ThrowsOnNullInner()
+    [TestMethod]
+    public void MemoryNode_UntilCommitWithoutUntilIndex_ThrowsInvalidOperation()
     {
-        Assert.Throws<ArgumentNullException>(() => new MemoryNode(null!));
+        var inner = new HypergraphNode
+        {
+            Id = "node-malformed-3",
+            Name = "Bad",
+            NodeType = "Class",
+            Language = "C#",
+            FilePath = "/src/Bad.cs",
+            Metadata = new Dictionary<string, object?>
+            {
+                [MemoryMetadataKeys.MemoryLayer] = "structural",
+                [MemoryMetadataKeys.ContentHash] = "hash",
+                [MemoryMetadataKeys.SinceCommit] = "abc123",
+                [MemoryMetadataKeys.SinceIndex] = 1,
+                [MemoryMetadataKeys.UntilCommit] = "def456",
+                // UntilIndex deliberately missing
+            },
+        };
+
+        var act = () => new MemoryNode(inner);
+        act.Should().Throw<InvalidOperationException>()
+            .Which.Message.Should().Contain("UntilIndex");
+    }
+
+    [TestMethod]
+    public void MemoryNode_VersionMetadataWithStringIndex_ParsesCorrectly()
+    {
+        var inner = new HypergraphNode
+        {
+            Id = "node-string-index",
+            Name = "StrParsed",
+            NodeType = "Class",
+            Language = "C#",
+            FilePath = "/src/Str.cs",
+            Metadata = new Dictionary<string, object?>
+            {
+                [MemoryMetadataKeys.MemoryLayer] = "structural",
+                [MemoryMetadataKeys.ContentHash] = "hash",
+                [MemoryMetadataKeys.SinceCommit] = "abc123",
+                [MemoryMetadataKeys.SinceIndex] = "42",
+            },
+        };
+
+        var memoryNode = new MemoryNode(inner);
+        memoryNode.Version.Should().NotBeNull();
+        memoryNode.Version!.SinceIndex.Should().Be(42);
     }
 }
