@@ -2,7 +2,7 @@
 
 > **Story:** `code-intelligence:AGENT-MEMORY` · 10 pts
 >
-> **Status:** Iteration 16
+> **Status:** Iteration 17
 >
 > This document is the **canonical authority** for component boundaries,
 > data model, edge/layer naming, ID format, interface signatures, and
@@ -42,9 +42,21 @@ and VCS history.
 
 ### 1.2 Multi-Agent Interaction Model
 
-The memory graph is scoped **per-repository**, not per-agent. Multiple agent
-sessions (e.g., Copilot in VS Code, Cursor, a CI bot) may access the same
-graph concurrently. The interaction model is:
+The memory graph is scoped **per-repository**, not per-agent-instance. A
+single graph store (one SQLite database or Neo4j instance) serves all agent
+sessions working on the same repository.
+
+> **Reconciliation with tech-spec O6:** Tech-spec.md §3 O6 says "The graph is
+> per-agent-instance for now" in the context of excluding "Multi-agent shared
+> memory." The wording is misleading. O6 excludes *G-Memory-style coordinated
+> sharing protocols* (agent swarms negotiating over a shared memory space). It
+> does **not** require separate storage per agent. The architecture's model —
+> a single per-repo graph with indirect knowledge sharing via read/write
+> operations and no inter-agent messaging — satisfies O6's intent. Multiple
+> agents reading and writing the same graph is simple concurrent I/O, not the
+> "shared memory" protocol that O6 defers.
+
+The interaction model is:
 
 - **Shared-nothing reads.** Each retrieval call is stateless and independent.
   Multiple concurrent `RetrieveAsync` calls are safe (§3.7).
@@ -524,7 +536,12 @@ CREATE TABLE commits (
 );
 ```
 
-Every node and edge carries a `VersionRange` in its `Metadata`:
+Every node and edge carries a `VersionRange` in its `Metadata`, **with one
+exception**: `External` stub nodes (§4.4) represent out-of-repo symbols that
+are never extracted or versioned — they have no `VersionRange`, no
+`ContentHash`, and no `Embedding`. They participate in `CALLS`/`REFERENCES`
+edges but are excluded from temporal queries. The edges connecting to them
+*do* carry `VersionRange` (tracking when the in-repo caller was extracted).
 
 ```csharp
 public record VersionRange(
@@ -760,6 +777,17 @@ public interface IMemoryGraphStore : IGraphStore
 
     Task<int> RegisterCommitAsync(string commitSha, string? parentSha,
         DateTime timestamp, CancellationToken ct = default);
+
+    Task<GraphStats> GetStatsAsync(CancellationToken ct = default);
+}
+
+public class GraphStats
+{
+    public required int NodeCount { get; init; }
+    public required int EdgeCount { get; init; }
+    public required int ExpertiseNodeCount { get; init; }
+    public required string? LastCommitSha { get; init; }
+    public required int? LastCommitIndex { get; init; }
 }
 
 public class TraversalPlan
@@ -910,7 +938,7 @@ Each tool maps to one or more internal interface methods.
 | `memory_call_chain` | `IMemoryGraphStore.TraverseAsync` | Trace callers/callees of a symbol to a given depth |
 | `memory_find_similar` | `IMemoryGraphStore.VectorSearchAsync` | Find semantically similar code nodes |
 | `memory_annotate` | `IEvolutionEngine.RecordExpertiseAsync` | Write an expertise entry (pattern/pitfall/preference/insight) |
-| `memory_status` | `IMemoryGraphStore.FindByNameAsync` (stats) + conditionally `IIncrementalSync.SyncToCommitAsync` (when `syncToHead=true`) | Check graph status; optionally trigger sync |
+| `memory_status` | `IMemoryGraphStore.GetStatsAsync` + conditionally `IIncrementalSync.SyncToCommitAsync` (when `syncToHead=true`) | Check graph status; optionally trigger sync |
 
 #### 5.6.2 MCP Tool Schemas
 
@@ -1432,6 +1460,9 @@ All conflicts resolved as of tech-spec.md iteration 10. Key alignment:
 | Token budget | default 8K, ceiling 32K | §2.4 |
 | Decay formula | `2^(−age_days / 1095) × centrality_boost` | §3.5 |
 | Agent API style | Typed MCP tools (no DSL) — 5 tools in §5.6 | §5.6 |
+| `memory_status` mapping | `GetStatsAsync` + conditional `SyncToCommitAsync` | §5.2, §5.6.1 |
+| Multi-agent scope | Per-repository shared graph; tech-spec O6 defers *coordinated protocols*, not concurrent access | §1.2 |
+| Temporal exceptions | `External` nodes exempt from `VersionRange` | §4.3, §4.4 |
 | Cross-branch expertise | Globally visible; staleness via `ContentHash` | §3.3 |
 
 ### 10.2 implementation-plan.md — Divergences Resolved
@@ -1456,7 +1487,7 @@ canonical values from this document regardless of what the plan says.
 | Decay half-life | 60 days | **1,095 days** (3 years) (§2.4) |
 | Decay formula | `e^(−λ × days)` | `2^(−age_days / 1095) × centrality_boost` (§3.5) |
 | Enum name | `PatternType` | **`ExpertiseKind`** (§5.4) |
-| Interface methods | `UpsertAnnotationAsync`, `GetAnnotationsAsync`, etc. | `ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`, etc. (§5.2) |
+| Interface methods | `UpsertAnnotationAsync`, `GetAnnotationsAsync`, etc. | `ApplyDiffAsync`, `TraverseAsync`, `VectorSearchAsync`, `GetStatsAsync`, etc. (§5.2) |
 | `IMemoryGraphStore` location | implied `Ast.GraphDb` | **`Ast.Memory/Interfaces/`** — zero `Ast.GraphDb` files modified (§3.0) |
 | MCP file location | `Ast.Cli` | **`Ast.Memory/Mcp/`** — `Ast.Cli` only gets additive registration (§5.6) |
 | Embedding model | unspecified | **`"nomic-embed-text"`** (§4.7) |
