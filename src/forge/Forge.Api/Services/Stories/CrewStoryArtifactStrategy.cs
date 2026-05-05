@@ -41,6 +41,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
     private readonly TaskChannel taskChannel;
     private readonly IConfiguration config;
     private readonly IStoryGitOps git;
+    private readonly AgentSlotService slots;
     private readonly ILogger<CrewStoryArtifactStrategy>? logger;
 
     public CrewStoryArtifactStrategy(
@@ -49,6 +50,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         TaskChannel taskChannel,
         IConfiguration config,
         IStoryGitOps git,
+        AgentSlotService slots,
         ILogger<CrewStoryArtifactStrategy>? logger = null)
     {
         this.scopeFactory = scopeFactory;
@@ -56,6 +58,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         this.taskChannel = taskChannel;
         this.config = config;
         this.git = git;
+        this.slots = slots;
         this.logger = logger;
     }
 
@@ -431,6 +434,11 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
         var docPoints = await this.LookupWorkItemPointsAsync(
             docWorkItemId, fallback: Math.Max(1, spawn.StoryPoints), ct);
 
+        // Recompute budget from docPoints so the agent timeout matches
+        // the work item's actual size, not the story-level points which
+        // may be 0 for locally-created stories.
+        var docBudget = BudgetForPhase(docPoints, $"plan:{spec.FileName}");
+
         await this.RunGenEvalLoopAsync(
             team: "Architect",
             workItemId: docWorkItemId,
@@ -438,7 +446,7 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             generatorPrompt: generatorPrompt,
             evaluatorPrompt: evaluatorPrompt,
             workspace: worktreePath,
-            budget: budget,
+            budget: docBudget,
             storyPoints: docPoints,
             generatorAgentOverride: generatorAgentOverride,
             // Phase 41 — revoke shell access. The architect's job is file I/O.
@@ -1114,7 +1122,13 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             "qa-steps" => 0.8,
             _ => 1.0,
         };
-        return TimeSpan.FromSeconds(baseSeconds * multiplier);
+        var seconds = baseSeconds * multiplier;
+        // Plan docs need a higher floor — the architect must read repo
+        // context + siblings + write a large markdown file. 3 minutes
+        // (the 0-point default) is too tight and causes timeouts.
+        if (prefix == "plan" && seconds < 600)
+            seconds = 600;
+        return TimeSpan.FromSeconds(seconds);
     }
 
     /// <summary>
@@ -1472,16 +1486,36 @@ public sealed class CrewStoryArtifactStrategy : IStoryArtifactStrategy
             return new EvaluatorRunOutput(output.ToString(), cost, inTok, outTok);
         }
 
-        var result = await loop.RunAsync(new DeliverableLoopRequest(
-            WorkItemId: workItemId,
-            CrewId: crew.Id,
-            GeneratorAgentId: genAgentId,
-            EvaluatorAgentId: evalAgentId ?? genAgentId,
-            Generator: GeneratorDelegate,
-            Evaluator: EvaluatorDelegate,
-            MaxTaskBudgetUsd: crew.MaxTaskBudgetUsd,
-            EvaluatorCrewId: evalCrewId,
-            WorkItemPoints: storyPoints), ct);
+        // Phase 44 — claim agents before starting the gen/eval loop.
+        await this.slots.TryClaimAsync(genAgentId, workItemId, "generator", ct);
+        if (evalAgentId is not null)
+        {
+            await this.slots.TryClaimAsync(evalAgentId, workItemId, "evaluator", ct);
+        }
+
+        DeliverableLoopResult result;
+        try
+        {
+            result = await loop.RunAsync(new DeliverableLoopRequest(
+                WorkItemId: workItemId,
+                CrewId: crew.Id,
+                GeneratorAgentId: genAgentId,
+                EvaluatorAgentId: evalAgentId ?? genAgentId,
+                Generator: GeneratorDelegate,
+                Evaluator: EvaluatorDelegate,
+                MaxTaskBudgetUsd: crew.MaxTaskBudgetUsd,
+                EvaluatorCrewId: evalCrewId,
+                WorkItemPoints: storyPoints), ct);
+        }
+        finally
+        {
+            // Phase 44 — always release agents, even on error/cancel.
+            await this.slots.ReleaseAsync(genAgentId, workItemId, ct: CancellationToken.None);
+            if (evalAgentId is not null)
+            {
+                await this.slots.ReleaseAsync(evalAgentId, workItemId, ct: CancellationToken.None);
+            }
+        }
 
         // The plan PR ships unattended (no human gate), so anything short of
         // a passing verdict is shipping subpar work. Throw on every non-pass

@@ -66,6 +66,7 @@ export function DocConversationPane({ storyId, docId }: Props) {
   const [evaluator, setEvaluator] = useState<AgentInfo | null>(null);
   const [status, setStatus] = useState<'live' | 'iterating' | 'stalled' | 'awaiting-pr-review' | 'completed' | 'pending'>('pending');
   const [maxIterations, setMaxIterations] = useState(0);
+  const [budgetSeconds, setBudgetSeconds] = useState(0);
   const [filter, setFilter] = useState<FilterKey>('summary');
   const [selectedIter, setSelectedIter] = useState<number | null>(null);
   const [resuming, setResuming] = useState(false);
@@ -153,6 +154,7 @@ export function DocConversationPane({ storyId, docId }: Props) {
         setEvaluator(r.evaluator);
         setStatus(r.status);
         setMaxIterations(r.maxIterations);
+        setBudgetSeconds(r.budgetSeconds ?? 0);
         setLoading(false);
       } catch {
         if (!cancelled) setLoading(false);
@@ -320,6 +322,11 @@ export function DocConversationPane({ storyId, docId }: Props) {
           {maxIterations > 0 && (
             <span style={{ marginLeft: 'auto', fontFamily: 'var(--sc-font-display, monospace)', fontSize: 9, letterSpacing: '0.14em', color: 'var(--sc-text-dim, #8d94a3)' }}>
               iter <strong style={{ color: 'var(--sc-text, #e9e6dc)' }}>{currentIteration}</strong> of <strong style={{ color: 'var(--sc-text, #e9e6dc)' }}>{maxIterations}</strong>
+              {budgetSeconds > 0 && (
+                <span style={{ marginLeft: 8, color: 'var(--sc-text-dim, #8d94a3)' }}>
+                  · timeout <strong style={{ color: 'var(--sc-text, #e9e6dc)' }}>{budgetSeconds >= 60 ? `${Math.floor(budgetSeconds / 60)}m` : `${budgetSeconds}s`}</strong>
+                </span>
+              )}
             </span>
           )}
         </nav>

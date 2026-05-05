@@ -768,6 +768,40 @@ public class AgentRow
     /// at the time of the row.
     /// </summary>
     public decimal HourlyUsd { get; set; } = ScoringConstants.HourlyBaseUsd;
+
+    /// <summary>
+    /// Phase 44 — max concurrent tasks this agent can work on. Default 1 for
+    /// regular agents; leads/evaluators may have higher capacity.
+    /// </summary>
+    public int MaxConcurrentTasks { get; set; } = 1;
+}
+
+/// <summary>
+/// Phase 44 — first-class claim row tracking which agent is working on which
+/// task and for how long. An open claim (ReleasedAt IS NULL) means the agent
+/// is actively working. Released claims form a durable time-tracking history.
+/// </summary>
+public class AgentClaimRow
+{
+    public long Id { get; set; }
+
+    public string AgentId { get; set; } = string.Empty;
+
+    public string WorkItemId { get; set; } = string.Empty;
+
+    /// <summary>One of: generator, evaluator.</summary>
+    public string Role { get; set; } = "generator";
+
+    public DateTimeOffset ClaimedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>Null while the agent is actively working; set on release.</summary>
+    public DateTimeOffset? ReleasedAt { get; set; }
+
+    public long InputTokens { get; set; }
+
+    public long OutputTokens { get; set; }
+
+    public decimal CostUsd { get; set; }
 }
 
 /// <summary>

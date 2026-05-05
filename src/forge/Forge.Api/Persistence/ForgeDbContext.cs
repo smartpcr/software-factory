@@ -93,6 +93,9 @@ public class ForgeDbContext : DbContext
 
     public DbSet<AgentAssignmentRow> AgentAssignments => this.Set<AgentAssignmentRow>();
 
+    /// <summary>Phase 44 — agent busy/idle claim tracking.</summary>
+    public DbSet<AgentClaimRow> AgentClaims => this.Set<AgentClaimRow>();
+
     public DbSet<WorkItemSyncRunRow> WorkItemSyncRuns => this.Set<WorkItemSyncRunRow>();
 
     public DbSet<SyncRunItemRow> SyncRunItems => this.Set<SyncRunItemRow>();
@@ -350,6 +353,13 @@ public class ForgeDbContext : DbContext
         mb.Entity<AgentAssignmentRow>().ToTable("agent_assignments").HasKey(x => x.Id);
         mb.Entity<AgentAssignmentRow>().HasIndex(x => new { x.WorkItemId, x.At })
             .HasDatabaseName("IX_agent_assignments_workitem_at");
+
+        // Phase 44 — agent claim tracking
+        mb.Entity<AgentClaimRow>().ToTable("agent_claims").HasKey(x => x.Id);
+        mb.Entity<AgentClaimRow>().HasIndex(x => new { x.AgentId, x.ReleasedAt })
+            .HasDatabaseName("IX_agent_claims_agent_released");
+        mb.Entity<AgentClaimRow>().HasIndex(x => x.WorkItemId)
+            .HasDatabaseName("IX_agent_claims_workitem");
 
         // Phase 24 — PR comments + history
         mb.Entity<PrCommentRow>().ToTable("pr_comments").HasKey(x => x.Id);

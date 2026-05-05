@@ -14,6 +14,7 @@ using Forge.Api.Providers;
 using Forge.Api.Providers.Ado;
 using Forge.Api.Providers.GitHub;
 using Forge.Api.Realtime;
+using Forge.Api.Services;
 using Forge.Api.Services.Git;
 using Microsoft.EntityFrameworkCore;
 
@@ -177,6 +178,9 @@ var enableBackground = Environment.GetEnvironmentVariable("FORGE_TEST_GUARDRAIL"
 // Git worktree service.
 builder.Services.Configure<GitWorktreeOptions>(builder.Configuration.GetSection(GitWorktreeOptions.SectionName));
 builder.Services.AddSingleton<IGitWorktreeService, GitWorktreeService>();
+
+// Phase 44 — agent busy/idle slot tracking.
+builder.Services.AddSingleton<AgentSlotService>();
 
 // Phase 8.10 — repo auto-clone service.
 builder.Services.Configure<RepoCloneOptions>(builder.Configuration.GetSection(RepoCloneOptions.SectionName));
@@ -428,7 +432,9 @@ using (var scope = app.Services.CreateScope())
     await Phase41Migration.ApplyAsync(db);
     // Phase 43 — AttachmentsJson on story_spawns for operator-uploaded reference docs.
     await Phase43Migration.ApplyAsync(db);
-    // Phase 42 already ran at the top of this scope (must precede the EF
+    // Phase 44 — agent_claims table + MaxConcurrentTasks on agents.
+    await Phase44Migration.ApplyAsync(db);
+    // Phase 42 already ran at the top of this scope(must precede the EF
     // queries in Phase 38 / Phase 40 that select all WorkItem / Workstream
     // columns including the new PlanAnchor / PlanContentHash).
     // Phase 29 — cancel orphaned validation runs left from a previous crash/restart.
@@ -444,6 +450,11 @@ using (var scope = app.Services.CreateScope())
             r.ErrorMessage = "Server restarted — run was not completed";
         }
         if (orphaned.Count > 0) await db.SaveChangesAsync();
+    }
+    // Phase 44 — recover orphaned agent claims from a previous crash.
+    {
+        var slots = scope.ServiceProvider.GetRequiredService<AgentSlotService>();
+        await slots.RecoverOrphanedClaimsAsync();
     }
     // Prototype data seed (cards/PRs/workstreams) is intentionally skipped —
     // real data is committed in forge.db.

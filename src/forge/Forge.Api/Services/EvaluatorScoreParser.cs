@@ -147,6 +147,10 @@ public static class EvaluatorScoreParser
     public static string DeriveVerdict(int score, int workItemPoints = 1)
     {
         if (score >= ScoringConstants.PassThreshold) return "pass";
+        // Score 0 always iterates — it means the generator failed to
+        // produce the file (timeout, tool error, etc.), not that the
+        // work quality is so poor it should be permanently rejected.
+        if (score == 0) return "iterate";
         if (score >= ScoringConstants.RejectThreshold(workItemPoints)) return "iterate";
         return "reject";
     }

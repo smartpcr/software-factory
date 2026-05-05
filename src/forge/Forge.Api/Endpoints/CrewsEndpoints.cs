@@ -125,7 +125,8 @@ public static class CrewsEndpoints
             .ToListAsync(ct);
         var todays = rows.Where(r => r.StartedAt >= startOfDay).ToList();
         var total = todays.Sum(r => r.CostUsd);
-        var active = todays.Count(r => r.Status == "running");
+        // Phase 44 — active agent count from durable claims, not transient usage rows.
+        var active = await db.AgentClaims.CountAsync(c => c.ReleasedAt == null, ct);
         return Results.Ok(new Forge.Api.Contracts.SalaryTodaySummary(Round(total), active));
     }
 

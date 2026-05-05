@@ -210,6 +210,15 @@ public static class StateEndpoints
                 if (points < 0)
                     return Results.Problem(title: "Points must be >= 0", statusCode: 400);
                 row.Points = points;
+
+                // Propagate to the spawn snapshot so BudgetForPhase and
+                // scoring thresholds use the updated value.
+                var spawn = await db.StorySpawns.FirstOrDefaultAsync(s => s.StoryId == storyId);
+                if (spawn is not null && spawn.StoryPoints != points)
+                {
+                    spawn.StoryPoints = points;
+                    spawn.UpdatedAt = DateTimeOffset.UtcNow;
+                }
             }
 
             // Phase 43 — append newly uploaded attachments.

@@ -93,6 +93,7 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
     private readonly IServiceScopeFactory scopeFactory;
     private readonly TaskChannel taskChannel;
     private readonly IHubContext<ForgeHub> hub;
+    private readonly AgentSlotService slots;
     private readonly ILogger<CrewQueueWorker> logger;
 
     /// <summary>Per-crew strain debounce — when did we last emit a signal?</summary>
@@ -140,12 +141,14 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         TaskChannel taskChannel,
         IHubContext<ForgeHub> hub,
         WorktreeChangeFeed worktreeFeed,
+        AgentSlotService slots,
         ILogger<CrewQueueWorker> logger)
     {
         this.scopeFactory = scopeFactory;
         this.taskChannel = taskChannel;
         this.hub = hub;
         this.worktreeFeed = worktreeFeed;
+        this.slots = slots;
         this.logger = logger;
     }
 
@@ -758,6 +761,8 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         string workItemId, string crewId, string agentId,
         CrewRow crew, WorkItemRow? wi, string kind, CancellationToken ct)
     {
+        // Phase 44 — claim the agent slot before doing any work.
+        await this.slots.TryClaimAsync(agentId, workItemId, "generator", ct);
         try
         {
             using var scope = this.scopeFactory.CreateScope();
@@ -2270,6 +2275,9 @@ public sealed class CrewQueueWorker : IHostedService, IDisposable
         finally
         {
             this.worktreeFeed.Unsubscribe(workItemId);
+            // Phase 44 — release the agent slot.
+            try { await this.slots.ReleaseByTaskAsync(workItemId, CancellationToken.None); }
+            catch { /* best-effort — don't block cleanup */ }
         }
     }
 

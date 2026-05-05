@@ -1683,6 +1683,7 @@ public static class StoriesEndpoints
                 workItemId = (string?)null,
                 status = "pending",
                 maxIterations = 0,
+                budgetSeconds = 0,
                 generator = (object?)null,
                 evaluator = (object?)null,
                 iterations = Array.Empty<object>(),
@@ -1697,6 +1698,8 @@ public static class StoriesEndpoints
             .Select(w => (int?)w.Points)
             .FirstOrDefaultAsync();
         var maxIterations = ScoringConstants.MaxIterationsForPoints(workItemPoints ?? 0);
+        var budgetSeconds = (int)CrewStoryArtifactStrategy.BudgetForPhase(
+            workItemPoints ?? Math.Max(1, spawn.StoryPoints), $"plan:{fileName}").TotalSeconds;
 
         // SQLite can't ORDER BY DateTimeOffset directly. Order by Iter on the
         // server (cheap index hit) and then re-sort by CreatedAt on the client
@@ -1867,6 +1870,7 @@ public static class StoriesEndpoints
             workItemId,
             status,
             maxIterations,
+            budgetSeconds,
             unansweredQuestions,
             generator = genInfo,
             evaluator = evalInfo,
