@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <BaseOutputPath>C:\t\b\</BaseOutputPath>
+    <BaseIntermediateOutputPath>C:\t\o\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+</Project>
