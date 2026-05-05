@@ -81,7 +81,18 @@ public sealed class SpawnDependencyScheduler : BackgroundService
         {
             try
             {
-                await orchestrator.DriveAsync(sid, ct);
+                // Per-spawn timeout prevents one slow drive (blocked on a
+                // provider API, long gen-eval loop, etc.) from starving all
+                // other spawns in the tick.
+                using var perSpawnCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                perSpawnCts.CancelAfter(TimeSpan.FromSeconds(30));
+                await orchestrator.DriveAsync(sid, perSpawnCts.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                this.logger?.LogWarning(
+                    "DriveAsync timed out (30s) for spawn {SpawnId} (story {StoryId}); skipping to next.",
+                    spawnId, sid);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

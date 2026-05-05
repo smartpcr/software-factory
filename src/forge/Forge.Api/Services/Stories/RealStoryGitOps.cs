@@ -431,7 +431,9 @@ public sealed class RealStoryGitOps : IStoryGitOps
         var listOutNormalized = listOut.Replace('\\', '/');
         if (listCode == 0 && listOutNormalized.Contains(wtPathNormalized, StringComparison.OrdinalIgnoreCase) && Directory.Exists(wtPath))
         {
-            await this.GitAsync(wtPath, ct, "fetch", "origin", branch);
+            // Best-effort fetch — the remote branch may have been deleted
+            // after a PR merge. The local worktree still has its commits.
+            await this.RunGitCaptureAsync(wtPath, ct, "fetch", "origin", branch);
             var (code, _, _) = await this.RunGitCaptureAsync(wtPath, ct, "checkout", branch);
             if (code != 0)
             {

@@ -10,6 +10,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Forge.Api.Persistence;
+using Forge.Api.Services.Stories;
 using Forge.Api.Tests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -350,6 +351,40 @@ public class Phase28StorySpawnTests
             Assert.Equal(HttpStatusCode.UnprocessableEntity, resp.StatusCode);
             var body = await resp.Content.ReadAsStringAsync();
             Assert.Contains("Plan PR must be merged", body);
+        }
+        finally { f.Dispose(); }
+    }
+
+    /// <summary>
+    /// Regression: DrivePlanAsync must skip ProducePlanArtifactsAsync and
+    /// auto-advance to decompose when the plan PR is already merged. Before
+    /// this fix, a long-running gen-eval retry blocked phase progression
+    /// indefinitely because ProducePlanArtifactsAsync never returned while
+    /// the scheduler kept re-entering Step 1.
+    /// </summary>
+    [Fact]
+    public async Task Drive_Advances_To_Decompose_When_Plan_Pr_Already_Merged()
+    {
+        var (f, c) = NewFactory();
+        try
+        {
+            await SeedStoryAsync(f, "WI-60004-merged", "Auto-advance on merged PR");
+            await SpawnAsync(c, "WI-60004-merged");
+            await SetPlanPrAsync(f, "WI-60004-merged", "pr-merged-1", "merged");
+
+            // Verify precondition: still at plan phase with a merged PR.
+            var before = await GetSpawnAsync(f, "WI-60004-merged");
+            Assert.Equal(StorySpawnPhases.Plan, before!.Phase);
+            Assert.Equal("pr-merged-1", before.PlanPrId);
+
+            // Drive the orchestrator — should auto-advance without blocking.
+            using var scope = f.Services.CreateScope();
+            var orchestrator = scope.ServiceProvider.GetRequiredService<StorySpawnOrchestrator>();
+            await orchestrator.DriveAsync("WI-60004-merged");
+
+            // Phase must have advanced past plan.
+            var after = await GetSpawnAsync(f, "WI-60004-merged");
+            Assert.NotEqual(StorySpawnPhases.Plan, after!.Phase);
         }
         finally { f.Dispose(); }
     }

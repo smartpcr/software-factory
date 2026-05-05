@@ -2180,9 +2180,9 @@ public static class StoriesEndpoints
             unansweredQuestions = byExtId.Count(q => q.Answer == null);
         }
 
-        if (isRunnerLive || isRecentEvent) status = "live";
+        if (lastWasPass && planPrMerged) status = "completed";
+        else if (isRunnerLive || isRecentEvent) status = "live";
         else if (lastDeliverable is null) status = "pending";
-        else if (lastWasPass && planPrMerged) status = "completed";
         else if (lastWasPass) status = "awaiting-pr-review";
         else if (unansweredQuestions > 0) status = "stalled";
         else if (lastDeliverable.Verdict != null

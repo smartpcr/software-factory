@@ -174,9 +174,30 @@ public sealed class StorySpawnOrchestrator
                 "Orchestrator phase '{Phase}' failed for spawn {SpawnId} ({StoryId}).",
                 spawn.Phase, spawn.Id, spawn.StoryId);
             await PersistLastErrorAsync(db, spawn.Id,
-                $"{spawn.Phase} failed: {ex.Message}", hub, ct);
+                $"{spawn.Phase} failed: {FlattenMessage(ex)}", hub, ct);
         }
         return advanced;
+    }
+
+    /// <summary>
+    /// Phase 45 follow-up — flatten an exception chain into a single string
+    /// so EF Core's "An error occurred while saving the entity changes. See
+    /// the inner exception for details." actually shows the inner SqliteException
+    /// to the operator. Without this the LastError banner is useless for
+    /// any DB failure.
+    /// </summary>
+    private static string FlattenMessage(Exception ex)
+    {
+        if (ex.InnerException is null) return ex.Message;
+        var sb = new System.Text.StringBuilder(ex.Message);
+        var inner = ex.InnerException;
+        while (inner is not null)
+        {
+            sb.Append(" → ");
+            sb.Append(inner.Message);
+            inner = inner.InnerException;
+        }
+        return sb.ToString();
     }
 
     /// <summary>
@@ -210,6 +231,27 @@ public sealed class StorySpawnOrchestrator
     {
         var baseBranch = BaseBranchOf(spawn);
         await this.EnsureSpawnBaseBranchAsync(spawn, repo, ct);
+
+        // Early exit: if the plan PR is already merged, skip artifact
+        // production and advance to decompose immediately. This prevents
+        // a long-running retry (ProducePlanArtifactsAsync) from blocking
+        // phase progression when the PR merged via auto-merge or externally.
+        if (!string.IsNullOrEmpty(spawn.PlanPrId))
+        {
+            var mergeCheck = await db.Prs.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.Id == spawn.PlanPrId, ct);
+            if (mergeCheck is not null
+                && string.Equals(mergeCheck.Col, "merged", StringComparison.OrdinalIgnoreCase))
+            {
+                var earlyRow = await db.StorySpawns.FirstAsync(s => s.Id == spawn.Id, ct);
+                earlyRow.Phase = StorySpawnPhases.Decompose;
+                earlyRow.UpdatedAt = DateTimeOffset.UtcNow;
+                await ClearLastErrorAsync(db, earlyRow, ct);
+                await db.SaveChangesAsync(ct);
+                await EmitChange(hub, "phase-advanced", earlyRow, ct);
+                return true;
+            }
+        }
 
         // Step 1 — PR doesn't exist yet: produce artifacts, commit, open PR.
         // Also re-enters when forceResume=true and PR exists: re-generate
@@ -289,7 +331,7 @@ public sealed class StorySpawnOrchestrator
                 this.logger?.LogError(ex,
                     "Plan artifact production failed for spawn {SpawnId} ({StoryId}).",
                     spawn.Id, spawn.StoryId);
-                await PersistLastErrorAsync(db, spawn.Id, $"plan artifacts failed: {ex.Message}", hub, ct);
+                await PersistLastErrorAsync(db, spawn.Id, $"plan artifacts failed: {FlattenMessage(ex)}", hub, ct);
                 return false;
             }
         }
@@ -323,7 +365,7 @@ public sealed class StorySpawnOrchestrator
                 this.logger?.LogWarning(ex,
                     "Plan PR {PrId} auto-merge failed; surfacing to operator and deferring to PrSyncJob.",
                     spawn.PlanPrId);
-                await PersistLastErrorAsync(db, spawn.Id, $"plan PR merge failed: {ex.Message}", hub, ct);
+                await PersistLastErrorAsync(db, spawn.Id, $"plan PR merge failed: {FlattenMessage(ex)}", hub, ct);
                 return false;
             }
         }
