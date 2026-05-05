@@ -1,0 +1,209 @@
+[
+  {
+    "title": "Project Scaffold and Core Models",
+    "description": "Project Scaffold and Core Models (10 steps)",
+    "anchor": "phase-memory-schema-and-storage-foundation/stage-project-scaffold-and-core-models",
+    "contentHash": "1aec7450cd1e107c9f6c54e6feea2527563513b62c661faef1f37d68c0a31541",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-memory-schema-and-storage-foundation-stage-project-scaffold-and-core-models",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-memory-schema-and-storage-foundation-stage-project-scaffold-and-core-models",
+    "status": "active"
+  },
+  {
+    "title": "IMemoryGraphStore Interface and Configuration",
+    "description": "IMemoryGraphStore Interface and Configuration (4 steps)",
+    "anchor": "phase-memory-schema-and-storage-foundation/stage-imemorygraphstore-interface-and-configuration",
+    "contentHash": "153bc3554e6b050190d6212a7179d39b9841bb1d690a0b253bbbc06a3bc95ab1",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-memory-schema-and-storage-foundation-stage-imemorygraphstore-interface-and-configuration",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-memory-schema-and-storage-foundation-stage-imemorygraphstore-interface-and-configuration",
+    "status": "planning"
+  },
+  {
+    "title": "SqliteGraphStore Implementation",
+    "description": "SqliteGraphStore Implementation (7 steps)",
+    "anchor": "phase-memory-schema-and-storage-foundation/stage-sqlitegraphstore-implementation",
+    "contentHash": "c42cebb270783ea34d5fa05fd9c22f6ec87f0d27f6e1fe75f76da69b0bcf11b4",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-memory-schema-and-storage-foundation-stage-sqlitegraphstore-implementation",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-memory-schema-and-storage-foundation-stage-sqlitegraphstore-implementation",
+    "status": "planning"
+  },
+  {
+    "title": "Neo4jMemoryGraphStore Implementation",
+    "description": "Neo4jMemoryGraphStore Implementation (6 steps)",
+    "anchor": "phase-memory-schema-and-storage-foundation/stage-neo4jmemorygraphstore-implementation",
+    "contentHash": "fa7753c569dc35c09ed80585d6ee4feb71b3d3e07b5dfbb28c9316e2c0897907",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-memory-schema-and-storage-foundation-stage-neo4jmemorygraphstore-implementation",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-memory-schema-and-storage-foundation-stage-neo4jmemorygraphstore-implementation",
+    "status": "planning"
+  },
+  {
+    "title": "DI Registration and Test Infrastructure",
+    "description": "DI Registration and Test Infrastructure (4 steps)",
+    "anchor": "phase-memory-schema-and-storage-foundation/stage-di-registration-and-test-infrastructure",
+    "contentHash": "f2a0fb545e2e449e1cd4e499100d987a1f494b3bc7264795fc7afb6d98cd34f3",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-memory-schema-and-storage-foundation-stage-di-registration-and-test-infrastructure",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-memory-schema-and-storage-foundation-stage-di-registration-and-test-infrastructure",
+    "status": "planning"
+  },
+  {
+    "title": "StructureBuilder \u2014 Structural Layer",
+    "description": "StructureBuilder \u2014 Structural Layer (5 steps)",
+    "anchor": "phase-extraction-pipeline/stage-structurebuilder-structural-layer",
+    "contentHash": "295647e4858e736787d2c9afb66db6df4a2c787a0e6321da783281b12d3dd96d",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-extraction-pipeline-stage-structurebuilder-structural-layer",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-extraction-pipeline-stage-structurebuilder-structural-layer",
+    "status": "planning"
+  },
+  {
+    "title": "CallChainAnalyzer \u2014 Call-Chain Layer",
+    "description": "CallChainAnalyzer \u2014 Call-Chain Layer (5 steps)",
+    "anchor": "phase-extraction-pipeline/stage-callchainanalyzer-call-chain-layer",
+    "contentHash": "7ae516924fbd950b38faacd2d5a6b34365a29846194a4941819da0ed4be3939d",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-extraction-pipeline-stage-callchainanalyzer-call-chain-layer",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-extraction-pipeline-stage-callchainanalyzer-call-chain-layer",
+    "status": "planning"
+  },
+  {
+    "title": "SemanticIndexer \u2014 Semantic Layer",
+    "description": "SemanticIndexer \u2014 Semantic Layer (3 steps)",
+    "anchor": "phase-extraction-pipeline/stage-semanticindexer-semantic-layer",
+    "contentHash": "e983ccd3bbc36d8acaf9231a0dc5e2ebf4badc9f96b73ac39255c90a3114f5a5",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-extraction-pipeline-stage-semanticindexer-semantic-layer",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-extraction-pipeline-stage-semanticindexer-semantic-layer",
+    "status": "planning"
+  },
+  {
+    "title": "FactNormalizer and IExtractionPipeline",
+    "description": "FactNormalizer and IExtractionPipeline (4 steps)",
+    "anchor": "phase-extraction-pipeline/stage-factnormalizer-and-iextractionpipeline",
+    "contentHash": "28ae06a11fdcb9cc4b97115076a9a70bd9fb1679d1a7686bfa8e4e2021d4cef7",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-extraction-pipeline-stage-factnormalizer-and-iextractionpipeline",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-extraction-pipeline-stage-factnormalizer-and-iextractionpipeline",
+    "status": "planning"
+  },
+  {
+    "title": "QueryPlanner and RetrievalMode Selection",
+    "description": "QueryPlanner and RetrievalMode Selection (6 steps)",
+    "anchor": "phase-retrieval-engine-and-context-assembly/stage-queryplanner-and-retrievalmode-selection",
+    "contentHash": "0a49cec1171a79aa12172eae764075592f1412bd8e75824d5ef38c2665ce7096",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-retrieval-engine-and-context-assembly-stage-queryplanner-and-retrievalmode-selection",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-retrieval-engine-and-context-assembly-stage-queryplanner-and-retrievalmode-selection",
+    "status": "planning"
+  },
+  {
+    "title": "Ranker \u2014 5-Signal Scoring",
+    "description": "Ranker \u2014 5-Signal Scoring (3 steps)",
+    "anchor": "phase-retrieval-engine-and-context-assembly/stage-ranker-5-signal-scoring",
+    "contentHash": "82e787eb91b08727da87b0abd64e349574067f5ba0f78471cb52ce798fd6cb66",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-retrieval-engine-and-context-assembly-stage-ranker-5-signal-scoring",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-retrieval-engine-and-context-assembly-stage-ranker-5-signal-scoring",
+    "status": "planning"
+  },
+  {
+    "title": "BudgetController and ContextAssembler",
+    "description": "BudgetController and ContextAssembler (3 steps)",
+    "anchor": "phase-retrieval-engine-and-context-assembly/stage-budgetcontroller-and-contextassembler",
+    "contentHash": "902f1f8cb1eb03a96a5c091a756d3a7662bfc79e6c305269726218e8a93a6542",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-retrieval-engine-and-context-assembly-stage-budgetcontroller-and-contextassembler",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-retrieval-engine-and-context-assembly-stage-budgetcontroller-and-contextassembler",
+    "status": "planning"
+  },
+  {
+    "title": "MemoryRetrievalEngine Integration",
+    "description": "MemoryRetrievalEngine Integration (6 steps)",
+    "anchor": "phase-retrieval-engine-and-context-assembly/stage-memoryretrievalengine-integration",
+    "contentHash": "3bf38bf551ca9f830185f45bf6ef09715c841c8777083c95395f000d1b5f77c9",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-retrieval-engine-and-context-assembly-stage-memoryretrievalengine-integration",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-retrieval-engine-and-context-assembly-stage-memoryretrievalengine-integration",
+    "status": "planning"
+  },
+  {
+    "title": "GitDiffDriver",
+    "description": "GitDiffDriver (2 steps)",
+    "anchor": "phase-incremental-sync/stage-gitdiffdriver",
+    "contentHash": "899da19415f6c3a1b41cd396c0b87804bf0c11030fc5d5181eb6109aa1a81541",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-incremental-sync-stage-gitdiffdriver",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-incremental-sync-stage-gitdiffdriver",
+    "status": "planning"
+  },
+  {
+    "title": "IncrementalSync Implementation",
+    "description": "IncrementalSync Implementation (7 steps)",
+    "anchor": "phase-incremental-sync/stage-incrementalsync-implementation",
+    "contentHash": "356f5a74a1899be6848342e1c3ba44f38c5403d7767bfc61b6d60755d1666401",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-incremental-sync-stage-incrementalsync-implementation",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-incremental-sync-stage-incrementalsync-implementation",
+    "status": "planning"
+  },
+  {
+    "title": "File-System Watcher Integration",
+    "description": "File-System Watcher Integration (3 steps)",
+    "anchor": "phase-incremental-sync/stage-file-system-watcher-integration",
+    "contentHash": "8626d126707803d59a19d652cf736a57801b07d89b51ef05c7b5c047487aed93",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-incremental-sync-stage-file-system-watcher-integration",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-incremental-sync-stage-file-system-watcher-integration",
+    "status": "planning"
+  },
+  {
+    "title": "Expertise Write-Back",
+    "description": "Expertise Write-Back (4 steps)",
+    "anchor": "phase-evolution-engine/stage-expertise-write-back",
+    "contentHash": "29419a966b332b295127fdfa56d58e9367760c2509b58ab2d8e77b3ff16f2561",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-evolution-engine-stage-expertise-write-back",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-evolution-engine-stage-expertise-write-back",
+    "status": "planning"
+  },
+  {
+    "title": "ConsolidationService",
+    "description": "ConsolidationService (3 steps)",
+    "anchor": "phase-evolution-engine/stage-consolidationservice",
+    "contentHash": "58f8435af704eea1486713a43e21e2baafa56d95280336389ab8285dc0b18a76",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-evolution-engine-stage-consolidationservice",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-evolution-engine-stage-consolidationservice",
+    "status": "planning"
+  },
+  {
+    "title": "DecayService",
+    "description": "DecayService (3 steps)",
+    "anchor": "phase-evolution-engine/stage-decayservice",
+    "contentHash": "adb7b2fca933c11f55b7cbdf1667fdf1507beb77b94873f8803f306e7090d61a",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-evolution-engine-stage-decayservice",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-evolution-engine-stage-decayservice",
+    "status": "planning"
+  },
+  {
+    "title": "Community Detection",
+    "description": "Community Detection (2 steps)",
+    "anchor": "phase-evolution-engine/stage-community-detection",
+    "contentHash": "24b1b96097e45a28d76a1f4e333cd95a4d057fd464ffa1add32ef5722ae2ea15",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-evolution-engine-stage-community-detection",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-evolution-engine-stage-community-detection",
+    "status": "planning"
+  },
+  {
+    "title": "MCP Tool Registration",
+    "description": "MCP Tool Registration (3 steps)",
+    "anchor": "phase-mcp-tools-cli-and-integration/stage-mcp-tool-registration",
+    "contentHash": "1d96d7e8629553d7a2a564a30dff3b3661f547163d18780b6033ff9ed5fb6658",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-mcp-tools-cli-and-integration-stage-mcp-tool-registration",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-mcp-tools-cli-and-integration-stage-mcp-tool-registration",
+    "status": "planning"
+  },
+  {
+    "title": "CLI Commands",
+    "description": "CLI Commands (2 steps)",
+    "anchor": "phase-mcp-tools-cli-and-integration/stage-cli-commands",
+    "contentHash": "e2a5d82312547251c34133c7ffa6b927fa739b83bf9adc1be16a8d7a28f73694",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-mcp-tools-cli-and-integration-stage-cli-commands",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-mcp-tools-cli-and-integration-stage-cli-commands",
+    "status": "planning"
+  },
+  {
+    "title": "End-to-End Integration Tests",
+    "description": "End-to-End Integration Tests (4 steps)",
+    "anchor": "phase-mcp-tools-cli-and-integration/stage-end-to-end-integration-tests",
+    "contentHash": "94fd9105fc7508c74246896ad542ccfb55094192e3579da3efccc7bbbae15718",
+    "workstreamId": "ws-code-intelligence-agent-memory-phase-mcp-tools-cli-and-integration-stage-end-to-end-integration-tests",
+    "branch": "ws/code-intelligence-AGENT-MEMORY/phase-mcp-tools-cli-and-integration-stage-end-to-end-integration-tests",
+    "status": "planning"
+  }
+]

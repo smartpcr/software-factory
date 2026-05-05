@@ -7,7 +7,7 @@
 namespace Ast.Memory.Models;
 
 /// <summary>
-/// An evidence citation linking expertise to a specific graph node and commit.
+/// Evidence citation for an expertise entry.
 /// Per architecture.md §4.2.
 /// </summary>
 public record Citation(string NodeId, string? CommitSha, string? Snippet);

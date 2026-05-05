@@ -1,123 +1,280 @@
-using Ast.Core;
-using Ast.Memory.Models;
-using Xunit;
+// -----------------------------------------------------------------------
+// <copyright file="MemoryEdgeTests.cs" company="Microsoft Corp.">
+//     Copyright (c) Microsoft Corp. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
 
 namespace Ast.Memory.Tests;
 
+using Ast.Core;
+using Ast.Memory.Models;
+
+[TestClass]
 public class MemoryEdgeTests
 {
-    private static readonly VersionRange DefaultVersion = new("abc123", 1, null, null);
-
-    [Fact]
-    public void Inner_ReturnsOriginalEdge()
+    [TestMethod]
+    public void MemoryEdge_CompositionScenario_ExposesInnerAndSemanticRelation()
     {
-        var edge = new Hyperedge("e1", HyperedgeType.MemoryRelation, ["s1"], ["t1"],
-            new Dictionary<string, string>
+        // Acceptance scenario (architecture.md §4.1):
+        // Given a Hyperedge with EdgeType=HyperedgeType.MemoryRelation
+        //   and Metadata["SemanticRelation"]="APPLIES_TO"
+        // When wrapped in a MemoryEdge
+        // Then memoryEdge.Inner is the original edge
+        //   and memoryEdge.SemanticRelation returns "APPLIES_TO"
+        var inner = new Hyperedge
+        {
+            Id = "edge-1",
+            EdgeType = HyperedgeType.MemoryRelation,
+            NodeIds = ["node-a", "node-b"],
+            Roles = new Dictionary<string, string>
             {
-                [MemoryMetadataKeys.SemanticRelation] = "APPLIES_TO"
-            });
+                ["node-a"] = "source",
+                ["node-b"] = "target",
+            },
+            Metadata = new Dictionary<string, object?>
+            {
+                [MemoryMetadataKeys.SemanticRelation] = "APPLIES_TO",
+            },
+        };
 
-        var memoryEdge = new MemoryEdge(edge, DefaultVersion);
+        var memoryEdge = new MemoryEdge(inner);
 
-        Assert.Same(edge, memoryEdge.Inner);
+        memoryEdge.Inner.Should().BeSameAs(inner);
+        memoryEdge.SemanticRelation.Should().Be("APPLIES_TO");
     }
 
-    [Fact]
-    public void SemanticRelation_ReturnsFromMetadata()
+    [TestMethod]
+    public void MemoryEdge_NoTemporalMetadata_SingleArgUsesDefaultVersion()
     {
-        var edge = new Hyperedge("e1", HyperedgeType.MemoryRelation, ["s1"], ["t1"],
-            new Dictionary<string, string>
-            {
-                [MemoryMetadataKeys.SemanticRelation] = "APPLIES_TO"
-            });
-
-        var memoryEdge = new MemoryEdge(edge, DefaultVersion);
-
-        Assert.Equal("APPLIES_TO", memoryEdge.SemanticRelation);
-    }
-
-    [Fact]
-    public void MemoryLayer_ReturnsFromMetadata()
-    {
-        var edge = new Hyperedge("e1", HyperedgeType.MemoryRelation, ["s1"], ["t1"],
-            new Dictionary<string, string>
+        // When no temporal metadata is present in the Hyperedge,
+        // the single-arg constructor succeeds with a default empty VersionRange.
+        var inner = new Hyperedge
+        {
+            Id = "edge-no-temporal",
+            EdgeType = HyperedgeType.MemoryRelation,
+            NodeIds = ["node-a"],
+            Roles = new Dictionary<string, string>(),
+            Metadata = new Dictionary<string, object?>
             {
                 [MemoryMetadataKeys.SemanticRelation] = "CALLS",
-                [MemoryMetadataKeys.MemoryLayer] = "semantic"
-            });
+            },
+        };
 
-        var memoryEdge = new MemoryEdge(edge, new VersionRange("abc123", 5, null, null));
+        var memoryEdge = new MemoryEdge(inner);
 
-        Assert.Equal("semantic", memoryEdge.MemoryLayer);
+        memoryEdge.Version.Should().NotBeNull();
+        memoryEdge.Version.Since.Should().BeEmpty();
+        memoryEdge.Version.SinceIndex.Should().Be(0);
     }
 
-    [Fact]
-    public void Version_ReturnsProvidedVersionRange()
+    [TestMethod]
+    public void MemoryEdge_SingleArgCtor_WithTemporalMetadata_ExtractsVersionRange()
     {
-        var edge = new Hyperedge("e1", HyperedgeType.MemoryRelation, ["s1"], ["t1"],
-            new Dictionary<string, string>
+        var inner = new Hyperedge
+        {
+            Id = "edge-1b",
+            EdgeType = HyperedgeType.MemoryRelation,
+            NodeIds = ["node-a", "node-b"],
+            Roles = new Dictionary<string, string>
+            {
+                ["node-a"] = "source",
+                ["node-b"] = "target",
+            },
+            Metadata = new Dictionary<string, object?>
             {
                 [MemoryMetadataKeys.SemanticRelation] = "APPLIES_TO",
-                [MemoryMetadataKeys.MemoryLayer] = "expertise"
-            });
+                [MemoryMetadataKeys.MemoryLayer] = "expertise",
+                [MemoryMetadataKeys.SinceCommit] = "commit-abc",
+                [MemoryMetadataKeys.SinceIndex] = 5,
+            },
+        };
 
-        var version = new VersionRange("commit1", 10, "commit2", 20);
-        var memoryEdge = new MemoryEdge(edge, version);
+        var memoryEdge = new MemoryEdge(inner);
 
-        Assert.Same(version, memoryEdge.Version);
-        Assert.Equal("commit1", memoryEdge.Version.Since);
-        Assert.Equal(10, memoryEdge.Version.SinceIndex);
-        Assert.Equal("commit2", memoryEdge.Version.Until);
-        Assert.Equal(20, memoryEdge.Version.UntilIndex);
+        memoryEdge.MemoryLayer.Should().Be("expertise");
+        memoryEdge.Version.Since.Should().Be("commit-abc");
+        memoryEdge.Version.SinceIndex.Should().Be(5);
+        memoryEdge.Version.Until.Should().BeNull();
+        memoryEdge.Version.UntilIndex.Should().BeNull();
     }
 
-    [Fact]
-    public void Version_IsNeverNull()
+    [TestMethod]
+    public void MemoryEdge_WithFullVersionRange()
     {
-        var edge = new Hyperedge("e1", HyperedgeType.MemoryRelation, ["s1"], ["t1"],
-            new Dictionary<string, string>
+        var inner = new Hyperedge
+        {
+            Id = "edge-full",
+            EdgeType = HyperedgeType.MemoryRelation,
+            NodeIds = ["node-a"],
+            Roles = new Dictionary<string, string>(),
+            Metadata = new Dictionary<string, object?>
             {
-                [MemoryMetadataKeys.SemanticRelation] = "APPLIES_TO"
-            });
+                [MemoryMetadataKeys.SemanticRelation] = "CALLS",
+                [MemoryMetadataKeys.MemoryLayer] = "structural",
+                [MemoryMetadataKeys.SinceCommit] = "aaa111",
+                [MemoryMetadataKeys.SinceIndex] = 10,
+                [MemoryMetadataKeys.UntilCommit] = "bbb222",
+                [MemoryMetadataKeys.UntilIndex] = 20,
+            },
+        };
 
-        var memoryEdge = new MemoryEdge(edge, DefaultVersion);
+        var memoryEdge = new MemoryEdge(inner);
 
-        Assert.NotNull(memoryEdge.Version);
+        memoryEdge.Version.Since.Should().Be("aaa111");
+        memoryEdge.Version.SinceIndex.Should().Be(10);
+        memoryEdge.Version.Until.Should().Be("bbb222");
+        memoryEdge.Version.UntilIndex.Should().Be(20);
     }
 
-    [Fact]
-    public void Version_OpenEnded_WhenUntilIsNull()
+    [TestMethod]
+    public void MemoryEdge_ExplicitVersionConstructor_UsesProvidedVersion()
     {
-        var edge = new Hyperedge("e1", HyperedgeType.MemoryRelation, ["s1"], ["t1"],
-            new Dictionary<string, string>
+        var inner = new Hyperedge
+        {
+            Id = "edge-explicit",
+            EdgeType = HyperedgeType.MemoryRelation,
+            NodeIds = ["node-a", "node-b"],
+            Roles = new Dictionary<string, string>
+            {
+                ["node-a"] = "source",
+                ["node-b"] = "target",
+            },
+            Metadata = new Dictionary<string, object?>
             {
                 [MemoryMetadataKeys.SemanticRelation] = "APPLIES_TO",
-                [MemoryMetadataKeys.MemoryLayer] = "expertise"
-            });
+                [MemoryMetadataKeys.MemoryLayer] = "expertise",
+            },
+        };
 
-        var version = new VersionRange("abc", 0, null, null);
-        var memoryEdge = new MemoryEdge(edge, version);
+        var version = new VersionRange("commit-abc", 5, null, null);
+        var memoryEdge = new MemoryEdge(inner, version);
 
-        Assert.NotNull(memoryEdge.Version);
-        Assert.Null(memoryEdge.Version.Until);
-        Assert.Null(memoryEdge.Version.UntilIndex);
+        memoryEdge.Inner.Should().BeSameAs(inner);
+        memoryEdge.SemanticRelation.Should().Be("APPLIES_TO");
+        memoryEdge.Version.Should().BeSameAs(version);
     }
 
-    [Fact]
-    public void Constructor_ThrowsOnNullInner()
+    [TestMethod]
+    public void MemoryEdge_NullInner_ThrowsArgumentNullException()
     {
-        Assert.Throws<ArgumentNullException>(() => new MemoryEdge(null!, DefaultVersion));
+        var version = new VersionRange("abc", 1, null, null);
+        var act = () => new MemoryEdge(null!, version);
+        act.Should().Throw<ArgumentNullException>();
     }
 
-    [Fact]
-    public void Constructor_ThrowsOnNullVersion()
+    [TestMethod]
+    public void MemoryEdge_SingleArgCtor_NullInner_ThrowsArgumentNullException()
     {
-        var edge = new Hyperedge("e1", HyperedgeType.MemoryRelation, ["s1"], ["t1"],
-            new Dictionary<string, string>
+        var act = () => new MemoryEdge(null!);
+        act.Should().Throw<ArgumentNullException>();
+    }
+
+    [TestMethod]
+    public void MemoryEdge_ExplicitCtor_NullVersion_ThrowsArgumentNullException()
+    {
+        var inner = new Hyperedge
+        {
+            Id = "edge-2",
+            EdgeType = HyperedgeType.MemoryRelation,
+            NodeIds = ["node-a"],
+            Roles = new Dictionary<string, string>(),
+            Metadata = new Dictionary<string, object?>
             {
-                [MemoryMetadataKeys.SemanticRelation] = "APPLIES_TO"
-            });
+                [MemoryMetadataKeys.SemanticRelation] = "CALLS",
+                [MemoryMetadataKeys.MemoryLayer] = "structural",
+            },
+        };
 
-        Assert.Throws<ArgumentNullException>(() => new MemoryEdge(edge, null!));
+        var act = () => new MemoryEdge(inner, null!);
+        act.Should().Throw<ArgumentNullException>();
+    }
+
+    [TestMethod]
+    public void MemoryEdge_WrongEdgeType_ThrowsArgumentException()
+    {
+        var inner = new Hyperedge
+        {
+            Id = "edge-wrong-type",
+            EdgeType = HyperedgeType.MethodInvocation,
+            NodeIds = ["node-a"],
+            Roles = new Dictionary<string, string>(),
+            Metadata = new Dictionary<string, object?>
+            {
+                [MemoryMetadataKeys.SemanticRelation] = "CALLS",
+            },
+        };
+
+        var version = new VersionRange("abc", 1, null, null);
+        var act = () => new MemoryEdge(inner, version);
+        act.Should().Throw<ArgumentException>()
+            .Which.Message.Should().Contain("MemoryRelation");
+    }
+
+    [TestMethod]
+    public void MemoryEdge_WrongEdgeType_SingleArgCtor_ThrowsArgumentException()
+    {
+        var inner = new Hyperedge
+        {
+            Id = "edge-wrong-type-single",
+            EdgeType = HyperedgeType.DataFlow,
+            NodeIds = ["node-a"],
+            Roles = new Dictionary<string, string>(),
+            Metadata = new Dictionary<string, object?>
+            {
+                [MemoryMetadataKeys.SemanticRelation] = "CALLS",
+                [MemoryMetadataKeys.SinceCommit] = "abc",
+                [MemoryMetadataKeys.SinceIndex] = 1,
+            },
+        };
+
+        var act = () => new MemoryEdge(inner);
+        act.Should().Throw<ArgumentException>()
+            .Which.Message.Should().Contain("MemoryRelation");
+    }
+
+    [TestMethod]
+    public void MemoryEdge_IncompleteSinceMetadata_ThrowsInvalidOperationException()
+    {
+        var inner = new Hyperedge
+        {
+            Id = "edge-bad",
+            EdgeType = HyperedgeType.MemoryRelation,
+            NodeIds = ["node-a"],
+            Roles = new Dictionary<string, string>(),
+            Metadata = new Dictionary<string, object?>
+            {
+                [MemoryMetadataKeys.SemanticRelation] = "CALLS",
+                [MemoryMetadataKeys.MemoryLayer] = "structural",
+                [MemoryMetadataKeys.SinceCommit] = "abc123",
+                // SinceIndex missing — malformed
+            },
+        };
+
+        var act = () => new MemoryEdge(inner);
+        act.Should().Throw<InvalidOperationException>()
+            .Which.Message.Should().Contain("SinceIndex");
+    }
+
+    [TestMethod]
+    public void MemoryEdge_MissingSemanticRelation_ThrowsOnAccess()
+    {
+        var inner = new Hyperedge
+        {
+            Id = "edge-3",
+            EdgeType = HyperedgeType.MemoryRelation,
+            NodeIds = ["node-a"],
+            Roles = new Dictionary<string, string>(),
+            Metadata = new Dictionary<string, object?>
+            {
+                [MemoryMetadataKeys.MemoryLayer] = "structural",
+                [MemoryMetadataKeys.SinceCommit] = "abc",
+                [MemoryMetadataKeys.SinceIndex] = 1,
+            },
+        };
+
+        var edge = new MemoryEdge(inner);
+
+        var act = () => edge.SemanticRelation;
+        act.Should().Throw<KeyNotFoundException>();
     }
 }

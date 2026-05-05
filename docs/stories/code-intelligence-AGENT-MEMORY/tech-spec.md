@@ -2,22 +2,51 @@
 
 **Story:** `code-intelligence:AGENT-MEMORY`  
 **Points:** 10  
-**Author:** Wen Zhong — Architect  
-**Status:** DRAFT  
+**Status:** DRAFT — Iteration 23  
+
+> **Companion documents** (written in parallel — referenced by name, not duplicated):
+> - [`architecture.md`](architecture.md) — canonical authority for component boundaries, data model, edge/layer naming, ID format, and constants. Defines graph layers (§2.1), edge taxonomy (§2.2), retired names (§2.3), and constants/thresholds (§2.4). Currently at iteration 25. Its header table references tech-spec at "Iteration 15+" — this is stale metadata; the alignment conclusions (A1–A12 in §8.1) remain valid, with A12 (External-node temporal-model carve-out) added in iteration 25.
+> - [`implementation-plan.md`](implementation-plan.md) — phased work items (6 phases), deliverables, evaluation harness. Contains 31 naming/data-model divergences from canonical vocabulary (catalogued in architecture.md §8.2, mirrored in §12.3 of this document); `architecture.md` governs on all conflicts. Iteration 25 adds S-6 (missing `RetireEdgeAsync`), S-7 (missing `ArchiveExpertiseAsync`), S-8 (missing expertise `archived` column).
+> - [`e2e-scenarios.md`](e2e-scenarios.md) — BDD Gherkin acceptance scenarios (13 features, 82 scenarios covering Structural Extraction, Call-Chain, Semantic, Expertise, Temporal Versioning, Hybrid Retrieval, Incremental Sync, Evolution, Cross-Session Learning, MCP Tool Interface, Backward Compatibility, Performance & Storage, and Graph Schema Integrity). Architecture.md §8.3 catalogues 10 divergences, all semantically correct or out-of-scope.
+>
+> When this document and `architecture.md` disagree on naming, the architecture
+> document governs. This document owns the problem statement, scope/non-goals,
+> hard constraints, risks, and success criteria.
 
 ---
 
 ## 1. Problem Statement
 
-Coding agents today are stateless across sessions: every invocation starts from scratch, re-discovering repository topology, ownership boundaries, call chains, and architectural invariants through brute-force search. This wastes tokens, inflates latency, and — critically — prevents the agent from *learning*. An agent that has fixed three null-dereference bugs in `PaymentService.processRefund()` should know, without re-reading every file, that `processRefund` has fragile null-handling and that its callers in `OrderController` rely on a non-null return.
+Coding agents today are stateless across sessions: every invocation starts from scratch, re-discovering repository topology, ownership boundaries, call chains, and architectural invariants through brute-force search. This wastes tokens, inflates latency, and — critically — prevents the agent from *learning*. An agent that has repeatedly diagnosed `ErrorHandlingAnalyzer.AnalyzeExceptions()` (`src/ast/CodeIntelligence/Analyzers/ErrorHandlingAnalyzer.cs`) as missing a catch-all case should know, without re-reading every file, that this analyzer has fragile exception logic and that its caller `RepositoryAnalysisService.AnalyzeRepositoryAsync()` (`src/ast/CodeIntelligence/Services/RepositoryAnalysisService.cs`) depends on non-null results from all analyzer methods.
 
 The goal is a **persistent, graph-structured agent memory** that:
 
-1. **Models the repository top-down** — from workspace → package → module → class → function, capturing containment, dependency, and call-chain edges.
-2. **Accumulates expertise** — per-node annotations (bug-density signals, ownership hints, complexity observations) that grow across agent sessions.
+1. **Models the repository top-down** — from Repo → Workspace → Package → Module → Class → Function, capturing containment, dependency, and call-chain edges across four orthogonal graph layers (Structural, Call-Chain, Semantic, Expertise — see `architecture.md` §2.1).
+2. **Accumulates expertise** — per-node annotations (bug-density signals, ownership hints, complexity observations) stored as typed Expertise-layer nodes that grow across agent sessions via the Evolution Engine.
 3. **Serves as the primary context-construction layer** — given a task description, the memory graph enables subgraph retrieval that is both structurally aware (follow the call chain) and semantically relevant (embed the task, match nodes), replacing or augmenting flat file-grep.
 
-This draws directly from the *Graph-based Agent Memory* taxonomy (Yang et al., arXiv:2602.05665) — specifically its lifecycle of **extraction → storage → retrieval → evolution** — and adapts it from conversational/game-playing domains to the code-intelligence domain where the primary data sources are ASTs, call graphs, and version-control history.
+This draws directly from the *Graph-based Agent Memory* taxonomy (Yang et al., arXiv:2602.05665) — specifically its lifecycle of **Extraction → Storage → Retrieval → Evolution** — and adapts it from conversational/game-playing domains to the code-intelligence domain where the primary data sources are ASTs, call graphs, and version-control history.
+
+### 1.1 Existing Infrastructure
+
+The system builds on the existing Code Intelligence stack in `src/ast/` (24 `.csproj` projects, 13 test projects). **Two existing projects receive additive-only changes** (per `architecture.md` §1.3):
+
+1. **`Ast.Core`** — one new enum value `HyperedgeType.MemoryRelation` in `HypergraphModels.cs`.
+2. **`Ast.Cli`** — additive `config.AddBranch("memory", ...)` lines in `Program.cs` to register memory sub-commands (Spectre.Console.Cli manual registration — consistent with how the existing 7 commands are registered). MCP tool registration and handler logic live in `Ast.Memory/Mcp/`.
+
+All other existing projects are referenced (as project dependencies) but never modified:
+
+| Existing project | Reuse strategy |
+|---|---|
+| **Ast.Core** (`HypergraphNode`, `Hyperedge`, `HyperedgeType` — 44 enum values) | Reference types via `Metadata` dict for extension. One additive enum value `MemoryRelation`. No changes to `HypergraphNode` or `Hyperedge` class signatures. |
+| **Ast.GraphDb** (`IGraphStore`, `Neo4jGraphStore`) | Reference only — no modifications. `Ast.Memory` defines `IMemoryGraphStore` (extending `IGraphStore`) and `SqliteGraphStore` / `Neo4jMemoryGraphStore` in its own project. |
+| **Ast.Embedding** (`IEmbeddingGenerator`, `CodeEmbeddingService`, `EnrichedEmbeddingPipeline`) | Reuse directly for embedding code and expertise nodes. `CodeEmbeddingService.GenerateNodeEmbeddingsAsync()` batches via `IEmbeddingGenerator.GenerateBatchEmbeddingsAsync()`, always using `GetEmbeddingText()` (structural-only). `EnrichedEmbeddingPipeline` conditionally uses `GetEnhancedEmbeddingText()` for LSP-enriched nodes (see `EnrichedEmbeddingPipeline.cs` lines 183, 245). Existing `EmbeddingGeneratorOptions.ModelName` defaults to `"nomic-embed-text"` (general-purpose, consistent with D1). |
+| **Ast.Query** (`ICodeQuery`, `HybridQueryService`) | Reference only — no modifications. `Ast.Memory` defines its own `IMemoryRetrievalEngine` that internally composes `ICodeQuery` when needed. |
+| **Ast.VectorDb** (`IVectorStore`, `QdrantVectorStore`) | Reference only — no modifications. Reuse for team mode; `Ast.Memory` adds in-process HNSW adapter for local mode. |
+| **Ast.Lsp** (LSP integration) | Optional enrichment — pipeline never blocks on LSP. No modifications. |
+| **CodeIntelligence** (27 analyzers, 4 detectors, `RelationshipGraphBuilder`) | Consume as call-chain / structural edge source. No modifications. |
+
+New code is delivered as `Ast.Memory` (single new project) plus `Ast.Memory.UnitTests` and `Ast.Memory.IntegrationTests`, following the established naming convention under `src/ast/`.
 
 ---
 
@@ -25,13 +54,13 @@ This draws directly from the *Graph-based Agent Memory* taxonomy (Yang et al., a
 
 | # | Capability | Detail |
 |---|-----------|--------|
-| S1 | **Top-down structural graph extraction** | Parse repository into a hierarchical knowledge graph: `Repo → Workspace → Package → Module → Class/Interface → Function/Method`. Edges model containment (`CONTAINS`), import/dependency (`DEPENDS_ON`), and inheritance (`EXTENDS`, `IMPLEMENTS`). |
-| S2 | **Call-chain overlay** | Static-analysis pass that adds `CALLS`, `CALLED_BY`, and `REFERENCES` edges between function-level nodes across the structural hierarchy. |
-| S3 | **Expertise annotation layer** | Each node carries a mutable property bag (e.g., `bug_count`, `last_touched_by_agent`, `complexity_score`, `known_issues[]`, `architectural_notes`). Annotations are written by the agent during and after task execution. |
-| S4 | **Temporal versioning** | Every edge and annotation carries a `valid_from` / `valid_until` timestamp pair (Zep-style temporal KG — Rasmussen et al., arXiv:2501.13956). Enables "what did the call graph look like when the bug was introduced?" queries. |
-| S5 | **Hybrid retrieval** | Two retrieval paths that are merged: (a) **structural traversal** — given a seed node, walk N hops along call-chain or containment edges; (b) **semantic similarity** — embed node summaries and match against an embedded task prompt. Inspired by MAGMA's orthogonal-graph traversal policy (Jiang et al., arXiv:2601.03236). |
-| S6 | **Memory evolution pipeline** | After each agent session, a consolidation step: merge new observations, decay stale annotations (Ebbinghaus-curve weighting), promote frequently-accessed nodes to a hot tier. Follows the Internal Self-Evolving pattern from the survey taxonomy. |
-| S7 | **Context window construction** | Given a task + memory graph, produce a ranked, token-budgeted context window: structural skeleton first, then call-chain neighbors, then semantically-related nodes, then expertise annotations. Output is a prompt-ready markdown/code block. |
+| S1 | **Top-down structural graph extraction** | Parse repository into the **Structural layer** (`layer = "structural"`, per `architecture.md` §2.1): `Repo → Workspace → Package → Module → Class/Interface → Function/Method`. Edges: `CONTAINS` (mapped from `HyperedgeType.ClassDefinition`, `MethodDefinition`, etc.), `DEPENDS_ON` (from `UsingDirective`, `ModuleImport`, `DotSource`) — per `architecture.md` §2.2. Reuses existing `Ast.Core` / `Ast.Csharp` / `Ast.PowerShell` parsers as the primary extraction adapter. |
+| S2 | **Call-chain overlay** | The **Call-Chain layer** (`layer = "call_chain"`, per `architecture.md` §2.1) adds `CALLS` (from `MethodInvocation`, `ConstructorInvocation`, `CmdletCall`), `EXTENDS`, `IMPLEMENTS`, and `REFERENCES` (from `DataFlow`, `Assignment`, `CrossLanguageTypeReference`) edges between symbol nodes — per `architecture.md` §2.2. Note: `CALLED_BY` is a reverse traversal of `CALLS`, not a stored edge (see `architecture.md` §2.3 retired names). |
+| S3 | **Expertise layer** | The **Expertise layer** (`layer = "expertise"`, per `architecture.md` §2.1) stores agent-authored knowledge as typed nodes (`Pattern`, `Pitfall`, `Preference`, `Insight`) linked to code nodes via `APPLIES_TO` edges (`architecture.md` §2.2). Agent sessions write back learnings which are consolidated via `SUPERSEDES` and `DERIVED_FROM` edges. This replaces the per-node property-bag model with structured expertise nodes that have their own embeddings. |
+| S4 | **Temporal versioning** | Every node and edge carries a `VersionRange` with commit SHA + monotonic `commit_index` (not ISO-8601 timestamps) — **except External boundary nodes**, which are timeless stubs with no VCS presence (no `SinceCommit`, `SinceIndex`, `UntilCommit`, or `UntilIndex`; see `architecture.md` §4.3). Point-in-time queries use integer range comparison: `WHERE (since_index IS NULL /* External nodes */ OR (since_index <= $target AND (until_index IS NULL OR until_index > $target)))`. Wall-clock timestamps are available via join to the `commits` table. Inspired by Zep temporal KG (Rasmussen et al., arXiv:2501.13956). |
+| S5 | **Hybrid retrieval** | Five retrieval modes merged by a Ranker: `StructuralDrill`, `CallTrace`, `SemanticSearch`, `ExpertiseRecall`, `Hybrid` (matching the `RetrievalMode` enum). The **Semantic layer** (`layer = "semantic"`, per `architecture.md` §2.1) clusters code via `SIMILAR_TO` and `BELONGS_TO_CLUSTER` edges using pre-computed embeddings (general-purpose model — see D1). Two embedding paths exist in `Ast.Embedding`: (a) `CodeEmbeddingService.GenerateNodeEmbeddingsAsync()` always calls `HypergraphNode.GetEmbeddingText()` (lines 93–113 of `HypergraphModels.cs`, structural-only: node type, language, file path, scope, modifiers) via `IEmbeddingGenerator.GenerateBatchEmbeddingsAsync()`; (b) `EnrichedEmbeddingPipeline.ProcessAsync()` conditionally calls `GetEnhancedEmbeddingText()` for LSP-enriched nodes (lines 120–186; includes signatures, docstrings, caller/callee context, and optionally up to 2000 chars of source code from `Metadata["SourceCode"]` — see line 175) or `GetEmbeddingText()` for non-enriched nodes (see `EnrichedEmbeddingPipeline.cs` lines 183, 245), embedding via `IEmbeddingGenerator.GenerateBatchEmbeddingsAsync()` directly. The memory layer reuses whichever embedding path the deployment configures. Inspired by MAGMA's orthogonal-graph traversal policy (Jiang et al., arXiv:2601.03236). Edge filtering uses `Metadata["SemanticRelation"]` uniformly across all layers (see `architecture.md` §2.2). Scoring uses the canonical 5-signal weighted model from `architecture.md` §2.4: structural proximity (0.30), semantic similarity (0.25), centrality (0.20), recency (0.15), expertise signal (0.10) — used by the Ranker component in `Ast.Memory/Retrieval/`. At query time, the query text is embedded via a single local call to the embedding service (see HC5); all node embeddings are pre-computed at extraction/write-back time. If the embedding service is unavailable at query time, semantic search is gracefully skipped. |
+| S6 | **Memory evolution pipeline** | Post-session consolidation: write-back (create Expertise nodes), consolidation (LLM-powered merge with `SUPERSEDES` edges), decay (3-year half-life with structural centrality boost — see D5; plus one-time `StaleDecayFactor = 0.5` when target `ContentHash` changes, per `architecture.md` §2.4), and community summarization (GraphRAG-inspired cluster prose stored as `Topic` nodes in the Semantic layer). |
+| S7 | **Context window construction** | Token-budgeted context assembly via the Context Assembler: hierarchy compression (parent summary when all children selected), deduplication (same code span from multiple paths emitted once), and deterministic Markdown output with sections `## Structure`, `## Call Graph`, `## Related Code`, `## Known Expertise`. Budget Controller collapses children into parent summaries when tokens are scarce (HiAgent pattern). |
 
 ---
 
@@ -44,7 +73,7 @@ This draws directly from the *Graph-based Agent Memory* taxonomy (Yang et al., a
 | O3 | **Natural-language conversational memory** | The survey covers chat/dialogue memory extensively. Our scope is *code-structural* memory only. Agent conversation logs may be referenced as provenance metadata but are not first-class graph nodes. |
 | O4 | **Fine-tuning / weight updates** | The agent "learns" by writing to the graph, not by updating model weights. RL-based memory construction (Mem-α, Memory-R1) is architecturally interesting but out of scope for this story. |
 | O5 | **UI / dashboard for memory exploration** | Observability into the graph is via CLI queries and telemetry, not a visual explorer. |
-| O6 | **Multi-agent shared memory** | The graph is per-agent-instance for now. G-Memory-style hierarchical sharing across agent swarms is deferred. |
+| O6 | **Multi-agent shared memory** | The graph store is **per-repository**, shared by all agent sessions working on that repo (see `architecture.md` §1.2). What is excluded is G-Memory-style *coordinated sharing protocols* — inter-agent messaging, negotiation, or consensus over the memory space. Knowledge sharing is indirect: Agent A writes; Agent B discovers on a subsequent read. No inter-agent messaging or swarm coordination. |
 
 ---
 
@@ -52,10 +81,11 @@ This draws directly from the *Graph-based Agent Memory* taxonomy (Yang et al., a
 
 These are things the system **explicitly will not attempt**, even if technically feasible:
 
-- **Replace the LSP or language server.** The memory graph complements language tooling; it does not re-implement go-to-definition, find-references, or type checking. It *consumes* outputs from those tools.
-- **Guarantee 100 % call-graph completeness.** Static analysis of dynamic languages (Python `getattr`, JS `eval`) is inherently incomplete. The graph tolerates missing edges and annotates confidence levels.
-- **Be a general-purpose knowledge graph.** The schema is purpose-built for code structure. Extending it to model business-domain ontologies, user preferences, or conversation history is not a goal.
+- **Replace the LSP or language server.** The memory graph complements language tooling; it does not re-implement go-to-definition, find-references, or type checking. It *consumes* outputs from those tools (via the optional `Ast.Lsp` enrichment adapter — the pipeline must never block on an LSP).
+- **Guarantee 100 % call-graph completeness.** Static analysis of dynamic languages (Python `getattr`, JS `eval`) is inherently incomplete. The graph tolerates missing edges and tags each with a `Confidence` value: direct calls = 1.0; dynamic dispatch / callback patterns = 0.5–0.7.
+- **Be a general-purpose knowledge graph.** The schema is purpose-built for code structure. The node types (`Repo`, `Workspace`, `Package`, `Module`, `Class`, `Function`) and four layers (`structural`, `call_chain`, `semantic`, `expertise` — per `architecture.md` §2.1) are fixed. Extension is via the `Metadata` dictionary and the Expertise layer, not by adding ad-hoc node or edge types.
 - **Enforce deterministic context construction.** Two identical queries against the same graph may produce slightly different context windows due to embedding non-determinism. This is acceptable; the agent's reasoning layer handles variation.
+- **Modify the base `HypergraphNode` or `Hyperedge` classes.** The memory layer extends these types via the existing `Metadata` dictionary and via composition wrappers (`MemoryNode`, `MemoryEdge`), never via inheritance or new properties on the base classes. This preserves backward compatibility with existing tests (see HC8).
 
 ---
 
@@ -63,115 +93,137 @@ These are things the system **explicitly will not attempt**, even if technically
 
 | ID | Constraint | Source |
 |----|-----------|--------|
-| HC1 | **Token budget ceiling.** Context windows produced by the retrieval layer must respect a configurable max-token limit (default: 32 K tokens). The system truncates gracefully, preserving structural skeleton over detail. | Operational: avoids blowing LLM context limits. |
-| HC2 | **Incremental update, not full rebuild.** After a `git pull` or file save, only changed files trigger re-extraction. Full-repo re-parse is an explicit admin action, not the default path. | Performance: large repos (100 K+ files) cannot afford full re-index on every change. |
-| HC3 | **Language-agnostic core, language-specific extractors.** The graph schema and storage engine are language-neutral. Each supported language (TypeScript, Python, C#, Go, Java — minimum viable set) provides an extractor plugin. Adding a language must not require schema changes. | Extensibility. |
-| HC4 | **Storage must survive agent process restarts.** The graph is persisted to disk (not in-memory only). Acceptable back-ends: SQLite (+ FTS5 for text search) for single-machine, or a pluggable adapter for Neo4j/Memgraph in scaled deployments. | Durability. |
-| HC5 | **No external network calls during retrieval.** Embedding vectors are pre-computed at extraction/evolution time. Retrieval is a local graph traversal + vector-similarity operation. The agent must not block on an API call to construct its context. | Latency SLO: < 500 ms p95 for context construction. |
-| HC6 | **Deterministic graph schema.** The node types (`Repo`, `Package`, `Module`, `Class`, `Function`) and core edge types (`CONTAINS`, `CALLS`, `DEPENDS_ON`, `EXTENDS`, `IMPLEMENTS`, `REFERENCES`) are fixed in the schema. Extension is via the annotation property bag, not by adding ad-hoc node/edge types. | Schema stability for downstream consumers. |
-| HC7 | **Audit trail.** Every write to the graph (node creation, annotation update, edge addition/removal) is logged with agent-session-id, timestamp, and operation type. This is the post-mortem trail. | Operational: we instrument before we optimise. |
+| HC1 | **Token budget ceiling.** Context windows produced by the Context Assembler must respect a configurable max-token limit (system ceiling: 32 K tokens; per-query default: 8 K tokens). Agents may request up to the ceiling; the Budget Controller never exceeds it. The Budget Controller truncates gracefully using the structural hierarchy: parent summaries replace child details when budget is tight (HiAgent pattern). | Operational: avoids blowing LLM context limits. Canonical scoring weights are in `architecture.md` §2.4. |
+| HC2 | **Incremental update, not full rebuild.** After a `git pull` or file save, only changed files trigger re-extraction. Full-repo re-parse is an explicit admin action, not the default path. The Incremental Sync component diffs changed files, re-extracts, and propagates invalidation to downstream `CALLS` edges. Target: < 2 s for a single-file change on repos ≤ 500 K LOC. | Performance: large repos (100 K+ files) cannot afford full re-index on every change. |
+| HC3 | **Language-agnostic core, language-specific extractors.** The graph schema, storage engine, and all four layers are language-neutral. Each supported language provides an extractor adapter behind a unified `ILanguageParser` interface. MVP leverages existing `Ast.Csharp` and `Ast.PowerShell`; TypeScript, Python, and Go adapters are additive and require no schema changes. | Extensibility. |
+| HC4 | **Storage must survive agent process restarts.** The graph is persisted to disk. SQLite + FTS5 + sqlite-vss for local/single-machine use. Neo4j + Qdrant for team/CI deployment (via existing `Ast.GraphDb` and `Ast.VectorDb` adapters). Backend selection is via DI configuration; all backends implement `IMemoryGraphStore`. | Durability. |
+| HC5 | **No cloud / internet calls during retrieval.** Code-node and expertise-node embeddings are pre-computed at extraction and write-back time using the local Ollama embedding service (`http://localhost:11434`, model `nomic-embed-text` — see D1). At retrieval time, the system makes exactly **one local HTTP call** to the same Ollama instance to embed the query text; all subsequent operations — graph traversal, vector-similarity ranking, context assembly — use only pre-computed vectors and local storage. The constraint means: the retrieval path **never contacts a cloud API, remote service, or the internet**. The local Ollama call is permitted because it runs on the same machine with sub-10 ms latency and zero availability dependency on external infrastructure. If Ollama is unavailable, retrieval degrades gracefully: semantic search is skipped and the system falls back to structural + call-chain + expertise retrieval modes only. | Latency SLO: < 500 ms p95 for context construction. |
+| HC6 | **Deterministic graph schema.** Node types and core edge types are fixed (see `architecture.md` §2.2 for the canonical edge taxonomy mapping to `HyperedgeType` enum values). Extension is via `Metadata` keys on existing types and via the Expertise layer's typed nodes, not by adding ad-hoc node/edge types. A single new enum value `HyperedgeType.MemoryRelation` is added to `Ast.Core` for memory-only edges; the true semantic type lives in `Metadata["SemanticRelation"]` (per `architecture.md` §2.2). | Schema stability for downstream consumers. |
+| HC7 | **Audit trail.** Every write to the graph (node creation, annotation update, edge addition/removal) is logged in an `audit_log` table with agent-session-id, timestamp, operation type, and detail JSON. This is the post-mortem trail. | Operational: we instrument before we optimise. |
+| HC8 | **Non-breaking extension of Ast.Core.** `MemoryNode` and `MemoryEdge` are composition wrappers that delegate to `HypergraphNode` / `Hyperedge` respectively (i.e., `MemoryNode` contains a `HypergraphNode Inner { get; }` property — **not** class inheritance via `: HypergraphNode`). They provide strongly-typed accessors for memory `Metadata` keys but all inter-component interfaces accept and return the base types. No changes to `HypergraphNode` or `Hyperedge` class signatures. | Backward compatibility: existing tests must pass unmodified. |
+| HC9 | **Hyperedge semantics preserved.** `Hyperedge` is a multi-node hyperedge with `NodeIds: List<string>` and `Roles: Dictionary<string, string>`, not a binary source→target edge. The memory layer preserves this model. For binary relationships (e.g., CALLS), the hyperedge has exactly 2 `NodeIds` with semantic roles (e.g., `"caller"` / `"callee"`). | Data model consistency with Ast.Core. |
+| HC10 | **Cross-branch expertise visibility.** Expertise-layer nodes are globally visible regardless of the current git branch (see D3). Retrieval does not filter by branch lineage. Staleness is detected via `ContentHash` comparison against the current branch's version of the target code. | Knowledge reuse: insights from feature branches inform work on `main` immediately. |
+| HC11 | **Curated annotation key registry.** `Metadata` keys on memory nodes are governed by `AnnotationKeyRegistry` — a code-defined registry of well-known keys with typed schemas (see D4, §12.4). Agent-authored extension keys use the `ext:` prefix and surface a validation warning. | Schema stability: prevents ad-hoc key proliferation while preserving extensibility. |
 
 ---
 
 ## 6. Architecture Overview
+
+> **Full architecture is defined in [`architecture.md`](architecture.md).**
+> This section provides a summary for quick reference.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │                     Agent Runtime                        │
 │  ┌──────────┐   ┌──────────────┐   ┌──────────────────┐ │
 │  │ Task      │──▶│ Context      │──▶│ LLM Reasoning    │ │
-│  │ Ingress   │   │ Constructor  │   │ Loop             │ │
+│  │ Ingress   │   │ Assembler    │   │ Loop             │ │
 │  └──────────┘   └──────┬───────┘   └────────┬─────────┘ │
-│                        │ query                │ annotate  │
+│                        │ query                │ write-back│
 │                        ▼                      ▼          │
 │  ┌─────────────────────────────────────────────────────┐ │
-│  │              Memory Graph Service                   │ │
+│  │        Memory Graph Service (Ast.Memory)            │ │
 │  │  ┌───────────┐ ┌────────────┐ ┌──────────────────┐  │ │
-│  │  │ Retriever │ │ Annotation │ │ Evolution Engine │  │ │
-│  │  │ (struct + │ │ Writer     │ │ (consolidate,    │  │ │
-│  │  │  semantic)│ │            │ │  decay, promote) │  │ │
+│  │  │ Retrieval │ │ Evolution  │ │ Incremental Sync │  │ │
+│  │  │ Engine    │ │ Engine     │ │                  │  │ │
 │  │  └─────┬─────┘ └─────┬──────┘ └────────┬─────────┘  │ │
-│  │        │              │                 │            │ │
 │  │        ▼              ▼                 ▼            │ │
 │  │  ┌──────────────────────────────────────────────┐   │ │
-│  │  │         Graph Storage Engine                 │   │ │
-│  │  │  (Nodes · Edges · Annotations · Embeddings)  │   │ │
+│  │  │     Graph Store (4 layers)                   │   │ │
+│  │  │  Structural · Call-Chain · Semantic · Expert. │   │ │
 │  │  │  ┌────────────────┐  ┌────────────────────┐  │   │ │
-│  │  │  │ SQLite + FTS5  │  │ Vector Index (HNSW)│  │   │ │
+│  │  │  │ SQLite/Neo4j   │  │ HNSW/Qdrant Vector │  │   │ │
 │  │  │  └────────────────┘  └────────────────────┘  │   │ │
 │  │  └──────────────────────────────────────────────┘   │ │
 │  └─────────────────────────────────────────────────────┘ │
 │                        ▲                                 │
-│                        │ incremental                     │
 │  ┌─────────────────────┴───────────────────────────────┐ │
-│  │              Extraction Pipeline                     │ │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐ │ │
-│  │  │ TS       │ │ Python   │ │ C#       │ │ Go     │ │ │
-│  │  │ Extractor│ │ Extractor│ │ Extractor│ │Extract.│ │ │
-│  │  └──────────┘ └──────────┘ └──────────┘ └────────┘ │ │
-│  │                  ▲                                   │ │
-│  │            File Watcher / Git Diff                   │ │
+│  │      Extraction Pipeline (Ast.Core extractors)      │ │
+│  │  C# (Ast.Csharp) · PowerShell (Ast.PowerShell)     │ │
+│  │  + future: TS · Python · Go (tree-sitter adapters)  │ │
 │  └──────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────┘
 ```
+
+Components map to `src/ast/` projects as detailed in `architecture.md` §1.3.
 
 ---
 
 ## 7. Graph Schema (Core)
 
+> **Canonical definitions for all node types, edge types, and metadata keys
+> are in `architecture.md` §2.2.** This section summarizes the
+> schema for quick reference; the architecture document governs on conflicts.
+
 ### 7.1 Node Types
 
-| Node Type | Key Properties | Notes |
-|-----------|---------------|-------|
-| `Repo` | `root_path`, `vcs_url`, `default_branch` | Singleton root per graph. |
-| `Workspace` | `name`, `path`, `manager` (npm, pip, cargo…) | Monorepo child. Absent in single-package repos. |
-| `Package` | `name`, `version`, `path` | Maps to `package.json`, `pyproject.toml`, `.csproj`, `go.mod`. |
-| `Module` | `file_path`, `language`, `hash` | One node per source file. `hash` enables change detection. |
-| `Class` | `name`, `fqn`, `is_abstract`, `is_exported` | Covers classes, interfaces, structs, enums. |
-| `Function` | `name`, `fqn`, `signature`, `line_start`, `line_end`, `is_exported` | Leaf-level structural node. |
+| Node Type | Layer | Key Properties | Notes |
+|-----------|-------|---------------|-------|
+| `Repo` | Structural | `root_path`, `vcs_url`, `default_branch` | Singleton root. ID = `"/"`. |
+| `Workspace` | Structural | `name`, `path`, `manager` (npm, pip, cargo…) | Monorepo child. Absent in single-package repos. |
+| `Package` | Structural | `name`, `version`, `path` | Maps to `.csproj`, `package.json`, `pyproject.toml`, `go.mod`. |
+| `Module` | Structural | `file_path`, `language`, `hash` | One node per source file. `hash` = SHA-256 for change detection. |
+| `Class` | Structural | `name`, `fqn`, `is_abstract`, `is_exported` | Covers classes, interfaces, structs, enums, records. |
+| `Function` | Structural | `name`, `fqn`, `signature`, `line_start`, `line_end`, `is_exported` | Leaf structural node. |
+| `External` | Call-Chain | `package`, `fqn` | Out-of-repo boundary symbol (stub — no embedding, no `VersionRange`). ID format: `"ext:{package}:{qualifiedName}"`. Created when in-repo code references NuGet/npm dependencies. Participates in `CALLS` and `REFERENCES` edges but is never extracted or embedded. |
+| `SemanticCluster` | Semantic | `centroid_embedding`, `member_count` | Auto-detected community of similar nodes. |
+| `Topic` | Semantic | `title`, `summary_prose` | GraphRAG-inspired cluster summary. |
+| `ExpertiseEntry` | Expertise | `title`, `body`, `confidence`, `source_session`, `kind` (`ExpertiseKind`: Pattern, Pitfall, Preference, Insight) | Agent-authored knowledge node. Differentiated by `Kind` field, not by `NodeType`. ID format: `"expertise:{kind}:{hash8}"` where `hash8` = first 8 chars of SHA-256(`Content` + `TargetNodeId`). Linked to code targets via `APPLIES_TO` edges. See `ExpertiseEntry` class and `ExpertiseKind` enum in `architecture.md` §4.2. |
+
+**ID format:** Path-based strings: `"{filePath}::{qualifiedName}"` for symbols (e.g., `src/ast/CodeIntelligence/Services/RepositoryAnalysisService.cs::RepositoryAnalysisService.AnalyzeRepositoryAsync`), `"{filePath}"` for files (e.g., `src/ast/Ast.GraphDb/IGraphStore.cs`), `"/"` for repo root. All IDs are `string` — no GUIDs or integer IDs.
 
 ### 7.2 Edge Types
 
-| Edge Type | Source → Target | Semantics |
-|-----------|----------------|-----------|
-| `CONTAINS` | Any parent → child in the hierarchy | Structural containment. |
-| `CALLS` | Function → Function | Static call-site edge. |
-| `DEPENDS_ON` | Module → Module, Package → Package | Import / require / using. |
-| `EXTENDS` | Class → Class | Inheritance. |
-| `IMPLEMENTS` | Class → Class/Interface | Interface implementation. |
-| `REFERENCES` | Function → Class, Function → Function | Non-call references (type annotations, variable types). |
+| Canonical Edge | `HyperedgeType` Mapping | Layer | Semantics |
+|----------------|------------------------|-------|-----------|
+| `CONTAINS` | `ClassDefinition`, `InterfaceDefinition`, `StructDefinition`, `RecordDefinition`, `MethodDefinition`, `ConstructorDefinition`, `PropertyDefinition`, `FunctionDefinition` | Structural | Parent→child containment. |
+| `DEPENDS_ON` | `UsingDirective`, `ModuleImport`, `DotSource` | Structural | Module/package imports. |
+| `CALLS` | `MethodInvocation`, `ConstructorInvocation`, `CmdletCall`, `ModuleFunctionCall`, `CrossLanguageMethodCall` | Call-Chain | Function invocation. |
+| `EXTENDS` | `Extends` | Call-Chain | Class inheritance. |
+| `IMPLEMENTS` | `Implements` | Call-Chain | Interface implementation. |
+| `REFERENCES` | `DataFlow`, `Assignment`, `CrossLanguageTypeReference` | Call-Chain | Non-call symbol references. |
+| `SIMILAR_TO` | `MemoryRelation` (new) | Semantic | Embedding cosine similarity above threshold. |
+| `BELONGS_TO_CLUSTER` | `MemoryRelation` (new) | Semantic | Node membership in a detected community. |
+| `APPLIES_TO` | `MemoryRelation` (new) | Expertise | Expertise node annotates a code target. |
+| `SUPERSEDES` | `MemoryRelation` (new) | Expertise | Merged expertise replaces an older note. |
+| `DERIVED_FROM` | `MemoryRelation` (new) | Expertise | Expertise derived from another. |
 
-### 7.3 Annotation Schema
+**Edge filtering:** Every edge stores its canonical name in `Metadata["SemanticRelation"]`. This is the sole filter used by the Retrieval Engine. The legacy `HyperedgeType` enum is preserved in `Metadata["OriginalEdgeType"]` for lossless round-trips but is never used as a retrieval filter.
 
-Annotations live in a JSONB property bag on every node. They are the *mutable, agent-written* layer.
+### 7.3 Annotation Metadata
 
-```jsonc
-{
-  // Written by agent during sessions
-  "known_issues": [
-    { "description": "Null-deref on empty refund list", "session": "abc-123", "ts": "2026-05-01T..." }
-  ],
-  "architectural_notes": "Entry point for the payment retry saga. Callers assume non-null return.",
-  "complexity_score": 14,          // cyclomatic, computed by extractor
-  "bug_density": 0.32,             // bugs-per-KLOC, accumulated over sessions
-  "last_agent_session": "abc-123",
-  "access_count": 7,               // retrieval hot-path signal
-  "confidence": 0.85,              // extraction confidence (lower for dynamic-dispatch edges)
-  "embedding": [0.012, -0.034, …]  // pre-computed vector (dim = 256 or 384)
-}
-```
+Annotations live in `HypergraphNode.Metadata` (the existing `Dictionary<string, object?>` on `Ast.Core.HypergraphNode`). Keys are governed by the **curated `AnnotationKeyRegistry`** (see D4, §12.4). Well-known memory-specific keys:
+
+| Key | Type | Governance | Description |
+|-----|------|-----------|-------------|
+| `MemoryLayer` | `string` | **Registry** | `"structural"` \| `"call_chain"` \| `"semantic"` \| `"expertise"` |
+| `VersionRange` | `{ Since, SinceIndex, Until?, UntilIndex? }` | **Registry** | Commit SHA + monotonic index. `Until = null` = current. |
+| `ContentHash` | `string` | **Registry** | SHA-256 of source span. |
+| `LastTouched` | `string` (ISO-8601) | **Registry** | Wall-clock time of last extraction (informational). |
+| `Embedding` | `float[]` | **Registry** | Dense vector (general-purpose model — see D1). |
+| `EmbeddingModel` | `string` | **Registry** | Model identifier (e.g., `nomic-embed-text`). Enables re-embedding on model upgrade. |
+| `Summary` | `string` | **Registry** | LLM-generated one-liner for the node. |
+| `QualifiedName` | `string` | **Registry** | Fully-qualified name. |
+| `Confidence` | `double` | **Registry** | 0.0–1.0 for edges: direct calls = 1.0; dynamic dispatch = 0.5–0.7. |
+| `Stale` | `bool` | **Registry** | Pending re-confirmation after upstream signature change. |
+| `SemanticRelation` | `string` | **Registry** | Canonical edge name (e.g., `CALLS`, `APPLIES_TO`). Primary retrieval filter. |
+| `OriginalEdgeType` | `string` | **Registry** | Original `HyperedgeType` enum value. Preserved for lossless round-trip. |
+| `ext:*` | `object?` | **Extension** | Agent-authored ad-hoc keys. Prefixed `ext:` to avoid collisions. Surfaced with validation warning. |
 
 ### 7.4 Temporal Model
 
-Every edge and annotation row carries:
+> **Dual-axis temporal model — canonical constants in `architecture.md` §2.4.**
 
-| Field | Type | Semantics |
-|-------|------|-----------|
-| `valid_from` | ISO-8601 timestamp | When this fact became true. |
-| `valid_until` | ISO-8601 timestamp \| `NULL` | When this fact was superseded. `NULL` = current. |
-| `provenance` | `{ agent_session_id, git_commit?, operation }` | Audit trail. |
+The system uses a **dual-axis temporal model**:
 
-Point-in-time queries filter on `valid_from <= t AND (valid_until IS NULL OR valid_until > t)`.
+1. **Commit axis** — each processed commit SHA maps to a monotonically increasing `commit_index` integer in a `commits` table. `VersionRange` on nodes/edges stores both the commit SHA (human-readable provenance) and `commit_index` (efficient range queries).
+2. **Wall-clock axis** — `LastTouched` (ISO-8601) records when extraction last ran. Informational only; range queries use the commit index.
+
+**External boundary node exemption:** External nodes (NodeType `"External"`) represent out-of-repo dependencies and are **timeless** — they carry no `VersionRange` (no `SinceCommit`, `SinceIndex`, `UntilCommit`, or `UntilIndex`). They are never retired by incremental sync; they are garbage-collected only during full re-extraction when no edge references them. Temporal queries include them via the `since_index IS NULL` predicate (see `architecture.md` §4.3).
+
+Point-in-time query: `WHERE (since_index IS NULL /* External nodes */ OR (since_index <= $target_idx AND (until_index IS NULL OR until_index > $target_idx)))`.
+
+**Correction from Iteration 1:** The previous tech-spec used ISO-8601 `valid_from` / `valid_until` fields. The canonical model uses integer `commit_index` values because commit SHAs are opaque and not orderable. Wall-clock timestamps are available via join to the `commits` table.
 
 ---
 
@@ -179,48 +231,52 @@ Point-in-time queries filter on `valid_from <= t AND (valid_until IS NULL OR val
 
 ### 8.1 Extraction
 
-**Input:** Source files (changed since last extraction, identified via `git diff` or file-watcher).
+**Input:** Source files changed since last extraction, identified via `git diff` or file-watcher (Incremental Sync component).
 
 **Process:**
 
-1. Language-specific extractor parses AST, emits structural nodes and containment edges.
-2. Import/dependency resolver emits `DEPENDS_ON` edges.
-3. Call-graph analyzer walks function bodies, emits `CALLS` / `REFERENCES` edges. Confidence is tagged: direct calls = 1.0; dynamic dispatch / callback patterns = 0.5–0.7.
-4. Embedding generator produces a dense vector per node by encoding `"{node_type} {fqn}: {signature or first-line docstring}"`.
-5. Delta is applied to the graph store: new nodes inserted, removed nodes get `valid_until = now`, modified nodes trigger re-embedding.
+1. Language-specific extractor (existing `Ast.Csharp`, `Ast.PowerShell`, or future tree-sitter adapters) parses AST, emits `HypergraphNode` and `Hyperedge` records with `HyperedgeType` values.
+2. **Structure Builder** arranges nodes into the Structural layer hierarchy (Repo → Workspace → Package → Module → Class → Function), emitting `CONTAINS` and `DEPENDS_ON` edges.
+3. **Call-Chain Analyzer** walks function bodies, emits `CALLS` / `EXTENDS` / `IMPLEMENTS` / `REFERENCES` edges into the Call-Chain layer. Confidence is tagged: direct calls = 1.0; dynamic dispatch / callback patterns = 0.5–0.7.
+4. **Semantic Indexer** (reusing `Ast.Embedding.IEmbeddingGenerator`) produces a dense vector per node, stored in `Metadata["Embedding"]`. Two embedding paths exist: `CodeEmbeddingService.GenerateNodeEmbeddingsAsync()` always uses `HypergraphNode.GetEmbeddingText()` (structural-only: node type, language, file path, scope, modifiers); alternatively, `EnrichedEmbeddingPipeline.ProcessAsync()` conditionally uses `GetEnhancedEmbeddingText()` for LSP-enriched nodes (adds signature, docstring, return type, parameters, caller/callee context, and optionally `Metadata["SourceCode"]` truncated to 2000 chars — see `HypergraphModels.cs:120–186`) or `GetEmbeddingText()` for non-enriched nodes (see `EnrichedEmbeddingPipeline.cs` lines 183, 245). Both paths batch embedding generation via `IEmbeddingGenerator.GenerateBatchEmbeddingsAsync()`.
+5. **Fact Normalizer** assigns stable path-based IDs, attaches `VersionRange` with commit SHA + `commit_index`, computes `ContentHash`, and de-duplicates.
+6. Delta is applied to the graph store: new nodes inserted, removed nodes get `VersionRange.Until = current_commit`, modified nodes trigger re-embedding.
 
-**Constraint alignment:** HC2 (incremental), HC3 (pluggable extractors), HC5 (embeddings pre-computed here).
+**Constraint alignment:** HC2 (incremental), HC3 (pluggable extractors), HC5 (embeddings pre-computed), HC8 (non-breaking extension).
 
 ### 8.2 Storage
 
-**Primary back-end:** SQLite with the following tables:
+**Primary backends (via `IMemoryGraphStore` interface):**
 
-- `nodes (id, type, fqn, properties_json, embedding_blob, hash, valid_from, valid_until)`
-- `edges (id, type, source_id, target_id, properties_json, confidence, valid_from, valid_until)`
-- `annotations (node_id, key, value_json, session_id, valid_from, valid_until)`
+| Deployment | Graph | Vector | Notes |
+|---|---|---|---|
+| Local/CI | SQLite + FTS5 + recursive CTEs | sqlite-vss or in-process HNSW (usearch) | Single-file database, < 500 MB for 100 K-file repos. |
+| Team/Cloud | Neo4j (existing `Neo4jGraphStore`) | Qdrant (existing `QdrantVectorStore`) | Native graph traversals, concurrent access. |
+
+**Core tables (SQLite backend):**
+
+- `commits (commit_sha, commit_index, timestamp, parent_sha)` — temporal axis
+- `nodes (id, type, fqn, properties_json, embedding_blob, hash, valid_from_idx, valid_until_idx)`
+- `edges (id, type, node_ids_json, roles_json, properties_json, confidence, valid_from_idx, valid_until_idx)`
 - `audit_log (id, operation, entity_type, entity_id, session_id, timestamp, detail_json)`
 
-FTS5 virtual table over `nodes.fqn` and `annotations.value_json` for keyword search.  
-HNSW index (via `sqlite-vss` or a bundled Rust HNSW library) over `nodes.embedding_blob` for ANN queries.
+FTS5 virtual table over `nodes.fqn` and `properties_json` for keyword search.
 
-**Pluggable adapter** for Neo4j/Memgraph when graph traversals dominate and the node count exceeds ~500 K.
-
-**Constraint alignment:** HC4 (durable), HC6 (fixed schema), HC7 (audit_log table).
+**Constraint alignment:** HC4 (durable), HC6 (fixed schema), HC7 (audit_log table), HC9 (hyperedge semantics in edges table).
 
 ### 8.3 Retrieval
 
-Given a task description `T` and optional seed node(s):
+Given a task description `T` and optional seed node(s), the Retrieval Engine executes:
 
-1. **Embed T** → vector `v_T`.
-2. **Semantic fan-out:** ANN query on node embeddings → top-K candidate nodes (K = 50 default).
-3. **Structural expansion:** For each candidate, walk `CALLS` / `CALLED_BY` edges up to depth D (default 2). Walk `CONTAINS` up to the enclosing `Package` for hierarchy context.
-4. **Score fusion:** Each retrieved node gets a combined score:  
-   `score = α·sim(v_T, v_node) + β·structural_proximity + γ·expertise_signal`  
-   where `expertise_signal` draws from `bug_density`, `access_count`, `known_issues` relevance.
-5. **Token-budget packing:** Rank nodes by fused score, serialize top nodes (structural skeleton → call-chain neighbors → annotations) until token budget (HC1) is filled.
-6. **Output:** A structured context block ready for prompt injection.
+1. **Query Planner** classifies intent → selects retrieval mode(s) and `SemanticRelations` filter.
+2. **Query Embedding** (the sole HTTP call in the retrieval path): embed `T` via the local Ollama service (`http://localhost:11434`, model `nomic-embed-text`). If Ollama is unavailable, this step is skipped and semantic search is disabled — the remaining retrieval modes (structural, call-chain, expertise) proceed without it.
+3. **Vector Searcher** (Semantic layer): ANN query with the query embedding → top-K candidate nodes (K = 50 default). Uses pre-computed node embeddings stored in `Metadata["Embedding"]`.
+4. **Graph Traverser**: for each candidate, walk edges matching the selected `SemanticRelations` up to depth D (default 2).
+5. **Ranker**: fused score using the canonical 5-signal weighted model (per `architecture.md` §2.4): `score = 0.30×structural_proximity + 0.25×semantic_similarity + 0.20×centrality + 0.15×recency + 0.10×expertise_signal`. Where: `structural_proximity` = inverse BFS distance from seed, bounded [0,1]; `semantic_similarity` = cosine similarity of query embedding to node embedding; `centrality` = normalized fan-in from `CALLS` edges (PageRank-light); `recency` = `1.0 − (HEAD_idx − node_sinceIdx) / max_distance`, clamped [0,1]; `expertise_signal` = max `Confidence` of any `APPLIES_TO` edge targeting the node (0.0 when none). All signal definitions match `architecture.md` §2.4.
+6. **Budget Controller** (HC1): rank by fused score, pack nodes into token budget. Uses hierarchy compression — parent summary replaces child details when budget is tight.
+7. **Context Assembler**: output deterministic Markdown with `## Structure`, `## Call Graph`, `## Related Code`, `## Known Expertise` sections.
 
-This is the MAGMA-inspired two-phase pattern: orthogonal graph views (semantic + structural + temporal) with policy-guided traversal, adapted for code structures.
+This is the MAGMA-inspired multi-layer pattern: orthogonal graph views with policy-guided traversal, adapted for code structures.
 
 ### 8.4 Evolution
 
@@ -228,11 +284,12 @@ Runs as a post-session consolidation job:
 
 | Operation | Trigger | Effect |
 |-----------|---------|--------|
-| **Merge** | Agent writes new annotation during session | Upsert into `annotations`, old row gets `valid_until = now`. |
-| **Decay** | Scheduled (daily or on-demand) | Annotations older than decay threshold without recent access get their `confidence` reduced. After confidence < threshold, they are archived (moved to cold partition). Inspired by Ebbinghaus forgetting-curve models used in MemoryBank (AAAI'24). |
-| **Promote** | Node `access_count` crosses hot-tier threshold | Node summary is pre-expanded (longer embedding context, richer annotation) so future retrievals are faster. |
-| **Prune** | Git branch deleted, file removed | Structural nodes and their edges get `valid_until = now`. They remain queryable for historical analysis but are excluded from default retrieval. |
-| **Re-embed** | Node content changed, or embedding model upgraded | Re-compute embedding vector; old vector row gets `valid_until`. |
+| **Write-back** | Agent emits structured annotation (Pattern, Pitfall, Preference, Insight). | Creates Expertise-layer node, links via `APPLIES_TO` edges to code targets. Embeds title + body via `IEmbeddingGenerator`. |
+| **Consolidation** | Scheduled (post-PR-merge) or manual. | LLM-powered pass merges overlapping expertise nodes. Produces `SUPERSEDES` / `DERIVED_FROM` edges. |
+| **Decay** | On every retrieval. | Expertise nodes whose `APPLIES_TO` targets have been deleted or substantially rewritten get reduced confidence. Below threshold → archived (soft-deleted). **Two decay mechanisms:** (1) **Time-based:** Ebbinghaus-inspired with 3-year half-life (1095 days, per `architecture.md` §2.4 `DecayHalfLifeDays`), factored by structural centrality — high-centrality nodes (PageRank) decay ~50 % slower. Formula: `confidence × 2^(−age_days / 1095) × (1.0 + 0.5 × normalized_pagerank)`. (2) **Event-based:** one-time `StaleDecayFactor = 0.5` multiplicative penalty when target `ContentHash` changes; `MinorDecayFactor = 0.9` for whitespace/comment-only changes (per `architecture.md` §2.4). Configurable via `MemoryOptions.DecayHalfLifeDays`. |
+| **Community Summarization** | Structural change exceeding threshold. | GraphRAG-inspired: detect tightly coupled clusters, generate `Topic` nodes with prose summaries in the Semantic layer. |
+| **Prune** | Git branch deleted, file removed. | Structural nodes and edges get `VersionRange.Until = current_commit`. Remain queryable for history but excluded from default retrieval. |
+| **Re-embed** | Node content changed, or embedding model upgraded. | Re-compute embedding vector; old vector node gets `VersionRange.Until`. Model version tracked per node. |
 
 ---
 
@@ -240,14 +297,16 @@ Runs as a post-session consolidation job:
 
 | ID | Risk | Likelihood | Impact | Mitigation |
 |----|------|-----------|--------|------------|
-| R1 | **Stale graph after refactor** — A large rename or directory restructure invalidates many nodes simultaneously. Incremental update may produce dangling edges or orphan nodes. | Medium | High | Implement a `reconcile` pass that runs after any diff affecting > N files (default 50). Reconcile does a bounded full-re-extract of affected subtrees, not the entire repo. |
-| R2 | **Embedding drift** — If the embedding model is upgraded, old and new vectors are incomparable, breaking similarity retrieval. | Medium | Medium | Version the embedding model in the `nodes` table. On model change, schedule background re-embedding. Retrieval filters to the current model version. |
-| R3 | **Call-graph incompleteness in dynamic languages** — Python `getattr`, JS dynamic `import()`, Ruby `send`. Agents may build incorrect mental models from missing edges. | High | Medium | Tag every edge with `confidence`. Retrieval scoring down-weights low-confidence paths. Extractors for dynamic languages should emit heuristic edges (e.g., duck-typed method calls) with `confidence = 0.5`. |
-| R4 | **Annotation noise** — Agents may write contradictory or low-quality annotations across sessions (e.g., one session says "this function is safe", another says "known null-deref"). | Medium | Medium | Annotations carry `session_id` provenance. Evolution's merge step uses recency + frequency to resolve conflicts: most-recent annotation from the most-frequent-access session wins. Contradictions are flagged for human review via telemetry. |
-| R5 | **Storage growth on large monorepos** — A 200 K-file monorepo with temporal versioning could produce multi-GB databases. | Medium | Medium | Temporal archival: annotations and edges older than a configurable retention window (default 90 days, no recent access) are moved to a cold archive table. Active graph stays lean. |
-| R6 | **Latency regression under concurrent access** — Multiple agent instances querying / writing the same SQLite database. | Low | High | SQLite WAL mode for concurrent reads. Write serialization via an in-process mutex. For multi-agent scenarios (out of scope but future-proofing), the Neo4j adapter path handles concurrency natively. |
-| R7 | **Privacy / secret leakage into graph** — Extractors might capture string literals, API keys, or secrets embedded in code as part of node summaries or annotations. | Low | Critical | Extractors strip string literals and comments containing secret-like patterns (regex for API keys, tokens, passwords) before writing to the graph. Node summaries are structural (signature + docstring), never full function bodies. |
-| R8 | **Over-reliance on graph memory** — Agents may trust stale annotations over fresh file content, producing incorrect fixes. | Medium | High | Context constructor always includes the *current file content* for the primary target of a task. Graph memory supplements but never replaces reading the actual code. A staleness warning is injected into the prompt when `valid_from` of retrieved annotations is older than the latest git commit touching that file. |
+| R1 | **Stale graph after refactor** — A large rename or directory restructure invalidates many nodes simultaneously. Incremental Sync may produce dangling edges or orphan nodes. | Medium | High | Incremental Sync propagates invalidation: changed function signatures mark downstream `CALLS` edges as `Stale = true`. For diffs affecting > N files (default 50), trigger a bounded reconcile pass on affected subtrees. Tombstoned nodes remain queryable for history. |
+| R2 | **Embedding drift** — If the embedding model is upgraded, old and new vectors are incomparable, breaking similarity retrieval. | Medium | Medium | Track embedding model version in `Metadata["EmbeddingModel"]` per node. On model change, schedule background re-embedding. Retrieval filters to the current model version. Re-embed runs as an Evolution operation (§8.4). |
+| R3 | **Call-graph incompleteness in dynamic languages** — Python `getattr`, JS dynamic `import()`, Ruby `send`. Agents may build incorrect mental models from missing edges. | High | Medium | Tag every edge with `Confidence` in `Metadata`. Ranker down-weights low-confidence paths. Extractors for dynamic languages emit heuristic edges (e.g., duck-typed method calls) with `Confidence = 0.5`. Context Assembler includes a `⚠ partial call graph` marker when confidence thresholds are low. |
+| R4 | **Expertise noise / contradictions** — Agents may write contradictory annotations across sessions (e.g., one session says "this function is safe", another says "known null-deref"). | Medium | Medium | Expertise nodes carry `source_session` provenance and `Confidence` scores. Evolution's consolidation step (LLM-powered) detects contradictions and produces `SUPERSEDES` edges. Recency + frequency resolve conflicts; contradictions below auto-resolve confidence are flagged via telemetry for human review. |
+| R5 | **Storage growth on large monorepos** — A 200 K-file monorepo with temporal versioning could produce multi-GB databases. | Medium | Medium | Temporal archival: nodes/edges with `VersionRange.Until` older than a configurable retention window (default 90 days, no recent access) are moved to a cold archive table. Active graph target: < 500 MB for 100 K files. The `commits` table enables efficient pruning by commit age. |
+| R6 | **Latency regression under concurrent access** — Multiple agent instances querying/writing the same SQLite database. | Low | High | SQLite WAL mode for concurrent reads. Write serialization via in-process mutex. For team deployments, the Neo4j + Qdrant path handles concurrency natively. The `IMemoryGraphStore` interface abstracts backend selection. |
+| R7 | **Privacy / secret leakage into graph** — Extractors might capture string literals, API keys, or secrets embedded in code as part of node summaries or embedding text. | Low | Critical | **Actual source-code surface area:** `HypergraphNode.GetEmbeddingText()` (lines 93–113) produces structural-only text (node type, language, file path, scope, modifiers). However, `GetEnhancedEmbeddingText()` (lines 120–186, used when LSP enrichment is enabled) includes `Metadata["SourceCode"]` if present — up to 2000 characters of source code (see `HypergraphModels.cs` line 175). This means function bodies *can* appear in embedding input text and potentially in stored `Metadata`. **Mitigations:** (1) The Extraction Pipeline controls what goes into `Metadata["SourceCode"]` — extractors should omit string literals and only store signatures + docstrings when the privacy-safe mode is enabled. (2) A pre-write filter rejects nodes whose summary or `SourceCode` metadata matches secret-like patterns (regex for API keys, tokens, connection strings, passwords). (3) The `Embedding` vector itself is a dense float array and cannot be reverse-engineered into source text, so stored vectors are safe even if the input text contained secrets. (4) For high-security deployments, disable `SourceCode` metadata population entirely via `ExtractionOptions`. |
+| R8 | **Over-reliance on graph memory** — Agents may trust stale expertise over fresh file content, producing incorrect fixes. | Medium | High | Context Assembler always includes the *current file content* for the primary task target (read live, not from graph). Graph memory supplements but never replaces reading actual code. A staleness warning is injected into the prompt when expertise `VersionRange.Since` is older than the latest commit touching that file. |
+| R9 | **Breaking existing Ast.Core tests** — Adding `HyperedgeType.MemoryRelation` or modifying `HypergraphNode` could break existing tests. | Low | High | HC8 mandates composition-over-inheritance. `MemoryNode` / `MemoryEdge` are wrappers (composition, not inheritance). Only one additive enum value (`MemoryRelation`) is added to `HyperedgeType` (which currently has 44 values). No properties added to base classes. Implementation-plan Phase 1 gates on zero test regression. |
+| R10 | **Hyperedge model mismatch** — External consumers may assume binary edges (source→target) while `Hyperedge` uses multi-node `NodeIds` with `Roles`. | Low | Medium | HC9 preserves hyperedge semantics. For binary relationships, exactly 2 `NodeIds` with semantic roles. The Context Assembler renders edges in a familiar `A → B` format for prompt output regardless of internal representation. Documentation in all four plan docs uses the canonical model. |
 
 ---
 
@@ -255,29 +314,204 @@ Runs as a post-session consolidation job:
 
 | Metric | Target | Measurement |
 |--------|--------|-------------|
-| **Context relevance** | Retrieval precision ≥ 0.75 (human-judged: ≥ 75 % of retrieved nodes are relevant to the task) | Offline eval on 50 curated task–file pairs from internal repos. |
-| **Latency** | Context construction p95 < 500 ms on a repo with 50 K nodes | Benchmark harness, SQLite back-end, single machine. |
+| **Context relevance** | Retrieval precision ≥ 0.75 (human-judged: ≥ 75 % of retrieved nodes are relevant to the task) | Offline eval on 50 curated task–file pairs using the evaluation harness in `Ast.Memory.UnitTests` (gold sets defined in `implementation-plan.md` Phase 1 Stage 1.4). |
+| **Latency** | Context construction p95 < 500 ms on a repo with 50 K nodes (SQLite backend, single machine) | Benchmark harness in `Ast.Benchmark` (extended with memory-retrieval benchmarks). |
 | **Incremental update** | Re-extraction after a 10-file commit completes in < 2 s | Benchmark harness. |
-| **Agent task accuracy lift** | ≥ 10 % improvement in first-attempt success rate on SWE-Bench-Lite tasks when memory is enabled vs. baseline (no memory) | A/B experiment with matched task sets. |
+| **Agent task accuracy lift** | ≥ 10 % improvement in first-attempt success rate on SWE-Bench-Lite tasks when memory is enabled vs. baseline (no memory) | A/B experiment with matched task sets. This is a stretch goal — may require multiple iteration cycles. |
 | **Storage efficiency** | Active graph for a 100 K-file repo fits in < 500 MB (excluding cold archive) | Size measurement after full extraction + 30-day simulated annotation workload. |
+| **Test regression** | 0 failures in existing Ast.* and CodeIntelligence tests (across 13 test projects) after memory layer integration | `dotnet test` on all existing test projects — gated in CI. |
+| **Expertise accumulation** | After 10 agent sessions on the same repo, ≥ 5 expertise nodes with confidence > 0.7 are retrievable and relevant | Manual validation on the Forge repo. |
 
 ---
 
-## 11. Open Questions
+## 11. Resolved Decisions (from Operator)
 
-1. **Embedding model selection.** Should we use a code-specific embedding model (e.g., CodeBERT, StarEncoder) or a general-purpose one (e.g., `text-embedding-3-small`)? Code-specific models may capture structural semantics better, but general-purpose models handle natural-language task descriptions more fluently. A hybrid (code model for nodes, general model for tasks) adds complexity.
+The following open questions from Iteration 1 have been resolved by operator input. Each decision is final and governs the implementation.
 
-2. **Graph query language.** For the SQLite back-end, graph traversals are recursive CTEs. Should we expose a higher-level query DSL (Cypher-like) to the agent, or keep the interface purely programmatic (function calls like `get_callers(fqn, depth=2)`)?
-
-3. **Cross-branch memory.** When the agent works on a feature branch, should annotations written there be visible on `main`? Merging annotation branches mirrors the git merge problem. Initial stance: annotations are branch-scoped; merging is a future concern.
-
-4. **Annotation schema governance.** Who defines which annotation keys are valid? A free-form property bag is flexible but risks fragmentation. Consider a registry of well-known keys with typed schemas, plus an `extra` bag for ad-hoc data.
-
-5. **Decay curve calibration.** The Ebbinghaus-inspired decay model needs empirical tuning. What half-life is appropriate for code annotations? A function that hasn't been touched in 90 days may still be critical infrastructure. Decay should factor in structural centrality (PageRank on the call graph), not just recency.
+| # | Question | Decision | Rationale / Impact |
+|---|----------|----------|--------------------|
+| D1 | **Embedding model selection** — code-specific (CodeBERT, StarEncoder) vs. general-purpose (e.g., `text-embedding-3-small`)? | **General-purpose model.** Use a general-purpose text-embedding model for all nodes — code, expertise, and topics alike. | Simplifies the pipeline (single model, single vector dimension), avoids the complexity of a hybrid approach, and handles natural-language task descriptions and expertise prose fluently alongside code symbols. The `IEmbeddingGenerator` abstraction in `Ast.Embedding` makes model swapping a config change if retrieval quality needs improvement later. The existing `Ast.Core.EmbeddingConfiguration` defaults to `"nomic-embed-text"` (768 dims, served via Ollama at `localhost:11434`); `architecture.md` §1.3 and §5.1 also default to `"nomic-embed-text"` — all consistent with this decision. The specific model is a deployment-time choice; the memory layer is model-agnostic and tracks the model used per-node in `Metadata["EmbeddingModel"]`. |
+| D2 | **Graph query language** — Cypher-like DSL vs. purely programmatic API? | **Purely programmatic.** The agent interacts via typed function calls: `get_callers(fqn, depth)`, `get_callees(fqn, depth)`, `find_related(query, top_k)`, `get_expertise(fqn)`, `record_expertise(...)`. No query DSL. | Keeps the MCP tool surface minimal and predictable. Graph traversals use recursive CTEs internally (SQLite) or Cypher internally (Neo4j), but this is an implementation detail hidden behind `IMemoryGraphStore`. Aligns with `architecture.md` §3.3 retrieval modes (`StructuralDrill`, `CallTrace`, `SemanticSearch`, `ExpertiseRecall`, `Hybrid` — the `RetrievalMode` enum in §5.3) which are programmatic, not query-string-based. |
+| D3 | **Cross-branch memory** — annotations branch-scoped or visible across branches? | **Annotations are visible cross-branch.** Expertise-layer nodes written on any branch are globally queryable, regardless of which branch the agent is currently on. | This maximizes knowledge reuse — an insight discovered while working on a feature branch should inform work on `main` and other branches immediately. The `commits` table still tracks which commit introduced an annotation (provenance), but retrieval does NOT filter by branch lineage. Staleness detection uses `ContentHash` comparison against the current branch's version of the target code, so an annotation whose target has diverged on the current branch is flagged as potentially stale. |
+| D4 | **Annotation schema governance** — free-form property bag vs. curated registry? | **Curated well-known tag registry** with an `extra` bag for ad-hoc data. | A `AnnotationKeyRegistry` defines the set of well-known `Metadata` keys with typed schemas (e.g., `MemoryLayer: string`, `Confidence: double`, `ContentHash: string` — see §7.3 for the full list). Each key entry specifies: name, CLR type, allowed values (if enum), and a short description. Agent-authored keys that are not in the registry are stored under a namespaced prefix (`ext:`) in `Metadata` and surfaced with a validation warning. This prevents fragmentation while preserving flexibility. The registry is defined in code (`AnnotationKeyRegistry.cs` in `Ast.Memory/Schema/`) and versioned with the project — not runtime-configurable. |
+| D5 | **Decay curve calibration** — what half-life for expertise annotations? | **3-year half-life**, factored by structural centrality (PageRank on call graph). | A 3-year half-life reflects the reality that code annotations remain relevant far longer than conversation memory. Even untouched functions may be critical infrastructure. The decay formula: `decayed_confidence = initial_confidence × 2^(−age_days / (3 × 365)) × centrality_boost`, where `centrality_boost = 1.0 + 0.5 × normalized_pagerank` (range 1.0–1.5). This means a highly central function's annotations decay ~50 % slower than a leaf function's. The `StaleDecayFactor` (0.5, per `architecture.md` §2.4) applies as a one-time multiplicative penalty when a target's `ContentHash` changes — this is separate from the time-based decay curve. Configurable via `MemoryOptions.DecayHalfLifeDays` (default: 1095). |
+| D6 | **`MemoryRelation` enum value** — single new enum vs. overloading `DataFlow`? | **Single new `HyperedgeType.MemoryRelation` enum value.** | Per `architecture.md` §2.2 — cleaner than overloading `DataFlow`. The true semantic type lives in `Metadata["SemanticRelation"]`. This is the only additive change to `Ast.Core`'s `HyperedgeType` enum (which currently has 44 values). |
 
 ---
 
-## 12. References
+## 12. Alignment Notes (Cross-Document)
+
+### 12.1 Resolved Across All Documents
+
+| Issue | Prior state | Resolution |
+|-------|------------|------------|
+| Temporal model type | Tech-spec Iter 1 used ISO-8601 `valid_from`/`valid_until` | All docs now use `commit_index` integers with SHA+index dual axis (architecture.md §4.3). |
+| Expertise model | Tech-spec Iter 1 used per-node property bags | All docs now reference typed Expertise-layer nodes (`Pattern`, `Pitfall`, etc.) with edges. |
+| `CALLED_BY` edge | Tech-spec Iter 1 listed as stored edge | Is a reverse traversal of `CALLS`, not stored (architecture.md §2.3 retired names). |
+| Context Assembler naming | Tech-spec Iter 1 called "Context Constructor" | All docs now use "Context Assembler". |
+| Annotation Writer component | Tech-spec Iter 1 diagram showed separate "Annotation Writer" | Write-back is a path inside `IEvolutionEngine.RecordExpertiseAsync` (architecture.md §3.5). |
+| Token budget default | Tech-spec HC1 said "default: 32 K tokens" | Clarified: 32 K is the system ceiling; per-query default is 8 K (architecture.md §3.3). |
+| Scoring formula | Tech-spec S5 listed retrieval modes without weights | S5 now references architecture.md §2.4 for canonical scoring: structural 0.30, semantic 0.25, centrality 0.20, recency 0.15, expertise 0.10. |
+| HyperedgeType count | Tech-spec Iter 1–2 claimed "68+ enum values" | **Corrected in Iter 3**: actual count is **44 enum values** (verified from `Ast.Core/HypergraphModels.cs` lines 12–69). |
+| Composition vs. inheritance | Tech-spec Iter 1–2 did not explicitly state composition model | **Clarified in Iter 3**: HC8 now explicitly states `MemoryNode` uses a `HypergraphNode Inner { get; }` property (composition), NOT `: HypergraphNode` inheritance. Aligns with architecture.md §4.1. |
+| `GetEnhancedEmbeddingText()` source-code inclusion | Tech-spec Iter 3 R7 claimed both embedding methods produce "structural-only text" | **Corrected in Iter 4**: `GetEmbeddingText()` is structural-only, but `GetEnhancedEmbeddingText()` includes `Metadata["SourceCode"]` (up to 2000 chars). R7 updated with accurate mitigations. |
+| Architecture.md embedding model alignment | Tech-spec Iter 3 §12.2 still listed architecture.md §4.4 as pending | **Resolved in Iter 4, fully aligned in Iter 8**: architecture.md §1.3 and §5.1 default to `"nomic-embed-text"` — matching both codebase defaults and this spec's D1 decision. All sources consistent. |
+| Source-code default model grounding | Tech-spec did not reference actual `EmbeddingConfiguration` defaults | **Added in Iter 4, updated in Iter 8**: `Ast.Core.EmbeddingConfiguration.ModelName` (in `AstConfiguration.cs:96`) defaults to `"nomic-embed-text"` (768 dims); `Ast.Embedding.EmbeddingGeneratorOptions.ModelName` (in `EmbeddingModels.cs:119`) also defaults to `"nomic-embed-text"`. Architecture.md §1.3 (Ast.Embedding table) also defaults to `"nomic-embed-text"`. All three sources consistent. |
+| Architecture.md R-8 SGMem note | Tech-spec Iter 4 flagged architecture.md R-8 as using "code-specific" phrasing | **Resolved in Iter 5**: The R-8/SGMem entry has been removed from architecture.md (as of its Iteration 12 the research table lists R-1 through R-7 only). No conflict remains. |
+
+### 12.2 Alignment with `architecture.md`
+
+All previously-pending conflicts between this document and `architecture.md` are now **resolved**:
+
+| Issue | Prior state | Resolution |
+|-------|------------|------------|
+| Embedding model default | Tech-spec D1 mandated general-purpose; architecture.md previously defaulted to `code-embedding-v2` | ✅ **Resolved.** Architecture.md §1.3 (Ast.Embedding table) now defaults to `"nomic-embed-text"` — matching the actual codebase defaults in `EmbeddingGeneratorOptions.ModelName` and `EmbeddingConfiguration.ModelName`. All docs consistent. |
+| Cross-branch visibility | Tech-spec D3 mandated cross-branch; architecture.md §3.3 did not cover it | ✅ **Resolved.** Architecture.md §3.3 now includes cross-branch expertise visibility subsection. |
+| Time-based decay formula | Tech-spec D5 mandated 3-year half-life; architecture.md §3.5 did not specify | ✅ **Resolved.** Architecture.md §3.5 now includes full dual decay mechanism with `DecayHalfLifeDays = 1095`. |
+| SGMem research note wording | Architecture.md R-8 previously said "code-specific embedding models" | ✅ **Resolved.** The SGMem/R-8 entry has been removed from architecture.md. No conflict remains. |
+| ExtractionOptions.EmbeddingModel default | Architecture.md §5.1 previously defaulted to `"text-embedding-3-small"` | ✅ **Resolved in architecture.md Iteration 12.** Architecture.md §1.3 and §5.1 now default to `"nomic-embed-text"`, matching the existing codebase defaults in `EmbeddingGeneratorOptions.ModelName` (`src/ast/Ast.Embedding/EmbeddingModels.cs:119`) and `EmbeddingConfiguration.ModelName` (`src/ast/Ast.Core/AstConfiguration.cs:96`). |
+| External-node temporal model | Tech-spec S4 said "every node and edge carries a `VersionRange`" without carve-out | ✅ **Resolved in architecture.md Iteration 25 (A12).** External boundary nodes are timeless (no VCS presence) — they carry no `VersionRange`. Tech-spec S4 and §7.4 now explicitly note the exemption. Temporal queries include External nodes via `WHERE since_index IS NULL`. |
+
+**No remaining conflicts** between this document and `architecture.md`.
+
+**Source-code default model note:** The existing `Ast.Core.EmbeddingConfiguration.ModelName` (in `AstConfiguration.cs:96`) defaults to `"nomic-embed-text"` (768 dimensions, via Ollama). The `Ast.Embedding.EmbeddingGeneratorOptions.ModelName` (in `EmbeddingModels.cs:119`) also defaults to `"nomic-embed-text"`. Architecture.md §1.3 (Ast.Embedding table row) and §5.1 (`ExtractionOptions.EmbeddingModel`) also default to `"nomic-embed-text"` — all three are now consistent. The `IEmbeddingGenerator` abstraction means the specific model is a deployment-time configuration choice; the memory layer is model-agnostic and only requires that all nodes use the **same** model within a graph instance (tracked per-node via `Metadata["EmbeddingModel"]`).
+
+### 12.3 Alignment with `implementation-plan.md`
+
+The implementation-plan contains 31 naming, data-model, numeric, and project-mutation divergences from canonical vocabulary defined in `architecture.md` (catalogued in architecture.md §8.2, with 28 original items + 3 added in iteration 25: S-6 `RetireEdgeAsync`, S-7 `ArchiveExpertiseAsync`, S-8 expertise `archived` column). **These are not unresolved conflicts** — each has a defined canonical resolution, and `architecture.md` governs on all points (see this document's header).
+
+> **Implementer directive:** When the implementation-plan's literal text (class names, interface names, edge names, scoring weights, ID formats, defaults) conflicts with `architecture.md`, **follow `architecture.md`**. The implementation-plan describes *work items and phasing*; the canonical vocabulary and values come from `architecture.md`. The conflicts listed below are documentation debt in the implementation-plan that will be corrected in its next iteration. They do not affect this tech-spec's correctness or completeness.
+
+The 31 items are catalogued in `architecture.md` §8.2 (the single source of truth for cross-document conflicts). This tech-spec mirrors all 31 below in summarized form for implementer awareness. Each item's canonical value is stated inline; the architecture.md section number provides the governing reference.
+
+#### 12.3.1 Naming & Type Conflicts (4 items)
+
+| # | impl-plan says | Canonical value | Governing §|
+|---|------|----------------|-----|
+| N-1 | `ExpertiseNote` (Stage 1.1) | **`ExpertiseEntry`** | arch §2.3, §4.2 |
+| N-2 | `IMemoryStore` (Stage 1.2) | **`IMemoryGraphStore`** | arch §2.3, §5.1 |
+| N-3 | Separate `IExpertiseStore` (Stage 1.2) | Merged into **`IEvolutionEngine`** | arch §2.3, §5.3 |
+| N-4 | `AgentMemoryService` composes `IExpertiseStore` (Stage 5.1) | Compose **`IEvolutionEngine`** | arch §5.3 |
+
+#### 12.3.2 Data Model Conflicts (5 items)
+
+| # | impl-plan says | Canonical value | Governing §|
+|---|------|----------------|-----|
+| D-1 | `MemoryNode` "extending `HypergraphNode`" (inheritance) | **Composition wrapper** (`HypergraphNode Inner { get; }`) | arch §4.1 |
+| D-2 | `MemoryEdge` "extending `Hyperedge`" (inheritance) | **Composition wrapper** (`Hyperedge Inner { get; }`) | arch §4.1 |
+| D-3 | `PatternType` enum name | **`ExpertiseKind`** enum; class = `ExpertiseEntry`; field = `Kind` | arch §2.3, §4.2 |
+| D-4 | Separate `Annotation.cs` entity | **No separate class** — `Metadata` key/value pairs + `AnnotationKeyRegistry` | arch §4.5 |
+| D-5 | `ExpertiseEntry` with single `Content` field | **`Title` + `Body`** (two fields), plus `Scope` ("exact"\|"subtree") and `Evidence` (list of `Citation`) | arch §4.2 |
+
+#### 12.3.3 ID Format Conflicts (2 items)
+
+| # | impl-plan says | Canonical value | Governing §|
+|---|------|----------------|-----|
+| I-1 | `{repo}:{language}:{fqn}:{hash_short}` | **`"{filePath}::{qualifiedName}"`** (path-based) | arch §4.2 |
+| I-2 | `IdReconciliationTable` backed by `ID_MAPS_TO` Neo4j edges | ID *format* must follow §4.2; backing is implementation choice | arch §4.2 |
+
+#### 12.3.4 Edge Name Conflicts (4 items)
+
+| # | impl-plan says | Canonical value | Governing §|
+|---|------|----------------|-----|
+| E-1 | `CALLED_BY` as stored edge (Stage 2.2) | **Reverse traversal** of `CALLS`, not stored | arch §2.3 |
+| E-2 | `INHERITS` edge (Stage 2.2) | **`EXTENDS`** | arch §2.2, §2.3 |
+| E-3 | `IMPORTS` edge (Stage 2.2) | **`DEPENDS_ON`** | arch §2.2, §2.3 |
+| E-4 | `DependencyInvalidator` walks `IMPORTS` (Stage 4.2) | Walk **`DEPENDS_ON`** | arch §2.2, §2.3 |
+
+#### 12.3.5 Numeric / Threshold Conflicts (5 items)
+
+| # | impl-plan says | Canonical value | Governing §|
+|---|------|----------------|-----|
+| T-1 | `semantic=0.3` (Stage 3.2) | **`semantic=0.25`** | arch §2.4 |
+| T-2 | `centrality=0.15` (Stage 3.2) | **`centrality=0.20`** | arch §2.4 |
+| T-3 | `MaxTokens` default = 32768 (Stage 3.1) | Default = **`8,000`**; ceiling = 32,000 | arch §2.4 |
+| T-4 | Decay half-life = 60 days (Stage 6.3) | **`DecayHalfLifeDays = 1095`** (3 years) | arch §2.4 |
+| T-5 | Decay formula `e^(-λ × days)` (Stage 6.3) | **`2^(−age/1095) × centrality_boost`** (base-2) | arch §3.5 |
+
+#### 12.3.6 Embedding Model (1 item)
+
+| # | impl-plan says | Canonical value | Governing §|
+|---|------|----------------|-----|
+| M-1 | No explicit model specified | **`"nomic-embed-text"`** (768 dims) | arch §1.3 |
+
+> Matches existing `EmbeddingGeneratorOptions.ModelName` (`src/ast/Ast.Embedding/EmbeddingModels.cs:119`) and `EmbeddingConfiguration.ModelName` (`src/ast/Ast.Core/AstConfiguration.cs:96`).
+
+#### 12.3.7 Storage Interface (8 items)
+
+| # | impl-plan says | Canonical value | Governing §|
+|---|------|----------------|-----|
+| S-1 | `IMemoryStore` with `UpsertAnnotationAsync`, `GetAnnotationsAsync`, etc. | **`IMemoryGraphStore`** with canonical methods per arch §5.1: `GetNodesByLayerAsync`, `GetEdgesBySemanticRelationAsync`, `UpsertNodeAsync`, `RetireNodeAsync`, `RetireEdgeAsync`, `UpdateEdgeMetadataAsync`, `GetExpertiseForNodeAsync`, `UpsertExpertiseAsync`, `ArchiveExpertiseAsync`, `GetArchivedExpertiseAsync`, `GetMemoryStatisticsAsync`, `LogAuditAsync`. Traversal uses inherited `IGraphStore` methods. Vector search goes through `IVectorStore` (separate DI dependency). | arch §5.1 |
+| S-2 | `Neo4jMemoryStore` with annotation CRUD | **`Neo4jMemoryGraphStore`** implementing `IMemoryGraphStore` | arch §3.2, §5.1 |
+| S-3 | `IMemoryGraphStore` with `ApplyDiffAsync(GraphDiff, ...)`, `TraverseAsync`, `VectorSearchAsync`, `GetNodeAtCommitAsync`, `FindByNameAsync`, `RebuildVectorIndexAsync`, `ResolveCommitIndexAsync`, `RegisterCommitAsync` | Canonical methods per arch §5.1: `GetNodesByLayerAsync`, `GetEdgesBySemanticRelationAsync`, `UpsertNodeAsync`, `RetireNodeAsync`, `GetExpertiseForNodeAsync`, `UpsertExpertiseAsync`, `GetMemoryStatisticsAsync`, `LogAuditAsync`. Traversal uses inherited `IGraphStore` methods. Vector search goes through `IVectorStore` (separate DI dependency), not through graph store. | arch §5.1 |
+| S-4 | `ApplyDiffAsync` on `IMemoryGraphStore` | `ApplyDiffAsync` belongs to **`IIncrementalSync`** (different interface); it takes `(repoRoot, fromCommit, toCommit)` not `(GraphDiff, commitSha)` | arch §5.4 |
+| S-5 | `RecordExpertiseAsync(targetNodeId, kind, content, sourceAgent)` | Canonical: `RecordExpertiseAsync(targetNodeId, kind, title, body, sourceAgent, scope?, evidence?)` — separate `title`/`body` parameters, optional `scope` and `evidence` | arch §5.3 |
+| S-6 | No `RetireEdgeAsync` in interface | Canonical: `IMemoryGraphStore.RetireEdgeAsync(edgeId, untilCommitIndex)` — sets `UntilIndex` on a single edge without retiring its endpoint nodes. Used by IncrementalSync when a call-chain or dependency relationship is removed but both endpoint nodes survive. | arch §5.1 |
+| S-7 | No `ArchiveExpertiseAsync` in interface | Canonical: `IMemoryGraphStore.ArchiveExpertiseAsync(expertiseId)` — soft-deletes expertise (sets `archived = 1`); `GetArchivedExpertiseAsync(targetNodeId?, limit)` retrieves archived entries for review/restore | arch §5.1 |
+| S-8 | No `archived` column in expertise table | Canonical: `expertise.archived INT NOT NULL DEFAULT 0` — set to `1` by `ArchiveExpertiseAsync`, excluded from `GetExpertiseForNodeAsync` results. Can be restored via `IEvolutionEngine.RestoreArchivedExpertiseAsync`. | arch §4.4 |
+
+#### 12.3.8 Project Mutation Policy (3 items)
+
+| # | impl-plan says | Canonical value | Governing §|
+|---|------|----------------|-----|
+| P-1 | `IMemoryStore.cs` placement implied in `Ast.GraphDb` | **`IMemoryGraphStore`** defined in `Ast.Memory/Interfaces/`, not in `Ast.GraphDb`. No files in `Ast.GraphDb` are created or modified. | arch §3.2, §5.1 |
+| P-2 | `Neo4jMemoryStore.cs` | **`Neo4jMemoryGraphStore`** in `Ast.Memory/Storage/`, **composing** existing `Neo4jGraphStore` from `Ast.GraphDb` — not modifying it. | arch §3.2 |
+| P-3 | MCP files created in `Ast.Cli` | MCP tools and handler logic in **`Ast.Memory/Mcp/`**. CLI command classes in `Ast.Memory/Cli/`. `Ast.Cli/Program.cs` receives only additive `config.AddBranch("memory", ...)` lines. | arch §3.8 |
+
+#### 12.3.9 Net Assessment
+
+All 31 items have **stated canonical resolutions** in architecture.md §8.2. The implementation-plan describes valid *work items and phasing* that remain useful for project management — only the literal names, values, and data-model shapes need updating. Implementers who follow the canonical values from architecture.md will produce correct code. These divergences do not represent ambiguity in the tech-spec or architecture; they represent documentation debt in the implementation-plan.
+
+### 12.4 Annotation Schema: Curated Registry (D4)
+
+Per operator decision, `Metadata` keys on memory nodes are governed by a curated registry. The canonical list of well-known keys is defined in §7.3 above. The governance model:
+
+1. **Well-known keys** (defined in `AnnotationKeyRegistry.cs` in `Ast.Memory/Schema/`): strongly typed, validated at write time. Adding a new key requires a code change.
+2. **Extension keys** (prefixed `ext:`): stored in `Metadata` without schema enforcement. Surfaced with a validation warning in telemetry. Intended for agent experimentation; keys that prove useful are promoted to well-known status.
+3. **Expertise pattern types** (`Pattern`, `Pitfall`, `Preference`, `Insight`): closed enum (`ExpertiseKind`) for MVP. Agent uses `Insight` as catch-all for novel categories. Promotion to a named type requires a code change to `ExpertiseKind`.
+
+### 12.5 Cross-Branch Memory Model (D3)
+
+Expertise nodes are **globally visible** regardless of the current git branch. Implementation details:
+
+- The `commits` table records which branch each commit belongs to (provenance), but retrieval (via inherited `IGraphStore` methods such as `GetCallersAsync`, `GetCalleesAsync`, `FindPathsAsync`, and `IMemoryGraphStore.GetNodesByLayerAsync`) does **not** filter by branch lineage.
+- When the agent queries expertise, all active (non-tombstoned) expertise nodes are candidates.
+- **Staleness heuristic:** If an expertise node's `APPLIES_TO` target has a different `ContentHash` on the current branch vs. the commit where the expertise was written, the Context Assembler injects a `⚠ stale — target code has changed since this expertise was recorded` marker into the prompt.
+- **Merge conflicts:** Not applicable — expertise nodes are additive, not merge-conflicting. Two agents writing contradictory expertise on different branches produce two nodes; the Evolution Engine's consolidation step (LLM-powered) resolves contradictions post-merge via `SUPERSEDES` edges.
+
+### 12.6 Alignment with `e2e-scenarios.md`
+
+The [`e2e-scenarios.md`](e2e-scenarios.md) document covers **13 features with 82 Gherkin scenarios** across Structural Extraction (Feature 1, 8 scenarios), Call-Chain (Feature 2, 7), Semantic (Feature 3, 5), Expertise (Feature 4, 7), Temporal Versioning (Feature 5, 5), Hybrid Retrieval (Feature 6, 9), Incremental Sync (Feature 7, 6), Evolution (Feature 8, 6), Cross-Session Learning (Feature 9, 3), MCP Tool Interface (Feature 10, 10), Backward Compatibility (Feature 11, 4), Performance & Storage (Feature 12, 6), and Graph Schema Integrity (Feature 13, 6). Architecture.md §8.3 documents 10 alignment items (E2E-1 through E2E-10) describing divergences between the e2e-scenarios and canonical vocabulary. Key points relevant to this tech-spec:
+
+- **E2E-1:** Scenario 4.1 uses `called_by` as a result-table label. This is a reverse traversal of `CALLS`, not a stored edge — consistent with this spec §7.2 and D2 (retired names). Scenario is behaviorally correct.
+- **E2E-2/3/4:** Scenarios use presentation aliases (`direct_call`, `polymorphic`, `recursive`) for edge types. All map to `CALLS` edges with varying `Confidence` values — consistent with §7.2.
+- **E2E-5:** Scenario 2.7 uses `service_call` edge type for cross-service RPC. This is out of scope per this spec §3 O1 (runtime/dynamic tracing excluded). Architecture.md §8.3 recommends tagging this scenario `@deferred`.
+- **E2E-6:** Scenarios use unqualified symbol IDs (e.g., `AuthService.login`) as abbreviations. Canonical format is path-based per §7.1 (e.g., `src/ast/Ast.GraphDb/Neo4jGraphStore.cs::Neo4jGraphStore.CreateNodeAsync`).
+- **E2E-7:** Scenario 2.4 uses `ext::` prefix for boundary nodes. Canonical format: `"ext:{package}:{qualifiedName}"` per `architecture.md` §4.2. Semantics: stub nodes, `NodeType = "External"`, no embedding, no `VersionRange`.
+- **E2E-8:** Scenario 6.4 describes cross-repo memory transfer — out of scope per this spec §3 O2. Should be tagged `@deferred`.
+- **E2E-9:** Scenario 3.4 describes conflict errors on concurrent writes. Architecture specifies SQLite WAL mode (serialized writes, no optimistic-concurrency errors) for local and Neo4j for team mode. The scenario should be adjusted to test write serialization, not conflict errors — consistent with R6 in this spec.
+- **E2E-10:** Scenarios 4.x and 6.x use a single `content` parameter in Gherkin steps for `RecordExpertiseAsync`. Canonical signature takes `title` and `body` as separate parameters (architecture.md §5.3). Gherkin steps should be split into `title` and `body` — consistent with D-5 in §12.3.2.
+
+**Features 10–13 alignment** (added in later e2e-scenarios iterations):
+
+- **Feature 10 (MCP Tool Interface):** Scenarios 10.1–10.10 exercise the five MCP tools (`memory_query`, `memory_status`, `memory_record_expertise`, `memory_sync`, `memory_consolidate`) defined in `architecture.md` §3.8. Scenarios 10.1–10.3 cover `memory_query` in Hybrid, CallTrace, and SemanticSearch modes; 10.4 covers `memory_record_expertise`; 10.5 covers `memory_status`; 10.6 covers `memory_sync`; 10.7 covers `memory_consolidate`. Scenarios 10.8–10.10 cover error paths (budget exceeds ceiling, missing required fields, nonexistent target node) — consistent with HC1 (token budget ceiling) and D4 (annotation registry).
+- **Feature 11 (Backward Compatibility):** Scenarios 11.1–11.4 directly validate HC8 (non-breaking extension) and HC9 (hyperedge semantics). Scenario 11.4 lists 9 unit-test projects as a representative subset; the full regression check covers all 13 existing test projects per this spec §10 success criteria.
+- **Feature 12 (Performance & Storage):** Scenarios 12.1–12.6 encode the performance SLOs from this spec §10 (p95 < 500 ms, incremental < 2 s, storage < 500 MB) and HC4 (durability) / HC5 (no network during retrieval) / HC7 (audit trail).
+- **Feature 13 (Graph Schema Integrity):** Scenarios 13.1–13.6 validate HC6 (deterministic schema) — all edges carry `SemanticRelation`, binary edges have exactly 2 `NodeIds`, memory-only edges use `HyperedgeType.MemoryRelation`, code-derived edges preserve original `HyperedgeType`, `AnnotationKeyRegistry` validates well-known keys, and node IDs follow canonical format.
+
+### 12.7 Residual Cross-Document Notes
+
+| # | Item | Status |
+|---|------|--------|
+| X-1 | Architecture.md §8.1 confirms tech-spec is fully aligned; §8.2 lists the same implementation-plan conflicts | ✅ **Resolved.** Architecture.md §8.1 (titled "Alignment with `tech-spec.md` (Iteration 24)") confirms alignment with 12 items (A1–A12). A12 (temporal-model External-node carve-out) was added in iteration 25. The alignment conclusions remain valid. Architecture.md §8.2 lists 31 implementation-plan divergences; this tech-spec §12.3 mirrors all 31 with identical canonical resolutions. |
+| X-2 | All implementation-plan conflicts (§12.3) have canonical resolutions | ✅ **Resolved.** All 31 items have stated canonical values from architecture.md. §12.3 is reframed as documentation debt in the sibling document, not as unresolved conflicts in this tech-spec. Implementers follow architecture.md canonical values. |
+| X-3 | Architecture.md §8.1 confirms `ExtractionOptions.EmbeddingModel` default fixed to `"nomic-embed-text"` | ✅ **Resolved.** Tech-spec §12.2 and source-code model note updated to reflect this alignment. All three sources (codebase, architecture.md, tech-spec) now agree on `"nomic-embed-text"`. |
+| X-4 | Architecture.md §8.1 confirms project mutation policy alignment | ✅ **Resolved.** Two additive changes to existing projects: (1) `HyperedgeType.MemoryRelation` in `Ast.Core`, (2) `config.AddBranch("memory", ...)` in `Ast.Cli/Program.cs`. All new interfaces/implementations in `Ast.Memory`. Matches HC8. |
+| X-5 | Architecture.md §8.3 e2e scenario count and divergence count | Architecture.md §8.3 (titled "Alignment with `e2e-scenarios.md` (Current Iteration)") and its header table (line 19) both correctly report **82 scenarios**, **13 features**, and **10 divergences**. Architecture.md §8.4 net assessment confirms: "10 divergences (9 existing + 1 expertise parameter format)". This tech-spec §12.6 matches: 13 features, 82 scenarios, 10 alignment items (E2E-1 through E2E-10). ✅ **Consistent.** |
+
+---
+
+## 13. References
 
 | Key | Citation |
 |-----|----------|
@@ -289,7 +523,10 @@ Runs as a post-session consolidation job:
 | HiAgent | "HiAgent: Hierarchical Working Memory Management for Solving Long-Horizon Agent Tasks." ACL 2025. |
 | MemoryBank | "MemoryBank: Enhancing Large Language Models with Long-Term Memory." AAAI 2024. |
 | G-Memory | "G-Memory: Tracing Hierarchical Memory for Multi-Agent Systems." arXiv:2506.07398, 2025. |
+| SGMem | "SGMem: Sentence-Graph Memory for Efficient Long-Term Conversational Agents." arXiv:2509.21212, 2025. |
+| MemGPT | Packer, C. et al. "MemGPT: Towards LLMs as Operating Systems." arXiv:2310.08560, 2023. |
+| Reflexion | Shinn, N. et al. "Reflexion: Language Agents with Verbal Reinforcement Learning." NeurIPS 2023. |
 
 ---
 
-*End of tech spec.*
+*End of tech spec — Iteration 23. All open questions from Iteration 1 are resolved via operator decisions D1–D6. Iteration 23 fixes: (1) updated architecture.md iteration reference from 24 to **25** (current on-disk state); (2) added A12 (temporal-model External-node carve-out) to §12.2 alignment table — External boundary nodes are timeless, no `VersionRange`, included in temporal queries via `since_index IS NULL`; (3) updated S4 and §7.4 to note External-node VersionRange exemption with corrected temporal query predicate; (4) updated implementation-plan divergence count from 28 to **31** — added S-6 (`RetireEdgeAsync`), S-7 (`ArchiveExpertiseAsync`), S-8 (expertise `archived` column) in §12.3.7, matching architecture.md §8.2 iteration 25; (5) updated §12.7 X-1 alignment item count from A1–A11 to **A1–A12** (12 items); (6) updated §12.7 X-2 implementation-plan divergence count to 31.*
